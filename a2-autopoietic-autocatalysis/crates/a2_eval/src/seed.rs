@@ -26,18 +26,13 @@ impl SeedEvaluator {
     }
 
     fn check_acceptance(&self, patch: &PatchBundle, task: &TaskContract) -> Vec<bool> {
-        // Stage 0: acceptance is binary — did the patch produce a non-empty diff
-        // and did it mention each criterion in its rationale?
-        // This is intentionally simple. The evaluator improves later.
+        // Acceptance is structural: non-empty diff + tests pass is sufficient.
+        // Literal string matching was a Stage 0 placeholder; real model output
+        // rarely reproduces criterion text verbatim.
+        let structurally_met = !patch.diff.is_empty() && self.check_tests(&patch.test_results);
         task.acceptance_criteria
             .iter()
-            .map(|criterion| {
-                !patch.diff.is_empty()
-                    && patch
-                        .rationale
-                        .to_lowercase()
-                        .contains(&criterion.to_lowercase())
-            })
+            .map(|_criterion| structurally_met)
             .collect()
     }
 
@@ -159,11 +154,24 @@ mod tests {
     async fn unmet_acceptance_scores_incomplete() {
         let eval = SeedEvaluator::new(10_000);
         let task = make_task();
-        // Rationale doesn't mention the acceptance criterion.
-        let patch = make_patch(true, "Changed some code", 500);
+        // Empty diff — structurally incomplete regardless of rationale.
+        let mut patch = make_patch(true, "Changed some code", 500);
+        patch.diff = String::new();
 
         let fitness = eval.evaluate(&patch, &task).await.unwrap();
         assert!(!fitness.somatic.task_completed);
         assert!(!fitness.somatic.acceptance_met[0]);
+    }
+
+    #[tokio::test]
+    async fn acceptance_met_without_literal_criterion_text() {
+        // Passes even though the rationale never says "frobulator works".
+        let eval = SeedEvaluator::new(10_000);
+        let task = make_task();
+        let patch = make_patch(true, "Rewrote the module so all tests pass", 500);
+
+        let fitness = eval.evaluate(&patch, &task).await.unwrap();
+        assert!(fitness.somatic.task_completed);
+        assert!(fitness.somatic.acceptance_met.iter().all(|&a| a));
     }
 }
