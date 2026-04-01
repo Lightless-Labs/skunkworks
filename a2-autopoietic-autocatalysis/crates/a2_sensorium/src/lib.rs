@@ -1,1 +1,1 @@
-// a2_sensorium — stub
+pub mod ingest;
