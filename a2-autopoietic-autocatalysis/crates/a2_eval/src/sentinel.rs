@@ -137,7 +137,7 @@ impl SentinelSuite {
             "No unsafe blocks in crate source",
             move || {
                 let output = std::process::Command::new("grep")
-                    .args(["-r", "unsafe", "crates/", "--include=*.rs", "-l"])
+                    .args(["-rP", r"unsafe\s*\{|unsafe\s+fn|unsafe\s+impl", "crates/", "--include=*.rs", "-l"])
                     .current_dir(&root)
                     .output();
                 match output {
