@@ -64,6 +64,8 @@ impl Catalyst for MockCatalyst {
 }
 
 struct MockModelProvider {
+    provider_id: &'static str,
+    model_id: &'static str,
     calls: Arc<AtomicUsize>,
 }
 
@@ -82,11 +84,33 @@ impl ModelProvider for MockModelProvider {
     }
 
     fn provider_id(&self) -> &str {
-        "mock-provider"
+        self.provider_id
     }
 
     fn model_id(&self) -> &str {
-        "mock-model"
+        self.model_id
+    }
+}
+
+struct RoutedMockProvider {
+    provider_id: &'static str,
+    model_id: &'static str,
+    active: MockModelProvider,
+    standby: MockModelProvider,
+}
+
+#[async_trait::async_trait]
+impl ModelProvider for RoutedMockProvider {
+    async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
+        self.active.generate(prompt, system).await
+    }
+
+    fn provider_id(&self) -> &str {
+        self.provider_id
+    }
+
+    fn model_id(&self) -> &str {
+        self.model_id
     }
 }
 
@@ -139,12 +163,27 @@ fn sample_task() -> TaskContract {
 }
 
 #[tokio::test]
-async fn governor_run_creates_and_persists_lineage_record_for_completed_task() {
+async fn governor_run_uses_selected_mock_provider_and_persists_lineage_record() {
     let governor = Governor::new(GermlineVersion::new(), default_budget());
     let task = sample_task();
     let catalyst_calls = Arc::new(AtomicUsize::new(0));
-    let provider_calls = Arc::new(AtomicUsize::new(0));
+    let selected_provider_calls = Arc::new(AtomicUsize::new(0));
+    let fallback_provider_calls = Arc::new(AtomicUsize::new(0));
     let evaluator_calls = Arc::new(AtomicUsize::new(0));
+    let provider = RoutedMockProvider {
+        provider_id: "mock-provider",
+        model_id: "mock-model",
+        active: MockModelProvider {
+            provider_id: "mock-provider",
+            model_id: "mock-model",
+            calls: Arc::clone(&selected_provider_calls),
+        },
+        standby: MockModelProvider {
+            provider_id: "unused-provider",
+            model_id: "unused-model",
+            calls: Arc::clone(&fallback_provider_calls),
+        },
+    };
     let outcome = governor
         .run_task(
             task.clone(),
@@ -152,9 +191,7 @@ async fn governor_run_creates_and_persists_lineage_record_for_completed_task() {
                 id: CatalystId::new(),
                 calls: Arc::clone(&catalyst_calls),
             },
-            &MockModelProvider {
-                calls: Arc::clone(&provider_calls),
-            },
+            &provider,
             &MockEvaluator {
                 calls: Arc::clone(&evaluator_calls),
             },
@@ -199,7 +236,10 @@ async fn governor_run_creates_and_persists_lineage_record_for_completed_task() {
         }
     ));
     assert_eq!(catalyst_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(selected_provider_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fallback_provider_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.standby.provider_id(), "unused-provider");
+    assert_eq!(provider.standby.model_id(), "unused-model");
     assert_eq!(evaluator_calls.load(Ordering::SeqCst), 1);
 
     let store = SqliteLineageStore::new(Connection::open_in_memory().unwrap()).unwrap();
