@@ -3,6 +3,7 @@
 //! Stage 0 commands:
 //!   a2ctl task "title" "description"   — create and run a task
 //!   a2ctl sentinel                     — run the seed sentinel suite
+//!   a2ctl hello                        — print a one-line greeting
 //!   a2ctl status                       — show system health
 
 use clap::{Parser, Subcommand};
@@ -38,6 +39,8 @@ enum Commands {
         #[arg(long, default_value = ".")]
         workspace: String,
     },
+    /// Print a one-line greeting.
+    Hello,
     /// Show system status and health.
     Status,
 }
@@ -207,6 +210,9 @@ async fn main() {
                 println!("Sentinel gate: FAIL");
                 std::process::exit(1);
             }
+        }
+        Commands::Hello => {
+            println!("Hello from A².");
         }
         Commands::Status => {
             println!("A² — Autopoietic Autocatalysis");

@@ -92,6 +92,50 @@ fn extract_text_recursive(val: &Value, key: &str) -> Option<String> {
     }
 }
 
+/// Parse token usage from Codex JSONL — looks for turn.completed with usage field.
+fn parse_codex_usage(jsonl: &str) -> (u64, u64) {
+    for line in jsonl.lines() {
+        if let Ok(v) = serde_json::from_str::<Value>(line) {
+            if v.get("type").and_then(|t| t.as_str()) == Some("turn.completed") {
+                if let Some(usage) = v.get("usage") {
+                    let input = usage
+                        .get("input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let output = usage
+                        .get("output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    return (input, output);
+                }
+            }
+        }
+    }
+    (0, 0)
+}
+
+/// Parse token usage from Claude stream-json — looks for result event with usage.
+fn parse_claude_usage(jsonl: &str) -> (u64, u64) {
+    for line in jsonl.lines() {
+        if let Ok(v) = serde_json::from_str::<Value>(line) {
+            if v.get("type").and_then(|t| t.as_str()) == Some("result") {
+                if let Some(usage) = v.get("usage") {
+                    let input = usage
+                        .get("input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let output = usage
+                        .get("output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    return (input, output);
+                }
+            }
+        }
+    }
+    (0, 0)
+}
+
 // --- Providers ---
 
 pub struct ClaudeProvider {
@@ -155,10 +199,12 @@ impl ModelProvider for ClaudeProvider {
             }
         }
 
+        let (tokens_in, tokens_out) = parse_claude_usage(&stdout_str);
+
         Ok(GenerateResponse {
             text: full_text,
-            tokens_in: 0,
-            tokens_out: 0,
+            tokens_in,
+            tokens_out,
         })
     }
 
@@ -288,6 +334,8 @@ impl ModelProvider for CodexProvider {
 
         cmd.arg("exec");
         cmd.arg(&combined_prompt);
+        cmd.arg("-m").arg(&self.model_id);
+        cmd.arg("-c").arg("model_reasoning_effort=\"high\"");
         cmd.arg("--full-auto");
         cmd.arg("--skip-git-repo-check");
         cmd.arg("--json");
@@ -307,10 +355,14 @@ impl ModelProvider for CodexProvider {
         let text = fs::read_to_string(&out_path).await.unwrap_or_default();
         let _ = fs::remove_file(&out_path).await;
 
+        // Parse token usage from JSONL stdout
+        let stdout_str = String::from_utf8_lossy(&output.stdout);
+        let (tokens_in, tokens_out) = parse_codex_usage(&stdout_str);
+
         Ok(GenerateResponse {
             text,
-            tokens_in: 0,
-            tokens_out: 0,
+            tokens_in,
+            tokens_out,
         })
     }
 
