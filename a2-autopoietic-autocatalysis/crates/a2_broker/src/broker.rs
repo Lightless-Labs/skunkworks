@@ -141,6 +141,52 @@ fn parse_claude_usage(jsonl: &str) -> (u64, u64) {
     (0, 0)
 }
 
+/// Parse token usage from Gemini JSON output.
+///
+/// `--output-format json` includes a `stats` object whose `models` entries
+/// contain aggregated token counts. Prefer prompt/candidate totals so usage
+/// aligns with the provider-level token accounting used elsewhere.
+fn parse_gemini_usage(json: &Value) -> (u64, u64) {
+    let Some(stats) = json.get("stats") else {
+        return (0, 0);
+    };
+
+    if let Some(models) = stats.get("models").and_then(|v| v.as_object()) {
+        let mut tokens_in = 0;
+        let mut tokens_out = 0;
+
+        for metrics in models.values() {
+            let Some(tokens) = metrics.get("tokens") else {
+                continue;
+            };
+
+            tokens_in += tokens
+                .get("prompt")
+                .or_else(|| tokens.get("input"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            tokens_out += tokens
+                .get("candidates")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+        }
+
+        return (tokens_in, tokens_out);
+    }
+
+    let tokens_in = stats
+        .get("input_tokens")
+        .or_else(|| stats.get("input"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let tokens_out = stats
+        .get("output_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    (tokens_in, tokens_out)
+}
+
 // --- Providers ---
 
 pub struct ClaudeProvider {
@@ -284,11 +330,12 @@ impl ModelProvider for GeminiProvider {
             .map_err(|e| A2Error::ProviderError(format!("Failed to parse JSON: {}", e)))?;
 
         let text = extract_text_recursive(&v, "text").unwrap_or_default();
+        let (tokens_in, tokens_out) = parse_gemini_usage(&v);
 
         Ok(GenerateResponse {
             text,
-            tokens_in: 0,
-            tokens_out: 0,
+            tokens_in,
+            tokens_out,
         })
     }
 
@@ -557,5 +604,51 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(routed_resp.text, "Mock response to: world");
+    }
+
+    #[test]
+    fn test_parse_gemini_usage_from_model_stats() {
+        let v = serde_json::json!({
+            "response": "hello",
+            "stats": {
+                "models": {
+                    "gemini-3.1-pro": {
+                        "tokens": {
+                            "input": 80,
+                            "prompt": 100,
+                            "candidates": 25,
+                            "cached": 20
+                        }
+                    },
+                    "gemini-3.1-flash": {
+                        "tokens": {
+                            "prompt": 40,
+                            "candidates": 10
+                        }
+                    }
+                }
+            }
+        });
+
+        let (tokens_in, tokens_out) = parse_gemini_usage(&v);
+
+        assert_eq!(tokens_in, 140);
+        assert_eq!(tokens_out, 35);
+    }
+
+    #[test]
+    fn test_parse_gemini_usage_from_flat_stats() {
+        let v = serde_json::json!({
+            "response": "hello",
+            "stats": {
+                "input_tokens": 12,
+                "output_tokens": 34
+            }
+        });
+
+        let (tokens_in, tokens_out) = parse_gemini_usage(&v);
+
+        assert_eq!(tokens_in, 12);
+        assert_eq!(tokens_out, 34);
     }
 }
