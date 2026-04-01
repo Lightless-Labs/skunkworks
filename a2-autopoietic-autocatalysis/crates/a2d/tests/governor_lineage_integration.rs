@@ -163,7 +163,8 @@ fn sample_task() -> TaskContract {
 }
 
 #[tokio::test]
-async fn governor_run_uses_selected_mock_provider_and_persists_lineage_record() {
+async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_persists_lineage_record()
+{
     let governor = Governor::new(GermlineVersion::new(), default_budget());
     let task = sample_task();
     let catalyst_calls = Arc::new(AtomicUsize::new(0));
@@ -210,7 +211,10 @@ async fn governor_run_uses_selected_mock_provider_and_persists_lineage_record() 
     assert_eq!(patch.task_id, task.id.clone());
     assert_eq!(patch.model_attribution.provider, "mock-provider");
     assert_eq!(patch.model_attribution.model, "mock-model");
-    assert_eq!(patch.rationale, "generated diff for produce patch via integration-test");
+    assert_eq!(
+        patch.rationale,
+        "generated diff for produce patch via integration-test"
+    );
     assert!(fitness.somatic.task_completed);
     assert!(fitness.somatic.tests_pass);
     assert_eq!(outcome.result.lineage.id, outcome.lineage.id);
@@ -219,6 +223,10 @@ async fn governor_run_uses_selected_mock_provider_and_persists_lineage_record() 
     assert_eq!(outcome.lineage.task_id, task.id.clone());
     assert_eq!(outcome.lineage.patch_id, patch.id.clone());
     assert_eq!(outcome.lineage.model_attributions.len(), 1);
+    assert_eq!(
+        outcome.lineage.parent_germline.to_string(),
+        outcome.result.lineage.parent_germline.to_string()
+    );
     assert_eq!(outcome.lineage.fitness.task_id, task.id.clone());
     assert_eq!(outcome.lineage.fitness.somatic.acceptance_met, vec![true]);
     assert_eq!(
