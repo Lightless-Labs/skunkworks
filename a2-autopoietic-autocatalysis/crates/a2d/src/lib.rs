@@ -7,7 +7,7 @@ use a2_core::error::{A2Error, A2Result};
 use a2_core::id::*;
 use a2_core::protocol::*;
 use a2_core::traits::*;
-use a2_workcell::runtime::{run_workcell, WorkcellConfig, WorkcellResult};
+use a2_workcell::runtime::{WorkcellConfig, WorkcellResult, run_workcell};
 use chrono::Utc;
 
 /// Stage 0 Governor — minimal control plane for bootstrap.
