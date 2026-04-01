@@ -117,8 +117,10 @@ async fn main() {
                     }
                 },
                 "opencode" => {
-                    match a2_broker::broker::OpenCodeProvider::new("zai-coding-plan/glm-5.1").await
-                    {
+                    match a2_broker::broker::OpenCodeProvider::new(
+                        a2_broker::broker::OpenCodeProvider::DEFAULT_MODEL_ID,
+                    )
+                    .await {
                         Ok(p) => Box::new(a2_broker::adapt::CoreAdapter::new(p)),
                         Err(e) => {
                             eprintln!("Failed to init OpenCode provider: {e}");
