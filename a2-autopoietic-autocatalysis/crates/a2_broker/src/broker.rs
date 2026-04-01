@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -31,7 +32,11 @@ async fn resolve_binary(binary: &str) -> A2Result<String> {
         .arg(binary)
         .output()
         .await
-        .map_err(|e| A2Error::ProviderError(format!("Failed to execute which: {}", e)))?;
+        .map_err(|e| {
+            A2Error::ProviderError(format!(
+                "failed to resolve provider binary `{binary}` via `which`: {e}"
+            ))
+        })?;
 
     if !output.status.success() {
         return Err(A2Error::ProviderError(format!(
@@ -41,6 +46,55 @@ async fn resolve_binary(binary: &str) -> A2Result<String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn provider_launch_error(provider: &str, binary_path: &str, error: &std::io::Error) -> A2Error {
+    A2Error::ProviderError(format!(
+        "{provider} provider failed to launch binary `{binary_path}`: {error}"
+    ))
+}
+
+fn provider_temp_file_error(
+    provider: &str,
+    action: &str,
+    path: &Path,
+    error: &std::io::Error,
+) -> A2Error {
+    A2Error::ProviderError(format!(
+        "{provider} provider failed to {action} temp file `{}`: {error}",
+        path.display()
+    ))
+}
+
+fn provider_exit_error(
+    provider: &str,
+    model_id: &str,
+    status: std::process::ExitStatus,
+    stderr: &[u8],
+) -> A2Error {
+    let stderr = String::from_utf8_lossy(stderr);
+    let stderr = stderr.trim();
+
+    if stderr.is_empty() {
+        A2Error::ProviderError(format!(
+            "{provider} provider model `{model_id}` exited with status {status} and produced no stderr"
+        ))
+    } else {
+        A2Error::ProviderError(format!(
+            "{provider} provider model `{model_id}` exited with status {status}: {stderr}"
+        ))
+    }
+}
+
+fn provider_parse_error(
+    provider: &str,
+    model_id: &str,
+    format_name: &str,
+    error: &serde_json::Error,
+) -> A2Error {
+    A2Error::ProviderError(format!(
+        "{provider} provider model `{model_id}` returned invalid {format_name}: {error}"
+    ))
 }
 
 fn clear_env(cmd: &mut Command) {
@@ -223,11 +277,15 @@ impl ModelProvider for ClaudeProvider {
         let output = cmd
             .output()
             .await
-            .map_err(|e| A2Error::ProviderError(e.to_string()))?;
+            .map_err(|e| provider_launch_error("claude", &self.binary_path, &e))?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(A2Error::ProviderError(format!("Claude failed: {}", stderr)));
+            return Err(provider_exit_error(
+                "claude",
+                &self.model_id,
+                output.status,
+                &output.stderr,
+            ));
         }
 
         let mut full_text = String::new();
@@ -304,7 +362,7 @@ impl ModelProvider for GeminiProvider {
             ));
             fs::write(&path, sys)
                 .await
-                .map_err(|e| A2Error::ProviderError(e.to_string()))?;
+                .map_err(|e| provider_temp_file_error("gemini", "write", &path, &e))?;
             cmd.env("GEMINI_SYSTEM_MD", &path);
             temp_sys_file = Some(path);
         }
@@ -312,20 +370,24 @@ impl ModelProvider for GeminiProvider {
         let output = cmd
             .output()
             .await
-            .map_err(|e| A2Error::ProviderError(e.to_string()))?;
+            .map_err(|e| provider_launch_error("gemini", &self.binary_path, &e))?;
 
         if let Some(path) = temp_sys_file {
             let _ = fs::remove_file(path).await;
         }
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(A2Error::ProviderError(format!("Gemini failed: {}", stderr)));
+            return Err(provider_exit_error(
+                "gemini",
+                &self.model_id,
+                output.status,
+                &output.stderr,
+            ));
         }
 
         let stdout_str = String::from_utf8_lossy(&output.stdout);
         let v: Value = serde_json::from_str(&stdout_str)
-            .map_err(|e| A2Error::ProviderError(format!("Failed to parse JSON: {}", e)))?;
+            .map_err(|e| provider_parse_error("gemini", &self.model_id, "JSON", &e))?;
 
         let text = extract_text_recursive(&v, "text").unwrap_or_default();
         let (tokens_in, tokens_out) = parse_gemini_usage(&v);
@@ -394,15 +456,21 @@ impl ModelProvider for CodexProvider {
         let output = cmd
             .output()
             .await
-            .map_err(|e| A2Error::ProviderError(e.to_string()))?;
+            .map_err(|e| provider_launch_error("codex", &self.binary_path, &e))?;
 
         if !output.status.success() {
             let _ = fs::remove_file(&out_path).await;
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(A2Error::ProviderError(format!("Codex failed: {}", stderr)));
+            return Err(provider_exit_error(
+                "codex",
+                &self.model_id,
+                output.status,
+                &output.stderr,
+            ));
         }
 
-        let text = fs::read_to_string(&out_path).await.unwrap_or_default();
+        let text = fs::read_to_string(&out_path)
+            .await
+            .map_err(|e| provider_temp_file_error("codex", "read", &out_path, &e))?;
         let _ = fs::remove_file(&out_path).await;
 
         // Parse token usage from JSONL stdout
@@ -463,14 +531,15 @@ impl ModelProvider for OpenCodeProvider {
         let output = cmd
             .output()
             .await
-            .map_err(|e| A2Error::ProviderError(e.to_string()))?;
+            .map_err(|e| provider_launch_error("opencode", &self.binary_path, &e))?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(A2Error::ProviderError(format!(
-                "OpenCode failed: {}",
-                stderr
-            )));
+            return Err(provider_exit_error(
+                "opencode",
+                &self.model_id,
+                output.status,
+                &output.stderr,
+            ));
         }
 
         let mut full_text = String::new();
@@ -540,7 +609,9 @@ impl ModelRouter {
         system: Option<&str>,
     ) -> A2Result<GenerateResponse> {
         let provider = self.get_provider(provider_id, model_id).ok_or_else(|| {
-            A2Error::ProviderError(format!("Provider not found: {}/{}", provider_id, model_id))
+            A2Error::ProviderError(format!(
+                "no registered model provider for `{provider_id}/{model_id}`"
+            ))
         })?;
         provider.generate(prompt, system).await
     }
@@ -601,6 +672,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(routed_resp.text, "Mock response to: world");
+    }
+
+    #[tokio::test]
+    async fn test_route_generate_missing_provider_error_is_context_rich() {
+        let router = ModelRouter::new();
+
+        let error = router
+            .route_generate("missing", "v1", "world", None)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "model provider error: no registered model provider for `missing/v1`"
+        );
     }
 
     #[test]

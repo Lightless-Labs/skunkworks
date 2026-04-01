@@ -115,9 +115,18 @@ impl ConstitutionalVerifier for SelfHostVerifier {
 
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = if stderr.trim().is_empty() {
-            "cargo check failed".to_string()
+            format!(
+                "`cargo check --workspace --quiet` failed in `{}` with status {} and produced no stderr",
+                self.workspace_root().display(),
+                output.status
+            )
         } else {
-            stderr.trim().to_string()
+            format!(
+                "`cargo check --workspace --quiet` failed in `{}` with status {}: {}",
+                self.workspace_root().display(),
+                output.status,
+                stderr.trim()
+            )
         };
 
         Err(A2Error::InvariantViolation {

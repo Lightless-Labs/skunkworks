@@ -4,6 +4,17 @@
 //! the primary anti-Goodharting mechanism: if visible benchmark scores
 //! diverge from sentinel scores, the system is gaming its evaluator.
 
+fn command_spawn_error(
+    command: &str,
+    workspace_root: &std::path::Path,
+    error: &std::io::Error,
+) -> String {
+    format!(
+        "failed to launch `{command}` in `{}`: {error}",
+        workspace_root.display()
+    )
+}
+
 /// Result of running the full sentinel suite.
 #[derive(Clone, Debug)]
 pub struct SuiteResult {
@@ -102,9 +113,14 @@ impl SentinelSuite {
                     Ok(o) if o.status.success() => (true, "cargo check passed".into()),
                     Ok(o) => (
                         false,
-                        format!("cargo check failed: {}", String::from_utf8_lossy(&o.stderr)),
+                        format!(
+                            "`cargo check` failed in `{}` with status {}: {}",
+                            root.display(),
+                            o.status,
+                            String::from_utf8_lossy(&o.stderr).trim()
+                        ),
                     ),
-                    Err(e) => (false, format!("failed to run cargo: {e}")),
+                    Err(e) => (false, command_spawn_error("cargo check", &root, &e)),
                 }
             },
         ));
@@ -123,9 +139,14 @@ impl SentinelSuite {
                     Ok(o) if o.status.success() => (true, "cargo test passed".into()),
                     Ok(o) => (
                         false,
-                        format!("cargo test failed: {}", String::from_utf8_lossy(&o.stderr)),
+                        format!(
+                            "`cargo test` failed in `{}` with status {}: {}",
+                            root.display(),
+                            o.status,
+                            String::from_utf8_lossy(&o.stderr).trim()
+                        ),
                     ),
-                    Err(e) => (false, format!("failed to run cargo: {e}")),
+                    Err(e) => (false, command_spawn_error("cargo test", &root, &e)),
                 }
             },
         ));
@@ -151,11 +172,12 @@ impl SentinelSuite {
                     Ok(o) => (
                         false,
                         format!(
-                            "unsafe found in: {}",
+                            "found unsafe Rust constructs under `{}`: {}",
+                            root.display(),
                             String::from_utf8_lossy(&o.stdout).trim()
                         ),
                     ),
-                    Err(e) => (false, format!("grep failed: {e}")),
+                    Err(e) => (false, command_spawn_error("grep", &root, &e)),
                 }
             },
         ));
@@ -175,11 +197,16 @@ impl SentinelSuite {
                     Ok(o) => (
                         false,
                         format!(
-                            "cargo clippy failed: {}",
-                            String::from_utf8_lossy(&o.stderr)
+                            "`cargo clippy --all-targets -- -D warnings` failed in `{}` with status {}: {}",
+                            root.display(),
+                            o.status,
+                            String::from_utf8_lossy(&o.stderr).trim()
                         ),
                     ),
-                    Err(e) => (false, format!("failed to run cargo: {e}")),
+                    Err(e) => (
+                        false,
+                        command_spawn_error("cargo clippy --all-targets -- -D warnings", &root, &e),
+                    ),
                 }
             },
         ));
