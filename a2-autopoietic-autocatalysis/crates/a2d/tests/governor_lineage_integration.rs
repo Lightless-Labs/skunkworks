@@ -164,7 +164,12 @@ async fn governor_run_creates_and_persists_lineage_record_for_completed_task() {
 
     let patch = outcome.result.patch.as_ref().unwrap();
     let fitness = outcome.result.fitness.as_ref().unwrap();
+    assert!(outcome.result.patch.is_some());
+    assert!(outcome.result.fitness.is_some());
     assert_eq!(outcome.task_id, task.id.clone());
+    assert_eq!(outcome.result.tokens_used, 34);
+    assert_eq!(outcome.result.calls_used, 1);
+    assert!(outcome.result.duration_secs >= 0.0);
     assert_eq!(patch.task_id, task.id.clone());
     assert_eq!(patch.model_attribution.provider, "mock-provider");
     assert_eq!(patch.model_attribution.model, "mock-model");
@@ -201,23 +206,23 @@ async fn governor_run_creates_and_persists_lineage_record_for_completed_task() {
     store.record(outcome.lineage.clone()).await.unwrap();
 
     let stored = store.get(&outcome.lineage.id).await.unwrap().unwrap();
-    assert_eq!(stored.id, outcome.lineage.id);
+    assert_eq!(
+        serde_json::to_value(&stored).unwrap(),
+        serde_json::to_value(&outcome.lineage).unwrap()
+    );
     assert_eq!(stored.task_id, task.id);
-    assert_eq!(stored.patch_id, outcome.lineage.patch_id);
-    assert_eq!(stored.parent_germline, outcome.lineage.parent_germline);
-    assert_eq!(stored.model_attributions.len(), 1);
-    assert_eq!(stored.model_attributions[0].provider, "mock-provider");
-    assert_eq!(stored.model_attributions[0].model, "mock-model");
-    assert_eq!(stored.fitness.task_id, task.id);
-    assert_eq!(stored.fitness.somatic.acceptance_met, vec![true]);
-    assert!(stored.fitness.somatic.task_completed);
-    assert!(stored.fitness.somatic.tests_pass);
 
     let task_records = store.for_task(&task.id).await.unwrap();
     assert_eq!(task_records.len(), 1);
-    assert_eq!(task_records[0].id, outcome.lineage.id);
+    assert_eq!(
+        serde_json::to_value(&task_records[0]).unwrap(),
+        serde_json::to_value(&outcome.lineage).unwrap()
+    );
 
     let recent_records = store.recent(1).await.unwrap();
     assert_eq!(recent_records.len(), 1);
-    assert_eq!(recent_records[0].id, outcome.lineage.id);
+    assert_eq!(
+        serde_json::to_value(&recent_records[0]).unwrap(),
+        serde_json::to_value(&outcome.lineage).unwrap()
+    );
 }
