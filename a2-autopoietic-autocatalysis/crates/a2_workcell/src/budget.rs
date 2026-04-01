@@ -3,8 +3,8 @@
 //! Each workcell has a token budget, call budget, and wall-clock budget.
 //! The BudgetTracker monitors usage and signals when limits are approached or exceeded.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use a2_core::protocol::Budget;

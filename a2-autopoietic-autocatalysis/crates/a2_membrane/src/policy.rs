@@ -53,9 +53,7 @@ impl PolicyMembrane {
         }
 
         // Wildcard allow or explicit allow.
-        cap.allowed_tools
-            .iter()
-            .any(|a| a == "*" || a == tool_name)
+        cap.allowed_tools.iter().any(|a| a == "*" || a == tool_name)
     }
 
     fn is_endpoint_allowed(&self, endpoint: &str) -> bool {
@@ -161,12 +159,14 @@ mod tests {
         });
         let wc = WorkcellId::new();
 
-        assert!(m
-            .check_network("https://api.anthropic.com/v1/messages", &wc)
-            .is_ok());
-        assert!(m
-            .check_network("https://api.openai.com/v1/chat", &wc)
-            .is_ok());
+        assert!(
+            m.check_network("https://api.anthropic.com/v1/messages", &wc)
+                .is_ok()
+        );
+        assert!(
+            m.check_network("https://api.openai.com/v1/chat", &wc)
+                .is_ok()
+        );
         assert!(m.check_network("https://evil.com", &wc).is_err());
     }
 }

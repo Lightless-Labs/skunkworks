@@ -107,7 +107,10 @@ mod tests {
     #[test]
     fn human_signal_ingests_as_low_risk() {
         let ingester = Ingester::new(default_budget());
-        let task = ingester.from_human("Fix the auth bug", "Users can't log in after password reset");
+        let task = ingester.from_human(
+            "Fix the auth bug",
+            "Users can't log in after password reset",
+        );
 
         assert!(matches!(task.priority, Priority::Normal));
         assert!(matches!(task.source, TaskSource::Sensorium { .. }));

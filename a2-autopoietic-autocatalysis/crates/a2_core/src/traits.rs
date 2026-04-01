@@ -43,11 +43,7 @@ pub trait Catalyst: Send + Sync {
 /// Evaluates a PatchBundle and produces a FitnessRecord.
 #[async_trait]
 pub trait Evaluator: Send + Sync {
-    async fn evaluate(
-        &self,
-        patch: &PatchBundle,
-        task: &TaskContract,
-    ) -> A2Result<FitnessRecord>;
+    async fn evaluate(&self, patch: &PatchBundle, task: &TaskContract) -> A2Result<FitnessRecord>;
 }
 
 /// Decides whether a patch should be promoted to germline.

@@ -44,7 +44,9 @@ impl SqliteLineageStore {
             task_id: deserialize_json::<TaskId>(&task_id)?,
             patch_id: deserialize_json::<PatchId>(&patch_id)?,
             parent_germline: deserialize_json::<GermlineVersion>(&parent_germline)?,
-            model_attributions: deserialize_json::<Vec<ModelAttribution>>(&model_attributions_json)?,
+            model_attributions: deserialize_json::<Vec<ModelAttribution>>(
+                &model_attributions_json,
+            )?,
             fitness: deserialize_json::<FitnessRecord>(&fitness_json)?,
             created_at: parse_timestamp(&created_at)?,
         })
