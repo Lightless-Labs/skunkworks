@@ -65,6 +65,11 @@ fn clear_env(cmd: &mut Command) {
             cmd.env(var, val);
         }
     }
+    for (key, val) in env::vars() {
+        if key.starts_with("OPENCODE_") {
+            cmd.env(key, val);
+        }
+    }
 }
 
 fn extract_text_recursive(val: &Value, key: &str) -> Option<String> {
@@ -381,6 +386,8 @@ pub struct OpenCodeProvider {
 }
 
 impl OpenCodeProvider {
+    pub const DEFAULT_MODEL_ID: &'static str = "zai-coding-plan/glm-5.1";
+
     pub async fn new(model_id: &str) -> A2Result<Self> {
         let binary_path = resolve_binary("opencode").await?;
         Ok(Self {
@@ -403,8 +410,9 @@ impl ModelProvider for OpenCodeProvider {
         };
 
         cmd.arg("run");
-        cmd.arg(&combined_prompt);
+        cmd.arg("--model").arg(&self.model_id);
         cmd.arg("--format").arg("json");
+        cmd.arg(&combined_prompt);
         cmd.stdin(Stdio::null());
 
         let output = cmd
