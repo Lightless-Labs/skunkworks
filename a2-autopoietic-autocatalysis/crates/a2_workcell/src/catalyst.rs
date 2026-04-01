@@ -216,7 +216,9 @@ impl Catalyst for GeneralistCatalyst {
 /// Split model response into diff and rationale sections.
 /// Looks for a ```diff block; if not found, treats everything as rationale.
 fn split_response(text: &str) -> (String, String) {
-    if let Some(start) = text.find("```diff") {
+    // Use rfind to grab the LAST ```diff block — models often self-correct
+    // mid-response, producing a first draft then a "let me redo that" final diff.
+    if let Some(start) = text.rfind("```diff") {
         let after_fence = start + 7;
         if let Some(end) = text[after_fence..].find("```") {
             let diff = text[after_fence..after_fence + end].trim().to_string();
