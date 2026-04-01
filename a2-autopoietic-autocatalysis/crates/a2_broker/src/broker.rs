@@ -34,7 +34,10 @@ async fn resolve_binary(binary: &str) -> A2Result<String> {
         .map_err(|e| A2Error::ProviderError(format!("Failed to execute which: {}", e)))?;
 
     if !output.status.success() {
-        return Err(A2Error::ProviderError(format!("Binary '{}' not found in PATH", binary)));
+        return Err(A2Error::ProviderError(format!(
+            "Binary '{}' not found in PATH",
+            binary
+        )));
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -42,7 +45,22 @@ async fn resolve_binary(binary: &str) -> A2Result<String> {
 
 fn clear_env(cmd: &mut Command) {
     cmd.env_clear();
-    for var in &["PATH", "HOME", "TMPDIR"] {
+    for var in &[
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        // Claude
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        // Gemini
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        // OpenAI / Codex
+        "OPENAI_API_KEY",
+        // XDG (needed by some CLI tools)
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+    ] {
         if let Ok(val) = env::var(var) {
             cmd.env(var, val);
         }
@@ -97,16 +115,22 @@ impl ModelProvider for ClaudeProvider {
         let mut cmd = Command::new(&self.binary_path);
         clear_env(&mut cmd);
 
-        let combined_prompt = if let Some(sys) = system {
-            format!("{}\n\n{}", sys, prompt)
-        } else {
-            prompt.to_string()
-        };
+        cmd.arg("-p")
+            .arg(prompt)
+            .arg("--model")
+            .arg(&self.model_id)
+            .arg("--output-format")
+            .arg("stream-json")
+            .arg("--verbose");
 
-        cmd.arg("-p").arg(&combined_prompt);
-        cmd.arg("--output-format").arg("stream-json");
+        if let Some(sys) = system {
+            cmd.arg("--append-system-prompt").arg(sys);
+        }
 
-        let output = cmd.output().await.map_err(|e| A2Error::ProviderError(e.to_string()))?;
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| A2Error::ProviderError(e.to_string()))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -115,9 +139,11 @@ impl ModelProvider for ClaudeProvider {
 
         let mut full_text = String::new();
         let stdout_str = String::from_utf8_lossy(&output.stdout);
-        
+
         for line in stdout_str.lines() {
-            if line.trim().is_empty() { continue; }
+            if line.trim().is_empty() {
+                continue;
+            }
             if let Ok(v) = serde_json::from_str::<Value>(line) {
                 if let Some(delta) = v.get("delta") {
                     if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
@@ -176,14 +202,22 @@ impl ModelProvider for GeminiProvider {
             let path = env::temp_dir().join(format!(
                 "gemini_sys_{}_{}.md",
                 std::process::id(),
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_micros()
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_micros()
             ));
-            fs::write(&path, sys).await.map_err(|e| A2Error::ProviderError(e.to_string()))?;
+            fs::write(&path, sys)
+                .await
+                .map_err(|e| A2Error::ProviderError(e.to_string()))?;
             cmd.env("GEMINI_SYSTEM_MD", &path);
             temp_sys_file = Some(path);
         }
 
-        let output = cmd.output().await.map_err(|e| A2Error::ProviderError(e.to_string()))?;
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| A2Error::ProviderError(e.to_string()))?;
 
         if let Some(path) = temp_sys_file {
             let _ = fs::remove_file(path).await;
@@ -197,7 +231,7 @@ impl ModelProvider for GeminiProvider {
         let stdout_str = String::from_utf8_lossy(&output.stdout);
         let v: Value = serde_json::from_str(&stdout_str)
             .map_err(|e| A2Error::ProviderError(format!("Failed to parse JSON: {}", e)))?;
-        
+
         let text = extract_text_recursive(&v, "text").unwrap_or_default();
 
         Ok(GenerateResponse {
@@ -246,7 +280,10 @@ impl ModelProvider for CodexProvider {
         let out_path = env::temp_dir().join(format!(
             "codex_out_{}_{}.txt",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_micros()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros()
         ));
 
         cmd.arg("exec");
@@ -256,7 +293,10 @@ impl ModelProvider for CodexProvider {
         cmd.arg("--json");
         cmd.arg("-o").arg(&out_path);
 
-        let output = cmd.output().await.map_err(|e| A2Error::ProviderError(e.to_string()))?;
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| A2Error::ProviderError(e.to_string()))?;
 
         if !output.status.success() {
             let _ = fs::remove_file(&out_path).await;
@@ -315,18 +355,26 @@ impl ModelProvider for OpenCodeProvider {
         cmd.arg("--format").arg("json");
         cmd.stdin(Stdio::null());
 
-        let output = cmd.output().await.map_err(|e| A2Error::ProviderError(e.to_string()))?;
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| A2Error::ProviderError(e.to_string()))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(A2Error::ProviderError(format!("OpenCode failed: {}", stderr)));
+            return Err(A2Error::ProviderError(format!(
+                "OpenCode failed: {}",
+                stderr
+            )));
         }
 
         let mut full_text = String::new();
         let stdout_str = String::from_utf8_lossy(&output.stdout);
-        
+
         for line in stdout_str.lines() {
-            if line.trim().is_empty() { continue; }
+            if line.trim().is_empty() {
+                continue;
+            }
             if let Ok(v) = serde_json::from_str::<Value>(line) {
                 if v.get("type").and_then(|t| t.as_str()) == Some("text") {
                     if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
@@ -371,7 +419,11 @@ impl ModelRouter {
         self.providers.insert(key, provider);
     }
 
-    pub fn get_provider(&self, provider_id: &str, model_id: &str) -> Option<Arc<dyn ModelProvider>> {
+    pub fn get_provider(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+    ) -> Option<Arc<dyn ModelProvider>> {
         let key = format!("{}/{}", provider_id, model_id);
         self.providers.get(&key).cloned()
     }
@@ -383,8 +435,9 @@ impl ModelRouter {
         prompt: &str,
         system: Option<&str>,
     ) -> A2Result<GenerateResponse> {
-        let provider = self.get_provider(provider_id, model_id)
-            .ok_or_else(|| A2Error::ProviderError(format!("Provider not found: {}/{}", provider_id, model_id)))?;
+        let provider = self.get_provider(provider_id, model_id).ok_or_else(|| {
+            A2Error::ProviderError(format!("Provider not found: {}/{}", provider_id, model_id))
+        })?;
         provider.generate(prompt, system).await
     }
 }
@@ -400,7 +453,11 @@ mod tests {
 
     #[async_trait]
     impl ModelProvider for MockProvider {
-        async fn generate(&self, prompt: &str, _system: Option<&str>) -> A2Result<GenerateResponse> {
+        async fn generate(
+            &self,
+            prompt: &str,
+            _system: Option<&str>,
+        ) -> A2Result<GenerateResponse> {
             Ok(GenerateResponse {
                 text: format!("Mock response to: {}", prompt),
                 tokens_in: 10,
@@ -424,16 +481,21 @@ mod tests {
             provider_id: "mock".to_string(),
             model_id: "v1".to_string(),
         });
-        
+
         router.register_provider(mock1.clone());
 
-        let provider = router.get_provider("mock", "v1").expect("Provider not found");
+        let provider = router
+            .get_provider("mock", "v1")
+            .expect("Provider not found");
         let resp = provider.generate("hello", None).await.unwrap();
         assert_eq!(resp.text, "Mock response to: hello");
         assert_eq!(resp.tokens_in, 10);
         assert_eq!(resp.tokens_out, 20);
 
-        let routed_resp = router.route_generate("mock", "v1", "world", None).await.unwrap();
+        let routed_resp = router
+            .route_generate("mock", "v1", "world", None)
+            .await
+            .unwrap();
         assert_eq!(routed_resp.text, "Mock response to: world");
     }
 }

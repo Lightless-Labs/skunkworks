@@ -174,7 +174,10 @@ pub enum PromotionDecision {
     /// Patch promoted to germline.
     PromoteGermline { mutation_scope: MutationScope },
     /// Rollback to a previous germline version.
-    Rollback { target: GermlineVersion, reason: String },
+    Rollback {
+        target: GermlineVersion,
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -17,7 +17,9 @@ pub use store::SqliteLineageStore;
 
 pub type SqliteConnection = Arc<Mutex<Connection>>;
 
-pub(crate) fn lock_connection(connection: &SqliteConnection) -> A2Result<MutexGuard<'_, Connection>> {
+pub(crate) fn lock_connection(
+    connection: &SqliteConnection,
+) -> A2Result<MutexGuard<'_, Connection>> {
     connection
         .lock()
         .map_err(|_| A2Error::Io(io::Error::other("sqlite connection mutex poisoned")))

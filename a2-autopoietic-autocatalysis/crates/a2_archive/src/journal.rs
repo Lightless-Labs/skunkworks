@@ -171,10 +171,7 @@ mod tests {
             decision: PromotionDecision::PromoteGermline {
                 mutation_scope: MutationScope::Catalyst,
             },
-            gate_results: HashMap::from([
-                ("tests".into(), true),
-                ("constitutional".into(), true),
-            ]),
+            gate_results: HashMap::from([("tests".into(), true), ("constitutional".into(), true)]),
             promoted_at,
         }
     }
