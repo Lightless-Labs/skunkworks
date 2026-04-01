@@ -34,6 +34,9 @@ enum Commands {
         /// Dry run: create task but don't execute.
         #[arg(long)]
         dry_run: bool,
+        /// Auto-apply promoted patches via git apply.
+        #[arg(long)]
+        apply: bool,
     },
     /// Read task descriptions from stdin and run them sequentially.
     Run {
@@ -45,6 +48,9 @@ enum Commands {
         /// Available: claude, gemini, codex, opencode
         #[arg(long, default_value = "claude")]
         provider: String,
+        /// Auto-apply promoted patches via git apply.
+        #[arg(long)]
+        apply: bool,
     },
     /// Run the seed sentinel suite.
     Sentinel {
@@ -84,6 +90,7 @@ async fn main() {
             max_tokens,
             model,
             dry_run,
+            apply,
         } => {
             let budget = default_budget(max_tokens);
 
@@ -141,6 +148,18 @@ async fn main() {
                     println!();
                     println!("--- Promotion Decision ---");
                     println!("{:?}", outcome.decision);
+
+                    if apply {
+                        if let a2_core::protocol::PromotionDecision::PromoteGermline { .. } = &outcome.decision {
+                            if let Some(patch) = &outcome.result.patch {
+                                match try_apply_patch(&patch.diff) {
+                                    Ok(true) => println!("--- Applied ---"),
+                                    Ok(false) => println!("[empty diff, nothing to apply]"),
+                                    Err(e) => eprintln!("[apply failed: {e}]"),
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     eprintln!("Task failed: {e}");
@@ -148,7 +167,7 @@ async fn main() {
                 }
             }
         }
-        Commands::Run { max_tokens, provider } => {
+        Commands::Run { max_tokens, provider, apply } => {
             let budget = default_budget(max_tokens);
             let ingester = a2_sensorium::ingest::Ingester::new(budget.clone());
 
@@ -200,7 +219,20 @@ async fn main() {
                 task_index += 1;
 
                 match run_task(&governor, task, &catalyst, p, &evaluator).await {
-                    Ok(outcome) => rows.push(run_summary_row(&title, p, &outcome)),
+                    Ok(outcome) => {
+                        if apply {
+                            if let a2_core::protocol::PromotionDecision::PromoteGermline { .. } = &outcome.decision {
+                                if let Some(patch) = &outcome.result.patch {
+                                    match try_apply_patch(&patch.diff) {
+                                        Ok(true) => eprintln!("[applied: {title}]"),
+                                        Ok(false) => {}
+                                        Err(e) => eprintln!("[apply failed for {title}: {e}]"),
+                                    }
+                                }
+                            }
+                        }
+                        rows.push(run_summary_row(&title, p, &outcome));
+                    }
                     Err(e) => rows.push(RunSummaryRow {
                         title,
                         model: requested_model(p),
@@ -441,6 +473,44 @@ fn render_summary_table(rows: &[RunSummaryRow]) -> String {
     }
 
     out
+}
+
+/// Attempt to apply a promoted patch via `git apply`. Returns Ok(true) if applied,
+/// Ok(false) if the diff was empty, Err if git apply failed.
+fn try_apply_patch(diff: &str) -> Result<bool, String> {
+    if diff.trim().is_empty() {
+        return Ok(false);
+    }
+
+    let tmp = std::env::temp_dir().join(format!("a2_patch_{}.diff", std::process::id()));
+    std::fs::write(&tmp, diff).map_err(|e| format!("write temp diff: {e}"))?;
+
+    let output = std::process::Command::new("git")
+        .args(["apply", "--check"])
+        .arg(&tmp)
+        .output()
+        .map_err(|e| format!("git apply --check: {e}"))?;
+
+    if !output.status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git apply --check failed: {stderr}"));
+    }
+
+    let output = std::process::Command::new("git")
+        .arg("apply")
+        .arg(&tmp)
+        .output()
+        .map_err(|e| format!("git apply: {e}"))?;
+
+    let _ = std::fs::remove_file(&tmp);
+
+    if output.status.success() {
+        Ok(true)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("git apply failed: {stderr}"))
+    }
 }
 
 #[cfg(test)]
