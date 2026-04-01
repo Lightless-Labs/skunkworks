@@ -20,9 +20,11 @@ pub type SqliteConnection = Arc<Mutex<Connection>>;
 pub(crate) fn lock_connection(
     connection: &SqliteConnection,
 ) -> A2Result<MutexGuard<'_, Connection>> {
-    connection
-        .lock()
-        .map_err(|_| A2Error::Io(io::Error::other("sqlite connection mutex poisoned")))
+    connection.lock().map_err(|_| {
+        A2Error::Io(io::Error::other(
+            "failed to lock sqlite connection: mutex poisoned",
+        ))
+    })
 }
 
 pub(crate) fn parse_timestamp(raw: &str) -> A2Result<DateTime<Utc>> {

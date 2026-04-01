@@ -77,9 +77,13 @@ impl GeneralistCatalyst {
         prompt.push_str("     existing_line\n");
         prompt.push_str("```\n\n");
         prompt.push_str("CRITICAL diff rules:\n");
-        prompt.push_str("- Paths MUST be relative to workspace root (e.g. crates/a2_eval/src/seed.rs)\n");
+        prompt.push_str(
+            "- Paths MUST be relative to workspace root (e.g. crates/a2_eval/src/seed.rs)\n",
+        );
         prompt.push_str("- Paths MUST have a/ and b/ prefixes\n");
-        prompt.push_str("- @@ hunk headers MUST have correct line numbers: @@ -start,count +start,count @@\n");
+        prompt.push_str(
+            "- @@ hunk headers MUST have correct line numbers: @@ -start,count +start,count @@\n",
+        );
         prompt.push_str("- Context lines (unchanged) must have a single leading space\n");
         prompt.push_str("- Added lines start with +, removed lines start with -\n");
         prompt.push_str("- The diff must pass `git apply --check` — if unsure, produce a smaller, precise diff\n\n");
