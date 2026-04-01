@@ -40,9 +40,11 @@ enum Commands {
         /// Maximum token budget per task.
         #[arg(long, default_value = "50000")]
         max_tokens: u64,
-        /// Model provider/model (e.g., "claude" or "gemini").
+        /// Provider(s) to use. Comma-separated list for round-robin cycling
+        /// across tasks (e.g. "claude,gemini,codex,opencode").
+        /// Available: claude, gemini, codex, opencode
         #[arg(long, default_value = "claude")]
-        model: String,
+        provider: String,
     },
     /// Run the seed sentinel suite.
     Sentinel {
@@ -146,15 +148,30 @@ async fn main() {
                 }
             }
         }
-        Commands::Run { max_tokens, model } => {
+        Commands::Run { max_tokens, provider } => {
             let budget = default_budget(max_tokens);
             let ingester = a2_sensorium::ingest::Ingester::new(budget.clone());
-            let provider = build_provider(&model).await;
+
+            let provider_names: Vec<&str> = provider
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            let mut providers: Vec<Box<dyn a2_core::traits::ModelProvider>> = Vec::new();
+            for name in &provider_names {
+                providers.push(build_provider(name).await);
+            }
+            if providers.is_empty() {
+                eprintln!("No valid providers specified.");
+                std::process::exit(1);
+            }
+
             let catalyst = a2_workcell::catalyst::GeneralistCatalyst::new();
             let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
             let governor = a2d::Governor::new(a2_core::id::GermlineVersion::new(), budget);
 
             let mut rows = Vec::new();
+            let mut task_index: usize = 0;
 
             for line in io::stdin().lock().lines() {
                 let description = match line {
@@ -179,11 +196,14 @@ async fn main() {
 
                 let title = task.title.clone();
 
-                match run_task(&governor, task, &catalyst, provider.as_ref(), &evaluator).await {
-                    Ok(outcome) => rows.push(run_summary_row(&title, provider.as_ref(), &outcome)),
+                let p = providers[task_index % providers.len()].as_ref();
+                task_index += 1;
+
+                match run_task(&governor, task, &catalyst, p, &evaluator).await {
+                    Ok(outcome) => rows.push(run_summary_row(&title, p, &outcome)),
                     Err(e) => rows.push(RunSummaryRow {
                         title,
-                        model: requested_model(provider.as_ref()),
+                        model: requested_model(p),
                         tokens: 0,
                         duration_secs: 0.0,
                         decision: format!("error: {e}"),
