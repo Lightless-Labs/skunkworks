@@ -10,6 +10,8 @@ use a2_core::protocol::*;
 use a2_core::traits::*;
 use chrono::Utc;
 
+const MAX_RELEVANT_FILE_LINES: usize = 2_000;
+
 pub struct GeneralistCatalyst {
     id: CatalystId,
 }
@@ -37,7 +39,7 @@ impl GeneralistCatalyst {
          - `constitution/`, `policies/`, `schemas/`, `prompts/`, `docs/`, `bench/`, `lineage/`: supporting inputs and artifacts\n"
     }
 
-    fn build_prompt(&self, task: &TaskContract, context: &ContextPack) -> String {
+    async fn build_prompt(&self, task: &TaskContract, context: &ContextPack) -> String {
         let mut prompt = String::new();
 
         prompt.push_str(&format!("# Task: {}\n\n", task.title));
@@ -55,13 +57,7 @@ impl GeneralistCatalyst {
         prompt.push_str(self.workspace_structure());
         prompt.push('\n');
 
-        if !context.relevant_files.is_empty() {
-            prompt.push_str("## Relevant Files\n\n");
-            for f in &context.relevant_files {
-                prompt.push_str(&format!("- {}\n", f.display()));
-            }
-            prompt.push('\n');
-        }
+        prompt.push_str(&self.relevant_files_section(context).await);
 
         prompt.push_str("## Instructions\n\n");
         prompt.push_str("Produce a clean, minimal unified diff that addresses the task.\n");
@@ -92,6 +88,65 @@ impl GeneralistCatalyst {
          Output explicit Diff, Rationale, and Test Suggestions sections. \
          Be concise."
     }
+
+    async fn relevant_files_section(&self, context: &ContextPack) -> String {
+        if context.relevant_files.is_empty() {
+            return String::new();
+        }
+
+        let mut section = String::from("## Relevant Files\n\n");
+        for path in &context.relevant_files {
+            section.push_str(&format!("- {}\n", path.display()));
+        }
+        section.push('\n');
+        section.push_str("## Relevant File Contents\n\n");
+
+        let mut remaining_lines = MAX_RELEVANT_FILE_LINES;
+
+        for path in &context.relevant_files {
+            section.push_str(&format!("### {}\n\n", path.display()));
+
+            match tokio::fs::read_to_string(path).await {
+                Ok(contents) => {
+                    let (snippet, lines_used, truncated) =
+                        truncate_to_line_limit(&contents, remaining_lines);
+                    remaining_lines = remaining_lines.saturating_sub(lines_used);
+
+                    section.push_str("```text\n");
+                    section.push_str(&snippet);
+                    if !snippet.is_empty() && !snippet.ends_with('\n') {
+                        section.push('\n');
+                    }
+                    section.push_str("```\n");
+
+                    if truncated {
+                        section.push_str(&format!(
+                            "\n[truncated after {} total lines across relevant files]\n\n",
+                            MAX_RELEVANT_FILE_LINES
+                        ));
+                        break;
+                    }
+
+                    section.push('\n');
+                }
+                Err(error) => {
+                    section.push_str("```text\n");
+                    section.push_str(&format!("[failed to read file: {error}]"));
+                    section.push_str("\n```\n\n");
+                }
+            }
+
+            if remaining_lines == 0 {
+                section.push_str(&format!(
+                    "[truncated after {} total lines across relevant files]\n\n",
+                    MAX_RELEVANT_FILE_LINES
+                ));
+                break;
+            }
+        }
+
+        section
+    }
 }
 
 impl Default for GeneralistCatalyst {
@@ -116,7 +171,7 @@ impl Catalyst for GeneralistCatalyst {
         context: &ContextPack,
         model: &dyn ModelProvider,
     ) -> A2Result<PatchBundle> {
-        let prompt = self.build_prompt(task, context);
+        let prompt = self.build_prompt(task, context).await;
         let system = self.build_system_prompt();
 
         let response = model.generate(&prompt, Some(system)).await?;
@@ -201,10 +256,33 @@ fn join_non_empty_sections<const N: usize>(sections: [String; N]) -> String {
         .join("\n\n")
 }
 
+fn truncate_to_line_limit(text: &str, max_lines: usize) -> (String, usize, bool) {
+    if max_lines == 0 {
+        return (String::new(), 0, !text.is_empty());
+    }
+
+    let mut snippet = String::new();
+    let mut used = 0;
+    let mut lines = text.split_inclusive('\n');
+
+    while used < max_lines {
+        match lines.next() {
+            Some(line) => {
+                snippet.push_str(line);
+                used += 1;
+            }
+            None => return (snippet, used, false),
+        }
+    }
+
+    (snippet, used, lines.next().is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn make_task() -> TaskContract {
         TaskContract {
@@ -225,27 +303,64 @@ mod tests {
         }
     }
 
-    fn make_context() -> ContextPack {
-        ContextPack {
-            germline_version: GermlineVersion::new(),
-            relevant_files: vec![PathBuf::from("crates/a2_workcell/src/catalyst.rs")],
-            prior_attempts: vec![],
-            retrieved_motifs: vec![],
-        }
+    fn unique_temp_path(name: &str) -> PathBuf {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("a2_workcell_{name}_{id}.txt"))
     }
 
-    #[test]
-    fn prompt_includes_workspace_structure_and_output_contract() {
+    #[tokio::test]
+    async fn prompt_includes_workspace_structure_output_contract_and_file_contents() {
+        let path = unique_temp_path("prompt_context");
+        tokio::fs::write(&path, "alpha\nbeta\n").await.unwrap();
+
         let catalyst = GeneralistCatalyst::new();
-        let prompt = catalyst.build_prompt(&make_task(), &make_context());
+        let context = ContextPack {
+            germline_version: GermlineVersion::new(),
+            relevant_files: vec![path.clone()],
+            prior_attempts: vec![],
+            retrieved_motifs: vec![],
+        };
+        let prompt = catalyst.build_prompt(&make_task(), &context).await;
 
         assert!(prompt.contains("## Workspace Structure"));
         assert!(prompt.contains("crates/a2_workcell"));
+        assert!(prompt.contains("## Relevant File Contents"));
+        assert!(prompt.contains("alpha\nbeta"));
         assert!(prompt.contains("## Output Format"));
         assert!(prompt.contains("## Diff"));
         assert!(prompt.contains("## Rationale"));
         assert!(prompt.contains("## Test Suggestions"));
         assert!(prompt.contains("Suggest the most relevant tests"));
+
+        tokio::fs::remove_file(path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn prompt_truncates_relevant_file_contents_to_total_line_budget() {
+        let path = unique_temp_path("line_budget");
+        let contents = (0..=MAX_RELEVANT_FILE_LINES)
+            .map(|i| format!("line-{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        tokio::fs::write(&path, contents).await.unwrap();
+
+        let catalyst = GeneralistCatalyst::new();
+        let context = ContextPack {
+            germline_version: GermlineVersion::new(),
+            relevant_files: vec![path.clone()],
+            prior_attempts: vec![],
+            retrieved_motifs: vec![],
+        };
+        let prompt = catalyst.build_prompt(&make_task(), &context).await;
+
+        assert!(prompt.contains("line-0"));
+        assert!(prompt.contains(&format!("line-{}", MAX_RELEVANT_FILE_LINES - 1)));
+        assert!(!prompt.contains(&format!("line-{MAX_RELEVANT_FILE_LINES}")));
+        assert!(prompt.contains("truncated after 2000 total lines"));
+
+        tokio::fs::remove_file(path).await.unwrap();
     }
 
     #[test]
