@@ -149,15 +149,15 @@ async fn main() {
                     println!("--- Promotion Decision ---");
                     println!("{:?}", outcome.decision);
 
-                    if apply {
-                        if let a2_core::protocol::PromotionDecision::PromoteGermline { .. } = &outcome.decision {
-                            if let Some(patch) = &outcome.result.patch {
-                                match try_apply_patch(&patch.diff) {
-                                    Ok(true) => println!("--- Applied ---"),
-                                    Ok(false) => println!("[empty diff, nothing to apply]"),
-                                    Err(e) => eprintln!("[apply failed: {e}]"),
-                                }
-                            }
+                    if apply
+                        && let a2_core::protocol::PromotionDecision::PromoteGermline { .. } =
+                            &outcome.decision
+                        && let Some(patch) = &outcome.result.patch
+                    {
+                        match try_apply_patch(&patch.diff) {
+                            Ok(true) => println!("--- Applied ---"),
+                            Ok(false) => println!("[empty diff, nothing to apply]"),
+                            Err(e) => eprintln!("[apply failed: {e}]"),
                         }
                     }
                 }
@@ -220,15 +220,15 @@ async fn main() {
 
                 match run_task(&governor, task, &catalyst, p, &evaluator).await {
                     Ok(outcome) => {
-                        if apply {
-                            if let a2_core::protocol::PromotionDecision::PromoteGermline { .. } = &outcome.decision {
-                                if let Some(patch) = &outcome.result.patch {
-                                    match try_apply_patch(&patch.diff) {
-                                        Ok(true) => eprintln!("[applied: {title}]"),
-                                        Ok(false) => {}
-                                        Err(e) => eprintln!("[apply failed for {title}: {e}]"),
-                                    }
-                                }
+                        if apply
+                            && let a2_core::protocol::PromotionDecision::PromoteGermline { .. } =
+                                &outcome.decision
+                            && let Some(patch) = &outcome.result.patch
+                        {
+                            match try_apply_patch(&patch.diff) {
+                                Ok(true) => eprintln!("[applied: {title}]"),
+                                Ok(false) => {}
+                                Err(e) => eprintln!("[apply failed for {title}: {e}]"),
                             }
                         }
                         rows.push(run_summary_row(&title, p, &outcome));
@@ -475,8 +475,9 @@ fn render_summary_table(rows: &[RunSummaryRow]) -> String {
     out
 }
 
-/// Attempt to apply a promoted patch via `git apply`. Returns Ok(true) if applied,
-/// Ok(false) if the diff was empty, Err if git apply failed.
+/// Attempt to apply a promoted patch via `git apply`. Falls back to fuzzy
+/// apply if strict check fails. Returns Ok(true) if applied,
+/// Ok(false) if the diff was empty, Err if all strategies failed.
 fn try_apply_patch(diff: &str) -> Result<bool, String> {
     if diff.trim().is_empty() {
         return Ok(false);
@@ -485,31 +486,44 @@ fn try_apply_patch(diff: &str) -> Result<bool, String> {
     let tmp = std::env::temp_dir().join(format!("a2_patch_{}.diff", std::process::id()));
     std::fs::write(&tmp, diff).map_err(|e| format!("write temp diff: {e}"))?;
 
-    let output = std::process::Command::new("git")
+    // Try strict apply first.
+    let check = std::process::Command::new("git")
         .args(["apply", "--check"])
         .arg(&tmp)
         .output()
         .map_err(|e| format!("git apply --check: {e}"))?;
 
-    if !output.status.success() {
+    if check.status.success() {
+        let apply = std::process::Command::new("git")
+            .arg("apply")
+            .arg(&tmp)
+            .output()
+            .map_err(|e| format!("git apply: {e}"))?;
         let _ = std::fs::remove_file(&tmp);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("git apply --check failed: {stderr}"));
+        return if apply.status.success() {
+            Ok(true)
+        } else {
+            Err(format!(
+                "git apply failed: {}",
+                String::from_utf8_lossy(&apply.stderr)
+            ))
+        };
     }
 
-    let output = std::process::Command::new("git")
-        .arg("apply")
+    // Strict failed — try fuzzy apply (tolerates whitespace/offset mismatches).
+    let fuzzy = std::process::Command::new("git")
+        .args(["apply", "--3way", "--whitespace=fix"])
         .arg(&tmp)
         .output()
-        .map_err(|e| format!("git apply: {e}"))?;
+        .map_err(|e| format!("git apply --3way: {e}"))?;
 
     let _ = std::fs::remove_file(&tmp);
 
-    if output.status.success() {
+    if fuzzy.status.success() {
         Ok(true)
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("git apply failed: {stderr}"))
+        let stderr = String::from_utf8_lossy(&fuzzy.stderr);
+        Err(format!("git apply failed (strict + fuzzy): {stderr}"))
     }
 }
 

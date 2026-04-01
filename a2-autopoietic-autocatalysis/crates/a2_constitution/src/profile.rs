@@ -1,20 +1,15 @@
 use a2_core::protocol::{BoundaryPolicy, CapabilityMap, HardShell, NetworkPolicy};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum BootstrapProfile {
     #[serde(rename = "B0")]
+    #[default]
     B0,
     #[serde(rename = "B1")]
     B1,
     #[serde(rename = "B2")]
     B2,
-}
-
-impl Default for BootstrapProfile {
-    fn default() -> Self {
-        Self::B0
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]

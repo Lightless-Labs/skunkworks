@@ -131,7 +131,7 @@ impl SentinelSuite {
         ));
 
         // Sentinel 3: no unsafe code (Stage 0 constraint).
-        let root = workspace_root;
+        let root = workspace_root.clone();
         suite.add(Sentinel::new(
             "no_unsafe",
             "No unsafe blocks in crate source",
@@ -156,6 +156,30 @@ impl SentinelSuite {
                         ),
                     ),
                     Err(e) => (false, format!("grep failed: {e}")),
+                }
+            },
+        ));
+
+        // Sentinel 4: clippy clean (A²-designed, human-applied).
+        let root = workspace_root;
+        suite.add(Sentinel::new(
+            "clippy_check",
+            "Workspace must pass cargo clippy with no warnings",
+            move || {
+                let output = std::process::Command::new("cargo")
+                    .args(["clippy", "--all-targets", "--", "-D", "warnings"])
+                    .current_dir(&root)
+                    .output();
+                match output {
+                    Ok(o) if o.status.success() => (true, "cargo clippy passed".into()),
+                    Ok(o) => (
+                        false,
+                        format!(
+                            "cargo clippy failed: {}",
+                            String::from_utf8_lossy(&o.stderr)
+                        ),
+                    ),
+                    Err(e) => (false, format!("failed to run cargo: {e}")),
                 }
             },
         ));
