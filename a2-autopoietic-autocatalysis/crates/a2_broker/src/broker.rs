@@ -100,20 +100,19 @@ fn extract_text_recursive(val: &Value, key: &str) -> Option<String> {
 /// Parse token usage from Codex JSONL — looks for turn.completed with usage field.
 fn parse_codex_usage(jsonl: &str) -> (u64, u64) {
     for line in jsonl.lines() {
-        if let Ok(v) = serde_json::from_str::<Value>(line) {
-            if v.get("type").and_then(|t| t.as_str()) == Some("turn.completed") {
-                if let Some(usage) = v.get("usage") {
-                    let input = usage
-                        .get("input_tokens")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let output = usage
-                        .get("output_tokens")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    return (input, output);
-                }
-            }
+        if let Ok(v) = serde_json::from_str::<Value>(line)
+            && v.get("type").and_then(|t| t.as_str()) == Some("turn.completed")
+            && let Some(usage) = v.get("usage")
+        {
+            let input = usage
+                .get("input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let output = usage
+                .get("output_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            return (input, output);
         }
     }
     (0, 0)
@@ -122,20 +121,19 @@ fn parse_codex_usage(jsonl: &str) -> (u64, u64) {
 /// Parse token usage from Claude stream-json — looks for result event with usage.
 fn parse_claude_usage(jsonl: &str) -> (u64, u64) {
     for line in jsonl.lines() {
-        if let Ok(v) = serde_json::from_str::<Value>(line) {
-            if v.get("type").and_then(|t| t.as_str()) == Some("result") {
-                if let Some(usage) = v.get("usage") {
-                    let input = usage
-                        .get("input_tokens")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let output = usage
-                        .get("output_tokens")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    return (input, output);
-                }
-            }
+        if let Ok(v) = serde_json::from_str::<Value>(line)
+            && v.get("type").and_then(|t| t.as_str()) == Some("result")
+            && let Some(usage) = v.get("usage")
+        {
+            let input = usage
+                .get("input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let output = usage
+                .get("output_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            return (input, output);
         }
     }
     (0, 0)
@@ -482,12 +480,11 @@ impl ModelProvider for OpenCodeProvider {
             if line.trim().is_empty() {
                 continue;
             }
-            if let Ok(v) = serde_json::from_str::<Value>(line) {
-                if v.get("type").and_then(|t| t.as_str()) == Some("text") {
-                    if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
-                        full_text.push_str(text);
-                    }
-                }
+            if let Ok(v) = serde_json::from_str::<Value>(line)
+                && v.get("type").and_then(|t| t.as_str()) == Some("text")
+                && let Some(text) = v.get("text").and_then(|t| t.as_str())
+            {
+                full_text.push_str(text);
             }
         }
 
