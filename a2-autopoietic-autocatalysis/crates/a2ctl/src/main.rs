@@ -9,6 +9,7 @@
 
 use clap::{Parser, Subcommand};
 use std::io::{self, BufRead};
+use std::path::Path;
 
 #[derive(Parser)]
 #[command(name = "a2ctl", version, about = "A² — Autopoietic Autocatalysis")]
@@ -51,6 +52,12 @@ enum Commands {
         /// Auto-apply promoted patches via git apply.
         #[arg(long)]
         apply: bool,
+    },
+    /// Scan the workspace for TODO/FIXME comments and emit task descriptions.
+    Scan {
+        /// Workspace root path (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        workspace: String,
     },
     /// Run the seed sentinel suite.
     Sentinel {
@@ -167,7 +174,11 @@ async fn main() {
                 }
             }
         }
-        Commands::Run { max_tokens, provider, apply } => {
+        Commands::Run {
+            max_tokens,
+            provider,
+            apply,
+        } => {
             let budget = default_budget(max_tokens);
             let ingester = a2_sensorium::ingest::Ingester::new(budget.clone());
 
@@ -250,6 +261,17 @@ async fn main() {
 
             print!("{}", render_summary_table(&rows));
         }
+        Commands::Scan { workspace } => match scan_workspace(Path::new(&workspace)) {
+            Ok(tasks) => {
+                for task in tasks {
+                    println!("{task}");
+                }
+            }
+            Err(e) => {
+                eprintln!("Scan failed: {e}");
+                std::process::exit(1);
+            }
+        },
         Commands::Sentinel { workspace } => {
             println!("A² Seed Sentinel Suite");
             println!("Workspace: {workspace}");
@@ -475,6 +497,180 @@ fn render_summary_table(rows: &[RunSummaryRow]) -> String {
     out
 }
 
+fn scan_workspace(root: &Path) -> io::Result<Vec<String>> {
+    let mut tasks = Vec::new();
+    scan_dir(root, root, &mut tasks)?;
+    Ok(tasks)
+}
+
+fn scan_dir(root: &Path, dir: &Path, tasks: &mut Vec<String>) -> io::Result<()> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            if should_skip_dir(&path) {
+                continue;
+            }
+
+            scan_dir(root, &path, tasks)?;
+            continue;
+        }
+
+        if file_type.is_file() {
+            scan_file(root, &path, tasks)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn should_skip_dir(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(".git" | "target")
+    )
+}
+
+fn scan_file(root: &Path, path: &Path, tasks: &mut Vec<String>) -> io::Result<()> {
+    let bytes = std::fs::read(path)?;
+    if bytes.contains(&0) {
+        return Ok(());
+    }
+
+    let content = String::from_utf8_lossy(&bytes);
+    for (index, line) in content.lines().enumerate() {
+        if let Some(marker) = find_scan_marker(line) {
+            tasks.push(format_scan_task(root, path, index + 1, marker, line));
+        }
+    }
+
+    Ok(())
+}
+
+fn find_scan_marker(line: &str) -> Option<&'static str> {
+    let body = comment_body(line)?;
+
+    if starts_with_marker(body, "TODO") {
+        Some("TODO")
+    } else if starts_with_marker(body, "FIXME") {
+        Some("FIXME")
+    } else {
+        None
+    }
+}
+
+fn comment_body(line: &str) -> Option<&str> {
+    let (index, marker) = find_comment_start(line)?;
+    Some(line[index + marker.len()..].trim_start())
+}
+
+fn starts_with_marker(body: &str, marker: &str) -> bool {
+    body.strip_prefix(marker)
+        .map(|rest| {
+            rest.is_empty()
+                || rest.starts_with(':')
+                || rest.starts_with('-')
+                || rest.starts_with(' ')
+                || rest.starts_with('(')
+        })
+        .unwrap_or(false)
+}
+
+fn find_comment_start(line: &str) -> Option<(usize, &'static str)> {
+    let bytes = line.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let markers = ["<!--", "///", "//!", "//", "/*", "--", "#"];
+
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+
+        if in_single {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'\'' {
+                in_single = false;
+            }
+
+            index += 1;
+            continue;
+        }
+
+        if in_double {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_double = false;
+            }
+
+            index += 1;
+            continue;
+        }
+
+        if byte == b'\'' {
+            in_single = true;
+            index += 1;
+            continue;
+        }
+
+        if byte == b'"' {
+            in_double = true;
+            index += 1;
+            continue;
+        }
+
+        if let Some(marker) = markers
+            .iter()
+            .find(|marker| line[index..].starts_with(**marker))
+        {
+            return Some((index, *marker));
+        }
+
+        index += 1;
+    }
+
+    None
+}
+
+fn format_scan_task(
+    root: &Path,
+    path: &Path,
+    line_number: usize,
+    marker: &str,
+    line: &str,
+) -> String {
+    let relative = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string();
+    let note = scan_note(marker, line);
+
+    if note.is_empty() {
+        format!("Resolve {marker} in {relative}:{line_number}")
+    } else {
+        format!("Resolve {marker} in {relative}:{line_number} - {note}")
+    }
+}
+
+fn scan_note<'a>(marker: &str, line: &'a str) -> &'a str {
+    comment_body(line)
+        .and_then(|body| body.strip_prefix(marker))
+        .unwrap_or("")
+        .trim_start_matches(|c: char| c == ':' || c == '-' || c.is_whitespace())
+        .trim()
+}
+
 /// Attempt to apply a promoted patch via `git apply`. Falls back to fuzzy
 /// apply if strict check fails. Returns Ok(true) if applied,
 /// Ok(false) if the diff was empty, Err if all strategies failed.
@@ -530,6 +726,8 @@ fn try_apply_patch(diff: &str) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn formats_promotion_decisions_for_summary_output() {
@@ -558,5 +756,67 @@ mod tests {
         assert!(output.contains("Fix auth bug"));
         assert!(output.contains("150"));
         assert!(output.contains("0.4s"));
+    }
+
+    #[test]
+    fn scans_workspace_for_todo_and_fixme_comments() {
+        let root = unique_test_dir("comments");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "// TODO: tighten parser\n# FIXME remove fallback\n",
+        )
+        .unwrap();
+
+        let tasks = scan_workspace(&root).unwrap();
+
+        assert_eq!(
+            tasks,
+            vec![
+                "Resolve TODO in src/lib.rs:1 - tighten parser",
+                "Resolve FIXME in src/lib.rs:2 - remove fallback",
+            ]
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ignores_non_task_mentions_inside_comments_and_strings() {
+        assert!(find_scan_marker("/// Scan TODO/FIXME comments and emit tasks.").is_none());
+        assert!(find_scan_marker("let s = \"// TODO: not a comment\";").is_none());
+        assert_eq!(
+            find_scan_marker("let x = 1; // TODO: real comment"),
+            Some("TODO")
+        );
+    }
+
+    #[test]
+    fn skips_target_and_git_directories_when_scanning() {
+        let root = unique_test_dir("skip");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "// TODO: keep me\n").unwrap();
+        std::fs::write(root.join("target/generated.rs"), "// TODO: skip me\n").unwrap();
+        std::fs::write(root.join(".git/HEAD"), "TODO: skip me\n").unwrap();
+
+        let tasks = scan_workspace(&root).unwrap();
+
+        assert_eq!(tasks, vec!["Resolve TODO in src/main.rs:1 - keep me"]);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "a2ctl_scan_{label}_{}_{}",
+            std::process::id(),
+            nonce
+        ))
     }
 }
