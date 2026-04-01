@@ -9,9 +9,14 @@ use a2_core::traits::{Catalyst, Evaluator, GenerateResponse, LineageStore, Model
 use a2d::Governor;
 use chrono::Utc;
 use rusqlite::Connection;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 struct MockCatalyst {
     id: CatalystId,
+    calls: Arc<AtomicUsize>,
 }
 
 #[async_trait::async_trait]
@@ -30,6 +35,7 @@ impl Catalyst for MockCatalyst {
         _context: &ContextPack,
         model: &dyn ModelProvider,
     ) -> A2Result<PatchBundle> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         let generated = model
             .generate("produce patch", Some("integration-test"))
             .await?;
@@ -57,11 +63,14 @@ impl Catalyst for MockCatalyst {
     }
 }
 
-struct MockModelProvider;
+struct MockModelProvider {
+    calls: Arc<AtomicUsize>,
+}
 
 #[async_trait::async_trait]
 impl ModelProvider for MockModelProvider {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(GenerateResponse {
             text: format!(
                 "generated diff for {prompt} via {}",
@@ -81,11 +90,14 @@ impl ModelProvider for MockModelProvider {
     }
 }
 
-struct MockEvaluator;
+struct MockEvaluator {
+    calls: Arc<AtomicUsize>,
+}
 
 #[async_trait::async_trait]
 impl Evaluator for MockEvaluator {
     async fn evaluate(&self, _patch: &PatchBundle, task: &TaskContract) -> A2Result<FitnessRecord> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(FitnessRecord {
             eval_id: EvalId::new(),
             task_id: task.id.clone(),
@@ -130,24 +142,35 @@ fn sample_task() -> TaskContract {
 async fn governor_run_persists_lineage_record_for_completed_task() {
     let governor = Governor::new(GermlineVersion::new(), default_budget());
     let task = sample_task();
+    let catalyst_calls = Arc::new(AtomicUsize::new(0));
+    let provider_calls = Arc::new(AtomicUsize::new(0));
+    let evaluator_calls = Arc::new(AtomicUsize::new(0));
     let outcome = governor
         .run_task(
             task.clone(),
             &MockCatalyst {
                 id: CatalystId::new(),
+                calls: Arc::clone(&catalyst_calls),
             },
-            &MockModelProvider,
-            &MockEvaluator,
+            &MockModelProvider {
+                calls: Arc::clone(&provider_calls),
+            },
+            &MockEvaluator {
+                calls: Arc::clone(&evaluator_calls),
+            },
         )
         .await
         .unwrap();
 
     let patch = outcome.result.patch.as_ref().unwrap();
+    let fitness = outcome.result.fitness.as_ref().unwrap();
     assert_eq!(outcome.task_id, task.id.clone());
     assert_eq!(patch.task_id, task.id.clone());
     assert_eq!(patch.model_attribution.provider, "mock-provider");
     assert_eq!(patch.model_attribution.model, "mock-model");
     assert_eq!(patch.rationale, "generated diff for produce patch via integration-test");
+    assert!(fitness.somatic.task_completed);
+    assert!(fitness.somatic.tests_pass);
     assert_eq!(outcome.lineage.task_id, task.id.clone());
     assert_eq!(outcome.lineage.patch_id, patch.id.clone());
     assert_eq!(outcome.lineage.model_attributions.len(), 1);
@@ -165,6 +188,9 @@ async fn governor_run_persists_lineage_record_for_completed_task() {
             mutation_scope: MutationScope::Prompt,
         }
     ));
+    assert_eq!(catalyst_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(evaluator_calls.load(Ordering::SeqCst), 1);
 
     let store = SqliteLineageStore::new(Connection::open_in_memory().unwrap()).unwrap();
     store.record(outcome.lineage.clone()).await.unwrap();
@@ -183,4 +209,8 @@ async fn governor_run_persists_lineage_record_for_completed_task() {
     let task_records = store.for_task(&task.id).await.unwrap();
     assert_eq!(task_records.len(), 1);
     assert_eq!(task_records[0].id, outcome.lineage.id);
+
+    let recent_records = store.recent(1).await.unwrap();
+    assert_eq!(recent_records.len(), 1);
+    assert_eq!(recent_records[0].id, outcome.lineage.id);
 }
