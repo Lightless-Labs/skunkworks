@@ -142,7 +142,23 @@ async fn governor_run_persists_lineage_record_for_completed_task() {
         .await
         .unwrap();
 
-    assert!(outcome.result.patch.is_some());
+    let patch = outcome.result.patch.as_ref().unwrap();
+    assert_eq!(outcome.task_id, task.id.clone());
+    assert_eq!(patch.task_id, task.id.clone());
+    assert_eq!(patch.model_attribution.provider, "mock-provider");
+    assert_eq!(patch.model_attribution.model, "mock-model");
+    assert_eq!(patch.rationale, "generated diff for produce patch via integration-test");
+    assert_eq!(outcome.lineage.task_id, task.id.clone());
+    assert_eq!(outcome.lineage.patch_id, patch.id.clone());
+    assert_eq!(outcome.lineage.model_attributions.len(), 1);
+    assert_eq!(
+        outcome.lineage.model_attributions[0].provider,
+        patch.model_attribution.provider
+    );
+    assert_eq!(
+        outcome.lineage.model_attributions[0].model,
+        patch.model_attribution.model
+    );
     assert!(matches!(
         outcome.decision,
         PromotionDecision::PromoteGermline {
