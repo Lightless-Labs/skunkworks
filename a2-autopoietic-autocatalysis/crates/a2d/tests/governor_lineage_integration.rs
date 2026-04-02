@@ -10,9 +10,8 @@ use a2d::Governor;
 use chrono::Utc;
 use rusqlite::Connection;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
-    Mutex,
 };
 
 struct MockCatalyst {
@@ -170,8 +169,7 @@ fn in_memory_lineage_store() -> (Arc<Mutex<Connection>>, SqliteLineageStore) {
 }
 
 #[tokio::test]
-async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_persists_lineage_record(
-)
+async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_persists_lineage_record()
 {
     let governor = Governor::new(GermlineVersion::new(), default_budget());
     let task = sample_task();
@@ -267,7 +265,8 @@ async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_persi
         connection
             .lock()
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM lineage_records", [], |row| row.get::<_, i64>(0))
+            .query_row("SELECT COUNT(*) FROM lineage_records", [], |row| row
+                .get::<_, i64>(0))
             .unwrap(),
         1
     );
