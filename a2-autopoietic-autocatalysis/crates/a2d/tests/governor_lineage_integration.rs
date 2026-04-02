@@ -163,7 +163,7 @@ fn sample_task() -> TaskContract {
 }
 
 #[tokio::test]
-async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_persists_lineage_record()
+async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_creates_lineage_record()
 {
     let governor = Governor::new(GermlineVersion::new(), default_budget());
     let task = sample_task();
@@ -251,6 +251,7 @@ async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_persi
     assert_eq!(evaluator_calls.load(Ordering::SeqCst), 1);
 
     let store = SqliteLineageStore::new(Connection::open_in_memory().unwrap()).unwrap();
+    assert!(store.get(&outcome.lineage.id).await.unwrap().is_none());
     store.record(outcome.lineage.clone()).await.unwrap();
 
     let stored = store.get(&outcome.lineage.id).await.unwrap().unwrap();
