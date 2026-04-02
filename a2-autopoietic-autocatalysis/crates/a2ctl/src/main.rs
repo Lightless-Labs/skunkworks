@@ -175,10 +175,16 @@ async fn main() {
                             &outcome.decision
                         && let Some(patch) = &outcome.result.patch
                     {
-                        match try_apply_patch(&patch.diff) {
-                            Ok(true) => println!("--- Applied ---"),
+                        match try_apply_patch(&patch.diff).and_then(|applied| {
+                            if applied {
+                                verify_and_rebuild()
+                            } else {
+                                Ok(false)
+                            }
+                        }) {
+                            Ok(true) => println!("--- Applied and rebuilt ---"),
                             Ok(false) => println!("[empty diff, nothing to apply]"),
-                            Err(e) => eprintln!("[apply failed: {e}]"),
+                            Err(e) => eprintln!("[apply/rebuild failed: {e}]"),
                         }
                     }
                 }
@@ -256,10 +262,16 @@ async fn main() {
                                 &outcome.decision
                             && let Some(patch) = &outcome.result.patch
                         {
-                            match try_apply_patch(&patch.diff) {
-                                Ok(true) => eprintln!("[applied: {title}]"),
+                            match try_apply_patch(&patch.diff).and_then(|applied| {
+                                if applied {
+                                    verify_and_rebuild()
+                                } else {
+                                    Ok(false)
+                                }
+                            }) {
+                                Ok(true) => eprintln!("[applied and rebuilt: {title}]"),
                                 Ok(false) => {}
-                                Err(e) => eprintln!("[apply failed for {title}: {e}]"),
+                                Err(e) => eprintln!("[apply/rebuild failed for {title}: {e}]"),
                             }
                         }
                         rows.push(run_summary_row(&title, p, &outcome));
@@ -741,6 +753,76 @@ fn try_apply_patch(diff: &str) -> Result<bool, String> {
         let stderr = String::from_utf8_lossy(&fuzzy.stderr);
         Err(format!("git apply failed (strict + fuzzy): {stderr}"))
     }
+}
+
+fn verify_and_rebuild() -> Result<bool, String> {
+    run_workspace_command("cargo", &["check"], "cargo check")?;
+    run_workspace_command("cargo", &["test"], "cargo test")?;
+    run_workspace_command(
+        "cargo",
+        &["clippy", "--all-targets", "--", "-D", "warnings"],
+        "cargo clippy --all-targets -- -D warnings",
+    )?;
+    run_workspace_command(
+        "cargo",
+        &["build", "--release", "-p", "a2ctl", "-p", "a2d"],
+        "cargo build --release -p a2ctl -p a2d",
+    )?;
+    Ok(true)
+}
+
+fn run_workspace_command(command: &str, args: &[&str], label: &str) -> Result<(), String> {
+    let output = std::process::Command::new(command)
+        .args(args)
+        .current_dir(workspace_root())
+        .output()
+        .map_err(|e| format!("{label}: {e}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let failure = command_failure_message(label, &output);
+    match revert_workspace() {
+        Ok(()) => Err(failure),
+        Err(revert_error) => Err(format!("{failure}; rollback failed: {revert_error}")),
+    }
+}
+
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+}
+
+fn revert_workspace() -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .args(["checkout", "."])
+        .current_dir(workspace_root())
+        .output()
+        .map_err(|e| format!("git checkout .: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(command_failure_message("git checkout .", &output))
+    }
+}
+
+fn command_failure_message(label: &str, output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        format!("exit status {}", output.status)
+    };
+
+    format!("{label} failed: {detail}")
 }
 
 #[cfg(test)]
