@@ -1231,7 +1231,7 @@ fn try_apply_patch(diff: &str) -> Result<bool, String> {
     let tmp = std::env::temp_dir().join(format!("a2_patch_{}.diff", std::process::id()));
     std::fs::write(&tmp, diff).map_err(|e| format!("write temp diff: {e}"))?;
 
-    let root = workspace_root();
+    let root = std::env::current_dir().map_err(|e| format!("current_dir: {e}"))?;
 
     // Try strict apply first.
     let check = std::process::Command::new("git")
