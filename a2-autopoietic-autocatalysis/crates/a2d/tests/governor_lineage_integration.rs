@@ -9,7 +9,7 @@ use a2_core::protocol::{
 use a2_core::traits::{Catalyst, Evaluator, GenerateResponse, LineageStore, ModelProvider};
 use a2d::Governor;
 use chrono::Utc;
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -171,6 +171,25 @@ fn assert_lineage_record_matches(actual: &LineageRecord, expected: &LineageRecor
     );
 }
 
+fn lineage_record_count(
+    connection: &Arc<Mutex<Connection>>,
+    lineage: &LineageRecord,
+) -> i64 {
+    connection
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM lineage_records WHERE id = ?1 AND task_id = ?2 AND patch_id = ?3",
+            params![
+                serde_json::to_string(&lineage.id).unwrap(),
+                serde_json::to_string(&lineage.task_id).unwrap(),
+                serde_json::to_string(&lineage.patch_id).unwrap(),
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+}
+
 #[tokio::test]
 async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_creates_lineage_record()
 {
@@ -277,6 +296,7 @@ async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_creat
     assert!(store.get(&outcome.lineage.id).await.unwrap().is_none());
     assert!(store.for_task(&task.id).await.unwrap().is_empty());
     assert!(store.recent(1).await.unwrap().is_empty());
+    assert_eq!(lineage_record_count(&connection, &outcome.lineage), 0);
     assert_eq!(
         connection
             .lock()
@@ -286,6 +306,7 @@ async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_creat
         0
     );
     store.record(outcome.lineage.clone()).await.unwrap();
+    assert_eq!(lineage_record_count(&connection, &outcome.lineage), 1);
     assert_eq!(
         connection
             .lock()
