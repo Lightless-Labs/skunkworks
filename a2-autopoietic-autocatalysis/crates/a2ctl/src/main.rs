@@ -203,7 +203,8 @@ async fn main() {
 
             let provider = build_provider(&model).await;
             let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let catalyst = a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root);
+            let catalyst =
+                a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root.clone());
             let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
             let governor = a2d::Governor::with_stagnation_detector(
                 a2_core::id::GermlineVersion::new(),
@@ -246,7 +247,7 @@ async fn main() {
                             &outcome.decision
                         && let Some(patch) = &outcome.result.patch
                     {
-                        match try_apply_patch(&patch.diff).and_then(|applied| {
+                        match try_apply_patch(&patch.diff, &workspace_root).and_then(|applied| {
                             if applied {
                                 verify_and_rebuild()
                             } else {
@@ -289,7 +290,8 @@ async fn main() {
             }
 
             let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let catalyst = a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root);
+            let catalyst =
+                a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root.clone());
             let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
             let governor = a2d::Governor::with_stagnation_detector(
                 a2_core::id::GermlineVersion::new(),
@@ -333,13 +335,15 @@ async fn main() {
                                 &outcome.decision
                             && let Some(patch) = &outcome.result.patch
                         {
-                            match try_apply_patch(&patch.diff).and_then(|applied| {
-                                if applied {
-                                    verify_and_rebuild()
-                                } else {
-                                    Ok(false)
-                                }
-                            }) {
+                            match try_apply_patch(&patch.diff, &workspace_root).and_then(
+                                |applied| {
+                                    if applied {
+                                        verify_and_rebuild()
+                                    } else {
+                                        Ok(false)
+                                    }
+                                },
+                            ) {
                                 Ok(true) => eprintln!("[applied and rebuilt: {title}]"),
                                 Ok(false) => {}
                                 Err(e) => eprintln!("[apply/rebuild failed for {title}: {e}]"),
@@ -409,7 +413,7 @@ async fn main() {
 
                 let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                 let catalyst =
-                    a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root);
+                    a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root.clone());
                 let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
                 let governor = a2d::Governor::with_stagnation_detector(
                     a2_core::id::GermlineVersion::new(),
@@ -437,13 +441,15 @@ async fn main() {
                                 } = &outcome.decision
                                 && let Some(patch) = &outcome.result.patch
                             {
-                                match try_apply_patch(&patch.diff).and_then(|applied| {
-                                    if applied {
-                                        verify_and_rebuild()
-                                    } else {
-                                        Ok(false)
-                                    }
-                                }) {
+                                match try_apply_patch(&patch.diff, &workspace_root).and_then(
+                                    |applied| {
+                                        if applied {
+                                            verify_and_rebuild()
+                                        } else {
+                                            Ok(false)
+                                        }
+                                    },
+                                ) {
                                     Ok(true) => eprintln!("[applied and rebuilt: {title}]"),
                                     Ok(false) => {}
                                     Err(e) => {
@@ -595,7 +601,7 @@ async fn run_benchmark_suite(model: &str, apply: bool) -> Result<(), String> {
     let ingester = a2_sensorium::ingest::Ingester::new(budget.clone());
     let provider = build_provider(model).await;
     let workspace = workspace_root();
-    let catalyst = a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace);
+    let catalyst = a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace.clone());
     let evaluator = a2_eval::seed::SeedEvaluator::new(DEFAULT_BENCH_MAX_TOKENS);
     let governor = a2d::Governor::with_stagnation_detector(
         a2_core::id::GermlineVersion::new(),
@@ -636,7 +642,7 @@ async fn run_benchmark_suite(model: &str, apply: bool) -> Result<(), String> {
                             &outcome.decision
                         && let Some(patch) = &outcome.result.patch
                     {
-                        match try_apply_patch(&patch.diff) {
+                        match try_apply_patch(&patch.diff, &workspace) {
                             Ok(true) => {
                                 row.applied = true;
                                 match run_workspace_shell_command(&bench_task.verify.command) {
@@ -1223,7 +1229,7 @@ fn scan_note<'a>(marker: &str, line: &'a str) -> &'a str {
 /// Attempt to apply a promoted patch via `git apply`. Falls back to fuzzy
 /// apply if strict check fails. Returns Ok(true) if applied,
 /// Ok(false) if the diff was empty, Err if all strategies failed.
-fn try_apply_patch(diff: &str) -> Result<bool, String> {
+fn try_apply_patch(diff: &str, dir: &Path) -> Result<bool, String> {
     if diff.trim().is_empty() {
         return Ok(false);
     }
@@ -1231,7 +1237,7 @@ fn try_apply_patch(diff: &str) -> Result<bool, String> {
     let tmp = std::env::temp_dir().join(format!("a2_patch_{}.diff", std::process::id()));
     std::fs::write(&tmp, diff).map_err(|e| format!("write temp diff: {e}"))?;
 
-    let root = std::env::current_dir().map_err(|e| format!("current_dir: {e}"))?;
+    let root = dir.to_path_buf();
 
     // Try strict apply first.
     let check = std::process::Command::new("git")
