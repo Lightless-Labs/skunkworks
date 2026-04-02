@@ -101,6 +101,10 @@ impl WorktreeCatalyst {
         prompt: &str,
         worktree_path: &Path,
     ) -> A2Result<(String, u64, u64)> {
+        #[cfg(test)]
+        if provider_id == "mock" {
+            return self.run_mock_agent(worktree_path).await;
+        }
         match provider_id {
             "claude" => self.run_claude(model_id, prompt, worktree_path).await,
             "codex" => self.run_codex(model_id, prompt, worktree_path).await,
@@ -110,6 +114,26 @@ impl WorktreeCatalyst {
                 format!("worktree catalyst doesn't support provider: {other}"),
             )),
         }
+    }
+
+    /// Mock agent used in tests: appends a comment to `src/lib.rs` in the worktree.
+    #[cfg(test)]
+    async fn run_mock_agent(&self, worktree_path: &Path) -> A2Result<(String, u64, u64)> {
+        let lib_path = worktree_path.join("src").join("lib.rs");
+        let mut content = std::fs::read_to_string(&lib_path).map_err(|e| {
+            A2Error::CatalystFailure(
+                self.id.clone(),
+                format!("mock agent read src/lib.rs: {e}"),
+            )
+        })?;
+        content.push_str("// mock agent modification\n");
+        std::fs::write(&lib_path, &content).map_err(|e| {
+            A2Error::CatalystFailure(
+                self.id.clone(),
+                format!("mock agent write src/lib.rs: {e}"),
+            )
+        })?;
+        Ok(("mock agent ran successfully".into(), 10, 5))
     }
 
     async fn run_claude(
@@ -345,6 +369,64 @@ impl Catalyst for WorktreeCatalyst {
 mod tests {
     use super::*;
     use std::fs;
+    struct MockModelProvider {
+        provider_id: &'static str,
+        model_id: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl ModelProvider for MockModelProvider {
+        async fn generate(
+            &self,
+            _prompt: &str,
+            _system: Option<&str>,
+        ) -> A2Result<GenerateResponse> {
+            Ok(GenerateResponse {
+                text: "mock response".into(),
+                tokens_in: 0,
+                tokens_out: 0,
+            })
+        }
+
+        fn provider_id(&self) -> &str {
+            self.provider_id
+        }
+
+        fn model_id(&self) -> &str {
+            self.model_id
+        }
+    }
+
+    /// Bootstrap a minimal git repo with a Rust package so `cargo check` works.
+    async fn init_git_repo_with_rust_project(dir: &Path) {
+        for args in [
+            vec!["init"],
+            vec!["config", "user.email", "test@a2"],
+            vec!["config", "user.name", "A2 Test"],
+        ] {
+            Command::new("git")
+                .args(&args)
+                .current_dir(dir)
+                .output()
+                .await
+                .unwrap();
+        }
+        fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"mock-selfmod\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/lib.rs"), "// initial\npub fn hello() {}\n").unwrap();
+        for args in [vec!["add", "."], vec!["commit", "-m", "initial"]] {
+            Command::new("git")
+                .args(&args)
+                .current_dir(dir)
+                .output()
+                .await
+                .unwrap();
+        }
+    }
 
     /// Bootstrap a minimal git repo with one commit so `git worktree add HEAD` works.
     async fn init_git_repo(dir: &Path) {
@@ -411,5 +493,101 @@ mod tests {
             diff.contains("+modified by mock edit"),
             "diff must contain the inserted line; got:\n{diff}"
         );
+    }
+
+    #[tokio::test]
+    async fn full_self_modification_pipeline_create_task_execute_diff_apply_cargo_check() {
+        // --- 1. Bootstrap: temp git repo with a minimal Rust project -------
+        let repo_dir =
+            std::env::temp_dir().join(format!("a2-selfmod-{}", uuid::Uuid::now_v7()));
+        fs::create_dir_all(&repo_dir).unwrap();
+        init_git_repo_with_rust_project(&repo_dir).await;
+
+        let catalyst = WorktreeCatalyst::new(repo_dir.clone());
+
+        // --- 2. Create task -------------------------------------------------
+        let task = TaskContract {
+            id: TaskId::new(),
+            title: "Add comment to src/lib.rs".into(),
+            description: "Append a comment line to the lib file.".into(),
+            acceptance_criteria: vec!["src/lib.rs contains a new comment".into()],
+            budget: Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 4,
+            },
+            priority: Priority::Normal,
+            source: TaskSource::External {
+                origin: "integration-test".into(),
+            },
+            created_at: Utc::now(),
+        };
+
+        let context = ContextPack {
+            germline_version: GermlineVersion::new(),
+            relevant_files: vec![repo_dir.join("src/lib.rs")],
+            prior_attempts: vec![],
+            retrieved_motifs: vec![],
+        };
+
+        // --- 3. Run worktree catalyst with mock model provider --------------
+        let model = MockModelProvider {
+            provider_id: "mock",
+            model_id: "mock-model",
+        };
+        let patch = catalyst
+            .execute(&task, &context, &model)
+            .await
+            .expect("execute must succeed");
+
+        // --- 4. Verify diff captured ----------------------------------------
+        assert!(!patch.diff.trim().is_empty(), "diff must be non-empty");
+        assert!(
+            patch.diff.contains("mock agent modification"),
+            "diff must contain the mock agent change; got:\n{}",
+            patch.diff
+        );
+        assert_eq!(patch.task_id, task.id);
+        assert_eq!(patch.model_attribution.provider, "mock");
+
+        // --- 5. Apply the diff to the main repo ----------------------------
+        let mut apply_child = Command::new("git")
+            .args(["apply"])
+            .current_dir(&repo_dir)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("git apply failed to spawn");
+        {
+            use tokio::io::AsyncWriteExt;
+            apply_child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(patch.diff.as_bytes())
+                .await
+                .unwrap();
+        }
+        let apply_status = apply_child.wait().await.unwrap();
+        assert!(
+            apply_status.success(),
+            "git apply must succeed; diff was:\n{}",
+            patch.diff
+        );
+
+        // --- 6. Verify build passes ----------------------------------------
+        let check = Command::new("cargo")
+            .args(["check"])
+            .current_dir(&repo_dir)
+            .env("CARGO_TERM_COLOR", "never")
+            .output()
+            .await
+            .expect("cargo check failed to spawn");
+        assert!(
+            check.status.success(),
+            "cargo check must pass after applying diff;\nstderr: {}",
+            String::from_utf8_lossy(&check.stderr)
+        );
+
+        let _ = fs::remove_dir_all(&repo_dir);
     }
 }

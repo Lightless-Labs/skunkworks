@@ -60,10 +60,26 @@ enum Commands {
         apply: bool,
     },
     /// Scan the workspace for TODO/FIXME comments and emit task descriptions.
+    /// With --run, pipe discoveries directly into the run loop.
     Scan {
         /// Workspace root path (defaults to current directory).
         #[arg(long, default_value = ".")]
         workspace: String,
+        /// Execute discovered tasks through the run loop instead of printing them.
+        #[arg(long)]
+        run: bool,
+        /// Provider(s) to use when --run is set (comma-separated for round-robin).
+        #[arg(long, default_value = "claude")]
+        provider: String,
+        /// Maximum token budget per task when --run is set.
+        #[arg(long, default_value = "50000")]
+        max_tokens: u64,
+        /// Maximum wall-clock time per task in seconds when --run is set.
+        #[arg(long, default_value = "300")]
+        timeout: u64,
+        /// Auto-apply promoted patches when --run is set.
+        #[arg(long)]
+        apply: bool,
     },
     /// Run the seed sentinel suite.
     Sentinel {
@@ -293,17 +309,109 @@ async fn main() {
 
             print!("{}", render_summary_table(&rows));
         }
-        Commands::Scan { workspace } => match scan_workspace(Path::new(&workspace)) {
-            Ok(tasks) => {
+        Commands::Scan {
+            workspace,
+            run,
+            provider,
+            max_tokens,
+            timeout,
+            apply,
+        } => {
+            let tasks = match scan_workspace(Path::new(&workspace)) {
+                Ok(tasks) => tasks,
+                Err(e) => {
+                    eprintln!("Scan failed: {e}");
+                    std::process::exit(1);
+                }
+            };
+
+            if !run {
                 for task in tasks {
                     println!("{task}");
                 }
+            } else {
+                if tasks.is_empty() {
+                    eprintln!("No TODO/FIXME items found.");
+                    return;
+                }
+
+                let budget = build_budget(max_tokens, timeout);
+                let ingester = a2_sensorium::ingest::Ingester::new(budget.clone());
+
+                let provider_names: Vec<&str> = provider
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let mut providers: Vec<Box<dyn a2_core::traits::ModelProvider>> = Vec::new();
+                for name in &provider_names {
+                    providers.push(build_provider(name).await);
+                }
+                if providers.is_empty() {
+                    eprintln!("No valid providers specified.");
+                    std::process::exit(1);
+                }
+
+                let workspace_root =
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let catalyst =
+                    a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root);
+                let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
+                let governor = a2d::Governor::with_stagnation_detector(
+                    a2_core::id::GermlineVersion::new(),
+                    budget,
+                    a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
+                );
+
+                let mut rows = Vec::new();
+                for (task_index, description) in tasks.iter().enumerate() {
+                    let task = ingester.ingest(a2_sensorium::ingest::RawSignal {
+                        origin: "scan".into(),
+                        content: description.clone(),
+                        risk_tier: a2_sensorium::ingest::RiskTier::Low,
+                        metadata: vec![],
+                    });
+
+                    let title = task.title.clone();
+                    let p = providers[task_index % providers.len()].as_ref();
+
+                    match run_task(&governor, task, &catalyst, p, &evaluator).await {
+                        Ok(outcome) => {
+                            if apply
+                                && let a2_core::protocol::PromotionDecision::PromoteGermline {
+                                    ..
+                                } = &outcome.decision
+                                && let Some(patch) = &outcome.result.patch
+                            {
+                                match try_apply_patch(&patch.diff).and_then(|applied| {
+                                    if applied {
+                                        verify_and_rebuild()
+                                    } else {
+                                        Ok(false)
+                                    }
+                                }) {
+                                    Ok(true) => eprintln!("[applied and rebuilt: {title}]"),
+                                    Ok(false) => {}
+                                    Err(e) => {
+                                        eprintln!("[apply/rebuild failed for {title}: {e}]")
+                                    }
+                                }
+                            }
+                            rows.push(run_summary_row(&title, p, &outcome));
+                        }
+                        Err(e) => rows.push(RunSummaryRow {
+                            title,
+                            model: requested_model(p),
+                            tokens: 0,
+                            duration_secs: 0.0,
+                            decision: format!("error: {e}"),
+                        }),
+                    }
+                }
+
+                print!("{}", render_summary_table(&rows));
             }
-            Err(e) => {
-                eprintln!("Scan failed: {e}");
-                std::process::exit(1);
-            }
-        },
+        }
         Commands::Sentinel { workspace } => {
             println!("A² Seed Sentinel Suite");
             println!("Workspace: {workspace}");
