@@ -9,7 +9,7 @@
 
 use clap::{Parser, Subcommand};
 use std::io::{self, BufRead};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "a2ctl", version, about = "A² — Autopoietic Autocatalysis")]
@@ -122,7 +122,8 @@ async fn main() {
             }
 
             let provider = build_provider(&model).await;
-            let catalyst = a2_workcell::catalyst::GeneralistCatalyst::new();
+            let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let catalyst = a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root);
             let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
             let governor = a2d::Governor::new(a2_core::id::GermlineVersion::new(), budget);
 
@@ -196,7 +197,8 @@ async fn main() {
                 std::process::exit(1);
             }
 
-            let catalyst = a2_workcell::catalyst::GeneralistCatalyst::new();
+            let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let catalyst = a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root);
             let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
             let governor = a2d::Governor::new(a2_core::id::GermlineVersion::new(), budget);
 
