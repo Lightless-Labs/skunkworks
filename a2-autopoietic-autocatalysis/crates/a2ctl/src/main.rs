@@ -1237,7 +1237,19 @@ fn try_apply_patch(diff: &str, dir: &Path) -> Result<bool, String> {
     let tmp = std::env::temp_dir().join(format!("a2_patch_{}.diff", std::process::id()));
     std::fs::write(&tmp, diff).map_err(|e| format!("write temp diff: {e}"))?;
 
-    let root = dir.to_path_buf();
+    // git diff paths are relative to the repo root (where .git lives), which may
+    // differ from the Cargo workspace root passed as `dir`.  Run git apply from
+    // the true repo root so that paths resolve correctly.
+    let toplevel = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(dir)
+        .output()
+        .map_err(|e| format!("git rev-parse --show-toplevel: {e}"))?;
+    let root = if toplevel.status.success() {
+        PathBuf::from(String::from_utf8_lossy(&toplevel.stdout).trim().to_string())
+    } else {
+        dir.to_path_buf()
+    };
 
     // Try strict apply first.
     let check = std::process::Command::new("git")
