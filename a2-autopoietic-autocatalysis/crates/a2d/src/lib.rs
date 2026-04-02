@@ -8,6 +8,68 @@ use a2_core::id::*;
 use a2_core::protocol::*;
 use a2_core::traits::*;
 use a2_workcell::runtime::{WorkcellConfig, WorkcellResult, run_workcell};
+use std::collections::VecDeque;
+use std::sync::Mutex;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RoundOutcome {
+    test_count: u64,
+    successful_applies: u64,
+    promotion_count: u64,
+}
+
+/// Stage 0 detector for repeated non-improving rounds.
+pub struct StagnationDetector {
+    rounds: VecDeque<RoundOutcome>,
+    capacity: usize,
+}
+
+impl StagnationDetector {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            rounds: VecDeque::with_capacity(capacity.max(1)),
+            capacity: capacity.max(1),
+        }
+    }
+
+    pub fn record_round(&mut self, test_count: u64, successful_applies: u64, promotion_count: u64) {
+        if self.rounds.len() == self.capacity {
+            self.rounds.pop_front();
+        }
+
+        self.rounds.push_back(RoundOutcome {
+            test_count,
+            successful_applies,
+            promotion_count,
+        });
+    }
+
+    pub fn is_stagnant(&self, window: usize) -> bool {
+        if window == 0 || self.rounds.len() < window {
+            return false;
+        }
+
+        let mut recent_rounds = self.rounds.iter().rev().take(window).collect::<Vec<_>>();
+        recent_rounds.reverse();
+
+        !recent_rounds.windows(2).any(|pair| {
+            let previous = pair[0];
+            let current = pair[1];
+
+            current.test_count > previous.test_count
+                || current.successful_applies > previous.successful_applies
+                || current.promotion_count > previous.promotion_count
+        })
+    }
+
+    pub fn suggest_strategy_change(&self) -> String {
+        "Recent rounds are flat. Try changing the model or catalyst strategy, or break the task into a smaller step.".into()
+    }
+
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+}
 
 /// Stage 0 Governor — minimal control plane for bootstrap.
 ///
@@ -18,6 +80,7 @@ use a2_workcell::runtime::{WorkcellConfig, WorkcellResult, run_workcell};
 pub struct Governor {
     germline_version: GermlineVersion,
     default_budget: Budget,
+    stagnation_detector: Option<Mutex<StagnationDetector>>,
 }
 
 impl Governor {
@@ -25,6 +88,19 @@ impl Governor {
         Self {
             germline_version,
             default_budget,
+            stagnation_detector: None,
+        }
+    }
+
+    pub fn with_stagnation_detector(
+        germline_version: GermlineVersion,
+        default_budget: Budget,
+        stagnation_detector: StagnationDetector,
+    ) -> Self {
+        Self {
+            germline_version,
+            default_budget,
+            stagnation_detector: Some(Mutex::new(stagnation_detector)),
         }
     }
 
@@ -69,6 +145,8 @@ impl Governor {
         // Build lineage.
         let lineage = result.lineage.clone();
 
+        self.record_round_outcome(&result, &decision);
+
         Ok(GovernorOutcome {
             workcell_id,
             task_id: task.id,
@@ -93,6 +171,41 @@ impl Governor {
             },
         }
     }
+
+    fn record_round_outcome(&self, result: &WorkcellResult, decision: &PromotionDecision) {
+        let Some(detector) = &self.stagnation_detector else {
+            return;
+        };
+
+        let test_count = result
+            .patch
+            .as_ref()
+            .map(|patch| {
+                u64::from(
+                    patch.test_results.passed
+                        + patch.test_results.failed
+                        + patch.test_results.skipped,
+                )
+            })
+            .unwrap_or(0);
+        let successful_applies = u64::from(result.patch.is_some());
+        let promotion_count = u64::from(matches!(
+            decision,
+            PromotionDecision::MergeSomatic | PromotionDecision::PromoteGermline { .. }
+        ));
+
+        let mut detector = detector.lock().expect("stagnation detector mutex poisoned");
+        detector.record_round(test_count, successful_applies, promotion_count);
+
+        let window = detector.capacity();
+        if detector.is_stagnant(window) {
+            tracing::warn!(
+                window,
+                suggestion = %detector.suggest_strategy_change(),
+                "stagnation detected"
+            );
+        }
+    }
 }
 
 /// The outcome of a governor run_task cycle.
@@ -109,6 +222,12 @@ mod tests {
     use super::*;
     use a2_core::error::A2Error;
     use chrono::Utc;
+
+    fn record_rounds(detector: &mut StagnationDetector, rounds: &[(u64, u64, u64)]) {
+        for (test_count, successful_applies, promotion_count) in rounds {
+            detector.record_round(*test_count, *successful_applies, *promotion_count);
+        }
+    }
 
     struct EchoCatalyst(CatalystId);
 
@@ -305,5 +424,37 @@ mod tests {
             outcome.decision,
             PromotionDecision::Discard { .. }
         ));
+    }
+
+    #[test]
+    fn improving_rounds_are_not_stagnant() {
+        let mut detector = StagnationDetector::new(3);
+        record_rounds(&mut detector, &[(1, 0, 0), (1, 1, 0), (2, 1, 1)]);
+
+        assert!(!detector.is_stagnant(3));
+    }
+
+    #[test]
+    fn flat_rounds_trigger_stagnation_after_window_size() {
+        let mut detector = StagnationDetector::new(3);
+        record_rounds(&mut detector, &[(1, 0, 0), (1, 0, 0), (1, 0, 0)]);
+
+        assert!(detector.is_stagnant(3));
+    }
+
+    #[test]
+    fn a_single_improvement_resets_the_window() {
+        let mut detector = StagnationDetector::new(3);
+        record_rounds(&mut detector, &[(1, 0, 0), (1, 0, 0), (1, 0, 0)]);
+        assert!(detector.is_stagnant(3));
+
+        detector.record_round(2, 0, 0);
+        assert!(!detector.is_stagnant(3));
+
+        detector.record_round(2, 0, 0);
+        assert!(!detector.is_stagnant(3));
+
+        detector.record_round(2, 0, 0);
+        assert!(detector.is_stagnant(3));
     }
 }

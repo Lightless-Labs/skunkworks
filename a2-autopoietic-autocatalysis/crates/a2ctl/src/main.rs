@@ -85,6 +85,8 @@ struct RunSummaryRow {
     decision: String,
 }
 
+const DEFAULT_STAGNATION_WINDOW: usize = 3;
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -132,7 +134,11 @@ async fn main() {
             let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let catalyst = a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root);
             let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
-            let governor = a2d::Governor::new(a2_core::id::GermlineVersion::new(), budget);
+            let governor = a2d::Governor::with_stagnation_detector(
+                a2_core::id::GermlineVersion::new(),
+                budget,
+                a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
+            );
 
             println!("Executing...");
             println!();
@@ -208,7 +214,11 @@ async fn main() {
             let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let catalyst = a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root);
             let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
-            let governor = a2d::Governor::new(a2_core::id::GermlineVersion::new(), budget);
+            let governor = a2d::Governor::with_stagnation_detector(
+                a2_core::id::GermlineVersion::new(),
+                budget,
+                a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
+            );
 
             let mut rows = Vec::new();
             let mut task_index: usize = 0;

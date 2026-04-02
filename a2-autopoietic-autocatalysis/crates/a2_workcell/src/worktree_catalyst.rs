@@ -47,7 +47,9 @@ impl WorktreeCatalyst {
             .current_dir(&self.workspace_root)
             .output()
             .await
-            .map_err(|e| A2Error::CatalystFailure(self.id.clone(), format!("git worktree add: {e}")))?;
+            .map_err(|e| {
+                A2Error::CatalystFailure(self.id.clone(), format!("git worktree add: {e}"))
+            })?;
 
         if !output.status.success() {
             return Err(A2Error::CatalystFailure(
@@ -118,11 +120,15 @@ impl WorktreeCatalyst {
     ) -> A2Result<(String, u64, u64)> {
         let output = Command::new("claude")
             .args([
-                "-p", prompt,
-                "--model", model_id,
-                "--output-format", "stream-json",
+                "-p",
+                prompt,
+                "--model",
+                model_id,
+                "--output-format",
+                "stream-json",
                 "--verbose",
-                "--max-turns", "30",
+                "--max-turns",
+                "30",
                 "--dangerously-skip-permissions",
             ])
             .current_dir(worktree_path)
@@ -139,15 +145,25 @@ impl WorktreeCatalyst {
         for line in stdout.lines() {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
                 // Collect text
-                if let Some(delta) = v.get("delta").and_then(|d| d.get("text")).and_then(|t| t.as_str()) {
+                if let Some(delta) = v
+                    .get("delta")
+                    .and_then(|d| d.get("text"))
+                    .and_then(|t| t.as_str())
+                {
                     text.push_str(delta);
                 }
                 // Collect usage
                 if v.get("type").and_then(|t| t.as_str()) == Some("result")
                     && let Some(usage) = v.get("usage")
                 {
-                    tokens_in = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                    tokens_out = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    tokens_in = usage
+                        .get("input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    tokens_out = usage
+                        .get("output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
                 }
             }
         }
@@ -163,9 +179,12 @@ impl WorktreeCatalyst {
     ) -> A2Result<(String, u64, u64)> {
         let output = Command::new("codex")
             .args([
-                "exec", prompt,
-                "-m", model_id,
-                "-c", "model_reasoning_effort=\"high\"",
+                "exec",
+                prompt,
+                "-m",
+                model_id,
+                "-c",
+                "model_reasoning_effort=\"high\"",
                 "--full-auto",
             ])
             .arg("--json")
@@ -182,14 +201,24 @@ impl WorktreeCatalyst {
 
         for line in stdout.lines() {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                if let Some(msg) = v.get("item").and_then(|i| i.get("text")).and_then(|t| t.as_str()) {
+                if let Some(msg) = v
+                    .get("item")
+                    .and_then(|i| i.get("text"))
+                    .and_then(|t| t.as_str())
+                {
                     text.push_str(msg);
                 }
                 if v.get("type").and_then(|t| t.as_str()) == Some("turn.completed")
                     && let Some(usage) = v.get("usage")
                 {
-                    tokens_in = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                    tokens_out = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    tokens_in = usage
+                        .get("input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    tokens_out = usage
+                        .get("output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
                 }
             }
         }
@@ -205,11 +234,7 @@ impl WorktreeCatalyst {
     ) -> A2Result<(String, u64, u64)> {
         let output = Command::new("gemini")
             .args([
-                "-p", prompt,
-                "--model", model_id,
-                "-s", "false",
-                "-y",
-                "-o", "text",
+                "-p", prompt, "--model", model_id, "-s", "false", "-y", "-o", "text",
             ])
             .current_dir(worktree_path)
             .stdin(std::process::Stdio::null())
@@ -264,7 +289,12 @@ impl Catalyst for WorktreeCatalyst {
 
         // Run the agent in the worktree
         let result = self
-            .run_agent(model.provider_id(), model.model_id(), &prompt, &worktree_path)
+            .run_agent(
+                model.provider_id(),
+                model.model_id(),
+                &prompt,
+                &worktree_path,
+            )
             .await;
 
         let (rationale, tokens_in, tokens_out) = match result {
@@ -368,10 +398,15 @@ mod tests {
         // git diff should capture the change.
         let diff = catalyst.capture_diff(&worktree_path).await.unwrap();
 
-        catalyst.cleanup_worktree(&worktree_path, &branch_name).await;
+        catalyst
+            .cleanup_worktree(&worktree_path, &branch_name)
+            .await;
         let _ = fs::remove_dir_all(&repo_dir);
 
-        assert!(!diff.trim().is_empty(), "diff must be non-empty after mock edit");
+        assert!(
+            !diff.trim().is_empty(),
+            "diff must be non-empty after mock edit"
+        );
         assert!(
             diff.contains("+modified by mock edit"),
             "diff must contain the inserted line; got:\n{diff}"
