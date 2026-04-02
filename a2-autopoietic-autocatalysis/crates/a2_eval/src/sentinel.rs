@@ -212,7 +212,7 @@ impl SentinelSuite {
         ));
 
         // Sentinel 5: doc build clean — no rustdoc warnings.
-        let root = workspace_root;
+        let root = workspace_root.clone();
         suite.add(Sentinel::new(
             "doc_check",
             "Workspace must build docs without warnings",
@@ -237,6 +237,52 @@ impl SentinelSuite {
                         false,
                         command_spawn_error("cargo doc --no-deps --document-private-items", &root, &e),
                     ),
+                }
+            },
+        ));
+
+        // Sentinel 6: Cargo.lock is present and up to date.
+        let root = workspace_root;
+        suite.add(Sentinel::new(
+            "lockfile_check",
+            "Cargo.lock must exist and be up to date (cargo update --dry-run shows no changes)",
+            move || {
+                let lockfile = root.join("Cargo.lock");
+                if !lockfile.exists() {
+                    return (
+                        false,
+                        format!("Cargo.lock is missing from `{}`", root.display()),
+                    );
+                }
+                let output = std::process::Command::new("cargo")
+                    .args(["update", "--dry-run"])
+                    .current_dir(&root)
+                    .output();
+                match output {
+                    Ok(o) => {
+                        // `cargo update --dry-run` prints proposed changes to stderr.
+                        // Lines like "Updating foo v1.0 -> v1.1" or "Adding bar v2.0"
+                        // indicate the lockfile is stale.
+                        let stderr = String::from_utf8_lossy(&o.stderr);
+                        let has_changes = stderr.lines().any(|line| {
+                            let t = line.trim_start();
+                            (t.starts_with("Updating") && t.contains(" -> "))
+                                || t.starts_with("Adding")
+                        });
+                        if has_changes {
+                            (
+                                false,
+                                format!(
+                                    "Cargo.lock is stale in `{}` — run `cargo update`: {}",
+                                    root.display(),
+                                    stderr.trim()
+                                ),
+                            )
+                        } else {
+                            (true, "Cargo.lock is present and up to date".into())
+                        }
+                    }
+                    Err(e) => (false, command_spawn_error("cargo update --dry-run", &root, &e)),
                 }
             },
         ));
