@@ -93,14 +93,14 @@ impl WorktreeCatalyst {
     }
 
     /// Run a model CLI agent in the worktree directory.
-    /// Returns (stdout_text, stderr_text, tokens_in, tokens_out).
+    /// Returns (parsed_text, raw_stdout, stderr_text, tokens_in, tokens_out).
     async fn run_agent(
         &self,
         provider_id: &str,
         model_id: &str,
         prompt: &str,
         worktree_path: &Path,
-    ) -> A2Result<(String, String, u64, u64)> {
+    ) -> A2Result<(String, String, String, u64, u64)> {
         #[cfg(test)]
         if provider_id == "mock" {
             return self.run_mock_agent(worktree_path).await;
@@ -118,7 +118,10 @@ impl WorktreeCatalyst {
 
     /// Mock agent used in tests: appends a comment to `src/lib.rs` in the worktree.
     #[cfg(test)]
-    async fn run_mock_agent(&self, worktree_path: &Path) -> A2Result<(String, String, u64, u64)> {
+    async fn run_mock_agent(
+        &self,
+        worktree_path: &Path,
+    ) -> A2Result<(String, String, String, u64, u64)> {
         let lib_path = worktree_path.join("src").join("lib.rs");
         let mut content = std::fs::read_to_string(&lib_path).map_err(|e| {
             A2Error::CatalystFailure(self.id.clone(), format!("mock agent read src/lib.rs: {e}"))
@@ -127,7 +130,8 @@ impl WorktreeCatalyst {
         std::fs::write(&lib_path, &content).map_err(|e| {
             A2Error::CatalystFailure(self.id.clone(), format!("mock agent write src/lib.rs: {e}"))
         })?;
-        Ok(("mock agent ran successfully".into(), String::new(), 10, 5))
+        let raw = "mock agent ran successfully".to_string();
+        Ok((raw.clone(), raw, String::new(), 10, 5))
     }
 
     async fn run_claude(
@@ -135,7 +139,7 @@ impl WorktreeCatalyst {
         model_id: &str,
         prompt: &str,
         worktree_path: &Path,
-    ) -> A2Result<(String, String, u64, u64)> {
+    ) -> A2Result<(String, String, String, u64, u64)> {
         let output = Command::new("claude")
             .args([
                 "-p",
@@ -155,13 +159,13 @@ impl WorktreeCatalyst {
             .await
             .map_err(|e| A2Error::ProviderError(format!("claude: {e}")))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let raw_stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let mut text = String::new();
         let mut tokens_in = 0u64;
         let mut tokens_out = 0u64;
 
-        for line in stdout.lines() {
+        for line in raw_stdout.lines() {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
                 // Collect text
                 if let Some(delta) = v
@@ -187,7 +191,7 @@ impl WorktreeCatalyst {
             }
         }
 
-        Ok((text, stderr, tokens_in, tokens_out))
+        Ok((text, raw_stdout, stderr, tokens_in, tokens_out))
     }
 
     async fn run_codex(
@@ -195,7 +199,7 @@ impl WorktreeCatalyst {
         model_id: &str,
         prompt: &str,
         worktree_path: &Path,
-    ) -> A2Result<(String, String, u64, u64)> {
+    ) -> A2Result<(String, String, String, u64, u64)> {
         let output = Command::new("codex")
             .args([
                 "exec",
@@ -213,13 +217,13 @@ impl WorktreeCatalyst {
             .await
             .map_err(|e| A2Error::ProviderError(format!("codex: {e}")))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let raw_stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let mut text = String::new();
         let mut tokens_in = 0u64;
         let mut tokens_out = 0u64;
 
-        for line in stdout.lines() {
+        for line in raw_stdout.lines() {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
                 if let Some(msg) = v
                     .get("item")
@@ -243,7 +247,7 @@ impl WorktreeCatalyst {
             }
         }
 
-        Ok((text, stderr, tokens_in, tokens_out))
+        Ok((text, raw_stdout, stderr, tokens_in, tokens_out))
     }
 
     async fn run_gemini(
@@ -251,7 +255,7 @@ impl WorktreeCatalyst {
         model_id: &str,
         prompt: &str,
         worktree_path: &Path,
-    ) -> A2Result<(String, String, u64, u64)> {
+    ) -> A2Result<(String, String, String, u64, u64)> {
         let output = Command::new("gemini")
             .args([
                 "-p", prompt, "--model", model_id, "-s", "false", "-y", "-o", "text",
@@ -264,8 +268,8 @@ impl WorktreeCatalyst {
 
         let text = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        // Gemini text mode doesn't expose token counts
-        Ok((text, stderr, 0, 0))
+        // Gemini text mode doesn't expose token counts; raw_stdout == text
+        Ok((text.clone(), text, stderr, 0, 0))
     }
 
     fn build_prompt(&self, task: &TaskContract) -> String {
@@ -318,7 +322,7 @@ impl Catalyst for WorktreeCatalyst {
             )
             .await;
 
-        let (rationale, stderr, tokens_in, tokens_out) = match result {
+        let (rationale, raw_stdout, stderr, tokens_in, tokens_out) = match result {
             Ok(r) => r,
             Err(e) => {
                 self.cleanup_worktree(&worktree_path, &branch_name).await;
@@ -333,8 +337,9 @@ impl Catalyst for WorktreeCatalyst {
         self.cleanup_worktree(&worktree_path, &branch_name).await;
 
         if diff.trim().is_empty() {
-            let mut msg =
-                format!("agent made no changes to the worktree\n--- model stdout ---\n{rationale}");
+            let mut msg = format!(
+                "agent made no changes to the worktree\n--- model stdout ---\n{raw_stdout}"
+            );
             if !stderr.trim().is_empty() {
                 msg.push_str("\n--- model stderr ---\n");
                 msg.push_str(&stderr);
