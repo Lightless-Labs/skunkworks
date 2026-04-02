@@ -13,6 +13,7 @@ use rusqlite::Connection;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
+    Mutex,
 };
 
 struct MockCatalyst {
@@ -271,11 +272,28 @@ async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_creat
     assert_eq!(provider.standby.model_id(), "unused-model");
     assert_eq!(evaluator_calls.load(Ordering::SeqCst), 1);
 
-    let store = SqliteLineageStore::new(Connection::open_in_memory().unwrap()).unwrap();
+    let connection = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+    let store = SqliteLineageStore::from_connection(Arc::clone(&connection)).unwrap();
     assert!(store.get(&outcome.lineage.id).await.unwrap().is_none());
     assert!(store.for_task(&task.id).await.unwrap().is_empty());
     assert!(store.recent(1).await.unwrap().is_empty());
+    assert_eq!(
+        connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM lineage_records", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
     store.record(outcome.lineage.clone()).await.unwrap();
+    assert_eq!(
+        connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM lineage_records", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
 
     let stored = store.get(&outcome.lineage.id).await.unwrap().unwrap();
     assert_lineage_record_matches(&stored, &outcome.lineage);
