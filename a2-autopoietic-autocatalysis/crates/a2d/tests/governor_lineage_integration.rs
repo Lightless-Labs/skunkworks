@@ -164,26 +164,9 @@ fn sample_task() -> TaskContract {
 }
 
 fn assert_lineage_record_matches(actual: &LineageRecord, expected: &LineageRecord) {
-    assert_eq!(actual.id, expected.id);
-    assert_eq!(actual.task_id, expected.task_id);
-    assert_eq!(actual.patch_id, expected.patch_id);
     assert_eq!(
-        actual.parent_germline.to_string(),
-        expected.parent_germline.to_string()
-    );
-    assert_eq!(actual.model_attributions.len(), expected.model_attributions.len());
-    assert_eq!(
-        actual.model_attributions[0].provider,
-        expected.model_attributions[0].provider
-    );
-    assert_eq!(
-        actual.model_attributions[0].model,
-        expected.model_attributions[0].model
-    );
-    assert_eq!(actual.fitness.task_id, expected.fitness.task_id);
-    assert_eq!(
-        actual.fitness.somatic.acceptance_met,
-        expected.fitness.somatic.acceptance_met
+        serde_json::to_value(actual).unwrap(),
+        serde_json::to_value(expected).unwrap()
     );
 }
 
