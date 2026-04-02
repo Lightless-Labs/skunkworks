@@ -219,6 +219,8 @@ async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_creat
     assert_eq!(patch.task_id, task.id.clone());
     assert_eq!(patch.model_attribution.provider, "mock-provider");
     assert_eq!(patch.model_attribution.model, "mock-model");
+    assert_eq!(patch.model_attribution.tokens_in, 21);
+    assert_eq!(patch.model_attribution.tokens_out, 13);
     assert_eq!(
         patch.rationale,
         "generated diff for produce patch via integration-test"
@@ -230,6 +232,7 @@ async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_creat
     assert_eq!(outcome.result.lineage.patch_id, patch.id.clone());
     assert_eq!(outcome.lineage.task_id, task.id.clone());
     assert_eq!(outcome.lineage.patch_id, patch.id.clone());
+    assert_eq!(outcome.result.lineage.model_attributions.len(), 1);
     assert_eq!(outcome.lineage.model_attributions.len(), 1);
     assert_eq!(
         outcome.lineage.parent_germline.to_string(),
@@ -245,6 +248,16 @@ async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_creat
         outcome.lineage.model_attributions[0].model,
         patch.model_attribution.model
     );
+    assert_eq!(
+        outcome.lineage.model_attributions[0].tokens_in,
+        patch.model_attribution.tokens_in
+    );
+    assert_eq!(
+        outcome.lineage.model_attributions[0].tokens_out,
+        patch.model_attribution.tokens_out
+    );
+    assert!(outcome.lineage.created_at >= patch.created_at);
+    assert!(outcome.lineage.created_at >= fitness.evaluated_at);
     assert!(matches!(
         outcome.decision,
         PromotionDecision::PromoteGermline {
@@ -260,6 +273,8 @@ async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_creat
 
     let store = SqliteLineageStore::new(Connection::open_in_memory().unwrap()).unwrap();
     assert!(store.get(&outcome.lineage.id).await.unwrap().is_none());
+    assert!(store.for_task(&task.id).await.unwrap().is_empty());
+    assert!(store.recent(1).await.unwrap().is_empty());
     store.record(outcome.lineage.clone()).await.unwrap();
 
     let stored = store.get(&outcome.lineage.id).await.unwrap().unwrap();
