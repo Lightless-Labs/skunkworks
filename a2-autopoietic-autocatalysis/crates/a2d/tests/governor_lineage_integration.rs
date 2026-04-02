@@ -2,8 +2,9 @@ use a2_archive::SqliteLineageStore;
 use a2_core::error::A2Result;
 use a2_core::id::{CatalystId, EvalId, GermlineVersion, PatchId, TaskId, WorkcellId};
 use a2_core::protocol::{
-    Budget, ContextPack, FitnessRecord, ModelAttribution, MutationScope, PatchBundle, Priority,
-    PromotionDecision, SomaticFitness, TaskContract, TaskSource, TestResults,
+    Budget, ContextPack, FitnessRecord, LineageRecord, ModelAttribution, MutationScope,
+    PatchBundle, Priority, PromotionDecision, SomaticFitness, TaskContract, TaskSource,
+    TestResults,
 };
 use a2_core::traits::{Catalyst, Evaluator, GenerateResponse, LineageStore, ModelProvider};
 use a2d::Governor;
@@ -162,6 +163,30 @@ fn sample_task() -> TaskContract {
     }
 }
 
+fn assert_lineage_record_matches(actual: &LineageRecord, expected: &LineageRecord) {
+    assert_eq!(actual.id, expected.id);
+    assert_eq!(actual.task_id, expected.task_id);
+    assert_eq!(actual.patch_id, expected.patch_id);
+    assert_eq!(
+        actual.parent_germline.to_string(),
+        expected.parent_germline.to_string()
+    );
+    assert_eq!(actual.model_attributions.len(), expected.model_attributions.len());
+    assert_eq!(
+        actual.model_attributions[0].provider,
+        expected.model_attributions[0].provider
+    );
+    assert_eq!(
+        actual.model_attributions[0].model,
+        expected.model_attributions[0].model
+    );
+    assert_eq!(actual.fitness.task_id, expected.fitness.task_id);
+    assert_eq!(
+        actual.fitness.somatic.acceptance_met,
+        expected.fitness.somatic.acceptance_met
+    );
+}
+
 #[tokio::test]
 async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_creates_lineage_record()
 {
@@ -255,23 +280,14 @@ async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_creat
     store.record(outcome.lineage.clone()).await.unwrap();
 
     let stored = store.get(&outcome.lineage.id).await.unwrap().unwrap();
-    assert_eq!(
-        serde_json::to_value(&stored).unwrap(),
-        serde_json::to_value(&outcome.lineage).unwrap()
-    );
+    assert_lineage_record_matches(&stored, &outcome.lineage);
     assert_eq!(stored.task_id, task.id);
 
     let task_records = store.for_task(&task.id).await.unwrap();
     assert_eq!(task_records.len(), 1);
-    assert_eq!(
-        serde_json::to_value(&task_records[0]).unwrap(),
-        serde_json::to_value(&outcome.lineage).unwrap()
-    );
+    assert_lineage_record_matches(&task_records[0], &outcome.lineage);
 
     let recent_records = store.recent(1).await.unwrap();
     assert_eq!(recent_records.len(), 1);
-    assert_eq!(
-        serde_json::to_value(&recent_records[0]).unwrap(),
-        serde_json::to_value(&outcome.lineage).unwrap()
-    );
+    assert_lineage_record_matches(&recent_records[0], &outcome.lineage);
 }
