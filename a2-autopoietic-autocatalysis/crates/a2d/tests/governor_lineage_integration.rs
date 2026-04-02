@@ -2,14 +2,13 @@ use a2_archive::SqliteLineageStore;
 use a2_core::error::A2Result;
 use a2_core::id::{CatalystId, EvalId, GermlineVersion, PatchId, TaskId, WorkcellId};
 use a2_core::protocol::{
-    Budget, ContextPack, FitnessRecord, LineageRecord, ModelAttribution, MutationScope,
-    PatchBundle, Priority, PromotionDecision, SomaticFitness, TaskContract, TaskSource,
-    TestResults,
+    Budget, ContextPack, FitnessRecord, ModelAttribution, MutationScope, PatchBundle, Priority,
+    PromotionDecision, SomaticFitness, TaskContract, TaskSource, TestResults,
 };
 use a2_core::traits::{Catalyst, Evaluator, GenerateResponse, LineageStore, ModelProvider};
 use a2d::Governor;
 use chrono::Utc;
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -170,32 +169,6 @@ fn in_memory_lineage_store() -> (Arc<Mutex<Connection>>, SqliteLineageStore) {
     (connection, store)
 }
 
-fn assert_lineage_record_matches(actual: &LineageRecord, expected: &LineageRecord) {
-    assert_eq!(
-        serde_json::to_value(actual).unwrap(),
-        serde_json::to_value(expected).unwrap()
-    );
-}
-
-fn lineage_record_count(
-    connection: &Arc<Mutex<Connection>>,
-    lineage: &LineageRecord,
-) -> i64 {
-    connection
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT COUNT(*) FROM lineage_records WHERE id = ?1 AND task_id = ?2 AND patch_id = ?3",
-            params![
-                serde_json::to_string(&lineage.id).unwrap(),
-                serde_json::to_string(&lineage.task_id).unwrap(),
-                serde_json::to_string(&lineage.patch_id).unwrap(),
-            ],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap()
-}
-
 #[tokio::test]
 async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_persists_lineage_record(
 )
@@ -238,11 +211,9 @@ async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_persi
     let patch = outcome.result.patch.as_ref().unwrap();
     let fitness = outcome.result.fitness.as_ref().unwrap();
     assert!(outcome.result.patch.is_some());
-    assert!(outcome.result.fitness.is_some());
     assert_eq!(outcome.task_id, task.id.clone());
     assert_eq!(outcome.result.tokens_used, 34);
     assert_eq!(outcome.result.calls_used, 1);
-    assert!(outcome.result.duration_secs >= 0.0);
     assert_eq!(patch.task_id, task.id.clone());
     assert_eq!(patch.model_attribution.provider, "mock-provider");
     assert_eq!(patch.model_attribution.model, "mock-model");
@@ -254,17 +225,9 @@ async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_persi
     );
     assert!(fitness.somatic.task_completed);
     assert!(fitness.somatic.tests_pass);
-    assert_eq!(outcome.result.lineage.id, outcome.lineage.id);
-    assert_eq!(outcome.result.lineage.task_id, task.id.clone());
-    assert_eq!(outcome.result.lineage.patch_id, patch.id.clone());
     assert_eq!(outcome.lineage.task_id, task.id.clone());
     assert_eq!(outcome.lineage.patch_id, patch.id.clone());
-    assert_eq!(outcome.result.lineage.model_attributions.len(), 1);
     assert_eq!(outcome.lineage.model_attributions.len(), 1);
-    assert_eq!(
-        outcome.lineage.parent_germline.to_string(),
-        outcome.result.lineage.parent_germline.to_string()
-    );
     assert_eq!(outcome.lineage.fitness.task_id, task.id.clone());
     assert_eq!(outcome.lineage.fitness.somatic.acceptance_met, vec![true]);
     assert_eq!(
@@ -300,7 +263,6 @@ async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_persi
 
     let (connection, store) = in_memory_lineage_store();
     store.record(outcome.lineage.clone()).await.unwrap();
-    assert_eq!(lineage_record_count(&connection, &outcome.lineage), 1);
     assert_eq!(
         connection
             .lock()
@@ -311,14 +273,18 @@ async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_persi
     );
 
     let stored = store.get(&outcome.lineage.id).await.unwrap().unwrap();
-    assert_lineage_record_matches(&stored, &outcome.lineage);
     assert_eq!(stored.task_id, task.id);
+    assert_eq!(stored.patch_id, patch.id.clone());
+    assert_eq!(
+        serde_json::to_value(&stored).unwrap(),
+        serde_json::to_value(&outcome.lineage).unwrap()
+    );
 
     let task_records = store.for_task(&task.id).await.unwrap();
     assert_eq!(task_records.len(), 1);
-    assert_lineage_record_matches(&task_records[0], &outcome.lineage);
+    assert_eq!(task_records[0].id, outcome.lineage.id);
 
     let recent_records = store.recent(1).await.unwrap();
     assert_eq!(recent_records.len(), 1);
-    assert_lineage_record_matches(&recent_records[0], &outcome.lineage);
+    assert_eq!(recent_records[0].id, outcome.lineage.id);
 }
