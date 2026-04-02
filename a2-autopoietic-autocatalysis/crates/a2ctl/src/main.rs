@@ -29,6 +29,9 @@ enum Commands {
         /// Maximum token budget.
         #[arg(long, default_value = "50000")]
         max_tokens: u64,
+        /// Maximum wall-clock time per task in seconds.
+        #[arg(long, default_value = "300")]
+        timeout: u64,
         /// Model provider/model (e.g., "claude" or "gemini").
         #[arg(long, default_value = "claude")]
         model: String,
@@ -44,6 +47,9 @@ enum Commands {
         /// Maximum token budget per task.
         #[arg(long, default_value = "50000")]
         max_tokens: u64,
+        /// Maximum wall-clock time per task in seconds.
+        #[arg(long, default_value = "300")]
+        timeout: u64,
         /// Provider(s) to use. Comma-separated list for round-robin cycling
         /// across tasks (e.g. "claude,gemini,codex,opencode").
         /// Available: claude, gemini, codex, opencode
@@ -95,11 +101,12 @@ async fn main() {
             title,
             description,
             max_tokens,
+            timeout,
             model,
             dry_run,
             apply,
         } => {
-            let budget = default_budget(max_tokens);
+            let budget = build_budget(max_tokens, timeout);
 
             let ingester = a2_sensorium::ingest::Ingester::new(budget.clone());
             let task = ingester.from_human(&title, &description);
@@ -177,10 +184,11 @@ async fn main() {
         }
         Commands::Run {
             max_tokens,
+            timeout,
             provider,
             apply,
         } => {
-            let budget = default_budget(max_tokens);
+            let budget = build_budget(max_tokens, timeout);
             let ingester = a2_sensorium::ingest::Ingester::new(budget.clone());
 
             let provider_names: Vec<&str> = provider
@@ -328,10 +336,10 @@ async fn main() {
     }
 }
 
-fn default_budget(max_tokens: u64) -> a2_core::protocol::Budget {
+fn build_budget(max_tokens: u64, timeout_secs: u64) -> a2_core::protocol::Budget {
     a2_core::protocol::Budget {
         max_tokens,
-        max_duration_secs: 300,
+        max_duration_secs: timeout_secs,
         max_calls: 20,
     }
 }
