@@ -51,11 +51,24 @@ pub async fn run_workcell(
         retrieved_motifs: vec![],
     };
 
-    // Execute the catalyst to produce a patch.
-    let patch_result = catalyst.execute(&config.task, &context, model).await;
+    // Execute the catalyst to produce a patch, bounded by the wall-clock budget.
+    let timeout_duration = std::time::Duration::from_secs(config.budget.max_duration_secs);
+    let timed = tokio::time::timeout(
+        timeout_duration,
+        catalyst.execute(&config.task, &context, model),
+    )
+    .await;
 
-    let patch = match patch_result {
-        Ok(p) => {
+    let patch = match timed {
+        Err(_elapsed) => {
+            tracing::warn!(
+                workcell = %config.workcell_id,
+                timeout_secs = config.budget.max_duration_secs,
+                "catalyst timed out — wall-clock budget exceeded"
+            );
+            None
+        }
+        Ok(Ok(p)) => {
             // Record the model usage against budget.
             if let Err(e) = tracker.record_usage(
                 p.model_attribution.tokens_in,
@@ -66,7 +79,7 @@ pub async fn run_workcell(
             }
             Some(p)
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             tracing::error!(workcell = %config.workcell_id, "catalyst failed: {e}");
             None
         }
