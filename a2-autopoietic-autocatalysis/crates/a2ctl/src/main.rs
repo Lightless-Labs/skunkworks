@@ -3,11 +3,14 @@
 //! Stage 0 commands:
 //!   a2ctl task "title" "description"   — create and run a task
 //!   a2ctl run < tasks.txt              — run stdin tasks sequentially
+//!   a2ctl bench                        — run the A² benchmark suite
 //!   a2ctl sentinel                     — run the seed sentinel suite
 //!   a2ctl hello                        — print a one-line greeting
 //!   a2ctl status                       — show system health
 
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
+use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 
@@ -87,6 +90,15 @@ enum Commands {
         #[arg(long, default_value = ".")]
         workspace: String,
     },
+    /// Run the A² benchmark suite from bench/tasks.
+    Bench {
+        /// Model provider/model (e.g., "claude" or "gemini").
+        #[arg(long, default_value = "claude")]
+        model: String,
+        /// Auto-apply promoted patches before running verification.
+        #[arg(long, action = ArgAction::Set, default_value_t = true)]
+        apply: bool,
+    },
     /// Print a one-line greeting.
     Hello,
     /// Show system status and health.
@@ -101,7 +113,50 @@ struct RunSummaryRow {
     decision: String,
 }
 
+struct BenchSummaryRow {
+    title: String,
+    model: String,
+    tokens: u64,
+    duration_secs: f64,
+    applied: bool,
+    verified: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct BenchTaskFile {
+    task: BenchTaskSpec,
+    verify: BenchVerifySpec,
+    setup: BenchSetupSpec,
+}
+
+#[derive(Debug, Deserialize)]
+struct BenchTaskSpec {
+    title: String,
+    description: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BenchVerifySpec {
+    command: String,
+    expect_exit: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct BenchSetupSpec {
+    test_file: String,
+    test_content: String,
+}
+
+struct BenchTaskCase {
+    path: PathBuf,
+    task: BenchTaskSpec,
+    verify: BenchVerifySpec,
+    setup: BenchSetupSpec,
+}
+
 const DEFAULT_STAGNATION_WINDOW: usize = 3;
+const DEFAULT_BENCH_MAX_TOKENS: u64 = 50_000;
+const DEFAULT_BENCH_TIMEOUT_SECS: u64 = 300;
 
 #[tokio::main]
 async fn main() {
@@ -352,8 +407,7 @@ async fn main() {
                     std::process::exit(1);
                 }
 
-                let workspace_root =
-                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                 let catalyst =
                     a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root);
                 let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
@@ -441,6 +495,12 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Bench { model, apply } => {
+            if let Err(e) = run_benchmark_suite(&model, apply).await {
+                eprintln!("Benchmark suite failed: {e}");
+                std::process::exit(1);
+            }
+        }
         Commands::Hello => {
             println!("Hello from A².");
         }
@@ -518,6 +578,261 @@ async fn build_provider(model: &str) -> Box<dyn a2_core::traits::ModelProvider> 
     }
 }
 
+async fn run_benchmark_suite(model: &str, apply: bool) -> Result<(), String> {
+    assert_benchmark_workspace_clean()?;
+    let baseline_untracked = workspace_untracked_files()?;
+
+    let bench_root = workspace_root().join("bench/tasks");
+    let bench_tasks = load_benchmark_tasks(&bench_root)?;
+    if bench_tasks.is_empty() {
+        return Err(format!(
+            "no benchmark tasks found in {}",
+            bench_root.display()
+        ));
+    }
+
+    let budget = build_budget(DEFAULT_BENCH_MAX_TOKENS, DEFAULT_BENCH_TIMEOUT_SECS);
+    let ingester = a2_sensorium::ingest::Ingester::new(budget.clone());
+    let provider = build_provider(model).await;
+    let workspace = workspace_root();
+    let catalyst = a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace);
+    let evaluator = a2_eval::seed::SeedEvaluator::new(DEFAULT_BENCH_MAX_TOKENS);
+    let governor = a2d::Governor::with_stagnation_detector(
+        a2_core::id::GermlineVersion::new(),
+        budget,
+        a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
+    );
+
+    let mut rows = Vec::with_capacity(bench_tasks.len());
+
+    for bench_task in bench_tasks {
+        eprintln!(
+            "[bench] {} ({})",
+            bench_task.task.title,
+            bench_task.path.display()
+        );
+
+        let mut row = BenchSummaryRow {
+            title: bench_task.task.title.clone(),
+            model: requested_model(provider.as_ref()),
+            tokens: 0,
+            duration_secs: 0.0,
+            applied: false,
+            verified: false,
+        };
+
+        let task_result = append_benchmark_test_content(&bench_task)
+            .map(|()| ingester.from_human(&bench_task.task.title, &bench_task.task.description));
+
+        match task_result {
+            Ok(task) => match run_task(&governor, task, &catalyst, provider.as_ref(), &evaluator)
+                .await
+            {
+                Ok(outcome) => {
+                    row = bench_summary_row(&bench_task.task.title, provider.as_ref(), &outcome);
+
+                    if apply
+                        && let a2_core::protocol::PromotionDecision::PromoteGermline { .. } =
+                            &outcome.decision
+                        && let Some(patch) = &outcome.result.patch
+                    {
+                        match try_apply_patch(&patch.diff) {
+                            Ok(true) => {
+                                row.applied = true;
+                                match run_workspace_shell_command(&bench_task.verify.command) {
+                                    Ok(output) => {
+                                        let actual_exit = output.status.code().unwrap_or(-1);
+                                        if actual_exit == bench_task.verify.expect_exit {
+                                            row.verified = true;
+                                        } else {
+                                            eprintln!(
+                                                "[verify failed for {}: expected exit {}, got {}; {}]",
+                                                bench_task.task.title,
+                                                bench_task.verify.expect_exit,
+                                                actual_exit,
+                                                command_failure_message(
+                                                    &bench_task.verify.command,
+                                                    &output
+                                                )
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[verify command failed for {}: {e}]",
+                                            bench_task.task.title
+                                        );
+                                    }
+                                }
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                eprintln!("[apply failed for {}: {e}]", bench_task.task.title);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[bench run failed for {}: {e}]", bench_task.task.title);
+                }
+            },
+            Err(e) => {
+                eprintln!("[bench setup failed for {}: {e}]", bench_task.task.title);
+            }
+        }
+
+        cleanup_benchmark_workspace(&baseline_untracked)
+            .map_err(|e| format!("cleanup after {}: {e}", bench_task.task.title))?;
+
+        rows.push(row);
+    }
+
+    print!("{}", render_benchmark_summary_table(&rows));
+    let verified = rows.iter().filter(|row| row.verified).count();
+    println!("Score: {verified}/{} tasks verified", rows.len());
+
+    Ok(())
+}
+
+fn load_benchmark_tasks(root: &Path) -> Result<Vec<BenchTaskCase>, String> {
+    let mut entries = std::fs::read_dir(root)
+        .map_err(|e| format!("read {}: {e}", root.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("read {}: {e}", root.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+
+    let mut tasks = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        let is_toml = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.eq_ignore_ascii_case("toml"))
+            .unwrap_or(false);
+        if !entry
+            .file_type()
+            .map_err(|e| format!("{}: {e}", path.display()))?
+            .is_file()
+            || !is_toml
+        {
+            continue;
+        }
+
+        let content =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let parsed = toml::from_str::<BenchTaskFile>(&content)
+            .map_err(|e| format!("parse {}: {e}", path.display()))?;
+        tasks.push(BenchTaskCase {
+            path,
+            task: parsed.task,
+            verify: parsed.verify,
+            setup: parsed.setup,
+        });
+    }
+
+    Ok(tasks)
+}
+
+fn append_benchmark_test_content(task: &BenchTaskCase) -> Result<(), String> {
+    let relative = Path::new(&task.setup.test_file);
+    if relative.is_absolute() {
+        return Err(format!(
+            "benchmark setup file must be relative: {}",
+            task.setup.test_file
+        ));
+    }
+
+    let path = workspace_root().join(relative);
+    let mut content =
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(&task.setup.test_content);
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+
+    std::fs::write(&path, content).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+fn assert_benchmark_workspace_clean() -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=no", "--", "."])
+        .current_dir(workspace_root())
+        .output()
+        .map_err(|e| format!("git status --porcelain --untracked-files=no -- .: {e}"))?;
+
+    if !output.status.success() {
+        return Err(command_failure_message(
+            "git status --porcelain --untracked-files=no -- .",
+            &output,
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim().is_empty() {
+        Ok(())
+    } else {
+        Err(
+            "bench requires a clean tracked workspace because it resets changes with `git checkout .` between tasks"
+                .into(),
+        )
+    }
+}
+
+fn cleanup_benchmark_workspace(baseline_untracked: &BTreeSet<String>) -> Result<(), String> {
+    revert_workspace()?;
+
+    let current_untracked = workspace_untracked_files()?;
+    let leaked = current_untracked
+        .difference(baseline_untracked)
+        .cloned()
+        .collect::<Vec<_>>();
+    if leaked.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "new untracked files remain after cleanup: {}",
+            leaked.join(", ")
+        ))
+    }
+}
+
+fn workspace_untracked_files() -> Result<BTreeSet<String>, String> {
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=all", "--", "."])
+        .current_dir(workspace_root())
+        .output()
+        .map_err(|e| format!("git status --porcelain --untracked-files=all -- .: {e}"))?;
+
+    if !output.status.success() {
+        return Err(command_failure_message(
+            "git status --porcelain --untracked-files=all -- .",
+            &output,
+        ));
+    }
+
+    Ok(parse_untracked_files(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+fn parse_untracked_files(output: &str) -> BTreeSet<String> {
+    output
+        .lines()
+        .filter_map(|line| line.strip_prefix("?? ").map(ToOwned::to_owned))
+        .collect()
+}
+
+fn run_workspace_shell_command(command: &str) -> Result<std::process::Output, String> {
+    std::process::Command::new("sh")
+        .args(["-lc", command])
+        .current_dir(workspace_root())
+        .output()
+        .map_err(|e| format!("{command}: {e}"))
+}
+
 async fn run_task(
     governor: &a2d::Governor,
     task: a2_core::protocol::TaskContract,
@@ -526,6 +841,33 @@ async fn run_task(
     evaluator: &dyn a2_core::traits::Evaluator,
 ) -> a2_core::error::A2Result<a2d::GovernorOutcome> {
     governor.run_task(task, catalyst, provider, evaluator).await
+}
+
+fn bench_summary_row(
+    title: &str,
+    provider: &dyn a2_core::traits::ModelProvider,
+    outcome: &a2d::GovernorOutcome,
+) -> BenchSummaryRow {
+    let model = outcome
+        .result
+        .patch
+        .as_ref()
+        .map(|patch| {
+            format!(
+                "{}/{}",
+                patch.model_attribution.provider, patch.model_attribution.model
+            )
+        })
+        .unwrap_or_else(|| requested_model(provider));
+
+    BenchSummaryRow {
+        title: title.to_string(),
+        model,
+        tokens: outcome.result.tokens_used,
+        duration_secs: outcome.result.duration_secs,
+        applied: false,
+        verified: false,
+    }
 }
 
 fn run_summary_row(
@@ -635,6 +977,73 @@ fn render_summary_table(rows: &[RunSummaryRow]) -> String {
     }
 
     out
+}
+
+fn render_benchmark_summary_table(rows: &[BenchSummaryRow]) -> String {
+    let title_width = rows
+        .iter()
+        .map(|row| row.title.len())
+        .max()
+        .unwrap_or(5)
+        .max("Title".len());
+    let model_width = rows
+        .iter()
+        .map(|row| row.model.len())
+        .max()
+        .unwrap_or(5)
+        .max("Model".len());
+    let tokens_width = rows
+        .iter()
+        .map(|row| row.tokens.to_string().len())
+        .max()
+        .unwrap_or(6)
+        .max("Tokens".len());
+    let duration_width = rows
+        .iter()
+        .map(|row| format!("{:.1}s", row.duration_secs).len())
+        .max()
+        .unwrap_or(8)
+        .max("Duration".len());
+    let applied_width = "Applied".len();
+    let verified_width = "Verified".len();
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{:<title_width$}  {:<model_width$}  {:>tokens_width$}  {:>duration_width$}  {:<applied_width$}  {:<verified_width$}\n",
+        "Title",
+        "Model",
+        "Tokens",
+        "Duration",
+        "Applied",
+        "Verified",
+    ));
+    out.push_str(&format!(
+        "{}  {}  {}  {}  {}  {}\n",
+        "-".repeat(title_width),
+        "-".repeat(model_width),
+        "-".repeat(tokens_width),
+        "-".repeat(duration_width),
+        "-".repeat(applied_width),
+        "-".repeat(verified_width),
+    ));
+
+    for row in rows {
+        out.push_str(&format!(
+            "{:<title_width$}  {:<model_width$}  {:>tokens_width$}  {:>duration_width$}  {:<applied_width$}  {:<verified_width$}\n",
+            row.title,
+            row.model,
+            row.tokens,
+            format!("{:.1}s", row.duration_secs),
+            yes_no(row.applied),
+            yes_no(row.verified),
+        ));
+    }
+
+    out
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }
 
 fn scan_workspace(root: &Path) -> io::Result<Vec<String>> {
@@ -966,6 +1375,67 @@ mod tests {
         assert!(output.contains("Fix auth bug"));
         assert!(output.contains("150"));
         assert!(output.contains("0.4s"));
+    }
+
+    #[test]
+    fn renders_benchmark_summary_table_headers_and_rows() {
+        let output = render_benchmark_summary_table(&[BenchSummaryRow {
+            title: "Add fibonacci".into(),
+            model: "claude/claude-sonnet-4-6".into(),
+            tokens: 321,
+            duration_secs: 1.2,
+            applied: true,
+            verified: false,
+        }]);
+
+        assert!(output.contains("Applied"));
+        assert!(output.contains("Verified"));
+        assert!(output.contains("Add fibonacci"));
+        assert!(output.contains("321"));
+        assert!(output.contains("1.2s"));
+        assert!(output.contains("yes"));
+        assert!(output.contains("no"));
+    }
+
+    #[test]
+    fn parses_benchmark_task_toml() {
+        let parsed = toml::from_str::<BenchTaskFile>(
+            r#"
+[task]
+title = "Add a fibonacci function"
+description = "Implement fibonacci"
+
+[verify]
+command = "cargo test -p a2_core fibonacci"
+expect_exit = 0
+
+[setup]
+test_file = "crates/a2_core/src/lib.rs"
+test_content = """
+#[test]
+fn test_fibonacci() {
+    assert_eq!(fibonacci(10), 55);
+}
+"""
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.task.title, "Add a fibonacci function");
+        assert_eq!(parsed.verify.expect_exit, 0);
+        assert_eq!(parsed.setup.test_file, "crates/a2_core/src/lib.rs");
+        assert!(parsed.setup.test_content.contains("test_fibonacci"));
+    }
+
+    #[test]
+    fn parses_untracked_files_from_porcelain_output() {
+        let files = parse_untracked_files(
+            "?? a2-autopoietic-autocatalysis/bench/tasks/001_add_function.toml\n?? a2-autopoietic-autocatalysis/bench/tasks/002_error_variant.toml\n",
+        );
+
+        assert_eq!(files.len(), 2);
+        assert!(files.contains("a2-autopoietic-autocatalysis/bench/tasks/001_add_function.toml"));
+        assert!(files.contains("a2-autopoietic-autocatalysis/bench/tasks/002_error_variant.toml"));
     }
 
     #[test]
