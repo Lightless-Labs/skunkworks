@@ -183,7 +183,7 @@ impl SentinelSuite {
         ));
 
         // Sentinel 4: clippy clean (A²-designed, human-applied).
-        let root = workspace_root;
+        let root = workspace_root.clone();
         suite.add(Sentinel::new(
             "clippy_check",
             "Workspace must pass cargo clippy with no warnings",
@@ -206,6 +206,36 @@ impl SentinelSuite {
                     Err(e) => (
                         false,
                         command_spawn_error("cargo clippy --all-targets -- -D warnings", &root, &e),
+                    ),
+                }
+            },
+        ));
+
+        // Sentinel 5: doc build clean — no rustdoc warnings.
+        let root = workspace_root;
+        suite.add(Sentinel::new(
+            "doc_check",
+            "Workspace must build docs without warnings",
+            move || {
+                let output = std::process::Command::new("cargo")
+                    .args(["doc", "--no-deps", "--document-private-items"])
+                    .env("RUSTDOCFLAGS", "-D warnings")
+                    .current_dir(&root)
+                    .output();
+                match output {
+                    Ok(o) if o.status.success() => (true, "cargo doc passed".into()),
+                    Ok(o) => (
+                        false,
+                        format!(
+                            "`cargo doc --no-deps --document-private-items` failed in `{}` with status {}: {}",
+                            root.display(),
+                            o.status,
+                            String::from_utf8_lossy(&o.stderr).trim()
+                        ),
+                    ),
+                    Err(e) => (
+                        false,
+                        command_spawn_error("cargo doc --no-deps --document-private-items", &root, &e),
                     ),
                 }
             },
