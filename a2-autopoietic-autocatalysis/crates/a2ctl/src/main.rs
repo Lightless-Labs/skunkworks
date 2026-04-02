@@ -202,7 +202,7 @@ async fn main() {
             }
 
             let provider = build_provider(&model).await;
-            let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let workspace_root = workspace_root();
             let catalyst =
                 a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root.clone());
             let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
@@ -289,7 +289,7 @@ async fn main() {
                 std::process::exit(1);
             }
 
-            let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let workspace_root = workspace_root();
             let catalyst =
                 a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root.clone());
             let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
@@ -411,7 +411,7 @@ async fn main() {
                     std::process::exit(1);
                 }
 
-                let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let workspace_root = workspace_root();
                 let catalyst =
                     a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root.clone());
                 let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
