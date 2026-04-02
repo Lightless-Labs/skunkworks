@@ -1237,20 +1237,10 @@ fn try_apply_patch(diff: &str, dir: &Path) -> Result<bool, String> {
     let tmp = std::env::temp_dir().join(format!("a2_patch_{}.diff", std::process::id()));
     std::fs::write(&tmp, diff).map_err(|e| format!("write temp diff: {e}"))?;
 
-    // The worktree catalyst generates diffs relative to the git repo root (the
-    // output of `git diff` inside the worktree uses repo-root-relative paths).
-    // Resolve the true toplevel so `git apply` runs from the right directory,
-    // not from a potential subdirectory like `a2-autopoietic-autocatalysis/`.
-    let toplevel_out = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(dir)
-        .output()
-        .map_err(|e| format!("git rev-parse --show-toplevel: {e}"))?;
-    let apply_dir: std::path::PathBuf = if toplevel_out.status.success() {
-        std::path::PathBuf::from(String::from_utf8_lossy(&toplevel_out.stdout).trim())
-    } else {
-        dir.to_path_buf()
-    };
+    // The worktree catalyst generates diffs relative to the workspace root
+    // (paths like `crates/a2_foo/src/bar.rs`), so git apply must run from
+    // the workspace root — not the git repo root one level above it.
+    let apply_dir = dir.to_path_buf();
 
     // Try strict apply first.
     let check = std::process::Command::new("git")
