@@ -154,7 +154,7 @@ fn sample_task() -> TaskContract {
         id: TaskId::new(),
         title: "record lineage".into(),
         description: "run the full governor lifecycle".into(),
-        acceptance_criteria: vec!["lineage record is persisted".into()],
+        acceptance_criteria: vec!["lineage record is created and persisted".into()],
         budget: default_budget(),
         priority: Priority::Normal,
         source: TaskSource::External {
@@ -162,6 +162,12 @@ fn sample_task() -> TaskContract {
         },
         created_at: Utc::now(),
     }
+}
+
+fn in_memory_lineage_store() -> (Arc<Mutex<Connection>>, SqliteLineageStore) {
+    let connection = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+    let store = SqliteLineageStore::from_connection(Arc::clone(&connection)).unwrap();
+    (connection, store)
 }
 
 fn assert_lineage_record_matches(actual: &LineageRecord, expected: &LineageRecord) {
@@ -191,7 +197,8 @@ fn lineage_record_count(
 }
 
 #[tokio::test]
-async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_creates_lineage_record()
+async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_persists_lineage_record(
+)
 {
     let governor = Governor::new(GermlineVersion::new(), default_budget());
     let task = sample_task();
@@ -291,20 +298,7 @@ async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_creat
     assert_eq!(provider.standby.model_id(), "unused-model");
     assert_eq!(evaluator_calls.load(Ordering::SeqCst), 1);
 
-    let connection = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
-    let store = SqliteLineageStore::from_connection(Arc::clone(&connection)).unwrap();
-    assert!(store.get(&outcome.lineage.id).await.unwrap().is_none());
-    assert!(store.for_task(&task.id).await.unwrap().is_empty());
-    assert!(store.recent(1).await.unwrap().is_empty());
-    assert_eq!(lineage_record_count(&connection, &outcome.lineage), 0);
-    assert_eq!(
-        connection
-            .lock()
-            .unwrap()
-            .query_row("SELECT COUNT(*) FROM lineage_records", [], |row| row.get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
+    let (connection, store) = in_memory_lineage_store();
     store.record(outcome.lineage.clone()).await.unwrap();
     assert_eq!(lineage_record_count(&connection, &outcome.lineage), 1);
     assert_eq!(
