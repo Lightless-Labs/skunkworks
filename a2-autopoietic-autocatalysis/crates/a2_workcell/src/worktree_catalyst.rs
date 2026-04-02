@@ -310,3 +310,71 @@ impl Catalyst for WorktreeCatalyst {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Bootstrap a minimal git repo with one commit so `git worktree add HEAD` works.
+    async fn init_git_repo(dir: &Path) {
+        for args in [
+            vec!["init"],
+            vec!["config", "user.email", "test@a2"],
+            vec!["config", "user.name", "A2 Test"],
+        ] {
+            Command::new("git")
+                .args(&args)
+                .current_dir(dir)
+                .output()
+                .await
+                .unwrap();
+        }
+        fs::write(dir.join("README.md"), "# repo\n").unwrap();
+        for args in [vec!["add", "."], vec!["commit", "-m", "initial"]] {
+            Command::new("git")
+                .args(&args)
+                .current_dir(dir)
+                .output()
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn worktree_catalyst_creates_worktree_mock_edit_diff_captured() {
+        // Set up a real (but temporary) git repo.
+        let repo_dir = std::env::temp_dir().join(format!("a2-test-{}", uuid::Uuid::now_v7()));
+        fs::create_dir_all(&repo_dir).unwrap();
+        init_git_repo(&repo_dir).await;
+
+        let catalyst = WorktreeCatalyst::new(repo_dir.clone());
+
+        // Create an isolated worktree.
+        let worktree_path = catalyst.create_worktree().await.unwrap();
+        let branch_name = worktree_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        // Mock edit: overwrite the tracked file with new content.
+        fs::write(
+            worktree_path.join("README.md"),
+            "# repo\nmodified by mock edit\n",
+        )
+        .unwrap();
+
+        // git diff should capture the change.
+        let diff = catalyst.capture_diff(&worktree_path).await.unwrap();
+
+        catalyst.cleanup_worktree(&worktree_path, &branch_name).await;
+        let _ = fs::remove_dir_all(&repo_dir);
+
+        assert!(!diff.trim().is_empty(), "diff must be non-empty after mock edit");
+        assert!(
+            diff.contains("+modified by mock edit"),
+            "diff must contain the inserted line; got:\n{diff}"
+        );
+    }
+}
