@@ -121,17 +121,11 @@ impl WorktreeCatalyst {
     async fn run_mock_agent(&self, worktree_path: &Path) -> A2Result<(String, u64, u64)> {
         let lib_path = worktree_path.join("src").join("lib.rs");
         let mut content = std::fs::read_to_string(&lib_path).map_err(|e| {
-            A2Error::CatalystFailure(
-                self.id.clone(),
-                format!("mock agent read src/lib.rs: {e}"),
-            )
+            A2Error::CatalystFailure(self.id.clone(), format!("mock agent read src/lib.rs: {e}"))
         })?;
         content.push_str("// mock agent modification\n");
         std::fs::write(&lib_path, &content).map_err(|e| {
-            A2Error::CatalystFailure(
-                self.id.clone(),
-                format!("mock agent write src/lib.rs: {e}"),
-            )
+            A2Error::CatalystFailure(self.id.clone(), format!("mock agent write src/lib.rs: {e}"))
         })?;
         Ok(("mock agent ran successfully".into(), 10, 5))
     }
@@ -498,8 +492,7 @@ mod tests {
     #[tokio::test]
     async fn full_self_modification_pipeline_create_task_execute_diff_apply_cargo_check() {
         // --- 1. Bootstrap: temp git repo with a minimal Rust project -------
-        let repo_dir =
-            std::env::temp_dir().join(format!("a2-selfmod-{}", uuid::Uuid::now_v7()));
+        let repo_dir = std::env::temp_dir().join(format!("a2-selfmod-{}", uuid::Uuid::now_v7()));
         fs::create_dir_all(&repo_dir).unwrap();
         init_git_repo_with_rust_project(&repo_dir).await;
 

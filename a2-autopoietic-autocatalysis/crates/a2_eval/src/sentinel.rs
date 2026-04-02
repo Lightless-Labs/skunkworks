@@ -282,7 +282,10 @@ impl SentinelSuite {
                             (true, "Cargo.lock is present and up to date".into())
                         }
                     }
-                    Err(e) => (false, command_spawn_error("cargo update --dry-run", &root, &e)),
+                    Err(e) => (
+                        false,
+                        command_spawn_error("cargo update --dry-run", &root, &e),
+                    ),
                 }
             },
         ));
