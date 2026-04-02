@@ -344,7 +344,12 @@ impl Catalyst for WorktreeCatalyst {
             }
             const MAX_RAW: usize = 4096;
             let raw_snippet = if raw_stdout.len() > MAX_RAW {
-                format!("{} … [truncated {} bytes]", &raw_stdout[..MAX_RAW], raw_stdout.len() - MAX_RAW)
+                // Find a safe char boundary so we don't panic on multibyte sequences.
+                let mut end = MAX_RAW;
+                while !raw_stdout.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{} … [truncated {} bytes]", &raw_stdout[..end], raw_stdout.len() - end)
             } else {
                 raw_stdout.clone()
             };
