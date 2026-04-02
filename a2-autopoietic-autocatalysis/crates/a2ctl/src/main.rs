@@ -1237,14 +1237,26 @@ fn try_apply_patch(diff: &str, dir: &Path) -> Result<bool, String> {
     let tmp = std::env::temp_dir().join(format!("a2_patch_{}.diff", std::process::id()));
     std::fs::write(&tmp, diff).map_err(|e| format!("write temp diff: {e}"))?;
 
-    // The worktree catalyst generates diffs relative to the workspace root
-    // (`dir`), so run git apply from there, not from the repo toplevel.
+    // The worktree catalyst generates diffs relative to the git repo root (the
+    // output of `git diff` inside the worktree uses repo-root-relative paths).
+    // Resolve the true toplevel so `git apply` runs from the right directory,
+    // not from a potential subdirectory like `a2-autopoietic-autocatalysis/`.
+    let toplevel_out = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(dir)
+        .output()
+        .map_err(|e| format!("git rev-parse --show-toplevel: {e}"))?;
+    let apply_dir: std::path::PathBuf = if toplevel_out.status.success() {
+        std::path::PathBuf::from(String::from_utf8_lossy(&toplevel_out.stdout).trim())
+    } else {
+        dir.to_path_buf()
+    };
 
     // Try strict apply first.
     let check = std::process::Command::new("git")
         .args(["apply", "--check"])
         .arg(&tmp)
-        .current_dir(dir)
+        .current_dir(&apply_dir)
         .output()
         .map_err(|e| format!("git apply --check: {e}"))?;
 
@@ -1252,7 +1264,7 @@ fn try_apply_patch(diff: &str, dir: &Path) -> Result<bool, String> {
         let apply = std::process::Command::new("git")
             .arg("apply")
             .arg(&tmp)
-            .current_dir(dir)
+            .current_dir(&apply_dir)
             .output()
             .map_err(|e| format!("git apply: {e}"))?;
         let _ = std::fs::remove_file(&tmp);
@@ -1270,7 +1282,7 @@ fn try_apply_patch(diff: &str, dir: &Path) -> Result<bool, String> {
     let fuzzy = std::process::Command::new("git")
         .args(["apply", "--3way", "--whitespace=fix"])
         .arg(&tmp)
-        .current_dir(dir)
+        .current_dir(&apply_dir)
         .output()
         .map_err(|e| format!("git apply --3way: {e}"))?;
 
