@@ -337,9 +337,19 @@ impl Catalyst for WorktreeCatalyst {
         self.cleanup_worktree(&worktree_path, &branch_name).await;
 
         if diff.trim().is_empty() {
-            let mut msg = format!(
-                "agent made no changes to the worktree\n--- model stdout ---\n{raw_stdout}"
-            );
+            let mut msg = "agent made no changes to the worktree".to_string();
+            if !rationale.trim().is_empty() {
+                msg.push_str("\n--- model output ---\n");
+                msg.push_str(&rationale);
+            }
+            const MAX_RAW: usize = 4096;
+            let raw_snippet = if raw_stdout.len() > MAX_RAW {
+                format!("{} … [truncated {} bytes]", &raw_stdout[..MAX_RAW], raw_stdout.len() - MAX_RAW)
+            } else {
+                raw_stdout.clone()
+            };
+            msg.push_str("\n--- model stdout (raw) ---\n");
+            msg.push_str(&raw_snippet);
             if !stderr.trim().is_empty() {
                 msg.push_str("\n--- model stderr ---\n");
                 msg.push_str(&stderr);
