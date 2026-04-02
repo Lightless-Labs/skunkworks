@@ -332,7 +332,9 @@ impl Catalyst for WorktreeCatalyst {
         if diff.trim().is_empty() {
             return Err(A2Error::CatalystFailure(
                 self.id.clone(),
-                "agent made no changes to the worktree".into(),
+                format!(
+                    "agent made no changes to the worktree\n--- model stdout ---\n{rationale}"
+                ),
             ));
         }
 
