@@ -53,8 +53,23 @@ impl Governor {
             budget: self.default_budget.clone(),
         };
 
-        // Execute.
-        let result = run_workcell(config, catalyst, model, evaluator).await?;
+        // Execute with a hard wall-clock timeout derived from the budget.
+        let timeout_duration =
+            std::time::Duration::from_secs(self.default_budget.max_duration_secs);
+        let result = tokio::time::timeout(
+            timeout_duration,
+            run_workcell(config, catalyst, model, evaluator),
+        )
+        .await
+        .map_err(|_| {
+            A2Error::BudgetExceeded(
+                workcell_id.clone(),
+                format!(
+                    "wall-clock timeout after {}s",
+                    self.default_budget.max_duration_secs
+                ),
+            )
+        })??;
 
         tracing::info!(
             workcell = %workcell_id,
