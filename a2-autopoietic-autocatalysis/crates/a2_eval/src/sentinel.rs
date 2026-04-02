@@ -281,7 +281,7 @@ impl SentinelSuite {
         let root = workspace_root;
         suite.add(Sentinel::new(
             "lockfile_check",
-            "Cargo.lock must exist and be up to date (cargo update --dry-run shows no changes)",
+            "Cargo.lock must exist and match an offline lockfile regeneration",
             move || {
                 let lockfile = root.join("Cargo.lock");
                 if !lockfile.exists() {
@@ -290,37 +290,53 @@ impl SentinelSuite {
                         format!("Cargo.lock is missing from `{}`", root.display()),
                     );
                 }
+                let original = match std::fs::read(&lockfile) {
+                    Ok(contents) => contents,
+                    Err(e) => {
+                        return (
+                            false,
+                            format!("failed to read `{}`: {e}", lockfile.display()),
+                        );
+                    }
+                };
                 let output = std::process::Command::new("cargo")
-                    .args(["update", "--dry-run"])
+                    .args(["generate-lockfile", "--offline"])
                     .current_dir(&root)
                     .output();
                 match output {
-                    Ok(o) => {
-                        // `cargo update --dry-run` prints proposed changes to stderr.
-                        // Lines like "Updating foo v1.0 -> v1.1" or "Adding bar v2.0"
-                        // indicate the lockfile is stale.
-                        let stderr = String::from_utf8_lossy(&o.stderr);
-                        let has_changes = stderr.lines().any(|line| {
-                            let t = line.trim_start();
-                            (t.starts_with("Updating") && t.contains(" -> "))
-                                || t.starts_with("Adding")
-                        });
-                        if has_changes {
+                    Ok(o) if o.status.success() => {
+                        let regenerated = match std::fs::read(&lockfile) {
+                            Ok(contents) => contents,
+                            Err(e) => {
+                                return (
+                                    false,
+                                    format!(
+                                        "failed to read regenerated `{}`: {e}",
+                                        lockfile.display()
+                                    ),
+                                );
+                            }
+                        };
+                        if regenerated != original {
+                            let _ = std::fs::write(&lockfile, &original);
                             (
                                 false,
                                 format!(
-                                    "Cargo.lock is stale in `{}` — run `cargo update`: {}",
+                                    "Cargo.lock is stale in `{}` — offline regeneration changes it",
                                     root.display(),
-                                    stderr.trim()
                                 ),
                             )
                         } else {
                             (true, "Cargo.lock is present and up to date".into())
                         }
                     }
+                    Ok(o) => (
+                        false,
+                        command_failure("cargo generate-lockfile --offline", &root, &o),
+                    ),
                     Err(e) => (
                         false,
-                        command_spawn_error("cargo update --dry-run", &root, &e),
+                        command_spawn_error("cargo generate-lockfile --offline", &root, &e),
                     ),
                 }
             },
