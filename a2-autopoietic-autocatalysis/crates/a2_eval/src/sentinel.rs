@@ -15,6 +15,29 @@ fn command_spawn_error(
     )
 }
 
+fn command_failure(
+    command: &str,
+    workspace_root: &std::path::Path,
+    output: &std::process::Output,
+) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
+    if detail.is_empty() {
+        format!(
+            "`{command}` failed in `{}` with status {}",
+            workspace_root.display(),
+            output.status
+        )
+    } else {
+        format!(
+            "`{command}` failed in `{}` with status {}: {}",
+            workspace_root.display(),
+            output.status,
+            detail
+        )
+    }
+}
+
 /// Result of running the full sentinel suite.
 #[derive(Clone, Debug)]
 pub struct SuiteResult {
@@ -157,27 +180,40 @@ impl SentinelSuite {
             "no_unsafe",
             "No unsafe blocks in crate source",
             move || {
-                let output = std::process::Command::new("grep")
+                let output = std::process::Command::new("rg")
                     .args([
-                        "-rP",
+                        "-l",
+                        "-g",
+                        "*.rs",
                         r"unsafe\s*\{|unsafe\s+fn|unsafe\s+impl",
                         "crates/",
-                        "--include=*.rs",
-                        "-l",
                     ])
                     .current_dir(&root)
                     .output();
                 match output {
-                    Ok(o) if o.stdout.is_empty() => (true, "no unsafe found".into()),
+                    Ok(o) if o.status.success() && o.stdout.is_empty() => {
+                        (true, "no unsafe found".into())
+                    }
+                    Ok(o) if o.status.code() == Some(1) && o.stdout.is_empty() => {
+                        (true, "no unsafe found".into())
+                    }
                     Ok(o) => (
                         false,
-                        format!(
-                            "found unsafe Rust constructs under `{}`: {}",
-                            root.display(),
-                            String::from_utf8_lossy(&o.stdout).trim()
-                        ),
+                        if !o.status.success() && o.status.code() != Some(1) {
+                            command_failure(
+                                "rg -l -g '*.rs' 'unsafe\\s*\\{|unsafe\\s+fn|unsafe\\s+impl' crates/",
+                                &root,
+                                &o,
+                            )
+                        } else {
+                            format!(
+                                "found unsafe Rust constructs under `{}`: {}",
+                                root.display(),
+                                String::from_utf8_lossy(&o.stdout).trim()
+                            )
+                        },
                     ),
-                    Err(e) => (false, command_spawn_error("grep", &root, &e)),
+                    Err(e) => (false, command_spawn_error("rg", &root, &e)),
                 }
             },
         ));
@@ -303,6 +339,7 @@ impl Default for SentinelSuite {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::ExitStatusExt;
 
     #[test]
     fn empty_suite_passes() {
@@ -328,5 +365,28 @@ mod tests {
         let result = suite.run_all();
         assert!(!result.all_passed);
         assert!((result.score - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn command_failure_includes_status_without_stderr() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(2 << 8),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        let detail = command_failure("grep", std::path::Path::new("."), &output);
+        assert!(detail.contains("status"));
+        assert!(!detail.ends_with(':'));
+    }
+
+    #[test]
+    fn command_failure_includes_stderr_when_present() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(2 << 8),
+            stdout: Vec::new(),
+            stderr: b"grep: invalid option -- P\n".to_vec(),
+        };
+        let detail = command_failure("grep", std::path::Path::new("."), &output);
+        assert!(detail.contains("invalid option"));
     }
 }
