@@ -3,6 +3,7 @@
 //! Stage 0 commands:
 //!   a2ctl task "title" "description"   — create and run a task
 //!   a2ctl run < tasks.txt              — run stdin tasks sequentially
+//!                                        (plain text or JSONL with problem_statement)
 //!   a2ctl bench                        — run the A² benchmark suite
 //!   a2ctl sentinel                     — run the seed sentinel suite
 //!   a2ctl hello                        — print a one-line greeting
@@ -46,6 +47,7 @@ enum Commands {
         apply: bool,
     },
     /// Read task descriptions from stdin and run them sequentially.
+    /// Accepts plain text lines or JSONL tasks with `problem_statement`.
     Run {
         /// Maximum token budget per task.
         #[arg(long, default_value = "50000")]
@@ -152,6 +154,13 @@ struct BenchTaskCase {
     task: BenchTaskSpec,
     verify: BenchVerifySpec,
     setup: BenchSetupSpec,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunInputTask {
+    problem_statement: String,
+    #[serde(default)]
+    task_id: Option<String>,
 }
 
 const DEFAULT_STAGNATION_WINDOW: usize = 3;
@@ -303,7 +312,7 @@ async fn main() {
             let mut task_index: usize = 0;
 
             for line in io::stdin().lock().lines() {
-                let description = match line {
+                let raw_line = match line {
                     Ok(line) => line,
                     Err(e) => {
                         eprintln!("Failed to read stdin: {e}");
@@ -311,17 +320,28 @@ async fn main() {
                     }
                 };
 
-                let description = description.trim();
-                if description.is_empty() {
+                let raw_line = raw_line.trim();
+                if raw_line.is_empty() {
                     continue;
                 }
 
-                let task = ingester.ingest(a2_sensorium::ingest::RawSignal {
-                    origin: "stdin".into(),
-                    content: description.to_string(),
-                    risk_tier: a2_sensorium::ingest::RiskTier::Low,
-                    metadata: vec![],
-                });
+                let task = match parse_run_input(raw_line) {
+                    ParsedRunInput::Plain(description) => {
+                        ingester.ingest(a2_sensorium::ingest::RawSignal {
+                            origin: "stdin".into(),
+                            content: description,
+                            risk_tier: a2_sensorium::ingest::RiskTier::Low,
+                            metadata: vec![],
+                        })
+                    }
+                    ParsedRunInput::Json(task) => {
+                        let title = task
+                            .task_id
+                            .as_deref()
+                            .unwrap_or_else(|| derive_run_title(&task.problem_statement));
+                        ingester.from_human(title, &task.problem_statement)
+                    }
+                };
 
                 let title = task.title.clone();
 
@@ -1059,6 +1079,26 @@ fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
 
+enum ParsedRunInput {
+    Plain(String),
+    Json(RunInputTask),
+}
+
+fn parse_run_input(line: &str) -> ParsedRunInput {
+    match serde_json::from_str::<RunInputTask>(line) {
+        Ok(task) => ParsedRunInput::Json(task),
+        Err(_) => ParsedRunInput::Plain(line.to_string()),
+    }
+}
+
+fn derive_run_title(problem_statement: &str) -> &str {
+    problem_statement
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("stdin task")
+}
+
 fn scan_workspace(root: &Path) -> io::Result<Vec<String>> {
     let mut tasks = Vec::new();
     scan_dir(root, root, &mut tasks)?;
@@ -1416,6 +1456,26 @@ mod tests {
         assert!(output.contains("1.2s"));
         assert!(output.contains("yes"));
         assert!(output.contains("no"));
+    }
+
+    #[test]
+    fn parses_json_run_input_tasks() {
+        match parse_run_input(r#"{"task_id":"bench-1","problem_statement":"Implement feature"}"#) {
+            ParsedRunInput::Json(task) => {
+                assert_eq!(task.task_id.as_deref(), Some("bench-1"));
+                assert_eq!(task.problem_statement, "Implement feature");
+            }
+            ParsedRunInput::Plain(_) => panic!("expected json input"),
+        }
+    }
+
+    #[test]
+    fn derives_titles_from_problem_statement() {
+        assert_eq!(
+            derive_run_title("\n\nSolve this task\nwith details"),
+            "Solve this task"
+        );
+        assert_eq!(derive_run_title(""), "stdin task");
     }
 
     #[test]

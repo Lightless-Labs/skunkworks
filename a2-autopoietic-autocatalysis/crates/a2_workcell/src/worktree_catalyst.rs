@@ -279,8 +279,9 @@ impl WorktreeCatalyst {
              {}\n\n\
              ## Instructions\n\n\
              Read the relevant files, make the necessary changes directly, and run \
-             `cargo check` to verify your changes compile. If tests are relevant, \
-             run `cargo test`. Do not produce a diff — edit the files directly.\n\n\
+             the task-specific verification command if one is described above. If no \
+             verification command is specified, run `cargo check`, and run `cargo test` \
+             when tests are relevant. Do not produce a diff — edit the files directly.\n\n\
              Keep changes minimal and focused on the task.",
             task.title, task.description
         )
@@ -349,7 +350,11 @@ impl Catalyst for WorktreeCatalyst {
                 while !raw_stdout.is_char_boundary(end) {
                     end -= 1;
                 }
-                format!("{} … [truncated {} bytes]", &raw_stdout[..end], raw_stdout.len() - end)
+                format!(
+                    "{} … [truncated {} bytes]",
+                    &raw_stdout[..end],
+                    raw_stdout.len() - end
+                )
             } else {
                 raw_stdout.clone()
             };
