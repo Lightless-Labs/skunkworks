@@ -330,6 +330,8 @@ async fn main() {
 
                 match run_task(&governor, task, &catalyst, p, &evaluator).await {
                     Ok(outcome) => {
+                        let mut apply_ok = false;
+                        let mut verify_ok = false;
                         if apply
                             && let a2_core::protocol::PromotionDecision::PromoteGermline { .. } =
                                 &outcome.decision
@@ -344,11 +346,16 @@ async fn main() {
                                     }
                                 },
                             ) {
-                                Ok(true) => eprintln!("[applied and rebuilt: {title}]"),
+                                Ok(true) => {
+                                    apply_ok = true;
+                                    verify_ok = true;
+                                    eprintln!("[applied and rebuilt: {title}]");
+                                }
                                 Ok(false) => {}
                                 Err(e) => eprintln!("[apply/rebuild failed for {title}: {e}]"),
                             }
                         }
+                        governor.record_apply_outcome(apply_ok, verify_ok);
                         rows.push(run_summary_row(&title, p, &outcome));
                     }
                     Err(e) => rows.push(RunSummaryRow {
