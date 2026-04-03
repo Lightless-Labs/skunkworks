@@ -66,6 +66,17 @@ impl StagnationDetector {
         "Recent rounds are flat. Try changing the model or catalyst strategy, or break the task into a smaller step.".into()
     }
 
+    /// Update the last recorded round with the actual apply and verify outcomes.
+    ///
+    /// Called after the outer loop attempts `git apply` and `verify_and_rebuild`,
+    /// replacing the provisional values set by `record_round` with ground truth.
+    pub fn update_last_round_apply(&mut self, applied: bool, verified: bool) {
+        if let Some(last) = self.rounds.back_mut() {
+            last.successful_applies = u64::from(applied);
+            last.promotion_count = u64::from(verified);
+        }
+    }
+
     fn capacity(&self) -> usize {
         self.capacity
     }
@@ -197,6 +208,27 @@ impl Governor {
         let mut detector = detector.lock().expect("stagnation detector mutex poisoned");
         detector.record_round(test_count, successful_applies, promotion_count);
 
+        let window = detector.capacity();
+        if detector.is_stagnant(window) {
+            tracing::warn!(
+                window,
+                suggestion = %detector.suggest_strategy_change(),
+                "stagnation detected"
+            );
+        }
+    }
+
+    /// Update the last round with the actual apply and verify outcomes from the outer loop.
+    ///
+    /// Call this after attempting `git apply` and `verify_and_rebuild` in `a2ctl run`.
+    /// Overwrites the provisional `successful_applies` and `promotion_count` recorded
+    /// by `record_round_outcome` with ground-truth values, then re-checks for stagnation.
+    pub fn record_apply_outcome(&self, applied: bool, verified: bool) {
+        let Some(detector) = &self.stagnation_detector else {
+            return;
+        };
+        let mut detector = detector.lock().expect("stagnation detector mutex poisoned");
+        detector.update_last_round_apply(applied, verified);
         let window = detector.capacity();
         if detector.is_stagnant(window) {
             tracing::warn!(
