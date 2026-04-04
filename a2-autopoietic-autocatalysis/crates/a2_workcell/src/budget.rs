@@ -105,3 +105,10 @@ pub enum BudgetExceeded {
     #[error("duration budget exceeded: elapsed {elapsed:.1}s, limit {limit:.1}s")]
     Duration { elapsed: f64, limit: f64 },
 }
+#[test]
+fn test_budget_percentage() {
+    let tracker = BudgetTracker::new(Budget { max_tokens: 1000, max_duration_secs: 60, max_calls: 10 });
+    assert!((tracker.percentage_used() - 0.0).abs() < f64::EPSILON);
+    tracker.record_usage(250, 250).unwrap();
+    assert!((tracker.percentage_used() - 50.0).abs() < f64::EPSILON);
+}
