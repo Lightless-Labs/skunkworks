@@ -82,8 +82,15 @@ impl WorktreeCatalyst {
 
     /// Capture `git diff` from the worktree (uncommitted changes).
     async fn capture_diff(&self, worktree_path: &Path) -> A2Result<String> {
+        // Stage all changes (including untracked files) so they appear in the diff
+        let _ = Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(worktree_path)
+            .output()
+            .await;
+
         let output = Command::new("git")
-            .args(["diff", "--no-color"])
+            .args(["diff", "--staged", "--no-color"])
             .current_dir(worktree_path)
             .output()
             .await
