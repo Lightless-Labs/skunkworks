@@ -32,7 +32,10 @@ pub enum A2Error {
     RollbackRequired(String),
 
     #[error("timeout after {duration_secs}s during {operation}")]
-    Timeout { duration_secs: f64, operation: String },
+    Timeout {
+        duration_secs: f64,
+        operation: String,
+    },
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -49,10 +52,12 @@ mod tests {
 
     #[test]
     fn test_timeout_error() {
-        let err = A2Error::Timeout { duration_secs: 30.0, operation: "model call".into() };
+        let err = A2Error::Timeout {
+            duration_secs: 30.0,
+            operation: "model call".into(),
+        };
         let msg = format!("{err}");
         assert!(msg.contains("30"));
         assert!(msg.contains("model call"));
     }
 }
-
