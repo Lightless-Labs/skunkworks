@@ -71,6 +71,10 @@ impl Ingester {
         }
     }
 
+    pub fn ingest_batch(&self, signals: Vec<RawSignal>) -> Vec<TaskContract> {
+        signals.into_iter().map(|s| self.ingest(s)).collect()
+    }
+
     /// Ingest a simple human-provided objective (the most common food set input).
     pub fn from_human(&self, title: &str, description: &str) -> TaskContract {
         self.ingest(RawSignal {
