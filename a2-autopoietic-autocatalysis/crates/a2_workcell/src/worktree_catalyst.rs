@@ -109,6 +109,7 @@ impl WorktreeCatalyst {
             "claude" => self.run_claude(model_id, prompt, worktree_path).await,
             "codex" => self.run_codex(model_id, prompt, worktree_path).await,
             "gemini" => self.run_gemini(model_id, prompt, worktree_path).await,
+            "opencode" => self.run_opencode(model_id, prompt, worktree_path).await,
             other => Err(A2Error::CatalystFailure(
                 self.id.clone(),
                 format!("worktree catalyst doesn't support provider: {other}"),
@@ -270,6 +271,45 @@ impl WorktreeCatalyst {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         // Gemini text mode doesn't expose token counts; raw_stdout == text
         Ok((text.clone(), text, stderr, 0, 0))
+    }
+
+    async fn run_opencode(
+        &self,
+        model_id: &str,
+        prompt: &str,
+        worktree_path: &Path,
+    ) -> A2Result<(String, String, String, u64, u64)> {
+        let output = Command::new("opencode")
+            .args(["run", "--format", "json", "--model", model_id, "--dir"])
+            .arg(worktree_path)
+            .arg(prompt)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await
+            .map_err(|e| A2Error::ProviderError(format!("opencode: {e}")))?;
+
+        let raw_stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let mut text = String::new();
+        let mut tokens_in = 0u64;
+        let mut tokens_out = 0u64;
+
+        for line in raw_stdout.lines() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(t) = v.get("part").and_then(|p| p.get("text")).and_then(|t| t.as_str())
+                {
+                    text.push_str(t);
+                }
+                if v.get("type").and_then(|t| t.as_str()) == Some("step_finish") {
+                    if let Some(tokens) = v.get("part").and_then(|p| p.get("tokens")) {
+                        tokens_in += tokens.get("input").and_then(|v| v.as_u64()).unwrap_or(0);
+                        tokens_out += tokens.get("output").and_then(|v| v.as_u64()).unwrap_or(0);
+                    }
+                }
+            }
+        }
+
+        Ok((text, raw_stdout, stderr, tokens_in, tokens_out))
     }
 
     fn build_prompt(&self, task: &TaskContract) -> String {
