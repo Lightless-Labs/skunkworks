@@ -31,6 +31,9 @@ pub enum A2Error {
     #[error("rollback required: {0}")]
     RollbackRequired(String),
 
+    #[error("timeout after {duration_secs}s during {operation}")]
+    Timeout { duration_secs: f64, operation: String },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 

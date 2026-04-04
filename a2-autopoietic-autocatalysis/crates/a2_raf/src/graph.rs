@@ -40,6 +40,20 @@ impl CausalGraph {
         }
     }
 
+    pub fn remove_node(&mut self, id: &str) -> bool {
+        if let Some(node_index) = self.node_indices.remove(id) {
+            self.graph.remove_node(node_index);
+            self.node_indices.clear();
+            for node_idx in self.graph.node_indices() {
+                let node_id = self.graph[node_idx].clone();
+                self.node_indices.insert(node_id, node_idx);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn repair_coverage(&self) -> f64 {
         let node_count = self.graph.node_count();
         if node_count == 0 {
