@@ -300,11 +300,11 @@ impl WorktreeCatalyst {
                 {
                     text.push_str(t);
                 }
-                if v.get("type").and_then(|t| t.as_str()) == Some("step_finish") {
-                    if let Some(tokens) = v.get("part").and_then(|p| p.get("tokens")) {
-                        tokens_in += tokens.get("input").and_then(|v| v.as_u64()).unwrap_or(0);
-                        tokens_out += tokens.get("output").and_then(|v| v.as_u64()).unwrap_or(0);
-                    }
+                if v.get("type").and_then(|t| t.as_str()) == Some("step_finish")
+                    && let Some(tokens) = v.get("part").and_then(|p| p.get("tokens"))
+                {
+                    tokens_in += tokens.get("input").and_then(|v| v.as_u64()).unwrap_or(0);
+                    tokens_out += tokens.get("output").and_then(|v| v.as_u64()).unwrap_or(0);
                 }
             }
         }
