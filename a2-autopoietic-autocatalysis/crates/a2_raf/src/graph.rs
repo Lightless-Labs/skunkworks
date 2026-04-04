@@ -301,4 +301,20 @@ mod tests {
         assert_eq!(graph.bottlenecks(), vec!["b".to_string()]);
         assert!(!graph.is_raf_connected());
     }
+
+    #[test]
+    fn can_remove_nodes() {
+        let mut graph = CausalGraph::new();
+        graph.add_edge("a", "b", 1.0);
+        graph.add_edge("b", "c", 1.0);
+
+        assert_eq!(graph.node_count(), 3);
+        assert_eq!(graph.edge_count(), 2);
+
+        assert!(graph.remove_node("b"));
+        assert_eq!(graph.node_count(), 2);
+        assert_eq!(graph.edge_count(), 0);
+
+        assert!(!graph.remove_node("d")); // Doesn't exist
+    }
 }
