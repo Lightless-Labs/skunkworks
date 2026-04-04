@@ -135,6 +135,33 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_ingestion() {
+        let budget = Budget {
+            max_tokens: 50_000,
+            max_duration_secs: 300,
+            max_calls: 20,
+        };
+        let ingester = Ingester::new(budget);
+        let signals = vec![
+            RawSignal {
+                origin: "a".into(),
+                content: "task 1".into(),
+                risk_tier: RiskTier::Low,
+                metadata: vec![],
+            },
+            RawSignal {
+                origin: "b".into(),
+                content: "task 2".into(),
+                risk_tier: RiskTier::High,
+                metadata: vec![],
+            },
+        ];
+        let tasks = ingester.ingest_batch(signals);
+        assert_eq!(tasks.len(), 2);
+        assert!(matches!(tasks[1].priority, Priority::Low));
+    }
+
+    #[test]
     fn long_content_truncated_in_title() {
         let ingester = Ingester::new(default_budget());
         let long = "a".repeat(200);

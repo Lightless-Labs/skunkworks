@@ -319,8 +319,24 @@ impl WorktreeCatalyst {
         Ok((text, raw_stdout, stderr, tokens_in, tokens_out))
     }
 
-    fn build_prompt(&self, task: &TaskContract) -> String {
-        format!(
+    fn workspace_structure(&self) -> &'static str {
+        "- `Cargo.toml`: workspace root\n\
+         - `DESIGN.md`: architectural reference\n\
+         - `crates/a2d`: control plane / governor\n\
+         - `crates/a2ctl`: CLI entrypoint\n\
+         - `crates/a2_workcell`: workcell runtime and catalyst prompt logic\n\
+         - `crates/a2_membrane`: policy enforcement\n\
+         - `crates/a2_broker`: model/provider routing\n\
+         - `crates/a2_constitution`: constitutional kernel and verifiers\n\
+         - `crates/a2_eval`: evaluators and sentinels\n\
+         - `crates/a2_archive`: lineage and archive storage\n\
+         - `crates/a2_raf`: causal graph and RAF diagnostics\n\
+         - `crates/a2_sensorium`: evidence/task ingestion\n\
+         - `constitution/`, `policies/`, `schemas/`, `prompts/`, `docs/`, `bench/`, `lineage/`: supporting inputs and artifacts\n"
+    }
+
+    fn build_prompt(&self, task: &TaskContract, context: &ContextPack) -> String {
+        let mut prompt = format!(
             "You are working on the A² project.\n\n\
              # Task: {}\n\n\
              {}\n\n\
@@ -331,7 +347,21 @@ impl WorktreeCatalyst {
              when tests are relevant. Do not produce a diff — edit the files directly.\n\n\
              Keep changes minimal and focused on the task.",
             task.title, task.description
-        )
+        );
+
+        prompt.push_str("\n\n## Workspace Structure\n\n");
+        prompt.push_str(self.workspace_structure());
+
+        if !context.relevant_files.is_empty() {
+            prompt.push_str("\n## Relevant Files\n\n");
+            for file in &context.relevant_files {
+                // Try to strip the workspace_root to make the paths relative and shorter
+                let path = file.strip_prefix(&self.workspace_root).unwrap_or(file);
+                prompt.push_str(&format!("- {}\n", path.display()));
+            }
+        }
+
+        prompt
     }
 }
 
@@ -348,7 +378,7 @@ impl Catalyst for WorktreeCatalyst {
     async fn execute(
         &self,
         task: &TaskContract,
-        _context: &ContextPack,
+        context: &ContextPack,
         model: &dyn ModelProvider,
     ) -> A2Result<PatchBundle> {
         let worktree_path = self.create_worktree().await?;
@@ -358,7 +388,7 @@ impl Catalyst for WorktreeCatalyst {
             .to_string_lossy()
             .to_string();
 
-        let prompt = self.build_prompt(task);
+        let prompt = self.build_prompt(task, context);
 
         // Run the agent in the worktree
         let result = self
@@ -385,7 +415,7 @@ impl Catalyst for WorktreeCatalyst {
         self.cleanup_worktree(&worktree_path, &branch_name).await;
 
         if diff.trim().is_empty() {
-            let mut msg = "agent made no changes to the worktree".to_string();
+            let mut msg = "agent made no changes to the worktree — the worktree agent must edit the correct file and the diff must apply cleanly".to_string();
             if !rationale.trim().is_empty() {
                 msg.push_str("\n--- model output ---\n");
                 msg.push_str(&rationale);
