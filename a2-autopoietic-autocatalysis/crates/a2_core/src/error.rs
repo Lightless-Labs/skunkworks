@@ -42,3 +42,17 @@ pub enum A2Error {
 }
 
 pub type A2Result<T> = Result<T, A2Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_timeout_error() {
+        let err = A2Error::Timeout { duration_secs: 30.0, operation: "model call".into() };
+        let msg = format!("{err}");
+        assert!(msg.contains("30"));
+        assert!(msg.contains("model call"));
+    }
+}
+
