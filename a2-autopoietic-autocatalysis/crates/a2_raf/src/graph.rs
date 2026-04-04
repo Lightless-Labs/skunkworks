@@ -302,6 +302,17 @@ mod tests {
     }
 
     #[test]
+    fn test_remove_node() {
+        let mut graph = CausalGraph::new();
+        graph.add_node("a");
+        graph.add_node("b");
+        graph.add_edge("a", "b", 1.0);
+        assert!(graph.remove_node("a"));
+        assert!(!graph.remove_node("a")); // already removed
+        assert!(!graph.is_raf_connected());
+    }
+
+    #[test]
     fn can_remove_nodes() {
         let mut graph = CausalGraph::new();
         graph.add_edge("a", "b", 1.0);
