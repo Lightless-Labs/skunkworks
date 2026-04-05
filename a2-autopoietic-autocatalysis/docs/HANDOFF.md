@@ -15,7 +15,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 | Sentinels | 6/6 PASS |
 | Benchmark (Claude) | untested |
 | Benchmark (Gemini) | 5/5 hard tasks (011-015) |
-| Benchmark (OpenCode/GLM) | testing hard tasks |
+| Benchmark (OpenCode/GLM) | 4/5 hard tasks (failed 014: lineage query CLI) |
 | Germline mutations | 12+ self-authored |
 | Crates | 11 |
 
