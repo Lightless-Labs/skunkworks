@@ -9,7 +9,7 @@ use a2_core::protocol::*;
 use a2_core::traits::*;
 use a2_workcell::runtime::{WorkcellConfig, WorkcellResult, run_workcell};
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Actionable strategy change recommended by the stagnation detector.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -145,6 +145,7 @@ pub struct Governor {
     germline_version: GermlineVersion,
     default_budget: Budget,
     stagnation_detector: Option<Mutex<StagnationDetector>>,
+    lineage_store: Option<Arc<dyn LineageStore>>,
 }
 
 impl Governor {
@@ -153,6 +154,7 @@ impl Governor {
             germline_version,
             default_budget,
             stagnation_detector: None,
+            lineage_store: None,
         }
     }
 
@@ -165,7 +167,14 @@ impl Governor {
             germline_version,
             default_budget,
             stagnation_detector: Some(Mutex::new(stagnation_detector)),
+            lineage_store: None,
         }
+    }
+
+    /// Attach a lineage store for automatic persistence of lineage records.
+    pub fn with_lineage_store(mut self, store: Arc<dyn LineageStore>) -> Self {
+        self.lineage_store = Some(store);
+        self
     }
 
     /// Run a single task through the full pipeline.
@@ -208,6 +217,13 @@ impl Governor {
 
         // Build lineage.
         let lineage = result.lineage.clone();
+
+        // Persist lineage if a store is wired.
+        if let Some(store) = &self.lineage_store
+            && let Err(e) = store.record(lineage.clone()).await
+        {
+            tracing::warn!(error = %e, "failed to persist lineage record");
+        }
 
         self.record_round_outcome(&result, &decision);
 
