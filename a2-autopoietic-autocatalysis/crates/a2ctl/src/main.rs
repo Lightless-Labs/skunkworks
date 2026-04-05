@@ -302,11 +302,31 @@ async fn main() {
             let catalyst =
                 a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root.clone());
             let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
-            let governor = a2d::Governor::with_stagnation_detector(
-                a2_core::id::GermlineVersion::new(),
-                budget,
-                a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
-            );
+            let lineage_db = workspace_root.join("lineage.sqlite");
+            let governor = match rusqlite::Connection::open(&lineage_db)
+                .map_err(|e| format!("open lineage db: {e}"))
+                .and_then(|conn| {
+                    a2_archive::SqliteLineageStore::new(conn)
+                        .map_err(|e| format!("init lineage store: {e}"))
+                }) {
+                Ok(store) => {
+                    eprintln!("[lineage store: {}]", lineage_db.display());
+                    a2d::Governor::with_stagnation_detector(
+                        a2_core::id::GermlineVersion::new(),
+                        budget,
+                        a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
+                    )
+                    .with_lineage_store(std::sync::Arc::new(store))
+                }
+                Err(e) => {
+                    eprintln!("[lineage store unavailable: {e}]");
+                    a2d::Governor::with_stagnation_detector(
+                        a2_core::id::GermlineVersion::new(),
+                        budget,
+                        a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
+                    )
+                }
+            };
 
             let mut rows = Vec::new();
             let mut task_index: usize = 0;
