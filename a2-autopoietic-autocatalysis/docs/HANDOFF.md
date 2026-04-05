@@ -11,7 +11,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 | Metric | Value |
 |--------|-------|
-| Tests | 62 (was 57) |
+| Tests | 61 |
 | Sentinels | 6/6 PASS |
 | Benchmark (Claude) | untested on new tasks |
 | Benchmark (Gemini) | 5/5 |
@@ -25,7 +25,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 cd /Users/thomas/Projects/lightless-labs/skunkworks/a2-autopoietic-autocatalysis
 cargo test
 cargo run -p a2ctl -- sentinel --workspace .
-cargo run -p a2ctl -- bench --model claude
+cargo run -p a2ctl -- bench --model gemini
 ```
 
 If any of these fail, fix them before doing anything else.
@@ -74,7 +74,7 @@ Check quota before choosing: `codex --version`, `gemini --version`, `opencode mo
 3. ~~**Lineage persistence**: FIXED 2026-04-05 — Governor.with_lineage_store(Arc<dyn LineageStore>), wired to lineage.sqlite in a2ctl run.~~
 4. ~~**Stagnation detector**: FIXED 2026-04-05 — StrategyChange enum + auto-switch in run loop when SwitchModel recommended.~~
 5. **Benchmark staleness**: FIXED 2026-04-05 — bench-baseline tag + WorktreeCatalyst::with_base_ref(). Benchmark now creates worktrees from a pinned commit.
-6. **Benchmark residue**: Running benchmark with --apply leaves dangling tests/implementations on workspace when tasks succeed. Concurrent benchmark runs fight with manual edits.
+6. ~~**Benchmark residue**: FIXED 2026-04-05 — removed --apply from bench entirely. Benchmark is now purely observational (like autoresearch's evaluate_bpb). -219 lines removed.~~
 
 ## Architecture Quick Reference
 
@@ -132,3 +132,4 @@ Check quota before choosing: `codex --version`, `gemini --version`, `opencode mo
 | 2026-04-05 | bench-baseline tag for worktree pinning | Prevents benchmark staleness |
 | 2026-04-05 | Lineage persistence wired into Governor | Auto-persists to lineage.sqlite |
 | 2026-04-05 | Stagnation auto-adaptation in run loop | SwitchModel rotates providers |
+| 2026-04-05 | Benchmark made purely observational | Removed --apply, -219 lines. Benchmark is evaluation, not mutation. |
