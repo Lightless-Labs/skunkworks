@@ -62,6 +62,20 @@ impl StagnationDetector {
         })
     }
 
+    pub fn trend(&self) -> f64 {
+        if self.rounds.len() < 2 {
+            return 0.0;
+        }
+        let deltas: Vec<f64> = self
+            .rounds
+            .iter()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .map(|pair| pair[1].promotion_count as f64 - pair[0].promotion_count as f64)
+            .collect();
+        deltas.iter().sum::<f64>() / deltas.len() as f64
+    }
+
     pub fn suggest_strategy_change(&self) -> String {
         "Recent rounds are flat. Try changing the model or catalyst strategy, or break the task into a smaller step.".into()
     }
@@ -488,5 +502,17 @@ mod tests {
 
         detector.record_round(2, 0, 0);
         assert!(detector.is_stagnant(3));
+    }
+
+    #[test]
+    fn test_stagnation_trend() {
+        let mut detector = StagnationDetector::new(5);
+        assert!((detector.trend() - 0.0).abs() < f64::EPSILON);
+        detector.record_round(10, 1, 1);
+        assert!((detector.trend() - 0.0).abs() < f64::EPSILON);
+        detector.record_round(10, 1, 3);
+        assert!((detector.trend() - 2.0).abs() < f64::EPSILON);
+        detector.record_round(10, 1, 2);
+        assert!((detector.trend() - 0.5).abs() < f64::EPSILON);
     }
 }
