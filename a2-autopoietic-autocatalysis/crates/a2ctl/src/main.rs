@@ -9,9 +9,8 @@
 //!   a2ctl hello                        — print a one-line greeting
 //!   a2ctl status                       — show system health
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use serde::Deserialize;
-use std::collections::BTreeSet;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 
@@ -97,9 +96,6 @@ enum Commands {
         /// Model provider/model (e.g., "claude" or "gemini").
         #[arg(long, default_value = "claude")]
         model: String,
-        /// Auto-apply promoted patches before running verification.
-        #[arg(long, action = ArgAction::Set, default_value_t = true)]
-        apply: bool,
     },
     /// Print a one-line greeting.
     Hello,
@@ -120,8 +116,7 @@ struct BenchSummaryRow {
     model: String,
     tokens: u64,
     duration_secs: f64,
-    applied: bool,
-    verified: bool,
+    promoted: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,18 +132,21 @@ struct BenchTaskSpec {
     description: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct BenchVerifySpec {
     command: String,
     expect_exit: i32,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct BenchSetupSpec {
     test_file: String,
     test_content: String,
 }
 
+#[allow(dead_code)]
 struct BenchTaskCase {
     path: PathBuf,
     task: BenchTaskSpec,
@@ -558,8 +556,8 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Bench { model, apply } => {
-            if let Err(e) = run_benchmark_suite(&model, apply).await {
+        Commands::Bench { model } => {
+            if let Err(e) = run_benchmark_suite(&model).await {
                 eprintln!("Benchmark suite failed: {e}");
                 std::process::exit(1);
             }
@@ -641,10 +639,7 @@ async fn build_provider(model: &str) -> Box<dyn a2_core::traits::ModelProvider> 
     }
 }
 
-async fn run_benchmark_suite(model: &str, apply: bool) -> Result<(), String> {
-    assert_benchmark_workspace_clean()?;
-    let baseline_untracked = workspace_untracked_files()?;
-
+async fn run_benchmark_suite(model: &str) -> Result<(), String> {
     let bench_root = workspace_root().join("bench/tasks");
     let bench_tasks = load_benchmark_tasks(&bench_root)?;
     if bench_tasks.is_empty() {
@@ -658,8 +653,8 @@ async fn run_benchmark_suite(model: &str, apply: bool) -> Result<(), String> {
     let ingester = a2_sensorium::ingest::Ingester::new(budget.clone());
     let provider = build_provider(model).await;
     let workspace = workspace_root();
-    // Use bench-baseline tag so tasks always start from a known clean state,
-    // preventing staleness when features are committed to HEAD.
+    // Use bench-baseline tag so worktrees start from a known clean state.
+    // The benchmark is purely observational — it never mutates the workspace.
     let catalyst = a2_workcell::worktree_catalyst::WorktreeCatalyst::with_base_ref(
         workspace.clone(),
         "bench-baseline",
@@ -685,88 +680,26 @@ async fn run_benchmark_suite(model: &str, apply: bool) -> Result<(), String> {
             model: requested_model(provider.as_ref()),
             tokens: 0,
             duration_secs: 0.0,
-            applied: false,
-            verified: false,
+            promoted: false,
         };
 
-        let task_result = append_benchmark_test_content(&bench_task)
-            .map(|()| ingester.from_human(&bench_task.task.title, &bench_task.task.description));
+        let task = ingester.from_human(&bench_task.task.title, &bench_task.task.description);
 
-        match task_result {
-            Ok(task) => match run_task(&governor, task, &catalyst, provider.as_ref(), &evaluator)
-                .await
-            {
-                Ok(outcome) => {
-                    row = bench_summary_row(&bench_task.task.title, provider.as_ref(), &outcome);
-
-                    if apply
-                        && let a2_core::protocol::PromotionDecision::PromoteGermline { .. } =
-                            &outcome.decision
-                        && let Some(patch) = &outcome.result.patch
-                    {
-                        // Revert workspace so diff context lines match the
-                        // clean HEAD the worktree was branched from.
-                        if let Err(e) = revert_workspace() {
-                            eprintln!("[revert before apply failed: {e}]");
-                        }
-                        match try_apply_patch(&patch.diff, &workspace) {
-                            Ok(true) => {
-                                row.applied = true;
-                                // Re-append test content so verification can find it.
-                                if let Err(e) = append_benchmark_test_content(&bench_task) {
-                                    eprintln!("[re-append test content failed: {e}]");
-                                }
-                                match run_workspace_shell_command(&bench_task.verify.command) {
-                                    Ok(output) => {
-                                        let actual_exit = output.status.code().unwrap_or(-1);
-                                        if actual_exit == bench_task.verify.expect_exit {
-                                            row.verified = true;
-                                        } else {
-                                            eprintln!(
-                                                "[verify failed for {}: expected exit {}, got {}; {}]",
-                                                bench_task.task.title,
-                                                bench_task.verify.expect_exit,
-                                                actual_exit,
-                                                command_failure_message(
-                                                    &bench_task.verify.command,
-                                                    &output
-                                                )
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
-                                        eprintln!(
-                                            "[verify command failed for {}: {e}]",
-                                            bench_task.task.title
-                                        );
-                                    }
-                                }
-                            }
-                            Ok(false) => {}
-                            Err(e) => {
-                                eprintln!("[apply failed for {}: {e}]", bench_task.task.title);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("[bench run failed for {}: {e}]", bench_task.task.title);
-                }
-            },
+        match run_task(&governor, task, &catalyst, provider.as_ref(), &evaluator).await {
+            Ok(outcome) => {
+                row = bench_summary_row(&bench_task.task.title, provider.as_ref(), &outcome);
+            }
             Err(e) => {
-                eprintln!("[bench setup failed for {}: {e}]", bench_task.task.title);
+                eprintln!("[bench run failed for {}: {e}]", bench_task.task.title);
             }
         }
-
-        cleanup_benchmark_workspace(&baseline_untracked)
-            .map_err(|e| format!("cleanup after {}: {e}", bench_task.task.title))?;
 
         rows.push(row);
     }
 
     print!("{}", render_benchmark_summary_table(&rows));
-    let verified = rows.iter().filter(|row| row.verified).count();
-    println!("Score: {verified}/{} tasks verified", rows.len());
+    let promoted = rows.iter().filter(|row| row.promoted).count();
+    println!("Score: {promoted}/{} tasks promoted", rows.len());
 
     Ok(())
 }
@@ -810,106 +743,6 @@ fn load_benchmark_tasks(root: &Path) -> Result<Vec<BenchTaskCase>, String> {
     Ok(tasks)
 }
 
-fn append_benchmark_test_content(task: &BenchTaskCase) -> Result<(), String> {
-    let relative = Path::new(&task.setup.test_file);
-    if relative.is_absolute() {
-        return Err(format!(
-            "benchmark setup file must be relative: {}",
-            task.setup.test_file
-        ));
-    }
-
-    let path = workspace_root().join(relative);
-    let mut content =
-        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    if !content.ends_with('\n') {
-        content.push('\n');
-    }
-    content.push_str(&task.setup.test_content);
-    if !content.ends_with('\n') {
-        content.push('\n');
-    }
-
-    std::fs::write(&path, content).map_err(|e| format!("write {}: {e}", path.display()))
-}
-
-fn assert_benchmark_workspace_clean() -> Result<(), String> {
-    let output = std::process::Command::new("git")
-        .args(["status", "--porcelain", "--untracked-files=no", "--", "."])
-        .current_dir(workspace_root())
-        .output()
-        .map_err(|e| format!("git status --porcelain --untracked-files=no -- .: {e}"))?;
-
-    if !output.status.success() {
-        return Err(command_failure_message(
-            "git status --porcelain --untracked-files=no -- .",
-            &output,
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if stdout.trim().is_empty() {
-        Ok(())
-    } else {
-        Err(
-            "bench requires a clean tracked workspace because it resets changes with `git checkout .` between tasks"
-                .into(),
-        )
-    }
-}
-
-fn cleanup_benchmark_workspace(baseline_untracked: &BTreeSet<String>) -> Result<(), String> {
-    revert_workspace()?;
-
-    let current_untracked = workspace_untracked_files()?;
-    let leaked = current_untracked
-        .difference(baseline_untracked)
-        .cloned()
-        .collect::<Vec<_>>();
-    if leaked.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "new untracked files remain after cleanup: {}",
-            leaked.join(", ")
-        ))
-    }
-}
-
-fn workspace_untracked_files() -> Result<BTreeSet<String>, String> {
-    let output = std::process::Command::new("git")
-        .args(["status", "--porcelain", "--untracked-files=all", "--", "."])
-        .current_dir(workspace_root())
-        .output()
-        .map_err(|e| format!("git status --porcelain --untracked-files=all -- .: {e}"))?;
-
-    if !output.status.success() {
-        return Err(command_failure_message(
-            "git status --porcelain --untracked-files=all -- .",
-            &output,
-        ));
-    }
-
-    Ok(parse_untracked_files(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
-}
-
-fn parse_untracked_files(output: &str) -> BTreeSet<String> {
-    output
-        .lines()
-        .filter_map(|line| line.strip_prefix("?? ").map(ToOwned::to_owned))
-        .collect()
-}
-
-fn run_workspace_shell_command(command: &str) -> Result<std::process::Output, String> {
-    std::process::Command::new("sh")
-        .args(["-lc", command])
-        .current_dir(workspace_root())
-        .output()
-        .map_err(|e| format!("{command}: {e}"))
-}
-
 async fn run_task(
     governor: &a2d::Governor,
     task: a2_core::protocol::TaskContract,
@@ -942,8 +775,10 @@ fn bench_summary_row(
         model,
         tokens: outcome.result.tokens_used,
         duration_secs: outcome.result.duration_secs,
-        applied: false,
-        verified: false,
+        promoted: matches!(
+            outcome.decision,
+            a2_core::protocol::PromotionDecision::PromoteGermline { .. }
+        ),
     }
 }
 
@@ -1081,38 +916,30 @@ fn render_benchmark_summary_table(rows: &[BenchSummaryRow]) -> String {
         .max()
         .unwrap_or(8)
         .max("Duration".len());
-    let applied_width = "Applied".len();
-    let verified_width = "Verified".len();
+    let promoted_width = "Promoted".len();
 
     let mut out = String::new();
     out.push_str(&format!(
-        "{:<title_width$}  {:<model_width$}  {:>tokens_width$}  {:>duration_width$}  {:<applied_width$}  {:<verified_width$}\n",
-        "Title",
-        "Model",
-        "Tokens",
-        "Duration",
-        "Applied",
-        "Verified",
+        "{:<title_width$}  {:<model_width$}  {:>tokens_width$}  {:>duration_width$}  {:<promoted_width$}\n",
+        "Title", "Model", "Tokens", "Duration", "Promoted",
     ));
     out.push_str(&format!(
-        "{}  {}  {}  {}  {}  {}\n",
+        "{}  {}  {}  {}  {}\n",
         "-".repeat(title_width),
         "-".repeat(model_width),
         "-".repeat(tokens_width),
         "-".repeat(duration_width),
-        "-".repeat(applied_width),
-        "-".repeat(verified_width),
+        "-".repeat(promoted_width),
     ));
 
     for row in rows {
         out.push_str(&format!(
-            "{:<title_width$}  {:<model_width$}  {:>tokens_width$}  {:>duration_width$}  {:<applied_width$}  {:<verified_width$}\n",
+            "{:<title_width$}  {:<model_width$}  {:>tokens_width$}  {:>duration_width$}  {:<promoted_width$}\n",
             row.title,
             row.model,
             row.tokens,
             format!("{:.1}s", row.duration_secs),
-            yes_no(row.applied),
-            yes_no(row.verified),
+            yes_no(row.promoted),
         ));
     }
 
@@ -1489,17 +1316,14 @@ mod tests {
             model: "claude/claude-sonnet-4-6".into(),
             tokens: 321,
             duration_secs: 1.2,
-            applied: true,
-            verified: false,
+            promoted: true,
         }]);
 
-        assert!(output.contains("Applied"));
-        assert!(output.contains("Verified"));
+        assert!(output.contains("Promoted"));
         assert!(output.contains("Add fibonacci"));
         assert!(output.contains("321"));
         assert!(output.contains("1.2s"));
         assert!(output.contains("yes"));
-        assert!(output.contains("no"));
     }
 
     #[test]
@@ -1550,17 +1374,6 @@ fn test_fibonacci() {
         assert_eq!(parsed.verify.expect_exit, 0);
         assert_eq!(parsed.setup.test_file, "crates/a2_core/src/lib.rs");
         assert!(parsed.setup.test_content.contains("test_fibonacci"));
-    }
-
-    #[test]
-    fn parses_untracked_files_from_porcelain_output() {
-        let files = parse_untracked_files(
-            "?? a2-autopoietic-autocatalysis/bench/tasks/001_add_function.toml\n?? a2-autopoietic-autocatalysis/bench/tasks/002_error_variant.toml\n",
-        );
-
-        assert_eq!(files.len(), 2);
-        assert!(files.contains("a2-autopoietic-autocatalysis/bench/tasks/001_add_function.toml"));
-        assert!(files.contains("a2-autopoietic-autocatalysis/bench/tasks/002_error_variant.toml"));
     }
 
     #[test]
