@@ -345,6 +345,16 @@ async fn main() {
 
                 let title = task.title.clone();
 
+                // Check stagnation and advance provider if needed.
+                let strategy = governor.suggest_strategy_change();
+                if strategy == a2d::StrategyChange::SwitchModel && providers.len() > 1 {
+                    task_index += 1;
+                    eprintln!(
+                        "[stagnation: switching to {}]",
+                        providers[task_index % providers.len()].model_id()
+                    );
+                }
+
                 let p = providers[task_index % providers.len()].as_ref();
                 task_index += 1;
 

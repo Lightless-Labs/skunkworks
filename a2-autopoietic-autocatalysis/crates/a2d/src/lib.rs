@@ -291,6 +291,15 @@ impl Governor {
             );
         }
     }
+
+    /// Query the stagnation detector for a recommended strategy change.
+    pub fn suggest_strategy_change(&self) -> StrategyChange {
+        let Some(detector) = &self.stagnation_detector else {
+            return StrategyChange::None;
+        };
+        let detector = detector.lock().expect("stagnation detector mutex poisoned");
+        detector.suggest_strategy_change()
+    }
 }
 
 /// The outcome of a governor run_task cycle.
