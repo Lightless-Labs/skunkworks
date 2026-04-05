@@ -9,6 +9,10 @@ set -euo pipefail
 
 MODEL="${1:-zai-coding-plan/glm-5.1}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Git root may differ from REPO_ROOT if A² is inside a monorepo
+GIT_ROOT="$(git -C "$REPO_ROOT" rev-parse --show-toplevel)"
+# Relative path from git root to A² project root
+A2_PREFIX="$(python3 -c "import os; print(os.path.relpath('$REPO_ROOT', '$GIT_ROOT'))")"
 BASELINE_REF="bench-baseline"
 RESULTS_FILE="/tmp/a2_baseline_results.txt"
 
@@ -36,20 +40,23 @@ for task_file in "$REPO_ROOT/bench/tasks/"*.toml; do
     # Create worktree from baseline
     BRANCH="baseline-$(uuidgen | tr '[:upper:]' '[:lower:]' | head -c 8)"
     WORKTREE="/tmp/$BRANCH"
-    git -C "$REPO_ROOT" worktree add -b "$BRANCH" "$WORKTREE" "$BASELINE_REF" 2>/dev/null
+    git -C "$GIT_ROOT" worktree add -b "$BRANCH" "$WORKTREE" "$BASELINE_REF" 2>/dev/null
+
+    # Working dir inside the worktree (accounts for monorepo nesting)
+    WORK_DIR="$WORKTREE/$A2_PREFIX"
 
     # Append test content to the worktree (not workspace)
     if [ -n "$TEST_FILE" ] && [ -n "$TEST_CONTENT" ]; then
-        echo "$TEST_CONTENT" >> "$WORKTREE/$TEST_FILE"
+        echo "$TEST_CONTENT" >> "$WORK_DIR/$TEST_FILE"
     fi
 
     # Run model directly in worktree
     START=$(date +%s)
     opencode run \
         --model "$MODEL" \
-        --dir "$WORKTREE" \
+        --dir "$WORK_DIR" \
         --format json \
-        "You are in a Rust project. Your task: $TITLE
+        "You are in a Rust project at $WORK_DIR. Your task: $TITLE
 
 $DESCRIPTION
 
@@ -63,7 +70,7 @@ Make sure the verify command passes before finishing." \
     DURATION=$((END - START))
 
     # Verify in worktree
-    if (cd "$WORKTREE" && eval "$VERIFY_CMD" > /dev/null 2>&1); then
+    if (cd "$WORK_DIR" && eval "$VERIFY_CMD" > /dev/null 2>&1); then
         echo "  PASS (${DURATION}s)"
         echo "PASS $TITLE ${DURATION}s" >> "$RESULTS_FILE"
         PASS=$((PASS + 1))
@@ -74,8 +81,8 @@ Make sure the verify command passes before finishing." \
     fi
 
     # Cleanup worktree
-    git -C "$REPO_ROOT" worktree remove --force "$WORKTREE" 2>/dev/null || true
-    git -C "$REPO_ROOT" branch -D "$BRANCH" 2>/dev/null || true
+    git -C "$GIT_ROOT" worktree remove --force "$WORKTREE" 2>/dev/null || true
+    git -C "$GIT_ROOT" branch -D "$BRANCH" 2>/dev/null || true
 done
 
 echo ""
