@@ -11,7 +11,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 | Metric | Value |
 |--------|-------|
-| Tests | 62 |
+| Tests | 62 (was 57) |
 | Sentinels | 6/6 PASS |
 | Benchmark (Claude) | untested on new tasks |
 | Benchmark (Gemini) | 5/5 |
@@ -71,8 +71,8 @@ Check quota before choosing: `codex --version`, `gemini --version`, `opencode mo
 
 1. ~~**Fibonacci bench task**: FIXED 2026-04-05 — revert workspace before git apply so diff context matches clean HEAD.~~
 2. ~~**Gemini worktree**: FIXED 2026-04-05 — was stale benchmark tasks, not Gemini. Gemini now 5/5 on fresh tasks.~~
-3. **Lineage persistence**: Governor produces LineageRecords but doesn't persist to SQLite. Wire `Arc<dyn LineageStore>` into Governor.
-4. **Stagnation detector**: Warns but doesn't auto-adapt. Should switch models or strategies when stagnant.
+3. ~~**Lineage persistence**: FIXED 2026-04-05 — Governor.with_lineage_store(Arc<dyn LineageStore>), wired to lineage.sqlite in a2ctl run.~~
+4. ~~**Stagnation detector**: FIXED 2026-04-05 — StrategyChange enum + auto-switch in run loop when SwitchModel recommended.~~
 5. **Benchmark staleness**: FIXED 2026-04-05 — bench-baseline tag + WorktreeCatalyst::with_base_ref(). Benchmark now creates worktrees from a pinned commit.
 6. **Benchmark residue**: Running benchmark with --apply leaves dangling tests/implementations on workspace when tasks succeed. Concurrent benchmark runs fight with manual edits.
 
@@ -109,12 +109,12 @@ Check quota before choosing: `codex --version`, `gemini --version`, `opencode mo
 
 ## What To Do Next
 
-1. Test OpenCode models on benchmark → find which are viable (shell timeouts may need >5min)
-2. Wire stagnation detector into benchmark loop → auto-adapt on plateau
-3. Auto-generate benchmark tasks → prevent staleness, raise ceiling continuously
-4. SWE-bench Lite integration → real-world evaluation (the proof that A² > single-pass)
-5. Lineage persistence → track what actually worked
-6. Run Claude on new benchmark tasks → establish baseline score
+1. Test OpenCode models on benchmark with bench-baseline → find which are viable
+2. Auto-generate benchmark tasks from codebase gaps → raise ceiling continuously
+3. SWE-bench Lite integration → real-world evaluation (the proof that A² > single-pass)
+4. Run Claude on new benchmark tasks → establish baseline score
+5. Wire lineage store into bench command (currently only in run command)
+6. Query lineage data for strategy decisions (which model works best on which task type)
 
 ## Decision Log
 
@@ -130,3 +130,5 @@ Check quota before choosing: `codex --version`, `gemini --version`, `opencode mo
 | 2026-04-05 | Gemini promoted from 1/5 to 5/5 | Was stale benchmarks, not model failure |
 | 2026-04-05 | StrategyChange enum replaces static string | Enables auto-adaptation when stagnant |
 | 2026-04-05 | bench-baseline tag for worktree pinning | Prevents benchmark staleness |
+| 2026-04-05 | Lineage persistence wired into Governor | Auto-persists to lineage.sqlite |
+| 2026-04-05 | Stagnation auto-adaptation in run loop | SwitchModel rotates providers |
