@@ -660,11 +660,28 @@ async fn run_benchmark_suite(model: &str) -> Result<(), String> {
         "bench-baseline",
     );
     let evaluator = a2_eval::seed::SeedEvaluator::new(DEFAULT_BENCH_MAX_TOKENS);
-    let governor = a2d::Governor::with_stagnation_detector(
-        a2_core::id::GermlineVersion::new(),
-        budget,
-        a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
-    );
+    let lineage_db = workspace.join("lineage.sqlite");
+    let governor = match rusqlite::Connection::open(&lineage_db)
+        .map_err(|e| format!("open lineage db: {e}"))
+        .and_then(|conn| {
+            a2_archive::SqliteLineageStore::new(conn)
+                .map_err(|e| format!("init lineage store: {e}"))
+        }) {
+        Ok(store) => a2d::Governor::with_stagnation_detector(
+            a2_core::id::GermlineVersion::new(),
+            budget,
+            a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
+        )
+        .with_lineage_store(std::sync::Arc::new(store)),
+        Err(e) => {
+            eprintln!("[lineage store unavailable: {e}]");
+            a2d::Governor::with_stagnation_detector(
+                a2_core::id::GermlineVersion::new(),
+                budget,
+                a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
+            )
+        }
+    };
 
     let mut rows = Vec::with_capacity(bench_tasks.len());
 
