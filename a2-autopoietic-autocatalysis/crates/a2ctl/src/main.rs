@@ -162,7 +162,7 @@ struct RunInputTask {
 }
 
 const DEFAULT_STAGNATION_WINDOW: usize = 3;
-const DEFAULT_BENCH_MAX_TOKENS: u64 = 50_000;
+const DEFAULT_BENCH_MAX_TOKENS: u64 = 100_000;
 const DEFAULT_BENCH_TIMEOUT_SECS: u64 = 300;
 
 #[tokio::main]
