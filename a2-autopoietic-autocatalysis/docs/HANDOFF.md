@@ -109,7 +109,7 @@ Check quota before choosing: `codex --version`, `gemini --version`, `opencode mo
 
 ## What To Do Next
 
-**The baseline result (GLM 5/5 raw vs 4/5 via A²) proves the current benchmark tests the wrong thing.** Single-pass coding tasks don't need A². The system's value is multi-round evolution. Next steps must test accumulation:
+Baseline result: GLM 5/5 raw vs 4/5 via A². Investigate why task 014 fails through A² but passes raw. Also add benchmarks that test what A² is actually for — multi-round improvement:
 
 1. **Multi-round benchmark**: run N iterations on the same task, measure improvement over rounds
 2. **Self-correction benchmark**: inject a bug, measure whether A² finds and fixes it autonomously
