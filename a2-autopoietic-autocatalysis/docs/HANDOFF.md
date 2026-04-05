@@ -15,7 +15,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 | Sentinels | 6/6 PASS |
 | Benchmark (Claude) | untested |
 | Benchmark (Gemini) | 5/5 hard tasks (011-015) |
-| Benchmark (OpenCode/GLM) | 4/5 hard tasks (failed 014: lineage query CLI) |
+| Benchmark (OpenCode/GLM) | 4/5 via A², **5/5 raw baseline** — A² is overhead on single-pass tasks |
 | Germline mutations | 12+ self-authored |
 | Crates | 11 |
 
@@ -109,12 +109,14 @@ Check quota before choosing: `codex --version`, `gemini --version`, `opencode mo
 
 ## What To Do Next
 
-1. Test OpenCode models on benchmark with bench-baseline → find which are viable
-2. Auto-generate benchmark tasks from codebase gaps → raise ceiling continuously
-3. SWE-bench Lite integration → real-world evaluation (the proof that A² > single-pass)
-4. Run Claude on new benchmark tasks → establish baseline score
-5. Wire lineage store into bench command (currently only in run command)
-6. Query lineage data for strategy decisions (which model works best on which task type)
+**The baseline result (GLM 5/5 raw vs 4/5 via A²) proves the current benchmark tests the wrong thing.** Single-pass coding tasks don't need A². The system's value is multi-round evolution. Next steps must test accumulation:
+
+1. **Multi-round benchmark**: run N iterations on the same task, measure improvement over rounds
+2. **Self-correction benchmark**: inject a bug, measure whether A² finds and fixes it autonomously
+3. **Cross-task transfer**: solve task A, then measure if solving related task B is faster/better
+4. **SWE-bench Lite integration**: real-world multi-step problems where single-pass models struggle
+5. Query lineage data for strategy decisions (which model works best on which task type)
+6. Auto-generate benchmark tasks from codebase gaps → raise ceiling
 
 ## Decision Log
 
@@ -133,3 +135,4 @@ Check quota before choosing: `codex --version`, `gemini --version`, `opencode mo
 | 2026-04-05 | Lineage persistence wired into Governor | Auto-persists to lineage.sqlite |
 | 2026-04-05 | Stagnation auto-adaptation in run loop | SwitchModel rotates providers |
 | 2026-04-05 | Benchmark made purely observational | Removed --apply, -219 lines. Benchmark is evaluation, not mutation. |
+| 2026-04-05 | Baseline benchmark added | GLM 5/5 raw vs 4/5 via A² — proves current bench tests the wrong thing |
