@@ -669,9 +669,18 @@ async fn run_benchmark_suite(model: &str, apply: bool) -> Result<(), String> {
                             &outcome.decision
                         && let Some(patch) = &outcome.result.patch
                     {
+                        // Revert workspace so diff context lines match the
+                        // clean HEAD the worktree was branched from.
+                        if let Err(e) = revert_workspace() {
+                            eprintln!("[revert before apply failed: {e}]");
+                        }
                         match try_apply_patch(&patch.diff, &workspace) {
                             Ok(true) => {
                                 row.applied = true;
+                                // Re-append test content so verification can find it.
+                                if let Err(e) = append_benchmark_test_content(&bench_task) {
+                                    eprintln!("[re-append test content failed: {e}]");
+                                }
                                 match run_workspace_shell_command(&bench_task.verify.command) {
                                     Ok(output) => {
                                         let actual_exit = output.status.code().unwrap_or(-1);
