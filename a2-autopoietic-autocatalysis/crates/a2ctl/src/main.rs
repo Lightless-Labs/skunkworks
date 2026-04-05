@@ -628,7 +628,12 @@ async fn run_benchmark_suite(model: &str, apply: bool) -> Result<(), String> {
     let ingester = a2_sensorium::ingest::Ingester::new(budget.clone());
     let provider = build_provider(model).await;
     let workspace = workspace_root();
-    let catalyst = a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace.clone());
+    // Use bench-baseline tag so tasks always start from a known clean state,
+    // preventing staleness when features are committed to HEAD.
+    let catalyst = a2_workcell::worktree_catalyst::WorktreeCatalyst::with_base_ref(
+        workspace.clone(),
+        "bench-baseline",
+    );
     let evaluator = a2_eval::seed::SeedEvaluator::new(DEFAULT_BENCH_MAX_TOKENS);
     let governor = a2d::Governor::with_stagnation_detector(
         a2_core::id::GermlineVersion::new(),

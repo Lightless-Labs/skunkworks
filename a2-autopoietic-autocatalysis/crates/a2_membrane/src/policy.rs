@@ -56,6 +56,13 @@ impl PolicyMembrane {
         cap.allowed_tools.iter().any(|a| a == "*" || a == tool_name)
     }
 
+    pub fn deny_tool(&mut self, tool_name: &str) {
+        self.policy
+            .soft_membrane
+            .denied_tools
+            .push(tool_name.to_string());
+    }
+
     fn is_endpoint_allowed(&self, endpoint: &str) -> bool {
         match &self.policy.soft_membrane.network_policy {
             NetworkPolicy::Open => true,
@@ -168,5 +175,14 @@ mod tests {
                 .is_ok()
         );
         assert!(m.check_network("https://evil.com", &wc).is_err());
+    }
+
+    #[test]
+    fn test_deny_tool() {
+        let mut membrane = PolicyMembrane::permissive();
+        let wc = WorkcellId::new();
+        assert!(membrane.check_tool("dangerous_tool", &wc).is_ok());
+        membrane.deny_tool("dangerous_tool");
+        assert!(membrane.check_tool("dangerous_tool", &wc).is_err());
     }
 }

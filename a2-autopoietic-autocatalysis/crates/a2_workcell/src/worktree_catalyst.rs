@@ -25,6 +25,8 @@ pub struct WorktreeCatalyst {
     id: CatalystId,
     /// Root of the main workspace (where .git lives).
     workspace_root: PathBuf,
+    /// Git ref to branch worktrees from (default: "HEAD").
+    base_ref: String,
 }
 
 impl WorktreeCatalyst {
@@ -32,6 +34,16 @@ impl WorktreeCatalyst {
         Self {
             id: CatalystId::new(),
             workspace_root,
+            base_ref: "HEAD".into(),
+        }
+    }
+
+    /// Create a catalyst that branches worktrees from a specific ref (tag, commit, branch).
+    pub fn with_base_ref(workspace_root: PathBuf, base_ref: impl Into<String>) -> Self {
+        Self {
+            id: CatalystId::new(),
+            workspace_root,
+            base_ref: base_ref.into(),
         }
     }
 
@@ -43,7 +55,7 @@ impl WorktreeCatalyst {
         let output = Command::new("git")
             .args(["worktree", "add", "-b", &branch_name])
             .arg(&worktree_path)
-            .arg("HEAD")
+            .arg(&self.base_ref)
             .current_dir(&self.workspace_root)
             .output()
             .await
