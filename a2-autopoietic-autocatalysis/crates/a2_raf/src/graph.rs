@@ -89,6 +89,32 @@ impl CausalGraph {
         bottlenecks
     }
 
+    /// Length of the longest path (in edges) from any root to any reachable node.
+    pub fn max_depth(&self) -> usize {
+        if self.graph.node_count() == 0 || self.graph.edge_count() == 0 {
+            return 0;
+        }
+        let roots: Vec<NodeIndex> = self
+            .graph
+            .node_indices()
+            .filter(|&n| self.graph.neighbors_directed(n, Incoming).next().is_none())
+            .collect();
+        let mut max = 0;
+        for root in roots {
+            let mut queue = VecDeque::new();
+            queue.push_back((root, 0usize));
+            while let Some((node, depth)) = queue.pop_front() {
+                if depth > max {
+                    max = depth;
+                }
+                for neighbor in self.graph.neighbors_directed(node, Outgoing) {
+                    queue.push_back((neighbor, depth + 1));
+                }
+            }
+        }
+        max
+    }
+
     pub fn is_raf_connected(&self) -> bool {
         let node_count = self.graph.node_count();
         if node_count < 2 {

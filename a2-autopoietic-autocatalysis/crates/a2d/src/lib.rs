@@ -11,6 +11,30 @@ use a2_workcell::runtime::{WorkcellConfig, WorkcellResult, run_workcell};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
+/// Actionable strategy change recommended by the stagnation detector.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StrategyChange {
+    /// No change needed — rounds are improving.
+    None,
+    /// Switch to a different model provider.
+    SwitchModel,
+    /// Break the task into smaller steps.
+    DecomposeTask,
+    /// Raise mutation temperature (try more radical changes).
+    RaiseTemperature,
+}
+
+impl std::fmt::Display for StrategyChange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => write!(f, "no change needed"),
+            Self::SwitchModel => write!(f, "switch model provider"),
+            Self::DecomposeTask => write!(f, "decompose task into smaller steps"),
+            Self::RaiseTemperature => write!(f, "raise mutation temperature"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RoundOutcome {
     test_count: u64,
@@ -76,8 +100,23 @@ impl StagnationDetector {
         deltas.iter().sum::<f64>() / deltas.len() as f64
     }
 
-    pub fn suggest_strategy_change(&self) -> String {
-        "Recent rounds are flat. Try changing the model or catalyst strategy, or break the task into a smaller step.".into()
+    pub fn suggest_strategy_change(&self) -> StrategyChange {
+        if !self.is_stagnant(self.capacity) {
+            return StrategyChange::None;
+        }
+        let t = self.trend();
+        if t < -0.5 {
+            StrategyChange::SwitchModel
+        } else if t > 0.1 {
+            StrategyChange::RaiseTemperature
+        } else {
+            let total_promotions: u64 = self.rounds.iter().map(|r| r.promotion_count).sum();
+            if total_promotions == 0 {
+                StrategyChange::SwitchModel
+            } else {
+                StrategyChange::DecomposeTask
+            }
+        }
     }
 
     /// Update the last recorded round with the actual apply and verify outcomes.
