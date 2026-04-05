@@ -1,6 +1,6 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-04-04
+**Last updated:** 2026-04-05
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -13,8 +13,8 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 |--------|-------|
 | Tests | 57 |
 | Sentinels | 6/6 PASS |
-| Benchmark (Claude) | 4/5 |
-| Benchmark (Gemini) | 1/5 |
+| Benchmark (Claude) | untested on new tasks |
+| Benchmark (Gemini) | 5/5 |
 | Benchmark (OpenCode) | untested |
 | Germline mutations | 12+ self-authored |
 | Crates | 11 |
@@ -69,10 +69,11 @@ Check quota before choosing: `codex --version`, `gemini --version`, `opencode mo
 
 ## Known Bugs (Fix These)
 
-1. **Fibonacci bench task**: `git apply` fails — path mismatch between worktree root and repo root. Fix `try_apply_patch()` in `a2ctl/src/main.rs` to apply from workspace root.
-2. **Gemini worktree**: Most edits don't land (1/5). Likely needs better prompt or `-s false` not taking effect.
+1. ~~**Fibonacci bench task**: FIXED 2026-04-05 — revert workspace before git apply so diff context matches clean HEAD.~~
+2. ~~**Gemini worktree**: FIXED 2026-04-05 — was stale benchmark tasks, not Gemini. Gemini now 5/5 on fresh tasks.~~
 3. **Lineage persistence**: Governor produces LineageRecords but doesn't persist to SQLite. Wire `Arc<dyn LineageStore>` into Governor.
 4. **Stagnation detector**: Warns but doesn't auto-adapt. Should switch models or strategies when stagnant.
+5. **Benchmark staleness**: Tasks become stale once solved and committed. Need auto-generation of new tasks or baseline commit pinning.
 
 ## Architecture Quick Reference
 
@@ -107,12 +108,12 @@ Check quota before choosing: `codex --version`, `gemini --version`, `opencode mo
 
 ## What To Do Next
 
-1. Fix the fibonacci apply path issue → 5/5 benchmark
-2. Test OpenCode models on benchmark → find which are viable
-3. Wire stagnation detector into benchmark loop → auto-adapt on plateau
-4. Add harder benchmark tasks → raise the ceiling
-5. SWE-bench Lite integration → real-world evaluation
-6. Lineage persistence → track what actually worked
+1. Test OpenCode models on benchmark → find which are viable (shell timeouts may need >5min)
+2. Wire stagnation detector into benchmark loop → auto-adapt on plateau
+3. Auto-generate benchmark tasks → prevent staleness, raise ceiling continuously
+4. SWE-bench Lite integration → real-world evaluation (the proof that A² > single-pass)
+5. Lineage persistence → track what actually worked
+6. Run Claude on new benchmark tasks → establish baseline score
 
 ## Decision Log
 
@@ -123,3 +124,6 @@ Check quota before choosing: `codex --version`, `gemini --version`, `opencode mo
 | 2026-04-02 | WorktreeCatalyst over GeneralistCatalyst | Models can't produce git-apply-compatible diffs |
 | 2026-04-02 | Benchmark-driven loop over task-count loop | 14 overnight rounds with zero capability improvement |
 | 2026-04-04 | OpenCode models added to worktree catalyst | Codex quota exhausted, need alternatives |
+| 2026-04-05 | Apply-path fix: revert workspace before git apply | Diff context from worktree mismatched modified workspace |
+| 2026-04-05 | Benchmark tasks 001-005 retired, 006-010 added | Old tasks solved in HEAD, every model said "already there" |
+| 2026-04-05 | Gemini promoted from 1/5 to 5/5 | Was stale benchmarks, not model failure |
