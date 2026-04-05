@@ -11,11 +11,11 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 | Metric | Value |
 |--------|-------|
-| Tests | 57 |
+| Tests | 62 |
 | Sentinels | 6/6 PASS |
 | Benchmark (Claude) | untested on new tasks |
 | Benchmark (Gemini) | 5/5 |
-| Benchmark (OpenCode) | untested |
+| Benchmark (OpenCode) | partial (killed — fought with workspace) |
 | Germline mutations | 12+ self-authored |
 | Crates | 11 |
 
@@ -73,7 +73,8 @@ Check quota before choosing: `codex --version`, `gemini --version`, `opencode mo
 2. ~~**Gemini worktree**: FIXED 2026-04-05 — was stale benchmark tasks, not Gemini. Gemini now 5/5 on fresh tasks.~~
 3. **Lineage persistence**: Governor produces LineageRecords but doesn't persist to SQLite. Wire `Arc<dyn LineageStore>` into Governor.
 4. **Stagnation detector**: Warns but doesn't auto-adapt. Should switch models or strategies when stagnant.
-5. **Benchmark staleness**: Tasks become stale once solved and committed. Need auto-generation of new tasks or baseline commit pinning.
+5. **Benchmark staleness**: FIXED 2026-04-05 — bench-baseline tag + WorktreeCatalyst::with_base_ref(). Benchmark now creates worktrees from a pinned commit.
+6. **Benchmark residue**: Running benchmark with --apply leaves dangling tests/implementations on workspace when tasks succeed. Concurrent benchmark runs fight with manual edits.
 
 ## Architecture Quick Reference
 
@@ -127,3 +128,5 @@ Check quota before choosing: `codex --version`, `gemini --version`, `opencode mo
 | 2026-04-05 | Apply-path fix: revert workspace before git apply | Diff context from worktree mismatched modified workspace |
 | 2026-04-05 | Benchmark tasks 001-005 retired, 006-010 added | Old tasks solved in HEAD, every model said "already there" |
 | 2026-04-05 | Gemini promoted from 1/5 to 5/5 | Was stale benchmarks, not model failure |
+| 2026-04-05 | StrategyChange enum replaces static string | Enables auto-adaptation when stagnant |
+| 2026-04-05 | bench-baseline tag for worktree pinning | Prevents benchmark staleness |
