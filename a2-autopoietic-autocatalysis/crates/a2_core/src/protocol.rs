@@ -130,6 +130,15 @@ pub struct SomaticFitness {
     pub duration_secs: f64,
 }
 
+impl SomaticFitness {
+    pub fn summary(&self) -> String {
+        format!(
+            "completed={} tests={} tokens={} duration={:.1}s",
+            self.task_completed, self.tests_pass, self.tokens_used, self.duration_secs
+        )
+    }
+}
+
 /// Does this mutation help future workcells?
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GermlineFitness {
@@ -271,4 +280,25 @@ pub struct EvolutionPolicy {
     pub diversity_floor: usize,
     pub max_concurrent_workcells: usize,
     pub mutation_temperature: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_somatic_summary() {
+        let f = SomaticFitness {
+            task_completed: true,
+            tests_pass: true,
+            acceptance_met: vec![true, false],
+            tokens_used: 500,
+            duration_secs: 12.3,
+        };
+        let s = f.summary();
+        assert!(s.contains("completed=true"), "got: {s}");
+        assert!(s.contains("tests=true"), "got: {s}");
+        assert!(s.contains("tokens=500"), "got: {s}");
+        assert!(s.contains("duration=12.3s"), "got: {s}");
+    }
 }

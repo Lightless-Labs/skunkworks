@@ -44,6 +44,13 @@ impl PolicyMembrane {
         }
     }
 
+    pub fn deny_tool(&mut self, tool_name: &str) {
+        self.policy
+            .soft_membrane
+            .denied_tools
+            .push(tool_name.into());
+    }
+
     fn is_tool_allowed(&self, tool_name: &str) -> bool {
         let cap = &self.policy.soft_membrane;
 
@@ -166,14 +173,12 @@ mod tests {
         });
         let wc = WorkcellId::new();
 
-        assert!(
-            m.check_network("https://api.anthropic.com/v1/messages", &wc)
-                .is_ok()
-        );
-        assert!(
-            m.check_network("https://api.openai.com/v1/chat", &wc)
-                .is_ok()
-        );
+        assert!(m
+            .check_network("https://api.anthropic.com/v1/messages", &wc)
+            .is_ok());
+        assert!(m
+            .check_network("https://api.openai.com/v1/chat", &wc)
+            .is_ok());
         assert!(m.check_network("https://evil.com", &wc).is_err());
     }
 
