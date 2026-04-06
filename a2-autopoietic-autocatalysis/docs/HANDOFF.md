@@ -15,8 +15,9 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 | Sentinels | 6/6 PASS |
 | Benchmark (Claude) | untested |
 | Benchmark (Gemini) | 5/5 hard tasks (011-015) |
-| Benchmark (OpenCode/GLM) | high variance: 5/5, 4/5, 3/5 across runs depending on which arbitrary limit (token budget, timeout) trips |
-| Benchmark (OpenCode/GLM raw, no A²) | 5/5 (no budget/timeout limits) |
+| Benchmark (OpenCode/GLM via A²) | 5/5 (with 100k token / 1800s budget) |
+| Benchmark (OpenCode/GLM raw, no A²) | 5/5 |
+| A² value-add on single-pass tasks | None measurable. Need multi-round bench. |
 | Germline mutations | 12+ self-authored |
 | Crates | 11 |
 
