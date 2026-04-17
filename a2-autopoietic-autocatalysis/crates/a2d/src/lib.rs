@@ -193,12 +193,28 @@ impl Governor {
             "scheduling workcell"
         );
 
+        // Fetch prior lineage for this task, if a store is wired. Surfaced to
+        // the catalyst via ContextPack so multi-round runs can learn from
+        // previous attempts. Query failure is non-fatal: fall back to empty.
+        let prior_lineage = if let Some(store) = &self.lineage_store {
+            match store.for_task(&task.id).await {
+                Ok(records) => records,
+                Err(e) => {
+                    tracing::warn!(error = %e, task = %task.id, "failed to load prior lineage");
+                    vec![]
+                }
+            }
+        } else {
+            vec![]
+        };
+
         // Stage 0 scheduler: single workcell, direct assignment.
         let config = WorkcellConfig {
             workcell_id: workcell_id.clone(),
             germline_version: self.germline_version.clone(),
             task: task.clone(),
             budget: self.default_budget.clone(),
+            prior_lineage,
         };
 
         // Execute.

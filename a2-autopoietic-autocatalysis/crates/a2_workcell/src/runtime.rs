@@ -21,6 +21,28 @@ pub struct WorkcellConfig {
     pub germline_version: GermlineVersion,
     pub task: TaskContract,
     pub budget: Budget,
+    /// Prior lineage records for the same task, oldest first.
+    /// Populated by the Governor from the LineageStore; empty on first attempt.
+    pub prior_lineage: Vec<LineageRecord>,
+}
+
+/// Render a prior LineageRecord as a compact motif line for the context pack.
+fn render_prior_motif(record: &LineageRecord, index: usize) -> String {
+    let model = record
+        .model_attributions
+        .first()
+        .map(|a| format!("{}/{}", a.provider, a.model))
+        .unwrap_or_else(|| "unknown".into());
+    let s = &record.fitness.somatic;
+    format!(
+        "attempt {} [{}]: task_completed={}, tests_pass={}, tokens={}, duration={:.1}s",
+        index + 1,
+        model,
+        s.task_completed,
+        s.tests_pass,
+        s.tokens_used,
+        s.duration_secs
+    )
 }
 
 /// Result of a workcell execution.
@@ -43,12 +65,20 @@ pub async fn run_workcell(
     let tracker = BudgetTracker::new(config.budget.clone());
     let start = std::time::Instant::now();
 
-    // Build context pack. In Stage 0, this is minimal — just the germline ref.
+    // Build context pack. Prior lineage (if any) is surfaced to the catalyst
+    // via prior_attempts (IDs) + retrieved_motifs (compact rendered summaries).
+    let prior_attempts = config.prior_lineage.iter().map(|r| r.id.clone()).collect();
+    let retrieved_motifs = config
+        .prior_lineage
+        .iter()
+        .enumerate()
+        .map(|(i, r)| render_prior_motif(r, i))
+        .collect();
     let context = ContextPack {
         germline_version: config.germline_version.clone(),
         relevant_files: vec![],
-        prior_attempts: vec![],
-        retrieved_motifs: vec![],
+        prior_attempts,
+        retrieved_motifs,
     };
 
     // Execute the catalyst to produce a patch, bounded by the wall-clock budget.
@@ -235,6 +265,130 @@ mod tests {
         }
     }
 
+    /// Captures the ContextPack the catalyst was invoked with so the test can
+    /// assert that prior_lineage is surfaced correctly.
+    struct CapturingCatalyst {
+        id: CatalystId,
+        seen: std::sync::Arc<std::sync::Mutex<Option<ContextPack>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Catalyst for CapturingCatalyst {
+        fn id(&self) -> &CatalystId {
+            &self.id
+        }
+        fn name(&self) -> &str {
+            "capturing"
+        }
+        async fn execute(
+            &self,
+            task: &TaskContract,
+            context: &ContextPack,
+            _model: &dyn ModelProvider,
+        ) -> A2Result<PatchBundle> {
+            *self.seen.lock().unwrap() = Some(context.clone());
+            Ok(PatchBundle {
+                id: PatchId::new(),
+                task_id: task.id.clone(),
+                workcell_id: WorkcellId::new(),
+                diff: "+x".into(),
+                rationale: "capture".into(),
+                test_results: TestResults {
+                    passed: 0,
+                    failed: 0,
+                    skipped: 0,
+                    details: vec![],
+                },
+                model_attribution: ModelAttribution {
+                    provider: "t".into(),
+                    model: "m".into(),
+                    tokens_in: 1,
+                    tokens_out: 1,
+                },
+                created_at: Utc::now(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn prior_lineage_surfaces_as_attempts_and_motifs() {
+        let task_id = TaskId::new();
+        let prior = LineageRecord {
+            id: LineageId::new(),
+            task_id: task_id.clone(),
+            patch_id: PatchId::new(),
+            parent_germline: GermlineVersion::new(),
+            model_attributions: vec![ModelAttribution {
+                provider: "gemini".into(),
+                model: "gemini-3.1-pro-preview".into(),
+                tokens_in: 2000,
+                tokens_out: 500,
+            }],
+            fitness: FitnessRecord {
+                eval_id: EvalId::new(),
+                task_id: task_id.clone(),
+                somatic: SomaticFitness {
+                    task_completed: false,
+                    tests_pass: false,
+                    acceptance_met: vec![],
+                    tokens_used: 2500,
+                    duration_secs: 42.0,
+                },
+                germline: None,
+                organizational: None,
+                evaluated_at: Utc::now(),
+            },
+            created_at: Utc::now(),
+        };
+        let prior_id = prior.id.clone();
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let catalyst = CapturingCatalyst {
+            id: CatalystId::new(),
+            seen: seen.clone(),
+        };
+
+        let config = WorkcellConfig {
+            workcell_id: WorkcellId::new(),
+            germline_version: GermlineVersion::new(),
+            task: TaskContract {
+                id: task_id,
+                title: "t".into(),
+                description: "d".into(),
+                acceptance_criteria: vec![],
+                budget: Budget {
+                    max_tokens: 10_000,
+                    max_duration_secs: 60,
+                    max_calls: 10,
+                },
+                priority: Priority::Normal,
+                source: TaskSource::External {
+                    origin: "test".into(),
+                },
+                created_at: Utc::now(),
+            },
+            budget: Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 10,
+            },
+            prior_lineage: vec![prior],
+        };
+
+        run_workcell(config, &catalyst, &NoopProvider, &AlwaysPassEvaluator)
+            .await
+            .unwrap();
+
+        let captured = seen.lock().unwrap().clone().expect("catalyst must see context");
+        assert_eq!(captured.prior_attempts, vec![prior_id]);
+        assert_eq!(captured.retrieved_motifs.len(), 1);
+        let motif = &captured.retrieved_motifs[0];
+        assert!(motif.contains("attempt 1"));
+        assert!(motif.contains("gemini/gemini-3.1-pro-preview"));
+        assert!(motif.contains("task_completed=false"));
+        assert!(motif.contains("tests_pass=false"));
+    }
+
     #[tokio::test]
     async fn workcell_runs_catalyst_and_evaluator() {
         let config = WorkcellConfig {
@@ -261,6 +415,7 @@ mod tests {
                 max_duration_secs: 60,
                 max_calls: 10,
             },
+            prior_lineage: vec![],
         };
 
         let catalyst = EchoCatalyst {

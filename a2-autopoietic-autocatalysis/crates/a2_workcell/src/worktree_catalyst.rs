@@ -373,6 +373,18 @@ impl WorktreeCatalyst {
             }
         }
 
+        if !context.retrieved_motifs.is_empty() {
+            prompt.push_str(
+                "\n## Prior Attempts on This Task\n\n\
+                 Earlier workcell runs on this same task produced the results below. \
+                 Learn from them: if prior attempts failed, try a different approach; \
+                 if they partially succeeded, build on what worked.\n\n",
+            );
+            for motif in &context.retrieved_motifs {
+                prompt.push_str(&format!("- {motif}\n"));
+            }
+        }
+
         prompt
     }
 }
