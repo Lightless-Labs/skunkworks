@@ -1,6 +1,6 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-04-07
+**Last updated:** 2026-04-16
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -11,8 +11,8 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 | Metric | Value |
 |--------|-------|
-| Tests | 61 |
-| Sentinels | 6/6 PASS |
+| Tests | 62 |
+| Sentinels | 5/6 PASS (lockfile_check fails — pre-existing, Cargo.lock unchanged locally) |
 | Crates | 11 |
 | Benchmark (OpenCode/GLM via A²) | 5/5 (with 100k token / 1800s budget) |
 | Benchmark (OpenCode/GLM raw, no A²) | 5/5 |
@@ -130,6 +130,13 @@ const DEFAULT_STAGNATION_WINDOW: usize = 3;
 
 ## What To Do Next
 
+ContextPack is now wired (2026-04-16, c32b657) — the catalyst sees prior attempts on the same task. That unblocks loop-shaped benchmarks.
+
+**Known gotchas before building them:**
+- `crates/a2d/src/governor.rs` is dead code (not declared as a module in lib.rs). Delete or promote.
+- `StrategyChange::DecomposeTask` and `RaiseTemperature` are returned but never acted on. Only `SwitchModel` branches in a2ctl (main.rs:368).
+- Prior motifs currently render model + pass/fail/tokens/duration but not *rationale* or *what changed*. Lineage stores `patch_id` but the diff/rationale are on `PatchBundle`, not persisted with lineage. Enriching this will matter for self-correction — the model needs to know *why* the previous attempt failed, not just *that* it did.
+
 The #1 priority is designing a benchmark that A² should actually win at — one that exercises the loop:
 
 1. **Multi-round benchmark**: N iterations on the same task, measure improvement over rounds. Needs stagnation detector + provider rotation + lineage to improve score.
@@ -175,3 +182,4 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-04-05 | Hard bench tasks 011-015 replace easy 006-010 | Both models hit 5/5 on easy tasks, need differentiation |
 | 2026-04-06 | Budget 50k→100k, timeout 300s→1800s | False negatives from arbitrary limits, not model/system |
 | 2026-04-07 | Current bench doesn't measure A² value-add | A² = raw model on single-pass tasks. Need loop-shaped benchmark. |
+| 2026-04-16 | ContextPack wired with prior lineage (c32b657) | Prior attempts + motifs now surface to the catalyst. Prerequisite for any loop-shaped benchmark — before this, multi-round and self-correction had no memory across rounds. |
