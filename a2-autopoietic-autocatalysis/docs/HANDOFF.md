@@ -19,6 +19,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 | Benchmark (Gemini 3.1 Pro) | 5/5 |
 | Benchmark (Claude) | untested on current task set |
 | A² value-add on single-pass tasks | None measurable |
+| 4-provider smoke (2026-04-16) | 4/4 PASS (gemini, glm-5.1, minimax-2.7, kimi k2.5) post ContextPack wiring |
 
 ## Verify State (run these first)
 
@@ -38,7 +39,9 @@ If any fail, read `docs/solutions/` for known issues before touching anything.
 - `workflow-issues/handoff-editorial-creep-20260404.md` — handoffs state facts, not interpretation
 - `workflow-issues/single-run-conclusions-20260404.md` — N≥3 before reporting any benchmark number
 - `workflow-issues/user-questions-as-design-signals-20260404.md` — short user questions are refactor triggers
+- `workflow-issues/explore-the-code-before-opining-20260416.md` — HANDOFF is a starting point, not a verdict
 - `best-practices/autopoietic-no-pausing-20260404.md` — the project name is the instruction
+- `best-practices/contextpack-is-a-load-bearing-extension-point-20260416.md` — empty extension points silently invalidate downstream benchmarks
 
 **Design:**
 - `best-practices/evaluation-must-not-touch-the-germline-20260404.md` — soma vs germline separation
@@ -83,6 +86,10 @@ cargo run -p a2ctl -- bench --model gemini     # or claude/codex/opencode
 # Run (actually mutates germline — be intentional)
 echo "fix X" | cargo run -p a2ctl -- run --provider gemini,opencode --apply
 
+# Run with a specific OpenCode submodel (added 2026-04-16)
+echo "fix X" | cargo run -p a2ctl -- run --provider opencode/kimi-for-coding/k2p5
+echo "fix X" | cargo run -p a2ctl -- run --provider opencode/minimax-coding-plan/MiniMax-M2.7
+
 # Sentinel gate
 cargo run -p a2ctl -- sentinel --workspace .
 ```
@@ -95,8 +102,8 @@ cargo run -p a2ctl -- sentinel --workspace .
 | codex | gpt-5.4 | **OUT OF QUOTA** | Don't use until reset |
 | gemini | gemini-3.1-pro-preview | Available | 5/5 on current bench, ~67s/task |
 | opencode/glm | zai-coding-plan/glm-5.1 | Available | 5/5 on current bench, 10-15min/task (slow) |
-| opencode/kimi | kimi-for-coding/k2p5 | Untested in bench | Sometimes returns empty on opencode run |
-| opencode/minimax | minimax-coding-plan/MiniMax-M2.7 | Untested | |
+| opencode/kimi | kimi-for-coding/k2p5 | Available | 2026-04-16 smoke PASS (75s, 12k tokens); sometimes empty historically |
+| opencode/minimax | minimax-coding-plan/MiniMax-M2.7 | Available | 2026-04-16 smoke PASS (72s, 31k tokens) |
 
 ## Config constants (a2ctl/src/main.rs)
 
@@ -183,3 +190,4 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-04-06 | Budget 50k→100k, timeout 300s→1800s | False negatives from arbitrary limits, not model/system |
 | 2026-04-07 | Current bench doesn't measure A² value-add | A² = raw model on single-pass tasks. Need loop-shaped benchmark. |
 | 2026-04-16 | ContextPack wired with prior lineage (c32b657) | Prior attempts + motifs now surface to the catalyst. Prerequisite for any loop-shaped benchmark — before this, multi-round and self-correction had no memory across rounds. |
+| 2026-04-16 | a2ctl accepts `opencode/<model_id>` (b432129) | Minimax and Kimi were unreachable from the CLI even though the broker supported them. 4/4 providers smoke-clean post-wiring. |
