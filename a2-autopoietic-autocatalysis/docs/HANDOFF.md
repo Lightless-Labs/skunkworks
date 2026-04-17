@@ -139,22 +139,26 @@ const DEFAULT_STAGNATION_WINDOW: usize = 3;
 
 ContextPack is now wired (2026-04-16, c32b657) — the catalyst sees prior attempts on the same task. That unblocks loop-shaped benchmarks.
 
-**Known gotchas before building them:**
-- `crates/a2d/src/governor.rs` is dead code (not declared as a module in lib.rs). Delete or promote.
-- `StrategyChange::DecomposeTask` and `RaiseTemperature` are returned but never acted on. Only `SwitchModel` branches in a2ctl (main.rs:368).
-- Prior motifs currently render model + pass/fail/tokens/duration but not *rationale* or *what changed*. Lineage stores `patch_id` but the diff/rationale are on `PatchBundle`, not persisted with lineage. Enriching this will matter for self-correction — the model needs to know *why* the previous attempt failed, not just *that* it did.
+### Prerequisite todos (small, unblock the rest)
 
-The #1 priority is designing a benchmark that A² should actually win at — one that exercises the loop:
+- [ ] **Persist `PatchBundle.rationale` and `diff` alongside `LineageRecord`.** Today's motifs render pass/fail/tokens/duration but not *why* a prior attempt failed. The model needs the rationale/diff to actually self-correct. Touch: `a2_core::protocol::LineageRecord`, `a2_archive::SqliteLineageStore` schema, `a2_workcell::runtime::render_prior_motif`.
+- [ ] **Delete or promote `crates/a2d/src/governor.rs`.** Not declared as a module in `lib.rs` — ~300 lines of dead shadow code confusing readers.
+- [ ] **Act on `StrategyChange::DecomposeTask` and `::RaiseTemperature`** (or remove them). Currently returned by the detector and logged in `a2ctl/main.rs:368` but no branch. Either wire actual handlers or shrink the enum to `{None, SwitchModel}`.
+- [ ] **Give `a2ctl run` a way to pin `TaskId` across invocations** so multi-round bench can reuse prior lineage. Today the ingester always calls `TaskId::new()`, so cross-invocation prior_lineage is always empty.
+- [ ] **Investigate lockfile sentinel failure.** HANDOFF previously claimed 6/6 but reality was 5/6 (Cargo.lock regenerates offline). Either fix the regeneration drift or relax the sentinel.
 
-1. **Multi-round benchmark**: N iterations on the same task, measure improvement over rounds. Needs stagnation detector + provider rotation + lineage to improve score.
-2. **Self-correction benchmark**: inject a bug, measure whether A² finds and fixes it autonomously without being told what's wrong.
-3. **Cross-task transfer**: solve task A, measure if solving related task B is faster/better because A² learned from task A's lineage.
-4. **SWE-bench Lite integration**: real-world multi-step problems where single-pass models struggle.
-5. **Adversarial drift**: can A² detect and reject a "promotion" that actually degrades the system? (Fontana Level 0 test.)
+### Loop-shaped benchmarks (after prerequisites)
+
+1. **Self-correction benchmark** *(lowest cost, highest signal — start here)*: inject a bug, hide the location, measure whether A² finds and fixes it autonomously. Clean pass/fail. A raw single-pass model genuinely can't do this.
+2. **Multi-round benchmark**: N iterations on the same task, measure score improvement over rounds. Needs TaskId persistence + enriched motifs.
+3. **Adversarial drift** (Fontana Level 0): can A² detect and reject a "promotion" that actually degrades the system? Philosophically load-bearing for the autopoiesis claim.
+4. **Cross-task transfer**: solve task A, measure if task B is faster/better because lineage carried over.
+5. **SWE-bench Lite integration**: real-world multi-step problems. Wide scope — probably last.
 
 Until one of these is implemented, benchmark scores are not evidence that A² works as designed.
 
-**Secondary:**
+### Secondary
+
 - Auto-generate benchmark tasks from codebase gaps → raise ceiling continuously
 - Query lineage data for strategy decisions (which model works best on which task type)
 - Test Claude on current bench (untested)
