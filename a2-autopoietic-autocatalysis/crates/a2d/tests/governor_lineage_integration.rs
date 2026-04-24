@@ -225,6 +225,14 @@ async fn governor_run_executes_full_task_lifecycle_with_mock_providers_and_persi
     assert!(fitness.somatic.tests_pass);
     assert_eq!(outcome.lineage.task_id, task.id.clone());
     assert_eq!(outcome.lineage.patch_id, patch.id.clone());
+    assert_eq!(
+        outcome.lineage.patch_diff.as_deref(),
+        Some(patch.diff.as_str())
+    );
+    assert_eq!(
+        outcome.lineage.patch_rationale.as_deref(),
+        Some(patch.rationale.as_str())
+    );
     assert_eq!(outcome.lineage.model_attributions.len(), 1);
     assert_eq!(outcome.lineage.fitness.task_id, task.id.clone());
     assert_eq!(outcome.lineage.fitness.somatic.acceptance_met, vec![true]);

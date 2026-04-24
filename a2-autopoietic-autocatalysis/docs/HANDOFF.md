@@ -1,17 +1,17 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-04-16
+**Last updated:** 2026-04-23
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
 
 A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies its own source code. It uses AI model CLIs (Claude, Codex, Gemini, OpenCode) as "food set" models that edit code in git worktrees, then the system verifies, scores, and optionally applies the patches to its own germline.
 
-## Current Numbers (as of 2026-04-07)
+## Current Numbers (as of 2026-04-23)
 
 | Metric | Value |
 |--------|-------|
-| Tests | 62 |
+| Tests | 63 |
 | Sentinels | 5/6 PASS (lockfile_check fails — pre-existing, Cargo.lock unchanged locally) |
 | Crates | 11 |
 | Benchmark (OpenCode/GLM via A²) | 5/5 (with 100k token / 1800s budget) |
@@ -25,8 +25,8 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 ```bash
 cd /Users/thomas/Projects/lightless-labs/skunkworks/a2-autopoietic-autocatalysis
-cargo test                                    # expect 61 pass
-cargo run -p a2ctl -- sentinel --workspace .  # expect 6/6 PASS
+cargo test                                    # expect 63 pass
+cargo run -p a2ctl -- sentinel --workspace .  # expect 5/6 PASS; lockfile_check fails pre-existing
 ```
 
 If any fail, read `docs/solutions/` for known issues before touching anything.
@@ -141,7 +141,7 @@ ContextPack is now wired (2026-04-16, c32b657) — the catalyst sees prior attem
 
 ### Prerequisite todos (small, unblock the rest)
 
-- [ ] **Persist `PatchBundle.rationale` and `diff` alongside `LineageRecord`.** Today's motifs render pass/fail/tokens/duration but not *why* a prior attempt failed. The model needs the rationale/diff to actually self-correct. Touch: `a2_core::protocol::LineageRecord`, `a2_archive::SqliteLineageStore` schema, `a2_workcell::runtime::render_prior_motif`.
+- [x] **Persist `PatchBundle.rationale` and `diff` alongside `LineageRecord`.** Completed 2026-04-23. Lineage records now carry optional patch diff/rationale, SQLite init migrates legacy lineage tables, and prior-attempt motifs include bounded rationale/diff snippets.
 - [ ] **Delete or promote `crates/a2d/src/governor.rs`.** Not declared as a module in `lib.rs` — ~300 lines of dead shadow code confusing readers.
 - [ ] **Act on `StrategyChange::DecomposeTask` and `::RaiseTemperature`** (or remove them). Currently returned by the detector and logged in `a2ctl/main.rs:368` but no branch. Either wire actual handlers or shrink the enum to `{None, SwitchModel}`.
 - [ ] **Give `a2ctl run` a way to pin `TaskId` across invocations** so multi-round bench can reuse prior lineage. Today the ingester always calls `TaskId::new()`, so cross-invocation prior_lineage is always empty.
@@ -195,3 +195,4 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-04-07 | Current bench doesn't measure A² value-add | A² = raw model on single-pass tasks. Need loop-shaped benchmark. |
 | 2026-04-16 | ContextPack wired with prior lineage (c32b657) | Prior attempts + motifs now surface to the catalyst. Prerequisite for any loop-shaped benchmark — before this, multi-round and self-correction had no memory across rounds. |
 | 2026-04-16 | a2ctl accepts `opencode/<model_id>` (b432129) | Minimax and Kimi were unreachable from the CLI even though the broker supported them. 4/4 providers smoke-clean post-wiring. |
+| 2026-04-23 | Persist patch diff/rationale in lineage | Prior motifs now include bounded rationale/diff snippets, giving multi-round/self-correction runs a reason to change approach instead of only seeing pass/fail metadata. |

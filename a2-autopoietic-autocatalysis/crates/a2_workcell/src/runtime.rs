@@ -26,6 +26,25 @@ pub struct WorkcellConfig {
     pub prior_lineage: Vec<LineageRecord>,
 }
 
+/// Normalize and bound persisted patch text before putting it into a prompt motif.
+fn compact_snippet(value: &str, max_chars: usize) -> String {
+    let normalized = value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('"', "'");
+    if normalized.chars().count() <= max_chars {
+        return normalized;
+    }
+
+    let mut truncated = normalized
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
 /// Render a prior LineageRecord as a compact motif line for the context pack.
 fn render_prior_motif(record: &LineageRecord, index: usize) -> String {
     let model = record
@@ -34,7 +53,7 @@ fn render_prior_motif(record: &LineageRecord, index: usize) -> String {
         .map(|a| format!("{}/{}", a.provider, a.model))
         .unwrap_or_else(|| "unknown".into());
     let s = &record.fitness.somatic;
-    format!(
+    let mut motif = format!(
         "attempt {} [{}]: task_completed={}, tests_pass={}, tokens={}, duration={:.1}s",
         index + 1,
         model,
@@ -42,7 +61,28 @@ fn render_prior_motif(record: &LineageRecord, index: usize) -> String {
         s.tests_pass,
         s.tokens_used,
         s.duration_secs
-    )
+    );
+
+    if let Some(rationale) = record
+        .patch_rationale
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        motif.push_str(&format!(
+            ", rationale=\"{}\"",
+            compact_snippet(rationale, 220)
+        ));
+    }
+
+    if let Some(diff) = record
+        .patch_diff
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        motif.push_str(&format!(", diff=\"{}\"", compact_snippet(diff, 320)));
+    }
+
+    motif
 }
 
 /// Result of a workcell execution.
@@ -138,6 +178,8 @@ pub async fn run_workcell(
             .as_ref()
             .map(|p| p.id.clone())
             .unwrap_or_else(PatchId::new),
+        patch_diff: patch.as_ref().map(|p| p.diff.clone()),
+        patch_rationale: patch.as_ref().map(|p| p.rationale.clone()),
         parent_germline: config.germline_version,
         model_attributions: patch
             .as_ref()
@@ -317,6 +359,8 @@ mod tests {
             id: LineageId::new(),
             task_id: task_id.clone(),
             patch_id: PatchId::new(),
+            patch_diff: Some("--- a/foo\n+++ b/foo\n+bad approach".into()),
+            patch_rationale: Some("tried the wrong file".into()),
             parent_germline: GermlineVersion::new(),
             model_attributions: vec![ModelAttribution {
                 provider: "gemini".into(),
@@ -379,7 +423,11 @@ mod tests {
             .await
             .unwrap();
 
-        let captured = seen.lock().unwrap().clone().expect("catalyst must see context");
+        let captured = seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("catalyst must see context");
         assert_eq!(captured.prior_attempts, vec![prior_id]);
         assert_eq!(captured.retrieved_motifs.len(), 1);
         let motif = &captured.retrieved_motifs[0];
@@ -387,6 +435,8 @@ mod tests {
         assert!(motif.contains("gemini/gemini-3.1-pro-preview"));
         assert!(motif.contains("task_completed=false"));
         assert!(motif.contains("tests_pass=false"));
+        assert!(motif.contains("rationale=\"tried the wrong file\""));
+        assert!(motif.contains("diff=\"--- a/foo +++ b/foo +bad approach\""));
     }
 
     #[tokio::test]
@@ -429,6 +479,14 @@ mod tests {
         assert!(result.patch.is_some());
         assert!(result.fitness.is_some());
         assert!(result.fitness.unwrap().somatic.task_completed);
+        assert_eq!(
+            result.lineage.patch_diff.as_deref(),
+            Some("--- a/test\n+++ b/test\n+hello")
+        );
+        assert_eq!(
+            result.lineage.patch_rationale.as_deref(),
+            Some("echo catalyst")
+        );
         assert!(result.tokens_used > 0);
     }
 }

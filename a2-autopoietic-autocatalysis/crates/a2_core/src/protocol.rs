@@ -167,6 +167,12 @@ pub struct LineageRecord {
     pub id: LineageId,
     pub task_id: TaskId,
     pub patch_id: PatchId,
+    /// Full patch diff produced by the workcell, when a patch exists.
+    #[serde(default)]
+    pub patch_diff: Option<String>,
+    /// Model rationale produced alongside the patch, when a patch exists.
+    #[serde(default)]
+    pub patch_rationale: Option<String>,
     pub parent_germline: GermlineVersion,
     pub model_attributions: Vec<ModelAttribution>,
     pub fitness: FitnessRecord,

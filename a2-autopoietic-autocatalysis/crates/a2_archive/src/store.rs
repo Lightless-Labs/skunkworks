@@ -34,15 +34,19 @@ impl SqliteLineageStore {
         let id = row.get::<_, String>(0).map_err(sqlite_error)?;
         let task_id = row.get::<_, String>(1).map_err(sqlite_error)?;
         let patch_id = row.get::<_, String>(2).map_err(sqlite_error)?;
-        let parent_germline = row.get::<_, String>(3).map_err(sqlite_error)?;
-        let model_attributions_json = row.get::<_, String>(4).map_err(sqlite_error)?;
-        let fitness_json = row.get::<_, String>(5).map_err(sqlite_error)?;
-        let created_at = row.get::<_, String>(6).map_err(sqlite_error)?;
+        let patch_diff = row.get::<_, Option<String>>(3).map_err(sqlite_error)?;
+        let patch_rationale = row.get::<_, Option<String>>(4).map_err(sqlite_error)?;
+        let parent_germline = row.get::<_, String>(5).map_err(sqlite_error)?;
+        let model_attributions_json = row.get::<_, String>(6).map_err(sqlite_error)?;
+        let fitness_json = row.get::<_, String>(7).map_err(sqlite_error)?;
+        let created_at = row.get::<_, String>(8).map_err(sqlite_error)?;
 
         Ok(LineageRecord {
             id: deserialize_json::<LineageId>(&id)?,
             task_id: deserialize_json::<TaskId>(&task_id)?,
             patch_id: deserialize_json::<PatchId>(&patch_id)?,
+            patch_diff,
+            patch_rationale,
             parent_germline: deserialize_json::<GermlineVersion>(&parent_germline)?,
             model_attributions: deserialize_json::<Vec<ModelAttribution>>(
                 &model_attributions_json,
@@ -65,16 +69,20 @@ impl LineageStore for SqliteLineageStore {
                     id,
                     task_id,
                     patch_id,
+                    patch_diff,
+                    patch_rationale,
                     parent_germline,
                     model_attributions_json,
                     fitness_json,
                     created_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                 ",
                 params![
                     serialize_json(&entry.id)?,
                     serialize_json(&entry.task_id)?,
                     serialize_json(&entry.patch_id)?,
+                    entry.patch_diff.as_deref(),
+                    entry.patch_rationale.as_deref(),
                     serialize_json(&entry.parent_germline)?,
                     serialize_json(&entry.model_attributions)?,
                     serialize_json(&entry.fitness)?,
@@ -95,6 +103,8 @@ impl LineageStore for SqliteLineageStore {
                     id,
                     task_id,
                     patch_id,
+                    patch_diff,
+                    patch_rationale,
                     parent_germline,
                     model_attributions_json,
                     fitness_json,
@@ -123,6 +133,8 @@ impl LineageStore for SqliteLineageStore {
                     id,
                     task_id,
                     patch_id,
+                    patch_diff,
+                    patch_rationale,
                     parent_germline,
                     model_attributions_json,
                     fitness_json,
@@ -154,6 +166,8 @@ impl LineageStore for SqliteLineageStore {
                     id,
                     task_id,
                     patch_id,
+                    patch_diff,
+                    patch_rationale,
                     parent_germline,
                     model_attributions_json,
                     fitness_json,
@@ -203,6 +217,8 @@ mod tests {
             id: LineageId::new(),
             task_id: task_id.clone(),
             patch_id,
+            patch_diff: Some("--- a/test\n+++ b/test\n+lineage".into()),
+            patch_rationale: Some("sample rationale".into()),
             parent_germline,
             model_attributions: vec![ModelAttribution {
                 provider: "openai".into(),
@@ -259,6 +275,44 @@ mod tests {
             serde_json::to_value(&actual).unwrap(),
             serde_json::to_value(&expected).unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn migrates_legacy_lineage_schema_to_store_patch_payloads() {
+        let connection = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        connection
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "
+                CREATE TABLE lineage_records (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    patch_id TEXT NOT NULL,
+                    parent_germline TEXT NOT NULL,
+                    model_attributions_json TEXT NOT NULL,
+                    fitness_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+
+        let store = SqliteLineageStore::from_connection(Arc::clone(&connection)).unwrap();
+        let expected = sample_lineage_record(
+            TaskId::new(),
+            PatchId::new(),
+            GermlineVersion::new(),
+            Utc.with_ymd_and_hms(2026, 4, 1, 12, 30, 0)
+                .single()
+                .unwrap(),
+        );
+
+        store.record(expected.clone()).await.unwrap();
+        let actual = store.get(&expected.id).await.unwrap().unwrap();
+
+        assert_eq!(actual.patch_diff, expected.patch_diff);
+        assert_eq!(actual.patch_rationale, expected.patch_rationale);
     }
 
     #[tokio::test]
