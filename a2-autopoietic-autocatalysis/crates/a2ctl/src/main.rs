@@ -343,23 +343,7 @@ async fn main() {
                     continue;
                 }
 
-                let task = match parse_run_input(raw_line) {
-                    ParsedRunInput::Plain(description) => {
-                        ingester.ingest(a2_sensorium::ingest::RawSignal {
-                            origin: "stdin".into(),
-                            content: description,
-                            risk_tier: a2_sensorium::ingest::RiskTier::Low,
-                            metadata: vec![],
-                        })
-                    }
-                    ParsedRunInput::Json(task) => {
-                        let title = task
-                            .task_id
-                            .as_deref()
-                            .unwrap_or_else(|| derive_run_title(&task.problem_statement));
-                        ingester.from_human(title, &task.problem_statement)
-                    }
-                };
+                let task = task_from_run_input(&ingester, parse_run_input(raw_line));
 
                 let title = task.title.clone();
 
@@ -1001,6 +985,35 @@ fn parse_run_input(line: &str) -> ParsedRunInput {
     }
 }
 
+fn task_from_run_input(
+    ingester: &a2_sensorium::ingest::Ingester,
+    input: ParsedRunInput,
+) -> a2_core::protocol::TaskContract {
+    match input {
+        ParsedRunInput::Plain(description) => ingester.ingest(a2_sensorium::ingest::RawSignal {
+            origin: "stdin".into(),
+            content: description,
+            risk_tier: a2_sensorium::ingest::RiskTier::Low,
+            metadata: vec![],
+        }),
+        ParsedRunInput::Json(input) => {
+            let title = input
+                .task_id
+                .as_deref()
+                .filter(|task_id| !task_id.trim().is_empty())
+                .unwrap_or_else(|| derive_run_title(&input.problem_statement));
+            let mut task = ingester.from_human(title, &input.problem_statement);
+
+            if let Some(task_id) = input.task_id.as_deref().filter(|id| !id.trim().is_empty()) {
+                task.id = a2_core::id::TaskId::parse_str(task_id)
+                    .unwrap_or_else(|_| a2_core::id::TaskId::from_external_key(task_id));
+            }
+
+            task
+        }
+    }
+}
+
 fn derive_run_title(problem_statement: &str) -> &str {
     problem_statement
         .lines()
@@ -1374,6 +1387,37 @@ mod tests {
             }
             ParsedRunInput::Plain(_) => panic!("expected json input"),
         }
+    }
+
+    #[test]
+    fn json_run_input_task_id_pins_task_contract_id() {
+        let ingester = a2_sensorium::ingest::Ingester::new(build_budget(50_000, 300));
+        let first = task_from_run_input(
+            &ingester,
+            parse_run_input(r#"{"task_id":"bench-1","problem_statement":"Implement feature"}"#),
+        );
+        let second = task_from_run_input(
+            &ingester,
+            parse_run_input(r#"{"task_id":"bench-1","problem_statement":"Retry feature"}"#),
+        );
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(first.id, a2_core::id::TaskId::from_external_key("bench-1"));
+    }
+
+    #[test]
+    fn json_run_input_accepts_existing_task_id_display_form() {
+        let ingester = a2_sensorium::ingest::Ingester::new(build_budget(50_000, 300));
+        let pinned = a2_core::id::TaskId::new();
+        let task = task_from_run_input(
+            &ingester,
+            parse_run_input(&format!(
+                r#"{{"task_id":"{}","problem_statement":"Retry feature"}}"#,
+                pinned
+            )),
+        );
+
+        assert_eq!(task.id, pinned);
     }
 
     #[test]
