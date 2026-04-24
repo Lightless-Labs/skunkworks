@@ -18,10 +18,6 @@ pub enum StrategyChange {
     None,
     /// Switch to a different model provider.
     SwitchModel,
-    /// Break the task into smaller steps.
-    DecomposeTask,
-    /// Raise mutation temperature (try more radical changes).
-    RaiseTemperature,
 }
 
 impl std::fmt::Display for StrategyChange {
@@ -29,8 +25,6 @@ impl std::fmt::Display for StrategyChange {
         match self {
             Self::None => write!(f, "no change needed"),
             Self::SwitchModel => write!(f, "switch model provider"),
-            Self::DecomposeTask => write!(f, "decompose task into smaller steps"),
-            Self::RaiseTemperature => write!(f, "raise mutation temperature"),
         }
     }
 }
@@ -101,21 +95,10 @@ impl StagnationDetector {
     }
 
     pub fn suggest_strategy_change(&self) -> StrategyChange {
-        if !self.is_stagnant(self.capacity) {
-            return StrategyChange::None;
-        }
-        let t = self.trend();
-        if t < -0.5 {
+        if self.is_stagnant(self.capacity) {
             StrategyChange::SwitchModel
-        } else if t > 0.1 {
-            StrategyChange::RaiseTemperature
         } else {
-            let total_promotions: u64 = self.rounds.iter().map(|r| r.promotion_count).sum();
-            if total_promotions == 0 {
-                StrategyChange::SwitchModel
-            } else {
-                StrategyChange::DecomposeTask
-            }
+            StrategyChange::None
         }
     }
 
@@ -594,5 +577,26 @@ mod tests {
         assert!((detector.trend() - 2.0).abs() < f64::EPSILON);
         detector.record_round(10, 1, 2);
         assert!((detector.trend() - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn strategy_change_matches_actions_a2ctl_actually_supports() {
+        let mut detector = StagnationDetector::new(3);
+        record_rounds(&mut detector, &[(1, 0, 0), (1, 1, 0), (2, 1, 1)]);
+        assert_eq!(detector.suggest_strategy_change(), StrategyChange::None);
+
+        let mut no_promotions = StagnationDetector::new(3);
+        record_rounds(&mut no_promotions, &[(1, 0, 0), (1, 0, 0), (1, 0, 0)]);
+        assert_eq!(
+            no_promotions.suggest_strategy_change(),
+            StrategyChange::SwitchModel
+        );
+
+        let mut flat_promotions = StagnationDetector::new(3);
+        record_rounds(&mut flat_promotions, &[(1, 1, 1), (1, 1, 1), (1, 1, 1)]);
+        assert_eq!(
+            flat_promotions.suggest_strategy_change(),
+            StrategyChange::SwitchModel
+        );
     }
 }

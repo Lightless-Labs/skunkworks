@@ -11,7 +11,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 | Metric | Value |
 |--------|-------|
-| Tests | 63 |
+| Tests | 64 |
 | Sentinels | 5/6 PASS (lockfile_check fails — pre-existing, Cargo.lock unchanged locally) |
 | Crates | 11 |
 | Benchmark (OpenCode/GLM via A²) | 5/5 (with 100k token / 1800s budget) |
@@ -25,7 +25,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 ```bash
 cd /Users/thomas/Projects/lightless-labs/skunkworks/a2-autopoietic-autocatalysis
-cargo test                                    # expect 63 pass
+cargo test                                    # expect 64 pass
 cargo run -p a2ctl -- sentinel --workspace .  # expect 5/6 PASS; lockfile_check fails pre-existing
 ```
 
@@ -143,7 +143,7 @@ ContextPack is now wired (2026-04-16, c32b657) — the catalyst sees prior attem
 
 - [x] **Persist `PatchBundle.rationale` and `diff` alongside `LineageRecord`.** Completed 2026-04-23. Lineage records now carry optional patch diff/rationale, SQLite init migrates legacy lineage tables, and prior-attempt motifs include bounded rationale/diff snippets.
 - [x] **Delete or promote `crates/a2d/src/governor.rs`.** Completed 2026-04-23 by deleting the unreferenced shadow implementation; `a2d::Governor` lives in `crates/a2d/src/lib.rs`.
-- [ ] **Act on `StrategyChange::DecomposeTask` and `::RaiseTemperature`** (or remove them). Currently returned by the detector and logged in `a2ctl/main.rs:368` but no branch. Either wire actual handlers or shrink the enum to `{None, SwitchModel}`.
+- [x] **Act on `StrategyChange::DecomposeTask` and `::RaiseTemperature`** (or remove them). Completed 2026-04-23 by shrinking `StrategyChange` to `{None, SwitchModel}`, matching the only strategy branch `a2ctl run` actually executes.
 - [ ] **Give `a2ctl run` a way to pin `TaskId` across invocations** so multi-round bench can reuse prior lineage. Today the ingester always calls `TaskId::new()`, so cross-invocation prior_lineage is always empty.
 - [ ] **Investigate lockfile sentinel failure.** HANDOFF previously claimed 6/6 but reality was 5/6 (Cargo.lock regenerates offline). Either fix the regeneration drift or relax the sentinel.
 
@@ -197,3 +197,4 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-04-16 | a2ctl accepts `opencode/<model_id>` (b432129) | Minimax and Kimi were unreachable from the CLI even though the broker supported them. 4/4 providers smoke-clean post-wiring. |
 | 2026-04-23 | Persist patch diff/rationale in lineage | Prior motifs now include bounded rationale/diff snippets, giving multi-round/self-correction runs a reason to change approach instead of only seeing pass/fail metadata. |
 | 2026-04-23 | Delete dead a2d governor shadow module | `crates/a2d/src/governor.rs` was not declared in `lib.rs` and had already drifted from the real `Governor`, including stale `WorkcellConfig` construction. |
+| 2026-04-23 | Shrink `StrategyChange` to executed actions | Removed `DecomposeTask` and `RaiseTemperature` because no caller acted on them; stagnant windows now recommend the supported `SwitchModel` action. |
