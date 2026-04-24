@@ -142,7 +142,7 @@ ContextPack is now wired (2026-04-16, c32b657) — the catalyst sees prior attem
 ### Prerequisite todos (small, unblock the rest)
 
 - [x] **Persist `PatchBundle.rationale` and `diff` alongside `LineageRecord`.** Completed 2026-04-23. Lineage records now carry optional patch diff/rationale, SQLite init migrates legacy lineage tables, and prior-attempt motifs include bounded rationale/diff snippets.
-- [ ] **Delete or promote `crates/a2d/src/governor.rs`.** Not declared as a module in `lib.rs` — ~300 lines of dead shadow code confusing readers.
+- [x] **Delete or promote `crates/a2d/src/governor.rs`.** Completed 2026-04-23 by deleting the unreferenced shadow implementation; `a2d::Governor` lives in `crates/a2d/src/lib.rs`.
 - [ ] **Act on `StrategyChange::DecomposeTask` and `::RaiseTemperature`** (or remove them). Currently returned by the detector and logged in `a2ctl/main.rs:368` but no branch. Either wire actual handlers or shrink the enum to `{None, SwitchModel}`.
 - [ ] **Give `a2ctl run` a way to pin `TaskId` across invocations** so multi-round bench can reuse prior lineage. Today the ingester always calls `TaskId::new()`, so cross-invocation prior_lineage is always empty.
 - [ ] **Investigate lockfile sentinel failure.** HANDOFF previously claimed 6/6 but reality was 5/6 (Cargo.lock regenerates offline). Either fix the regeneration drift or relax the sentinel.
@@ -196,3 +196,4 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-04-16 | ContextPack wired with prior lineage (c32b657) | Prior attempts + motifs now surface to the catalyst. Prerequisite for any loop-shaped benchmark — before this, multi-round and self-correction had no memory across rounds. |
 | 2026-04-16 | a2ctl accepts `opencode/<model_id>` (b432129) | Minimax and Kimi were unreachable from the CLI even though the broker supported them. 4/4 providers smoke-clean post-wiring. |
 | 2026-04-23 | Persist patch diff/rationale in lineage | Prior motifs now include bounded rationale/diff snippets, giving multi-round/self-correction runs a reason to change approach instead of only seeing pass/fail metadata. |
+| 2026-04-23 | Delete dead a2d governor shadow module | `crates/a2d/src/governor.rs` was not declared in `lib.rs` and had already drifted from the real `Governor`, including stale `WorkcellConfig` construction. |
