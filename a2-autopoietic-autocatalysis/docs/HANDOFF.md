@@ -7,11 +7,11 @@
 
 A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies its own source code. It uses AI model CLIs (Claude, Codex, Gemini, OpenCode) as "food set" models that edit code in git worktrees, then the system verifies, scores, and optionally applies the patches to its own germline.
 
-## Current Numbers (as of 2026-04-23)
+## Current Numbers (as of 2026-04-28)
 
 | Metric | Value |
 |--------|-------|
-| Tests | 68 |
+| Tests | 68 Rust + 3 self-correction harness tests |
 | Sentinels | 6/6 PASS |
 | Crates | 11 |
 | Benchmark (OpenCode/GLM via A²) | 5/5 (with 100k token / 1800s budget) |
@@ -147,10 +147,10 @@ ContextPack is now wired (2026-04-16, c32b657) — the catalyst sees prior attem
 - [x] **Give `a2ctl run` a way to pin `TaskId` across invocations.** Completed 2026-04-23. JSONL `task_id` now sets the `TaskContract.id`; `task-<uuid>`/UUID values parse directly and arbitrary external keys map to deterministic typed IDs.
 - [x] **Investigate lockfile sentinel failure.** Completed 2026-04-23 by regenerating and committing `Cargo.lock` with `cargo generate-lockfile --offline`; sentinel now passes 6/6.
 
-### Loop-shaped benchmarks (prerequisites now complete)
+### Loop-shaped benchmarks
 
-1. **Self-correction benchmark** *(lowest cost, highest signal — start here)*: inject a bug, hide the location, measure whether A² finds and fixes it autonomously. Clean pass/fail. A raw single-pass model genuinely can't do this.
-2. **Multi-round benchmark**: N iterations on the same task, measure score improvement over rounds. Needs TaskId persistence + enriched motifs.
+1. **Self-correction benchmark** *(implemented 2026-04-28 as `bench/self_correction.py`; real provider N≥3 runs still needed)*: injects a deterministic Fibonacci regression in an isolated git worktree, runs repeated A² attempts with a pinned task ID, and emits JSONL records with lineage visibility and pass/fail.
+2. **Multi-round benchmark**: N iterations on the same task, measure score improvement over rounds. Can now reuse the self-correction harness pattern.
 3. **Adversarial drift** (Fontana Level 0): can A² detect and reject a "promotion" that actually degrades the system? Philosophically load-bearing for the autopoiesis claim.
 4. **Cross-task transfer**: solve task A, measure if task B is faster/better because lineage carried over.
 5. **SWE-bench Lite integration**: real-world multi-step problems. Wide scope — probably last.
@@ -200,3 +200,4 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-04-23 | Shrink `StrategyChange` to executed actions | Removed `DecomposeTask` and `RaiseTemperature` because no caller acted on them; stagnant windows now recommend the supported `SwitchModel` action. |
 | 2026-04-23 | Pin `a2ctl run` tasks from JSONL `task_id` | Reusing the same `task_id` across invocations now retrieves prior lineage for the same typed `TaskId`, enabling multi-round/self-correction loops to use memory. |
 | 2026-04-23 | Refresh Cargo.lock to satisfy sentinel | `cargo generate-lockfile --offline` updated cached compatible package versions; committing that drift restored `lockfile_check` and the sentinel suite is now 6/6. |
+| 2026-04-28 | Add self-correction benchmark harness | `bench/self_correction.py` creates an isolated bugged worktree, repeats A² attempts with one pinned task ID, and records per-attempt JSONL including prior-lineage visibility. |

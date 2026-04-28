@@ -1,6 +1,36 @@
 # Benchmark Harness
 
-The old `bench/tasks/*.toml` suite is still in-tree, but the real evaluation path now lives in three small Python CLIs:
+## Self-Correction Benchmark
+
+`bench/self_correction.py` is the first loop-shaped A² benchmark. It creates an isolated git worktree, injects a deterministic `a2_core::fibonacci` regression, commits that bug only in the isolated branch, and runs repeated `a2ctl run --apply` attempts with the same JSONL `task_id`.
+
+Smoke the fixture without a model:
+
+```bash
+bench/self_correction.py --smoke-only --results /tmp/a2-self-correction-smoke.jsonl
+```
+
+Run real A² attempts with a cheap provider:
+
+```bash
+bench/self_correction.py --provider gemini --attempts 3 \
+  --results bench/self-correction-results.jsonl
+```
+
+Each JSONL result includes:
+
+- `task_id`, `run_id`, `attempt`, `category`
+- `provider` / `model`
+- `resolved`
+- `prior_lineage_present`
+- `lineage_records_before` / `lineage_records_after`
+- verification command, return code, duration, stdout, stderr
+
+The benchmark removes its isolated worktree by default. Use `--keep-workspace` to inspect a run.
+
+## BigCodeBench / Legacy Harness
+
+The old `bench/tasks/*.toml` suite is still in-tree, but the BigCodeBench evaluation path lives in three small Python CLIs:
 
 - `bench/bigcodebench_runner.py` emits BigCodeBench Hard tasks as JSONL.
 - `bench/eval.py` sets up a task workspace, runs the verification command, and emits one JSON result object.

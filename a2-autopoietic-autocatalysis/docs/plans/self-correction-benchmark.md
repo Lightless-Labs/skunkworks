@@ -1,6 +1,7 @@
 # Self-Correction Benchmark Plan
 
 **Created:** 2026-04-24
+**Completed:** 2026-04-28
 
 ## Goal
 
@@ -28,20 +29,14 @@ The remaining current benchmark suite is single-pass and mostly measures model c
 
 ## Proposed Shape
 
-Add a small harness under `bench/`:
+Implemented as `bench/self_correction.py`:
 
-- `bench/self_correction.py`
-  - creates a temporary copy/workspace
-  - applies a known bug fixture
-  - emits repeated JSONL tasks with the same `task_id`
-  - invokes `a2ctl run --provider <provider> --apply`
-  - runs a verification command after each attempt
-  - appends one JSON object per attempt
-
-Add fixtures under `bench/self_correction/`:
-
-- a minimal bug injection patch or setup script
-- a verification command that fails before the fix and passes after it
+- creates an isolated git worktree from the current germline
+- injects and commits a deterministic `a2_core::fibonacci` bug only in the isolated branch
+- emits repeated JSONL tasks with the same `task_id`
+- invokes `a2ctl run --provider <provider> --apply`
+- runs `cargo test -p a2_core test_fibonacci` after each attempt
+- appends one JSON object per attempt
 
 Keep it observational with respect to the main workspace. Candidate fixes may mutate only the isolated task workspace.
 
