@@ -37,6 +37,7 @@ Implemented as `bench/self_correction.py`:
 - emits repeated JSONL tasks with the same `task_id`
 - invokes `a2ctl run --provider <provider> --apply`
 - runs `cargo test -p a2_core test_fibonacci` after each attempt
+- reconciles the newest lineage row with the external verification result so failed post-apply attempts are visible to later motifs
 - appends one JSON object per attempt
 
 Implemented `bench/self_correction_score.py` to separate first-pass model capability from actual self-correction:

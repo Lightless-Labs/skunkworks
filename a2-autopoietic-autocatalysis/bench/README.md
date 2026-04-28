@@ -24,6 +24,7 @@ Each JSONL result includes:
 - `resolved`
 - `prior_lineage_present`
 - `lineage_records_before` / `lineage_records_after`
+- `lineage_reconciled_with_verify`
 - verification command, return code, duration, stdout, stderr
 
 Score self-correction specifically:
@@ -33,6 +34,8 @@ bench/self_correction_score.py bench/self-correction-results.jsonl
 ```
 
 This scorer reports `pass@1` separately from `self-corrected`. A first-attempt pass is useful model capability data, but it does not exercise prior-lineage self-correction.
+
+After each attempt, the harness reconciles the newest lineage row with the external verification result. This keeps the next attempt's prior motif honest when `a2ctl run` produced a patch but the post-apply verification failed.
 
 The benchmark removes its isolated worktree by default. Use `--keep-workspace` to inspect a run.
 

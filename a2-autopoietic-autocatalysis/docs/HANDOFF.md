@@ -11,7 +11,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 | Metric | Value |
 |--------|-------|
-| Tests | 68 Rust + 5 self-correction Python tests |
+| Tests | 68 Rust + 6 self-correction Python tests |
 | Sentinels | 6/6 PASS |
 | Crates | 11 |
 | Benchmark (OpenCode/GLM via A²) | 5/5 (with 100k token / 1800s budget) |
@@ -149,7 +149,7 @@ ContextPack is now wired (2026-04-16, c32b657) — the catalyst sees prior attem
 
 ### Loop-shaped benchmarks
 
-1. **Self-correction benchmark** *(implemented 2026-04-28 as `bench/self_correction.py` + `bench/self_correction_score.py`)*: injects a deterministic Fibonacci regression in an isolated git worktree, runs repeated A² attempts with a pinned task ID, and emits JSONL records with lineage visibility and pass/fail. Minimax N=3: resolved 3/3, pass@1 3/3, loop exercised 0/3, self-corrected 0/3. Kimi smoke: pass@1. Gemini failed due provider capacity. Current fixture is too easy to measure A² loop value because strong providers solve it before prior lineage is used.
+1. **Self-correction benchmark** *(implemented 2026-04-28 as `bench/self_correction.py` + `bench/self_correction_score.py`)*: injects a deterministic Fibonacci regression in an isolated git worktree, runs repeated A² attempts with a pinned task ID, reconciles lineage with external verification after each attempt, and emits JSONL records with lineage visibility and pass/fail. Minimax N=3: resolved 3/3, pass@1 3/3, loop exercised 0/3, self-corrected 0/3. Kimi smoke: pass@1. Gemini failed due provider capacity. Current fixture is too easy to measure A² loop value because strong providers solve it before prior lineage is used.
 2. **Multi-round benchmark**: N iterations on the same task, measure score improvement over rounds. Can now reuse the self-correction harness pattern.
 3. **Adversarial drift** (Fontana Level 0): can A² detect and reject a "promotion" that actually degrades the system? Philosophically load-bearing for the autopoiesis claim.
 4. **Cross-task transfer**: solve task A, measure if task B is faster/better because lineage carried over.
