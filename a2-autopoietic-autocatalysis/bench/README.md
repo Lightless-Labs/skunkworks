@@ -26,6 +26,14 @@ Each JSONL result includes:
 - `lineage_records_before` / `lineage_records_after`
 - verification command, return code, duration, stdout, stderr
 
+Score self-correction specifically:
+
+```bash
+bench/self_correction_score.py bench/self-correction-results.jsonl
+```
+
+This scorer reports `pass@1` separately from `self-corrected`. A first-attempt pass is useful model capability data, but it does not exercise prior-lineage self-correction.
+
 The benchmark removes its isolated worktree by default. Use `--keep-workspace` to inspect a run.
 
 ## BigCodeBench / Legacy Harness

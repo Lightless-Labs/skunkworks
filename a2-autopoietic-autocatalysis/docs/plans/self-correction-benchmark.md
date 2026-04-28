@@ -2,7 +2,7 @@
 
 **Created:** 2026-04-24
 **Completed:** 2026-04-28
-**Verified:** 2026-04-28 — `--self-test`, `--smoke-only`, and one Minimax real-provider smoke (resolved attempt 1).
+**Verified:** 2026-04-28 — `--self-test`, `--smoke-only`, Minimax N=3 real-provider run, and one Kimi smoke.
 
 ## Goal
 
@@ -39,7 +39,27 @@ Implemented as `bench/self_correction.py`:
 - runs `cargo test -p a2_core test_fibonacci` after each attempt
 - appends one JSON object per attempt
 
+Implemented `bench/self_correction_score.py` to separate first-pass model capability from actual self-correction:
+
+- `resolved`
+- `pass@1`
+- `loop exercised` (any later attempt saw prior lineage)
+- `self-corrected` (attempt 1 failed, later prior-lineage attempt passed)
+
 Keep it observational with respect to the main workspace. Candidate fixes may mutate only the isolated task workspace.
+
+## 2026-04-28 Result
+
+Minimax N=3 on this fixture:
+
+- `resolved`: 3/3
+- `pass@1`: 3/3
+- `loop exercised`: 0/3
+- `self-corrected`: 0/3
+
+Kimi smoke also passed on attempt 1. Gemini produced lineage records across two attempts but failed due 429 provider capacity errors.
+
+Conclusion: the harness works, but the Fibonacci regression fixture is too easy for strong providers and does not yet demonstrate A² loop value. The next fixture must reliably produce a failed first attempt or otherwise require a prior-lineage-informed second attempt.
 
 ## Implementation Steps
 
