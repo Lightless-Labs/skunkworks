@@ -1,6 +1,6 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-04-23
+**Last updated:** 2026-04-28
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -90,6 +90,11 @@ echo "fix X" | cargo run -p a2ctl -- run --provider gemini,opencode --apply
 echo "fix X" | cargo run -p a2ctl -- run --provider opencode/kimi-for-coding/k2p5
 echo "fix X" | cargo run -p a2ctl -- run --provider opencode/minimax-coding-plan/MiniMax-M2.7
 
+# Self-correction benchmark (isolated worktree; does not mutate germline)
+bench/self_correction.py --fixture fibonacci --provider opencode/minimax-coding-plan/MiniMax-M2.7 --attempts 3
+bench/self_correction.py --fixture compound-hidden --provider opencode/minimax-coding-plan/MiniMax-M2.7 --attempts 3
+bench/self_correction_score.py bench/self-correction-results.jsonl
+
 # Sentinel gate
 cargo run -p a2ctl -- sentinel --workspace .
 ```
@@ -137,7 +142,7 @@ const DEFAULT_STAGNATION_WINDOW: usize = 3;
 
 ## What To Do Next
 
-ContextPack is now wired (2026-04-16, c32b657) — the catalyst sees prior attempts on the same task. That unblocks loop-shaped benchmarks.
+ContextPack is wired and self-correction harnesses exist. The current gap is no longer "build a loop benchmark"; it is "make the loop recover." `compound-hidden` proves prior lineage reaches later attempts, but Minimax did not repair the hidden failure in 3 attempts.
 
 ### Completed prerequisites (2026-04-23)
 
@@ -147,6 +152,14 @@ ContextPack is now wired (2026-04-16, c32b657) — the catalyst sees prior attem
 - [x] **Give `a2ctl run` a way to pin `TaskId` across invocations.** Completed 2026-04-23. JSONL `task_id` now sets the `TaskContract.id`; `task-<uuid>`/UUID values parse directly and arbitrary external keys map to deterministic typed IDs.
 - [x] **Investigate lockfile sentinel failure.** Completed 2026-04-23 by regenerating and committing `Cargo.lock` with `cargo generate-lockfile --offline`; sentinel now passes 6/6.
 
+### Immediate todos
+
+- [ ] **Make prior failure motifs harder to ignore.** In `a2_workcell::runtime::render_prior_motif`, render external verification failures as structured multiline context instead of one compact line where the failure can be buried behind rationale/diff truncation.
+- [ ] **Move verification reconciliation out of the harness.** `a2ctl run` persists lineage before `try_apply_patch` + `verify_and_rebuild`; the benchmark currently patches lineage afterward. Promote this into the run path so persisted lineage always reflects actual apply/rebuild outcomes.
+- [ ] **Instrument what models changed per attempt.** Add result fields summarizing touched files or diff stats so `compound-hidden` failures can distinguish "fixed visible bug only" from "fixed hidden bug only" from "no meaningful change."
+- [ ] **Run `compound-hidden` N≥3 per available non-Claude provider after motif/run-path fixes.** Current factual result: Minimax one run, attempts 1-3 failed with prior lineage present on attempts 2-3.
+- [ ] **Add a second compound fixture after one self-correction success.** Avoid tuning the loop to a single benchmark shape.
+
 ### Loop-shaped benchmarks
 
 1. **Self-correction benchmark** *(implemented 2026-04-28 as `bench/self_correction.py` + `bench/self_correction_score.py`)*: isolated git worktree, pinned task ID, lineage reconciliation after external verification, JSONL results. Fixtures: `fibonacci` (too easy: Minimax N=3 pass@1 3/3, loop 0/3), `compound-hidden` (harder: Minimax run attempt 1 failed, attempts 2-3 saw prior lineage, self-corrected 0/1). Current signal: A² memory is wired and visible, but the loop did not yet recover from compound hidden verification failure.
@@ -155,7 +168,7 @@ ContextPack is now wired (2026-04-16, c32b657) — the catalyst sees prior attem
 4. **Cross-task transfer**: solve task A, measure if task B is faster/better because lineage carried over.
 5. **SWE-bench Lite integration**: real-world multi-step problems. Wide scope — probably last.
 
-Until one of these is implemented, benchmark scores are not evidence that A² works as designed.
+Single-pass benchmark scores remain non-evidence for A² loop value.
 
 ### Secondary
 

@@ -3,6 +3,7 @@
 **Created:** 2026-04-24
 **Completed:** 2026-04-28
 **Verified:** 2026-04-28 — `--self-test`, `--smoke-only`, Minimax N=3 real-provider run, and one Kimi smoke.
+**Addendum:** 2026-04-28 — `compound-hidden` exercises prior lineage but did not self-correct; next work is loop recovery, not harness creation.
 
 ## Goal
 
@@ -70,6 +71,14 @@ Minimax on `compound-hidden` for 3 attempts:
 - `self-corrected`: 0/1
 
 Conclusion: the harness now distinguishes three cases: easy pass@1, loop exercised, and actual self-correction. A² memory is visible on later attempts, but the current prompt/motif path did not recover from the compound hidden failure.
+
+## Follow-up TODOs
+
+- [ ] Render prior external verification failures prominently in the catalyst prompt instead of relying on compact motif snippets.
+- [ ] Persist post-apply verification outcome in the main `a2ctl run`/lineage path; remove benchmark-only lineage reconciliation once the core path records truth.
+- [ ] Add attempt diff/touched-file summaries to self-correction JSONL records.
+- [ ] Re-run `compound-hidden` N≥3 after motif/run-path changes.
+- [ ] Add a second hard fixture once at least one provider self-corrects `compound-hidden`.
 
 ## Implementation Steps
 
