@@ -100,10 +100,10 @@ cargo run -p a2ctl -- sentinel --workspace .
 |----------|-------|--------|-------|
 | claude | claude-sonnet-4-6 | Available | Burns subscription quota — use sparingly |
 | codex | gpt-5.4 | **OUT OF QUOTA** | Don't use until reset |
-| gemini | gemini-3.1-pro-preview | Available | 5/5 on current bench, ~67s/task |
+| gemini | gemini-3.1-pro-preview | **OUT OF CAPACITY** | 2026-04-28 self-correction smoke hit repeated 429 capacity errors; previous bench 5/5, ~67s/task |
 | opencode/glm | zai-coding-plan/glm-5.1 | Available | 5/5 on current bench, 10-15min/task (slow) |
 | opencode/kimi | kimi-for-coding/k2p5 | Available | 2026-04-16 smoke PASS (75s, 12k tokens); sometimes empty historically |
-| opencode/minimax | minimax-coding-plan/MiniMax-M2.7 | Available | 2026-04-16 smoke PASS (72s, 31k tokens) |
+| opencode/minimax | minimax-coding-plan/MiniMax-M2.7 | Available | 2026-04-28 self-correction PASS attempt 1 (70s model time, 17.6k tokens); 2026-04-16 smoke PASS |
 
 ## Config constants (a2ctl/src/main.rs)
 
@@ -149,7 +149,7 @@ ContextPack is now wired (2026-04-16, c32b657) — the catalyst sees prior attem
 
 ### Loop-shaped benchmarks
 
-1. **Self-correction benchmark** *(implemented 2026-04-28 as `bench/self_correction.py`; real provider N≥3 runs still needed)*: injects a deterministic Fibonacci regression in an isolated git worktree, runs repeated A² attempts with a pinned task ID, and emits JSONL records with lineage visibility and pass/fail.
+1. **Self-correction benchmark** *(implemented 2026-04-28 as `bench/self_correction.py`; N≥3 runs still needed before conclusions)*: injects a deterministic Fibonacci regression in an isolated git worktree, runs repeated A² attempts with a pinned task ID, and emits JSONL records with lineage visibility and pass/fail. Smoke: Minimax passed attempt 1; Gemini failed due provider capacity, not task capability.
 2. **Multi-round benchmark**: N iterations on the same task, measure score improvement over rounds. Can now reuse the self-correction harness pattern.
 3. **Adversarial drift** (Fontana Level 0): can A² detect and reject a "promotion" that actually degrades the system? Philosophically load-bearing for the autopoiesis claim.
 4. **Cross-task transfer**: solve task A, measure if task B is faster/better because lineage carried over.
@@ -200,4 +200,4 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-04-23 | Shrink `StrategyChange` to executed actions | Removed `DecomposeTask` and `RaiseTemperature` because no caller acted on them; stagnant windows now recommend the supported `SwitchModel` action. |
 | 2026-04-23 | Pin `a2ctl run` tasks from JSONL `task_id` | Reusing the same `task_id` across invocations now retrieves prior lineage for the same typed `TaskId`, enabling multi-round/self-correction loops to use memory. |
 | 2026-04-23 | Refresh Cargo.lock to satisfy sentinel | `cargo generate-lockfile --offline` updated cached compatible package versions; committing that drift restored `lockfile_check` and the sentinel suite is now 6/6. |
-| 2026-04-28 | Add self-correction benchmark harness | `bench/self_correction.py` creates an isolated bugged worktree, repeats A² attempts with one pinned task ID, and records per-attempt JSONL including prior-lineage visibility. |
+| 2026-04-28 | Add self-correction benchmark harness | `bench/self_correction.py` creates an isolated bugged worktree, repeats A² attempts with one pinned task ID, and records per-attempt JSONL including prior-lineage visibility. Smoke: Minimax resolved attempt 1; Gemini produced lineage across two attempts but hit capacity errors. |

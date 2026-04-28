@@ -2,6 +2,7 @@
 
 **Created:** 2026-04-24
 **Completed:** 2026-04-28
+**Verified:** 2026-04-28 — `--self-test`, `--smoke-only`, and one Minimax real-provider smoke (resolved attempt 1).
 
 ## Goal
 
