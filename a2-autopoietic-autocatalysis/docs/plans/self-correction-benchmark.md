@@ -51,16 +51,25 @@ Keep it observational with respect to the main workspace. Candidate fixes may mu
 
 ## 2026-04-28 Result
 
-Minimax N=3 on this fixture:
+Minimax N=3 on the `fibonacci` fixture:
 
 - `resolved`: 3/3
 - `pass@1`: 3/3
 - `loop exercised`: 0/3
 - `self-corrected`: 0/3
 
-Kimi smoke also passed on attempt 1. Gemini produced lineage records across two attempts but failed due 429 provider capacity errors.
+Kimi smoke also passed `fibonacci` on attempt 1. Gemini produced lineage records across two attempts but failed due 429 provider capacity errors.
 
-Conclusion: the harness works, but the Fibonacci regression fixture is too easy for strong providers and does not yet demonstrate A² loop value. The next fixture must reliably produce a failed first attempt or otherwise require a prior-lineage-informed second attempt.
+Added `compound-hidden`, which injects the Fibonacci regression plus a hidden TODO-scanner string-literal regression. Its verification command reveals both failures after each attempt.
+
+Minimax on `compound-hidden` for 3 attempts:
+
+- `resolved`: 0/1
+- `pass@1`: 0/1
+- `loop exercised`: 1/1
+- `self-corrected`: 0/1
+
+Conclusion: the harness now distinguishes three cases: easy pass@1, loop exercised, and actual self-correction. A² memory is visible on later attempts, but the current prompt/motif path did not recover from the compound hidden failure.
 
 ## Implementation Steps
 

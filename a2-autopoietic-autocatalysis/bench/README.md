@@ -17,6 +17,15 @@ bench/self_correction.py --provider gemini --attempts 3 \
   --results bench/self-correction-results.jsonl
 ```
 
+Run the harder compound fixture that usually exercises the loop instead of pass@1:
+
+```bash
+bench/self_correction.py --fixture compound-hidden \
+  --provider opencode/minimax-coding-plan/MiniMax-M2.7 \
+  --attempts 3 \
+  --results bench/self-correction-compound-results.jsonl
+```
+
 Each JSONL result includes:
 
 - `task_id`, `run_id`, `attempt`, `category`

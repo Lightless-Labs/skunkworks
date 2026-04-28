@@ -25,20 +25,77 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-TASK_ID = "self-correction-fibonacci-regression"
 CATEGORY = "self_correction"
-BUG_DESCRIPTION = """\
+FIBONACCI_TASK_ID = "self-correction-fibonacci-regression"
+FIBONACCI_DESCRIPTION = """\
 The workspace contains a regression. `cargo test -p a2_core test_fibonacci` fails.
 Diagnose the root cause and fix the implementation. Do not assume the failing
 function name is the location of the bug; inspect the code and make the minimal
 change that restores the test. Run `cargo test -p a2_core test_fibonacci` before
 finishing.
 """
-VERIFY_COMMAND = "cargo test -p a2_core test_fibonacci"
-BUG_OLD = "if n == 0 {\n        return 0;\n    }"
-BUG_NEW = "if n == 0 {\n        return 1;\n    }"
+FIBONACCI_VERIFY_COMMAND = "cargo test -p a2_core test_fibonacci"
+FIBONACCI_BUG_OLD = "if n == 0 {\n        return 0;\n    }"
+FIBONACCI_BUG_NEW = "if n == 0 {\n        return 1;\n    }"
+SCAN_BUG_OLD = "if byte == b'\"' {\n            in_double = true;\n            index += 1;\n            continue;\n        }"
+SCAN_BUG_NEW = "if byte == b'\"' {\n            index += 1;\n            continue;\n        }"
 FNV_OFFSET_128 = 0x6C62_272E_07BB_0142_62B8_2175_6295_C58D
 FNV_PRIME_128 = 0x0000_0000_0100_0000_0000_0000_0000_013B
+
+
+@dataclass(frozen=True)
+class Replacement:
+    path: str
+    old: str
+    new: str
+
+
+@dataclass(frozen=True)
+class Fixture:
+    name: str
+    task_id: str
+    description: str
+    verify_command: str
+    replacements: tuple[Replacement, ...]
+
+
+FIXTURES: dict[str, Fixture] = {
+    "fibonacci": Fixture(
+        name="fibonacci",
+        task_id=FIBONACCI_TASK_ID,
+        description=FIBONACCI_DESCRIPTION,
+        verify_command=FIBONACCI_VERIFY_COMMAND,
+        replacements=(
+            Replacement(
+                "crates/a2_core/src/lib.rs",
+                FIBONACCI_BUG_OLD,
+                FIBONACCI_BUG_NEW,
+            ),
+        ),
+    ),
+    "compound-hidden": Fixture(
+        name="compound-hidden",
+        task_id="self-correction-compound-hidden-regressions",
+        description=FIBONACCI_DESCRIPTION,
+        verify_command=(
+            "cargo test -p a2_core test_fibonacci; core=$?; "
+            "cargo test -p a2ctl ignores_non_task_mentions_inside_comments_and_strings; ctl=$?; "
+            "test $core -eq 0 -a $ctl -eq 0"
+        ),
+        replacements=(
+            Replacement(
+                "crates/a2_core/src/lib.rs",
+                FIBONACCI_BUG_OLD,
+                FIBONACCI_BUG_NEW,
+            ),
+            Replacement(
+                "crates/a2ctl/src/main.rs",
+                SCAN_BUG_OLD,
+                SCAN_BUG_NEW,
+            ),
+        ),
+    ),
+}
 
 
 @dataclass
@@ -54,6 +111,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default=".", help="Source A² project path containing Cargo.toml.")
     parser.add_argument("--provider", default="gemini", help="Provider/model for a2ctl run.")
+    parser.add_argument(
+        "--fixture",
+        choices=sorted(FIXTURES),
+        default="fibonacci",
+        help="Bug fixture to inject.",
+    )
     parser.add_argument("--attempts", type=int, default=2, help="Number of repeated A² attempts.")
     parser.add_argument("--max-tokens", type=int, default=100_000, help="Per-attempt token budget.")
     parser.add_argument("--timeout", type=int, default=1800, help="Per-attempt timeout in seconds.")
@@ -187,7 +250,7 @@ def reconcile_latest_lineage_with_verify(
 
         verify_note = (
             f"\n\n[external verify: {'PASS' if passed else 'FAIL'}] "
-            f"{VERIFY_COMMAND} exited {verify_result.returncode}."
+            f"{verify_result.command} exited {verify_result.returncode}."
         )
         if not passed:
             detail = (verify_result.stderr or verify_result.stdout).strip()
@@ -200,7 +263,11 @@ def reconcile_latest_lineage_with_verify(
             SET fitness_json = ?, patch_rationale = ?
             WHERE id = ?
             """,
-            (json.dumps(fitness, separators=(",", ":")), (patch_rationale or "") + verify_note, record_id),
+            (
+                json.dumps(fitness, separators=(",", ":")),
+                verify_note + ("\n\n" + patch_rationale if patch_rationale else ""),
+                record_id,
+            ),
         )
     return True
 
@@ -227,18 +294,19 @@ def cleanup_worktree(source_repo: Path, workspace: Path, branch: str) -> None:
     )
 
 
-def inject_fibonacci_bug(workspace: Path) -> None:
-    path = workspace / "crates/a2_core/src/lib.rs"
-    content = path.read_text(encoding="utf-8")
-    if BUG_NEW in content:
-        return
-    if BUG_OLD not in content:
-        raise RuntimeError(f"bug fixture target not found in {path}")
-    path.write_text(content.replace(BUG_OLD, BUG_NEW, 1), encoding="utf-8")
+def inject_fixture(workspace: Path, fixture: Fixture) -> None:
+    for replacement in fixture.replacements:
+        path = workspace / replacement.path
+        content = path.read_text(encoding="utf-8")
+        if replacement.new in content:
+            continue
+        if replacement.old not in content:
+            raise RuntimeError(f"bug fixture target not found in {path}")
+        path.write_text(content.replace(replacement.old, replacement.new, 1), encoding="utf-8")
 
 
 def commit_bug(workspace: Path) -> None:
-    git(["add", "crates/a2_core/src/lib.rs"], workspace)
+    git(["add", "-A"], workspace)
     git(
         [
             "-c",
@@ -253,11 +321,12 @@ def commit_bug(workspace: Path) -> None:
     )
 
 
-def task_payload(task_id: str, run_id: str, attempt: int) -> dict[str, Any]:
+def task_payload(fixture: Fixture, run_id: str, attempt: int) -> dict[str, Any]:
     return {
-        "task_id": task_id,
-        "problem_statement": BUG_DESCRIPTION,
+        "task_id": fixture.task_id,
+        "problem_statement": fixture.description,
         "category": CATEGORY,
+        "fixture": fixture.name,
         "run_id": run_id,
         "attempt": attempt,
     }
@@ -288,8 +357,8 @@ def run_a2_attempt(
     return run_command(command, workspace, stdin=json.dumps(payload) + "\n", timeout=timeout + 900)
 
 
-def verify(workspace: Path) -> CommandResult:
-    return run_command(VERIFY_COMMAND, workspace, shell=True, timeout=300)
+def verify(workspace: Path, fixture: Fixture) -> CommandResult:
+    return run_command(fixture.verify_command, workspace, shell=True, timeout=300)
 
 
 def result_record(
@@ -306,6 +375,7 @@ def result_record(
     return {
         "task_id": payload["task_id"],
         "category": payload["category"],
+        "fixture": payload.get("fixture"),
         "run_id": payload["run_id"],
         "attempt": payload["attempt"],
         "provider": provider,
@@ -318,7 +388,7 @@ def result_record(
         "workspace": str(workspace),
         "a2_returncode": a2_result.returncode if a2_result else None,
         "a2_duration_secs": round(a2_result.duration_secs, 3) if a2_result else 0.0,
-        "verify_command": VERIFY_COMMAND,
+        "verify_command": str(verify_result.command),
         "verify_returncode": verify_result.returncode,
         "verify_duration_secs": round(verify_result.duration_secs, 3),
         "stdout": "\n\n".join(
@@ -348,6 +418,7 @@ def append_jsonl(path: Path, record: dict[str, Any]) -> None:
 
 
 def run_benchmark(args: argparse.Namespace) -> int:
+    fixture = FIXTURES[args.fixture]
     source_project = Path(args.repo).resolve()
     if not (source_project / "Cargo.toml").exists():
         raise RuntimeError(f"--repo must point at the A² project root: {source_project}")
@@ -370,17 +441,17 @@ def run_benchmark(args: argparse.Namespace) -> int:
             worktree_root.rmdir()
         create_worktree(source_git_root, worktree_root, branch)
         created = True
-        inject_fibonacci_bug(workspace)
+        inject_fixture(workspace, fixture)
         commit_bug(workspace)
 
-        initial = verify(workspace)
+        initial = verify(workspace, fixture)
         if initial.returncode == 0:
             raise RuntimeError("bug fixture did not fail before A² attempts")
 
         attempts = 1 if args.smoke_only else max(args.attempts, 1)
         for attempt in range(1, attempts + 1):
-            payload = task_payload(TASK_ID, run_id, attempt)
-            lineage_before = lineage_count(workspace, TASK_ID)
+            payload = task_payload(fixture, run_id, attempt)
+            lineage_before = lineage_count(workspace, fixture.task_id)
             a2_result = (
                 None
                 if args.smoke_only
@@ -392,9 +463,9 @@ def run_benchmark(args: argparse.Namespace) -> int:
                     payload,
                 )
             )
-            verified = verify(workspace)
-            lineage_reconciled = reconcile_latest_lineage_with_verify(workspace, TASK_ID, verified)
-            lineage_after = lineage_count(workspace, TASK_ID)
+            verified = verify(workspace, fixture)
+            lineage_reconciled = reconcile_latest_lineage_with_verify(workspace, fixture.task_id, verified)
+            lineage_after = lineage_count(workspace, fixture.task_id)
             record = result_record(
                 payload=payload,
                 provider=args.provider,
@@ -424,15 +495,16 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertNotEqual(deterministic_task_uuid("same"), deterministic_task_uuid("other"))
 
     def test_task_payload_reuses_id_across_attempts(self) -> None:
-        first = task_payload(TASK_ID, "run", 1)
-        second = task_payload(TASK_ID, "run", 2)
+        fixture = FIXTURES["fibonacci"]
+        first = task_payload(fixture, "run", 1)
+        second = task_payload(fixture, "run", 2)
         self.assertEqual(first["task_id"], second["task_id"])
         self.assertEqual(first["run_id"], second["run_id"])
         self.assertEqual(second["attempt"], 2)
 
     def test_result_record_reports_prior_lineage(self) -> None:
-        payload = task_payload(TASK_ID, "run", 2)
-        verify_result = CommandResult(VERIFY_COMMAND, 0, "ok", "", 1.25)
+        payload = task_payload(FIXTURES["fibonacci"], "run", 2)
+        verify_result = CommandResult(FIBONACCI_VERIFY_COMMAND, 0, "ok", "", 1.25)
         record = result_record(
             payload=payload,
             provider="gemini",
@@ -452,7 +524,7 @@ class SelfCorrectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
             db = workspace / "lineage.sqlite"
-            task_id = TASK_ID
+            task_id = FIBONACCI_TASK_ID
             with sqlite3.connect(db) as connection:
                 connection.execute(
                     """
@@ -497,7 +569,7 @@ class SelfCorrectionTests(unittest.TestCase):
                     ),
                 )
 
-            verify_result = CommandResult(VERIFY_COMMAND, 101, "failed", "boom", 0.1)
+            verify_result = CommandResult(FIBONACCI_VERIFY_COMMAND, 101, "failed", "boom", 0.1)
             self.assertTrue(reconcile_latest_lineage_with_verify(workspace, task_id, verify_result))
 
             with sqlite3.connect(db) as connection:
