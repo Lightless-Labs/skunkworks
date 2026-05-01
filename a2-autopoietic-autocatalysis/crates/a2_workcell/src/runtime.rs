@@ -45,7 +45,41 @@ fn compact_snippet(value: &str, max_chars: usize) -> String {
     truncated
 }
 
-/// Render a prior LineageRecord as a compact motif line for the context pack.
+/// Split a benchmark/run verification note out of persisted model rationale.
+///
+/// Self-correction runs currently prepend notes like
+/// `[external verify: FAIL] cargo test ... exited 101.` to `patch_rationale` so
+/// the next attempt can see the real post-apply verification outcome. Keep that
+/// signal separate from the model's own rationale so it cannot be buried behind
+/// rationale truncation.
+fn split_external_verify_note(value: &str) -> (Option<String>, String) {
+    let trimmed = value.trim();
+    let Some(start) = trimmed.find("[external verify:") else {
+        return (None, trimmed.to_string());
+    };
+
+    let before = trimmed[..start].trim();
+    let after_marker = &trimmed[start..];
+    let (note, after) = after_marker
+        .split_once("\n\n")
+        .unwrap_or((after_marker, ""));
+
+    let mut remainder = String::new();
+    if !before.is_empty() {
+        remainder.push_str(before);
+    }
+    let after = after.trim();
+    if !after.is_empty() {
+        if !remainder.is_empty() {
+            remainder.push_str("\n\n");
+        }
+        remainder.push_str(after);
+    }
+
+    (Some(note.trim().to_string()), remainder)
+}
+
+/// Render a prior LineageRecord as a prompt motif for the context pack.
 fn render_prior_motif(record: &LineageRecord, index: usize) -> String {
     let model = record
         .model_attributions
@@ -53,6 +87,48 @@ fn render_prior_motif(record: &LineageRecord, index: usize) -> String {
         .map(|a| format!("{}/{}", a.provider, a.model))
         .unwrap_or_else(|| "unknown".into());
     let s = &record.fitness.somatic;
+
+    let rationale = record
+        .patch_rationale
+        .as_deref()
+        .filter(|value| !value.trim().is_empty());
+    let (external_verify, rationale_without_verify) = rationale
+        .map(split_external_verify_note)
+        .unwrap_or_else(|| (None, String::new()));
+
+    if let Some(note) = external_verify
+        .as_deref()
+        .filter(|note| note.contains("[external verify: FAIL]"))
+    {
+        let mut motif = format!(
+            "attempt {} [{}]\n  status: task_completed={}, tests_pass={}, tokens={}, duration={:.1}s\n  external_verification:\n    result: FAIL\n    detail: {}",
+            index + 1,
+            model,
+            s.task_completed,
+            s.tests_pass,
+            s.tokens_used,
+            s.duration_secs,
+            compact_snippet(note, 1_200)
+        );
+
+        if !rationale_without_verify.trim().is_empty() {
+            motif.push_str(&format!(
+                "\n  rationale: \"{}\"",
+                compact_snippet(&rationale_without_verify, 220)
+            ));
+        }
+
+        if let Some(diff) = record
+            .patch_diff
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            motif.push_str(&format!("\n  diff: \"{}\"", compact_snippet(diff, 320)));
+        }
+
+        return motif;
+    }
+
     let mut motif = format!(
         "attempt {} [{}]: task_completed={}, tests_pass={}, tokens={}, duration={:.1}s",
         index + 1,
@@ -63,14 +139,17 @@ fn render_prior_motif(record: &LineageRecord, index: usize) -> String {
         s.duration_secs
     );
 
-    if let Some(rationale) = record
-        .patch_rationale
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
+    if let Some(note) = external_verify.as_deref() {
+        motif.push_str(&format!(
+            ", external_verify=\"{}\"",
+            compact_snippet(note, 220)
+        ));
+    }
+
+    if !rationale_without_verify.trim().is_empty() {
         motif.push_str(&format!(
             ", rationale=\"{}\"",
-            compact_snippet(rationale, 220)
+            compact_snippet(&rationale_without_verify, 220)
         ));
     }
 
@@ -437,6 +516,60 @@ mod tests {
         assert!(motif.contains("tests_pass=false"));
         assert!(motif.contains("rationale=\"tried the wrong file\""));
         assert!(motif.contains("diff=\"--- a/foo +++ b/foo +bad approach\""));
+    }
+
+    #[test]
+    fn external_verification_failures_render_as_prominent_multiline_motifs() {
+        let task_id = TaskId::new();
+        let prior = LineageRecord {
+            id: LineageId::new(),
+            task_id: task_id.clone(),
+            patch_id: PatchId::new(),
+            patch_diff: Some("--- a/crate/src/lib.rs\n+++ b/crate/src/lib.rs\n+visible-only fix".into()),
+            patch_rationale: Some(
+                "[external verify: FAIL] cargo test -p hidden-fixture exited 101. assertion failed: hidden edge case still broken\n\ntried visible fix only"
+                    .into(),
+            ),
+            parent_germline: GermlineVersion::new(),
+            model_attributions: vec![ModelAttribution {
+                provider: "opencode".into(),
+                model: "minimax-coding-plan/MiniMax-M2.7".into(),
+                tokens_in: 1000,
+                tokens_out: 234,
+            }],
+            fitness: FitnessRecord {
+                eval_id: EvalId::new(),
+                task_id,
+                somatic: SomaticFitness {
+                    task_completed: false,
+                    tests_pass: false,
+                    acceptance_met: vec![false],
+                    tokens_used: 1234,
+                    duration_secs: 7.5,
+                },
+                germline: None,
+                organizational: None,
+                evaluated_at: Utc::now(),
+            },
+            created_at: Utc::now(),
+        };
+
+        let motif = render_prior_motif(&prior, 0);
+
+        assert!(motif.contains("attempt 1 [opencode/minimax-coding-plan/MiniMax-M2.7]"));
+        assert!(motif.contains(
+            "\n  status: task_completed=false, tests_pass=false, tokens=1234, duration=7.5s"
+        ));
+        assert!(motif.contains("\n  external_verification:"));
+        assert!(motif.contains("\n    result: FAIL"));
+        assert!(motif.contains(
+            "detail: [external verify: FAIL] cargo test -p hidden-fixture exited 101. assertion failed: hidden edge case still broken"
+        ));
+        assert!(motif.contains("\n  rationale: \"tried visible fix only\""));
+        assert!(motif.contains(
+            "\n  diff: \"--- a/crate/src/lib.rs +++ b/crate/src/lib.rs +visible-only fix\""
+        ));
+        assert!(!motif.contains("rationale=\"[external verify: FAIL]"));
     }
 
     #[tokio::test]

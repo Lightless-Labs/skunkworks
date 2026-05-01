@@ -10,7 +10,7 @@ Current facts:
 
 ## Next actions
 
-- [ ] Make prior external verification failures prominent in `a2_workcell::runtime::render_prior_motif` / prompt rendering.
+- [x] Make prior external verification failures prominent in `a2_workcell::runtime::render_prior_motif` / prompt rendering. Completed 2026-05-01; `[external verify: FAIL]` notes now render as structured multiline `external_verification` motifs.
 - [ ] Persist post-apply `verify_and_rebuild` outcomes in `a2ctl run` lineage instead of patching SQLite from the benchmark harness.
 - [ ] Add touched-file / diff-stat fields to `bench/self_correction.py` result JSONL.
 - [ ] Re-run `compound-hidden` N≥3 with Minimax after the prompt/lineage fixes.
