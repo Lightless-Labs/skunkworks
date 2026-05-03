@@ -1,13 +1,13 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-05-01
+**Last updated:** 2026-05-03
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
 
 A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies its own source code. It uses AI model CLIs (Claude, Codex, Gemini, OpenCode) as "food set" models that edit code in git worktrees, then the system verifies, scores, and optionally applies the patches to its own germline.
 
-## Current Numbers (as of 2026-04-28)
+## Current Numbers (as of 2026-05-03)
 
 | Metric | Value |
 |--------|-------|
@@ -25,7 +25,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 ```bash
 cd /Users/thomas/Projects/lightless-labs/skunkworks/a2-autopoietic-autocatalysis
-cargo test                                    # expect 68 pass
+cargo test                                    # expect 71 pass
 cargo run -p a2ctl -- sentinel --workspace .  # expect 6/6 PASS
 ```
 
@@ -157,12 +157,12 @@ ContextPack is wired and self-correction harnesses exist. The current gap is no 
 - [x] **Make prior failure motifs harder to ignore.** Completed 2026-05-01. `a2_workcell::runtime::render_prior_motif` now detects persisted `[external verify: FAIL]` notes and renders them as a structured multiline `external_verification` block ahead of rationale/diff snippets.
 - [x] **Move verification reconciliation out of the harness.** Completed 2026-05-01. `a2ctl run --apply` now reconciles persisted lineage after `try_apply_patch` + `verify_and_rebuild` via the Governor; `bench/self_correction.py` records whether core reconciliation ran and no longer patches SQLite directly.
 - [x] **Instrument what models changed per attempt.** Completed 2026-05-01. `bench/self_correction.py` now records touched files plus added/removed line counts from the latest lineage patch diff for each attempt.
-- [ ] **Run `compound-hidden` N≥3 per available non-Claude provider after motif/run-path fixes.** Current factual result: Minimax one run, attempts 1-3 failed with prior lineage present on attempts 2-3.
+- [ ] **Run `compound-hidden` N≥3 per available non-Claude provider after motif/run-path fixes.** Current factual result after motif/run-path fixes: one Minimax run on 2026-05-03, attempts 1-3 failed; prior lineage was present on attempts 2-3; core lineage reconciliation was true for all attempts; each attempt touched only `a2_core/src/lib.rs` (1 added, 1 removed), leaving the `a2ctl` hidden regression unfixed.
 - [ ] **Add a second compound fixture after one self-correction success.** Avoid tuning the loop to a single benchmark shape.
 
 ### Loop-shaped benchmarks
 
-1. **Self-correction benchmark** *(implemented 2026-04-28 as `bench/self_correction.py` + `bench/self_correction_score.py`)*: isolated git worktree, pinned task ID, lineage reconciliation after external verification, JSONL results. Fixtures: `fibonacci` (too easy: Minimax N=3 pass@1 3/3, loop 0/3), `compound-hidden` (harder: Minimax run attempt 1 failed, attempts 2-3 saw prior lineage, self-corrected 0/1). Current signal: A² memory is wired and visible, but the loop did not yet recover from compound hidden verification failure.
+1. **Self-correction benchmark** *(implemented 2026-04-28 as `bench/self_correction.py` + `bench/self_correction_score.py`)*: isolated git worktree, pinned task ID, core run-path lineage reconciliation, JSONL results. Fixtures: `fibonacci` (too easy: Minimax N=3 pass@1 3/3, loop 0/3), `compound-hidden` (harder: Minimax runs on 2026-04-28 and 2026-05-03 each failed attempts 1-3; attempts 2-3 saw prior lineage). Current factual observation: A² memory is wired and visible, but observed Minimax attempts have repeated the visible `a2_core` fix and not repaired the hidden `a2ctl` regression.
 2. **Multi-round benchmark**: N iterations on the same task, measure score improvement over rounds. Can now reuse the self-correction harness pattern.
 3. **Adversarial drift** (Fontana Level 0): can A² detect and reject a "promotion" that actually degrades the system? Philosophically load-bearing for the autopoiesis claim.
 4. **Cross-task transfer**: solve task A, measure if task B is faster/better because lineage carried over.
