@@ -1364,12 +1364,11 @@ fn revert_workspace() -> Result<(), String> {
 fn command_failure_message(label: &str, output: &std::process::Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let detail = if !stderr.is_empty() {
-        stderr
-    } else if !stdout.is_empty() {
-        stdout
-    } else {
-        format!("exit status {}", output.status)
+    let detail = match (stderr.is_empty(), stdout.is_empty()) {
+        (false, false) => format!("stderr:\n{stderr}\n\nstdout:\n{stdout}"),
+        (false, true) => stderr,
+        (true, false) => stdout,
+        (true, true) => format!("exit status {}", output.status),
     };
 
     format!("{label} failed: {detail}")
@@ -1391,6 +1390,23 @@ mod tests {
             format_promotion_decision(&decision),
             "promote_germline::Prompt"
         );
+    }
+
+    #[test]
+    fn command_failure_message_includes_stdout_and_stderr() {
+        let output = std::process::Command::new("sh")
+            .args([
+                "-c",
+                "printf stdout-detail; printf stderr-detail >&2; exit 7",
+            ])
+            .output()
+            .unwrap();
+
+        let message = command_failure_message("test command", &output);
+
+        assert!(message.contains("test command failed"));
+        assert!(message.contains("stderr-detail"));
+        assert!(message.contains("stdout-detail"));
     }
 
     #[test]
