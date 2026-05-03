@@ -12,7 +12,7 @@ Current facts:
 
 - [x] Make prior external verification failures prominent in `a2_workcell::runtime::render_prior_motif` / prompt rendering. Completed 2026-05-01; `[external verify: FAIL]` notes now render as structured multiline `external_verification` motifs.
 - [x] Persist post-apply `verify_and_rebuild` outcomes in `a2ctl run` lineage instead of patching SQLite from the benchmark harness. Completed 2026-05-01; `a2ctl run --apply` now asks the Governor to reconcile the persisted lineage record, and `bench/self_correction.py` no longer writes lineage rows directly.
-- [ ] Add touched-file / diff-stat fields to `bench/self_correction.py` result JSONL.
+- [x] Add touched-file / diff-stat fields to `bench/self_correction.py` result JSONL. Completed 2026-05-01; records now include `touched_files`, `touched_file_count`, `diff_added_lines`, and `diff_removed_lines` parsed from the latest lineage patch diff.
 - [ ] Re-run `compound-hidden` N≥3 with Minimax after the prompt/lineage fixes.
 - [ ] Run `compound-hidden` with Kimi and GLM after Minimax loop behavior is understood.
 - [ ] Add a second hard fixture after `compound-hidden` self-corrects at least once.

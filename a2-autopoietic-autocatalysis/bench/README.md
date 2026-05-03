@@ -34,6 +34,7 @@ Each JSONL result includes:
 - `prior_lineage_present`
 - `lineage_records_before` / `lineage_records_after`
 - `lineage_reconciled_by_core`
+- `touched_files`, `touched_file_count`, `diff_added_lines`, `diff_removed_lines`
 - verification command, return code, duration, stdout, stderr
 
 Score self-correction specifically:

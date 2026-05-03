@@ -210,6 +210,65 @@ def lineage_count(workspace: Path, task_id: str) -> int:
     return int(row[0]) if row else 0
 
 
+def latest_lineage_patch_diff(workspace: Path, task_id: str) -> str | None:
+    db = workspace / "lineage.sqlite"
+    if not db.exists():
+        return None
+
+    with sqlite3.connect(db) as connection:
+        try:
+            row = connection.execute(
+                """
+                SELECT patch_diff
+                FROM lineage_records
+                WHERE task_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (serialized_task_id(task_id),),
+            ).fetchone()
+        except sqlite3.Error:
+            return None
+    return row[0] if row and row[0] else None
+
+
+def diff_stats(diff: str | None) -> dict[str, Any]:
+    touched_files: list[str] = []
+    touched_seen: set[str] = set()
+    added_lines = 0
+    removed_lines = 0
+
+    if diff:
+        for line in diff.splitlines():
+            if line.startswith("diff --git "):
+                parts = line.split()
+                if len(parts) >= 4:
+                    path = parts[3]
+                    if path.startswith("b/"):
+                        path = path[2:]
+                    if path not in touched_seen:
+                        touched_seen.add(path)
+                        touched_files.append(path)
+            elif line.startswith("+++") and not touched_files:
+                path = line.removeprefix("+++ ").strip()
+                if path.startswith("b/"):
+                    path = path[2:]
+                if path != "/dev/null" and path not in touched_seen:
+                    touched_seen.add(path)
+                    touched_files.append(path)
+            elif line.startswith("+") and not line.startswith("+++"):
+                added_lines += 1
+            elif line.startswith("-") and not line.startswith("---"):
+                removed_lines += 1
+
+    return {
+        "touched_files": touched_files,
+        "touched_file_count": len(touched_files),
+        "diff_added_lines": added_lines,
+        "diff_removed_lines": removed_lines,
+    }
+
+
 def create_worktree(source_repo: Path, destination: Path, branch: str) -> Path:
     git(["worktree", "add", "-b", branch, str(destination), "HEAD"], source_repo)
     return destination
@@ -309,6 +368,7 @@ def result_record(
     lineage_before: int,
     lineage_after: int,
     lineage_reconciled_by_core: bool,
+    patch_stats: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "task_id": payload["task_id"],
@@ -323,6 +383,7 @@ def result_record(
         "lineage_records_before": lineage_before,
         "lineage_records_after": lineage_after,
         "lineage_reconciled_by_core": lineage_reconciled_by_core,
+        **patch_stats,
         "workspace": str(workspace),
         "a2_returncode": a2_result.returncode if a2_result else None,
         "a2_duration_secs": round(a2_result.duration_secs, 3) if a2_result else 0.0,
@@ -402,6 +463,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 )
             )
             verified = verify(workspace, fixture)
+            patch_stats = diff_stats(latest_lineage_patch_diff(workspace, fixture.task_id))
             lineage_after = lineage_count(workspace, fixture.task_id)
             lineage_reconciled_by_core = a2_result is not None and (
                 "[applied and rebuilt:" in a2_result.stderr
@@ -416,6 +478,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 lineage_before=lineage_before,
                 lineage_after=lineage_after,
                 lineage_reconciled_by_core=lineage_reconciled_by_core,
+                patch_stats=patch_stats,
             )
             append_jsonl(results, record)
             print(json.dumps(record, sort_keys=True))
@@ -455,11 +518,45 @@ class SelfCorrectionTests(unittest.TestCase):
             lineage_before=1,
             lineage_after=2,
             lineage_reconciled_by_core=True,
+            patch_stats={
+                "touched_files": ["crates/a2_core/src/lib.rs"],
+                "touched_file_count": 1,
+                "diff_added_lines": 1,
+                "diff_removed_lines": 1,
+            },
         )
         self.assertTrue(record["resolved"])
         self.assertTrue(record["prior_lineage_present"])
         self.assertEqual(record["lineage_records_after"], 2)
         self.assertTrue(record["lineage_reconciled_by_core"])
+        self.assertEqual(record["touched_files"], ["crates/a2_core/src/lib.rs"])
+        self.assertEqual(record["diff_added_lines"], 1)
+        self.assertEqual(record["diff_removed_lines"], 1)
+
+    def test_diff_stats_reports_touched_files_and_line_counts(self) -> None:
+        stats = diff_stats(
+            """
+diff --git a/crates/a2_core/src/lib.rs b/crates/a2_core/src/lib.rs
+--- a/crates/a2_core/src/lib.rs
++++ b/crates/a2_core/src/lib.rs
+@@ -1,2 +1,2 @@
+-old
++new
+diff --git a/crates/a2ctl/src/main.rs b/crates/a2ctl/src/main.rs
+--- a/crates/a2ctl/src/main.rs
++++ b/crates/a2ctl/src/main.rs
+@@ -10,0 +11,2 @@
++first
++second
+"""
+        )
+        self.assertEqual(
+            stats["touched_files"],
+            ["crates/a2_core/src/lib.rs", "crates/a2ctl/src/main.rs"],
+        )
+        self.assertEqual(stats["touched_file_count"], 2)
+        self.assertEqual(stats["diff_added_lines"], 3)
+        self.assertEqual(stats["diff_removed_lines"], 1)
 
 
 if __name__ == "__main__":

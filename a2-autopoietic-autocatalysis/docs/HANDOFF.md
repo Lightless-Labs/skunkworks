@@ -11,7 +11,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 | Metric | Value |
 |--------|-------|
-| Tests | 71 Rust + 3 self-correction Python tests |
+| Tests | 71 Rust + 4 self-correction Python tests |
 | Sentinels | 6/6 PASS |
 | Crates | 11 |
 | Benchmark (OpenCode/GLM via A²) | 5/5 (with 100k token / 1800s budget) |
@@ -156,7 +156,7 @@ ContextPack is wired and self-correction harnesses exist. The current gap is no 
 
 - [x] **Make prior failure motifs harder to ignore.** Completed 2026-05-01. `a2_workcell::runtime::render_prior_motif` now detects persisted `[external verify: FAIL]` notes and renders them as a structured multiline `external_verification` block ahead of rationale/diff snippets.
 - [x] **Move verification reconciliation out of the harness.** Completed 2026-05-01. `a2ctl run --apply` now reconciles persisted lineage after `try_apply_patch` + `verify_and_rebuild` via the Governor; `bench/self_correction.py` records whether core reconciliation ran and no longer patches SQLite directly.
-- [ ] **Instrument what models changed per attempt.** Add result fields summarizing touched files or diff stats so `compound-hidden` failures can distinguish "fixed visible bug only" from "fixed hidden bug only" from "no meaningful change."
+- [x] **Instrument what models changed per attempt.** Completed 2026-05-01. `bench/self_correction.py` now records touched files plus added/removed line counts from the latest lineage patch diff for each attempt.
 - [ ] **Run `compound-hidden` N≥3 per available non-Claude provider after motif/run-path fixes.** Current factual result: Minimax one run, attempts 1-3 failed with prior lineage present on attempts 2-3.
 - [ ] **Add a second compound fixture after one self-correction success.** Avoid tuning the loop to a single benchmark shape.
 
@@ -216,3 +216,4 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-04-28 | Add self-correction benchmark harness | `bench/self_correction.py` creates isolated bugged worktrees, repeats A² attempts with one pinned task ID, and records per-attempt JSONL including prior-lineage visibility. `fibonacci` showed pass@1, not loop value. `compound-hidden` exercised prior lineage but did not self-correct in 3 attempts. |
 | 2026-05-01 | Render external verification failures as structured motifs | Prior-attempt motifs now split `[external verify: FAIL]` notes out of persisted rationale and render `external_verification` as multiline context before rationale/diff snippets, so self-correction attempts see the post-apply failure prominently. |
 | 2026-05-01 | Reconcile apply/rebuild outcomes in `a2ctl run` | The run path now updates persisted lineage after `git apply` and `verify_and_rebuild`, replacing pre-apply somatic truth with post-apply germline gate truth. The self-correction harness no longer patches SQLite directly. |
+| 2026-05-01 | Add self-correction diff stats | Self-correction JSONL records now include touched files and added/removed line counts from the latest lineage patch diff, making per-attempt behavior distinguishable without inspecting workspaces manually. |
