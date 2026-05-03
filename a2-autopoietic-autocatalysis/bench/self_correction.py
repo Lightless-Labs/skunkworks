@@ -210,68 +210,6 @@ def lineage_count(workspace: Path, task_id: str) -> int:
     return int(row[0]) if row else 0
 
 
-def reconcile_latest_lineage_with_verify(
-    workspace: Path,
-    task_id: str,
-    verify_result: CommandResult,
-) -> bool:
-    """Patch the newest lineage row with post-apply verification truth.
-
-    `a2ctl run` persists lineage before its outer `git apply` + rebuild gate. For
-    a self-correction benchmark, the next attempt needs to see the *actual*
-    verification failure, not just the pre-apply SeedEvaluator result. This keeps
-    the benchmark's prior-attempt motif honest without mutating the germline.
-    """
-    db = workspace / "lineage.sqlite"
-    if not db.exists():
-        return False
-
-    passed = verify_result.returncode == 0
-    with sqlite3.connect(db) as connection:
-        row = connection.execute(
-            """
-            SELECT id, fitness_json, patch_rationale
-            FROM lineage_records
-            WHERE task_id = ?
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            (serialized_task_id(task_id),),
-        ).fetchone()
-        if row is None:
-            return False
-
-        record_id, fitness_json, patch_rationale = row
-        fitness = json.loads(fitness_json)
-        somatic = fitness.setdefault("somatic", {})
-        somatic["tests_pass"] = passed
-        somatic["task_completed"] = passed
-        somatic["acceptance_met"] = [passed for _ in somatic.get("acceptance_met", [])]
-
-        verify_note = (
-            f"\n\n[external verify: {'PASS' if passed else 'FAIL'}] "
-            f"{verify_result.command} exited {verify_result.returncode}."
-        )
-        if not passed:
-            detail = (verify_result.stderr or verify_result.stdout).strip()
-            if detail:
-                verify_note += " " + " ".join(detail.split())[:1000]
-
-        connection.execute(
-            """
-            UPDATE lineage_records
-            SET fitness_json = ?, patch_rationale = ?
-            WHERE id = ?
-            """,
-            (
-                json.dumps(fitness, separators=(",", ":")),
-                verify_note + ("\n\n" + patch_rationale if patch_rationale else ""),
-                record_id,
-            ),
-        )
-    return True
-
-
 def create_worktree(source_repo: Path, destination: Path, branch: str) -> Path:
     git(["worktree", "add", "-b", branch, str(destination), "HEAD"], source_repo)
     return destination
@@ -370,7 +308,7 @@ def result_record(
     verify_result: CommandResult,
     lineage_before: int,
     lineage_after: int,
-    lineage_reconciled: bool,
+    lineage_reconciled_by_core: bool,
 ) -> dict[str, Any]:
     return {
         "task_id": payload["task_id"],
@@ -384,7 +322,7 @@ def result_record(
         "prior_lineage_present": lineage_before > 0,
         "lineage_records_before": lineage_before,
         "lineage_records_after": lineage_after,
-        "lineage_reconciled_with_verify": lineage_reconciled,
+        "lineage_reconciled_by_core": lineage_reconciled_by_core,
         "workspace": str(workspace),
         "a2_returncode": a2_result.returncode if a2_result else None,
         "a2_duration_secs": round(a2_result.duration_secs, 3) if a2_result else 0.0,
@@ -464,8 +402,11 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 )
             )
             verified = verify(workspace, fixture)
-            lineage_reconciled = reconcile_latest_lineage_with_verify(workspace, fixture.task_id, verified)
             lineage_after = lineage_count(workspace, fixture.task_id)
+            lineage_reconciled_by_core = a2_result is not None and (
+                "[applied and rebuilt:" in a2_result.stderr
+                or "[apply/rebuild failed for" in a2_result.stderr
+            )
             record = result_record(
                 payload=payload,
                 provider=args.provider,
@@ -474,7 +415,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 verify_result=verified,
                 lineage_before=lineage_before,
                 lineage_after=lineage_after,
-                lineage_reconciled=lineage_reconciled,
+                lineage_reconciled_by_core=lineage_reconciled_by_core,
             )
             append_jsonl(results, record)
             print(json.dumps(record, sort_keys=True))
@@ -513,74 +454,12 @@ class SelfCorrectionTests(unittest.TestCase):
             verify_result=verify_result,
             lineage_before=1,
             lineage_after=2,
-            lineage_reconciled=True,
+            lineage_reconciled_by_core=True,
         )
         self.assertTrue(record["resolved"])
         self.assertTrue(record["prior_lineage_present"])
         self.assertEqual(record["lineage_records_after"], 2)
-        self.assertTrue(record["lineage_reconciled_with_verify"])
-
-    def test_reconcile_latest_lineage_with_verify_updates_fitness_and_rationale(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            workspace = Path(directory)
-            db = workspace / "lineage.sqlite"
-            task_id = FIBONACCI_TASK_ID
-            with sqlite3.connect(db) as connection:
-                connection.execute(
-                    """
-                    CREATE TABLE lineage_records (
-                        id TEXT PRIMARY KEY,
-                        task_id TEXT NOT NULL,
-                        patch_id TEXT NOT NULL,
-                        patch_diff TEXT,
-                        patch_rationale TEXT,
-                        parent_germline TEXT NOT NULL,
-                        model_attributions_json TEXT NOT NULL,
-                        fitness_json TEXT NOT NULL,
-                        created_at TEXT NOT NULL
-                    )
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO lineage_records (
-                        id, task_id, patch_id, patch_diff, patch_rationale,
-                        parent_germline, model_attributions_json, fitness_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        '"lineage"',
-                        serialized_task_id(task_id),
-                        '"patch"',
-                        "+bad",
-                        "original rationale",
-                        '"germline"',
-                        "[]",
-                        json.dumps(
-                            {
-                                "somatic": {
-                                    "task_completed": True,
-                                    "tests_pass": True,
-                                    "acceptance_met": [True],
-                                }
-                            }
-                        ),
-                        "2026-04-28T00:00:00Z",
-                    ),
-                )
-
-            verify_result = CommandResult(FIBONACCI_VERIFY_COMMAND, 101, "failed", "boom", 0.1)
-            self.assertTrue(reconcile_latest_lineage_with_verify(workspace, task_id, verify_result))
-
-            with sqlite3.connect(db) as connection:
-                fitness_json, rationale = connection.execute(
-                    "SELECT fitness_json, patch_rationale FROM lineage_records"
-                ).fetchone()
-            fitness = json.loads(fitness_json)
-            self.assertFalse(fitness["somatic"]["task_completed"])
-            self.assertFalse(fitness["somatic"]["tests_pass"])
-            self.assertEqual(fitness["somatic"]["acceptance_met"], [False])
-            self.assertIn("external verify: FAIL", rationale)
+        self.assertTrue(record["lineage_reconciled_by_core"])
 
 
 if __name__ == "__main__":

@@ -94,6 +94,41 @@ impl LineageStore for SqliteLineageStore {
         Ok(())
     }
 
+    async fn replace(&self, entry: LineageRecord) -> A2Result<()> {
+        let connection = lock_connection(&self.connection)?;
+
+        connection
+            .execute(
+                "
+                UPDATE lineage_records
+                SET
+                    task_id = ?2,
+                    patch_id = ?3,
+                    patch_diff = ?4,
+                    patch_rationale = ?5,
+                    parent_germline = ?6,
+                    model_attributions_json = ?7,
+                    fitness_json = ?8,
+                    created_at = ?9
+                WHERE id = ?1
+                ",
+                params![
+                    serialize_json(&entry.id)?,
+                    serialize_json(&entry.task_id)?,
+                    serialize_json(&entry.patch_id)?,
+                    entry.patch_diff.as_deref(),
+                    entry.patch_rationale.as_deref(),
+                    serialize_json(&entry.parent_germline)?,
+                    serialize_json(&entry.model_attributions)?,
+                    serialize_json(&entry.fitness)?,
+                    entry.created_at.to_rfc3339(),
+                ],
+            )
+            .map_err(sqlite_error)?;
+
+        Ok(())
+    }
+
     async fn get(&self, id: &LineageId) -> A2Result<Option<LineageRecord>> {
         let connection = lock_connection(&self.connection)?;
         let mut statement = connection
@@ -275,6 +310,41 @@ mod tests {
             serde_json::to_value(&actual).unwrap(),
             serde_json::to_value(&expected).unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn replaces_lineage_records_after_external_verification() {
+        let connection = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let store = SqliteLineageStore::from_connection(connection).unwrap();
+
+        let created_at = Utc.with_ymd_and_hms(2026, 4, 1, 12, 0, 0).single().unwrap();
+        let mut record = sample_lineage_record(
+            TaskId::new(),
+            PatchId::new(),
+            GermlineVersion::new(),
+            created_at,
+        );
+        record.fitness.somatic.task_completed = true;
+        record.fitness.somatic.tests_pass = true;
+        record.fitness.somatic.acceptance_met = vec![true, true];
+
+        store.record(record.clone()).await.unwrap();
+
+        record.fitness.somatic.task_completed = false;
+        record.fitness.somatic.tests_pass = false;
+        record.fitness.somatic.acceptance_met = vec![false, false];
+        record.patch_rationale = Some(
+            "[external verify: FAIL] cargo test exited 101. hidden assertion failed\n\noriginal rationale"
+                .into(),
+        );
+
+        store.replace(record.clone()).await.unwrap();
+
+        let actual = store.get(&record.id).await.unwrap().unwrap();
+        assert!(!actual.fitness.somatic.task_completed);
+        assert!(!actual.fitness.somatic.tests_pass);
+        assert_eq!(actual.fitness.somatic.acceptance_met, vec![false, false]);
+        assert_eq!(actual.patch_rationale, record.patch_rationale);
     }
 
     #[tokio::test]

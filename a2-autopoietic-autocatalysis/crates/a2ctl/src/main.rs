@@ -369,22 +369,30 @@ async fn main() {
                                 &outcome.decision
                             && let Some(patch) = &outcome.result.patch
                         {
-                            match try_apply_patch(&patch.diff, &workspace_root).and_then(
-                                |applied| {
-                                    if applied {
-                                        verify_and_rebuild()
-                                    } else {
-                                        Ok(false)
-                                    }
-                                },
-                            ) {
-                                Ok(true) => {
-                                    apply_ok = true;
-                                    verify_ok = true;
-                                    eprintln!("[applied and rebuilt: {title}]");
-                                }
-                                Ok(false) => {}
-                                Err(e) => eprintln!("[apply/rebuild failed for {title}: {e}]"),
+                            let apply_outcome =
+                                apply_and_verify_patch(&patch.diff, &workspace_root);
+                            apply_ok = apply_outcome.applied;
+                            verify_ok = apply_outcome.verified;
+
+                            if let Err(e) = governor
+                                .reconcile_lineage_apply_outcome(
+                                    &outcome.lineage.id,
+                                    apply_outcome.applied,
+                                    apply_outcome.verified,
+                                    apply_outcome.note.clone(),
+                                )
+                                .await
+                            {
+                                eprintln!("[lineage reconciliation failed for {title}: {e}]");
+                            }
+
+                            if apply_outcome.verified {
+                                eprintln!("[applied and rebuilt: {title}]");
+                            } else {
+                                eprintln!(
+                                    "[apply/rebuild failed for {title}: {}]",
+                                    apply_outcome.note
+                                );
                             }
                         }
                         governor.record_apply_outcome(apply_ok, verify_ok);
@@ -1194,6 +1202,47 @@ fn scan_note<'a>(marker: &str, line: &'a str) -> &'a str {
         .unwrap_or("")
         .trim_start_matches(|c: char| c == ':' || c == '-' || c.is_whitespace())
         .trim()
+}
+
+struct ApplyVerifyOutcome {
+    applied: bool,
+    verified: bool,
+    note: String,
+}
+
+fn apply_and_verify_patch(diff: &str, dir: &Path) -> ApplyVerifyOutcome {
+    match try_apply_patch(diff, dir) {
+        Ok(true) => match verify_and_rebuild() {
+            Ok(true) => ApplyVerifyOutcome {
+                applied: true,
+                verified: true,
+                note: "[external verify: PASS] git apply and verify_and_rebuild exited 0.".into(),
+            },
+            Ok(false) => ApplyVerifyOutcome {
+                applied: true,
+                verified: false,
+                note:
+                    "[external verify: FAIL] verify_and_rebuild exited 0 without reporting success."
+                        .into(),
+            },
+            Err(e) => ApplyVerifyOutcome {
+                applied: true,
+                verified: false,
+                note: format!("[external verify: FAIL] verify_and_rebuild failed. {e}"),
+            },
+        },
+        Ok(false) => ApplyVerifyOutcome {
+            applied: false,
+            verified: false,
+            note: "[external verify: FAIL] git apply skipped because the patch diff was empty."
+                .into(),
+        },
+        Err(e) => ApplyVerifyOutcome {
+            applied: false,
+            verified: false,
+            note: format!("[external verify: FAIL] git apply failed. {e}"),
+        },
+    }
 }
 
 /// Attempt to apply a promoted patch via `git apply`. Falls back to fuzzy

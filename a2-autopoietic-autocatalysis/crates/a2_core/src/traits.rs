@@ -74,6 +74,7 @@ pub trait ConstitutionalVerifier: Send + Sync {
 #[async_trait]
 pub trait LineageStore: Send + Sync {
     async fn record(&self, entry: LineageRecord) -> A2Result<()>;
+    async fn replace(&self, entry: LineageRecord) -> A2Result<()>;
     async fn get(&self, id: &LineageId) -> A2Result<Option<LineageRecord>>;
     async fn for_task(&self, task_id: &TaskId) -> A2Result<Vec<LineageRecord>>;
     async fn recent(&self, limit: usize) -> A2Result<Vec<LineageRecord>>;

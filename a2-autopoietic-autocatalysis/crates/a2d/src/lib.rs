@@ -29,6 +29,26 @@ impl std::fmt::Display for StrategyChange {
     }
 }
 
+fn prepend_verification_note(note: &str, existing_rationale: &str) -> String {
+    let note = note.trim();
+    let existing_rationale = existing_rationale.trim();
+
+    if existing_rationale.is_empty() {
+        note.to_string()
+    } else if existing_rationale.starts_with("[external verify:") {
+        let (_, rest) = existing_rationale
+            .split_once("\n\n")
+            .unwrap_or((existing_rationale, ""));
+        if rest.trim().is_empty() {
+            note.to_string()
+        } else {
+            format!("{note}\n\n{}", rest.trim())
+        }
+    } else {
+        format!("{note}\n\n{existing_rationale}")
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RoundOutcome {
     test_count: u64,
@@ -307,6 +327,38 @@ impl Governor {
         }
     }
 
+    /// Reconcile a persisted lineage record with post-apply verification truth.
+    ///
+    /// `run_task` records pre-apply somatic fitness from the worktree evaluator.
+    /// The outer `a2ctl run --apply` path then attempts to admit that patch into
+    /// the live germline and runs the full rebuild gate. Persist that later truth
+    /// back into lineage so future attempts see the actual apply/rebuild outcome.
+    pub async fn reconcile_lineage_apply_outcome(
+        &self,
+        lineage_id: &LineageId,
+        applied: bool,
+        verified: bool,
+        verification_note: String,
+    ) -> A2Result<()> {
+        let Some(store) = &self.lineage_store else {
+            return Ok(());
+        };
+        let Some(mut record) = store.get(lineage_id).await? else {
+            return Ok(());
+        };
+
+        let passed = applied && verified;
+        record.fitness.somatic.task_completed = passed;
+        record.fitness.somatic.tests_pass = passed;
+        for criterion in &mut record.fitness.somatic.acceptance_met {
+            *criterion = passed;
+        }
+
+        let existing = record.patch_rationale.unwrap_or_default();
+        record.patch_rationale = Some(prepend_verification_note(&verification_note, &existing));
+        store.replace(record).await
+    }
+
     /// Query the stagnation detector for a recommended strategy change.
     pub fn suggest_strategy_change(&self) -> StrategyChange {
         let Some(detector) = &self.stagnation_detector else {
@@ -331,6 +383,8 @@ mod tests {
     use super::*;
     use a2_core::error::A2Error;
     use chrono::Utc;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
     fn record_rounds(detector: &mut StagnationDetector, rounds: &[(u64, u64, u64)]) {
         for (test_count, successful_applies, promotion_count) in rounds {
@@ -403,6 +457,54 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct MemoryLineageStore {
+        records: Mutex<HashMap<LineageId, LineageRecord>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LineageStore for MemoryLineageStore {
+        async fn record(&self, entry: LineageRecord) -> A2Result<()> {
+            self.records.lock().unwrap().insert(entry.id.clone(), entry);
+            Ok(())
+        }
+
+        async fn replace(&self, entry: LineageRecord) -> A2Result<()> {
+            self.records.lock().unwrap().insert(entry.id.clone(), entry);
+            Ok(())
+        }
+
+        async fn get(&self, id: &LineageId) -> A2Result<Option<LineageRecord>> {
+            Ok(self.records.lock().unwrap().get(id).cloned())
+        }
+
+        async fn for_task(&self, task_id: &TaskId) -> A2Result<Vec<LineageRecord>> {
+            let mut records = self
+                .records
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|record| &record.task_id == task_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            records.sort_by_key(|record| record.created_at);
+            Ok(records)
+        }
+
+        async fn recent(&self, limit: usize) -> A2Result<Vec<LineageRecord>> {
+            let mut records = self
+                .records
+                .lock()
+                .unwrap()
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            records.sort_by_key(|record| std::cmp::Reverse(record.created_at));
+            records.truncate(limit);
+            Ok(records)
+        }
+    }
+
     struct NoopModel;
 
     #[async_trait::async_trait]
@@ -465,6 +567,76 @@ mod tests {
             outcome.decision,
             PromotionDecision::PromoteGermline { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn reconcile_lineage_apply_outcome_persists_post_apply_truth() {
+        let store = Arc::new(MemoryLineageStore::default());
+        let gov = Governor::new(
+            GermlineVersion::new(),
+            Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 10,
+            },
+        )
+        .with_lineage_store(store.clone());
+
+        let task_id = TaskId::new();
+        let lineage_id = LineageId::new();
+        let record = LineageRecord {
+            id: lineage_id.clone(),
+            task_id: task_id.clone(),
+            patch_id: PatchId::new(),
+            patch_diff: Some("+candidate".into()),
+            patch_rationale: Some("candidate rationale".into()),
+            parent_germline: GermlineVersion::new(),
+            model_attributions: vec![ModelAttribution {
+                provider: "test".into(),
+                model: "noop".into(),
+                tokens_in: 1,
+                tokens_out: 1,
+            }],
+            fitness: FitnessRecord {
+                eval_id: EvalId::new(),
+                task_id,
+                somatic: SomaticFitness {
+                    task_completed: true,
+                    tests_pass: true,
+                    acceptance_met: vec![true, true],
+                    tokens_used: 2,
+                    duration_secs: 0.1,
+                },
+                germline: None,
+                organizational: None,
+                evaluated_at: Utc::now(),
+            },
+            created_at: Utc::now(),
+        };
+        store.record(record).await.unwrap();
+
+        gov.reconcile_lineage_apply_outcome(
+            &lineage_id,
+            true,
+            false,
+            "[external verify: FAIL] cargo test exited 101. hidden failure".into(),
+        )
+        .await
+        .unwrap();
+
+        let reconciled = store.get(&lineage_id).await.unwrap().unwrap();
+        assert!(!reconciled.fitness.somatic.task_completed);
+        assert!(!reconciled.fitness.somatic.tests_pass);
+        assert_eq!(
+            reconciled.fitness.somatic.acceptance_met,
+            vec![false, false]
+        );
+        assert_eq!(
+            reconciled.patch_rationale.as_deref(),
+            Some(
+                "[external verify: FAIL] cargo test exited 101. hidden failure\n\ncandidate rationale"
+            )
+        );
     }
 
     #[tokio::test]
