@@ -45,6 +45,29 @@ fn compact_snippet(value: &str, max_chars: usize) -> String {
     truncated
 }
 
+fn verification_failure_focus(value: &str, max_chars: usize) -> Option<String> {
+    let mut focused = Vec::new();
+    for line in value.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("failed")
+            || lower.contains("failures:")
+            || lower.contains("panicked at")
+            || lower.contains("assertion failed")
+            || lower.contains("assertion `")
+            || lower.contains("left:")
+            || lower.contains("right:")
+        {
+            focused.push(line);
+        }
+    }
+
+    if focused.is_empty() {
+        None
+    } else {
+        Some(compact_snippet(&focused.join("\n"), max_chars))
+    }
+}
+
 /// Split a benchmark/run verification note out of persisted model rationale.
 ///
 /// Self-correction runs currently prepend notes like
@@ -101,15 +124,18 @@ fn render_prior_motif(record: &LineageRecord, index: usize) -> String {
         .filter(|note| note.contains("[external verify: FAIL]"))
     {
         let mut motif = format!(
-            "attempt {} [{}]\n  status: task_completed={}, tests_pass={}, tokens={}, duration={:.1}s\n  external_verification:\n    result: FAIL\n    detail: {}",
+            "attempt {} [{}]\n  status: task_completed={}, tests_pass={}, tokens={}, duration={:.1}s\n  external_verification:\n    result: FAIL",
             index + 1,
             model,
             s.task_completed,
             s.tests_pass,
             s.tokens_used,
             s.duration_secs,
-            compact_snippet(note, 1_200)
         );
+        if let Some(focus) = verification_failure_focus(note, 1_200) {
+            motif.push_str(&format!("\n    failure_focus: {focus}"));
+        }
+        motif.push_str(&format!("\n    detail: {}", compact_snippet(note, 1_200)));
 
         if !rationale_without_verify.trim().is_empty() {
             motif.push_str(&format!(
@@ -563,6 +589,9 @@ mod tests {
         assert!(motif.contains("\n  external_verification:"));
         assert!(motif.contains("\n    result: FAIL"));
         assert!(motif.contains(
+            "failure_focus: [external verify: FAIL] cargo test -p hidden-fixture exited 101. assertion failed: hidden edge case still broken"
+        ));
+        assert!(motif.contains(
             "detail: [external verify: FAIL] cargo test -p hidden-fixture exited 101. assertion failed: hidden edge case still broken"
         ));
         assert!(motif.contains("\n  rationale: \"tried visible fix only\""));
@@ -570,6 +599,25 @@ mod tests {
             "\n  diff: \"--- a/crate/src/lib.rs +++ b/crate/src/lib.rs +visible-only fix\""
         ));
         assert!(!motif.contains("rationale=\"[external verify: FAIL]"));
+    }
+
+    #[test]
+    fn external_verification_focus_preserves_late_hidden_failures() {
+        let note = "[external verify: FAIL] verify_and_rebuild failed. cargo test failed: stdout:\n\
+            running 99 tests\n\
+            test many::passing::tests ... ok\n\
+            test tests::ignores_non_task_mentions_inside_comments_and_strings ... FAILED\n\
+            failures:\n\n\
+            ---- tests::ignores_non_task_mentions_inside_comments_and_strings stdout ----\n\
+            thread 'tests::ignores_non_task_mentions_inside_comments_and_strings' panicked at crates/a2ctl/src/main.rs:1556:9:\n\
+            assertion failed: find_scan_marker(\"let s = \\\"// TODO: not a comment\\\";\").is_none()\n\
+            test result: FAILED. 11 passed; 1 failed";
+
+        let focus = verification_failure_focus(note, 600).expect("focus should find failures");
+
+        assert!(focus.contains("tests::ignores_non_task_mentions_inside_comments_and_strings"));
+        assert!(focus.contains("assertion failed: find_scan_marker"));
+        assert!(focus.contains("test result: FAILED"));
     }
 
     #[tokio::test]
