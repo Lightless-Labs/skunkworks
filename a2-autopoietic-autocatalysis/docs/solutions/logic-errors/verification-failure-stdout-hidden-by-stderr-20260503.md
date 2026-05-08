@@ -24,17 +24,17 @@ Result: prior-attempt motifs told the model that `cargo test` failed, but omitte
 
 ## Fix
 
-`a2ctl::command_failure_message()` now includes both streams when both are present:
+`a2ctl::command_failure_message()` now includes both streams when both are present, with stdout first:
 
 ```text
-<label> failed: stderr:
+<label> failed: stdout:
 ...
 
-stdout:
+stderr:
 ...
 ```
 
-A regression test asserts both stdout and stderr appear in the generated failure message.
+The ordering matters because prior-attempt motifs compact the verification note. If stderr comes first, compiler noise and cargo summaries can consume the prompt budget before the failing assertion on stdout appears. A regression test asserts both stdout and stderr appear, and that stdout is rendered first.
 
 ## Rule
 

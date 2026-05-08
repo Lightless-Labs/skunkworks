@@ -1365,7 +1365,7 @@ fn command_failure_message(label: &str, output: &std::process::Output) -> String
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let detail = match (stderr.is_empty(), stdout.is_empty()) {
-        (false, false) => format!("stderr:\n{stderr}\n\nstdout:\n{stdout}"),
+        (false, false) => format!("stdout:\n{stdout}\n\nstderr:\n{stderr}"),
         (false, true) => stderr,
         (true, false) => stdout,
         (true, true) => format!("exit status {}", output.status),
@@ -1407,6 +1407,10 @@ mod tests {
         assert!(message.contains("test command failed"));
         assert!(message.contains("stderr-detail"));
         assert!(message.contains("stdout-detail"));
+        assert!(
+            message.find("stdout-detail").unwrap() < message.find("stderr-detail").unwrap(),
+            "stdout should be rendered first because test assertions usually land there"
+        );
     }
 
     #[test]
