@@ -315,7 +315,10 @@ impl WorktreeCatalyst {
 
         for line in raw_stdout.lines() {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                if let Some(t) = v.get("part").and_then(|p| p.get("text")).and_then(|t| t.as_str())
+                if let Some(t) = v
+                    .get("part")
+                    .and_then(|p| p.get("text"))
+                    .and_then(|t| t.as_str())
                 {
                     text.push_str(t);
                 }
@@ -377,7 +380,10 @@ impl WorktreeCatalyst {
             prompt.push_str(
                 "\n## Prior Attempts on This Task\n\n\
                  Earlier workcell runs on this same task produced the results below. \
-                 Learn from them: if prior attempts failed, try a different approach; \
+                 Treat `external_verification` failures as authoritative acceptance \
+                 criteria for the next attempt, even when they reveal failures beyond \
+                 the original task description. If prior attempts failed, fix every \
+                 failing test named in `failure_focus` and try a different approach; \
                  if they partially succeeded, build on what worked.\n\n",
             );
             for motif in &context.retrieved_motifs {
@@ -619,6 +625,43 @@ mod tests {
             diff.contains("+modified by mock edit"),
             "diff must contain the inserted line; got:\n{diff}"
         );
+    }
+
+    #[test]
+    fn prompt_treats_prior_external_verification_as_authoritative() {
+        let repo_dir = std::env::temp_dir().join(format!("a2-prompt-{}", uuid::Uuid::now_v7()));
+        let catalyst = WorktreeCatalyst::new(repo_dir);
+        let task = TaskContract {
+            id: TaskId::new(),
+            title: "Fix visible bug".into(),
+            description: "Fix `cargo test -p a2_core test_fibonacci`.".into(),
+            acceptance_criteria: vec![],
+            budget: Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 4,
+            },
+            priority: Priority::Normal,
+            source: TaskSource::External {
+                origin: "test".into(),
+            },
+            created_at: Utc::now(),
+        };
+        let context = ContextPack {
+            germline_version: GermlineVersion::new(),
+            relevant_files: vec![],
+            prior_attempts: vec![LineageId::new()],
+            retrieved_motifs: vec![
+                "attempt 1 [opencode/minimax]\n  external_verification:\n    result: FAIL\n    failure_focus: tests::hidden_regression ... FAILED"
+                    .into(),
+            ],
+        };
+
+        let prompt = catalyst.build_prompt(&task, &context);
+
+        assert!(prompt.contains("Treat `external_verification` failures as authoritative"));
+        assert!(prompt.contains("fix every failing test named in `failure_focus`"));
+        assert!(prompt.contains("tests::hidden_regression"));
     }
 
     #[tokio::test]
