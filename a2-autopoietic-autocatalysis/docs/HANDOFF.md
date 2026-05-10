@@ -1,13 +1,13 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-05-03
+**Last updated:** 2026-05-10
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
 
 A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies its own source code. It uses AI model CLIs (Claude, Codex, Gemini, OpenCode) as "food set" models that edit code in git worktrees, then the system verifies, scores, and optionally applies the patches to its own germline.
 
-## Current Numbers (as of 2026-05-03)
+## Current Numbers (as of 2026-05-10)
 
 | Metric | Value |
 |--------|-------|
@@ -145,7 +145,23 @@ const DEFAULT_STAGNATION_WINDOW: usize = 3;
 
 ## What To Do Next
 
-ContextPack is wired and self-correction harnesses exist. The current gap is no longer "build a loop benchmark"; it is "make the loop recover." `compound-hidden` proves prior lineage reaches later attempts, but Minimax did not repair the hidden failure in 3 attempts.
+ContextPack is wired and self-correction harnesses exist. The current gap is no longer "build a loop benchmark"; it is "make the loop recover." `compound-hidden` proves prior lineage reaches later attempts, but observed Minimax/Kimi runs have not repaired the hidden failure.
+
+### Current loop status (2026-05-10)
+
+**Working:**
+- Prior lineage reaches retry attempts for a pinned `TaskId`.
+- `a2ctl run --apply` reconciles post-apply `git apply` + `verify_and_rebuild` truth into persisted lineage.
+- Prior motifs render structured `external_verification` blocks, stdout-first details, and `failure_focus` lines.
+- WorktreeCatalyst prompt states prior `external_verification` failures are authoritative acceptance criteria.
+- Self-correction JSONL records touched files and added/removed line counts.
+
+**Not working:**
+- `compound-hidden` still scores resolved 0/1 and self-corrected 0/1 in observed Minimax/Kimi runs.
+- Retry attempts repeatedly touch only `a2_core/src/lib.rs` with a one-line patch shape.
+- The hidden `a2ctl` scan-marker regression remains unfixed across attempts.
+
+**Structural solution direction:** graduate verifier failures from prompt context into typed retry structure: structured external verification records, verifier-derived acceptance criteria, verifier-derived relevant files, anti-repeat retry strategy, and task-specific worktree verification before promotion scoring. Dedicated todos now live in `todos/`.
 
 ### Completed prerequisites (2026-04-23)
 
@@ -160,7 +176,12 @@ ContextPack is wired and self-correction harnesses exist. The current gap is no 
 - [x] **Make prior failure motifs harder to ignore.** Completed 2026-05-01. `a2_workcell::runtime::render_prior_motif` now detects persisted `[external verify: FAIL]` notes and renders them as a structured multiline `external_verification` block ahead of rationale/diff snippets.
 - [x] **Move verification reconciliation out of the harness.** Completed 2026-05-01. `a2ctl run --apply` now reconciles persisted lineage after `try_apply_patch` + `verify_and_rebuild` via the Governor; `bench/self_correction.py` records whether core reconciliation ran and no longer patches SQLite directly.
 - [x] **Instrument what models changed per attempt.** Completed 2026-05-01. `bench/self_correction.py` now records touched files plus added/removed line counts from the latest lineage patch diff for each attempt.
-- [ ] **Run `compound-hidden` N≥3 per available non-Claude provider after motif/run-path fixes.** Current factual result after motif/run-path fixes: Minimax runs on 2026-05-03 and 2026-05-08 plus Kimi run on 2026-05-03 failed attempts 1-3; prior lineage was present on attempts 2-3; core lineage reconciliation was true for all attempts; each attempt touched only `a2_core/src/lib.rs` (1 added, 1 removed), leaving the `a2ctl` hidden regression unfixed. 2026-05-08 Minimax reruns after stdout-first, `failure_focus`, and authoritative-verification prompt changes still scored resolved 0/1, pass@1 0/1, loop exercised 1/1, self-corrected 0/1.
+- [ ] **Implement structured external verification.** See `todos/structured-external-verification.md`. Replace `[external verify: ...]` rationale parsing with typed verification records persisted in lineage.
+- [ ] **Promote verifier failures into retry task contracts.** See `todos/retry-task-contract-from-verification.md`. Retry attempts should receive verifier-derived acceptance criteria, not only prior-attempt motifs.
+- [ ] **Populate verifier-derived relevant files.** See `todos/verifier-derived-relevant-files.md`. A prior `crates/a2ctl/src/main.rs:...` failure should make that file relevant on retry.
+- [ ] **Add anti-repeat retry strategy.** See `todos/anti-repeat-retry-strategy.md`. Detect repeated failed patch shapes such as "only touched `a2_core/src/lib.rs` while `a2ctl` failure remains".
+- [ ] **Run task-specific verifier in candidate worktrees before promotion scoring.** See `todos/worktree-task-verifier.md`. Hidden verifier failures should affect somatic fitness before a patch is treated as promotable.
+- [ ] **Run `compound-hidden` N≥3 per available non-Claude provider after each structural change.** Current factual result after motif/run-path fixes: Minimax runs on 2026-05-03 and 2026-05-08 plus Kimi run on 2026-05-03 failed attempts 1-3; prior lineage was present on attempts 2-3; core lineage reconciliation was true for all attempts; each attempt touched only `a2_core/src/lib.rs` (1 added, 1 removed), leaving the `a2ctl` hidden regression unfixed. 2026-05-08 Minimax reruns after stdout-first, `failure_focus`, and authoritative-verification prompt changes still scored resolved 0/1, pass@1 0/1, loop exercised 1/1, self-corrected 0/1.
 - [ ] **Add a second compound fixture after one self-correction success.** Avoid tuning the loop to a single benchmark shape.
 
 ### Loop-shaped benchmarks

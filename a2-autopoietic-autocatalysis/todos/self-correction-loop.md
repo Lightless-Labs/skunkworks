@@ -5,8 +5,12 @@ Created: 2026-04-28
 Current facts:
 
 - `bench/self_correction.py --fixture fibonacci` is too easy: Minimax N=3 passed on attempt 1 every time.
-- `bench/self_correction.py --fixture compound-hidden` exercises the loop: Minimax attempt 1 failed; attempts 2-3 had prior lineage visible; no self-correction occurred.
-- Benchmark-only lineage reconciliation was added so later attempts see external verification failures. This should move into core `a2ctl run` lineage handling.
+- `bench/self_correction.py --fixture compound-hidden` exercises the loop: Minimax/Kimi attempts get prior lineage on retries, but observed runs still do not self-correct.
+- Core `a2ctl run --apply` now reconciles post-apply verification truth into lineage; the harness no longer patches SQLite directly.
+- Prior motifs now preserve external verification output, extract `failure_focus`, and tell models verifier failures are authoritative.
+- Observed failing pattern remains: attempts touch only `a2_core/src/lib.rs` and do not fix the hidden `a2ctl` scan-marker regression.
+
+See `todos/self-correction-loop-recovery.md` for the structural recovery sequence.
 
 ## Next actions
 
