@@ -13,6 +13,7 @@ pub fn init(connection: &Connection) -> A2Result<()> {
                 patch_id TEXT NOT NULL,
                 patch_diff TEXT,
                 patch_rationale TEXT,
+                external_verifications_json TEXT,
                 parent_germline TEXT NOT NULL,
                 model_attributions_json TEXT NOT NULL,
                 fitness_json TEXT NOT NULL,
@@ -43,6 +44,12 @@ pub fn init(connection: &Connection) -> A2Result<()> {
 
     ensure_optional_column(connection, "lineage_records", "patch_diff", "TEXT")?;
     ensure_optional_column(connection, "lineage_records", "patch_rationale", "TEXT")?;
+    ensure_optional_column(
+        connection,
+        "lineage_records",
+        "external_verifications_json",
+        "TEXT",
+    )?;
 
     Ok(())
 }

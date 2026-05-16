@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use a2_core::error::A2Result;
 use a2_core::id::{GermlineVersion, LineageId, PatchId, TaskId};
-use a2_core::protocol::{FitnessRecord, LineageRecord, ModelAttribution};
+use a2_core::protocol::{ExternalVerification, FitnessRecord, LineageRecord, ModelAttribution};
 use a2_core::traits::LineageStore;
 use async_trait::async_trait;
 use rusqlite::{Connection, params};
@@ -36,10 +36,17 @@ impl SqliteLineageStore {
         let patch_id = row.get::<_, String>(2).map_err(sqlite_error)?;
         let patch_diff = row.get::<_, Option<String>>(3).map_err(sqlite_error)?;
         let patch_rationale = row.get::<_, Option<String>>(4).map_err(sqlite_error)?;
-        let parent_germline = row.get::<_, String>(5).map_err(sqlite_error)?;
-        let model_attributions_json = row.get::<_, String>(6).map_err(sqlite_error)?;
-        let fitness_json = row.get::<_, String>(7).map_err(sqlite_error)?;
-        let created_at = row.get::<_, String>(8).map_err(sqlite_error)?;
+        let external_verifications_json = row.get::<_, Option<String>>(5).map_err(sqlite_error)?;
+        let parent_germline = row.get::<_, String>(6).map_err(sqlite_error)?;
+        let model_attributions_json = row.get::<_, String>(7).map_err(sqlite_error)?;
+        let fitness_json = row.get::<_, String>(8).map_err(sqlite_error)?;
+        let created_at = row.get::<_, String>(9).map_err(sqlite_error)?;
+        let external_verifications = external_verifications_json
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(deserialize_json::<Vec<ExternalVerification>>)
+            .transpose()?
+            .unwrap_or_default();
 
         Ok(LineageRecord {
             id: deserialize_json::<LineageId>(&id)?,
@@ -47,6 +54,7 @@ impl SqliteLineageStore {
             patch_id: deserialize_json::<PatchId>(&patch_id)?,
             patch_diff,
             patch_rationale,
+            external_verifications,
             parent_germline: deserialize_json::<GermlineVersion>(&parent_germline)?,
             model_attributions: deserialize_json::<Vec<ModelAttribution>>(
                 &model_attributions_json,
@@ -71,11 +79,12 @@ impl LineageStore for SqliteLineageStore {
                     patch_id,
                     patch_diff,
                     patch_rationale,
+                    external_verifications_json,
                     parent_germline,
                     model_attributions_json,
                     fitness_json,
                     created_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                 ",
                 params![
                     serialize_json(&entry.id)?,
@@ -83,6 +92,7 @@ impl LineageStore for SqliteLineageStore {
                     serialize_json(&entry.patch_id)?,
                     entry.patch_diff.as_deref(),
                     entry.patch_rationale.as_deref(),
+                    serialize_json(&entry.external_verifications)?,
                     serialize_json(&entry.parent_germline)?,
                     serialize_json(&entry.model_attributions)?,
                     serialize_json(&entry.fitness)?,
@@ -106,10 +116,11 @@ impl LineageStore for SqliteLineageStore {
                     patch_id = ?3,
                     patch_diff = ?4,
                     patch_rationale = ?5,
-                    parent_germline = ?6,
-                    model_attributions_json = ?7,
-                    fitness_json = ?8,
-                    created_at = ?9
+                    external_verifications_json = ?6,
+                    parent_germline = ?7,
+                    model_attributions_json = ?8,
+                    fitness_json = ?9,
+                    created_at = ?10
                 WHERE id = ?1
                 ",
                 params![
@@ -118,6 +129,7 @@ impl LineageStore for SqliteLineageStore {
                     serialize_json(&entry.patch_id)?,
                     entry.patch_diff.as_deref(),
                     entry.patch_rationale.as_deref(),
+                    serialize_json(&entry.external_verifications)?,
                     serialize_json(&entry.parent_germline)?,
                     serialize_json(&entry.model_attributions)?,
                     serialize_json(&entry.fitness)?,
@@ -140,6 +152,7 @@ impl LineageStore for SqliteLineageStore {
                     patch_id,
                     patch_diff,
                     patch_rationale,
+                    external_verifications_json,
                     parent_germline,
                     model_attributions_json,
                     fitness_json,
@@ -170,6 +183,7 @@ impl LineageStore for SqliteLineageStore {
                     patch_id,
                     patch_diff,
                     patch_rationale,
+                    external_verifications_json,
                     parent_germline,
                     model_attributions_json,
                     fitness_json,
@@ -203,6 +217,7 @@ impl LineageStore for SqliteLineageStore {
                     patch_id,
                     patch_diff,
                     patch_rationale,
+                    external_verifications_json,
                     parent_germline,
                     model_attributions_json,
                     fitness_json,
@@ -232,8 +247,8 @@ mod tests {
 
     use a2_core::id::{EvalId, GermlineVersion, LineageId, PatchId, TaskId};
     use a2_core::protocol::{
-        FitnessRecord, GermlineFitness, LineageRecord, ModelAttribution, OrganizationalFitness,
-        SomaticFitness,
+        ExternalVerification, FitnessRecord, GermlineFitness, LineageRecord, ModelAttribution,
+        OrganizationalFitness, SomaticFitness,
     };
     use chrono::{TimeZone, Utc};
     use rusqlite::Connection;
@@ -254,6 +269,16 @@ mod tests {
             patch_id,
             patch_diff: Some("--- a/test\n+++ b/test\n+lineage".into()),
             patch_rationale: Some("sample rationale".into()),
+            external_verifications: vec![ExternalVerification {
+                passed: false,
+                command: "cargo test -p a2ctl".into(),
+                exit_code: Some(101),
+                failing_tests: vec!["tests::hidden_regression".into()],
+                failure_focus: vec!["test tests::hidden_regression ... FAILED".into()],
+                stdout_excerpt: "test tests::hidden_regression ... FAILED".into(),
+                stderr_excerpt: "error: test failed".into(),
+                verified_at: created_at,
+            }],
             parent_germline,
             model_attributions: vec![ModelAttribution {
                 provider: "openai".into(),
@@ -337,6 +362,16 @@ mod tests {
             "[external verify: FAIL] cargo test exited 101. hidden assertion failed\n\noriginal rationale"
                 .into(),
         );
+        record.external_verifications.push(ExternalVerification {
+            passed: false,
+            command: "cargo test".into(),
+            exit_code: Some(101),
+            failing_tests: vec!["tests::hidden".into()],
+            failure_focus: vec!["hidden assertion failed".into()],
+            stdout_excerpt: "hidden assertion failed".into(),
+            stderr_excerpt: "error: test failed".into(),
+            verified_at: created_at,
+        });
 
         store.replace(record.clone()).await.unwrap();
 
@@ -345,6 +380,7 @@ mod tests {
         assert!(!actual.fitness.somatic.tests_pass);
         assert_eq!(actual.fitness.somatic.acceptance_met, vec![false, false]);
         assert_eq!(actual.patch_rationale, record.patch_rationale);
+        assert_eq!(actual.external_verifications, record.external_verifications);
     }
 
     #[tokio::test]
@@ -383,6 +419,74 @@ mod tests {
 
         assert_eq!(actual.patch_diff, expected.patch_diff);
         assert_eq!(actual.patch_rationale, expected.patch_rationale);
+    }
+
+    #[tokio::test]
+    async fn reads_existing_legacy_lineage_rows_with_empty_external_verifications() {
+        let connection = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        connection
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "
+                CREATE TABLE lineage_records (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    patch_id TEXT NOT NULL,
+                    parent_germline TEXT NOT NULL,
+                    model_attributions_json TEXT NOT NULL,
+                    fitness_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+
+        let mut expected = sample_lineage_record(
+            TaskId::new(),
+            PatchId::new(),
+            GermlineVersion::new(),
+            Utc.with_ymd_and_hms(2026, 4, 1, 12, 45, 0)
+                .single()
+                .unwrap(),
+        );
+        expected.patch_diff = None;
+        expected.patch_rationale = None;
+        expected.external_verifications = vec![];
+
+        connection
+            .lock()
+            .unwrap()
+            .execute(
+                "
+                INSERT INTO lineage_records (
+                    id,
+                    task_id,
+                    patch_id,
+                    parent_germline,
+                    model_attributions_json,
+                    fitness_json,
+                    created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                ",
+                rusqlite::params![
+                    crate::serialize_json(&expected.id).unwrap(),
+                    crate::serialize_json(&expected.task_id).unwrap(),
+                    crate::serialize_json(&expected.patch_id).unwrap(),
+                    crate::serialize_json(&expected.parent_germline).unwrap(),
+                    crate::serialize_json(&expected.model_attributions).unwrap(),
+                    crate::serialize_json(&expected.fitness).unwrap(),
+                    expected.created_at.to_rfc3339(),
+                ],
+            )
+            .unwrap();
+
+        let store = SqliteLineageStore::from_connection(connection).unwrap();
+        let actual = store.get(&expected.id).await.unwrap().unwrap();
+
+        assert_eq!(actual.patch_diff, None);
+        assert_eq!(actual.patch_rationale, None);
+        assert!(actual.external_verifications.is_empty());
     }
 
     #[tokio::test]

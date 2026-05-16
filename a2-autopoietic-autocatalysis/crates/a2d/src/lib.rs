@@ -29,6 +29,52 @@ impl std::fmt::Display for StrategyChange {
     }
 }
 
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !value.trim().is_empty() && !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+fn verifier_retry_acceptance_criteria(prior_lineage: &[LineageRecord]) -> Vec<String> {
+    let mut criteria = Vec::new();
+    for verification in prior_lineage
+        .iter()
+        .flat_map(|record| record.external_verifications.iter())
+        .filter(|verification| !verification.passed)
+    {
+        push_unique(
+            &mut criteria,
+            format!(
+                "Prior external verification must pass: {}",
+                verification.command
+            ),
+        );
+        for test in &verification.failing_tests {
+            push_unique(
+                &mut criteria,
+                format!("Prior failing test must pass: {test}"),
+            );
+        }
+        for focus in &verification.failure_focus {
+            push_unique(
+                &mut criteria,
+                format!("Prior verifier failure must be fixed: {focus}"),
+            );
+        }
+    }
+    criteria
+}
+
+fn task_with_retry_acceptance_criteria(
+    mut task: TaskContract,
+    prior_lineage: &[LineageRecord],
+) -> TaskContract {
+    for criterion in verifier_retry_acceptance_criteria(prior_lineage) {
+        push_unique(&mut task.acceptance_criteria, criterion);
+    }
+    task
+}
+
 fn prepend_verification_note(note: &str, existing_rationale: &str) -> String {
     let note = note.trim();
     let existing_rationale = existing_rationale.trim();
@@ -211,11 +257,13 @@ impl Governor {
             vec![]
         };
 
+        let task_for_workcell = task_with_retry_acceptance_criteria(task.clone(), &prior_lineage);
+
         // Stage 0 scheduler: single workcell, direct assignment.
         let config = WorkcellConfig {
             workcell_id: workcell_id.clone(),
             germline_version: self.germline_version.clone(),
-            task: task.clone(),
+            task: task_for_workcell,
             budget: self.default_budget.clone(),
             prior_lineage,
         };
@@ -339,6 +387,7 @@ impl Governor {
         applied: bool,
         verified: bool,
         verification_note: String,
+        external_verification: ExternalVerification,
     ) -> A2Result<()> {
         let Some(store) = &self.lineage_store else {
             return Ok(());
@@ -354,6 +403,7 @@ impl Governor {
             *criterion = passed;
         }
 
+        record.external_verifications.push(external_verification);
         let existing = record.patch_rationale.unwrap_or_default();
         record.patch_rationale = Some(prepend_verification_note(&verification_note, &existing));
         store.replace(record).await
@@ -423,6 +473,49 @@ mod tests {
                 model_attribution: ModelAttribution {
                     provider: "test".into(),
                     model: "echo".into(),
+                    tokens_in: 100,
+                    tokens_out: 50,
+                },
+                created_at: Utc::now(),
+            })
+        }
+    }
+
+    struct CapturingCatalyst {
+        id: CatalystId,
+        seen_task: Arc<Mutex<Option<TaskContract>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Catalyst for CapturingCatalyst {
+        fn id(&self) -> &CatalystId {
+            &self.id
+        }
+        fn name(&self) -> &str {
+            "capturing"
+        }
+        async fn execute(
+            &self,
+            task: &TaskContract,
+            _ctx: &ContextPack,
+            _model: &dyn ModelProvider,
+        ) -> A2Result<PatchBundle> {
+            *self.seen_task.lock().unwrap() = Some(task.clone());
+            Ok(PatchBundle {
+                id: PatchId::new(),
+                task_id: task.id.clone(),
+                workcell_id: WorkcellId::new(),
+                diff: "+hello".into(),
+                rationale: "captured task".into(),
+                test_results: TestResults {
+                    passed: 1,
+                    failed: 0,
+                    skipped: 0,
+                    details: vec![],
+                },
+                model_attribution: ModelAttribution {
+                    provider: "test".into(),
+                    model: "capture".into(),
                     tokens_in: 100,
                     tokens_out: 50,
                 },
@@ -570,6 +663,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prior_external_verification_becomes_retry_acceptance_criteria() {
+        let store = Arc::new(MemoryLineageStore::default());
+        let gov = Governor::new(
+            GermlineVersion::new(),
+            Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 10,
+            },
+        )
+        .with_lineage_store(store.clone());
+
+        let task_id = TaskId::new();
+        let verification = ExternalVerification {
+            passed: false,
+            command: "cargo test -p a2ctl".into(),
+            exit_code: Some(101),
+            failing_tests: vec![
+                "tests::ignores_non_task_mentions_inside_comments_and_strings".into(),
+            ],
+            failure_focus: vec!["assertion failed: find_scan_marker".into()],
+            stdout_excerpt:
+                "test tests::ignores_non_task_mentions_inside_comments_and_strings ... FAILED"
+                    .into(),
+            stderr_excerpt: "error: test failed".into(),
+            verified_at: Utc::now(),
+        };
+        let prior = LineageRecord {
+            id: LineageId::new(),
+            task_id: task_id.clone(),
+            patch_id: PatchId::new(),
+            patch_diff: Some("+visible-only".into()),
+            patch_rationale: Some("visible-only fix".into()),
+            external_verifications: vec![verification.clone(), verification],
+            parent_germline: GermlineVersion::new(),
+            model_attributions: vec![ModelAttribution {
+                provider: "test".into(),
+                model: "noop".into(),
+                tokens_in: 1,
+                tokens_out: 1,
+            }],
+            fitness: FitnessRecord {
+                eval_id: EvalId::new(),
+                task_id: task_id.clone(),
+                somatic: SomaticFitness {
+                    task_completed: false,
+                    tests_pass: false,
+                    acceptance_met: vec![false],
+                    tokens_used: 2,
+                    duration_secs: 0.1,
+                },
+                germline: None,
+                organizational: None,
+                evaluated_at: Utc::now(),
+            },
+            created_at: Utc::now(),
+        };
+        store.record(prior).await.unwrap();
+
+        let seen_task = Arc::new(Mutex::new(None));
+        let task = TaskContract {
+            id: task_id,
+            title: "retry task".into(),
+            description: "fix the visible failure".into(),
+            acceptance_criteria: vec!["Original criterion remains".into()],
+            budget: Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 10,
+            },
+            priority: Priority::Normal,
+            source: TaskSource::External {
+                origin: "test".into(),
+            },
+            created_at: Utc::now(),
+        };
+
+        gov.run_task(
+            task,
+            &CapturingCatalyst {
+                id: CatalystId::new(),
+                seen_task: seen_task.clone(),
+            },
+            &NoopModel,
+            &PassEvaluator,
+        )
+        .await
+        .unwrap();
+
+        let captured = seen_task.lock().unwrap().clone().unwrap();
+        assert!(
+            captured
+                .acceptance_criteria
+                .contains(&"Original criterion remains".into())
+        );
+        assert!(
+            captured
+                .acceptance_criteria
+                .contains(&"Prior external verification must pass: cargo test -p a2ctl".into())
+        );
+        assert!(captured.acceptance_criteria.contains(
+            &"Prior failing test must pass: tests::ignores_non_task_mentions_inside_comments_and_strings"
+                .into()
+        ));
+        assert!(captured.acceptance_criteria.contains(
+            &"Prior verifier failure must be fixed: assertion failed: find_scan_marker".into()
+        ));
+        assert_eq!(
+            captured
+                .acceptance_criteria
+                .iter()
+                .filter(|criterion| criterion.as_str()
+                    == "Prior external verification must pass: cargo test -p a2ctl")
+                .count(),
+            1,
+            "duplicate prior verifier records should not duplicate retry criteria"
+        );
+    }
+
+    #[tokio::test]
     async fn reconcile_lineage_apply_outcome_persists_post_apply_truth() {
         let store = Arc::new(MemoryLineageStore::default());
         let gov = Governor::new(
@@ -590,6 +803,7 @@ mod tests {
             patch_id: PatchId::new(),
             patch_diff: Some("+candidate".into()),
             patch_rationale: Some("candidate rationale".into()),
+            external_verifications: vec![],
             parent_germline: GermlineVersion::new(),
             model_attributions: vec![ModelAttribution {
                 provider: "test".into(),
@@ -620,6 +834,16 @@ mod tests {
             true,
             false,
             "[external verify: FAIL] cargo test exited 101. hidden failure".into(),
+            ExternalVerification {
+                passed: false,
+                command: "cargo test".into(),
+                exit_code: Some(101),
+                failing_tests: vec!["tests::hidden".into()],
+                failure_focus: vec!["hidden failure".into()],
+                stdout_excerpt: "hidden failure".into(),
+                stderr_excerpt: "error: test failed".into(),
+                verified_at: Utc::now(),
+            },
         )
         .await
         .unwrap();
@@ -637,6 +861,9 @@ mod tests {
                 "[external verify: FAIL] cargo test exited 101. hidden failure\n\ncandidate rationale"
             )
         );
+        assert_eq!(reconciled.external_verifications.len(), 1);
+        assert_eq!(reconciled.external_verifications[0].command, "cargo test");
+        assert_eq!(reconciled.external_verifications[0].exit_code, Some(101));
     }
 
     #[tokio::test]

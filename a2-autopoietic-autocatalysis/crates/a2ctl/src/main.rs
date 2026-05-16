@@ -256,7 +256,7 @@ async fn main() {
                     {
                         match try_apply_patch(&patch.diff, &workspace_root).and_then(|applied| {
                             if applied {
-                                verify_and_rebuild()
+                                verify_and_rebuild().map_err(|e| e.to_string())
                             } else {
                                 Ok(false)
                             }
@@ -380,6 +380,7 @@ async fn main() {
                                     apply_outcome.applied,
                                     apply_outcome.verified,
                                     apply_outcome.note.clone(),
+                                    apply_outcome.external_verification.clone(),
                                 )
                                 .await
                             {
@@ -491,7 +492,7 @@ async fn main() {
                                 match try_apply_patch(&patch.diff, &workspace_root).and_then(
                                     |applied| {
                                         if applied {
-                                            verify_and_rebuild()
+                                            verify_and_rebuild().map_err(|e| e.to_string())
                                         } else {
                                             Ok(false)
                                         }
@@ -1204,44 +1205,202 @@ fn scan_note<'a>(marker: &str, line: &'a str) -> &'a str {
         .trim()
 }
 
+#[derive(Clone, Debug)]
+struct VerificationCommandFailure {
+    label: String,
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    message: String,
+}
+
+impl std::fmt::Display for VerificationCommandFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
 struct ApplyVerifyOutcome {
     applied: bool,
     verified: bool,
     note: String,
+    external_verification: a2_core::protocol::ExternalVerification,
+}
+
+fn compact_verification_excerpt(value: &str, max_chars: usize) -> String {
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+
+    let mut truncated = trimmed
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
+fn extract_failing_tests(value: &str) -> Vec<String> {
+    let mut tests = Vec::new();
+    for line in value.lines().map(str::trim) {
+        if let Some(name) = line
+            .strip_prefix("test ")
+            .and_then(|rest| rest.split_once(" ... FAILED"))
+            .map(|(name, _)| name.trim())
+            && !name.is_empty()
+            && !tests.iter().any(|existing| existing == name)
+        {
+            tests.push(name.to_string());
+        }
+        if let Some(name) = line
+            .strip_prefix("---- ")
+            .and_then(|rest| rest.split_once(" stdout ----"))
+            .map(|(name, _)| name.trim())
+            && !name.is_empty()
+            && !tests.iter().any(|existing| existing == name)
+        {
+            tests.push(name.to_string());
+        }
+    }
+    tests
+}
+
+fn extract_failure_focus(value: &str, max_lines: usize) -> Vec<String> {
+    let mut focused = Vec::new();
+    for line in value.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("failed")
+            || lower.contains("failures:")
+            || lower.contains("panicked at")
+            || lower.contains("assertion failed")
+            || lower.contains("assertion `")
+            || lower.contains("left:")
+            || lower.contains("right:")
+        {
+            let line = compact_verification_excerpt(line, 300);
+            if !focused.iter().any(|existing| existing == &line) {
+                focused.push(line);
+            }
+        }
+        if focused.len() >= max_lines {
+            break;
+        }
+    }
+    focused
+}
+
+fn external_verification_from_failure(
+    failure: &VerificationCommandFailure,
+) -> a2_core::protocol::ExternalVerification {
+    let combined = format!(
+        "{}\n{}\n{}",
+        failure.message, failure.stdout, failure.stderr
+    );
+    a2_core::protocol::ExternalVerification {
+        passed: false,
+        command: failure.label.clone(),
+        exit_code: failure.exit_code,
+        failing_tests: extract_failing_tests(&combined),
+        failure_focus: extract_failure_focus(&combined, 12),
+        stdout_excerpt: compact_verification_excerpt(&failure.stdout, 4_000),
+        stderr_excerpt: compact_verification_excerpt(&failure.stderr, 4_000),
+        verified_at: chrono::Utc::now(),
+    }
+}
+
+fn external_verification_from_note(
+    passed: bool,
+    command: &str,
+    exit_code: Option<i32>,
+    note: &str,
+) -> a2_core::protocol::ExternalVerification {
+    a2_core::protocol::ExternalVerification {
+        passed,
+        command: command.into(),
+        exit_code,
+        failing_tests: extract_failing_tests(note),
+        failure_focus: extract_failure_focus(note, 12),
+        stdout_excerpt: String::new(),
+        stderr_excerpt: if passed {
+            String::new()
+        } else {
+            compact_verification_excerpt(note, 4_000)
+        },
+        verified_at: chrono::Utc::now(),
+    }
 }
 
 fn apply_and_verify_patch(diff: &str, dir: &Path) -> ApplyVerifyOutcome {
     match try_apply_patch(diff, dir) {
         Ok(true) => match verify_and_rebuild() {
-            Ok(true) => ApplyVerifyOutcome {
-                applied: true,
-                verified: true,
-                note: "[external verify: PASS] git apply and verify_and_rebuild exited 0.".into(),
-            },
-            Ok(false) => ApplyVerifyOutcome {
-                applied: true,
+            Ok(true) => {
+                let note = "[external verify: PASS] git apply and verify_and_rebuild exited 0.";
+                ApplyVerifyOutcome {
+                    applied: true,
+                    verified: true,
+                    note: note.into(),
+                    external_verification: external_verification_from_note(
+                        true,
+                        "verify_and_rebuild",
+                        Some(0),
+                        note,
+                    ),
+                }
+            }
+            Ok(false) => {
+                let note = "[external verify: FAIL] verify_and_rebuild exited 0 without reporting success.";
+                ApplyVerifyOutcome {
+                    applied: true,
+                    verified: false,
+                    note: note.into(),
+                    external_verification: external_verification_from_note(
+                        false,
+                        "verify_and_rebuild",
+                        Some(0),
+                        note,
+                    ),
+                }
+            }
+            Err(e) => {
+                let note = format!("[external verify: FAIL] verify_and_rebuild failed. {e}");
+                ApplyVerifyOutcome {
+                    applied: true,
+                    verified: false,
+                    note,
+                    external_verification: external_verification_from_failure(&e),
+                }
+            }
+        },
+        Ok(false) => {
+            let note =
+                "[external verify: FAIL] git apply skipped because the patch diff was empty.";
+            ApplyVerifyOutcome {
+                applied: false,
                 verified: false,
-                note:
-                    "[external verify: FAIL] verify_and_rebuild exited 0 without reporting success."
-                        .into(),
-            },
-            Err(e) => ApplyVerifyOutcome {
-                applied: true,
+                note: note.into(),
+                external_verification: external_verification_from_note(
+                    false,
+                    "git apply",
+                    None,
+                    note,
+                ),
+            }
+        }
+        Err(e) => {
+            let note = format!("[external verify: FAIL] git apply failed. {e}");
+            ApplyVerifyOutcome {
+                applied: false,
                 verified: false,
-                note: format!("[external verify: FAIL] verify_and_rebuild failed. {e}"),
-            },
-        },
-        Ok(false) => ApplyVerifyOutcome {
-            applied: false,
-            verified: false,
-            note: "[external verify: FAIL] git apply skipped because the patch diff was empty."
-                .into(),
-        },
-        Err(e) => ApplyVerifyOutcome {
-            applied: false,
-            verified: false,
-            note: format!("[external verify: FAIL] git apply failed. {e}"),
-        },
+                external_verification: external_verification_from_note(
+                    false,
+                    "git apply",
+                    None,
+                    &note,
+                ),
+                note,
+            }
+        }
     }
 }
 
@@ -1305,7 +1464,7 @@ fn try_apply_patch(diff: &str, dir: &Path) -> Result<bool, String> {
     }
 }
 
-fn verify_and_rebuild() -> Result<bool, String> {
+fn verify_and_rebuild() -> Result<bool, VerificationCommandFailure> {
     run_workspace_command("cargo", &["check"], "cargo check")?;
     run_workspace_command("cargo", &["test"], "cargo test")?;
     run_workspace_command(
@@ -1321,22 +1480,34 @@ fn verify_and_rebuild() -> Result<bool, String> {
     Ok(true)
 }
 
-fn run_workspace_command(command: &str, args: &[&str], label: &str) -> Result<(), String> {
+fn run_workspace_command(
+    command: &str,
+    args: &[&str],
+    label: &str,
+) -> Result<(), VerificationCommandFailure> {
     let output = std::process::Command::new(command)
         .args(args)
         .current_dir(workspace_root())
         .output()
-        .map_err(|e| format!("{label}: {e}"))?;
+        .map_err(|e| VerificationCommandFailure {
+            label: label.into(),
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            message: format!("{label}: {e}"),
+        })?;
 
     if output.status.success() {
         return Ok(());
     }
 
-    let failure = command_failure_message(label, &output);
-    match revert_workspace() {
-        Ok(()) => Err(failure),
-        Err(revert_error) => Err(format!("{failure}; rollback failed: {revert_error}")),
+    let mut failure = command_failure(label, &output);
+    if let Err(revert_error) = revert_workspace() {
+        failure
+            .message
+            .push_str(&format!("; rollback failed: {revert_error}"));
     }
+    Err(failure)
 }
 
 fn workspace_root() -> PathBuf {
@@ -1361,17 +1532,27 @@ fn revert_workspace() -> Result<(), String> {
     }
 }
 
-fn command_failure_message(label: &str, output: &std::process::Output) -> String {
+fn command_failure(label: &str, output: &std::process::Output) -> VerificationCommandFailure {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let detail = match (stderr.is_empty(), stdout.is_empty()) {
         (false, false) => format!("stdout:\n{stdout}\n\nstderr:\n{stderr}"),
-        (false, true) => stderr,
-        (true, false) => stdout,
+        (false, true) => stderr.clone(),
+        (true, false) => stdout.clone(),
         (true, true) => format!("exit status {}", output.status),
     };
 
-    format!("{label} failed: {detail}")
+    VerificationCommandFailure {
+        label: label.into(),
+        exit_code: output.status.code(),
+        stdout,
+        stderr,
+        message: format!("{label} failed: {detail}"),
+    }
+}
+
+fn command_failure_message(label: &str, output: &std::process::Output) -> String {
+    command_failure(label, output).message
 }
 
 #[cfg(test)]
@@ -1410,6 +1591,42 @@ mod tests {
         assert!(
             message.find("stdout-detail").unwrap() < message.find("stderr-detail").unwrap(),
             "stdout should be rendered first because test assertions usually land there"
+        );
+    }
+
+    #[test]
+    fn external_verification_from_command_failure_keeps_streams_and_failing_tests() {
+        let output = std::process::Command::new("sh")
+            .args([
+                "-c",
+                "printf 'running 2 tests\n'; printf 'test tests::hidden_regression ... FAILED\n'; printf 'failures:\n\n'; printf '---- tests::hidden_regression stdout ----\n'; printf 'thread panicked at src/main.rs:1: assertion failed: hidden()\n'; printf 'cargo stderr detail' >&2; exit 101",
+            ])
+            .output()
+            .unwrap();
+
+        let failure = command_failure("cargo test -p a2ctl", &output);
+        let verification = external_verification_from_failure(&failure);
+
+        assert!(!verification.passed);
+        assert_eq!(verification.command, "cargo test -p a2ctl");
+        assert_eq!(verification.exit_code, Some(101));
+        assert_eq!(
+            verification.failing_tests,
+            vec!["tests::hidden_regression".to_string()]
+        );
+        assert!(
+            verification
+                .stdout_excerpt
+                .contains("tests::hidden_regression")
+        );
+        assert!(verification.stderr_excerpt.contains("cargo stderr detail"));
+        assert!(
+            verification
+                .failure_focus
+                .iter()
+                .any(|line| line.contains("assertion failed: hidden()")),
+            "focus should preserve assertion lines: {:?}",
+            verification.failure_focus
         );
     }
 

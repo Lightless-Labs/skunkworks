@@ -364,6 +364,13 @@ impl WorktreeCatalyst {
             task.title, task.description
         );
 
+        if !task.acceptance_criteria.is_empty() {
+            prompt.push_str("\n\n## Acceptance Criteria\n\n");
+            for criterion in &task.acceptance_criteria {
+                prompt.push_str(&format!("- {criterion}\n"));
+            }
+        }
+
         prompt.push_str("\n\n## Workspace Structure\n\n");
         prompt.push_str(self.workspace_structure());
 
@@ -625,6 +632,45 @@ mod tests {
             diff.contains("+modified by mock edit"),
             "diff must contain the inserted line; got:\n{diff}"
         );
+    }
+
+    #[test]
+    fn prompt_renders_acceptance_criteria() {
+        let repo_dir = std::env::temp_dir().join(format!("a2-prompt-{}", uuid::Uuid::now_v7()));
+        let catalyst = WorktreeCatalyst::new(repo_dir);
+        let task = TaskContract {
+            id: TaskId::new(),
+            title: "Fix retry contract".into(),
+            description: "Use verifier-derived criteria.".into(),
+            acceptance_criteria: vec![
+                "Original acceptance remains".into(),
+                "Prior external verification must pass: cargo test -p a2ctl".into(),
+            ],
+            budget: Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 4,
+            },
+            priority: Priority::Normal,
+            source: TaskSource::External {
+                origin: "test".into(),
+            },
+            created_at: Utc::now(),
+        };
+        let context = ContextPack {
+            germline_version: GermlineVersion::new(),
+            relevant_files: vec![std::path::PathBuf::from("crates/a2ctl/src/main.rs")],
+            prior_attempts: vec![],
+            retrieved_motifs: vec![],
+        };
+
+        let prompt = catalyst.build_prompt(&task, &context);
+
+        assert!(prompt.contains("## Acceptance Criteria"));
+        assert!(prompt.contains("- Original acceptance remains"));
+        assert!(prompt.contains("- Prior external verification must pass: cargo test -p a2ctl"));
+        assert!(prompt.contains("## Relevant Files"));
+        assert!(prompt.contains("- crates/a2ctl/src/main.rs"));
     }
 
     #[test]

@@ -68,6 +68,57 @@ fn verification_failure_focus(value: &str, max_chars: usize) -> Option<String> {
     }
 }
 
+fn push_unique_path(paths: &mut Vec<std::path::PathBuf>, path: std::path::PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
+fn extract_rust_source_paths(value: &str) -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    for token in value.split_whitespace() {
+        let token = token.trim_matches(|c: char| {
+            matches!(
+                c,
+                '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+            )
+        });
+        let Some(end) = token.find(".rs") else {
+            continue;
+        };
+        let candidate = &token[..end + 3];
+        if candidate.contains('/') {
+            push_unique_path(&mut paths, std::path::PathBuf::from(candidate));
+        }
+    }
+    paths
+}
+
+fn verifier_derived_relevant_files(prior_lineage: &[LineageRecord]) -> Vec<std::path::PathBuf> {
+    const MAX_RELEVANT_FILES: usize = 8;
+    let mut files = Vec::new();
+    for verification in prior_lineage
+        .iter()
+        .flat_map(|record| record.external_verifications.iter())
+        .filter(|verification| !verification.passed)
+    {
+        for value in verification
+            .failure_focus
+            .iter()
+            .chain(std::iter::once(&verification.stdout_excerpt))
+            .chain(std::iter::once(&verification.stderr_excerpt))
+        {
+            for path in extract_rust_source_paths(value) {
+                push_unique_path(&mut files, path);
+                if files.len() >= MAX_RELEVANT_FILES {
+                    return files;
+                }
+            }
+        }
+    }
+    files
+}
+
 /// Split a benchmark/run verification note out of persisted model rationale.
 ///
 /// Self-correction runs currently prepend notes like
@@ -102,6 +153,47 @@ fn split_external_verify_note(value: &str) -> (Option<String>, String) {
     (Some(note.trim().to_string()), remainder)
 }
 
+fn external_verification_detail(verification: &ExternalVerification) -> String {
+    let mut parts = vec![format!("command={}", verification.command)];
+    if let Some(exit_code) = verification.exit_code {
+        parts.push(format!("exit_code={exit_code}"));
+    }
+    if !verification.failing_tests.is_empty() {
+        parts.push(format!(
+            "failing_tests={}",
+            verification.failing_tests.join(", ")
+        ));
+    }
+    if !verification.stdout_excerpt.trim().is_empty() {
+        parts.push(format!("stdout={}", verification.stdout_excerpt.trim()));
+    }
+    if !verification.stderr_excerpt.trim().is_empty() {
+        parts.push(format!("stderr={}", verification.stderr_excerpt.trim()));
+    }
+    compact_snippet(&parts.join("; "), 1_200)
+}
+
+fn external_verification_focus(verification: &ExternalVerification) -> Option<String> {
+    if !verification.failure_focus.is_empty() {
+        return Some(compact_snippet(
+            &verification.failure_focus.join("\n"),
+            1_200,
+        ));
+    }
+    if !verification.failing_tests.is_empty() {
+        return Some(compact_snippet(
+            &verification.failing_tests.join("\n"),
+            1_200,
+        ));
+    }
+
+    let combined = format!(
+        "{}\n{}",
+        verification.stdout_excerpt, verification.stderr_excerpt
+    );
+    verification_failure_focus(&combined, 1_200)
+}
+
 /// Render a prior LineageRecord as a prompt motif for the context pack.
 fn render_prior_motif(record: &LineageRecord, index: usize) -> String {
     let model = record
@@ -118,6 +210,48 @@ fn render_prior_motif(record: &LineageRecord, index: usize) -> String {
     let (external_verify, rationale_without_verify) = rationale
         .map(split_external_verify_note)
         .unwrap_or_else(|| (None, String::new()));
+
+    if let Some(verification) = record
+        .external_verifications
+        .iter()
+        .rev()
+        .find(|verification| !verification.passed)
+    {
+        let mut motif = format!(
+            "attempt {} [{}]\n  status: task_completed={}, tests_pass={}, tokens={}, duration={:.1}s\n  external_verification:\n    result: FAIL\n    command: {}",
+            index + 1,
+            model,
+            s.task_completed,
+            s.tests_pass,
+            s.tokens_used,
+            s.duration_secs,
+            verification.command,
+        );
+        if let Some(focus) = external_verification_focus(verification) {
+            motif.push_str(&format!("\n    failure_focus: {focus}"));
+        }
+        motif.push_str(&format!(
+            "\n    detail: {}",
+            external_verification_detail(verification)
+        ));
+
+        if !rationale_without_verify.trim().is_empty() {
+            motif.push_str(&format!(
+                "\n  rationale: \"{}\"",
+                compact_snippet(&rationale_without_verify, 220)
+            ));
+        }
+
+        if let Some(diff) = record
+            .patch_diff
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            motif.push_str(&format!("\n  diff: \"{}\"", compact_snippet(diff, 320)));
+        }
+
+        return motif;
+    }
 
     if let Some(note) = external_verify
         .as_deref()
@@ -165,7 +299,13 @@ fn render_prior_motif(record: &LineageRecord, index: usize) -> String {
         s.duration_secs
     );
 
-    if let Some(note) = external_verify.as_deref() {
+    if let Some(verification) = record.external_verifications.iter().next_back() {
+        let result = if verification.passed { "PASS" } else { "FAIL" };
+        motif.push_str(&format!(
+            ", external_verify=\"result={result}; {}\"",
+            external_verification_detail(verification)
+        ));
+    } else if let Some(note) = external_verify.as_deref() {
         motif.push_str(&format!(
             ", external_verify=\"{}\"",
             compact_snippet(note, 220)
@@ -213,6 +353,7 @@ pub async fn run_workcell(
     // Build context pack. Prior lineage (if any) is surfaced to the catalyst
     // via prior_attempts (IDs) + retrieved_motifs (compact rendered summaries).
     let prior_attempts = config.prior_lineage.iter().map(|r| r.id.clone()).collect();
+    let relevant_files = verifier_derived_relevant_files(&config.prior_lineage);
     let retrieved_motifs = config
         .prior_lineage
         .iter()
@@ -221,7 +362,7 @@ pub async fn run_workcell(
         .collect();
     let context = ContextPack {
         germline_version: config.germline_version.clone(),
-        relevant_files: vec![],
+        relevant_files,
         prior_attempts,
         retrieved_motifs,
     };
@@ -285,6 +426,7 @@ pub async fn run_workcell(
             .unwrap_or_else(PatchId::new),
         patch_diff: patch.as_ref().map(|p| p.diff.clone()),
         patch_rationale: patch.as_ref().map(|p| p.rationale.clone()),
+        external_verifications: vec![],
         parent_germline: config.germline_version,
         model_attributions: patch
             .as_ref()
@@ -466,6 +608,7 @@ mod tests {
             patch_id: PatchId::new(),
             patch_diff: Some("--- a/foo\n+++ b/foo\n+bad approach".into()),
             patch_rationale: Some("tried the wrong file".into()),
+            external_verifications: vec![],
             parent_germline: GermlineVersion::new(),
             model_attributions: vec![ModelAttribution {
                 provider: "gemini".into(),
@@ -544,6 +687,96 @@ mod tests {
         assert!(motif.contains("diff=\"--- a/foo +++ b/foo +bad approach\""));
     }
 
+    #[tokio::test]
+    async fn prior_external_verification_paths_become_relevant_files() {
+        let task_id = TaskId::new();
+        let prior = LineageRecord {
+            id: LineageId::new(),
+            task_id: task_id.clone(),
+            patch_id: PatchId::new(),
+            patch_diff: Some("+visible-only".into()),
+            patch_rationale: Some("visible-only fix".into()),
+            external_verifications: vec![ExternalVerification {
+                passed: false,
+                command: "cargo test -p a2ctl".into(),
+                exit_code: Some(101),
+                failing_tests: vec![
+                    "tests::ignores_non_task_mentions_inside_comments_and_strings".into(),
+                ],
+                failure_focus: vec![
+                    "thread 'tests::ignores_non_task_mentions_inside_comments_and_strings' panicked at crates/a2ctl/src/main.rs:1556:9:".into(),
+                    "assertion failed: find_scan_marker".into(),
+                ],
+                stdout_excerpt: "thread panicked at crates/a2ctl/src/main.rs:1556:9".into(),
+                stderr_excerpt: "error: test failed".into(),
+                verified_at: Utc::now(),
+            }],
+            parent_germline: GermlineVersion::new(),
+            model_attributions: vec![ModelAttribution {
+                provider: "opencode".into(),
+                model: "minimax".into(),
+                tokens_in: 1000,
+                tokens_out: 234,
+            }],
+            fitness: FitnessRecord {
+                eval_id: EvalId::new(),
+                task_id: task_id.clone(),
+                somatic: SomaticFitness {
+                    task_completed: false,
+                    tests_pass: false,
+                    acceptance_met: vec![false],
+                    tokens_used: 1234,
+                    duration_secs: 7.5,
+                },
+                germline: None,
+                organizational: None,
+                evaluated_at: Utc::now(),
+            },
+            created_at: Utc::now(),
+        };
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let catalyst = CapturingCatalyst {
+            id: CatalystId::new(),
+            seen: seen.clone(),
+        };
+        let config = WorkcellConfig {
+            workcell_id: WorkcellId::new(),
+            germline_version: GermlineVersion::new(),
+            task: TaskContract {
+                id: task_id,
+                title: "t".into(),
+                description: "d".into(),
+                acceptance_criteria: vec![],
+                budget: Budget {
+                    max_tokens: 10_000,
+                    max_duration_secs: 60,
+                    max_calls: 10,
+                },
+                priority: Priority::Normal,
+                source: TaskSource::External {
+                    origin: "test".into(),
+                },
+                created_at: Utc::now(),
+            },
+            budget: Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 10,
+            },
+            prior_lineage: vec![prior],
+        };
+
+        run_workcell(config, &catalyst, &NoopProvider, &AlwaysPassEvaluator)
+            .await
+            .unwrap();
+
+        let captured = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            captured.relevant_files,
+            vec![std::path::PathBuf::from("crates/a2ctl/src/main.rs")]
+        );
+    }
+
     #[test]
     fn external_verification_failures_render_as_prominent_multiline_motifs() {
         let task_id = TaskId::new();
@@ -556,6 +789,7 @@ mod tests {
                 "[external verify: FAIL] cargo test -p hidden-fixture exited 101. assertion failed: hidden edge case still broken\n\ntried visible fix only"
                     .into(),
             ),
+            external_verifications: vec![],
             parent_germline: GermlineVersion::new(),
             model_attributions: vec![ModelAttribution {
                 provider: "opencode".into(),
@@ -599,6 +833,73 @@ mod tests {
             "\n  diff: \"--- a/crate/src/lib.rs +++ b/crate/src/lib.rs +visible-only fix\""
         ));
         assert!(!motif.contains("rationale=\"[external verify: FAIL]"));
+    }
+
+    #[test]
+    fn structured_external_verification_renders_before_legacy_rationale_markers() {
+        let task_id = TaskId::new();
+        let prior = LineageRecord {
+            id: LineageId::new(),
+            task_id: task_id.clone(),
+            patch_id: PatchId::new(),
+            patch_diff: Some("--- a/crate/src/lib.rs\n+++ b/crate/src/lib.rs\n+visible-only fix".into()),
+            patch_rationale: Some(
+                "[external verify: FAIL] stale prose should not drive the motif\n\ntried visible fix only"
+                    .into(),
+            ),
+            external_verifications: vec![ExternalVerification {
+                passed: false,
+                command: "cargo test -p a2ctl".into(),
+                exit_code: Some(101),
+                failing_tests: vec![
+                    "tests::ignores_non_task_mentions_inside_comments_and_strings".into(),
+                ],
+                failure_focus: vec![
+                    "test tests::ignores_non_task_mentions_inside_comments_and_strings ... FAILED"
+                        .into(),
+                    "assertion failed: find_scan_marker".into(),
+                ],
+                stdout_excerpt:
+                    "test tests::ignores_non_task_mentions_inside_comments_and_strings ... FAILED"
+                        .into(),
+                stderr_excerpt: "error: test failed".into(),
+                verified_at: Utc::now(),
+            }],
+            parent_germline: GermlineVersion::new(),
+            model_attributions: vec![ModelAttribution {
+                provider: "opencode".into(),
+                model: "minimax-coding-plan/MiniMax-M2.7".into(),
+                tokens_in: 1000,
+                tokens_out: 234,
+            }],
+            fitness: FitnessRecord {
+                eval_id: EvalId::new(),
+                task_id,
+                somatic: SomaticFitness {
+                    task_completed: false,
+                    tests_pass: false,
+                    acceptance_met: vec![false],
+                    tokens_used: 1234,
+                    duration_secs: 7.5,
+                },
+                germline: None,
+                organizational: None,
+                evaluated_at: Utc::now(),
+            },
+            created_at: Utc::now(),
+        };
+
+        let motif = render_prior_motif(&prior, 0);
+
+        assert!(motif.contains("\n  external_verification:"));
+        assert!(motif.contains("\n    command: cargo test -p a2ctl"));
+        assert!(motif.contains("failure_focus: test tests::ignores_non_task_mentions_inside_comments_and_strings ... FAILED assertion failed: find_scan_marker"));
+        assert!(motif.contains("detail: command=cargo test -p a2ctl; exit_code=101"));
+        assert!(motif.contains(
+            "failing_tests=tests::ignores_non_task_mentions_inside_comments_and_strings"
+        ));
+        assert!(motif.contains("\n  rationale: \"tried visible fix only\""));
+        assert!(!motif.contains("stale prose should not drive the motif"));
     }
 
     #[test]

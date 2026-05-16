@@ -1,6 +1,7 @@
 # Verifier-Derived Relevant Files TODO
 
 Created: 2026-05-10
+Completed: 2026-05-12
 
 ## Problem
 
@@ -30,11 +31,11 @@ as a relevant file when the prior failure focus names `tests::ignores_non_task_m
 
 ## Acceptance criteria
 
-- [ ] Failed verification output with a source path adds that path to `ContextPack.relevant_files`.
-- [ ] Relevant files are deduplicated and bounded.
-- [ ] A unit/integration test proves prior lineage containing `crates/a2ctl/src/main.rs:...` reaches WorktreeCatalyst as a relevant file.
-- [ ] Prompt rendering includes the verifier-derived file path.
-- [ ] First attempts without prior verification failures keep current behavior.
+- [x] Failed verification output with a source path adds that path to `ContextPack.relevant_files`.
+- [x] Relevant files are deduplicated and bounded.
+- [x] A unit/integration test proves prior lineage containing `crates/a2ctl/src/main.rs:...` reaches WorktreeCatalyst as a relevant file.
+- [x] Prompt rendering includes the verifier-derived file path.
+- [x] First attempts without prior verification failures keep current behavior.
 
 ## Verification
 

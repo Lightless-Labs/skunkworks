@@ -1,6 +1,7 @@
 # Retry Task Contract From Verification TODO
 
 Created: 2026-05-10
+Completed: 2026-05-12
 
 ## Problem
 
@@ -33,11 +34,11 @@ This may be implemented by enriching `TaskContract.acceptance_criteria`, adding 
 
 ## Acceptance criteria
 
-- [ ] Retry attempts include verifier-derived acceptance criteria in the task seen by the catalyst.
-- [ ] A test proves prior failed external verification changes the next prompt/task contract.
-- [ ] The original task description is preserved, but verifier-derived requirements are rendered as mandatory.
-- [ ] Multiple prior failures deduplicate failing tests/assertions.
-- [ ] The implementation avoids adding verifier requirements on first attempt.
+- [x] Retry attempts include verifier-derived acceptance criteria in the task seen by the catalyst.
+- [x] A test proves prior failed external verification changes the next prompt/task contract.
+- [x] The original task description is preserved, but verifier-derived requirements are rendered as mandatory.
+- [x] Multiple prior failures deduplicate failing tests/assertions.
+- [x] The implementation avoids adding verifier requirements on first attempt.
 
 ## Verification
 

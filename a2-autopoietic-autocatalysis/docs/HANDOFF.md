@@ -1,6 +1,6 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-05-10
+**Last updated:** 2026-05-12
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -11,7 +11,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 | Metric | Value |
 |--------|-------|
-| Tests | 74 Rust + 4 self-correction Python tests |
+| Tests | 81 Rust + 4 self-correction Python tests |
 | Sentinels | 6/6 PASS |
 | Crates | 11 |
 | Benchmark (OpenCode/GLM via A²) | 5/5 (with 100k token / 1800s budget) |
@@ -176,9 +176,9 @@ ContextPack is wired and self-correction harnesses exist. The current gap is no 
 - [x] **Make prior failure motifs harder to ignore.** Completed 2026-05-01. `a2_workcell::runtime::render_prior_motif` now detects persisted `[external verify: FAIL]` notes and renders them as a structured multiline `external_verification` block ahead of rationale/diff snippets.
 - [x] **Move verification reconciliation out of the harness.** Completed 2026-05-01. `a2ctl run --apply` now reconciles persisted lineage after `try_apply_patch` + `verify_and_rebuild` via the Governor; `bench/self_correction.py` records whether core reconciliation ran and no longer patches SQLite directly.
 - [x] **Instrument what models changed per attempt.** Completed 2026-05-01. `bench/self_correction.py` now records touched files plus added/removed line counts from the latest lineage patch diff for each attempt.
-- [ ] **Implement structured external verification.** See `todos/structured-external-verification.md`. Replace `[external verify: ...]` rationale parsing with typed verification records persisted in lineage.
-- [ ] **Promote verifier failures into retry task contracts.** See `todos/retry-task-contract-from-verification.md`. Retry attempts should receive verifier-derived acceptance criteria, not only prior-attempt motifs.
-- [ ] **Populate verifier-derived relevant files.** See `todos/verifier-derived-relevant-files.md`. A prior `crates/a2ctl/src/main.rs:...` failure should make that file relevant on retry.
+- [x] **Implement structured external verification.** Completed 2026-05-12. `LineageRecord.external_verifications` now stores typed post-apply verifier outcomes; SQLite persists/migrates the field; `a2ctl run --apply` writes structured stdout/stderr/failing-test data; prior motifs render structured records before falling back to legacy rationale markers. See `todos/structured-external-verification.md`.
+- [x] **Promote verifier failures into retry task contracts.** Completed 2026-05-12. `a2d::Governor` derives retry acceptance criteria from failed structured external verification records and passes the enriched task into the workcell; `WorktreeCatalyst` renders acceptance criteria in prompts. See `todos/retry-task-contract-from-verification.md`.
+- [x] **Populate verifier-derived relevant files.** Completed 2026-05-12. Failed structured verifier output containing Rust source paths now populates `ContextPack.relevant_files`, and `WorktreeCatalyst` renders those paths in prompts. See `todos/verifier-derived-relevant-files.md`.
 - [ ] **Add anti-repeat retry strategy.** See `todos/anti-repeat-retry-strategy.md`. Detect repeated failed patch shapes such as "only touched `a2_core/src/lib.rs` while `a2ctl` failure remains".
 - [ ] **Run task-specific verifier in candidate worktrees before promotion scoring.** See `todos/worktree-task-verifier.md`. Hidden verifier failures should affect somatic fitness before a patch is treated as promotable.
 - [ ] **Run `compound-hidden` N≥3 per available non-Claude provider after each structural change.** Current factual result after motif/run-path fixes: Minimax runs on 2026-05-03 and 2026-05-08 plus Kimi run on 2026-05-03 failed attempts 1-3; prior lineage was present on attempts 2-3; core lineage reconciliation was true for all attempts; each attempt touched only `a2_core/src/lib.rs` (1 added, 1 removed), leaving the `a2ctl` hidden regression unfixed. 2026-05-08 Minimax reruns after stdout-first, `failure_focus`, and authoritative-verification prompt changes still scored resolved 0/1, pass@1 0/1, loop exercised 1/1, self-corrected 0/1.
@@ -245,3 +245,6 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-05-08 | Put verification stdout before stderr | A Minimax run after stdout preservation still repeated the visible fix; the structured motif's compact detail began with stderr compiler/cargo noise. `command_failure_message()` now renders stdout first so failing assertions are near the front of the persisted note. |
 | 2026-05-08 | Add verification failure focus to motifs | A Minimax run after stdout-first still repeated the visible fix because full `cargo test` stdout begins with many passing crates. Failed external verification motifs now include `failure_focus` lines extracted from failed tests/assertions before bounded raw detail. |
 | 2026-05-08 | Make external verification authoritative in prompts | WorktreeCatalyst now tells models that prior `external_verification` failures are authoritative acceptance criteria, even when they reveal failures beyond the original task description. |
+| 2026-05-12 | Persist structured external verification | `LineageRecord.external_verifications` now stores typed post-apply verifier outcomes, SQLite migrates/persists them, and prior motifs prefer typed verifier records over legacy `[external verify: ...]` rationale text. |
+| 2026-05-12 | Promote verifier failures into retry task contracts | `a2d::Governor` now derives mandatory retry acceptance criteria from failed structured external verification records; `WorktreeCatalyst` renders task acceptance criteria in prompts. |
+| 2026-05-12 | Populate verifier-derived relevant files | Failed structured verifier output containing source paths now populates `ContextPack.relevant_files`, making paths such as `crates/a2ctl/src/main.rs` visible in retry prompts. |

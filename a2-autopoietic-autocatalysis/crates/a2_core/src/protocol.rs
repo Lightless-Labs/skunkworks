@@ -161,6 +161,19 @@ pub struct OrganizationalFitness {
 // Lineage and promotion
 // ---------------------------------------------------------------------------
 
+/// Typed result from an external/post-apply verification gate.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalVerification {
+    pub passed: bool,
+    pub command: String,
+    pub exit_code: Option<i32>,
+    pub failing_tests: Vec<String>,
+    pub failure_focus: Vec<String>,
+    pub stdout_excerpt: String,
+    pub stderr_excerpt: String,
+    pub verified_at: DateTime<Utc>,
+}
+
 /// Provenance chain, model attributions, evaluation trace.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LineageRecord {
@@ -173,6 +186,9 @@ pub struct LineageRecord {
     /// Model rationale produced alongside the patch, when a patch exists.
     #[serde(default)]
     pub patch_rationale: Option<String>,
+    /// Post-apply/external verification outcomes, oldest first.
+    #[serde(default)]
+    pub external_verifications: Vec<ExternalVerification>,
     pub parent_germline: GermlineVersion,
     pub model_attributions: Vec<ModelAttribution>,
     pub fitness: FitnessRecord,

@@ -1,6 +1,7 @@
 # Structured External Verification TODO
 
 Created: 2026-05-10
+Completed: 2026-05-12
 
 ## Problem
 
@@ -31,12 +32,12 @@ Then attach it to `LineageRecord`, with SQLite migration support in `a2_archive`
 
 ## Acceptance criteria
 
-- [ ] `LineageRecord` has structured external verification data with serde defaults for legacy records.
-- [ ] `a2_archive::SqliteLineageStore` persists and reads the new data.
-- [ ] `a2ctl run --apply` writes post-apply verification into the structured field.
-- [ ] Prior motif rendering consumes the structured field first and only falls back to legacy rationale markers.
-- [ ] Existing legacy lineage rows still migrate/read successfully.
-- [ ] Tests cover failed verification with stdout + stderr + failing test extraction.
+- [x] `LineageRecord` has structured external verification data with serde defaults for legacy records.
+- [x] `a2_archive::SqliteLineageStore` persists and reads the new data.
+- [x] `a2ctl run --apply` writes post-apply verification into the structured field.
+- [x] Prior motif rendering consumes the structured field first and only falls back to legacy rationale markers.
+- [x] Existing legacy lineage rows still migrate/read successfully.
+- [x] Tests cover failed verification with stdout + stderr + failing test extraction.
 
 ## Verification
 
