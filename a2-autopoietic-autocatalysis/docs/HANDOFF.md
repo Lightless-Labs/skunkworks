@@ -163,7 +163,7 @@ ContextPack is wired and self-correction harnesses exist. The current gap is no 
 
 **Not yet validated:**
 - GLM repeat after the structured retry-context changes.
-- A second compound fixture after the first `compound-hidden` successes.
+- Self-correction results for the new `compound-membrane-hidden` fixture.
 - Task-specific verifier execution inside candidate worktrees before promotion scoring.
 - Anti-repeat retry strategy for patch-shape stagnation.
 
@@ -188,11 +188,11 @@ ContextPack is wired and self-correction harnesses exist. The current gap is no 
 - [ ] **Add anti-repeat retry strategy.** See `todos/anti-repeat-retry-strategy.md`. Detect repeated failed patch shapes such as "only touched `a2_core/src/lib.rs` while `a2ctl` failure remains".
 - [ ] **Run task-specific verifier in candidate worktrees before promotion scoring.** See `todos/worktree-task-verifier.md`. Hidden verifier failures should affect somatic fitness before a patch is treated as promotable.
 - [ ] **Run `compound-hidden` N≥3 per available non-Claude provider after each structural change.** Current factual result after structured verifier retry-context changes: Minimax N=3 on 2026-05-16 and Kimi N=3 on 2026-05-18 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Each run failed attempt 1 after touching only `a2_core/src/lib.rs`; each run passed attempt 2 after touching `a2_core/src/lib.rs` and `crates/a2ctl/src/main.rs`. Results: `/tmp/a2-compound-structured-retry.jsonl` and `/tmp/a2-compound-structured-retry-kimi.jsonl`. GLM rerun remains pending.
-- [ ] **Add a second compound fixture after one self-correction success.** Avoid tuning the loop to a single benchmark shape.
+- [x] **Add a second compound fixture after one self-correction success.** Completed 2026-05-18. `bench/self_correction.py` now includes `compound-membrane-hidden`, which combines the visible `a2_core` Fibonacci regression with a hidden `a2_membrane` deny-overrides-allow regression. Smoke-only injection verified both failures. Benchmark runs remain pending.
 
 ### Loop-shaped benchmarks
 
-1. **Self-correction benchmark** *(implemented 2026-04-28 as `bench/self_correction.py` + `bench/self_correction_score.py`)*: isolated git worktree, pinned task ID, core run-path lineage reconciliation, JSONL results. Fixtures: `fibonacci` (too easy: Minimax N=3 pass@1 3/3, loop 0/3), `compound-hidden` (harder: Minimax/Kimi runs before structured retry context failed attempts 1-3; after structured verifier records + retry acceptance criteria + verifier-derived relevant files, Minimax N=3 on 2026-05-16 and Kimi N=3 on 2026-05-18 resolved on attempt 2 in all runs).
+1. **Self-correction benchmark** *(implemented 2026-04-28 as `bench/self_correction.py` + `bench/self_correction_score.py`)*: isolated git worktree, pinned task ID, core run-path lineage reconciliation, JSONL results. Fixtures: `fibonacci` (too easy: Minimax N=3 pass@1 3/3, loop 0/3), `compound-hidden` (harder: Minimax/Kimi runs before structured retry context failed attempts 1-3; after structured verifier records + retry acceptance criteria + verifier-derived relevant files, Minimax N=3 on 2026-05-16 and Kimi N=3 on 2026-05-18 resolved on attempt 2 in all runs), `compound-membrane-hidden` (added 2026-05-18; visible `a2_core` Fibonacci regression plus hidden `a2_membrane` deny-overrides-allow regression; smoke-only injection verified failures; model runs pending).
 2. **Multi-round benchmark**: N iterations on the same task, measure score improvement over rounds. Can now reuse the self-correction harness pattern.
 3. **Adversarial drift** (Fontana Level 0): can A² detect and reject a "promotion" that actually degrades the system? Philosophically load-bearing for the autopoiesis claim.
 4. **Cross-task transfer**: solve task A, measure if task B is faster/better because lineage carried over.
@@ -256,3 +256,4 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-05-12 | Populate verifier-derived relevant files | Failed structured verifier output containing source paths now populates `ContextPack.relevant_files`, making paths such as `crates/a2ctl/src/main.rs` visible in retry prompts. |
 | 2026-05-16 | First `compound-hidden` N=3 self-correction success | Minimax after structured verifier retry context scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs fixed `a2_core` on attempt 1 and fixed `a2ctl` on attempt 2. |
 | 2026-05-18 | `compound-hidden` Kimi N=3 self-correction success | Kimi after structured verifier retry context scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs fixed `a2_core` on attempt 1 and fixed `a2ctl` on attempt 2. |
+| 2026-05-18 | Add second compound self-correction fixture | `compound-membrane-hidden` combines the visible `a2_core` Fibonacci regression with a hidden `a2_membrane` deny-overrides-allow regression so loop recovery can be tested beyond `a2ctl` scan-marker failures. |

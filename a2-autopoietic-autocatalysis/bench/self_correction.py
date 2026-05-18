@@ -39,6 +39,8 @@ FIBONACCI_BUG_OLD = "if n == 0 {\n        return 0;\n    }"
 FIBONACCI_BUG_NEW = "if n == 0 {\n        return 1;\n    }"
 SCAN_BUG_OLD = "if byte == b'\"' {\n            in_double = true;\n            index += 1;\n            continue;\n        }"
 SCAN_BUG_NEW = "if byte == b'\"' {\n            index += 1;\n            continue;\n        }"
+MEMBRANE_BUG_OLD = 'if cap.denied_tools.iter().any(|d| d == tool_name || d == "*") {\n            return false;\n        }'
+MEMBRANE_BUG_NEW = 'if cap.denied_tools.iter().any(|d| d == tool_name || d == "*") {\n            return true;\n        }'
 FNV_OFFSET_128 = 0x6C62_272E_07BB_0142_62B8_2175_6295_C58D
 FNV_PRIME_128 = 0x0000_0000_0100_0000_0000_0000_0000_013B
 
@@ -92,6 +94,28 @@ FIXTURES: dict[str, Fixture] = {
                 "crates/a2ctl/src/main.rs",
                 SCAN_BUG_OLD,
                 SCAN_BUG_NEW,
+            ),
+        ),
+    ),
+    "compound-membrane-hidden": Fixture(
+        name="compound-membrane-hidden",
+        task_id="self-correction-compound-membrane-hidden-regressions",
+        description=FIBONACCI_DESCRIPTION,
+        verify_command=(
+            "cargo test -p a2_core test_fibonacci; core=$?; "
+            "cargo test -p a2_membrane deny_overrides_allow; membrane=$?; "
+            "test $core -eq 0 -a $membrane -eq 0"
+        ),
+        replacements=(
+            Replacement(
+                "crates/a2_core/src/lib.rs",
+                FIBONACCI_BUG_OLD,
+                FIBONACCI_BUG_NEW,
+            ),
+            Replacement(
+                "crates/a2_membrane/src/policy.rs",
+                MEMBRANE_BUG_OLD,
+                MEMBRANE_BUG_NEW,
             ),
         ),
     ),
