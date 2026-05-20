@@ -53,6 +53,7 @@ impl Ingester {
             title: truncate(&signal.content, 80),
             description: signal.content.clone(),
             acceptance_criteria: vec!["Task addressed as described".into()],
+            verification_commands: vec![],
             budget: self.default_budget.clone(),
             priority,
             source: TaskSource::Sensorium {

@@ -159,15 +159,16 @@ ContextPack is wired and self-correction harnesses exist. The current gap is no 
 - Retry task contracts include verifier-derived acceptance criteria.
 - Retry context includes verifier-derived relevant files when verifier output names Rust source paths.
 - Retry context includes `anti_repeat_retry` warnings when latest failed patch touched files do not overlap unresolved verifier-derived Rust source paths; repeated failed touched-file sets are counted.
+- Task-specific verifier commands are represented on `TaskContract` and run inside candidate worktrees before promotion scoring; verifier results are stored on `PatchBundle.worktree_verifications` and copied into `LineageRecord.external_verifications`.
 - `compound-hidden` with Minimax on 2026-05-16 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2ctl/src/main.rs` and verified clean.
 - `compound-hidden` with Kimi on 2026-05-18 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2ctl/src/main.rs` and verified clean.
 
 **Not yet validated:**
 - GLM repeat after the structured retry-context changes.
-- Task-specific verifier execution inside candidate worktrees before promotion scoring.
+- Cross-provider/fixture benchmark impact of candidate-worktree task verifier execution.
 - Cross-provider/fixture benchmark impact of anti-repeat retry strategy.
 
-**Structural solution direction:** validate loop recovery beyond one provider/fixture, then add task-specific worktree verification. Dedicated todos live in `todos/`.
+**Structural solution direction:** validate loop recovery beyond one provider/fixture and measure candidate-worktree verifier impact. Dedicated todos live in `todos/`.
 
 ### Completed prerequisites (2026-04-23)
 
@@ -186,7 +187,7 @@ ContextPack is wired and self-correction harnesses exist. The current gap is no 
 - [x] **Promote verifier failures into retry task contracts.** Completed 2026-05-12. `a2d::Governor` derives retry acceptance criteria from failed structured external verification records and passes the enriched task into the workcell; `WorktreeCatalyst` renders acceptance criteria in prompts. See `todos/retry-task-contract-from-verification.md`.
 - [x] **Populate verifier-derived relevant files.** Completed 2026-05-12. Failed structured verifier output containing Rust source paths now populates `ContextPack.relevant_files`, and `WorktreeCatalyst` renders those paths in prompts. See `todos/verifier-derived-relevant-files.md`.
 - [x] **Add anti-repeat retry strategy.** Completed 2026-05-20. Retry context now emits an `anti_repeat_retry` motif when prior failed patch touched files do not overlap unresolved verifier-derived source paths; repeated touched-file sets are counted, and WorktreeCatalyst prompts explicitly warn not to repeat the prior patch shape alone. See `todos/anti-repeat-retry-strategy.md`.
-- [ ] **Run task-specific verifier in candidate worktrees before promotion scoring.** See `todos/worktree-task-verifier.md`. Hidden verifier failures should affect somatic fitness before a patch is treated as promotable.
+- [x] **Run task-specific verifier in candidate worktrees before promotion scoring.** Completed 2026-05-20. `TaskContract.verification_commands` carries shell verifier commands; `WorktreeCatalyst` runs them in the candidate worktree, maps outcomes into `TestResults` plus structured `ExternalVerification`, and `run_workcell` persists those verifier records into lineage before promotion. `a2ctl bench` wires TOML `[verify]` commands, and JSONL run input accepts optional `verification_commands`. See `todos/worktree-task-verifier.md`.
 - [ ] **Run `compound-hidden` N≥3 per available non-Claude provider after each structural change.** Current factual result after structured verifier retry-context changes: Minimax N=3 on 2026-05-16 and Kimi N=3 on 2026-05-18 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Each run failed attempt 1 after touching only `a2_core/src/lib.rs`; each run passed attempt 2 after touching `a2_core/src/lib.rs` and `crates/a2ctl/src/main.rs`. Results: `/tmp/a2-compound-structured-retry.jsonl` and `/tmp/a2-compound-structured-retry-kimi.jsonl`. GLM rerun remains pending.
 - [x] **Add a second compound fixture after one self-correction success.** Completed 2026-05-18. `bench/self_correction.py` now includes `compound-membrane-hidden`, which combines the visible `a2_core` Fibonacci regression with a hidden `a2_membrane` deny-overrides-allow regression. Smoke-only injection verified both failures. Minimax N=3 scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 
@@ -259,3 +260,4 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-05-18 | Add second compound self-correction fixture | `compound-membrane-hidden` combines the visible `a2_core` Fibonacci regression with a hidden `a2_membrane` deny-overrides-allow regression so loop recovery can be tested beyond `a2ctl` scan-marker failures. |
 | 2026-05-18 | `compound-membrane-hidden` Minimax N=3 self-correction success | Minimax scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs fixed `a2_core` on attempt 1 and fixed `a2_membrane` on attempt 2. |
 | 2026-05-20 | Add anti-repeat retry motif | Prior failed patch diffs are parsed for touched files. When unresolved verifier failures name Rust source paths not touched by the latest failed patch, retry context adds an `anti_repeat_retry` warning; repeated failed touched-file sets are counted. |
+| 2026-05-20 | Run task verifiers in candidate worktrees | `TaskContract.verification_commands` lets bench/run inputs carry verifier commands without prompt-only text; `WorktreeCatalyst` executes them before cleanup, failed commands mark `TestResults.failed`, and structured outcomes persist through lineage. |

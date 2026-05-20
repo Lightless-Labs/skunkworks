@@ -556,7 +556,10 @@ pub async fn run_workcell(
             .unwrap_or_else(PatchId::new),
         patch_diff: patch.as_ref().map(|p| p.diff.clone()),
         patch_rationale: patch.as_ref().map(|p| p.rationale.clone()),
-        external_verifications: vec![],
+        external_verifications: patch
+            .as_ref()
+            .map(|p| p.worktree_verifications.clone())
+            .unwrap_or_default(),
         parent_germline: config.germline_version,
         model_attributions: patch
             .as_ref()
@@ -624,6 +627,7 @@ mod tests {
                     skipped: 0,
                     details: vec![],
                 },
+                worktree_verifications: vec![],
                 model_attribution: ModelAttribution {
                     provider: "test".into(),
                     model: "echo".into(),
@@ -732,6 +736,53 @@ mod tests {
         }
     }
 
+    struct VerifierCatalyst {
+        id: CatalystId,
+        verification: ExternalVerification,
+    }
+
+    #[async_trait::async_trait]
+    impl Catalyst for VerifierCatalyst {
+        fn id(&self) -> &CatalystId {
+            &self.id
+        }
+        fn name(&self) -> &str {
+            "verifier"
+        }
+        async fn execute(
+            &self,
+            task: &TaskContract,
+            _context: &ContextPack,
+            _model: &dyn ModelProvider,
+        ) -> A2Result<PatchBundle> {
+            Ok(PatchBundle {
+                id: PatchId::new(),
+                task_id: task.id.clone(),
+                workcell_id: WorkcellId::new(),
+                diff: "+verified".into(),
+                rationale: "candidate with verifier output".into(),
+                test_results: TestResults {
+                    passed: 0,
+                    failed: 1,
+                    skipped: 0,
+                    details: vec![TestDetail {
+                        name: self.verification.command.clone(),
+                        passed: false,
+                        output: Some("hidden failure".into()),
+                    }],
+                },
+                worktree_verifications: vec![self.verification.clone()],
+                model_attribution: ModelAttribution {
+                    provider: "t".into(),
+                    model: "m".into(),
+                    tokens_in: 1,
+                    tokens_out: 1,
+                },
+                created_at: Utc::now(),
+            })
+        }
+    }
+
     /// Captures the ContextPack the catalyst was invoked with so the test can
     /// assert that prior_lineage is surfaced correctly.
     struct CapturingCatalyst {
@@ -766,6 +817,7 @@ mod tests {
                     skipped: 0,
                     details: vec![],
                 },
+                worktree_verifications: vec![],
                 model_attribution: ModelAttribution {
                     provider: "t".into(),
                     model: "m".into(),
@@ -826,6 +878,7 @@ mod tests {
                 title: "t".into(),
                 description: "d".into(),
                 acceptance_criteria: vec![],
+                verification_commands: vec![],
                 budget: Budget {
                     max_tokens: 10_000,
                     max_duration_secs: 60,
@@ -925,6 +978,7 @@ mod tests {
                 title: "t".into(),
                 description: "d".into(),
                 acceptance_criteria: vec![],
+                verification_commands: vec![],
                 budget: Budget {
                     max_tokens: 10_000,
                     max_duration_secs: 60,
@@ -1148,6 +1202,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn worktree_verifications_are_persisted_into_lineage() {
+        let verification = ExternalVerification {
+            passed: false,
+            command: "cargo test -p a2ctl hidden_case".into(),
+            exit_code: Some(101),
+            failing_tests: vec!["tests::hidden_case".into()],
+            failure_focus: vec!["thread panicked at crates/a2ctl/src/main.rs:42".into()],
+            stdout_excerpt: "test tests::hidden_case ... FAILED".into(),
+            stderr_excerpt: "error: test failed".into(),
+            verified_at: Utc::now(),
+        };
+        let task_id = TaskId::new();
+        let config = WorkcellConfig {
+            workcell_id: WorkcellId::new(),
+            germline_version: GermlineVersion::new(),
+            task: TaskContract {
+                id: task_id,
+                title: "test verifier lineage".into(),
+                description: "preserve verifier output".into(),
+                acceptance_criteria: vec![],
+                verification_commands: vec![TaskVerificationCommand {
+                    command: verification.command.clone(),
+                    expect_exit: 0,
+                }],
+                budget: Budget {
+                    max_tokens: 10_000,
+                    max_duration_secs: 60,
+                    max_calls: 10,
+                },
+                priority: Priority::Normal,
+                source: TaskSource::External {
+                    origin: "test".into(),
+                },
+                created_at: Utc::now(),
+            },
+            budget: Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 10,
+            },
+            prior_lineage: vec![],
+        };
+        let catalyst = VerifierCatalyst {
+            id: CatalystId::new(),
+            verification: verification.clone(),
+        };
+
+        let result = run_workcell(config, &catalyst, &NoopProvider, &AlwaysPassEvaluator)
+            .await
+            .unwrap();
+
+        assert_eq!(result.lineage.external_verifications, vec![verification]);
+    }
+
+    #[tokio::test]
     async fn workcell_runs_catalyst_and_evaluator() {
         let config = WorkcellConfig {
             workcell_id: WorkcellId::new(),
@@ -1157,6 +1266,7 @@ mod tests {
                 title: "test task".into(),
                 description: "do a thing".into(),
                 acceptance_criteria: vec!["it works".into()],
+                verification_commands: vec![],
                 budget: Budget {
                     max_tokens: 10_000,
                     max_duration_secs: 60,

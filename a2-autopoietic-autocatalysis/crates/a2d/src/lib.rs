@@ -470,6 +470,7 @@ mod tests {
                     skipped: 0,
                     details: vec![],
                 },
+                worktree_verifications: vec![],
                 model_attribution: ModelAttribution {
                     provider: "test".into(),
                     model: "echo".into(),
@@ -513,6 +514,7 @@ mod tests {
                     skipped: 0,
                     details: vec![],
                 },
+                worktree_verifications: vec![],
                 model_attribution: ModelAttribution {
                     provider: "test".into(),
                     model: "capture".into(),
@@ -633,6 +635,7 @@ mod tests {
             title: "test".into(),
             description: "test task".into(),
             acceptance_criteria: vec!["it works".into()],
+            verification_commands: vec![],
             budget: Budget {
                 max_tokens: 10_000,
                 max_duration_secs: 60,
@@ -728,6 +731,7 @@ mod tests {
             title: "retry task".into(),
             description: "fix the visible failure".into(),
             acceptance_criteria: vec!["Original criterion remains".into()],
+            verification_commands: vec![],
             budget: Budget {
                 max_tokens: 10_000,
                 max_duration_secs: 60,
@@ -905,6 +909,7 @@ mod tests {
             title: "fail".into(),
             description: "will fail".into(),
             acceptance_criteria: vec![],
+            verification_commands: vec![],
             budget: Budget {
                 max_tokens: 10_000,
                 max_duration_secs: 60,

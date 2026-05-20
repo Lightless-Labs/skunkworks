@@ -22,10 +22,22 @@ pub struct TaskContract {
     pub title: String,
     pub description: String,
     pub acceptance_criteria: Vec<String>,
+    /// Commands that must pass inside the candidate worktree before somatic
+    /// fitness can treat the task as complete.
+    #[serde(default)]
+    pub verification_commands: Vec<TaskVerificationCommand>,
     pub budget: Budget,
     pub priority: Priority,
     pub source: TaskSource,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskVerificationCommand {
+    /// Shell command to run from the candidate workspace root.
+    pub command: String,
+    /// Expected process exit code. Most verifiers should use 0.
+    pub expect_exit: i32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -78,6 +90,9 @@ pub struct PatchBundle {
     pub diff: String,
     pub rationale: String,
     pub test_results: TestResults,
+    /// Task-specific verifier outcomes captured inside the candidate worktree.
+    #[serde(default)]
+    pub worktree_verifications: Vec<ExternalVerification>,
     pub model_attribution: ModelAttribution,
     pub created_at: DateTime<Utc>,
 }

@@ -111,6 +111,133 @@ impl WorktreeCatalyst {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
+    fn compact_verification_excerpt(value: &str, max_chars: usize) -> String {
+        let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+        if normalized.chars().count() <= max_chars {
+            return normalized;
+        }
+        let mut truncated = normalized
+            .chars()
+            .take(max_chars.saturating_sub(1))
+            .collect::<String>();
+        truncated.push('…');
+        truncated
+    }
+
+    fn verification_failure_focus(stdout: &str, stderr: &str) -> Vec<String> {
+        stdout
+            .lines()
+            .chain(stderr.lines())
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .filter(|line| {
+                let lower = line.to_ascii_lowercase();
+                lower.contains("failed")
+                    || lower.contains("failures:")
+                    || lower.contains("panicked at")
+                    || lower.contains("assertion failed")
+                    || lower.contains("assertion `")
+                    || lower.contains("left:")
+                    || lower.contains("right:")
+                    || lower.contains("error:")
+            })
+            .take(20)
+            .map(|line| Self::compact_verification_excerpt(line, 300))
+            .collect()
+    }
+
+    fn failing_tests_from_output(stdout: &str, stderr: &str) -> Vec<String> {
+        stdout
+            .lines()
+            .chain(stderr.lines())
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                trimmed
+                    .strip_prefix("test ")
+                    .and_then(|rest| rest.strip_suffix(" ... FAILED"))
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    async fn run_task_verifications(
+        &self,
+        task: &TaskContract,
+        worktree_path: &Path,
+    ) -> A2Result<(TestResults, Vec<ExternalVerification>)> {
+        if task.verification_commands.is_empty() {
+            return Ok((
+                TestResults {
+                    passed: 0,
+                    failed: 0,
+                    skipped: 0,
+                    details: vec![],
+                },
+                vec![],
+            ));
+        }
+
+        let mut details = Vec::new();
+        let mut verifications = Vec::new();
+        for spec in &task.verification_commands {
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg(&spec.command)
+                .current_dir(worktree_path)
+                .output()
+                .await
+                .map_err(|e| {
+                    A2Error::CatalystFailure(
+                        self.id.clone(),
+                        format!("task verifier `{}` failed to start: {e}", spec.command),
+                    )
+                })?;
+            let exit_code = output.status.code();
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let passed = exit_code == Some(spec.expect_exit);
+            let output_text = if passed {
+                None
+            } else {
+                Some(Self::compact_verification_excerpt(
+                    &format!("stdout:\n{stdout}\nstderr:\n{stderr}"),
+                    1_200,
+                ))
+            };
+            details.push(TestDetail {
+                name: spec.command.clone(),
+                passed,
+                output: output_text,
+            });
+            verifications.push(ExternalVerification {
+                passed,
+                command: spec.command.clone(),
+                exit_code,
+                failing_tests: Self::failing_tests_from_output(&stdout, &stderr),
+                failure_focus: if passed {
+                    vec![]
+                } else {
+                    Self::verification_failure_focus(&stdout, &stderr)
+                },
+                stdout_excerpt: Self::compact_verification_excerpt(&stdout, 4_000),
+                stderr_excerpt: Self::compact_verification_excerpt(&stderr, 4_000),
+                verified_at: Utc::now(),
+            });
+        }
+
+        let passed = details.iter().filter(|detail| detail.passed).count() as u32;
+        let failed = details.iter().filter(|detail| !detail.passed).count() as u32;
+        Ok((
+            TestResults {
+                passed,
+                failed,
+                skipped: 0,
+                details,
+            },
+            verifications,
+        ))
+    }
+
     /// Run a model CLI agent in the worktree directory.
     /// Returns (parsed_text, raw_stdout, stderr_text, tokens_in, tokens_out).
     async fn run_agent(
@@ -371,6 +498,16 @@ impl WorktreeCatalyst {
             }
         }
 
+        if !task.verification_commands.is_empty() {
+            prompt.push_str("\n\n## Task-Specific Verification Commands\n\n");
+            for verifier in &task.verification_commands {
+                prompt.push_str(&format!(
+                    "- `{}` must exit {}\n",
+                    verifier.command, verifier.expect_exit
+                ));
+            }
+        }
+
         prompt.push_str("\n\n## Workspace Structure\n\n");
         prompt.push_str(self.workspace_structure());
 
@@ -450,8 +587,12 @@ impl Catalyst for WorktreeCatalyst {
         // Capture what the agent actually changed
         let diff = self.capture_diff(&worktree_path).await?;
 
+        let verification_result = self.run_task_verifications(task, &worktree_path).await;
+
         // Clean up
         self.cleanup_worktree(&worktree_path, &branch_name).await;
+
+        let (test_results, worktree_verifications) = verification_result?;
 
         if diff.trim().is_empty() {
             let mut msg = "agent made no changes to the worktree — the worktree agent must edit the correct file and the diff must apply cleanly".to_string();
@@ -489,12 +630,8 @@ impl Catalyst for WorktreeCatalyst {
             workcell_id: WorkcellId::new(),
             diff,
             rationale,
-            test_results: TestResults {
-                passed: 0,
-                failed: 0,
-                skipped: 0,
-                details: vec![],
-            },
+            test_results,
+            worktree_verifications,
             model_attribution: ModelAttribution {
                 provider: model.provider_id().into(),
                 model: model.model_id().into(),
@@ -648,6 +785,10 @@ mod tests {
                 "Original acceptance remains".into(),
                 "Prior external verification must pass: cargo test -p a2ctl".into(),
             ],
+            verification_commands: vec![TaskVerificationCommand {
+                command: "cargo test -p a2ctl hidden_test".into(),
+                expect_exit: 0,
+            }],
             budget: Budget {
                 max_tokens: 10_000,
                 max_duration_secs: 60,
@@ -671,6 +812,8 @@ mod tests {
         assert!(prompt.contains("## Acceptance Criteria"));
         assert!(prompt.contains("- Original acceptance remains"));
         assert!(prompt.contains("- Prior external verification must pass: cargo test -p a2ctl"));
+        assert!(prompt.contains("## Task-Specific Verification Commands"));
+        assert!(prompt.contains("- `cargo test -p a2ctl hidden_test` must exit 0"));
         assert!(prompt.contains("## Relevant Files"));
         assert!(prompt.contains("- crates/a2ctl/src/main.rs"));
     }
@@ -684,6 +827,7 @@ mod tests {
             title: "Fix visible bug".into(),
             description: "Fix `cargo test -p a2_core test_fibonacci`.".into(),
             acceptance_criteria: vec![],
+            verification_commands: vec![],
             budget: Budget {
                 max_tokens: 10_000,
                 max_duration_secs: 60,
@@ -715,6 +859,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn task_specific_verifier_failure_is_captured_in_patch() {
+        let repo_dir = std::env::temp_dir().join(format!("a2-verifier-{}", uuid::Uuid::now_v7()));
+        fs::create_dir_all(&repo_dir).unwrap();
+        init_git_repo_with_rust_project(&repo_dir).await;
+
+        let catalyst = WorktreeCatalyst::new(repo_dir.clone());
+        let task = TaskContract {
+            id: TaskId::new(),
+            title: "Capture verifier failure".into(),
+            description: "Make a change, then run a failing verifier.".into(),
+            acceptance_criteria: vec![],
+            verification_commands: vec![TaskVerificationCommand {
+                command: "echo thread panicked at crates/a2ctl/src/main.rs:42; exit 7".into(),
+                expect_exit: 0,
+            }],
+            budget: Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 4,
+            },
+            priority: Priority::Normal,
+            source: TaskSource::External {
+                origin: "test".into(),
+            },
+            created_at: Utc::now(),
+        };
+        let context = ContextPack {
+            germline_version: GermlineVersion::new(),
+            relevant_files: vec![repo_dir.join("src/lib.rs")],
+            prior_attempts: vec![],
+            retrieved_motifs: vec![],
+        };
+        let model = MockModelProvider {
+            provider_id: "mock",
+            model_id: "mock",
+        };
+
+        let patch = catalyst.execute(&task, &context, &model).await.unwrap();
+
+        assert_eq!(patch.test_results.passed, 0);
+        assert_eq!(patch.test_results.failed, 1);
+        assert_eq!(patch.worktree_verifications.len(), 1);
+        let verification = &patch.worktree_verifications[0];
+        assert!(!verification.passed);
+        assert_eq!(verification.exit_code, Some(7));
+        assert!(
+            verification
+                .failure_focus
+                .iter()
+                .any(|line| line.contains("crates/a2ctl/src/main.rs"))
+        );
+    }
+
+    #[tokio::test]
     async fn full_self_modification_pipeline_create_task_execute_diff_apply_cargo_check() {
         // --- 1. Bootstrap: temp git repo with a minimal Rust project -------
         let repo_dir = std::env::temp_dir().join(format!("a2-selfmod-{}", uuid::Uuid::now_v7()));
@@ -729,6 +927,7 @@ mod tests {
             title: "Add comment to src/lib.rs".into(),
             description: "Append a comment line to the lib file.".into(),
             acceptance_criteria: vec!["src/lib.rs contains a new comment".into()],
+            verification_commands: vec![],
             budget: Budget {
                 max_tokens: 10_000,
                 max_duration_secs: 60,

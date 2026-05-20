@@ -52,6 +52,7 @@ impl Catalyst for MockCatalyst {
                 skipped: 0,
                 details: vec![],
             },
+            worktree_verifications: vec![],
             model_attribution: ModelAttribution {
                 provider: model.provider_id().into(),
                 model: model.model_id().into(),
@@ -153,6 +154,7 @@ fn sample_task() -> TaskContract {
         title: "record lineage".into(),
         description: "run the full governor lifecycle".into(),
         acceptance_criteria: vec!["lineage record is created and persisted".into()],
+        verification_commands: vec![],
         budget: default_budget(),
         priority: Priority::Normal,
         source: TaskSource::External {

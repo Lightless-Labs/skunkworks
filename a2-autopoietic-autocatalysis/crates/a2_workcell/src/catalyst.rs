@@ -206,6 +206,7 @@ impl Catalyst for GeneralistCatalyst {
                 skipped: 0,
                 details: vec![],
             },
+            worktree_verifications: vec![],
             model_attribution: ModelAttribution {
                 provider: model.provider_id().into(),
                 model: model.model_id().into(),
@@ -306,6 +307,7 @@ mod tests {
             title: "Improve catalyst prompt".into(),
             description: "Tighten the prompt template and output contract.".into(),
             acceptance_criteria: vec!["Includes workspace context".into()],
+            verification_commands: vec![],
             budget: Budget {
                 max_tokens: 10_000,
                 max_duration_secs: 60,

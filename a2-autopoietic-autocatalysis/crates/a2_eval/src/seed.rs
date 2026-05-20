@@ -81,6 +81,7 @@ mod tests {
             title: "fix the frobulator".into(),
             description: "the frobulator is broken".into(),
             acceptance_criteria: vec!["frobulator works".into()],
+            verification_commands: vec![],
             budget: Budget {
                 max_tokens: 10_000,
                 max_duration_secs: 60,
@@ -107,6 +108,7 @@ mod tests {
                 skipped: 0,
                 details: vec![],
             },
+            worktree_verifications: vec![],
             model_attribution: ModelAttribution {
                 provider: "test".into(),
                 model: "test".into(),

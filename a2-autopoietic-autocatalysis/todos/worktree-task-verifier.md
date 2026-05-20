@@ -1,6 +1,7 @@
 # Worktree Task Verifier TODO
 
 Created: 2026-05-10
+Completed: 2026-05-20
 
 ## Problem
 
@@ -29,11 +30,11 @@ cargo test -p a2ctl ignores_non_task_mentions_inside_comments_and_strings
 
 ## Acceptance criteria
 
-- [ ] Task-specific verifier commands can be represented without ad hoc prompt text.
-- [ ] WorktreeCatalyst/evaluator can run verifier commands in the candidate worktree.
-- [ ] Failed verifier commands set somatic `task_completed=false` and `tests_pass=false` before promotion decision.
-- [ ] Verification output is persisted into structured external verification or equivalent lineage data.
-- [ ] Existing benchmark/run behavior remains compatible for tasks without explicit verifier commands.
+- [x] Task-specific verifier commands can be represented without ad hoc prompt text.
+- [x] WorktreeCatalyst/evaluator can run verifier commands in the candidate worktree.
+- [x] Failed verifier commands set somatic `task_completed=false` and `tests_pass=false` before promotion decision.
+- [x] Verification output is persisted into structured external verification or equivalent lineage data.
+- [x] Existing benchmark/run behavior remains compatible for tasks without explicit verifier commands.
 
 ## Verification
 

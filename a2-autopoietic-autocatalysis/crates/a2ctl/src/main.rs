@@ -159,6 +159,15 @@ struct RunInputTask {
     problem_statement: String,
     #[serde(default)]
     task_id: Option<String>,
+    #[serde(default)]
+    verification_commands: Vec<RunVerificationSpec>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunVerificationSpec {
+    command: String,
+    #[serde(default)]
+    expect_exit: i32,
 }
 
 const DEFAULT_STAGNATION_WINDOW: usize = 3;
@@ -715,7 +724,11 @@ async fn run_benchmark_suite(model: &str) -> Result<(), String> {
             promoted: false,
         };
 
-        let task = ingester.from_human(&bench_task.task.title, &bench_task.task.description);
+        let mut task = ingester.from_human(&bench_task.task.title, &bench_task.task.description);
+        task.verification_commands = vec![a2_core::protocol::TaskVerificationCommand {
+            command: bench_task.verify.command.clone(),
+            expect_exit: bench_task.verify.expect_exit,
+        }];
 
         match run_task(&governor, task, &catalyst, provider.as_ref(), &evaluator).await {
             Ok(outcome) => {
@@ -1017,6 +1030,14 @@ fn task_from_run_input(
                 task.id = a2_core::id::TaskId::parse_str(task_id)
                     .unwrap_or_else(|_| a2_core::id::TaskId::from_external_key(task_id));
             }
+            task.verification_commands = input
+                .verification_commands
+                .into_iter()
+                .map(|verification| a2_core::protocol::TaskVerificationCommand {
+                    command: verification.command,
+                    expect_exit: verification.expect_exit,
+                })
+                .collect();
 
             task
         }
@@ -1666,10 +1687,17 @@ mod tests {
 
     #[test]
     fn parses_json_run_input_tasks() {
-        match parse_run_input(r#"{"task_id":"bench-1","problem_statement":"Implement feature"}"#) {
+        match parse_run_input(
+            r#"{"task_id":"bench-1","problem_statement":"Implement feature","verification_commands":[{"command":"cargo test -p a2_core fibonacci","expect_exit":0}]}"#,
+        ) {
             ParsedRunInput::Json(task) => {
                 assert_eq!(task.task_id.as_deref(), Some("bench-1"));
                 assert_eq!(task.problem_statement, "Implement feature");
+                assert_eq!(task.verification_commands.len(), 1);
+                assert_eq!(
+                    task.verification_commands[0].command,
+                    "cargo test -p a2_core fibonacci"
+                );
             }
             ParsedRunInput::Plain(_) => panic!("expected json input"),
         }
@@ -1704,6 +1732,24 @@ mod tests {
         );
 
         assert_eq!(task.id, pinned);
+    }
+
+    #[test]
+    fn json_run_input_sets_task_verification_commands() {
+        let ingester = a2_sensorium::ingest::Ingester::new(build_budget(50_000, 300));
+        let task = task_from_run_input(
+            &ingester,
+            parse_run_input(
+                r#"{"task_id":"bench-1","problem_statement":"Retry feature","verification_commands":[{"command":"cargo test -p a2ctl hidden_case","expect_exit":0}]}"#,
+            ),
+        );
+
+        assert_eq!(task.verification_commands.len(), 1);
+        assert_eq!(
+            task.verification_commands[0].command,
+            "cargo test -p a2ctl hidden_case"
+        );
+        assert_eq!(task.verification_commands[0].expect_exit, 0);
     }
 
     #[test]
