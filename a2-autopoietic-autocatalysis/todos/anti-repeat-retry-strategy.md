@@ -1,6 +1,7 @@
 # Anti-Repeat Retry Strategy TODO
 
 Created: 2026-05-10
+Completed: 2026-05-20
 
 ## Problem
 
@@ -38,11 +39,11 @@ StrategyChange::AddressUnfixedVerifierFailures {
 
 ## Acceptance criteria
 
-- [ ] A repeated failed touched-file set can be detected from prior lineage.
-- [ ] Retry context includes prior touched files and unresolved verifier failures.
-- [ ] The next prompt explicitly warns when the previous patch shape did not address all failures.
-- [ ] Unit test covers `prior_touched_files = [a2_core]` plus unresolved `a2ctl` failure.
-- [ ] No warning is emitted when prior failure already touched files associated with unresolved verifier output.
+- [x] A repeated failed touched-file set can be detected from prior lineage.
+- [x] Retry context includes prior touched files and unresolved verifier failures.
+- [x] The next prompt explicitly warns when the previous patch shape did not address all failures.
+- [x] Unit test covers `prior_touched_files = [a2_core]` plus unresolved `a2ctl` failure.
+- [x] No warning is emitted when prior failure already touched files associated with unresolved verifier output.
 
 ## Verification
 

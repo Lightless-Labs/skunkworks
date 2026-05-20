@@ -68,6 +68,12 @@ fn verification_failure_focus(value: &str, max_chars: usize) -> Option<String> {
     }
 }
 
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !value.trim().is_empty() && !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
 fn push_unique_path(paths: &mut Vec<std::path::PathBuf>, path: std::path::PathBuf) {
     if !paths.iter().any(|existing| existing == &path) {
         paths.push(path);
@@ -94,6 +100,23 @@ fn extract_rust_source_paths(value: &str) -> Vec<std::path::PathBuf> {
     paths
 }
 
+fn failed_verification_source_paths(
+    verification: &ExternalVerification,
+) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    for value in verification
+        .failure_focus
+        .iter()
+        .chain(std::iter::once(&verification.stdout_excerpt))
+        .chain(std::iter::once(&verification.stderr_excerpt))
+    {
+        for path in extract_rust_source_paths(value) {
+            push_unique_path(&mut files, path);
+        }
+    }
+    files
+}
+
 fn verifier_derived_relevant_files(prior_lineage: &[LineageRecord]) -> Vec<std::path::PathBuf> {
     const MAX_RELEVANT_FILES: usize = 8;
     let mut files = Vec::new();
@@ -102,21 +125,125 @@ fn verifier_derived_relevant_files(prior_lineage: &[LineageRecord]) -> Vec<std::
         .flat_map(|record| record.external_verifications.iter())
         .filter(|verification| !verification.passed)
     {
-        for value in verification
-            .failure_focus
-            .iter()
-            .chain(std::iter::once(&verification.stdout_excerpt))
-            .chain(std::iter::once(&verification.stderr_excerpt))
-        {
-            for path in extract_rust_source_paths(value) {
-                push_unique_path(&mut files, path);
-                if files.len() >= MAX_RELEVANT_FILES {
-                    return files;
-                }
+        for path in failed_verification_source_paths(verification) {
+            push_unique_path(&mut files, path);
+            if files.len() >= MAX_RELEVANT_FILES {
+                return files;
             }
         }
     }
     files
+}
+
+fn normalize_diff_path(raw: &str) -> Option<std::path::PathBuf> {
+    let path = raw.trim();
+    if path.is_empty() || path == "/dev/null" {
+        return None;
+    }
+    let path = path
+        .strip_prefix("a/")
+        .or_else(|| path.strip_prefix("b/"))
+        .unwrap_or(path);
+    Some(std::path::PathBuf::from(path))
+}
+
+fn touched_files_from_diff(diff: &str) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    for line in diff.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            let mut parts = rest.split_whitespace();
+            let _old = parts.next();
+            if let Some(new) = parts.next().and_then(normalize_diff_path) {
+                push_unique_path(&mut files, new);
+            }
+        } else if let Some(path) = line.strip_prefix("+++ ").and_then(normalize_diff_path) {
+            push_unique_path(&mut files, path);
+        }
+    }
+    files
+}
+
+fn path_list(paths: &[std::path::PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| format!("`{}`", path.display()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn sorted_path_key(paths: &[std::path::PathBuf]) -> Vec<String> {
+    let mut key = paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+    key.sort();
+    key
+}
+
+fn render_anti_repeat_retry_motif(prior_lineage: &[LineageRecord]) -> Option<String> {
+    let latest_failed = prior_lineage
+        .iter()
+        .rev()
+        .find(|record| record.external_verifications.iter().any(|v| !v.passed))?;
+    let touched_files = latest_failed
+        .patch_diff
+        .as_deref()
+        .map(touched_files_from_diff)
+        .unwrap_or_default();
+    if touched_files.is_empty() {
+        return None;
+    }
+
+    let mut unresolved_files = Vec::new();
+    let mut failure_focus = Vec::new();
+    for verification in latest_failed
+        .external_verifications
+        .iter()
+        .filter(|verification| !verification.passed)
+    {
+        for path in failed_verification_source_paths(verification) {
+            push_unique_path(&mut unresolved_files, path);
+        }
+        if let Some(focus) = external_verification_focus(verification) {
+            push_unique(&mut failure_focus, focus);
+        }
+    }
+    if unresolved_files.is_empty() {
+        return None;
+    }
+
+    if unresolved_files
+        .iter()
+        .any(|path| touched_files.iter().any(|touched| touched == path))
+    {
+        return None;
+    }
+
+    let latest_key = sorted_path_key(&touched_files);
+    let repeated_count = prior_lineage
+        .iter()
+        .filter(|record| record.external_verifications.iter().any(|v| !v.passed))
+        .filter_map(|record| record.patch_diff.as_deref().map(touched_files_from_diff))
+        .filter(|files| !files.is_empty() && sorted_path_key(files) == latest_key)
+        .count();
+
+    let mut motif = format!(
+        "anti_repeat_retry:\n  prior_touched_files: {}\n  unresolved_verifier_files: {}\n  warning: Prior failed patch shape did not touch the files named by unresolved verifier failures. Do not repeat the previous patch shape alone; inspect and address the unresolved verifier failure.",
+        path_list(&touched_files),
+        path_list(&unresolved_files)
+    );
+    if repeated_count > 1 {
+        motif.push_str(&format!(
+            "\n  repeated_failed_patch_shape: same touched-file set has failed {repeated_count} times"
+        ));
+    }
+    if !failure_focus.is_empty() {
+        motif.push_str(&format!(
+            "\n  failure_focus: {}",
+            compact_snippet(&failure_focus.join("\n"), 1_200)
+        ));
+    }
+    Some(motif)
 }
 
 /// Split a benchmark/run verification note out of persisted model rationale.
@@ -354,12 +481,15 @@ pub async fn run_workcell(
     // via prior_attempts (IDs) + retrieved_motifs (compact rendered summaries).
     let prior_attempts = config.prior_lineage.iter().map(|r| r.id.clone()).collect();
     let relevant_files = verifier_derived_relevant_files(&config.prior_lineage);
-    let retrieved_motifs = config
+    let mut retrieved_motifs = config
         .prior_lineage
         .iter()
         .enumerate()
         .map(|(i, r)| render_prior_motif(r, i))
-        .collect();
+        .collect::<Vec<_>>();
+    if let Some(motif) = render_anti_repeat_retry_motif(&config.prior_lineage) {
+        retrieved_motifs.push(motif);
+    }
     let context = ContextPack {
         germline_version: config.germline_version.clone(),
         relevant_files,
@@ -532,6 +662,54 @@ mod tests {
     }
 
     struct NoopProvider;
+
+    fn failed_lineage_with_diff(
+        task_id: &TaskId,
+        diff: &str,
+        failure_focus: Vec<&str>,
+    ) -> LineageRecord {
+        LineageRecord {
+            id: LineageId::new(),
+            task_id: task_id.clone(),
+            patch_id: PatchId::new(),
+            patch_diff: Some(diff.into()),
+            patch_rationale: Some("visible-only fix".into()),
+            external_verifications: vec![ExternalVerification {
+                passed: false,
+                command: "cargo test -p a2ctl".into(),
+                exit_code: Some(101),
+                failing_tests: vec![
+                    "tests::ignores_non_task_mentions_inside_comments_and_strings".into(),
+                ],
+                failure_focus: failure_focus.into_iter().map(String::from).collect(),
+                stdout_excerpt: String::new(),
+                stderr_excerpt: "error: test failed".into(),
+                verified_at: Utc::now(),
+            }],
+            parent_germline: GermlineVersion::new(),
+            model_attributions: vec![ModelAttribution {
+                provider: "opencode".into(),
+                model: "minimax".into(),
+                tokens_in: 1000,
+                tokens_out: 234,
+            }],
+            fitness: FitnessRecord {
+                eval_id: EvalId::new(),
+                task_id: task_id.clone(),
+                somatic: SomaticFitness {
+                    task_completed: false,
+                    tests_pass: false,
+                    acceptance_met: vec![false],
+                    tokens_used: 1234,
+                    duration_secs: 7.5,
+                },
+                germline: None,
+                organizational: None,
+                evaluated_at: Utc::now(),
+            },
+            created_at: Utc::now(),
+        }
+    }
 
     #[async_trait::async_trait]
     impl ModelProvider for NoopProvider {
@@ -775,6 +953,54 @@ mod tests {
             captured.relevant_files,
             vec![std::path::PathBuf::from("crates/a2ctl/src/main.rs")]
         );
+    }
+
+    #[test]
+    fn anti_repeat_retry_motif_warns_when_failed_patch_shape_misses_verifier_file() {
+        let task_id = TaskId::new();
+        let visible_only_diff = "diff --git a/crates/a2_core/src/lib.rs b/crates/a2_core/src/lib.rs\n\
+            --- a/crates/a2_core/src/lib.rs\n\
+            +++ b/crates/a2_core/src/lib.rs\n\
+            @@\n\
+            +visible-only fix";
+        let focus = vec![
+            "thread 'tests::ignores_non_task_mentions_inside_comments_and_strings' panicked at crates/a2ctl/src/main.rs:1556:9:",
+            "assertion failed: find_scan_marker",
+        ];
+        let first = failed_lineage_with_diff(&task_id, visible_only_diff, focus.clone());
+        let second = failed_lineage_with_diff(&task_id, visible_only_diff, focus);
+
+        let motif = render_anti_repeat_retry_motif(&[first, second])
+            .expect("visible-only repeated failure should produce an anti-repeat warning");
+
+        assert!(motif.contains("anti_repeat_retry:"));
+        assert!(motif.contains("prior_touched_files: `crates/a2_core/src/lib.rs`"));
+        assert!(motif.contains("unresolved_verifier_files: `crates/a2ctl/src/main.rs`"));
+        assert!(motif.contains(
+            "Prior failed patch shape did not touch the files named by unresolved verifier failures"
+        ));
+        assert!(motif.contains("Do not repeat the previous patch shape alone"));
+        assert!(motif.contains("same touched-file set has failed 2 times"));
+        assert!(motif.contains("assertion failed: find_scan_marker"));
+    }
+
+    #[test]
+    fn anti_repeat_retry_motif_is_absent_when_patch_touches_verifier_file() {
+        let task_id = TaskId::new();
+        let hidden_file_diff = "diff --git a/crates/a2ctl/src/main.rs b/crates/a2ctl/src/main.rs\n\
+            --- a/crates/a2ctl/src/main.rs\n\
+            +++ b/crates/a2ctl/src/main.rs\n\
+            @@\n\
+            +hidden verifier fix";
+        let prior = failed_lineage_with_diff(
+            &task_id,
+            hidden_file_diff,
+            vec![
+                "thread 'tests::ignores_non_task_mentions_inside_comments_and_strings' panicked at crates/a2ctl/src/main.rs:1556:9:",
+            ],
+        );
+
+        assert!(render_anti_repeat_retry_motif(&[prior]).is_none());
     }
 
     #[test]

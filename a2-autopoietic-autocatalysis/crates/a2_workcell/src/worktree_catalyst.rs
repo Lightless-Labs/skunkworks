@@ -390,8 +390,10 @@ impl WorktreeCatalyst {
                  Treat `external_verification` failures as authoritative acceptance \
                  criteria for the next attempt, even when they reveal failures beyond \
                  the original task description. If prior attempts failed, fix every \
-                 failing test named in `failure_focus` and try a different approach; \
-                 if they partially succeeded, build on what worked.\n\n",
+                 failing test named in `failure_focus` and try a different approach. \
+                 If an `anti_repeat_retry` warning appears, do not repeat the prior \
+                 touched-file set alone; inspect and address the unresolved verifier \
+                 files. If prior attempts partially succeeded, build on what worked.\n\n",
             );
             for motif in &context.retrieved_motifs {
                 prompt.push_str(&format!("- {motif}\n"));
@@ -707,6 +709,8 @@ mod tests {
 
         assert!(prompt.contains("Treat `external_verification` failures as authoritative"));
         assert!(prompt.contains("fix every failing test named in `failure_focus`"));
+        assert!(prompt.contains("If an `anti_repeat_retry` warning appears"));
+        assert!(prompt.contains("do not repeat the prior"));
         assert!(prompt.contains("tests::hidden_regression"));
     }
 
