@@ -2,6 +2,7 @@
 
 Created: 2026-05-10
 Completed: 2026-05-20
+Addendum: 2026-05-21 — `bench/self_correction.py` now passes each fixture's verifier command through JSONL `verification_commands`; earlier 2026-05-20 self-correction reruns exercised post-apply verification and retry context but not the candidate-worktree verifier path.
 
 ## Problem
 

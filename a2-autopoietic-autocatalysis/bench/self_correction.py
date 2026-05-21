@@ -346,6 +346,12 @@ def task_payload(fixture: Fixture, run_id: str, attempt: int) -> dict[str, Any]:
     return {
         "task_id": fixture.task_id,
         "problem_statement": fixture.description,
+        "verification_commands": [
+            {
+                "command": fixture.verify_command,
+                "expect_exit": 0,
+            }
+        ],
         "category": CATEGORY,
         "fixture": fixture.name,
         "run_id": run_id,
@@ -529,6 +535,14 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(first["task_id"], second["task_id"])
         self.assertEqual(first["run_id"], second["run_id"])
         self.assertEqual(second["attempt"], 2)
+
+    def test_task_payload_carries_fixture_verifier_command(self) -> None:
+        fixture = FIXTURES["compound-hidden"]
+        payload = task_payload(fixture, "run", 1)
+        self.assertEqual(
+            payload["verification_commands"],
+            [{"command": fixture.verify_command, "expect_exit": 0}],
+        )
 
     def test_result_record_reports_prior_lineage(self) -> None:
         payload = task_payload(FIXTURES["fibonacci"], "run", 2)

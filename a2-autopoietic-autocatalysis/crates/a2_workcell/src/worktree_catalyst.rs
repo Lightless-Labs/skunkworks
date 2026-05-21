@@ -160,6 +160,34 @@ impl WorktreeCatalyst {
             .collect()
     }
 
+    fn worktree_project_root(&self, worktree_path: &Path) -> PathBuf {
+        if worktree_path.join("Cargo.toml").exists() {
+            return worktree_path.to_path_buf();
+        }
+
+        if let Ok(output) = std::process::Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(&self.workspace_root)
+            .output()
+            && output.status.success()
+        {
+            let git_root = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+            let git_root = git_root.canonicalize().unwrap_or(git_root);
+            let workspace_root = self
+                .workspace_root
+                .canonicalize()
+                .unwrap_or_else(|_| self.workspace_root.clone());
+            if let Ok(relative_project) = workspace_root.strip_prefix(git_root) {
+                let candidate = worktree_path.join(relative_project);
+                if candidate.join("Cargo.toml").exists() {
+                    return candidate;
+                }
+            }
+        }
+
+        worktree_path.to_path_buf()
+    }
+
     async fn run_task_verifications(
         &self,
         task: &TaskContract,
@@ -177,13 +205,14 @@ impl WorktreeCatalyst {
             ));
         }
 
+        let project_root = self.worktree_project_root(worktree_path);
         let mut details = Vec::new();
         let mut verifications = Vec::new();
         for spec in &task.verification_commands {
             let output = Command::new("sh")
                 .arg("-c")
                 .arg(&spec.command)
-                .current_dir(worktree_path)
+                .current_dir(&project_root)
                 .output()
                 .await
                 .map_err(|e| {
@@ -770,6 +799,31 @@ mod tests {
         assert!(
             diff.contains("+modified by mock edit"),
             "diff must contain the inserted line; got:\n{diff}"
+        );
+    }
+
+    #[test]
+    fn verifier_runs_from_nested_project_root_when_git_worktree_is_monorepo_root() {
+        let git_root = std::env::temp_dir().join(format!("a2-monorepo-{}", uuid::Uuid::now_v7()));
+        let project = git_root.join("a2-autopoietic-autocatalysis");
+        let candidate_root =
+            std::env::temp_dir().join(format!("a2-candidate-{}", uuid::Uuid::now_v7()));
+        let candidate_project = candidate_root.join("a2-autopoietic-autocatalysis");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&candidate_project).unwrap();
+        fs::write(project.join("Cargo.toml"), "[workspace]\n").unwrap();
+        fs::write(candidate_project.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::process::Command::new("git")
+            .arg("init")
+            .current_dir(&git_root)
+            .output()
+            .unwrap();
+
+        let catalyst = WorktreeCatalyst::new(project.clone());
+
+        assert_eq!(
+            catalyst.worktree_project_root(&candidate_root),
+            candidate_project
         );
     }
 

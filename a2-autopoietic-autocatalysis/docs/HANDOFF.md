@@ -1,6 +1,6 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-05-20
+**Last updated:** 2026-05-21
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -160,13 +160,15 @@ ContextPack is wired and self-correction harnesses exist. The current gap is no 
 - Retry context includes verifier-derived relevant files when verifier output names Rust source paths.
 - Retry context includes `anti_repeat_retry` warnings when latest failed patch touched files do not overlap unresolved verifier-derived Rust source paths; repeated failed touched-file sets are counted.
 - Task-specific verifier commands are represented on `TaskContract` and run inside candidate worktrees before promotion scoring; verifier results are stored on `PatchBundle.worktree_verifications` and copied into `LineageRecord.external_verifications`.
-- `compound-hidden` with Kimi on 2026-05-20 after anti-repeat + candidate-worktree verifier changes resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. Results: `/tmp/a2-compound-after-task-verifier-kimi.jsonl`.
-- `compound-hidden` with Minimax on 2026-05-20 after anti-repeat + candidate-worktree verifier changes resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2ctl/src/main.rs` and verified clean. Results: `/tmp/a2-compound-after-task-verifier-minimax.jsonl`.
+- `bench/self_correction.py` passes each fixture's verifier command via JSONL `verification_commands` as of 2026-05-21. The 2026-05-20 Minimax/Kimi reruns happened after candidate verifier code existed but before the self-correction harness passed verifier commands, so those reruns exercised post-apply verification/retry context rather than candidate-worktree verifier scoring.
+- `compound-hidden` with Kimi on 2026-05-20 after anti-repeat + task-verifier code changes resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. Results: `/tmp/a2-compound-after-task-verifier-kimi.jsonl`.
+- `compound-hidden` with Minimax on 2026-05-20 after anti-repeat + task-verifier code changes resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2ctl/src/main.rs` and verified clean. Results: `/tmp/a2-compound-after-task-verifier-minimax.jsonl`.
 - `compound-hidden` with Minimax on 2026-05-16 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2ctl/src/main.rs` and verified clean.
 - `compound-hidden` with Kimi on 2026-05-18 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2ctl/src/main.rs` and verified clean.
 
 **Not yet validated:**
-- GLM repeat after the structured retry-context changes.
+- Provider reruns after `bench/self_correction.py` started passing `verification_commands` on 2026-05-21.
+- GLM recovery under a recalibrated timeout/budget. A 2026-05-21 GLM run at 1800s attempt timeout produced no patches before timing out.
 - Cross-provider/fixture benchmark impact of candidate-worktree task verifier execution.
 - Cross-provider/fixture benchmark impact of anti-repeat retry strategy.
 
@@ -190,7 +192,7 @@ ContextPack is wired and self-correction harnesses exist. The current gap is no 
 - [x] **Populate verifier-derived relevant files.** Completed 2026-05-12. Failed structured verifier output containing Rust source paths now populates `ContextPack.relevant_files`, and `WorktreeCatalyst` renders those paths in prompts. See `todos/verifier-derived-relevant-files.md`.
 - [x] **Add anti-repeat retry strategy.** Completed 2026-05-20. Retry context now emits an `anti_repeat_retry` motif when prior failed patch touched files do not overlap unresolved verifier-derived source paths; repeated touched-file sets are counted, and WorktreeCatalyst prompts explicitly warn not to repeat the prior patch shape alone. See `todos/anti-repeat-retry-strategy.md`.
 - [x] **Run task-specific verifier in candidate worktrees before promotion scoring.** Completed 2026-05-20. `TaskContract.verification_commands` carries shell verifier commands; `WorktreeCatalyst` runs them in the candidate worktree, maps outcomes into `TestResults` plus structured `ExternalVerification`, and `run_workcell` persists those verifier records into lineage before promotion. `a2ctl bench` wires TOML `[verify]` commands, and JSONL run input accepts optional `verification_commands`. See `todos/worktree-task-verifier.md`.
-- [ ] **Run `compound-hidden` N≥3 per available non-Claude provider after each structural change.** Current factual result after anti-repeat + candidate-worktree verifier changes: Minimax N=3 and Kimi N=3 on 2026-05-20 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-after-task-verifier-minimax.jsonl` and `/tmp/a2-compound-after-task-verifier-kimi.jsonl`. GLM rerun after these structural changes remains pending. Prior structured retry-context results: Minimax N=3 on 2026-05-16 and Kimi N=3 on 2026-05-18 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
+- [ ] **Run `compound-hidden` N≥3 per available non-Claude provider after each structural change.** Current factual result after anti-repeat + task-verifier code changes but before self-correction harness verifier wiring: Minimax N=3 and Kimi N=3 on 2026-05-20 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-after-task-verifier-minimax.jsonl` and `/tmp/a2-compound-after-task-verifier-kimi.jsonl`. After the 2026-05-21 harness wiring, provider reruns remain pending. GLM 2026-05-21 at 1800s attempt timeout produced no patch before timeout across 7 observed attempts in `/tmp/a2-compound-after-task-verifier-glm.jsonl` (2 complete 3-attempt runs plus 1 timed-out first attempt before outer command timeout); recalibrate before treating as model capability. Prior structured retry-context results: Minimax N=3 on 2026-05-16 and Kimi N=3 on 2026-05-18 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 - [x] **Add a second compound fixture after one self-correction success.** Completed 2026-05-18. `bench/self_correction.py` now includes `compound-membrane-hidden`, which combines the visible `a2_core` Fibonacci regression with a hidden `a2_membrane` deny-overrides-allow regression. Smoke-only injection verified both failures. Minimax N=3 scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 
 ### Loop-shaped benchmarks
@@ -265,3 +267,5 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-05-20 | Run task verifiers in candidate worktrees | `TaskContract.verification_commands` lets bench/run inputs carry verifier commands without prompt-only text; `WorktreeCatalyst` executes them before cleanup, failed commands mark `TestResults.failed`, and structured outcomes persist through lineage. |
 | 2026-05-20 | `compound-hidden` Minimax N=3 repeat after verifier changes | Minimax scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs fixed `a2_core` on attempt 1 and fixed `a2ctl` on attempt 2. |
 | 2026-05-20 | `compound-hidden` Kimi N=3 repeat after verifier changes | Kimi scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. |
+| 2026-05-21 | Wire self-correction fixture verifiers into TaskContract | `bench/self_correction.py` now emits JSONL `verification_commands` so loop benchmarks exercise candidate-worktree verifier scoring, not only post-apply reconciliation. |
+| 2026-05-21 | GLM timeout at current self-correction budget | GLM at 1800s attempt timeout produced no patches in 7 observed attempts across 3 run IDs; result is a budget/timeout finding, not a model-capability conclusion. |
