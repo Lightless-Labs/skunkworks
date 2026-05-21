@@ -1,6 +1,7 @@
 # Self-Correction Loop Recovery TODO
 
 Created: 2026-05-10
+Updated: 2026-05-21
 
 ## Current status
 
@@ -11,16 +12,21 @@ Working:
 - Prior motifs render external verification failures, stdout-first details, and `failure_focus`.
 - WorktreeCatalyst prompt states prior `external_verification` failures are authoritative.
 - Self-correction JSONL records touched files and diff line counts.
+- Structured external verification persists typed verifier outcomes in lineage.
+- Retry task contracts receive verifier-derived acceptance criteria.
+- Retry context includes verifier-derived relevant files.
+- Retry context includes `anti_repeat_retry` warnings when failed patch shape misses verifier-derived source paths.
+- Candidate-worktree verifier commands run before promotion scoring and remain hidden from the initial prompt.
+- `compound-hidden` self-corrected with hidden candidate-worktree verifier wiring for Minimax N=3 and Kimi N=3 on 2026-05-21: both resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 
-Not working:
+Not working / not yet resolved:
 
-- `compound-hidden` still does not self-correct.
-- Minimax and Kimi attempts repeatedly touch only `a2_core/src/lib.rs`.
-- The hidden `a2ctl` scan-marker regression remains unfixed across retry attempts.
+- GLM at the current 1800s attempt timeout produced no patches across 7 observed attempts on 2026-05-21. Recalibrate budget/timeout before drawing model-capability conclusions.
+- Broader cross-fixture validation after hidden candidate-worktree verifier wiring remains limited.
 
 ## Recovery sequence
 
-Implement these in order; each one should be committed atomically and verified before the next:
+Implemented in order:
 
 1. `todos/structured-external-verification.md`
 2. `todos/retry-task-contract-from-verification.md`
@@ -28,9 +34,11 @@ Implement these in order; each one should be committed atomically and verified b
 4. `todos/anti-repeat-retry-strategy.md`
 5. `todos/worktree-task-verifier.md`
 
+Remaining recovery work is validation/calibration rather than missing core plumbing.
+
 ## Benchmark gate
 
-After each structural change, run at least one `compound-hidden` N=3 smoke with an available non-Claude provider:
+After each structural change, run `compound-hidden` N=3 with available non-Claude providers:
 
 ```bash
 bench/self_correction.py --fixture compound-hidden \
