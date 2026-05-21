@@ -513,9 +513,9 @@ impl WorktreeCatalyst {
              {}\n\n\
              ## Instructions\n\n\
              Read the relevant files, make the necessary changes directly, and run \
-             the task-specific verification command if one is described above. If no \
-             verification command is specified, run `cargo check`, and run `cargo test` \
-             when tests are relevant. Do not produce a diff — edit the files directly.\n\n\
+             `cargo check` plus relevant `cargo test` commands. A² may run additional \
+             task-specific verifier commands after your changes before accepting the \
+             patch. Do not produce a diff — edit the files directly.\n\n\
              Keep changes minimal and focused on the task.",
             task.title, task.description
         );
@@ -524,16 +524,6 @@ impl WorktreeCatalyst {
             prompt.push_str("\n\n## Acceptance Criteria\n\n");
             for criterion in &task.acceptance_criteria {
                 prompt.push_str(&format!("- {criterion}\n"));
-            }
-        }
-
-        if !task.verification_commands.is_empty() {
-            prompt.push_str("\n\n## Task-Specific Verification Commands\n\n");
-            for verifier in &task.verification_commands {
-                prompt.push_str(&format!(
-                    "- `{}` must exit {}\n",
-                    verifier.command, verifier.expect_exit
-                ));
             }
         }
 
@@ -828,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_renders_acceptance_criteria() {
+    fn prompt_renders_acceptance_criteria_without_leaking_verifier_commands() {
         let repo_dir = std::env::temp_dir().join(format!("a2-prompt-{}", uuid::Uuid::now_v7()));
         let catalyst = WorktreeCatalyst::new(repo_dir);
         let task = TaskContract {
@@ -866,8 +856,9 @@ mod tests {
         assert!(prompt.contains("## Acceptance Criteria"));
         assert!(prompt.contains("- Original acceptance remains"));
         assert!(prompt.contains("- Prior external verification must pass: cargo test -p a2ctl"));
-        assert!(prompt.contains("## Task-Specific Verification Commands"));
-        assert!(prompt.contains("- `cargo test -p a2ctl hidden_test` must exit 0"));
+        assert!(prompt.contains("A² may run additional task-specific verifier commands"));
+        assert!(!prompt.contains("## Task-Specific Verification Commands"));
+        assert!(!prompt.contains("hidden_test"));
         assert!(prompt.contains("## Relevant Files"));
         assert!(prompt.contains("- crates/a2ctl/src/main.rs"));
     }
