@@ -11,6 +11,7 @@ Current facts:
 - Prior motifs preserve external verification output, extract `failure_focus`, and tell models verifier failures are authoritative.
 - Structured external verification, verifier-derived retry acceptance criteria, verifier-derived relevant files, anti-repeat retry motifs, and hidden candidate-worktree verifier execution are implemented.
 - `compound-hidden` with hidden candidate-worktree verifier wiring self-corrected with Minimax N=3 and Kimi N=3 on 2026-05-21: both resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-with-hidden-worktree-verifier-minimax.jsonl` and `/tmp/a2-compound-with-hidden-worktree-verifier-kimi.jsonl`.
+- `compound-membrane-hidden` with hidden candidate-worktree verifier wiring self-corrected with Minimax N=3 and Kimi N=3 on 2026-05-21: both resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-minimax.jsonl` and `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-kimi.jsonl`.
 - GLM at the 1800s attempt timeout produced no patches across 7 observed attempts on 2026-05-21; treat that as budget/timeout evidence, not model-capability evidence.
 
 See `todos/self-correction-loop-recovery.md` for the structural recovery sequence.
@@ -23,4 +24,4 @@ See `todos/self-correction-loop-recovery.md` for the structural recovery sequenc
 - [x] Re-run `compound-hidden` N≥3 with Minimax after the prompt/lineage fixes. Completed 2026-05-21 after hidden candidate-worktree verifier wiring: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 - [x] Run `compound-hidden` with Kimi after Minimax loop behavior is understood. Completed 2026-05-21 after hidden candidate-worktree verifier wiring: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 - [ ] Recalibrate GLM budget/timeout before rerunning `compound-hidden`; 2026-05-21 at 1800s attempt timeout produced no patch across 7 observed attempts.
-- [x] Add a second hard fixture after `compound-hidden` self-corrects at least once. Completed 2026-05-18 with `compound-membrane-hidden`.
+- [x] Add a second hard fixture after `compound-hidden` self-corrects at least once. Completed 2026-05-18 with `compound-membrane-hidden`; after hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-21 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.

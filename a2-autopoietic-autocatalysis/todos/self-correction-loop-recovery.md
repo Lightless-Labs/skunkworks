@@ -18,11 +18,12 @@ Working:
 - Retry context includes `anti_repeat_retry` warnings when failed patch shape misses verifier-derived source paths.
 - Candidate-worktree verifier commands run before promotion scoring and remain hidden from the initial prompt.
 - `compound-hidden` self-corrected with hidden candidate-worktree verifier wiring for Minimax N=3 and Kimi N=3 on 2026-05-21: both resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
+- `compound-membrane-hidden` self-corrected with hidden candidate-worktree verifier wiring for Minimax N=3 and Kimi N=3 on 2026-05-21: both resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-minimax.jsonl` and `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-kimi.jsonl`.
 
 Not working / not yet resolved:
 
-- GLM at the current 1800s attempt timeout produced no patches across 7 observed attempts on 2026-05-21. Recalibrate budget/timeout before drawing model-capability conclusions.
-- Broader cross-fixture validation after hidden candidate-worktree verifier wiring remains limited.
+- GLM recovery under hidden candidate-worktree verifier wiring remains unvalidated until budget/timeout is recalibrated; at the current 1800s attempt timeout it produced no patches across 7 observed attempts on 2026-05-21.
+- Validation beyond Minimax/Kimi and the two current compound fixtures remains open.
 
 ## Recovery sequence
 
@@ -34,7 +35,7 @@ Implemented in order:
 4. `todos/anti-repeat-retry-strategy.md`
 5. `todos/worktree-task-verifier.md`
 
-Remaining recovery work is validation/calibration rather than missing core plumbing.
+Remaining recovery work is validation/calibration rather than missing core plumbing. As of 2026-05-21, Minimax and Kimi both have N=3 self-correction results on both current compound fixtures after hidden candidate-worktree verifier wiring.
 
 ## Benchmark gate
 
