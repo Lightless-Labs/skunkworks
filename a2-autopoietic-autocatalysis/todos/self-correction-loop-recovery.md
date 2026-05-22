@@ -1,7 +1,7 @@
 # Self-Correction Loop Recovery TODO
 
 Created: 2026-05-10
-Updated: 2026-05-21
+Updated: 2026-05-22
 
 ## Current status
 
@@ -22,7 +22,7 @@ Working:
 
 Not working / not yet resolved:
 
-- GLM recovery under hidden candidate-worktree verifier wiring remains unvalidated until budget/timeout is recalibrated; at the current 1800s attempt timeout it produced no patches across 7 observed attempts on 2026-05-21.
+- GLM recovery under hidden candidate-worktree verifier wiring remains unvalidated while the ZAI provider is unavailable; 2026-05-21 at 1800s produced no patches across 7 observed attempts, 2026-05-22 fibonacci calibration at 200k/3600s timed out with tokens=0/no patch, and direct `opencode --print-logs` smoke exposed upstream ZAI 429 `Insufficient balance or no resource package`.
 - Validation beyond Minimax/Kimi and the two current compound fixtures remains open.
 
 ## Recovery sequence
@@ -35,7 +35,7 @@ Implemented in order:
 4. `todos/anti-repeat-retry-strategy.md`
 5. `todos/worktree-task-verifier.md`
 
-Remaining recovery work is validation/calibration rather than missing core plumbing. As of 2026-05-21, Minimax and Kimi both have N=3 self-correction results on both current compound fixtures after hidden candidate-worktree verifier wiring.
+Remaining recovery work is validation/provider-availability rather than missing core plumbing. As of 2026-05-21, Minimax and Kimi both have N=3 self-correction results on both current compound fixtures after hidden candidate-worktree verifier wiring.
 
 ## Benchmark gate
 

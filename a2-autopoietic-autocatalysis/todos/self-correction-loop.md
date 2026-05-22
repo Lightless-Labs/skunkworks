@@ -1,7 +1,7 @@
 # Self-Correction Loop TODOs
 
 Created: 2026-04-28
-Updated: 2026-05-21
+Updated: 2026-05-22
 
 Current facts:
 
@@ -12,7 +12,7 @@ Current facts:
 - Structured external verification, verifier-derived retry acceptance criteria, verifier-derived relevant files, anti-repeat retry motifs, and hidden candidate-worktree verifier execution are implemented.
 - `compound-hidden` with hidden candidate-worktree verifier wiring self-corrected with Minimax N=3 and Kimi N=3 on 2026-05-21: both resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-with-hidden-worktree-verifier-minimax.jsonl` and `/tmp/a2-compound-with-hidden-worktree-verifier-kimi.jsonl`.
 - `compound-membrane-hidden` with hidden candidate-worktree verifier wiring self-corrected with Minimax N=3 and Kimi N=3 on 2026-05-21: both resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-minimax.jsonl` and `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-kimi.jsonl`.
-- GLM at the 1800s attempt timeout produced no patches across 7 observed attempts on 2026-05-21; treat that as budget/timeout evidence, not model-capability evidence.
+- GLM at the 1800s attempt timeout produced no patches across 7 observed attempts on 2026-05-21; 2026-05-22 fibonacci calibration at 200k/3600s also timed out with tokens=0/no patch. Direct `opencode --print-logs` smoke exposed upstream ZAI 429 `Insufficient balance or no resource package`; do not rerun GLM until provider balance/resources are restored.
 
 See `todos/self-correction-loop-recovery.md` for the structural recovery sequence.
 
@@ -23,5 +23,5 @@ See `todos/self-correction-loop-recovery.md` for the structural recovery sequenc
 - [x] Add touched-file / diff-stat fields to `bench/self_correction.py` result JSONL. Completed 2026-05-01; records now include `touched_files`, `touched_file_count`, `diff_added_lines`, and `diff_removed_lines` parsed from the latest lineage patch diff.
 - [x] Re-run `compound-hidden` N≥3 with Minimax after the prompt/lineage fixes. Completed 2026-05-21 after hidden candidate-worktree verifier wiring: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 - [x] Run `compound-hidden` with Kimi after Minimax loop behavior is understood. Completed 2026-05-21 after hidden candidate-worktree verifier wiring: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
-- [ ] Recalibrate GLM budget/timeout before rerunning `compound-hidden`; 2026-05-21 at 1800s attempt timeout produced no patch across 7 observed attempts.
+- [ ] Recheck GLM provider availability before rerunning `compound-hidden`; 2026-05-22 direct OpenCode smoke for `zai-coding-plan/glm-5.1` returned upstream ZAI 429 `Insufficient balance or no resource package` after A² fibonacci calibration at 200k/3600s timed out with tokens=0/no patch.
 - [x] Add a second hard fixture after `compound-hidden` self-corrects at least once. Completed 2026-05-18 with `compound-membrane-hidden`; after hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-21 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.

@@ -1,6 +1,6 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-05-21
+**Last updated:** 2026-05-22
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -57,6 +57,7 @@ If any fail, read `docs/solutions/` for known issues before touching anything.
 - `best-practices/budget-variance-as-noise-floor-20260405.md` — before tuning token/timeout limits
 - `best-practices/clippy-collapsible-if-with-let-chains-20260405.md` — Rust let-chain idiom
 - `integration-issues/monorepo-nested-worktree-paths-20260405.md` — before writing scripts that shell out to git worktree
+- `integration-issues/opencode-glm-insufficient-balance-hidden-by-timeout-20260522.md` — before treating GLM timeouts as budget/model evidence
 - `logic-errors/verification-failure-stdout-hidden-by-stderr-20260503.md` — before changing verification failure rendering
 - `logic-errors/verification-failure-focus-buried-by-passing-tests-20260508.md` — before changing prior failure motifs
 - `workflow-issues/benchmark-staleness-and-apply-path-20260405.md` — full archaeology
@@ -109,7 +110,7 @@ cargo run -p a2ctl -- sentinel --workspace .
 | claude | claude-sonnet-4-6 | Available | Burns subscription quota — use sparingly |
 | codex | gpt-5.4 | **OUT OF QUOTA** | Don't use until reset |
 | gemini | gemini-3.1-pro-preview | **OUT OF CAPACITY** | 2026-04-28 self-correction smoke hit repeated 429 capacity errors; previous bench 5/5, ~67s/task |
-| opencode/glm | zai-coding-plan/glm-5.1 | Available | 5/5 on current bench, 10-15min/task (slow) |
+| opencode/glm | zai-coding-plan/glm-5.1 | **UNAVAILABLE: ZAI 429 balance/resource** | 2026-05-22 direct `opencode --print-logs` smoke returned `Insufficient balance or no resource package`; A² fibonacci calibration at 200k/3600s timed out with tokens=0 and no patch. Previous bench was 5/5 when provider was funded, 10-15min/task. |
 | opencode/kimi | kimi-for-coding/k2p5 | Available | 2026-04-16 smoke PASS (75s, 12k tokens); sometimes empty historically |
 | opencode/minimax | minimax-coding-plan/MiniMax-M2.7 | Available | 2026-04-28 self-correction PASS attempt 1 (70s model time, 17.6k tokens); 2026-04-16 smoke PASS |
 
@@ -145,9 +146,9 @@ const DEFAULT_STAGNATION_WINDOW: usize = 3;
 
 ## What To Do Next
 
-ContextPack is wired and self-correction harnesses exist. The current gap is no longer "build a loop benchmark"; it is "make the loop recover." `compound-hidden` now has a Minimax N=3 self-correction success after structured verifier retry context, but this is still one fixture and needs cross-provider / second-fixture validation.
+ContextPack is wired and self-correction harnesses exist. The current gap is no longer "build a loop benchmark"; it is "make the loop recover." Minimax and Kimi now have N=3 self-correction success on both current compound fixtures after hidden candidate-worktree verifier wiring. Remaining validation is provider availability for GLM and broader loop-shaped fixtures.
 
-### Current loop status (2026-05-16)
+### Current loop status (2026-05-22)
 
 **Working:**
 - Prior lineage reaches retry attempts for a pinned `TaskId`.
@@ -172,11 +173,11 @@ ContextPack is wired and self-correction harnesses exist. The current gap is no 
 - `compound-hidden` with Kimi on 2026-05-18 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2ctl/src/main.rs` and verified clean.
 
 **Not yet validated:**
-- GLM recovery under a recalibrated timeout/budget. A 2026-05-21 GLM run at 1800s attempt timeout produced no patches before timing out.
+- GLM recovery after hidden candidate-worktree verifier wiring. 2026-05-21 at 1800s attempt timeout produced no patches; 2026-05-22 fibonacci calibration at 200k/3600s also timed out with tokens=0/no patch, and direct `opencode --print-logs` smoke exposed upstream ZAI `429` / `Insufficient balance or no resource package`.
 - Loop recovery beyond Minimax/Kimi and the two current compound fixtures after candidate-worktree task verifier execution.
 - Cross-provider/fixture benchmark impact of anti-repeat retry strategy beyond the current self-correction fixtures.
 
-**Structural solution direction:** Minimax/Kimi now have N=3 loop recovery on both current compound fixtures with hidden candidate-worktree verifier wiring. Remaining validation is GLM budget/timeout calibration and adding broader loop-shaped fixtures. Dedicated todos live in `todos/`.
+**Structural solution direction:** Minimax/Kimi now have N=3 loop recovery on both current compound fixtures with hidden candidate-worktree verifier wiring. Remaining validation is restoring/rechecking GLM provider availability and adding broader loop-shaped fixtures. Dedicated todos live in `todos/`.
 
 ### Completed prerequisites (2026-04-23)
 
@@ -196,7 +197,7 @@ ContextPack is wired and self-correction harnesses exist. The current gap is no 
 - [x] **Populate verifier-derived relevant files.** Completed 2026-05-12. Failed structured verifier output containing Rust source paths now populates `ContextPack.relevant_files`, and `WorktreeCatalyst` renders those paths in prompts. See `todos/verifier-derived-relevant-files.md`.
 - [x] **Add anti-repeat retry strategy.** Completed 2026-05-20. Retry context now emits an `anti_repeat_retry` motif when prior failed patch touched files do not overlap unresolved verifier-derived source paths; repeated touched-file sets are counted, and WorktreeCatalyst prompts explicitly warn not to repeat the prior patch shape alone. See `todos/anti-repeat-retry-strategy.md`.
 - [x] **Run task-specific verifier in candidate worktrees before promotion scoring.** Completed 2026-05-20. `TaskContract.verification_commands` carries shell verifier commands; `WorktreeCatalyst` runs them in the candidate worktree, maps outcomes into `TestResults` plus structured `ExternalVerification`, and `run_workcell` persists those verifier records into lineage before promotion. `a2ctl bench` wires TOML `[verify]` commands, and JSONL run input accepts optional `verification_commands`. See `todos/worktree-task-verifier.md`.
-- [ ] **Run `compound-hidden` N≥3 per available non-Claude provider after each structural change.** Current factual result after hidden candidate-worktree verifier wiring: Minimax N=3 and Kimi N=3 on `compound-hidden` on 2026-05-21 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-with-hidden-worktree-verifier-minimax.jsonl` and `/tmp/a2-compound-with-hidden-worktree-verifier-kimi.jsonl`. Minimax N=3 and Kimi N=3 on `compound-membrane-hidden` on 2026-05-21 both also scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-minimax.jsonl` and `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-kimi.jsonl`. GLM 2026-05-21 at 1800s attempt timeout produced no patch before timeout across 7 observed attempts in `/tmp/a2-compound-after-task-verifier-glm.jsonl` (2 complete 3-attempt runs plus 1 timed-out first attempt before outer command timeout); recalibrate before treating as model capability. Prior structured retry-context results: Minimax N=3 on 2026-05-16 and Kimi N=3 on 2026-05-18 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
+- [ ] **Run `compound-hidden` N≥3 per available non-Claude provider after each structural change.** Current factual result after hidden candidate-worktree verifier wiring: Minimax N=3 and Kimi N=3 on `compound-hidden` on 2026-05-21 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-with-hidden-worktree-verifier-minimax.jsonl` and `/tmp/a2-compound-with-hidden-worktree-verifier-kimi.jsonl`. Minimax N=3 and Kimi N=3 on `compound-membrane-hidden` on 2026-05-21 both also scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-minimax.jsonl` and `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-kimi.jsonl`. GLM 2026-05-21 at 1800s attempt timeout produced no patch before timeout across 7 observed attempts in `/tmp/a2-compound-after-task-verifier-glm.jsonl`; 2026-05-22 fibonacci calibration at 200k/3600s also timed out with tokens=0/no patch in `/tmp/a2-glm-calibration-fibonacci-timeout3600.jsonl`, and direct OpenCode logs showed upstream ZAI 429 insufficient balance/resource. Re-run GLM only after provider balance/resources are restored. Prior structured retry-context results: Minimax N=3 on 2026-05-16 and Kimi N=3 on 2026-05-18 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 - [x] **Add a second compound fixture after one self-correction success.** Completed 2026-05-18. `bench/self_correction.py` now includes `compound-membrane-hidden`, which combines the visible `a2_core` Fibonacci regression with a hidden `a2_membrane` deny-overrides-allow regression. Smoke-only injection verified both failures. After hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-21 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 
 ### Loop-shaped benchmarks
@@ -276,5 +277,6 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-05-21 | `compound-hidden` Minimax N=3 with hidden candidate verifier | Minimax scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; candidate verifier discarded attempt 1 before apply and attempt 2 passed. |
 | 2026-05-21 | `compound-hidden` Kimi N=3 with hidden candidate verifier | Kimi scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; candidate verifier discarded attempt 1 before apply and attempt 2 passed. |
 | 2026-05-21 | GLM timeout at current self-correction budget | GLM at 1800s attempt timeout produced no patches in 7 observed attempts across 3 run IDs; result is a budget/timeout finding, not a model-capability conclusion. |
+| 2026-05-22 | GLM provider unavailable due ZAI resource error | Fibonacci calibration at 200k/3600s timed out with tokens=0/no patch; direct `opencode --print-logs` smoke for `zai-coding-plan/glm-5.1` exposed upstream 429 `Insufficient balance or no resource package`. |
 | 2026-05-21 | `compound-membrane-hidden` Minimax N=3 with hidden candidate verifier | Minimax scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs fixed `a2_core` on attempt 1 and fixed `a2_membrane` on attempt 2. |
 | 2026-05-21 | `compound-membrane-hidden` Kimi N=3 with hidden candidate verifier | Kimi scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs fixed `a2_core` on attempt 1 and fixed `a2_membrane` on attempt 2. |
