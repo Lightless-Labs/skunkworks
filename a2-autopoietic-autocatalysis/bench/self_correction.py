@@ -41,6 +41,8 @@ SCAN_BUG_OLD = "if byte == b'\"' {\n            in_double = true;\n            i
 SCAN_BUG_NEW = "if byte == b'\"' {\n            index += 1;\n            continue;\n        }"
 MEMBRANE_BUG_OLD = 'if cap.denied_tools.iter().any(|d| d == tool_name || d == "*") {\n            return false;\n        }'
 MEMBRANE_BUG_NEW = 'if cap.denied_tools.iter().any(|d| d == tool_name || d == "*") {\n            return true;\n        }'
+ARCHIVE_BUG_OLD = "FROM lineage_records\n                WHERE task_id = ?1\n                ORDER BY created_at ASC"
+ARCHIVE_BUG_NEW = "FROM lineage_records\n                WHERE task_id = ?1\n                ORDER BY created_at DESC"
 FNV_OFFSET_128 = 0x6C62_272E_07BB_0142_62B8_2175_6295_C58D
 FNV_PRIME_128 = 0x0000_0000_0100_0000_0000_0000_0000_013B
 
@@ -116,6 +118,28 @@ FIXTURES: dict[str, Fixture] = {
                 "crates/a2_membrane/src/policy.rs",
                 MEMBRANE_BUG_OLD,
                 MEMBRANE_BUG_NEW,
+            ),
+        ),
+    ),
+    "compound-archive-hidden": Fixture(
+        name="compound-archive-hidden",
+        task_id="self-correction-compound-archive-hidden-regressions",
+        description=FIBONACCI_DESCRIPTION,
+        verify_command=(
+            "cargo test -p a2_core test_fibonacci; core=$?; "
+            "cargo test -p a2_archive filters_by_task_and_orders_recent_records; archive=$?; "
+            "test $core -eq 0 -a $archive -eq 0"
+        ),
+        replacements=(
+            Replacement(
+                "crates/a2_core/src/lib.rs",
+                FIBONACCI_BUG_OLD,
+                FIBONACCI_BUG_NEW,
+            ),
+            Replacement(
+                "crates/a2_archive/src/store.rs",
+                ARCHIVE_BUG_OLD,
+                ARCHIVE_BUG_NEW,
             ),
         ),
     ),
@@ -542,6 +566,16 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(
             payload["verification_commands"],
             [{"command": fixture.verify_command, "expect_exit": 0}],
+        )
+
+    def test_compound_archive_fixture_checks_archive_regression(self) -> None:
+        fixture = FIXTURES["compound-archive-hidden"]
+        self.assertEqual(fixture.task_id, "self-correction-compound-archive-hidden-regressions")
+        self.assertIn("a2_archive", fixture.verify_command)
+        self.assertIn("filters_by_task_and_orders_recent_records", fixture.verify_command)
+        self.assertEqual(
+            [replacement.path for replacement in fixture.replacements],
+            ["crates/a2_core/src/lib.rs", "crates/a2_archive/src/store.rs"],
         )
 
     def test_result_record_reports_prior_lineage(self) -> None:
