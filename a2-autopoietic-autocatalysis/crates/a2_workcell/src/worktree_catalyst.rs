@@ -498,7 +498,14 @@ impl WorktreeCatalyst {
         worktree_path: &Path,
     ) -> A2Result<(String, String, String, u64, u64)> {
         let output = Command::new("pi")
-            .args(["--model", model_id, "--no-session", "--print"])
+            .args([
+                "--model",
+                model_id,
+                "--no-session",
+                "--mode",
+                "json",
+                "--print",
+            ])
             .arg(prompt)
             .current_dir(worktree_path)
             .stdin(std::process::Stdio::null())
@@ -521,7 +528,60 @@ impl WorktreeCatalyst {
             return Err(A2Error::ProviderError(message));
         }
 
-        Ok((raw_stdout.clone(), raw_stdout, stderr, 0, 0))
+        let (text, tokens_in, tokens_out) = Self::parse_pi_jsonl(&raw_stdout);
+
+        Ok((text, raw_stdout, stderr, tokens_in, tokens_out))
+    }
+
+    fn parse_pi_jsonl(jsonl: &str) -> (String, u64, u64) {
+        let mut text = String::new();
+        let mut tokens_in = 0;
+        let mut tokens_out = 0;
+
+        for line in jsonl.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let event_type = v.get("type").and_then(|t| t.as_str());
+            if event_type != Some("turn_end") && event_type != Some("agent_end") {
+                continue;
+            }
+            let Some(message) = v.get("message").or_else(|| {
+                v.get("messages")
+                    .and_then(|messages| messages.as_array())
+                    .and_then(|messages| messages.last())
+            }) else {
+                continue;
+            };
+            if message.get("role").and_then(|role| role.as_str()) != Some("assistant") {
+                continue;
+            }
+            if let Some(content) = message
+                .get("content")
+                .and_then(|content| content.as_array())
+            {
+                text.clear();
+                for block in content {
+                    if block.get("type").and_then(|ty| ty.as_str()) == Some("text")
+                        && let Some(block_text) =
+                            block.get("text").and_then(|block_text| block_text.as_str())
+                    {
+                        text.push_str(block_text);
+                    }
+                }
+            }
+            if let Some(usage) = message.get("usage") {
+                tokens_in = usage.get("input").and_then(|v| v.as_u64()).unwrap_or(0)
+                    + usage.get("cacheRead").and_then(|v| v.as_u64()).unwrap_or(0)
+                    + usage
+                        .get("cacheWrite")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                tokens_out = usage.get("output").and_then(|v| v.as_u64()).unwrap_or(0);
+            }
+        }
+
+        (text, tokens_in, tokens_out)
     }
 
     fn workspace_structure(&self) -> &'static str {
@@ -895,6 +955,18 @@ mod tests {
         assert!(!prompt.contains("hidden_test"));
         assert!(prompt.contains("## Relevant Files"));
         assert!(prompt.contains("- crates/a2ctl/src/main.rs"));
+    }
+
+    #[test]
+    fn pi_jsonl_parser_extracts_final_text_and_usage() {
+        let jsonl = r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":10,"output":20,"cacheRead":30,"cacheWrite":40}}}
+"#;
+
+        let (text, tokens_in, tokens_out) = WorktreeCatalyst::parse_pi_jsonl(jsonl);
+
+        assert_eq!(text, "done");
+        assert_eq!(tokens_in, 80);
+        assert_eq!(tokens_out, 20);
     }
 
     #[test]

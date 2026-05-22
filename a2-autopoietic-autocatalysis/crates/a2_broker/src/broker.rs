@@ -204,6 +204,57 @@ fn parse_claude_usage(jsonl: &str) -> (u64, u64) {
 /// `--output-format json` includes a `stats` object whose `models` entries
 /// contain aggregated token counts. Prefer prompt/candidate totals so usage
 /// aligns with the provider-level token accounting used elsewhere.
+fn parse_pi_jsonl(jsonl: &str) -> (String, u64, u64) {
+    let mut text = String::new();
+    let mut tokens_in = 0;
+    let mut tokens_out = 0;
+
+    for line in jsonl.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let event_type = v.get("type").and_then(|t| t.as_str());
+        if event_type != Some("turn_end") && event_type != Some("agent_end") {
+            continue;
+        }
+        let Some(message) = v.get("message").or_else(|| {
+            v.get("messages")
+                .and_then(|messages| messages.as_array())
+                .and_then(|messages| messages.last())
+        }) else {
+            continue;
+        };
+        if message.get("role").and_then(|role| role.as_str()) != Some("assistant") {
+            continue;
+        }
+        if let Some(content) = message
+            .get("content")
+            .and_then(|content| content.as_array())
+        {
+            text.clear();
+            for block in content {
+                if block.get("type").and_then(|ty| ty.as_str()) == Some("text")
+                    && let Some(block_text) =
+                        block.get("text").and_then(|block_text| block_text.as_str())
+                {
+                    text.push_str(block_text);
+                }
+            }
+        }
+        if let Some(usage) = message.get("usage") {
+            tokens_in = usage.get("input").and_then(|v| v.as_u64()).unwrap_or(0)
+                + usage.get("cacheRead").and_then(|v| v.as_u64()).unwrap_or(0)
+                + usage
+                    .get("cacheWrite")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+            tokens_out = usage.get("output").and_then(|v| v.as_u64()).unwrap_or(0);
+        }
+    }
+
+    (text, tokens_in, tokens_out)
+}
+
 fn parse_gemini_usage(json: &Value) -> (u64, u64) {
     let Some(stats) = json.get("stats") else {
         return (0, 0);
@@ -524,6 +575,7 @@ impl ModelProvider for PiProvider {
 
         cmd.arg("--model").arg(&self.model_id);
         cmd.arg("--no-session");
+        cmd.arg("--mode").arg("json");
         cmd.arg("--print");
         if let Some(sys) = system {
             cmd.arg("--append-system-prompt").arg(sys);
@@ -545,10 +597,13 @@ impl ModelProvider for PiProvider {
             ));
         }
 
+        let stdout_str = String::from_utf8_lossy(&output.stdout);
+        let (text, tokens_in, tokens_out) = parse_pi_jsonl(&stdout_str);
+
         Ok(GenerateResponse {
-            text: String::from_utf8_lossy(&output.stdout).to_string(),
-            tokens_in: 0,
-            tokens_out: 0,
+            text,
+            tokens_in,
+            tokens_out,
         })
     }
 
@@ -763,6 +818,19 @@ mod tests {
 
         assert_eq!(provider.provider_id(), "pi");
         assert_eq!(provider.model_id(), "zai/glm-5.1");
+    }
+
+    #[test]
+    fn test_parse_pi_jsonl_extracts_final_text_and_usage() {
+        let jsonl = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"draft"}],"usage":{"input":1,"output":2,"cacheRead":3,"cacheWrite":4}}}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"final"}],"usage":{"input":10,"output":20,"cacheRead":30,"cacheWrite":40}}}
+"#;
+
+        let (text, tokens_in, tokens_out) = parse_pi_jsonl(jsonl);
+
+        assert_eq!(text, "final");
+        assert_eq!(tokens_in, 80);
+        assert_eq!(tokens_out, 20);
     }
 
     #[test]
