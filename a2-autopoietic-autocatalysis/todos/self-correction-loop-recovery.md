@@ -22,7 +22,7 @@ Working:
 
 Not working / not yet resolved:
 
-- GLM recovery under hidden candidate-worktree verifier wiring remains unvalidated while the ZAI provider is unavailable; 2026-05-21 at 1800s produced no patches across 7 observed attempts, 2026-05-22 fibonacci calibration at 200k/3600s timed out with tokens=0/no patch, and direct `opencode --print-logs` smoke exposed upstream ZAI 429 `Insufficient balance or no resource package`.
+- Pi/ZAI GLM recovery under hidden candidate-worktree verifier wiring is validated for `compound-hidden` only. 2026-05-22 `pi/zai/glm-5.1` scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3 on `compound-hidden`; `compound-membrane-hidden` and `compound-archive-hidden` remain unvalidated for Pi/ZAI. Prior OpenCode GLM route timed out while ZAI balance was unavailable.
 - `compound-archive-hidden` self-corrected with hidden candidate-worktree verifier wiring for Minimax N=3 and Kimi N=3 on 2026-05-22: both resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-archive-hidden-minimax.jsonl` and `/tmp/a2-compound-archive-hidden-kimi.jsonl`.
 
 ## Recovery sequence
@@ -35,7 +35,7 @@ Implemented in order:
 4. `todos/anti-repeat-retry-strategy.md`
 5. `todos/worktree-task-verifier.md`
 
-Remaining recovery work is validation/provider-availability rather than missing core plumbing. As of 2026-05-22, Minimax and Kimi both have N=3 self-correction results on all three compound fixtures after hidden candidate-worktree verifier wiring.
+Remaining recovery work is validation rather than missing core plumbing. As of 2026-05-22, Minimax and Kimi both have N=3 self-correction results on all three compound fixtures after hidden candidate-worktree verifier wiring, and Pi/ZAI GLM has N=3 on `compound-hidden`.
 
 ## Benchmark gate
 

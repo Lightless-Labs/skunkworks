@@ -58,5 +58,16 @@ Before increasing GLM benchmark timeouts beyond an already-large budget, run a d
 ## Follow-up options
 
 - Re-test GLM only after ZAI balance/resource package is restored.
+- Prefer the Pi/ZAI route (`pi/zai/glm-5.1`) when OpenCode-specific provider behavior is not under test.
 - Consider adding a short preflight provider smoke or better timeout diagnostics for `tokens=0` OpenCode runs.
 - Keep benchmark records factual: timeout/provider-availability evidence, not model-capability conclusions.
+
+## 2026-05-22 addendum
+
+After the ZAI subscription was restored, direct Pi access worked with the existing Pi `zai` API key:
+
+```bash
+pi --model zai/glm-5.1 --no-session --no-tools -p 'Respond with exactly OK.'
+```
+
+A² added a `pi` provider route and validated `pi/zai/glm-5.1` on the self-correction harness. `compound-hidden` N=3 scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-hidden-pi-zai-glm.jsonl`.
