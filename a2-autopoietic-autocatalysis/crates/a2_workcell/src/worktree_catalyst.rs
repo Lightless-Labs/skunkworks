@@ -285,6 +285,7 @@ impl WorktreeCatalyst {
             "codex" => self.run_codex(model_id, prompt, worktree_path).await,
             "gemini" => self.run_gemini(model_id, prompt, worktree_path).await,
             "opencode" => self.run_opencode(model_id, prompt, worktree_path).await,
+            "pi" => self.run_pi(model_id, prompt, worktree_path).await,
             other => Err(A2Error::CatalystFailure(
                 self.id.clone(),
                 format!("worktree catalyst doesn't support provider: {other}"),
@@ -488,6 +489,39 @@ impl WorktreeCatalyst {
         }
 
         Ok((text, raw_stdout, stderr, tokens_in, tokens_out))
+    }
+
+    async fn run_pi(
+        &self,
+        model_id: &str,
+        prompt: &str,
+        worktree_path: &Path,
+    ) -> A2Result<(String, String, String, u64, u64)> {
+        let output = Command::new("pi")
+            .args(["--model", model_id, "--no-session", "--print"])
+            .arg(prompt)
+            .current_dir(worktree_path)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await
+            .map_err(|e| A2Error::ProviderError(format!("pi: {e}")))?;
+
+        let raw_stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        if !output.status.success() {
+            let mut message = format!(
+                "pi provider model `{model_id}` exited with status {}",
+                output.status
+            );
+            if !stderr.trim().is_empty() {
+                message.push_str(": ");
+                message.push_str(stderr.trim());
+            }
+            return Err(A2Error::ProviderError(message));
+        }
+
+        Ok((raw_stdout.clone(), raw_stdout, stderr, 0, 0))
     }
 
     fn workspace_structure(&self) -> &'static str {

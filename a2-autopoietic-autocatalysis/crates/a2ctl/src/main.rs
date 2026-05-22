@@ -633,6 +633,19 @@ async fn build_provider(model: &str) -> Box<dyn a2_core::traits::ModelProvider> 
                 }
             }
         }
+        "pi" => {
+            match a2_broker::broker::PiProvider::new(
+                a2_broker::broker::PiProvider::DEFAULT_MODEL_ID,
+            )
+            .await
+            {
+                Ok(p) => Box::new(a2_broker::adapt::CoreAdapter::new(p)),
+                Err(e) => {
+                    eprintln!("Failed to init Pi provider: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         other if other.starts_with("opencode/") => {
             let model_id = &other["opencode/".len()..];
             if model_id.is_empty() {
@@ -651,12 +664,29 @@ async fn build_provider(model: &str) -> Box<dyn a2_core::traits::ModelProvider> 
                 }
             }
         }
+        other if other.starts_with("pi/") => {
+            let model_id = &other["pi/".len()..];
+            if model_id.is_empty() {
+                eprintln!(
+                    "Provider 'pi/' requires a model id after the slash (e.g. \
+                     'pi/zai/glm-5.1')."
+                );
+                std::process::exit(1);
+            }
+            match a2_broker::broker::PiProvider::new(model_id).await {
+                Ok(p) => Box::new(a2_broker::adapt::CoreAdapter::new(p)),
+                Err(e) => {
+                    eprintln!("Failed to init Pi provider ({model_id}): {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         other => {
             eprintln!("Unknown model provider: {other}");
             eprintln!(
-                "Available: claude, gemini, codex, opencode, opencode/<model_id> \
+                "Available: claude, gemini, codex, opencode, opencode/<model_id>, pi, pi/<model_id> \
                  (e.g. opencode/zai-coding-plan/glm-5.1, opencode/kimi-for-coding/k2p5, \
-                 opencode/minimax-coding-plan/MiniMax-M2.7)"
+                 opencode/minimax-coding-plan/MiniMax-M2.7, pi/zai/glm-5.1)"
             );
             std::process::exit(1);
         }

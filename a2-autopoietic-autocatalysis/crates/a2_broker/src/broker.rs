@@ -111,6 +111,12 @@ fn clear_env(cmd: &mut Command) {
         "GOOGLE_API_KEY",
         // OpenAI / Codex
         "OPENAI_API_KEY",
+        // ZAI / Pi
+        "ZAI_API_KEY",
+        "PI_CODING_AGENT_DIR",
+        "PI_CODING_AGENT_SESSION_DIR",
+        "PI_PACKAGE_DIR",
+        "PI_OFFLINE",
         // XDG (needed by some CLI tools)
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
@@ -120,7 +126,7 @@ fn clear_env(cmd: &mut Command) {
         }
     }
     for (key, val) in env::vars() {
-        if key.starts_with("OPENCODE_") {
+        if key.starts_with("OPENCODE_") || key.starts_with("PI_") {
             cmd.env(key, val);
         }
     }
@@ -493,6 +499,68 @@ impl ModelProvider for CodexProvider {
     }
 }
 
+pub struct PiProvider {
+    model_id: String,
+    binary_path: String,
+}
+
+impl PiProvider {
+    pub const DEFAULT_MODEL_ID: &'static str = "zai/glm-5.1";
+
+    pub async fn new(model_id: &str) -> A2Result<Self> {
+        let binary_path = resolve_binary("pi").await?;
+        Ok(Self {
+            model_id: model_id.to_string(),
+            binary_path,
+        })
+    }
+}
+
+#[async_trait]
+impl ModelProvider for PiProvider {
+    async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
+        let mut cmd = Command::new(&self.binary_path);
+        clear_env(&mut cmd);
+
+        cmd.arg("--model").arg(&self.model_id);
+        cmd.arg("--no-session");
+        cmd.arg("--print");
+        if let Some(sys) = system {
+            cmd.arg("--append-system-prompt").arg(sys);
+        }
+        cmd.arg(prompt);
+        cmd.stdin(Stdio::null());
+
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| provider_launch_error("pi", &self.binary_path, &e))?;
+
+        if !output.status.success() {
+            return Err(provider_exit_error(
+                "pi",
+                &self.model_id,
+                output.status,
+                &output.stderr,
+            ));
+        }
+
+        Ok(GenerateResponse {
+            text: String::from_utf8_lossy(&output.stdout).to_string(),
+            tokens_in: 0,
+            tokens_out: 0,
+        })
+    }
+
+    fn provider_id(&self) -> &str {
+        "pi"
+    }
+
+    fn model_id(&self) -> &str {
+        &self.model_id
+    }
+}
+
 pub struct OpenCodeProvider {
     model_id: String,
     binary_path: String,
@@ -687,6 +755,14 @@ mod tests {
             error.to_string(),
             "model provider error: no registered model provider for `missing/v1`"
         );
+    }
+
+    #[tokio::test]
+    async fn pi_provider_uses_pi_model_ids() {
+        let provider = PiProvider::new(PiProvider::DEFAULT_MODEL_ID).await.unwrap();
+
+        assert_eq!(provider.provider_id(), "pi");
+        assert_eq!(provider.model_id(), "zai/glm-5.1");
     }
 
     #[test]
