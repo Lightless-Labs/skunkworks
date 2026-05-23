@@ -1,17 +1,17 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-05-22
+**Last updated:** 2026-05-23
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
 
-A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies its own source code. It uses AI model CLIs (Claude, Codex, Gemini, OpenCode) as "food set" models that edit code in git worktrees, then the system verifies, scores, and optionally applies the patches to its own germline.
+A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies its own source code. It uses AI model CLIs (Claude, Codex, Gemini, OpenCode, Pi) as "food set" models that edit code in git worktrees, then the system verifies, scores, and optionally applies the patches to its own germline.
 
-## Current Numbers (as of 2026-05-10)
+## Current Numbers (as of 2026-05-23)
 
 | Metric | Value |
 |--------|-------|
-| Tests | 81 Rust + 4 self-correction Python tests |
+| Tests | 89 Rust + 4 self-correction Python tests |
 | Sentinels | 6/6 PASS |
 | Crates | 11 |
 | Benchmark (OpenCode/GLM via A²) | 5/5 (with 100k token / 1800s budget) |
@@ -19,13 +19,15 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 | Benchmark (Gemini 3.1 Pro) | 5/5 |
 | Benchmark (Claude) | untested on current task set |
 | A² value-add on single-pass tasks | None measurable |
+| Self-correction loop (Minimax/Kimi current compound fixtures) | each provider resolved/self-corrected 3/3 on `compound-hidden`, `compound-membrane-hidden`, and `compound-archive-hidden` after hidden candidate verifier wiring |
+| Self-correction loop (Pi/ZAI GLM) | resolved/self-corrected 3/3 on `compound-hidden`; `compound-membrane-hidden` and `compound-archive-hidden` not yet run |
 | 4-provider smoke (2026-04-16) | 4/4 PASS (gemini, glm-5.1, minimax-2.7, kimi k2.5) post ContextPack wiring |
 
 ## Verify State (run these first)
 
 ```bash
 cd /Users/thomas/Projects/lightless-labs/skunkworks/a2-autopoietic-autocatalysis
-cargo test                                    # expect 74 pass
+cargo test                                    # expect pass (89 Rust tests)
 cargo run -p a2ctl -- sentinel --workspace .  # expect 6/6 PASS
 ```
 
@@ -100,6 +102,7 @@ echo "fix X" | cargo run -p a2ctl -- run --provider pi/zai/glm-5.1 --apply
 # Self-correction benchmark (isolated worktree; does not mutate germline)
 bench/self_correction.py --fixture fibonacci --provider opencode/minimax-coding-plan/MiniMax-M2.7 --attempts 3
 bench/self_correction.py --fixture compound-hidden --provider opencode/minimax-coding-plan/MiniMax-M2.7 --attempts 3
+bench/self_correction.py --fixture compound-hidden --provider pi/zai/glm-5.1 --attempts 3
 bench/self_correction_score.py bench/self-correction-results.jsonl
 
 # Sentinel gate
@@ -114,7 +117,7 @@ cargo run -p a2ctl -- sentinel --workspace .
 | codex | gpt-5.4 | **OUT OF QUOTA** | Don't use until reset |
 | gemini | gemini-3.1-pro-preview | **OUT OF CAPACITY** | 2026-04-28 self-correction smoke hit repeated 429 capacity errors; previous bench 5/5, ~67s/task |
 | opencode/glm | zai-coding-plan/glm-5.1 | Not currently used | 2026-05-22 direct `opencode --print-logs` smoke returned `Insufficient balance or no resource package` before subscription restore; prefer Pi/ZAI route below. Previous bench was 5/5 when provider was funded, 10-15min/task. |
-| pi/zai | zai/glm-5.1 | Available | Added 2026-05-22. Uses Pi's built-in ZAI provider and existing `~/.pi/agent/auth.json` `zai` API key. Fibonacci calibration passed attempt 1 with token accounting (`/tmp/a2-pi-zai-fibonacci-json-usage.jsonl`); `compound-hidden` N=3 resolved/self-corrected 3/3 via Pi/ZAI before JSON usage parsing (`/tmp/a2-compound-hidden-pi-zai-glm.jsonl`). |
+| pi/zai | zai/glm-5.1 | Available | Added 2026-05-22. Uses Pi's built-in ZAI provider and existing `~/.pi/agent/auth.json` `zai` API key. Fibonacci calibration passed attempt 1 with token accounting (`/tmp/a2-pi-zai-fibonacci-json-usage.jsonl`); `compound-hidden` N=3 resolved/self-corrected 3/3 via Pi/ZAI (`/tmp/a2-compound-hidden-pi-zai-glm.jsonl`; run preceded parsed Pi token usage). |
 | opencode/kimi | kimi-for-coding/k2p5 | Available | 2026-04-16 smoke PASS (75s, 12k tokens); sometimes empty historically |
 | opencode/minimax | minimax-coding-plan/MiniMax-M2.7 | Available | 2026-04-28 self-correction PASS attempt 1 (70s model time, 17.6k tokens); 2026-04-16 smoke PASS |
 
@@ -134,7 +137,7 @@ const DEFAULT_STAGNATION_WINDOW: usize = 3;
 | `a2_constitution` | Invariants INV-1..5, bootstrap profiles B0/B1/B2 |
 | `a2_workcell` | Runtime, WorktreeCatalyst (with_base_ref supported) |
 | `a2_membrane` | Tool ACLs, network allowlists, deny-overrides-allow |
-| `a2_broker` | 4 model providers (claude/codex/gemini/opencode), token parsing |
+| `a2_broker` | model providers (claude/codex/gemini/opencode/pi), token parsing |
 | `a2_eval` | SeedEvaluator, 6 sentinels (compile/test/unsafe/clippy/doc/lockfile) |
 | `a2_archive` | SQLite lineage store + promotion journal |
 | `a2_sensorium` | Signal ingestion, quarantine, risk tiers |
@@ -150,9 +153,9 @@ const DEFAULT_STAGNATION_WINDOW: usize = 3;
 
 ## What To Do Next
 
-ContextPack is wired and self-correction harnesses exist. The current gap is no longer "build a loop benchmark"; it is "make the loop recover." Minimax and Kimi now have N=3 self-correction success on both current compound fixtures after hidden candidate-worktree verifier wiring. Remaining validation is provider availability for GLM and broader loop-shaped fixtures.
+ContextPack is wired and self-correction harnesses exist. The current gap is no longer "build a loop benchmark"; it is "make the loop recover." Minimax and Kimi now have N=3 self-correction success on all three current compound fixtures after hidden candidate-worktree verifier wiring. Pi/ZAI GLM has N=3 self-correction success on `compound-hidden`; remaining validation is Pi/ZAI GLM on the other compound fixtures and broader loop-shaped fixtures.
 
-### Current loop status (2026-05-22)
+### Current loop status (2026-05-23)
 
 **Working:**
 - Prior lineage reaches retry attempts for a pinned `TaskId`.
@@ -229,7 +232,7 @@ Single-pass benchmark scores remain non-evidence for A² loop value.
 - Don't ask for direction. The project name is the instruction. See `autopoietic-no-pausing`.
 - Don't draw conclusions from a single benchmark run. Variance across runs is huge (5/5, 4/5, 3/5 observed on same model/tasks). See `single-run-conclusions`.
 - Don't put interpretation in HANDOFF.md. State facts. See `handoff-editorial-creep`.
-- Don't burn Claude quota on routine coding tasks — use Gemini or OpenCode.
+- Don't burn Claude quota on routine coding tasks — use OpenCode models or Pi/ZAI when available.
 - Don't assume budget/timeout failures are capability failures. Recalibrate first. See `budget-variance-as-noise-floor`.
 - Don't run multiple benchmarks concurrently with manual editing — workspace residue fights with edits (if this ever regresses: make benchmark purely observational, see `observational-evaluation-no-mutation`).
 
@@ -286,10 +289,11 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-05-21 | `compound-hidden` Kimi N=3 with hidden candidate verifier | Kimi scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; candidate verifier discarded attempt 1 before apply and attempt 2 passed. |
 | 2026-05-21 | GLM timeout at current self-correction budget | GLM at 1800s attempt timeout produced no patches in 7 observed attempts across 3 run IDs; result is a budget/timeout finding, not a model-capability conclusion. |
 | 2026-05-22 | GLM provider unavailable via OpenCode due ZAI resource error | Fibonacci calibration at 200k/3600s timed out with tokens=0/no patch; direct `opencode --print-logs` smoke for `zai-coding-plan/glm-5.1` exposed upstream 429 `Insufficient balance or no resource package`. |
-| 2026-05-22 | Add Pi provider route for ZAI | `a2ctl run --provider pi/zai/glm-5.1` now routes WorktreeCatalyst through Pi's built-in ZAI provider, reusing Pi auth and parsing Pi JSON usage. |
-| 2026-05-22 | `compound-hidden` Pi/ZAI GLM N=3 with hidden candidate verifier | Pi/ZAI GLM scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs fixed `a2_core` on attempt 1 and fixed `a2ctl` on attempt 2. |
+| 2026-05-22 | Add Pi provider route for ZAI | `a2ctl run --provider pi/zai/glm-5.1` now routes WorktreeCatalyst through Pi's built-in ZAI provider, reusing Pi auth and parsing Pi JSON usage; commits `ed41471` and `318937c`. |
+| 2026-05-22 | `compound-hidden` Pi/ZAI GLM N=3 with hidden candidate verifier | Pi/ZAI GLM scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs fixed `a2_core` on attempt 1 and fixed `a2ctl` on attempt 2; result `/tmp/a2-compound-hidden-pi-zai-glm.jsonl`. |
 | 2026-05-22 | Add third compound self-correction fixture | `compound-archive-hidden` combines the visible `a2_core` Fibonacci regression with a hidden `a2_archive` `for_task` ordering regression; smoke-only injection verified both failures. |
 | 2026-05-22 | `compound-archive-hidden` Minimax N=3 with hidden candidate verifier | Minimax scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs fixed `a2_core` on attempt 1 and fixed `a2_archive` on attempt 2. |
 | 2026-05-22 | `compound-archive-hidden` Kimi N=3 with hidden candidate verifier | Kimi scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs fixed `a2_core` on attempt 1 and fixed `a2_archive` on attempt 2. |
 | 2026-05-21 | `compound-membrane-hidden` Minimax N=3 with hidden candidate verifier | Minimax scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs fixed `a2_core` on attempt 1 and fixed `a2_membrane` on attempt 2. |
 | 2026-05-21 | `compound-membrane-hidden` Kimi N=3 with hidden candidate verifier | Kimi scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs fixed `a2_core` on attempt 1 and fixed `a2_membrane` on attempt 2. |
+| 2026-05-22 | Refresh Cargo.lock after sentinel lockfile check | During Pi/ZAI validation, sentinel initially passed 5/6 with stale `Cargo.lock`; `cargo generate-lockfile --offline` refreshed compatible cached package versions and sentinel passed 6/6; commit `433adc8`. |
