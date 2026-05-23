@@ -5,6 +5,7 @@
 
 use crate::germline::Germline;
 use crate::metabolism::CycleReport;
+use crate::provider::ProviderPolicy;
 use crate::types::EnzymeDef;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,7 @@ use std::process::Command;
 pub struct LineageArchive {
     root: PathBuf,
     germline_path: PathBuf,
+    provider_policy_path: PathBuf,
 }
 
 impl LineageArchive {
@@ -23,6 +25,7 @@ impl LineageArchive {
         fs::create_dir_all(root)?;
 
         let germline_path = root.join("germline.json");
+        let provider_policy_path = root.join("provider-policy.json");
 
         // Init git if not already a repo
         if !root.join(".git").exists() {
@@ -35,6 +38,7 @@ impl LineageArchive {
         Ok(Self {
             root: root.to_path_buf(),
             germline_path,
+            provider_policy_path,
         })
     }
 
@@ -98,6 +102,48 @@ impl LineageArchive {
         Ok(enzymes)
     }
 
+    /// Persist the current provider policy as a git commit.
+    pub fn commit_provider_policy(
+        &self,
+        policy: &ProviderPolicy,
+        report: &CycleReport,
+    ) -> Result<String, std::io::Error> {
+        let json = serde_json::to_string_pretty(policy)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+        fs::write(&self.provider_policy_path, &json)?;
+
+        Command::new("git")
+            .args(["add", "provider-policy.json"])
+            .current_dir(&self.root)
+            .output()?;
+
+        let message = format!(
+            "Cycle {}: {} provider policy accepted, {} rejected",
+            report.cycle,
+            report.accepted_provider_policy_changes,
+            report.rejected_provider_policy_changes,
+        );
+
+        let output = Command::new("git")
+            .args(["commit", "-m", &message, "--allow-empty"])
+            .current_dir(&self.root)
+            .output()?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let commit_hash = stdout.lines().next().unwrap_or("unknown").to_string();
+
+        Ok(commit_hash)
+    }
+
+    /// Read the persisted provider policy from the archive.
+    pub fn read_provider_policy(&self) -> Result<ProviderPolicy, std::io::Error> {
+        let json = fs::read_to_string(&self.provider_policy_path)?;
+        let policy: ProviderPolicy = serde_json::from_str(&json)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        Ok(policy)
+    }
+
     /// List all commits (germline lineage).
     pub fn log(&self, max: usize) -> Result<Vec<String>, std::io::Error> {
         let output = Command::new("git")
@@ -127,7 +173,7 @@ impl LineageArchive {
 mod tests {
     use super::*;
     use crate::types::{ArtifactType, EnzymeId};
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn test_enzyme(id: &str) -> EnzymeDef {
         EnzymeDef {
@@ -180,6 +226,38 @@ mod tests {
         let read_back = archive.read_germline().unwrap();
         assert_eq!(read_back.len(), 2);
         assert_eq!(read_back[0].id, EnzymeId::from("a"));
+    }
+
+    #[test]
+    fn commit_and_read_provider_policy_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = LineageArchive::init(dir.path()).unwrap();
+
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "test"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let policy = ProviderPolicy {
+            assignments: BTreeMap::from([("coder".to_string(), "fast".to_string())]),
+        };
+        let report = CycleReport {
+            cycle: 2,
+            accepted_provider_policy_changes: 1,
+            ..CycleReport::default()
+        };
+
+        archive.commit_provider_policy(&policy, &report).unwrap();
+
+        let read_back = archive.read_provider_policy().unwrap();
+        assert_eq!(read_back, policy);
+        assert!(archive.root().join("provider-policy.json").exists());
     }
 
     #[test]

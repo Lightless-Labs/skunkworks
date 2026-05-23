@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-05-22 (session 13 — provider policy artifact)
+**Last updated:** 2026-05-23 (session 14 — provider policy lineage persistence)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-138 commits. 160 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 31 compound learnings.
+139 commits. 163 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 32 compound learnings.
 
 ## Clean-session pickup
 
@@ -25,7 +25,7 @@
 - **Coder no longer starves feedback metabolism after success:** a successful code-producing invocation ends the cycle so benchmark feedback can become the next cycle's food. Scheduler priority is dynamic: coder first before code exists; once mechanical fitness exists, evolver → architect → tester → coder.
 - **Evolver consumes mechanical fitness directly:** seed and loaded lineage germlines now use `fitness_report` as the evolver reactant; `test_results` is optional supporting evidence, not a gate. This routes sandbox outcome evidence directly into adaptation.
 - **Provider health is metabolic food:** metabolism emits a mechanical `provider_health_report` artifact with unavailable providers, cooldown/failure counters, recent invocation outcomes, and coder candidate portfolio evidence. Seed/loaded germlines route it to evolver and architect so provider-role degradation is visible to the system, not just to humans reading logs.
-- **Provider policy is now a typed, gated artifact:** `provider_policy` serializes active role-provider assignments; enzymes that produce it can propose assignment changes, but the metabolism accepts only known-enzyme/registered-provider changes and records accepted/rejected policy records in lineage. Current policy is routed to evolver/architect as catalyst context.
+- **Provider policy is now a typed, gated, durable artifact:** `provider_policy` serializes active role-provider assignments; enzymes that produce it can propose assignment changes, but the metabolism accepts only known-enzyme/registered-provider changes and records accepted/rejected policy records in lineage. Current policy is routed to evolver/architect as catalyst context. Accepted non-regressing policy is persisted as lineage `provider-policy.json` and reloaded through the same mechanical gate on later runs.
 - **GLM is off the coder/evolver critical path:** coder default is Kimi k2.6 with DeepSeek v4 flash fallback; evolver is explicitly assigned to Kimi k2.6 after GLM evolver timeouts starved feedback metabolism. Non-parallel evolver fallback is role-isolated, so it should not route to tester/architect GLM after Kimi/DeepSeek cooldowns. GLM 5.1 remains assigned to tester/architect only.
 - **Failed rung-2 consultation is bounded:** if consultation times out/fails, the workcell fails immediately instead of spending a second full provider timeout on the primary invocation.
 - **Timeouts are bounded but provider-specific:** GLM 5.1 now gets 900s by default; other CLI providers default to 300s; `A2D_PROVIDER_TIMEOUT_SECS` overrides.
@@ -41,7 +41,7 @@
 
 ### Best next moves
 
-1. **Persist accepted provider policy in lineage and strengthen the gate:** typed `provider_policy` exists and is schema/provider gated in memory. Next: persist accepted policy beside `germline.json`, then gate durable changes with bounded topology comparisons.
+1. **Strengthen durable provider-policy gates:** `provider_policy` now persists beside `germline.json`; next safety step is bounded topology-comparison gating before durable policy changes become defaults.
 2. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
 3. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
 4. **Live-validate empty-output diagnostics and architect no-op contract** during a run that reaches architect; confirm failures expose useful parsed/raw previews and legitimate no-change decisions route as `NOOP` artifacts.
@@ -68,9 +68,12 @@
 
 ### What happened this session
 
+- **Provider policy lineage persistence landed.** `LineageArchive` now reads/writes `provider-policy.json` beside `germline.json`; normal runtime loads persisted provider policy through the same mechanical gate used for model-proposed policy artifacts; accepted non-regressing provider-policy changes are committed to lineage. `A2D_GERMLINE=seed` bypasses persisted policy, while topology comparison keeps seed on defaults and lets evolved mode include lineage policy. Plan updated: `docs/plans/provider-policy-artifact.md`. Learning: `docs/solutions/architectural-insights/provider-policy-lineage-persistence-2026-05-23.md`.
+- **Validation:** `cargo test` passes (163 passing, 2 ignored). `cargo run -q -p a2d -- status` confirms lineage-loaded 7-enzyme RAF remains 100% closed.
+- **Known follow-up:** provider-policy durability is still gated only by schema/provider/enzyme validation plus non-regression; durable policy should next be gated with bounded topology comparisons.
+
 - **Provider policy artifact landed.** Added typed `ProviderPolicy` (`assignments: enzyme → provider`), `ProviderRegistry::current_policy/apply_policy`, `provider_policy` artifact sync, in-metabolism mechanical gating, provider-policy lineage records, and cycle counters. Seed/loaded germlines now include `provider_policy` as food/catalyst context for evolver and architect. Plan: `docs/plans/provider-policy-artifact.md`. Learning: `docs/solutions/architectural-insights/provider-policy-must-be-gated-metabolic-mechanism-2026-05-22.md`.
 - **Validation:** `cargo test` passes (160 passing, 2 ignored). `cargo run -q -p a2d -- status` confirms lineage-loaded 7-enzyme RAF remains 100% closed.
-- **Known follow-up:** accepted provider policy is active in memory and artifact-visible but not yet persisted as a separate lineage archive file; durable changes should be gated with bounded topology comparisons.
 
 - **Evolver moved off GLM.** Live registry now assigns evolver to Kimi k2.6 while keeping tester/architect on GLM 5.1. Unit coverage renamed/expanded to `live_registry_keeps_glm_off_coder_and_evolver_critical_path`. Documented in `docs/solutions/runtime-bugs/evolver-glm-critical-path-timeouts-2026-05-22.md`.
 - **Bounded topology validation completed after evolver provider change.** `A2D_PROVIDER_TIMEOUT_SECS=90 A2D_MAX_CYCLE_SECS=300 cargo run -p a2d -- compare-topologies sudoku 3` completed. Seed best: 83% (5/6), 337.0s, 5 invocations, 2 failures. Evolved best: 67% (4/6), 270.4s, 4 invocations, 2 failures. Log: `/tmp/a2d-topology-compare-sudoku3-evolver-kimi-20260522.log`. The result removed the known GLM-evolver assignment bottleneck but did not validate evolved-topology value.
@@ -251,7 +254,7 @@ a2d enzymes                   # List enzyme definitions (now includes architect)
 a2d lineage                   # Git log of germline evolution
 
 # Run tests
-cargo test                    # 160 tests passing (2 ignored integration)
+cargo test                    # 163 tests passing (2 ignored integration)
 cargo test -- --ignored       # Run integration tests (slow, compiles in temp dir)
 
 # Check OpenCode model IDs

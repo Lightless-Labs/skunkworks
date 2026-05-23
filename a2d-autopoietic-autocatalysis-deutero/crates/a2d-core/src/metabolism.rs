@@ -271,6 +271,10 @@ impl Metabolism {
         &self.lineage
     }
 
+    pub fn provider_policy(&self) -> ProviderPolicy {
+        self.providers.current_policy()
+    }
+
     pub fn artifacts(&self) -> ArtifactStore {
         self.artifacts
             .iter()

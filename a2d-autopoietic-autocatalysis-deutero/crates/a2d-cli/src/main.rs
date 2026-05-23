@@ -10,7 +10,7 @@ use a2d_core::challenges;
 use a2d_core::germline::Germline;
 use a2d_core::lineage::LineageArchive;
 use a2d_core::metabolism::{CycleReport, InvocationLineage, Metabolism};
-use a2d_core::provider::ProviderRegistry;
+use a2d_core::provider::{ProviderPolicy, ProviderRegistry};
 use a2d_core::types::{ArtifactType, EnzymeDef, EnzymeId};
 use a2d_providers::cli::CliProvider;
 use serde_json::Value;
@@ -358,6 +358,27 @@ fn seed_initial_runtime_artifacts(metabolism: &mut Metabolism, input: &str) {
     // until real data exists.
 }
 
+fn build_runtime_registry(germline: &Germline) -> ProviderRegistry {
+    let mut registry = build_registry();
+
+    if force_seed_germline(env::var("A2D_GERMLINE").ok().as_deref()) {
+        return registry;
+    }
+
+    if let Some(policy) = load_lineage_provider_policy() {
+        let application = apply_loaded_provider_policy(&mut registry, germline, &policy);
+        if !application.accepted.is_empty() || !application.rejected.is_empty() {
+            println!(
+                "Loaded provider policy from lineage ({} accepted, {} rejected)",
+                application.accepted.len(),
+                application.rejected.len()
+            );
+        }
+    }
+
+    registry
+}
+
 fn build_registry() -> ProviderRegistry {
     // Multi-model assignment via CLI providers (they manage their own auth).
     //
@@ -392,6 +413,25 @@ fn build_registry() -> ProviderRegistry {
     }
 
     registry
+}
+
+fn load_lineage_provider_policy() -> Option<ProviderPolicy> {
+    let dir = lineage_dir();
+    let archive = LineageArchive::init(&dir).ok()?;
+    archive.read_provider_policy().ok()
+}
+
+fn apply_loaded_provider_policy(
+    registry: &mut ProviderRegistry,
+    germline: &Germline,
+    policy: &ProviderPolicy,
+) -> a2d_core::provider::ProviderPolicyApplication {
+    let valid_enzyme_ids = germline
+        .enzymes()
+        .into_iter()
+        .map(|enzyme| enzyme.id.clone())
+        .collect::<BTreeSet<_>>();
+    registry.apply_policy(policy, &valid_enzyme_ids)
 }
 
 fn show_status() {
@@ -443,7 +483,7 @@ fn run_cycle(num_cycles: usize, requirements: &str) {
     println!("═══════════════════");
 
     let germline = load_or_seed_germline();
-    let registry = build_registry();
+    let registry = build_runtime_registry(&germline);
     let mut metabolism = apply_runtime_env(
         Metabolism::new(germline, registry)
             .with_benchmark(seed_benchmark())
@@ -537,9 +577,8 @@ fn run_cycle(num_cycles: usize, requirements: &str) {
         println!();
 
         // Fitness-gated persistence: only commit if fitness didn't regress
+        let regressed = report.fitness_delta.is_some_and(|d| d < 0.0);
         if report.accepted_mutations > 0 {
-            let regressed = report.fitness_delta.is_some_and(|d| d < 0.0);
-
             if regressed {
                 println!("  ⚠ Fitness regressed — skipping lineage commit");
                 // Archive stays at previous generation's state.
@@ -548,6 +587,16 @@ fn run_cycle(num_cycles: usize, requirements: &str) {
                 match archive.commit_germline(metabolism.germline(), &report) {
                     Ok(hash) => println!("  Lineage: {hash}"),
                     Err(e) => eprintln!("  Lineage error: {e}"),
+                }
+            }
+        }
+        if report.accepted_provider_policy_changes > 0 {
+            if regressed {
+                println!("  ⚠ Fitness regressed — skipping provider policy commit");
+            } else if let Some(ref archive) = archive {
+                match archive.commit_provider_policy(&metabolism.provider_policy(), &report) {
+                    Ok(hash) => println!("  Provider policy lineage: {hash}"),
+                    Err(e) => eprintln!("  Provider policy lineage error: {e}"),
                 }
             }
         }
@@ -681,7 +730,7 @@ fn run_challenge(name: &str, num_cycles: usize) {
     println!("═══════════════════");
 
     let germline = load_or_seed_germline();
-    let registry = build_registry();
+    let registry = build_runtime_registry(&germline);
     let mut benchmark = challenge.benchmark;
     benchmark.acceptance_test = challenge.acceptance_test;
     let mut metabolism = apply_runtime_env(
@@ -752,6 +801,14 @@ fn run_challenge(name: &str, num_cycles: usize) {
                 }
             } else if delta < 0.0 {
                 print!(" [regressed, skipped]");
+            }
+            if report.accepted_provider_policy_changes > 0 && delta >= 0.0 {
+                if let Some(ref archive) = archive {
+                    match archive.commit_provider_policy(&metabolism.provider_policy(), &report) {
+                        Ok(hash) => print!(" [policy: {hash}]"),
+                        Err(e) => print!(" [policy lineage error: {e}]"),
+                    }
+                }
             }
         }
         if report.capped {
@@ -844,7 +901,11 @@ fn run_challenge_for_topology(
 
     let germline = load_germline_for_topology(topology);
     let enzyme_count = germline.enzymes().len();
-    let registry = build_registry();
+    let registry = if topology == TopologyMode::Evolved {
+        build_runtime_registry(&germline)
+    } else {
+        build_registry()
+    };
     let mut metabolism = apply_runtime_env(
         Metabolism::new(germline, registry)
             .with_benchmark(benchmark)
@@ -1133,6 +1194,27 @@ mod tests {
             registry
                 .providers()
                 .contains(&"opencode/opencode/deepseek-v4-flash-free")
+        );
+    }
+
+    #[test]
+    fn loaded_provider_policy_applies_to_registered_known_enzyme() {
+        let germline = seed_germline();
+        let mut registry = build_registry();
+        let policy = ProviderPolicy {
+            assignments: BTreeMap::from([(
+                "tester".to_string(),
+                "opencode/kimi-for-coding/k2p6".to_string(),
+            )]),
+        };
+
+        let application = apply_loaded_provider_policy(&mut registry, &germline, &policy);
+
+        assert_eq!(application.accepted.len(), 1);
+        assert!(application.rejected.is_empty());
+        assert_eq!(
+            registry.provider_for(&EnzymeId::from("tester")).name(),
+            "opencode/kimi-for-coding/k2p6"
         );
     }
 
