@@ -1,0 +1,275 @@
+# A²D Handoff Document
+
+**Last updated:** 2026-05-22 (session 13 — provider policy artifact)
+**Update this document:** before context compaction, at session end, or when significant state changes.
+
+## System State
+
+138 commits. 160 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 31 compound learnings.
+
+## Clean-session pickup
+
+### What is working
+
+- **End-to-end metabolism:** requirements route through coder/tester/sandbox/evolver/architect with RAF checks, fitness ratchet, lineage, feedback reports, and provider circuit breaking.
+- **Sudoku can reach full fitness:** latest completed `sudoku 5` live run reached best fitness 100% (6/6): no code → 83% → 100% → 100% → 100%.
+- **Deutero-learning is real now, not theoretical:** the evolver accepted 6 mutations in the `sudoku 5` run; lineage-loaded germline has 7 RAF-closed enzymes.
+- **Autopoiesis is gated:** architect patches go through `SystemPatch` + self-sandbox, provider cwd isolation, protected-file rejection, and explicit mechanism-file eligibility.
+- **OpenCode parsing is more robust:** current text events, legacy text events, and `write` tool payloads are recovered.
+- **Empty provider output is diagnosable:** `InvocationResponse` now carries optional raw provider stdout; no-materialized-output failures include sanitized parsed/raw previews, and malformed `SystemPatch` rejections include parsed artifact previews.
+- **Architect can abstain explicitly:** architect output contract now accepts `{"action":"noop","reason":"..."}` as a valid no-change decision, separate from malformed/empty provider output. Legacy bare `SystemPatch` JSON remains accepted.
+- **Seed-vs-evolved comparisons are mechanical:** `A2D_GERMLINE=seed` forces the hardcoded 4-enzyme seed germline instead of loading lineage.
+- **Topology comparisons are now one command:** `a2d compare-topologies <challenge> <cycles>` runs seed then lineage-loaded evolved topology side by side without lineage commits or patch application, reporting best fitness, cycle-to-full-fitness, wall-clock, invocations, provider failures, caps, mutations, and patches.
+- **Coder is no longer starved by speculative decomposition:** before code exists, ready invocations prioritize enzymes producing `code`; after mechanical fitness exists, feedback metabolism runs first (`enzyme_defs` → `system_patch` → `test_results` → coder retry). Any failed/killed invocation ends the current cycle before lower-priority ready enzymes run, so provider fallback happens on the next cycle instead of wasting remaining budget on auxiliary products.
+- **Coder dispatch is now a fitness-scored portfolio:** coder invocations run assigned + unassigned fallback providers concurrently by default (`A2D_PARALLEL_CODER=0` disables). Every materialized code candidate is evaluated by the current benchmark/sandbox; the highest-fitness candidate is routed onward, and all candidate fitness/error records are stored in lineage and printed by topology comparison. Note: scoped threads still wait for slow losers before returning, so slow providers must be kept out of the coder portfolio.
+- **Coder no longer starves feedback metabolism after success:** a successful code-producing invocation ends the cycle so benchmark feedback can become the next cycle's food. Scheduler priority is dynamic: coder first before code exists; once mechanical fitness exists, evolver → architect → tester → coder.
+- **Evolver consumes mechanical fitness directly:** seed and loaded lineage germlines now use `fitness_report` as the evolver reactant; `test_results` is optional supporting evidence, not a gate. This routes sandbox outcome evidence directly into adaptation.
+- **Provider health is metabolic food:** metabolism emits a mechanical `provider_health_report` artifact with unavailable providers, cooldown/failure counters, recent invocation outcomes, and coder candidate portfolio evidence. Seed/loaded germlines route it to evolver and architect so provider-role degradation is visible to the system, not just to humans reading logs.
+- **Provider policy is now a typed, gated artifact:** `provider_policy` serializes active role-provider assignments; enzymes that produce it can propose assignment changes, but the metabolism accepts only known-enzyme/registered-provider changes and records accepted/rejected policy records in lineage. Current policy is routed to evolver/architect as catalyst context.
+- **GLM is off the coder/evolver critical path:** coder default is Kimi k2.6 with DeepSeek v4 flash fallback; evolver is explicitly assigned to Kimi k2.6 after GLM evolver timeouts starved feedback metabolism. Non-parallel evolver fallback is role-isolated, so it should not route to tester/architect GLM after Kimi/DeepSeek cooldowns. GLM 5.1 remains assigned to tester/architect only.
+- **Failed rung-2 consultation is bounded:** if consultation times out/fails, the workcell fails immediately instead of spending a second full provider timeout on the primary invocation.
+- **Timeouts are bounded but provider-specific:** GLM 5.1 now gets 900s by default; other CLI providers default to 300s; `A2D_PROVIDER_TIMEOUT_SECS` overrides.
+
+### What is not working / unproven
+
+- **Provider latency/quality remains bad and topology results are noisy:** 2026-05-22 bounded comparison after moving evolver to Kimi had seed 83% vs evolved 67% (`/tmp/a2d-topology-compare-sudoku3-evolver-kimi-20260522.log`). Rerun with lineage details had seed 67% vs evolved 50% and exposed a fallback leak: seed cycle 3 routed evolver to GLM (`/tmp/a2d-topology-compare-sudoku3-lineage-details-20260522.log`). After role-isolated evolver fallback, evolved beat seed 83% vs 50% and evolver stayed on Kimi (`/tmp/a2d-topology-compare-sudoku3-role-isolated-evolver-20260522.log`). Remaining slow failures were architect/tester provider windows.
+- **Architect output contract is brittle:** Kimi architect still produced two no-materialized-`system_patch` failures. Need raw-output previews and/or a valid no-op patch contract.
+- **Evolved topology value is unknown:** the 7-enzyme germline is RAF-closed and reached 100%, but may add latency/invocation overhead rather than useful capability.
+- **Compounding self-modification is unproven:** the only live architect patch in `sudoku 5` was irrelevant (`prime.rs`) and was reverted; relevance gate now prevents that class.
+- **Escalation rungs 4–6 are missing:** rungs 0–3 detect loops but do not reliably halt degradation.
+- **Benchmark coverage is narrow:** sudoku is validated; chess/rubiks need stronger acceptance tests and live runs.
+
+### Best next moves
+
+1. **Persist accepted provider policy in lineage and strengthen the gate:** typed `provider_policy` exists and is schema/provider gated in memory. Next: persist accepted policy beside `germline.json`, then gate durable changes with bounded topology comparisons.
+2. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
+3. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
+4. **Live-validate empty-output diagnostics and architect no-op contract** during a run that reaches architect; confirm failures expose useful parsed/raw previews and legitimate no-change decisions route as `NOOP` artifacts.
+5. **Implement escalation rungs 4–6**: forced model swap, multi-model consensus with mechanical selection, Darwinian isolation.
+6. **Expand acceptance tests**: chess castling/en-passant/checkmate/legal-move invariants; Rubiks scramble-solve roundtrip.
+
+### What works
+
+- Catalytic cycle runs autonomously across 3 model providers (OpenCode, Gemini, Claude)
+- **Feedback loop closed:** sandbox compile errors and test failures route back to coder and evolver as `failure_report` artifact. Coder prompt includes "PREVIOUS ATTEMPT FAILED" with specific errors.
+- **True autopoiesis:** architect enzyme reads system source code, proposes modifications, self-sandbox validates (cargo test in temp dir), accepted patches applied to real source tree.
+- **Constitutional boundary:** protected files (germline, raf, sandbox, benchmark, self_sandbox, CONSTITUTION.md) mechanically rejected before filesystem check.
+- **Architect relevance gate:** automated `SystemPatch` is now restricted to explicit A²D mechanism files. Incidental domain/demo modules (`prime.rs`, `email.rs`, etc.) are excluded from architect context and patch eligibility.
+- Sandbox compiles Rust code with `rustc --edition 2024` and runs tests mechanically
+- Fitness ratchet prevents regressions (won't commit germline with lower fitness)
+- RAF detection verifies catalytic closure after each mutation
+- Lineage archive persists germline evolution in a git repo
+- Challenges (sudoku, chess, rubiks) with hidden acceptance tests
+- Provider subprocess timeouts — no silent hangs. GLM 5.1 gets a 15-minute default window (900s); other CLI providers default to 5 minutes (300s). Override all with `A2D_PROVIDER_TIMEOUT_SECS`.
+- **Architect context pyramid:** `system_code` is now Tier 0 purpose + Tier 1 signatures by default, with full source only for files mentioned in `failure_report`; `A2D_ARCHITECT_FULL_CONTEXT=1` preserves the old full-context fallback.
+- **Provider circuit breaker:** provider invocation failures/timeouts temporarily cool down the failing provider and route subsequent invocations to healthy alternatives; cooldown expiry makes the original provider eligible again.
+- **CLI provider filesystem isolation:** CLI providers now run in an empty temp cwd, so coding tools cannot directly mutate the repo outside the `SystemPatch` + self-sandbox path.
+- **OpenCode write-output recovery:** OpenCode NDJSON parsing now handles current `/part/text`, legacy top-level `/text`, and `write` tool payloads. If the model writes the artifact then says only `Done.`, A²D recovers the written content instead of wasting the invocation.
+
+### What happened this session
+
+- **Provider policy artifact landed.** Added typed `ProviderPolicy` (`assignments: enzyme → provider`), `ProviderRegistry::current_policy/apply_policy`, `provider_policy` artifact sync, in-metabolism mechanical gating, provider-policy lineage records, and cycle counters. Seed/loaded germlines now include `provider_policy` as food/catalyst context for evolver and architect. Plan: `docs/plans/provider-policy-artifact.md`. Learning: `docs/solutions/architectural-insights/provider-policy-must-be-gated-metabolic-mechanism-2026-05-22.md`.
+- **Validation:** `cargo test` passes (160 passing, 2 ignored). `cargo run -q -p a2d -- status` confirms lineage-loaded 7-enzyme RAF remains 100% closed.
+- **Known follow-up:** accepted provider policy is active in memory and artifact-visible but not yet persisted as a separate lineage archive file; durable changes should be gated with bounded topology comparisons.
+
+- **Evolver moved off GLM.** Live registry now assigns evolver to Kimi k2.6 while keeping tester/architect on GLM 5.1. Unit coverage renamed/expanded to `live_registry_keeps_glm_off_coder_and_evolver_critical_path`. Documented in `docs/solutions/runtime-bugs/evolver-glm-critical-path-timeouts-2026-05-22.md`.
+- **Bounded topology validation completed after evolver provider change.** `A2D_PROVIDER_TIMEOUT_SECS=90 A2D_MAX_CYCLE_SECS=300 cargo run -p a2d -- compare-topologies sudoku 3` completed. Seed best: 83% (5/6), 337.0s, 5 invocations, 2 failures. Evolved best: 67% (4/6), 270.4s, 4 invocations, 2 failures. Log: `/tmp/a2d-topology-compare-sudoku3-evolver-kimi-20260522.log`. The result removed the known GLM-evolver assignment bottleneck but did not validate evolved-topology value.
+- **Topology comparison now prints per-invocation lineage details.** Each cycle lists `[enzyme via provider] OK/FAIL/KILL` with single-line truncated errors before coder candidate portfolios. This makes bounded comparisons actionable without `A2D_TRACE=1`. Smoke log: `/tmp/a2d-topology-compare-sudoku1-lineage-details-smoke-20260522.log`. Updated `docs/solutions/best-practices/topology-comparison-harness-2026-05-20.md`.
+- **Lineage-details rerun exposed and fixed an evolver fallback leak.** `A2D_PROVIDER_TIMEOUT_SECS=90 A2D_MAX_CYCLE_SECS=300 cargo run -p a2d -- compare-topologies sudoku 3` with details had seed best 67% and evolved best 50%. It showed seed cycle 3 routing `evolver` to GLM after Kimi/DeepSeek cooldowns. Provider registry now has role-isolated fallback; non-parallel evolver uses it and will fail on assigned Kimi rather than consuming tester/architect GLM. Log: `/tmp/a2d-topology-compare-sudoku3-lineage-details-20260522.log`.
+- **Role-isolated evolver fallback live validation passed.** Bounded rerun had seed best 50% (3/6), evolved best 83% (5/6). Evolver invocations stayed on Kimi k2.6 in seed cycles 2–3 and evolved cycle 3; no evolver→GLM fallback occurred. Remaining failures were architect GLM timeout and tester Kimi timeout. Log: `/tmp/a2d-topology-compare-sudoku3-role-isolated-evolver-20260522.log`.
+- **Provider health became metabolic food.** The metabolism now emits `provider_health_report` as mechanical JSON; seed and loaded germlines include it as food and route it as a catalyst to evolver/architect. Specialized prompts include provider health when available, closing `provider failures/timeouts → provider_health_report → evolver/architect`. Documented in `docs/solutions/architectural-insights/provider-health-must-be-metabolic-food-2026-05-22.md`. `cargo run -p a2d -- status` confirmed loaded 7-enzyme RAF remains 100% closed.
+- Full `cargo test` passes: 157 passing, 2 ignored.
+
+- **Provider empty-output diagnostics landed.** `InvocationResponse` now preserves optional raw stdout from CLI providers. No-materialized-output workcell failures include sanitized parsed/raw previews, and malformed `SystemPatch` rejections include parsed artifact previews. Documented in `docs/solutions/runtime-bugs/provider-empty-output-diagnostics-2026-05-16.md`.
+- **Architect no-op contract landed.** Architect prompt now admits `{"action":"patch", ...}` and `{"action":"noop", "reason":"..."}`; no-op records `NOOP: <reason>` without self-sandbox or rejection, while legacy bare `SystemPatch` remains accepted. Documented in `docs/solutions/runtime-bugs/architect-noop-contract-2026-05-16.md`.
+- **GLM 900s validation completed and failed usefully.** `A2D_TRACE=1 cargo run -p a2d -- challenge sudoku 1` with lineage-loaded 7-enzyme topology invoked `analyze_requirements` first; GLM timed out after 900s, the cycle wall-clock-capped before coder ran, and best fitness was 0%. Log: `/tmp/a2d-sudoku1-20260518-after-noop.log`. This shows the longer GLM window is not enough when slow evolved decomposition enzymes can starve coder.
+- **Seed germline switch landed.** `A2D_GERMLINE=seed` forces the hardcoded 4-enzyme topology even when lineage exists. Verified with `A2D_GERMLINE=seed cargo run -p a2d -- status`: RAF 100%, closed, 4 enzymes.
+- **Scheduler priority fix landed.** Ready invocations now prioritize direct artifact progress: `code` → `test_results` → `enzyme_defs` → `system_patch` → auxiliary products. Smoke validation with `A2D_TRACE=1 A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 cargo run -p a2d -- challenge sudoku 1` showed ready order `["coder", "analyze_requirements"]` and invoked coder first. Log: `/tmp/a2d-sudoku1-20260518-priority-smoke.log`.
+- **Fail-fast cycle advance landed.** Failed/killed invocations now end the current cycle before lower-priority ready enzymes execute. Two-cycle smoke with `A2D_PROVIDER_TIMEOUT_SECS=1` showed cycle 1 GLM coder timeout, then cycle 2 coder routed to Kimi fallback; no auxiliary decomposition ran after coder failure. Log: `/tmp/a2d-sudoku2-20260518-fallback-smoke.log`.
+- **Bounded 60s post-fix validation:** `A2D_TRACE=1 A2D_PROVIDER_TIMEOUT_SECS=60 A2D_MAX_CYCLE_SECS=180 cargo run -p a2d -- challenge sudoku 2` spent cycle 1 on GLM coder timeout and cycle 2 on Kimi coder timeout; no lower-priority decomposition ran after coder failures. Best fitness 0%, but budget was spent on the critical enzyme/fallback path. Log: `/tmp/a2d-sudoku2-20260518-evolved-failfast-60s.log`.
+- **Parallel coder race landed.** Coder now invokes assigned + unassigned fallback providers concurrently; role-specific tester/evolver providers are excluded. Documented in `docs/solutions/best-practices/parallel-cheap-coder-race-2026-05-19.md`. 60s live smoke showed GLM and Kimi spawned concurrently and both timed out in ~60s, proving wall-clock is max(timeout) rather than serial sum(timeout). Log: `/tmp/a2d-sudoku1-20260519-parallel-coder-60s.log`.
+- **Topology comparison harness landed.** New CLI command: `a2d compare-topologies <challenge> <cycles>` (alias `benchmark-topologies`). It runs seed and lineage-loaded evolved topologies in one process, disables lineage commits and patch application, and prints side-by-side fitness/cycle/wall-clock/invocation/provider-failure/cap/mutation/patch metrics. Documented in `docs/solutions/best-practices/topology-comparison-harness-2026-05-20.md`.
+- **Harness smoke validation completed:** `A2D_TRACE=1 A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 cargo run -p a2d -- compare-topologies sudoku 1` ran seed with 4 enzymes and evolved with 7 enzymes. Both prioritized coder first and raced GLM/Kimi in parallel; both timed out as expected under 1s provider budgets. No lineage commits or patches applied.
+- **Real topology comparison partially completed and found runtime bugs:** `A2D_TRACE=1 A2D_PROVIDER_TIMEOUT_SECS=180 A2D_MAX_CYCLE_SECS=240 cargo run -p a2d -- compare-topologies sudoku 3` ran seed to 0% (three coder failures) and evolved to 67% in cycle 1 via Kimi fallback before the outer command timed out in evolved cycle 3. Log: `/tmp/a2d-topology-compare-sudoku3-20260520.log`.
+- **Failed-consultation double-timeout fixed:** rung-2 consultation failure now fails the workcell immediately instead of invoking primary afterward. Documented in `docs/solutions/runtime-bugs/failed-consultation-double-timeout-2026-05-20.md`. 5s live smoke confirmed cycle 3 spends one timeout, not two. Log: `/tmp/a2d-topology-compare-sudoku3-consultfail-5s-20260520.log`.
+- **Coder provider assignment changed twice based on live data:** GLM is assigned to tester/evolver/architect and excluded from coder races. MiniMax highspeed + Kimi k2.5 still timed out under 60s, so direct provider smokes selected Kimi k2.6 + DeepSeek v4 flash as the coder race pool. Documented in `docs/solutions/runtime-bugs/coder-glm-critical-path-timeouts-2026-05-20.md`. One-invocation topology smoke: seed 0%, evolved 67% (4/6). Log: `/tmp/a2d-topology-compare-sudoku1-fastpool-oneinvoke-20260520.log`.
+- **Fitness-scored coder portfolio landed:** parallel coder dispatch now evaluates every materialized code candidate with the hidden benchmark/sandbox and selects by highest fitness, not first materialized/provider order. Candidate provider/materialization/error/fitness records are attached to invocation lineage and printed by topology comparison. Documented in `docs/solutions/best-practices/fitness-scored-coder-portfolio-2026-05-20.md`. Smoke log: `/tmp/a2d-topology-compare-sudoku1-portfolio-smoke-20260520.log`.
+- **Portfolio topology comparison completed:** `A2D_PROVIDER_TIMEOUT_SECS=180 A2D_MAX_CYCLE_SECS=300 cargo run -p a2d -- compare-topologies sudoku 3` completed. Seed best 67% in ~930s; evolved best 67% in ~810s. Exposed same-cycle coder retry starvation. Log: `/tmp/a2d-topology-compare-sudoku3-portfolio-20260520.log`.
+- **Scheduler feedback-metabolism fix landed:** successful code production advances the cycle and dynamic priority puts tester/evolver/architect before coder once code exists. Documented in `docs/solutions/runtime-bugs/coder-retry-starves-feedback-metabolism-2026-05-21.md`. One-cycle live validation: seed 83%, evolved 67%, no same-cycle coder retry or stale auxiliary after code. Log: `/tmp/a2d-topology-compare-sudoku1-cycleadvance-20260521.log`.
+- **Mechanical-fitness evolver landed:** evolver reactant is now `fitness_report`, loaded lineage is normalized, and scheduling prioritizes evolver before tester once fitness exists. Documented in `docs/solutions/runtime-bugs/evolver-must-consume-mechanical-fitness-2026-05-21.md`. Live `sudoku 2` validation: seed cycle 2 ready order `evolver`, `architect`, `tester`, `coder`; seed evolver timed out on GLM; evolved reached 100% at cycle 2. Log: `/tmp/a2d-topology-compare-sudoku2-mechanical-evolver-20260521.log`.
+- Full `cargo test` passes: 154 passing, 2 ignored.
+
+### What happened in prior sessions
+
+- **Architect context pyramid landed.** `format_system_code_snapshot` no longer concatenates every modifiable source file by default. It emits one-line purpose + signatures for every file and appends full source only for files named by `failure_report` (for example `metabolism.rs:510`). Old behavior remains available with `A2D_ARCHITECT_FULL_CONTEXT=1`.
+- **Tests added:** two unit tests cover default body elision and failure-targeted full-source inclusion.
+- **Live validation partially completed:** `a2d challenge sudoku 1` with `A2D_TRACE=1` measured `system_code snapshot = 15 files, 17,702 bytes` and architect Gemini prompt args at 37,533 bytes — well under the <60 KB target and far below the prior ~400 KB prompt.
+- **Latency did not improve enough:** first architect invocation still took 272.95 s and failed; tester Gemini also took 274.60 s and failed; the run hit the harness 900 s timeout during a second architect invocation. Context size is fixed, but Gemini CLI latency/failure remains a bottleneck.
+- **Runtime panic fixed:** live run exposed a Unicode char-boundary panic in `strip_module` when coder output contained `×`; fixed by iterating with `char_indices` and added a regression test.
+- **Provider timeout restored:** CLI provider default timeout was restored to 300 s (override via `A2D_PROVIDER_TIMEOUT_SECS`), matching the then-current 5-minute policy. Superseded for GLM by the later 900s default.
+- **Cycle wall-clock budget added and live-validated:** `Metabolism` now has a default 600 s between-invocation wall-clock budget and reports `CycleReport.wall_clock_capped`; CLI override is `A2D_MAX_CYCLE_SECS` (`0` disables for explicit experiments). Full `sudoku 1` now completes instead of hitting the 900 s harness timeout: 4 invocations, `[wall-clock-capped]`, Fitness 100% (6/6). In-flight provider calls are still governed by provider timeout.
+- **Provider circuit breaker added:** provider failures now set a temporary provider-level cooldown (default 600 s, exponential backoff to 3600 s, `A2D_PROVIDER_COOLDOWN_SECS` override). Subsequent invocations avoid cooled-down providers, but the provider is retried after cooldown instead of permanently banned. Documented in `docs/solutions/runtime-bugs/provider-circuit-breaker-temporary-cooldown-2026-04-23.md`.
+- Full `cargo test` passes: 128 passing, 2 ignored.
+- **Live circuit-breaker probe:** `A2D_TRACE=1 cargo run -p a2d -- challenge sudoku 1` confirmed provider failures now record cooldowns (`provider failure: gemini/... → cooldown 600s`). The run did not reach a subsequent Gemini-assigned tester/architect reroute because the second Kimi coder invocation timed out after 300 s and the 600 s cycle wall-clock cap fired first. Fitness was 83% (5/6), wall-clock-capped.
+- **Default provider switched from Gemini/Kimi mix to GLM 5.1.** Gemini is intentionally not registered in the default live CLI registry for now because quota failures consume ~5-minute timeout windows before the circuit breaker can help later invocations. Coder, tester, evolver, and architect now use GLM 5.1 by default; Kimi remains registered only as a fallback alternative if GLM is cooled down.
+- **Boundary violation found and fixed:** GLM/OpenCode modified `crates/a2d-core/src/challenges.rs` directly during provider execution even though the cycle reported `0 patches`. The change was reverted and CLI providers now run in isolated temp directories. See `docs/solutions/runtime-bugs/cli-providers-must-run-in-isolated-cwd-2026-04-28.md`.
+- **Empty provider output now fails:** GLM/OpenCode can return successfully with no parsed text/output under isolated cwd. A successful provider call that materializes no required products is now a failed invocation and opens provider cooldown instead of silently producing no fitness signal.
+- **All-GLM isolated live run completed cleanly:** `A2D_TRACE=1 cargo run -p a2d -- challenge sudoku 1` with GLM default + isolated cwd completed with 6 invocations, `[wall-clock-capped]`, Fitness 100% (6/6), and clean `git status`. Circuit breaker rerouting was observed live: GLM architect timeout cooled down GLM, then coder/tester/architect routed to Kimi fallback.
+- **OpenCode parser hardened:** provider parser now recovers artifact content from OpenCode `write` tool NDJSON when final assistant text is empty/generic (`Done.`), while still preferring substantive final text. Added 4 provider unit tests for current text shape, legacy text shape, write fallback, and final-text precedence. Documented in `docs/solutions/runtime-bugs/opencode-write-tool-output-recovery-2026-05-01.md`.
+- **`sudoku 5` live validation completed:** `A2D_TRACE=1 cargo run -p a2d -- challenge sudoku 5` finished all 5 cycles. Best fitness: 100% (6/6). Fitness curve: cycle 1 no code (GLM coder timeout), cycle 2 83% (5/6), cycles 3–5 100% (6/6). Log: `/tmp/a2d-sudoku5-20260501.log`.
+- **Deutero-learning exercised:** evolver accepted 6 germline mutations during `sudoku 5`; current lineage-loaded germline has 7 enzymes (`analyze_requirements`, `create_design`, `make_plan` added) and RAF closure remains 100%.
+- **New autopoiesis bug found and fixed:** architect accepted an irrelevant patch to `crates/a2d-core/src/prime.rs` during the live run. The generated patch was reverted. Self-sandbox now has an explicit automated-modifiable allowlist and excludes incidental domain/demo modules from architect context and patch eligibility. Documented in `docs/solutions/runtime-bugs/architect-patches-need-relevance-gate-2026-05-01.md`.
+- Full `cargo test` passes: 137 passing, 2 ignored.
+- **GLM timeout extended:** default timeout for `opencode/zai-coding-plan/glm-5.1` is now 900s (15 minutes). Other providers remain at 300s. `A2D_PROVIDER_TIMEOUT_SECS` still overrides all provider defaults. Added 2 provider unit tests.
+
+### What hasn't been validated yet
+
+- **Whether the architect's self-modifications compound:** `sudoku 5` applied one architect patch, but it was irrelevant and reverted manually. Need a run where patch N+1 builds on a useful patch N.
+- **Escalation ladder rungs 4–6:** Rungs 0–3 are implemented/unit-tested/live-observed. Full rungs 4–6 still open. See `todos/escalation-rungs-4-6.md`.
+- **Post-relevance-gate live validation:** Need a short live run to confirm architect context now excludes `prime.rs`/`email.rs` and rejects ineligible patches mechanically.
+
+### Known issues
+
+- **Rungs 0–3 detect degradation but don't halt it.** On sudoku, all four rungs fired cleanly but coder/evolver kept emitting near-identical output. Rungs 4–6 (model swap, multi-model consensus) needed. See `docs/solutions/architectural-insights/escalation-ladder-detects-but-doesnt-halt-degradation-2026-04-17.md`.
+- **Provider quality remains uneven.** `sudoku 5` saw 5 GLM timeouts at the old 300s limit (mostly coder/architect/create_design) and 2 Kimi architect no-materialized-output failures. GLM 900s revalidation on 2026-05-18 still timed out on `analyze_requirements` before coder ran, so longer timeout alone is not a fix.
+- **Architect empty-output/no-op handling needs live revalidation.** OpenCode write-output recovery helped a known parser gap, raw parsed/stdout previews are now attached to no-materialized-output failures, and a typed no-op contract now exists. Live `sudoku 5` still had two architect invocations with no materialized `system_patch`; next run should inspect whether the new diagnostics/no-op contract separates parser failures from legitimate abstention.
+- **Evolver accepted mutations, but quality is mixed.** `sudoku 5` lineage germline grew to 7 enzymes and stayed RAF-closed; new enzymes increased invocations and wall-clock. Need compare against seed topology and evaluate whether mutations add value.
+- Evolver prompt still says `food set contains: ["requirements"]` — should include all food artifacts.
+
+## Score Card
+
+| System | Sudoku (6 acceptance tests) | Chess (4 acceptance tests) |
+|--------|---------------------------|--------------------------|
+| Gemini 3 Pro one-shot | **100%** (7/7) | **100%** (9/9) |
+| Codex gpt-5.4 one-shot | **100%** (6/6) | **100%** (11/11) |
+| A²D + Codex coder (pre-feedback) | 83% (5/6) | 50% (4/8) |
+| A²D + Kimi k2.5 coder (pre-feedback) | 83% (5/6) | not completed |
+| A²D + feedback loop + architect | **100% (6/6)** single cycle; **100% best over sudoku 5** (fitness curve: no code → 83% → 100% → 100% → 100%) | **NOT YET RUN** |
+
+## Current Enzyme Topology
+
+```
+Current lineage-loaded germline: 7 enzymes, RAF 100% closed.
+Use `A2D_GERMLINE=seed` to force the hardcoded 4-enzyme seed topology for comparison.
+Baseline food: design, failure_report, fitness_report, plan, provider_health_report, provider_policy, requirements, system_code
+
+Analyze requirements: {requirements} → {spec}                    catalysts: {requirements}
+Create design:        {design, spec} → {architecture}             catalysts: {design}
+Make plan:            {architecture, plan} → {implementation_plan} catalysts: {plan}
+Coder:                {design, plan, requirements} → {code}       catalysts: {enzyme_defs, failure_report, requirements}
+Tester:               {code} → {test_results}                     catalysts: {requirements}
+Evolver:              {fitness_report} → {enzyme_defs}            catalysts: {enzyme_defs, failure_report, fitness_report, provider_health_report, provider_policy}
+Architect:            {failure_report, fitness_report} → {system_patch} catalysts: {provider_health_report, provider_policy, system_code}
+
+Note: seed germline in `a2d-cli/src/main.rs` is still the 4-enzyme topology plus provider-health food/catalysts; CLI loads the evolved 7-enzyme topology from lineage when present and normalizes evolver/architect feedback catalysts.
+```
+
+## Current Provider Configuration
+
+```
+Coder:     Kimi k2.6             (opencode, kimi-for-coding/k2p6, default provider)
+Coder race fallback: DeepSeek v4 flash (opencode, opencode/deepseek-v4-flash-free)
+Tester:    GLM 5.1               (opencode, zai-coding-plan/glm-5.1)
+Evolver:   Kimi k2.6             (opencode, kimi-for-coding/k2p6)
+Architect: GLM 5.1               (opencode, zai-coding-plan/glm-5.1)
+```
+
+Gemini is temporarily disabled from the default live registry due repeated capacity/quota failures. Codex quota exhausted until April 8th. GLM is deliberately excluded from coder races, evolver assignment, and evolver fallback because live runs showed repeated coder/evolver timeouts and scoped parallelism waits for slow losers.
+
+## Critical Path — What to Do Next
+
+### 1. Make topology comparisons diagnosable enough to act on
+
+The latest bounded comparison reports total failures but not which non-coder enzyme/provider failed unless `A2D_TRACE=1` is enabled. Add per-lineage failure details to `compare-topologies`, then rerun a bounded seed-vs-evolved comparison. The key question is now whether evolved topology overhead (lineage-added decomposition enzymes and extra feedback invocations) helps outcomes or just burns provider windows.
+
+### 2. Implement rungs 4–6: model swap → multi-model consensus → Darwinian isolation
+
+Rungs 0–3 detect degradation but don't halt it. With the cycle cap in place (2026-04-19), benchmarks can now actually complete — next step is to observe whether swapping the coder's provider at rung 4 produces different output. Refinery patterns in the metabolism, not a crate dependency.
+
+### 3. Evaluate evolved 7-enzyme topology
+
+The evolver accepted 6 mutations in `sudoku 5`, producing a 7-enzyme RAF-closed topology. Determine whether these extra enzymes improve outcomes or just add latency/invocation overhead. Use `a2d compare-topologies <challenge> <cycles>` for bounded, non-persistent seed-vs-evolved runs.
+
+### 4. Add more acceptance tests
+
+Chess needs: scholar's mate, castling, en passant. Rubiks needs scramble-solve roundtrip.
+
+## Architecture Overview
+
+```
+Requirements ──→ Coder ──→ Code ──→ Tester ──→ Test Results
+                   ↑
+                   ├──── failure_report (from sandbox) ──────────────────────────
+                   └──────────────────── (catalysts) ─────────────────────────┐
+                                                                              │
+                   Code ──→ Sandbox (rustc compile + run tests) ──→ Fitness Score
+                                                                       │      │
+                                                                       ├→ failure_report → Coder (next cycle)
+                                                                       ├→ fitness_report + failure_report → Evolver → Enzyme Defs
+                                                                       ↓
+                                                              Fitness Ratchet
+                                                                       │
+                                                                       ↓
+                                                              Lineage Archive
+
+Failure Report + Fitness + System Code ──→ Architect ──→ System Patch
+                                                              │
+                                                     Self-Sandbox (cargo test)
+                                                              │
+                                                     Accept → Apply to source tree
+                                                     Reject → Feed back to architect
+```
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `crates/a2d-core/src/metabolism.rs` | Cycle orchestration, enzyme invocation, fitness evaluation, architect/patch routing |
+| `crates/a2d-core/src/benchmark.rs` | Fitness scoring, sandbox integration, acceptance tests, **diagnostic capture** |
+| `crates/a2d-core/src/sandbox.rs` | rustc compilation + test execution |
+| `crates/a2d-core/src/self_sandbox.rs` | **NEW:** System code modification validation (copy tree, apply patch, cargo test) |
+| `crates/a2d-core/src/challenges.rs` | Challenge definitions + acceptance tests |
+| `crates/a2d-core/src/germline.rs` | Enzyme set management, mutation, RAF |
+| `crates/a2d-core/src/types.rs` | EnzymeDef (with prompt_template), ArtifactType |
+| `crates/a2d-providers/src/cli.rs` | CLI providers (Codex, Gemini, OpenCode) |
+| `crates/a2d-cli/src/main.rs` | CLI binary, provider registry, seed germline, **patch application** |
+| `docs/plans/true-autopoiesis.md` | Plan for self-modification capability |
+
+## Quick Reference
+
+```bash
+# Run a challenge
+a2d challenge sudoku 3        # 3 cycles of sudoku
+A2D_GERMLINE=seed a2d challenge sudoku 3  # force 4-enzyme seed topology
+a2d compare-topologies sudoku 3           # seed vs evolved without persistence
+a2d challenge chess 3
+a2d challenge rubiks 3
+
+# Check system state
+a2d status                    # RAF closure
+a2d enzymes                   # List enzyme definitions (now includes architect)
+a2d lineage                   # Git log of germline evolution
+
+# Run tests
+cargo test                    # 160 tests passing (2 ignored integration)
+cargo test -- --ignored       # Run integration tests (slow, compiles in temp dir)
+
+# Check OpenCode model IDs
+opencode models | grep -i 'kimi\|glm\|minimax'
+```
+
+## Compound Learnings Index
+
+Search `docs/solutions/` before implementing. Key findings:
+
+- **architectural-insights/**: cycle bottleneck is the cycle not the model, evolver adds no value, feedback loop broken, **harness engineering patterns** (Fowler), **landscape patterns to investigate** (Symphony/Gas Town/StrongDM/Schillace)
+- **best-practices/**: acceptance test coverage, fitness-gated evolution, multi-model dispatch
+- **runtime-bugs/**: provider timeouts, NDJSON parsing, fitness ratchet leak, cross-cycle dedup, architect relevance gate
+
+## Todos
+
+- `todos/bounded-live-benchmarks.md` — `sudoku 5` completed with 100% best fitness; remaining provider waste: GLM timeouts + architect no-materialized-output
+- `todos/escalation-rungs-4-6.md` — model swap → multi-model consensus → Darwinian isolation (rungs 0–3 live)
+- `todos/architect-pyramid-summaries.md` — implemented; prompt-size validated; latency still bad due provider/scheduling
+- `todos/test-evolution.md` — challenges beyond sudoku/chess/rubiks
+- `todos/testable-core.md` — separate pure orchestration from provider I/O to enable deterministic replays
