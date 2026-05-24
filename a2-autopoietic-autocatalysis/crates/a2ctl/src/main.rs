@@ -62,6 +62,10 @@ enum Commands {
         /// Auto-apply promoted patches via git apply.
         #[arg(long)]
         apply: bool,
+        /// Benchmark ablation: disable the anti-repeat retry prompt motif while
+        /// keeping prior lineage and verifier-derived retry context enabled.
+        #[arg(long)]
+        disable_anti_repeat_retry: bool,
     },
     /// Scan the workspace for TODO/FIXME comments and emit task descriptions.
     /// With --run, pipe discoveries directly into the run loop.
@@ -287,6 +291,7 @@ async fn main() {
             timeout,
             provider,
             apply,
+            disable_anti_repeat_retry,
         } => {
             let budget = build_budget(max_tokens, timeout);
             let ingester = a2_sensorium::ingest::Ingester::new(budget.clone());
@@ -333,7 +338,8 @@ async fn main() {
                         a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
                     )
                 }
-            };
+            }
+            .with_anti_repeat_retry(!disable_anti_repeat_retry);
 
             let mut rows = Vec::new();
             let mut task_index: usize = 0;

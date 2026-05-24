@@ -24,6 +24,10 @@ pub struct WorkcellConfig {
     /// Prior lineage records for the same task, oldest first.
     /// Populated by the Governor from the LineageStore; empty on first attempt.
     pub prior_lineage: Vec<LineageRecord>,
+    /// Emit the anti-repeat retry prompt motif when prior failed patch shape
+    /// misses verifier-derived source paths. Keep configurable for benchmark
+    /// ablations that isolate this strategy from the candidate verifier.
+    pub enable_anti_repeat_retry: bool,
 }
 
 /// Normalize and bound persisted patch text before putting it into a prompt motif.
@@ -487,7 +491,9 @@ pub async fn run_workcell(
         .enumerate()
         .map(|(i, r)| render_prior_motif(r, i))
         .collect::<Vec<_>>();
-    if let Some(motif) = render_anti_repeat_retry_motif(&config.prior_lineage) {
+    if config.enable_anti_repeat_retry
+        && let Some(motif) = render_anti_repeat_retry_motif(&config.prior_lineage)
+    {
         retrieved_motifs.push(motif);
     }
     let context = ContextPack {
@@ -896,6 +902,7 @@ mod tests {
                 max_calls: 10,
             },
             prior_lineage: vec![prior],
+            enable_anti_repeat_retry: true,
         };
 
         run_workcell(config, &catalyst, &NoopProvider, &AlwaysPassEvaluator)
@@ -996,6 +1003,7 @@ mod tests {
                 max_calls: 10,
             },
             prior_lineage: vec![prior],
+            enable_anti_repeat_retry: true,
         };
 
         run_workcell(config, &catalyst, &NoopProvider, &AlwaysPassEvaluator)
@@ -1055,6 +1063,67 @@ mod tests {
         );
 
         assert!(render_anti_repeat_retry_motif(&[prior]).is_none());
+    }
+
+    #[tokio::test]
+    async fn anti_repeat_retry_motif_can_be_disabled_for_ablation() {
+        let task_id = TaskId::new();
+        let visible_only_diff = "diff --git a/crates/a2_core/src/lib.rs b/crates/a2_core/src/lib.rs\n\
+            --- a/crates/a2_core/src/lib.rs\n\
+            +++ b/crates/a2_core/src/lib.rs\n\
+            @@\n\
+            +visible-only fix";
+        let prior = failed_lineage_with_diff(
+            &task_id,
+            visible_only_diff,
+            vec!["thread panicked at crates/a2ctl/src/main.rs:1556:9"],
+        );
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let catalyst = CapturingCatalyst {
+            id: CatalystId::new(),
+            seen: seen.clone(),
+        };
+        let config = WorkcellConfig {
+            workcell_id: WorkcellId::new(),
+            germline_version: GermlineVersion::new(),
+            task: TaskContract {
+                id: task_id,
+                title: "ablation".into(),
+                description: "disable anti-repeat only".into(),
+                acceptance_criteria: vec![],
+                verification_commands: vec![],
+                budget: Budget {
+                    max_tokens: 10_000,
+                    max_duration_secs: 60,
+                    max_calls: 10,
+                },
+                priority: Priority::Normal,
+                source: TaskSource::External {
+                    origin: "test".into(),
+                },
+                created_at: Utc::now(),
+            },
+            budget: Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 10,
+            },
+            prior_lineage: vec![prior],
+            enable_anti_repeat_retry: false,
+        };
+
+        run_workcell(config, &catalyst, &NoopProvider, &AlwaysPassEvaluator)
+            .await
+            .unwrap();
+
+        let captured = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(captured.retrieved_motifs.len(), 1);
+        assert!(
+            !captured
+                .retrieved_motifs
+                .iter()
+                .any(|motif| motif.contains("anti_repeat_retry:"))
+        );
     }
 
     #[test]
@@ -1243,6 +1312,7 @@ mod tests {
                 max_calls: 10,
             },
             prior_lineage: vec![],
+            enable_anti_repeat_retry: true,
         };
         let catalyst = VerifierCatalyst {
             id: CatalystId::new(),
@@ -1284,6 +1354,7 @@ mod tests {
                 max_calls: 10,
             },
             prior_lineage: vec![],
+            enable_anti_repeat_retry: true,
         };
 
         let catalyst = EchoCatalyst {

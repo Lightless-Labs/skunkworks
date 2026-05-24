@@ -34,6 +34,7 @@ Each JSONL result includes:
 - `prior_lineage_present`
 - `lineage_records_before` / `lineage_records_after`
 - `lineage_reconciled_by_core`
+- `anti_repeat_retry_enabled` / `ablation`
 - `touched_files`, `touched_file_count`, `diff_added_lines`, `diff_removed_lines`
 - verification command, return code, duration, stdout, stderr
 
@@ -44,6 +45,24 @@ bench/self_correction_score.py bench/self-correction-results.jsonl
 ```
 
 This scorer reports `pass@1` separately from `self-corrected`. A first-attempt pass is useful model capability data, but it does not exercise prior-lineage self-correction.
+
+Run the anti-repeat retry ablation by keeping the same fixture/provider/attempt budget and writing enabled/disabled cohorts to one log or to paired logs:
+
+```bash
+: > /tmp/a2-anti-repeat-ablation.jsonl
+bench/self_correction.py --fixture compound-hidden \
+  --provider opencode/minimax-coding-plan/MiniMax-M2.7 \
+  --attempts 3 \
+  --results /tmp/a2-anti-repeat-ablation.jsonl
+bench/self_correction.py --fixture compound-hidden \
+  --provider opencode/minimax-coding-plan/MiniMax-M2.7 \
+  --attempts 3 \
+  --disable-anti-repeat \
+  --results /tmp/a2-anti-repeat-ablation.jsonl
+bench/self_correction_score.py /tmp/a2-anti-repeat-ablation.jsonl
+```
+
+`--disable-anti-repeat` passes `--disable-anti-repeat-retry` to `a2ctl run`. Candidate-worktree verification commands, prior lineage, verifier-derived relevant files, and retry acceptance criteria remain enabled.
 
 After each attempt, `a2ctl run --apply` reconciles the newest lineage row with the core post-apply rebuild result. The harness records whether that core reconciliation path ran, but does not patch lineage itself.
 

@@ -25,6 +25,7 @@ class SelfCorrectionRecord:
     attempt: int
     resolved: bool
     prior_lineage_present: bool
+    anti_repeat_retry_enabled: bool | None = None
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -49,6 +50,11 @@ def load_records(path: Path) -> list[SelfCorrectionRecord]:
                     attempt=max(int(payload.get("attempt") or 1), 1),
                     resolved=bool(payload.get("resolved")),
                     prior_lineage_present=bool(payload.get("prior_lineage_present")),
+                    anti_repeat_retry_enabled=(
+                        bool(payload["anti_repeat_retry_enabled"])
+                        if "anti_repeat_retry_enabled" in payload
+                        else None
+                    ),
                 )
             )
     return records
@@ -105,20 +111,45 @@ def score(records: list[SelfCorrectionRecord]) -> dict[str, int]:
     }
 
 
-def render(records: list[SelfCorrectionRecord]) -> str:
-    metrics = score(records)
+def cohort_label(record: SelfCorrectionRecord) -> str:
+    if record.anti_repeat_retry_enabled is True:
+        return "anti-repeat enabled"
+    if record.anti_repeat_retry_enabled is False:
+        return "anti-repeat disabled"
+    return "anti-repeat unspecified"
+
+
+def render_metrics(prefix: str, metrics: dict[str, int]) -> list[str]:
     total = metrics["total"]
-    lines = [
-        "Self-Correction Benchmark",
+    return [
+        prefix,
         f"  resolved             {format_rate(metrics['resolved'], total)}",
         f"  pass@1               {format_rate(metrics['pass_at_1'], total)}",
         f"  loop exercised       {format_rate(metrics['loop_exercised'], total)}",
         f"  self-corrected       {format_rate(metrics['self_corrected'], total)}",
     ]
+
+
+def render(records: list[SelfCorrectionRecord]) -> str:
+    metrics = score(records)
+    lines = render_metrics("Self-Correction Benchmark", metrics)
     if metrics["pass_at_1"] and metrics["self_corrected"] == 0:
         lines.append(
             "  note: successful first attempts do not exercise prior-lineage self-correction"
         )
+
+    cohorts: dict[str, list[SelfCorrectionRecord]] = defaultdict(list)
+    for record in records:
+        cohorts[cohort_label(record)].append(record)
+    if len(cohorts) > 1:
+        lines.append("")
+        lines.append("Ablation cohorts")
+        for label in sorted(cohorts):
+            cohort_metrics = score(cohorts[label])
+            lines.append(f"  {label}")
+            for line in render_metrics(label, cohort_metrics)[1:]:
+                lines.append(f"  {line}")
+
     return "\n".join(lines)
 
 
@@ -153,6 +184,20 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertEqual(metrics["pass_at_1"], 0)
         self.assertEqual(metrics["loop_exercised"], 1)
         self.assertEqual(metrics["self_corrected"], 1)
+
+    def test_render_reports_anti_repeat_ablation_cohorts(self) -> None:
+        records = [
+            SelfCorrectionRecord("task", "enabled", 1, False, False, True),
+            SelfCorrectionRecord("task", "enabled", 2, True, True, True),
+            SelfCorrectionRecord("task", "disabled", 1, False, False, False),
+            SelfCorrectionRecord("task", "disabled", 2, False, True, False),
+        ]
+
+        output = render(records)
+
+        self.assertIn("Ablation cohorts", output)
+        self.assertIn("anti-repeat enabled", output)
+        self.assertIn("anti-repeat disabled", output)
 
 
 if __name__ == "__main__":

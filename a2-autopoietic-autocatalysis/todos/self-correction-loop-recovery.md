@@ -27,7 +27,6 @@ Working:
 
 Not working / not yet resolved:
 
-- Anti-repeat ablation is not yet implemented.
 - More fixture diversity beyond the current four compound fixtures is not yet implemented.
 
 ## Recovery sequence
@@ -40,7 +39,7 @@ Implemented in order:
 4. `todos/anti-repeat-retry-strategy.md`
 5. `todos/worktree-task-verifier.md`
 
-Remaining recovery work is fixture expansion and ablation rather than missing core plumbing. As of 2026-05-24, Minimax, Kimi, and Pi/ZAI GLM each have N=3 self-correction results on the three original compound fixtures after hidden candidate-worktree verifier wiring. On `compound-sensorium-same-crate-hidden`, Pi/ZAI GLM and Minimax self-corrected 3/3; Kimi resolved 3/3 with self-correction 2/3 because one run passed on attempt 1.
+Remaining recovery work is fixture expansion and anti-repeat ablation runs rather than missing core plumbing. As of 2026-05-24, Minimax, Kimi, and Pi/ZAI GLM each have N=3 self-correction results on the three original compound fixtures after hidden candidate-worktree verifier wiring. On `compound-sensorium-same-crate-hidden`, Pi/ZAI GLM and Minimax self-corrected 3/3; Kimi resolved 3/3 with self-correction 2/3 because one run passed on attempt 1. The anti-repeat ablation command surface is implemented (`a2ctl run --disable-anti-repeat-retry`, `bench/self_correction.py --disable-anti-repeat`); N≥3 ablation runs have not yet been executed.
 
 ## Benchmark gate
 

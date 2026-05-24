@@ -215,6 +215,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Create/inject/evaluate the bugged workspace without calling a model.",
     )
+    parser.add_argument(
+        "--disable-anti-repeat",
+        action="store_true",
+        help=(
+            "Ablation mode: pass --disable-anti-repeat-retry to a2ctl run, "
+            "leaving candidate verifiers and other retry context enabled."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -423,6 +431,8 @@ def run_a2_attempt(
     max_tokens: int,
     timeout: int,
     payload: dict[str, Any],
+    *,
+    disable_anti_repeat: bool,
 ) -> CommandResult:
     command = [
         "cargo",
@@ -439,6 +449,8 @@ def run_a2_attempt(
         str(timeout),
         "--apply",
     ]
+    if disable_anti_repeat:
+        command.append("--disable-anti-repeat-retry")
     return run_command(command, workspace, stdin=json.dumps(payload) + "\n", timeout=timeout + 900)
 
 
@@ -457,6 +469,7 @@ def result_record(
     lineage_after: int,
     lineage_reconciled_by_core: bool,
     patch_stats: dict[str, Any],
+    anti_repeat_retry_enabled: bool,
 ) -> dict[str, Any]:
     return {
         "task_id": payload["task_id"],
@@ -471,6 +484,8 @@ def result_record(
         "lineage_records_before": lineage_before,
         "lineage_records_after": lineage_after,
         "lineage_reconciled_by_core": lineage_reconciled_by_core,
+        "anti_repeat_retry_enabled": anti_repeat_retry_enabled,
+        "ablation": None if anti_repeat_retry_enabled else "anti_repeat_retry_disabled",
         **patch_stats,
         "workspace": str(workspace),
         "a2_returncode": a2_result.returncode if a2_result else None,
@@ -548,6 +563,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
                     args.max_tokens,
                     args.timeout,
                     payload,
+                    disable_anti_repeat=args.disable_anti_repeat,
                 )
             )
             verified = verify(workspace, fixture)
@@ -567,6 +583,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 lineage_after=lineage_after,
                 lineage_reconciled_by_core=lineage_reconciled_by_core,
                 patch_stats=patch_stats,
+                anti_repeat_retry_enabled=not args.disable_anti_repeat,
             )
             append_jsonl(results, record)
             print(json.dumps(record, sort_keys=True))
@@ -640,11 +657,14 @@ class SelfCorrectionTests(unittest.TestCase):
                 "diff_added_lines": 1,
                 "diff_removed_lines": 1,
             },
+            anti_repeat_retry_enabled=False,
         )
         self.assertTrue(record["resolved"])
         self.assertTrue(record["prior_lineage_present"])
         self.assertEqual(record["lineage_records_after"], 2)
         self.assertTrue(record["lineage_reconciled_by_core"])
+        self.assertFalse(record["anti_repeat_retry_enabled"])
+        self.assertEqual(record["ablation"], "anti_repeat_retry_disabled")
         self.assertEqual(record["touched_files"], ["crates/a2_core/src/lib.rs"])
         self.assertEqual(record["diff_added_lines"], 1)
         self.assertEqual(record["diff_removed_lines"], 1)

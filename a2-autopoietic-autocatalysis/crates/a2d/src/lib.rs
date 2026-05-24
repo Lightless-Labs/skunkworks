@@ -195,6 +195,7 @@ pub struct Governor {
     default_budget: Budget,
     stagnation_detector: Option<Mutex<StagnationDetector>>,
     lineage_store: Option<Arc<dyn LineageStore>>,
+    enable_anti_repeat_retry: bool,
 }
 
 impl Governor {
@@ -204,6 +205,7 @@ impl Governor {
             default_budget,
             stagnation_detector: None,
             lineage_store: None,
+            enable_anti_repeat_retry: true,
         }
     }
 
@@ -217,12 +219,23 @@ impl Governor {
             default_budget,
             stagnation_detector: Some(Mutex::new(stagnation_detector)),
             lineage_store: None,
+            enable_anti_repeat_retry: true,
         }
     }
 
     /// Attach a lineage store for automatic persistence of lineage records.
     pub fn with_lineage_store(mut self, store: Arc<dyn LineageStore>) -> Self {
         self.lineage_store = Some(store);
+        self
+    }
+
+    /// Enable or disable the anti-repeat retry prompt motif.
+    ///
+    /// This is normally enabled. Benchmark ablations disable only this motif
+    /// while leaving prior lineage, verifier-derived relevant files, retry
+    /// acceptance criteria, and candidate-worktree verifiers intact.
+    pub fn with_anti_repeat_retry(mut self, enabled: bool) -> Self {
+        self.enable_anti_repeat_retry = enabled;
         self
     }
 
@@ -266,6 +279,7 @@ impl Governor {
             task: task_for_workcell,
             budget: self.default_budget.clone(),
             prior_lineage,
+            enable_anti_repeat_retry: self.enable_anti_repeat_retry,
         };
 
         // Execute.
