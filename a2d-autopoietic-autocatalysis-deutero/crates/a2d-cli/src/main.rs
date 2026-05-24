@@ -10,15 +10,18 @@ use a2d_core::challenges;
 use a2d_core::germline::Germline;
 use a2d_core::lineage::LineageArchive;
 use a2d_core::metabolism::{CycleReport, InvocationLineage, Metabolism};
-use a2d_core::provider::{ProviderPolicy, ProviderRegistry};
+use a2d_core::provider::{InvocationRequest, ProviderPolicy, ProviderRegistry};
+use a2d_core::self_sandbox;
 use a2d_core::types::{ArtifactType, EnzymeDef, EnzymeId};
 use a2d_providers::cli::CliProvider;
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::time::Instant;
 
 fn main() {
@@ -41,11 +44,14 @@ fn main() {
             let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(3);
             run_topology_comparison(challenge_name, num_cycles);
         }
+        "autopilot" => run_autopilot(AutopilotConfig::parse(&args[2..])),
         "status" => show_status(),
         "enzymes" => list_enzymes(),
         "lineage" => show_lineage(),
         _ => {
-            eprintln!("Usage: a2d <cycle|challenge|compare-topologies|status|enzymes|lineage>");
+            eprintln!(
+                "Usage: a2d <cycle|challenge|compare-topologies|autopilot|status|enzymes|lineage>"
+            );
             std::process::exit(1);
         }
     }
@@ -432,6 +438,450 @@ fn apply_loaded_provider_policy(
         .map(|enzyme| enzyme.id.clone())
         .collect::<BTreeSet<_>>();
     registry.apply_policy(policy, &valid_enzyme_ids)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AutopilotConfig {
+    iterations: usize,
+    dry_run: bool,
+    allow_dirty: bool,
+}
+
+impl AutopilotConfig {
+    fn parse(args: &[String]) -> Self {
+        let mut config = Self {
+            iterations: 1,
+            dry_run: false,
+            allow_dirty: false,
+        };
+
+        let mut idx = 0;
+        while idx < args.len() {
+            match args[idx].as_str() {
+                "--iterations" | "-n" => {
+                    if let Some(value) = args.get(idx + 1).and_then(|value| value.parse().ok()) {
+                        config.iterations = value;
+                    }
+                    idx += 2;
+                }
+                "--dry-run" => {
+                    config.dry_run = true;
+                    idx += 1;
+                }
+                "--allow-dirty" => {
+                    config.allow_dirty = true;
+                    idx += 1;
+                }
+                _ => idx += 1,
+            }
+        }
+
+        config
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ProjectState {
+    handoff_preview: String,
+    todos: Vec<ProjectDoc>,
+    plans: Vec<ProjectDoc>,
+    git_status: String,
+    a2d_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectDoc {
+    path: String,
+    title: String,
+    body_preview: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectTask {
+    source_path: String,
+    objective: String,
+    acceptance_gates: Vec<String>,
+    allows_self_modification: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ProjectPatchset {
+    #[serde(default)]
+    replacements: Vec<ProjectFileReplacement>,
+    commit_message: String,
+    #[serde(default)]
+    validation_commands: Vec<String>,
+    #[serde(default)]
+    handoff_update: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ProjectFileReplacement {
+    path: String,
+    new_content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectPatchGateReport {
+    accepted: bool,
+    rejected: Vec<String>,
+    requires_cargo_test: bool,
+}
+
+fn run_autopilot(config: AutopilotConfig) {
+    println!("A²D Autopilot ({:?})", config);
+    println!("═══════════════════");
+
+    let root = project_root();
+    let state = collect_project_state(&root);
+
+    if !config.allow_dirty && !state.git_status.trim().is_empty() {
+        println!("Working tree is dirty; autopilot stops before self-modification.");
+        println!("Use --allow-dirty only for explicit experiments. Current status:");
+        println!("{}", state.git_status);
+        return;
+    }
+
+    for iteration in 1..=config.iterations {
+        println!("\nIteration {iteration}/{}", config.iterations);
+        let Some(task) = select_project_task(&state) else {
+            println!("No actionable project task found.");
+            return;
+        };
+
+        println!("Selected task: {}", task.source_path);
+        println!("Objective: {}", task.objective);
+        println!(
+            "Self-modification allowed: {}",
+            if task.allows_self_modification {
+                "yes"
+            } else {
+                "no"
+            }
+        );
+        println!("Acceptance gates:");
+        for gate in &task.acceptance_gates {
+            println!("  - {gate}");
+        }
+
+        let prompt = build_maintainer_prompt(&state, &task);
+        println!("Maintainer prompt: {} bytes", prompt.len());
+
+        if config.dry_run {
+            println!("Dry-run: stopping before provider invocation or filesystem changes.");
+            continue;
+        }
+
+        let registry = build_registry();
+        let provider = registry.provider_for(&EnzymeId::from("maintainer"));
+        println!("Invoking maintainer via {}...", provider.name());
+        let response = match provider.invoke(&InvocationRequest {
+            enzyme_id: EnzymeId::from("maintainer"),
+            system: maintainer_system_prompt(),
+            prompt,
+            max_tokens: 12_000,
+        }) {
+            Ok(response) => response,
+            Err(error) => {
+                println!("Maintainer invocation failed: {error}");
+                return;
+            }
+        };
+
+        let patchset = match parse_project_patchset(&response.text) {
+            Ok(patchset) => patchset,
+            Err(error) => {
+                println!("Maintainer returned malformed project_patchset: {error}");
+                println!("Parsed output preview: {}", preview(&response.text, 1200));
+                return;
+            }
+        };
+        let gate = validate_project_patchset_paths(&patchset);
+        println!("Patchset replacements: {}", patchset.replacements.len());
+        println!("Commit message: {}", patchset.commit_message);
+        if !patchset.validation_commands.is_empty() {
+            println!("Validation commands: {:?}", patchset.validation_commands);
+        }
+        if !patchset.handoff_update.trim().is_empty() {
+            println!(
+                "Handoff update: {}",
+                compact_one_line(&patchset.handoff_update, 240)
+            );
+        }
+        if !gate.accepted {
+            println!("Patchset rejected by path gate:");
+            for reason in gate.rejected {
+                println!("  - {reason}");
+            }
+            return;
+        }
+        if gate.requires_cargo_test {
+            println!(
+                "Patchset includes eligible source self-modification; cargo test/self-sandbox required before apply."
+            );
+        }
+        println!(
+            "Patchset passed path gate. Temp-worktree validation/application is the next implementation slice; no files changed."
+        );
+        return;
+    }
+}
+
+fn collect_project_state(root: &Path) -> ProjectState {
+    let handoff = fs::read_to_string(root.join("docs/HANDOFF.md")).unwrap_or_default();
+    ProjectState {
+        handoff_preview: preview(&handoff, 2000),
+        todos: read_project_docs(root, "todos"),
+        plans: read_project_docs(root, "docs/plans"),
+        git_status: command_stdout(root, "git", &["status", "--short"]),
+        a2d_status: command_stdout(root, "cargo", &["run", "-q", "-p", "a2d", "--", "status"]),
+    }
+}
+
+fn read_project_docs(root: &Path, dir: &str) -> Vec<ProjectDoc> {
+    let mut docs = Vec::new();
+    collect_markdown_docs(root, &root.join(dir), &mut docs);
+    docs.sort_by(|a, b| a.path.cmp(&b.path));
+    docs
+}
+
+fn collect_markdown_docs(root: &Path, dir: &Path, docs: &mut Vec<ProjectDoc>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_markdown_docs(root, &path, docs);
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(body) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(relative) = path.strip_prefix(root) else {
+            continue;
+        };
+        docs.push(ProjectDoc {
+            path: relative.to_string_lossy().replace('\\', "/"),
+            title: first_markdown_title(&body).unwrap_or_else(|| "Untitled".to_string()),
+            body_preview: preview(&body, 1200),
+        });
+    }
+}
+
+fn select_project_task(state: &ProjectState) -> Option<ProjectTask> {
+    let preferred = [
+        "todos/autonomous-project-loop.md",
+        "todos/provider-policy-topology-gate.md",
+        "todos/escalation-rungs-4-6.md",
+    ];
+
+    let doc = preferred
+        .iter()
+        .find_map(|path| state.todos.iter().find(|doc| doc.path == *path))
+        .or_else(|| state.todos.first())?;
+
+    let allows_self_modification = doc.path == "todos/autonomous-project-loop.md"
+        || doc.body_preview.contains("self-modification")
+        || doc.body_preview.contains("source/mechanism")
+        || doc.body_preview.contains("crates/");
+
+    Some(ProjectTask {
+        source_path: doc.path.clone(),
+        objective: format!(
+            "Advance {}: {}",
+            doc.title,
+            compact_one_line(&doc.body_preview, 220)
+        ),
+        acceptance_gates: vec![
+            "typed project_patchset JSON only".to_string(),
+            "path gate rejects protected files and traversal".to_string(),
+            "eligible source self-modification goes through self-sandbox/cargo test".to_string(),
+            "cargo test passes before commit".to_string(),
+            "docs/HANDOFF.md updated before commit".to_string(),
+        ],
+        allows_self_modification,
+    })
+}
+
+fn maintainer_system_prompt() -> String {
+    "You are A²D's outer-loop maintainer enzyme. Your job is gated autonomous self-modification of this repository.\n\
+     Return JSON only. Do not run shell commands. Do not describe changes outside JSON.\n\
+     Produce a project_patchset with: commit_message, validation_commands, handoff_update, replacements.\n\
+     replacements must be complete file contents. Source self-modification is allowed for eligible mechanism files; protected files are not.\n\
+     Prefer one small atomic change that advances the selected project_task."
+        .to_string()
+}
+
+fn build_maintainer_prompt(state: &ProjectState, task: &ProjectTask) -> String {
+    let todo_index = state
+        .todos
+        .iter()
+        .map(|doc| format!("- {} — {}", doc.path, doc.title))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let plan_index = state
+        .plans
+        .iter()
+        .map(|doc| format!("- {} — {}", doc.path, doc.title))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "PROJECT_STATE\n\
+         git_status:\n{}\n\n\
+         a2d_status:\n{}\n\n\
+         handoff_preview:\n{}\n\n\
+         todos:\n{}\n\n\
+         plans:\n{}\n\n\
+         SELECTED_PROJECT_TASK\n\
+         source_path: {}\n\
+         objective: {}\n\
+         allows_self_modification: {}\n\
+         acceptance_gates:\n{}\n\n\
+         OUTPUT CONTRACT\n\
+         Return exactly one JSON object matching:\n\
+         {{\"commit_message\":\"Autopilot: ...\",\"validation_commands\":[\"cargo test\"],\"handoff_update\":\"...\",\"replacements\":[{{\"path\":\"relative/path\",\"new_content\":\"complete file content\"}}]}}",
+        state.git_status,
+        state.a2d_status,
+        state.handoff_preview,
+        todo_index,
+        plan_index,
+        task.source_path,
+        task.objective,
+        task.allows_self_modification,
+        task.acceptance_gates
+            .iter()
+            .map(|gate| format!("- {gate}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
+fn parse_project_patchset(text: &str) -> Result<ProjectPatchset, serde_json::Error> {
+    let json = extract_json_from_autopilot_output(text).unwrap_or_else(|| text.to_string());
+    serde_json::from_str(&json)
+}
+
+fn validate_project_patchset_paths(patchset: &ProjectPatchset) -> ProjectPatchGateReport {
+    let mut rejected = Vec::new();
+    let mut requires_cargo_test = false;
+
+    if patchset.commit_message.trim().is_empty() {
+        rejected.push("commit_message must not be empty".to_string());
+    }
+    if patchset.replacements.is_empty() {
+        rejected.push("patchset must contain at least one replacement".to_string());
+    }
+
+    for replacement in &patchset.replacements {
+        let path = replacement.path.replace('\\', "/");
+        if replacement.new_content.is_empty() {
+            rejected.push(format!("{path}: new_content must not be empty"));
+        }
+        if path_is_unsafe(&path) {
+            rejected.push(format!("{path}: absolute paths and traversal are rejected"));
+            continue;
+        }
+        if self_sandbox::is_protected(&path) {
+            rejected.push(format!(
+                "{path}: protected file self-modification is rejected"
+            ));
+            continue;
+        }
+        if path.starts_with("crates/") {
+            requires_cargo_test = true;
+            if !self_sandbox::is_automated_modifiable(&path) {
+                rejected.push(format!(
+                    "{path}: source self-modification is not in the automated modifiable allowlist"
+                ));
+            }
+            continue;
+        }
+        if !is_allowed_project_doc_path(&path) {
+            rejected.push(format!(
+                "{path}: only eligible source files or markdown under docs/plans, docs/solutions, or todos are allowed"
+            ));
+        }
+    }
+
+    ProjectPatchGateReport {
+        accepted: rejected.is_empty(),
+        rejected,
+        requires_cargo_test,
+    }
+}
+
+fn path_is_unsafe(path: &str) -> bool {
+    let path = Path::new(path);
+    path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+}
+
+fn is_allowed_project_doc_path(path: &str) -> bool {
+    path.ends_with(".md")
+        && (path.starts_with("docs/plans/")
+            || path.starts_with("docs/solutions/")
+            || path.starts_with("todos/"))
+}
+
+fn extract_json_from_autopilot_output(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        return Some(trimmed.to_string());
+    }
+
+    let fence_start = trimmed.find("```json").or_else(|| trimmed.find("```"))?;
+    let after_fence = &trimmed[fence_start..];
+    let first_newline = after_fence.find('\n')?;
+    let body = &after_fence[first_newline + 1..];
+    let fence_end = body.find("```")?;
+    Some(body[..fence_end].trim().to_string())
+}
+
+fn first_markdown_title(body: &str) -> Option<String> {
+    body.lines().find_map(|line| {
+        line.strip_prefix("# ")
+            .map(|title| title.trim().to_string())
+    })
+}
+
+fn preview(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        text.to_string()
+    } else {
+        let mut out = text
+            .chars()
+            .take(max_chars.saturating_sub(1))
+            .collect::<String>();
+        out.push('…');
+        out
+    }
+}
+
+fn command_stdout(root: &Path, command: &str, args: &[&str]) -> String {
+    match Command::new(command).args(args).current_dir(root).output() {
+        Ok(output) => {
+            let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if !stderr.trim().is_empty() {
+                    text.push_str(&stderr);
+                }
+            }
+            preview(&text, 4000)
+        }
+        Err(error) => format!("failed to run {command}: {error}"),
+    }
 }
 
 fn show_status() {
@@ -1369,5 +1819,143 @@ mod tests {
             artifacts.get(&art("plan")).unwrap(),
             b"Implement hello world"
         );
+    }
+
+    #[test]
+    fn autopilot_args_parse_dry_run_iterations_and_dirty_override() {
+        let args = vec![
+            "--iterations".to_string(),
+            "3".to_string(),
+            "--dry-run".to_string(),
+            "--allow-dirty".to_string(),
+        ];
+
+        let config = AutopilotConfig::parse(&args);
+
+        assert_eq!(config.iterations, 3);
+        assert!(config.dry_run);
+        assert!(config.allow_dirty);
+    }
+
+    #[test]
+    fn autopilot_task_selector_prefers_outer_loop_and_allows_self_modification() {
+        let state = ProjectState {
+            handoff_preview: String::new(),
+            todos: vec![
+                ProjectDoc {
+                    path: "todos/provider-policy-topology-gate.md".to_string(),
+                    title: "Provider Policy Gate".to_string(),
+                    body_preview: "Gate provider policies".to_string(),
+                },
+                ProjectDoc {
+                    path: "todos/autonomous-project-loop.md".to_string(),
+                    title: "Autonomous Project Loop".to_string(),
+                    body_preview: "Allow gated self-modification of crates/ source".to_string(),
+                },
+            ],
+            plans: Vec::new(),
+            git_status: String::new(),
+            a2d_status: String::new(),
+        };
+
+        let task = select_project_task(&state).unwrap();
+
+        assert_eq!(task.source_path, "todos/autonomous-project-loop.md");
+        assert!(task.allows_self_modification);
+        assert!(
+            task.acceptance_gates
+                .iter()
+                .any(|gate| gate.contains("self-modification"))
+        );
+    }
+
+    #[test]
+    fn project_patchset_parser_accepts_fenced_json() {
+        let patchset = parse_project_patchset(
+            r##"```json
+            {
+              "commit_message": "Autopilot: test",
+              "validation_commands": ["cargo test"],
+              "handoff_update": "updated",
+              "replacements": [{"path":"todos/autonomous-project-loop.md","new_content":"# Updated\n"}]
+            }
+            ```"##,
+        )
+        .unwrap();
+
+        assert_eq!(patchset.commit_message, "Autopilot: test");
+        assert_eq!(patchset.replacements.len(), 1);
+        assert_eq!(patchset.validation_commands, vec!["cargo test"]);
+        assert_eq!(patchset.handoff_update, "updated");
+    }
+
+    #[test]
+    fn project_patch_gate_rejects_absolute_traversal_and_protected_paths() {
+        let patchset = ProjectPatchset {
+            commit_message: "Autopilot: bad".to_string(),
+            validation_commands: Vec::new(),
+            handoff_update: String::new(),
+            replacements: vec![
+                ProjectFileReplacement {
+                    path: "/tmp/evil".to_string(),
+                    new_content: "x".to_string(),
+                },
+                ProjectFileReplacement {
+                    path: "../outside.md".to_string(),
+                    new_content: "x".to_string(),
+                },
+                ProjectFileReplacement {
+                    path: "crates/a2d-core/src/benchmark.rs".to_string(),
+                    new_content: "x".to_string(),
+                },
+            ],
+        };
+
+        let report = validate_project_patchset_paths(&patchset);
+
+        assert!(!report.accepted);
+        assert_eq!(report.rejected.len(), 3);
+        assert!(
+            report
+                .rejected
+                .iter()
+                .any(|reason| reason.contains("protected"))
+        );
+    }
+
+    #[test]
+    fn project_patch_gate_accepts_docs_without_cargo_test() {
+        let patchset = ProjectPatchset {
+            commit_message: "Autopilot: docs".to_string(),
+            validation_commands: Vec::new(),
+            handoff_update: String::new(),
+            replacements: vec![ProjectFileReplacement {
+                path: "docs/plans/autonomous-project-loop.md".to_string(),
+                new_content: "# Updated\n".to_string(),
+            }],
+        };
+
+        let report = validate_project_patchset_paths(&patchset);
+
+        assert!(report.accepted, "{:?}", report.rejected);
+        assert!(!report.requires_cargo_test);
+    }
+
+    #[test]
+    fn project_patch_gate_accepts_eligible_source_self_modification_with_cargo_test() {
+        let patchset = ProjectPatchset {
+            commit_message: "Autopilot: source".to_string(),
+            validation_commands: vec!["cargo test".to_string()],
+            handoff_update: String::new(),
+            replacements: vec![ProjectFileReplacement {
+                path: "crates/a2d-cli/src/main.rs".to_string(),
+                new_content: "fn main() {}\n".to_string(),
+            }],
+        };
+
+        let report = validate_project_patchset_paths(&patchset);
+
+        assert!(report.accepted, "{:?}", report.rejected);
+        assert!(report.requires_cargo_test);
     }
 }

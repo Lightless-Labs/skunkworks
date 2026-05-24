@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-05-23 (session 14 — provider policy lineage persistence)
+**Last updated:** 2026-05-24 (session 15 — autonomous project loop gap captured)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
@@ -41,12 +41,13 @@
 
 ### Best next moves
 
-1. **Strengthen durable provider-policy gates:** `provider_policy` now persists beside `germline.json`; next safety step is bounded topology-comparison gating before durable policy changes become defaults.
-2. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
-3. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
-4. **Live-validate empty-output diagnostics and architect no-op contract** during a run that reaches architect; confirm failures expose useful parsed/raw previews and legitimate no-change decisions route as `NOOP` artifacts.
-5. **Implement escalation rungs 4–6**: forced model swap, multi-model consensus with mechanical selection, Darwinian isolation.
-6. **Expand acceptance tests**: chess castling/en-passant/checkmate/legal-move invariants; Rubiks scramble-solve roundtrip.
+1. **Close the outer autonomous project loop with gated self-modification:** current A²D can run bounded challenge/topology cycles when invoked, but it still lacks the repo-maintenance loop the human/coding assistant has been doing: read handoff/todos, choose task, self-modify code/docs, run gates, repair/escalate failures, commit, update handoff, repeat. This must not become a docs-only task runner; eligible source self-modification is expected through self-sandbox/cargo-test gates. Plan: `docs/plans/autonomous-project-loop.md`; todo: `todos/autonomous-project-loop.md`.
+2. **Strengthen durable provider-policy gates:** `provider_policy` now persists beside `germline.json`; next safety step is bounded topology-comparison gating before durable policy changes become defaults.
+3. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
+4. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
+5. **Live-validate empty-output diagnostics and architect no-op contract** during a run that reaches architect; confirm failures expose useful parsed/raw previews and legitimate no-change decisions route as `NOOP` artifacts.
+6. **Implement escalation rungs 4–6**: forced model swap, multi-model consensus with mechanical selection, Darwinian isolation.
+7. **Expand acceptance tests**: chess castling/en-passant/checkmate/legal-move invariants; Rubiks scramble-solve roundtrip.
 
 ### What works
 
@@ -67,6 +68,10 @@
 - **OpenCode write-output recovery:** OpenCode NDJSON parsing now handles current `/part/text`, legacy top-level `/text`, and `write` tool payloads. If the model writes the artifact then says only `Done.`, A²D recovers the written content instead of wasting the invocation.
 
 ### What happened this session
+
+- **Autonomous project loop gap captured and corrected toward self-modification.** The missing loop is now explicit: A²D has an inner challenge metabolism, but not the outer repo-maintenance loop currently performed by the human/coding assistant (`read handoff/todos → choose task → self-modify code/docs → run gates → repair/escalate → commit → update handoff → repeat`). Added plan `docs/plans/autonomous-project-loop.md` and todo `todos/autonomous-project-loop.md` for a bounded `a2d autopilot` command with typed `project_state`, `project_task`, `project_patchset`, validation reports, repair/escalation, handoff, and commit gates. Important correction: self-modification is the target behavior, not a non-goal; the safety property is gated self-modification, not absence of self-modification.
+- **First executable autopilot surface landed.** `a2d autopilot` now parses `--iterations`, `--dry-run`, and `--allow-dirty`; builds `ProjectState` from handoff/todos/plans/git/status; selects `todos/autonomous-project-loop.md` first; emits a maintainer prompt that explicitly allows eligible source self-modification; defines typed `ProjectPatchset` JSON; parses fenced JSON; and path-gates patchsets, rejecting traversal/protected files while accepting eligible source self-modification with required cargo-test gating. Non-dry-run can invoke the maintainer provider and gate the returned patchset, but temp-worktree validation/application/repair/commit remains the next slice.
+- **Validation:** `cargo test` passes (169 passing, 2 ignored). Dry-run smoke passes: `cargo run -q -p a2d -- autopilot --iterations 1 --dry-run --allow-dirty` selects `todos/autonomous-project-loop.md`, reports self-modification allowed, and makes no filesystem changes.
 
 - **Provider policy lineage persistence landed.** `LineageArchive` now reads/writes `provider-policy.json` beside `germline.json`; normal runtime loads persisted provider policy through the same mechanical gate used for model-proposed policy artifacts; accepted non-regressing provider-policy changes are committed to lineage. `A2D_GERMLINE=seed` bypasses persisted policy, while topology comparison keeps seed on defaults and lets evolved mode include lineage policy. Plan updated: `docs/plans/provider-policy-artifact.md`. Learning: `docs/solutions/architectural-insights/provider-policy-lineage-persistence-2026-05-23.md`.
 - **Validation:** `cargo test` passes (163 passing, 2 ignored). `cargo run -q -p a2d -- status` confirms lineage-loaded 7-enzyme RAF remains 100% closed.
@@ -271,6 +276,7 @@ Search `docs/solutions/` before implementing. Key findings:
 
 ## Todos
 
+- `todos/autonomous-project-loop.md` — close the outer repo-maintenance loop with bounded `a2d autopilot`: select task, propose typed patchset, validate, commit, update handoff, repeat
 - `todos/provider-policy-topology-gate.md` — gate durable provider-policy changes with bounded topology/current-vs-proposed comparisons
 - `todos/bounded-live-benchmarks.md` — `sudoku 5` completed with 100% best fitness; remaining provider waste: GLM timeouts + architect no-materialized-output
 - `todos/escalation-rungs-4-6.md` — model swap → multi-model consensus → Darwinian isolation (rungs 0–3 live; provider_policy now available as durable provider-assignment mechanism)
