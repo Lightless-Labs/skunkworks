@@ -529,6 +529,23 @@ struct ProjectPatchGateReport {
     requires_cargo_test: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectValidationReport {
+    accepted: bool,
+    errors: Vec<String>,
+    command_results: Vec<ProjectCommandResult>,
+    worktree_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectCommandResult {
+    command: Vec<String>,
+    success: bool,
+    status: Option<i32>,
+    stdout_preview: String,
+    stderr_preview: String,
+}
+
 #[derive(Debug, Clone)]
 struct AutopilotLogger {
     run_id: String,
@@ -806,14 +823,45 @@ fn run_autopilot(config: AutopilotConfig) {
                 "Patchset includes eligible source self-modification; cargo test/self-sandbox required before apply."
             );
         }
-        println!(
-            "Patchset passed path gate. Temp-worktree validation/application is the next implementation slice; no files changed."
+
+        let validation = validate_project_patchset_in_temp_worktree(&root, &patchset, &gate);
+        let validation_json = project_validation_report_json(&validation);
+        logger.artifact(
+            &format!("iteration-{iteration}/validation-report.json"),
+            &serde_json::to_string_pretty(&validation_json).unwrap_or_default(),
         );
         logger.event(
-            "run_stopped_before_apply",
+            "temp_worktree_validation_completed",
             json!({
                 "iteration": iteration,
-                "reason": "temp-worktree validation/application not implemented yet",
+                "accepted": validation.accepted,
+                "errors": validation.errors,
+                "worktree_path": validation.worktree_path.to_string_lossy(),
+                "commands": validation.command_results.iter().map(|result| json!({
+                    "command": result.command,
+                    "success": result.success,
+                    "status": result.status,
+                    "stdout_preview": result.stdout_preview,
+                    "stderr_preview": result.stderr_preview,
+                })).collect::<Vec<_>>(),
+            }),
+        );
+        if !validation.accepted {
+            println!("Temp-worktree validation failed:");
+            for error in validation.errors {
+                println!("  - {error}");
+            }
+            return;
+        }
+
+        println!(
+            "Patchset passed temp-worktree validation. Real-tree application/commit is the next implementation slice; no tracked files changed."
+        );
+        logger.event(
+            "run_stopped_after_temp_validation",
+            json!({
+                "iteration": iteration,
+                "reason": "real-tree application/commit not implemented yet",
             }),
         );
         return;
@@ -1007,6 +1055,227 @@ fn validate_project_patchset_paths(patchset: &ProjectPatchset) -> ProjectPatchGa
         rejected,
         requires_cargo_test,
     }
+}
+
+fn validate_project_patchset_in_temp_worktree(
+    root: &Path,
+    patchset: &ProjectPatchset,
+    gate: &ProjectPatchGateReport,
+) -> ProjectValidationReport {
+    let worktree_path = env::temp_dir().join(format!("a2d-autopilot-worktree-{}", unix_millis()));
+    let mut errors = Vec::new();
+    let mut command_results = Vec::new();
+
+    if !gate.accepted {
+        errors.extend(gate.rejected.clone());
+        return ProjectValidationReport {
+            accepted: false,
+            errors,
+            command_results,
+            worktree_path,
+        };
+    }
+
+    if let Err(error) = copy_project_for_autopilot(root, &worktree_path) {
+        errors.push(format!("failed to create temp worktree: {error}"));
+        return ProjectValidationReport {
+            accepted: false,
+            errors,
+            command_results,
+            worktree_path,
+        };
+    }
+
+    for replacement in &patchset.replacements {
+        let normalized = replacement.path.replace('\\', "/");
+        let target = worktree_path.join(&normalized);
+        if normalized.starts_with("crates/") && !target.exists() {
+            errors.push(format!(
+                "{normalized}: source self-modification target does not exist in temp worktree"
+            ));
+            continue;
+        }
+        if let Some(parent) = target.parent()
+            && let Err(error) = fs::create_dir_all(parent)
+        {
+            errors.push(format!(
+                "{normalized}: failed to create parent dir: {error}"
+            ));
+            continue;
+        }
+        if let Err(error) = fs::write(&target, &replacement.new_content) {
+            errors.push(format!(
+                "{normalized}: failed to write replacement: {error}"
+            ));
+        }
+    }
+
+    let commands = validation_commands_for_patchset(patchset, gate);
+    for command in commands {
+        match run_allowed_validation_command(&worktree_path, &command) {
+            Ok(result) => {
+                if !result.success {
+                    errors.push(format!(
+                        "validation command failed: {}",
+                        result.command.join(" ")
+                    ));
+                }
+                command_results.push(result);
+            }
+            Err(error) => errors.push(error),
+        }
+    }
+
+    ProjectValidationReport {
+        accepted: errors.is_empty(),
+        errors,
+        command_results,
+        worktree_path,
+    }
+}
+
+fn validation_commands_for_patchset(
+    patchset: &ProjectPatchset,
+    gate: &ProjectPatchGateReport,
+) -> Vec<Vec<String>> {
+    let mut commands = patchset
+        .validation_commands
+        .iter()
+        .filter_map(|command| parse_allowed_validation_command(command))
+        .collect::<Vec<_>>();
+
+    if gate.requires_cargo_test && !commands.iter().any(|command| command == &["cargo", "test"]) {
+        commands.push(vec!["cargo".to_string(), "test".to_string()]);
+    }
+
+    commands
+}
+
+fn parse_allowed_validation_command(command: &str) -> Option<Vec<String>> {
+    let parts = command
+        .split_whitespace()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if is_allowed_validation_command(&parts) {
+        Some(parts)
+    } else {
+        None
+    }
+}
+
+fn is_allowed_validation_command(parts: &[String]) -> bool {
+    matches!(
+        parts,
+        [cargo, test] if cargo == "cargo" && test == "test"
+    ) || matches!(
+        parts,
+        [cargo, test, package_flag, package] if cargo == "cargo" && test == "test" && package_flag == "-p" && package == "a2d"
+    ) || matches!(
+        parts,
+        [cargo, fmt, check] if cargo == "cargo" && fmt == "fmt" && check == "--check"
+    ) || matches!(
+        parts,
+        [cargo, run, quiet, package_flag, package, separator, status]
+            if cargo == "cargo"
+                && run == "run"
+                && quiet == "-q"
+                && package_flag == "-p"
+                && package == "a2d"
+                && separator == "--"
+                && status == "status"
+    ) || matches!(
+        parts,
+        [cargo, run, quiet, package_flag, package, separator, autopilot, iterations, one, dry_run]
+            if cargo == "cargo"
+                && run == "run"
+                && quiet == "-q"
+                && package_flag == "-p"
+                && package == "a2d"
+                && separator == "--"
+                && autopilot == "autopilot"
+                && iterations == "--iterations"
+                && one == "1"
+                && dry_run == "--dry-run"
+    )
+}
+
+fn run_allowed_validation_command(
+    worktree: &Path,
+    command: &[String],
+) -> Result<ProjectCommandResult, String> {
+    if !is_allowed_validation_command(command) {
+        return Err(format!(
+            "validation command is not in the allowlist: {}",
+            command.join(" ")
+        ));
+    }
+    let Some((program, args)) = command.split_first() else {
+        return Err("validation command is empty".to_string());
+    };
+
+    match Command::new(program)
+        .args(args)
+        .current_dir(worktree)
+        .output()
+    {
+        Ok(output) => Ok(ProjectCommandResult {
+            command: command.to_vec(),
+            success: output.status.success(),
+            status: output.status.code(),
+            stdout_preview: preview(&String::from_utf8_lossy(&output.stdout), 4000),
+            stderr_preview: preview(&String::from_utf8_lossy(&output.stderr), 4000),
+        }),
+        Err(error) => Err(format!(
+            "failed to run validation command {}: {error}",
+            command.join(" ")
+        )),
+    }
+}
+
+fn project_validation_report_json(report: &ProjectValidationReport) -> Value {
+    json!({
+        "accepted": report.accepted,
+        "errors": report.errors,
+        "worktree_path": report.worktree_path.to_string_lossy(),
+        "command_results": report.command_results.iter().map(|result| json!({
+            "command": result.command,
+            "success": result.success,
+            "status": result.status,
+            "stdout_preview": result.stdout_preview,
+            "stderr_preview": result.stderr_preview,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn copy_project_for_autopilot(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if dst.exists() {
+        fs::remove_dir_all(dst)?;
+    }
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::create_dir_all(dst)?;
+    copy_dir_for_autopilot(src, dst)
+}
+
+fn copy_dir_for_autopilot(src: &Path, dst: &Path) -> std::io::Result<()> {
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if matches!(name.as_ref(), ".git" | ".a2d" | "target") {
+            continue;
+        }
+        let target = dst.join(name.as_ref());
+        if path.is_dir() {
+            fs::create_dir_all(&target)?;
+            copy_dir_for_autopilot(&path, &target)?;
+        } else if path.is_file() {
+            fs::copy(&path, &target)?;
+        }
+    }
+    Ok(())
 }
 
 fn path_is_unsafe(path: &str) -> bool {
@@ -2103,6 +2372,82 @@ mod tests {
         assert_eq!(patchset.replacements.len(), 1);
         assert_eq!(patchset.validation_commands, vec!["cargo test"]);
         assert_eq!(patchset.handoff_update, "updated");
+    }
+
+    #[test]
+    fn validation_command_allowlist_rejects_shell_commands() {
+        assert!(parse_allowed_validation_command("cargo test").is_some());
+        assert!(parse_allowed_validation_command("cargo test -p a2d").is_some());
+        assert!(parse_allowed_validation_command("rm -rf /").is_none());
+        assert!(parse_allowed_validation_command("cargo test; rm -rf /").is_none());
+    }
+
+    #[test]
+    fn temp_worktree_validation_applies_docs_patch_without_cargo() {
+        let root = std::env::temp_dir().join(format!(
+            "a2d-autopilot-docs-validation-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("docs/plans")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(root.join("docs/plans/example.md"), "# Old\n").unwrap();
+        let patchset = ProjectPatchset {
+            commit_message: "Autopilot: docs".to_string(),
+            validation_commands: Vec::new(),
+            handoff_update: String::new(),
+            replacements: vec![ProjectFileReplacement {
+                path: "docs/plans/example.md".to_string(),
+                new_content: "# New\n".to_string(),
+            }],
+        };
+        let gate = validate_project_patchset_paths(&patchset);
+
+        let report = validate_project_patchset_in_temp_worktree(&root, &patchset, &gate);
+
+        assert!(report.accepted, "{:?}", report.errors);
+        assert!(report.command_results.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(report.worktree_path.join("docs/plans/example.md")).unwrap(),
+            "# New\n"
+        );
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(report.worktree_path);
+    }
+
+    #[test]
+    fn temp_worktree_validation_rejects_missing_source_target() {
+        let root = std::env::temp_dir().join(format!(
+            "a2d-autopilot-source-validation-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("crates/a2d-cli/src")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        let patchset = ProjectPatchset {
+            commit_message: "Autopilot: source".to_string(),
+            validation_commands: Vec::new(),
+            handoff_update: String::new(),
+            replacements: vec![ProjectFileReplacement {
+                path: "crates/a2d-cli/src/main.rs".to_string(),
+                new_content: "fn main() {}\n".to_string(),
+            }],
+        };
+        let gate = validate_project_patchset_paths(&patchset);
+
+        let report = validate_project_patchset_in_temp_worktree(&root, &patchset, &gate);
+
+        assert!(!report.accepted);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("target does not exist"))
+        );
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(report.worktree_path);
     }
 
     #[test]
