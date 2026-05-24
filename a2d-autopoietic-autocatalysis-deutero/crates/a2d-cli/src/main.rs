@@ -924,7 +924,7 @@ fn collect_project_state(root: &Path) -> ProjectState {
         handoff_preview: preview(&handoff, 2000),
         todos: read_project_docs(root, "todos"),
         plans: read_project_docs(root, "docs/plans"),
-        git_status: command_stdout(root, "git", &["status", "--short"]),
+        git_status: command_stdout(root, "git", &["status", "--short", "--", "."]),
         a2d_status: command_stdout(root, "cargo", &["run", "-q", "-p", "a2d", "--", "status"]),
     }
 }
