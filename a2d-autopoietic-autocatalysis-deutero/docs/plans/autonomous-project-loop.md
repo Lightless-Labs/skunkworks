@@ -2,6 +2,7 @@
 
 **Created:** 2026-05-24
 **Started:** 2026-05-24 — first executable `a2d autopilot` surface
+**Enhanced:** 2026-05-24 — structured monitor logs for external steering
 
 ## Problem
 
@@ -61,6 +62,7 @@ Implemented first slice on 2026-05-24:
 - Defines typed `project_patchset` JSON and fenced-JSON parsing.
 - Path-gates patchsets: rejects absolute/traversal/protected paths; allows approved docs; allows eligible mechanism source files and marks them as requiring cargo-test/self-sandbox validation.
 - Non-dry-run can invoke the maintainer provider and gate the returned patchset, but does not yet apply files.
+- Every autopilot run emits structured JSONL events plus per-run artifacts under `.a2d/autopilot/` so an external monitor/steerer can evaluate both model outputs and mechanical outcomes.
 
 Next slice: temp-worktree validation, repair/escalation, real application, handoff update, and commit.
 
@@ -89,6 +91,40 @@ Introduce typed artifacts for outer project work:
   - command statuses and output previews
   - git diff summary
   - accepted/rejected reason
+
+### Monitor/steering logs
+
+Autopilot must log for a separate monitor/controller, not only for humans reading stdout.
+
+Current log locations:
+
+- aggregate: `.a2d/autopilot/events.jsonl`
+- per run: `.a2d/autopilot/runs/<run-id>/events.jsonl`
+- per-run artifacts: `.a2d/autopilot/runs/<run-id>/...`
+
+Events are JSON objects with:
+
+- `ts_unix_ms`
+- `run_id`
+- `event`
+- `data`
+
+Current event types include:
+
+- `run_started`
+- `project_state_collected`
+- `artifact_written`
+- `task_selected`
+- `maintainer_prompt_built`
+- `dry_run_stop`
+- `maintainer_invocation_started`
+- `maintainer_invocation_failed`
+- `maintainer_output_received`
+- `patchset_parse_failed`
+- `patchset_path_gate_evaluated`
+- `run_stopped_before_apply`
+
+The key property: outputs and outcomes are both logged. Provider outputs are written as artifacts; parse/path-gate outcomes are JSONL events referencing those artifacts. Future temp-worktree validation, repair attempts, cargo-test results, self-sandbox decisions, real-tree apply, handoff update, and git commit must log the same way.
 
 ### New enzyme roles
 

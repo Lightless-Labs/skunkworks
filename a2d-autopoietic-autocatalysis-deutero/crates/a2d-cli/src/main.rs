@@ -15,14 +15,15 @@ use a2d_core::self_sandbox;
 use a2d_core::types::{ArtifactType, EnzymeDef, EnzymeId};
 use a2d_providers::cli::CliProvider;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -528,17 +529,113 @@ struct ProjectPatchGateReport {
     requires_cargo_test: bool,
 }
 
+#[derive(Debug, Clone)]
+struct AutopilotLogger {
+    run_id: String,
+    aggregate_log: PathBuf,
+    run_log: PathBuf,
+    run_dir: PathBuf,
+}
+
+impl AutopilotLogger {
+    fn new(root: &Path) -> Self {
+        let run_id = format!("run-{}", unix_millis());
+        let base = root.join(".a2d").join("autopilot");
+        let run_dir = base.join("runs").join(&run_id);
+        let _ = fs::create_dir_all(&run_dir);
+        Self {
+            run_id,
+            aggregate_log: base.join("events.jsonl"),
+            run_log: run_dir.join("events.jsonl"),
+            run_dir,
+        }
+    }
+
+    fn event(&self, event: &str, data: Value) {
+        let record = json!({
+            "ts_unix_ms": unix_millis(),
+            "run_id": self.run_id,
+            "event": event,
+            "data": data,
+        });
+        self.append_jsonl(&self.aggregate_log, &record);
+        self.append_jsonl(&self.run_log, &record);
+    }
+
+    fn artifact(&self, name: &str, content: &str) -> PathBuf {
+        let path = self.run_dir.join(name);
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Err(error) = fs::write(&path, content) {
+            self.event(
+                "artifact_write_failed",
+                json!({"name": name, "error": error.to_string()}),
+            );
+        } else {
+            self.event(
+                "artifact_written",
+                json!({"name": name, "path": path.to_string_lossy()}),
+            );
+        }
+        path
+    }
+
+    fn append_jsonl(&self, path: &Path, record: &Value) {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "{}", record);
+        }
+    }
+}
+
+fn unix_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
 fn run_autopilot(config: AutopilotConfig) {
     println!("A²D Autopilot ({:?})", config);
     println!("═══════════════════");
 
     let root = project_root();
+    let logger = AutopilotLogger::new(&root);
+    logger.event(
+        "run_started",
+        json!({
+            "iterations": config.iterations,
+            "dry_run": config.dry_run,
+            "allow_dirty": config.allow_dirty,
+        }),
+    );
+    println!("Autopilot run id: {}", logger.run_id);
+    println!("Autopilot logs: {}", logger.run_log.to_string_lossy());
+
     let state = collect_project_state(&root);
+    logger.event(
+        "project_state_collected",
+        json!({
+            "todos": state.todos.len(),
+            "plans": state.plans.len(),
+            "git_dirty": !state.git_status.trim().is_empty(),
+            "git_status_preview": preview(&state.git_status, 1200),
+            "a2d_status_preview": preview(&state.a2d_status, 1200),
+        }),
+    );
+    logger.artifact("project-state-handoff-preview.txt", &state.handoff_preview);
 
     if !config.allow_dirty && !state.git_status.trim().is_empty() {
         println!("Working tree is dirty; autopilot stops before self-modification.");
         println!("Use --allow-dirty only for explicit experiments. Current status:");
         println!("{}", state.git_status);
+        logger.event(
+            "run_stopped_dirty_worktree",
+            json!({"git_status": state.git_status}),
+        );
         return;
     }
 
@@ -546,8 +643,19 @@ fn run_autopilot(config: AutopilotConfig) {
         println!("\nIteration {iteration}/{}", config.iterations);
         let Some(task) = select_project_task(&state) else {
             println!("No actionable project task found.");
+            logger.event("run_stopped_no_task", json!({"iteration": iteration}));
             return;
         };
+        logger.event(
+            "task_selected",
+            json!({
+                "iteration": iteration,
+                "source_path": task.source_path,
+                "objective": task.objective,
+                "acceptance_gates": task.acceptance_gates,
+                "allows_self_modification": task.allows_self_modification,
+            }),
+        );
 
         println!("Selected task: {}", task.source_path);
         println!("Objective: {}", task.objective);
@@ -565,16 +673,33 @@ fn run_autopilot(config: AutopilotConfig) {
         }
 
         let prompt = build_maintainer_prompt(&state, &task);
+        let prompt_path = logger.artifact(
+            &format!("iteration-{iteration}/maintainer-prompt.txt"),
+            &prompt,
+        );
+        logger.event(
+            "maintainer_prompt_built",
+            json!({
+                "iteration": iteration,
+                "bytes": prompt.len(),
+                "artifact": prompt_path.to_string_lossy(),
+            }),
+        );
         println!("Maintainer prompt: {} bytes", prompt.len());
 
         if config.dry_run {
             println!("Dry-run: stopping before provider invocation or filesystem changes.");
+            logger.event("dry_run_stop", json!({"iteration": iteration}));
             continue;
         }
 
         let registry = build_registry();
         let provider = registry.provider_for(&EnzymeId::from("maintainer"));
         println!("Invoking maintainer via {}...", provider.name());
+        logger.event(
+            "maintainer_invocation_started",
+            json!({"iteration": iteration, "provider": provider.name()}),
+        );
         let response = match provider.invoke(&InvocationRequest {
             enzyme_id: EnzymeId::from("maintainer"),
             system: maintainer_system_prompt(),
@@ -584,18 +709,69 @@ fn run_autopilot(config: AutopilotConfig) {
             Ok(response) => response,
             Err(error) => {
                 println!("Maintainer invocation failed: {error}");
+                logger.event(
+                    "maintainer_invocation_failed",
+                    json!({"iteration": iteration, "provider": provider.name(), "error": error.to_string()}),
+                );
                 return;
             }
         };
+
+        let output_path = logger.artifact(
+            &format!("iteration-{iteration}/maintainer-output.txt"),
+            &response.text,
+        );
+        if let Some(raw) = &response.raw_output {
+            logger.artifact(
+                &format!("iteration-{iteration}/maintainer-raw-output.txt"),
+                raw,
+            );
+        }
+        logger.event(
+            "maintainer_output_received",
+            json!({
+                "iteration": iteration,
+                "provider": provider.name(),
+                "output_bytes": response.text.len(),
+                "raw_output_bytes": response.raw_output.as_ref().map(|raw| raw.len()),
+                "artifact": output_path.to_string_lossy(),
+                "output_preview": preview(&response.text, 1200),
+            }),
+        );
 
         let patchset = match parse_project_patchset(&response.text) {
             Ok(patchset) => patchset,
             Err(error) => {
                 println!("Maintainer returned malformed project_patchset: {error}");
                 println!("Parsed output preview: {}", preview(&response.text, 1200));
+                logger.event(
+                    "patchset_parse_failed",
+                    json!({
+                        "iteration": iteration,
+                        "error": error.to_string(),
+                        "output_artifact": output_path.to_string_lossy(),
+                    }),
+                );
                 return;
             }
         };
+
+        let patchset_summary = serde_json::to_string_pretty(&json!({
+            "commit_message": patchset.commit_message,
+            "validation_commands": patchset.validation_commands,
+            "handoff_update": patchset.handoff_update,
+            "replacements": patchset.replacements.iter().map(|replacement| json!({
+                "path": replacement.path,
+                "new_content_bytes": replacement.new_content.len(),
+                "new_content_preview": preview(&replacement.new_content, 400),
+            })).collect::<Vec<_>>(),
+        }))
+        .unwrap_or_default();
+        logger.artifact(
+            &format!("iteration-{iteration}/patchset-summary.json"),
+            &patchset_summary,
+        );
+
         let gate = validate_project_patchset_paths(&patchset);
         println!("Patchset replacements: {}", patchset.replacements.len());
         println!("Commit message: {}", patchset.commit_message);
@@ -608,6 +784,16 @@ fn run_autopilot(config: AutopilotConfig) {
                 compact_one_line(&patchset.handoff_update, 240)
             );
         }
+        logger.event(
+            "patchset_path_gate_evaluated",
+            json!({
+                "iteration": iteration,
+                "accepted": gate.accepted,
+                "rejected": gate.rejected,
+                "requires_cargo_test": gate.requires_cargo_test,
+                "replacement_paths": patchset.replacements.iter().map(|replacement| replacement.path.clone()).collect::<Vec<_>>(),
+            }),
+        );
         if !gate.accepted {
             println!("Patchset rejected by path gate:");
             for reason in gate.rejected {
@@ -622,6 +808,13 @@ fn run_autopilot(config: AutopilotConfig) {
         }
         println!(
             "Patchset passed path gate. Temp-worktree validation/application is the next implementation slice; no files changed."
+        );
+        logger.event(
+            "run_stopped_before_apply",
+            json!({
+                "iteration": iteration,
+                "reason": "temp-worktree validation/application not implemented yet",
+            }),
         );
         return;
     }
@@ -1867,6 +2060,29 @@ mod tests {
                 .iter()
                 .any(|gate| gate.contains("self-modification"))
         );
+    }
+
+    #[test]
+    fn autopilot_logger_writes_jsonl_events_and_artifacts() {
+        let root =
+            std::env::temp_dir().join(format!("a2d-autopilot-logger-test-{}", unix_millis()));
+        std::fs::create_dir_all(&root).unwrap();
+        let logger = AutopilotLogger::new(&root);
+
+        logger.event("test_event", json!({"ok": true}));
+        let artifact_path = logger.artifact("iteration-1/output.txt", "MODEL OUTPUT");
+
+        let events = std::fs::read_to_string(&logger.run_log).unwrap();
+        assert!(events.contains("test_event"));
+        assert!(events.contains("artifact_written"));
+        assert_eq!(
+            std::fs::read_to_string(artifact_path).unwrap(),
+            "MODEL OUTPUT"
+        );
+
+        let aggregate = std::fs::read_to_string(&logger.aggregate_log).unwrap();
+        assert!(aggregate.contains(&logger.run_id));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

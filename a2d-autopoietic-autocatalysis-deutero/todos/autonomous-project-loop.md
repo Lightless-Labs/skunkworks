@@ -2,6 +2,7 @@
 
 **Created:** 2026-05-24
 **Started:** 2026-05-24 — first executable autopilot surface
+**Enhanced:** 2026-05-24 — structured monitor logs
 **Plan:** `docs/plans/autonomous-project-loop.md`
 
 ## Context
@@ -20,13 +21,14 @@ The inner challenge metabolism is bounded and self-adaptive, but no command owns
 - [x] Autopilot builds a typed `project_state` from handoff, todos/plans, git status, tests/status summaries.
 - [x] Autopilot selects one concrete `project_task` with explicit validation gates, including tasks that modify A²D's own source.
 - [x] Provider-generated project work is represented as typed `project_patchset` JSON, not arbitrary shell commands.
+- [x] Autopilot emits structured monitor logs under `.a2d/autopilot/`, including prompts/provider outputs as artifacts and parse/path-gate outcomes as JSONL events.
 - [ ] Patchsets are path-gated and validated in a temp worktree before real application. Path gate exists; temp-worktree validation remains open.
 - [ ] Source/mechanism self-modifications go through self-sandbox/cargo-test gates. Path gate identifies eligible source self-modification and requires cargo-test/self-sandbox; actual temp validation remains open.
 - Docs/todos/plans changes are limited to approved markdown paths.
 - Failed validation creates a typed `project_validation_report` and routes to a bounded repair/escalation loop instead of immediately waiting for a human.
 - Protected-file changes are rejected as hard safety stops; eligible source self-modifications are not.
 - Passing non-dry-run iterations apply changes, rerun gates, update handoff, and make an atomic local git commit.
-- Failure after repair/escalation budget stops the loop with a clear report; no silent partial application.
+- Failure after repair/escalation budget stops the loop with a clear report and a machine-readable monitor log; no silent partial application.
 
 ## Notes
 
