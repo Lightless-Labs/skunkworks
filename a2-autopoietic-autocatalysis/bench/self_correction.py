@@ -43,6 +43,18 @@ MEMBRANE_BUG_OLD = 'if cap.denied_tools.iter().any(|d| d == tool_name || d == "*
 MEMBRANE_BUG_NEW = 'if cap.denied_tools.iter().any(|d| d == tool_name || d == "*") {\n            return true;\n        }'
 ARCHIVE_BUG_OLD = "FROM lineage_records\n                WHERE task_id = ?1\n                ORDER BY created_at ASC"
 ARCHIVE_BUG_NEW = "FROM lineage_records\n                WHERE task_id = ?1\n                ORDER BY created_at DESC"
+SENSORIUM_TASK_ID = "self-correction-compound-sensorium-same-crate-hidden-regressions"
+SENSORIUM_DESCRIPTION = """\
+The workspace contains a regression. `cargo test -p a2_sensorium high_risk_gets_low_priority` fails.
+Diagnose the root cause and fix the implementation. Do not assume the failing
+function name is the location of the bug; inspect the code and make the minimal
+change that restores the test. Run `cargo test -p a2_sensorium high_risk_gets_low_priority` before
+finishing.
+"""
+SENSORIUM_PRIORITY_BUG_OLD = "RiskTier::High => Priority::Low, // Untrusted signals get lower priority."
+SENSORIUM_PRIORITY_BUG_NEW = "RiskTier::High => Priority::Normal, // Untrusted signals get lower priority."
+SENSORIUM_TRUNCATE_BUG_OLD = "let mut t = s[..max - 3].to_string();"
+SENSORIUM_TRUNCATE_BUG_NEW = "let mut t = s[..max].to_string();"
 FNV_OFFSET_128 = 0x6C62_272E_07BB_0142_62B8_2175_6295_C58D
 FNV_PRIME_128 = 0x0000_0000_0100_0000_0000_0000_0000_013B
 
@@ -140,6 +152,28 @@ FIXTURES: dict[str, Fixture] = {
                 "crates/a2_archive/src/store.rs",
                 ARCHIVE_BUG_OLD,
                 ARCHIVE_BUG_NEW,
+            ),
+        ),
+    ),
+    "compound-sensorium-same-crate-hidden": Fixture(
+        name="compound-sensorium-same-crate-hidden",
+        task_id=SENSORIUM_TASK_ID,
+        description=SENSORIUM_DESCRIPTION,
+        verify_command=(
+            "cargo test -p a2_sensorium high_risk_gets_low_priority; priority=$?; "
+            "cargo test -p a2_sensorium long_content_truncated_in_title; title=$?; "
+            "test $priority -eq 0 -a $title -eq 0"
+        ),
+        replacements=(
+            Replacement(
+                "crates/a2_sensorium/src/ingest.rs",
+                SENSORIUM_PRIORITY_BUG_OLD,
+                SENSORIUM_PRIORITY_BUG_NEW,
+            ),
+            Replacement(
+                "crates/a2_sensorium/src/ingest.rs",
+                SENSORIUM_TRUNCATE_BUG_OLD,
+                SENSORIUM_TRUNCATE_BUG_NEW,
             ),
         ),
     ),
@@ -576,6 +610,16 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(
             [replacement.path for replacement in fixture.replacements],
             ["crates/a2_core/src/lib.rs", "crates/a2_archive/src/store.rs"],
+        )
+
+    def test_compound_sensorium_fixture_is_same_crate_multi_bug(self) -> None:
+        fixture = FIXTURES["compound-sensorium-same-crate-hidden"]
+        self.assertEqual(fixture.task_id, SENSORIUM_TASK_ID)
+        self.assertIn("high_risk_gets_low_priority", fixture.verify_command)
+        self.assertIn("long_content_truncated_in_title", fixture.verify_command)
+        self.assertEqual(
+            [replacement.path for replacement in fixture.replacements],
+            ["crates/a2_sensorium/src/ingest.rs", "crates/a2_sensorium/src/ingest.rs"],
         )
 
     def test_result_record_reports_prior_lineage(self) -> None:

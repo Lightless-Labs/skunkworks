@@ -22,11 +22,13 @@ Working:
 - `compound-archive-hidden` self-corrected with hidden candidate-worktree verifier wiring for Minimax N=3 and Kimi N=3 on 2026-05-22: both resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-archive-hidden-minimax.jsonl` and `/tmp/a2-compound-archive-hidden-kimi.jsonl`.
 - Pi/ZAI GLM provider routing is implemented. 2026-05-22 `pi/zai/glm-5.1` fibonacci calibration passed attempt 1 with token accounting; `compound-hidden` N=3 scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-pi-zai-fibonacci-json-usage.jsonl` and `/tmp/a2-compound-hidden-pi-zai-glm.jsonl`.
 - Pi/ZAI GLM on 2026-05-24 scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3 on `compound-membrane-hidden` and `compound-archive-hidden`. Results: `/tmp/a2-compound-membrane-pi-zai-glm.jsonl` and `/tmp/a2-compound-archive-pi-zai-glm.jsonl`.
+- `compound-sensorium-same-crate-hidden` was added 2026-05-24 as a same-crate multi-bug fixture in `a2_sensorium/src/ingest.rs`; smoke-only injection verified both failures. Pi/ZAI GLM scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Result: `/tmp/a2-sensorium-same-crate-pi-zai-glm.jsonl`.
 - Sentinel passed 6/6 after refreshing stale `Cargo.lock` with `cargo generate-lockfile --offline` during Pi/ZAI validation.
 
 Not working / not yet resolved:
 
-- No current-fixture/provider recovery gap remains for Minimax, Kimi, or Pi/ZAI GLM on the three current compound fixtures. Broader loop-shaped fixtures and anti-repeat ablation are not yet implemented.
+- Minimax/Kimi are not yet run on `compound-sensorium-same-crate-hidden`.
+- Anti-repeat ablation is not yet implemented.
 
 ## Recovery sequence
 
@@ -38,7 +40,7 @@ Implemented in order:
 4. `todos/anti-repeat-retry-strategy.md`
 5. `todos/worktree-task-verifier.md`
 
-Remaining recovery work is fixture expansion and ablation rather than missing core plumbing. As of 2026-05-24, Minimax, Kimi, and Pi/ZAI GLM each have N=3 self-correction results on all three current compound fixtures after hidden candidate-worktree verifier wiring.
+Remaining recovery work is fixture expansion and ablation rather than missing core plumbing. As of 2026-05-24, Minimax, Kimi, and Pi/ZAI GLM each have N=3 self-correction results on the three original compound fixtures after hidden candidate-worktree verifier wiring; Pi/ZAI GLM also has N=3 on `compound-sensorium-same-crate-hidden`.
 
 ## Benchmark gate
 
