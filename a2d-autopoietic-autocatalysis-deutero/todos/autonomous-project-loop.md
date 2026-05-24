@@ -4,6 +4,7 @@
 **Started:** 2026-05-24 — first executable autopilot surface
 **Enhanced:** 2026-05-24 — structured monitor logs
 **Enhanced:** 2026-05-24 — temp-worktree validation
+**Enhanced:** 2026-05-24 — real-tree apply and local commit gate
 **Plan:** `docs/plans/autonomous-project-loop.md`
 
 ## Context
@@ -28,8 +29,8 @@ The inner challenge metabolism is bounded and self-adaptive, but no command owns
 - Docs/todos/plans changes are limited to approved markdown paths.
 - [ ] Failed validation creates a typed `project_validation_report` and routes to a bounded repair/escalation loop instead of immediately waiting for a human. Validation report exists; repair/escalation remains open.
 - Protected-file changes are rejected as hard safety stops; eligible source self-modifications are not.
-- Passing non-dry-run iterations apply changes, rerun gates, update handoff, and make an atomic local git commit.
-- Failure after repair/escalation budget stops the loop with a clear report and a machine-readable monitor log; no silent partial application.
+- [x] Passing non-dry-run iterations apply changes, rerun gates, update handoff, and make an atomic local git commit.
+- [ ] Failure after repair/escalation budget stops the loop with a clear report and a machine-readable monitor log; no silent partial application. Rollback exists for failed real-tree validation; bounded repair/escalation remains open.
 
 ## Notes
 

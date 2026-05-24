@@ -4,6 +4,7 @@
 **Started:** 2026-05-24 — first executable `a2d autopilot` surface
 **Enhanced:** 2026-05-24 — structured monitor logs for external steering
 **Enhanced:** 2026-05-24 — temp-worktree patchset validation
+**Enhanced:** 2026-05-24 — gated real-tree apply and local commit
 
 ## Problem
 
@@ -65,8 +66,9 @@ Implemented first slice on 2026-05-24:
 - Non-dry-run can invoke the maintainer provider and gate the returned patchset, but does not yet apply files.
 - Every autopilot run emits structured JSONL events plus per-run artifacts under `.a2d/autopilot/` so an external monitor/steerer can evaluate both model outputs and mechanical outcomes.
 - Gated patchsets are copied into a temp worktree, replacements are applied there first, allowlisted validation commands can run there, source self-modification requires an existing source target and injects `cargo test` when needed, and the validation report is logged as JSON before any real-tree application.
+- Patchsets that pass temp validation are applied to the real tree, validation commands rerun, handoff updates are appended when needed, touched paths are committed locally, and failures roll back original file contents before stopping.
 
-Next slice: repair/escalation on failed temp validation, then real-tree application, handoff update, and commit.
+Next slice: bounded repair/escalation on failed parse/path/temp/real validation, followed by multi-iteration state refresh after commits.
 
 ### Loop state artifacts
 
@@ -125,10 +127,12 @@ Current event types include:
 - `patchset_parse_failed`
 - `patchset_path_gate_evaluated`
 - `temp_worktree_validation_completed`
+- `real_tree_apply_started`
+- `real_tree_apply_completed`
 - `run_stopped_after_temp_validation`
 - `run_stopped_before_apply`
 
-The key property: outputs and outcomes are both logged. Provider outputs are written as artifacts; parse/path-gate/temp-validation outcomes are JSONL events referencing those artifacts. Future repair attempts, real-tree apply, handoff update, and git commit must log the same way.
+The key property: outputs and outcomes are both logged. Provider outputs are written as artifacts; parse/path-gate/temp-validation/real-apply outcomes are JSONL events referencing those artifacts. Future repair attempts and multi-iteration state refresh must log the same way.
 
 ### New enzyme roles
 

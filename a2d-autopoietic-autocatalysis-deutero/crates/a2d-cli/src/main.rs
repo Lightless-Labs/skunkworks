@@ -23,7 +23,10 @@ use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -546,6 +549,16 @@ struct ProjectCommandResult {
     stderr_preview: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectApplyReport {
+    accepted: bool,
+    committed: bool,
+    errors: Vec<String>,
+    command_results: Vec<ProjectCommandResult>,
+    commit_hash: Option<String>,
+    touched_paths: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 struct AutopilotLogger {
     run_id: String,
@@ -556,7 +569,7 @@ struct AutopilotLogger {
 
 impl AutopilotLogger {
     fn new(root: &Path) -> Self {
-        let run_id = format!("run-{}", unix_millis());
+        let run_id = format!("run-{}", unique_suffix());
         let base = root.join(".a2d").join("autopilot");
         let run_dir = base.join("runs").join(&run_id);
         let _ = fs::create_dir_all(&run_dir);
@@ -606,6 +619,14 @@ impl AutopilotLogger {
             let _ = writeln!(file, "{}", record);
         }
     }
+}
+
+fn unique_suffix() -> String {
+    format!(
+        "{}-{}",
+        unix_millis(),
+        UNIQUE_COUNTER.fetch_add(1, Ordering::SeqCst)
+    )
 }
 
 fn unix_millis() -> u128 {
@@ -855,15 +876,44 @@ fn run_autopilot(config: AutopilotConfig) {
         }
 
         println!(
-            "Patchset passed temp-worktree validation. Real-tree application/commit is the next implementation slice; no tracked files changed."
+            "Patchset passed temp-worktree validation. Applying to real tree and committing..."
+        );
+        logger.event("real_tree_apply_started", json!({"iteration": iteration}));
+        let apply_report = apply_validated_patchset_to_real_tree(&root, &patchset, &gate);
+        let apply_json = project_apply_report_json(&apply_report);
+        logger.artifact(
+            &format!("iteration-{iteration}/apply-report.json"),
+            &serde_json::to_string_pretty(&apply_json).unwrap_or_default(),
         );
         logger.event(
-            "run_stopped_after_temp_validation",
+            "real_tree_apply_completed",
             json!({
                 "iteration": iteration,
-                "reason": "real-tree application/commit not implemented yet",
+                "accepted": apply_report.accepted,
+                "committed": apply_report.committed,
+                "commit_hash": apply_report.commit_hash,
+                "errors": apply_report.errors,
+                "touched_paths": apply_report.touched_paths,
+                "commands": apply_report.command_results.iter().map(|result| json!({
+                    "command": result.command,
+                    "success": result.success,
+                    "status": result.status,
+                    "stdout_preview": result.stdout_preview,
+                    "stderr_preview": result.stderr_preview,
+                })).collect::<Vec<_>>(),
             }),
         );
+        if apply_report.accepted {
+            println!(
+                "Autopilot committed {}",
+                apply_report.commit_hash.as_deref().unwrap_or("unknown")
+            );
+        } else {
+            println!("Real-tree application failed and was rolled back:");
+            for error in apply_report.errors {
+                println!("  - {error}");
+            }
+        }
         return;
     }
 }
@@ -1062,7 +1112,7 @@ fn validate_project_patchset_in_temp_worktree(
     patchset: &ProjectPatchset,
     gate: &ProjectPatchGateReport,
 ) -> ProjectValidationReport {
-    let worktree_path = env::temp_dir().join(format!("a2d-autopilot-worktree-{}", unix_millis()));
+    let worktree_path = env::temp_dir().join(format!("a2d-autopilot-worktree-{}", unique_suffix()));
     let mut errors = Vec::new();
     let mut command_results = Vec::new();
 
@@ -1110,6 +1160,12 @@ fn validate_project_patchset_in_temp_worktree(
         }
     }
 
+    for command in rejected_validation_commands(patchset) {
+        errors.push(format!(
+            "validation command is not in the allowlist: {command}"
+        ));
+    }
+
     let commands = validation_commands_for_patchset(patchset, gate);
     for command in commands {
         match run_allowed_validation_command(&worktree_path, &command) {
@@ -1149,6 +1205,15 @@ fn validation_commands_for_patchset(
     }
 
     commands
+}
+
+fn rejected_validation_commands(patchset: &ProjectPatchset) -> Vec<String> {
+    patchset
+        .validation_commands
+        .iter()
+        .filter(|command| parse_allowed_validation_command(command).is_none())
+        .cloned()
+        .collect()
 }
 
 fn parse_allowed_validation_command(command: &str) -> Option<Vec<String>> {
@@ -1247,6 +1312,240 @@ fn project_validation_report_json(report: &ProjectValidationReport) -> Value {
     })
 }
 
+fn apply_validated_patchset_to_real_tree(
+    root: &Path,
+    patchset: &ProjectPatchset,
+    gate: &ProjectPatchGateReport,
+) -> ProjectApplyReport {
+    let mut errors = Vec::new();
+    let mut command_results = Vec::new();
+    let mut touched_paths = patchset
+        .replacements
+        .iter()
+        .map(|replacement| replacement.path.replace('\\', "/"))
+        .collect::<Vec<_>>();
+
+    if !patchset.handoff_update.trim().is_empty()
+        && !touched_paths.iter().any(|path| path == "docs/HANDOFF.md")
+    {
+        touched_paths.push("docs/HANDOFF.md".to_string());
+    }
+    touched_paths.sort();
+    touched_paths.dedup();
+
+    let originals = snapshot_paths(root, &touched_paths);
+
+    for replacement in &patchset.replacements {
+        let normalized = replacement.path.replace('\\', "/");
+        if let Err(error) = write_real_tree_file(root, &normalized, &replacement.new_content) {
+            errors.push(format!(
+                "{normalized}: failed to apply replacement: {error}"
+            ));
+        }
+    }
+
+    if !patchset.handoff_update.trim().is_empty()
+        && !patchset
+            .replacements
+            .iter()
+            .any(|replacement| replacement.path.replace('\\', "/") == "docs/HANDOFF.md")
+    {
+        let handoff_path = root.join("docs/HANDOFF.md");
+        match fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&handoff_path)
+        {
+            Ok(mut file) => {
+                let _ = writeln!(
+                    file,
+                    "\n## Autopilot update {}\n\n{}\n",
+                    unix_millis(),
+                    patchset.handoff_update.trim()
+                );
+            }
+            Err(error) => errors.push(format!(
+                "docs/HANDOFF.md: failed to append handoff update: {error}"
+            )),
+        }
+    }
+
+    for command in rejected_validation_commands(patchset) {
+        errors.push(format!(
+            "validation command is not in the allowlist: {command}"
+        ));
+    }
+
+    for command in validation_commands_for_patchset(patchset, gate) {
+        match run_allowed_validation_command(root, &command) {
+            Ok(result) => {
+                if !result.success {
+                    errors.push(format!(
+                        "real-tree validation command failed: {}",
+                        result.command.join(" ")
+                    ));
+                }
+                command_results.push(result);
+            }
+            Err(error) => errors.push(error),
+        }
+    }
+
+    if !errors.is_empty() {
+        restore_paths(root, &originals);
+        reset_git_paths(root, &touched_paths);
+        return ProjectApplyReport {
+            accepted: false,
+            committed: false,
+            errors,
+            command_results,
+            commit_hash: None,
+            touched_paths,
+        };
+    }
+
+    if let Err(error) = git_add_paths(root, &touched_paths) {
+        errors.push(error);
+        restore_paths(root, &originals);
+        reset_git_paths(root, &touched_paths);
+        return ProjectApplyReport {
+            accepted: false,
+            committed: false,
+            errors,
+            command_results,
+            commit_hash: None,
+            touched_paths,
+        };
+    }
+
+    match git_commit(root, &patchset.commit_message) {
+        Ok(hash) => ProjectApplyReport {
+            accepted: true,
+            committed: true,
+            errors,
+            command_results,
+            commit_hash: Some(hash),
+            touched_paths,
+        },
+        Err(error) => {
+            errors.push(error);
+            restore_paths(root, &originals);
+            reset_git_paths(root, &touched_paths);
+            ProjectApplyReport {
+                accepted: false,
+                committed: false,
+                errors,
+                command_results,
+                commit_hash: None,
+                touched_paths,
+            }
+        }
+    }
+}
+
+fn project_apply_report_json(report: &ProjectApplyReport) -> Value {
+    json!({
+        "accepted": report.accepted,
+        "committed": report.committed,
+        "errors": report.errors,
+        "commit_hash": report.commit_hash,
+        "touched_paths": report.touched_paths,
+        "command_results": report.command_results.iter().map(|result| json!({
+            "command": result.command,
+            "success": result.success,
+            "status": result.status,
+            "stdout_preview": result.stdout_preview,
+            "stderr_preview": result.stderr_preview,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn snapshot_paths(root: &Path, paths: &[String]) -> BTreeMap<String, Option<String>> {
+    paths
+        .iter()
+        .map(|path| {
+            let content = fs::read_to_string(root.join(path)).ok();
+            (path.clone(), content)
+        })
+        .collect()
+}
+
+fn restore_paths(root: &Path, originals: &BTreeMap<String, Option<String>>) {
+    for (path, content) in originals {
+        let target = root.join(path);
+        match content {
+            Some(content) => {
+                if let Some(parent) = target.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                let _ = fs::write(&target, content);
+            }
+            None => {
+                let _ = fs::remove_file(&target);
+            }
+        }
+    }
+}
+
+fn write_real_tree_file(root: &Path, path: &str, content: &str) -> std::io::Result<()> {
+    let target = root.join(path);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(target, content)
+}
+
+fn git_add_paths(root: &Path, paths: &[String]) -> Result<(), String> {
+    let output = Command::new("git")
+        .arg("add")
+        .args(paths)
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("failed to run git add: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "git add failed: {}",
+            preview(&String::from_utf8_lossy(&output.stderr), 1200)
+        ))
+    }
+}
+
+fn reset_git_paths(root: &Path, paths: &[String]) {
+    let _ = Command::new("git")
+        .args(["reset", "--"])
+        .args(paths)
+        .current_dir(root)
+        .output();
+}
+
+fn git_commit(root: &Path, message: &str) -> Result<String, String> {
+    let commit = Command::new("git")
+        .args(["commit", "-m", message])
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("failed to run git commit: {error}"))?;
+    if !commit.status.success() {
+        return Err(format!(
+            "git commit failed: {}{}",
+            preview(&String::from_utf8_lossy(&commit.stdout), 1200),
+            preview(&String::from_utf8_lossy(&commit.stderr), 1200)
+        ));
+    }
+
+    let hash = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("failed to read commit hash: {error}"))?;
+    if hash.status.success() {
+        Ok(String::from_utf8_lossy(&hash.stdout).trim().to_string())
+    } else {
+        Ok("unknown".to_string())
+    }
+}
+
 fn copy_project_for_autopilot(src: &Path, dst: &Path) -> std::io::Result<()> {
     if dst.exists() {
         fs::remove_dir_all(dst)?;
@@ -1290,10 +1589,11 @@ fn path_is_unsafe(path: &str) -> bool {
 }
 
 fn is_allowed_project_doc_path(path: &str) -> bool {
-    path.ends_with(".md")
-        && (path.starts_with("docs/plans/")
-            || path.starts_with("docs/solutions/")
-            || path.starts_with("todos/"))
+    path == "docs/HANDOFF.md"
+        || (path.ends_with(".md")
+            && (path.starts_with("docs/plans/")
+                || path.starts_with("docs/solutions/")
+                || path.starts_with("todos/")))
 }
 
 fn extract_json_from_autopilot_output(text: &str) -> Option<String> {
@@ -2500,6 +2800,90 @@ mod tests {
 
         assert!(report.accepted, "{:?}", report.rejected);
         assert!(!report.requires_cargo_test);
+    }
+
+    #[test]
+    fn project_patch_gate_accepts_handoff_update_path() {
+        let patchset = ProjectPatchset {
+            commit_message: "Autopilot: handoff".to_string(),
+            validation_commands: Vec::new(),
+            handoff_update: String::new(),
+            replacements: vec![ProjectFileReplacement {
+                path: "docs/HANDOFF.md".to_string(),
+                new_content: "# Handoff\n".to_string(),
+            }],
+        };
+
+        let report = validate_project_patchset_paths(&patchset);
+
+        assert!(report.accepted, "{:?}", report.rejected);
+        assert!(!report.requires_cargo_test);
+    }
+
+    #[test]
+    fn project_patch_gate_rejects_disallowed_validation_command_during_temp_validation() {
+        let root = std::env::temp_dir().join(format!(
+            "a2d-autopilot-invalid-command-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("docs/plans")).unwrap();
+        std::fs::write(root.join("docs/plans/example.md"), "# Old\n").unwrap();
+        let patchset = ProjectPatchset {
+            commit_message: "Autopilot: docs".to_string(),
+            validation_commands: vec!["rm -rf /".to_string()],
+            handoff_update: String::new(),
+            replacements: vec![ProjectFileReplacement {
+                path: "docs/plans/example.md".to_string(),
+                new_content: "# New\n".to_string(),
+            }],
+        };
+        let gate = validate_project_patchset_paths(&patchset);
+
+        let report = validate_project_patchset_in_temp_worktree(&root, &patchset, &gate);
+
+        assert!(!report.accepted);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("not in the allowlist"))
+        );
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(report.worktree_path);
+    }
+
+    #[test]
+    fn real_tree_apply_rolls_back_when_validation_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "a2d-autopilot-rollback-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("docs/plans")).unwrap();
+        std::fs::write(root.join("docs/plans/example.md"), "# Old\n").unwrap();
+        let patchset = ProjectPatchset {
+            commit_message: "Autopilot: rollback".to_string(),
+            validation_commands: vec!["cargo run -q -p a2d -- status".to_string()],
+            handoff_update: String::new(),
+            replacements: vec![ProjectFileReplacement {
+                path: "docs/plans/example.md".to_string(),
+                new_content: "# New\n".to_string(),
+            }],
+        };
+        let gate = validate_project_patchset_paths(&patchset);
+
+        let report = apply_validated_patchset_to_real_tree(&root, &patchset, &gate);
+
+        assert!(!report.accepted);
+        assert!(!report.committed);
+        assert_eq!(
+            std::fs::read_to_string(root.join("docs/plans/example.md")).unwrap(),
+            "# Old\n"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
