@@ -3,7 +3,8 @@
 **Created:** 2026-04-10
 **Empirical update:** 2026-04-17 — live sudoku run confirms rungs 0–3 alone don't halt output repetition.
 **Provider-health update:** 2026-04-23 — provider failures/timeouts now open a temporary provider-level circuit breaker and route subsequent invocations to healthy alternatives; this is not full rung 4 history-aware model swap.
-**Depends on:** Rungs 0-3 (implemented), cycle iteration cap (`cycle-iteration-cap.md`, not yet implemented).
+**Provider-policy update:** 2026-05-23 — provider assignment is now a typed, gated, durable `provider_policy` artifact persisted as lineage `provider-policy.json`. This gives rung 4+ a safer mechanism for provider-role changes, but durable policy still needs topology-comparison gating.
+**Depends on:** Rungs 0-3 (implemented), cycle iteration/firing cap (implemented), cycle wall-clock cap (implemented), provider-policy topology gate (`todos/provider-policy-topology-gate.md`).
 
 ## What's Built (observed firing live 2026-04-17)
 
@@ -19,9 +20,9 @@ All 4 rungs layer: rung 3 includes awareness + consultation + clean session.
 
 Live run on sudoku (Kimi/Gemini/GLM), 2026-04-17: every dynamic enzyme climbed through rungs 0→1→2→3 within cycle 1 without producing fitness-improving output. Evolver entered rung 4 (unimplemented) — behaved as rung 3 since no handler exists. Rungs 4–6 are the next differentiated intervention. See `docs/solutions/architectural-insights/escalation-ladder-detects-but-doesnt-halt-degradation-2026-04-17.md`.
 
-## Known bug in rung 2
+## Rung 2 status
 
-Trace line at `metabolism.rs:510` area reads `rung 2+ consultation: asking <alt-provider> for advice on <wrong enzyme id>` — fires with a mismatched enzyme id when the escalating enzyme is the coder. Either the log message is malformed or `alternative_provider_for` is routing to the wrong enzyme. Fix before relying on rung 2 data.
+Failed rung-2 consultation is now bounded: if consultation fails/timeouts, the workcell fails immediately instead of spending a second full provider timeout on the primary invocation. This fixed the live double-timeout failure mode documented on 2026-05-20.
 
 ## What's Next
 
