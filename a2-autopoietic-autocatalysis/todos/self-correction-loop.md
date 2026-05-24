@@ -1,7 +1,7 @@
 # Self-Correction Loop TODOs
 
 Created: 2026-04-28
-Updated: 2026-05-23
+Updated: 2026-05-24
 
 Current facts:
 
@@ -14,7 +14,7 @@ Current facts:
 - `compound-membrane-hidden` with hidden candidate-worktree verifier wiring self-corrected with Minimax N=3 and Kimi N=3 on 2026-05-21: both resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-minimax.jsonl` and `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-kimi.jsonl`.
 - `compound-archive-hidden` with hidden candidate-worktree verifier wiring self-corrected with Minimax N=3 and Kimi N=3 on 2026-05-22: both resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-archive-hidden-minimax.jsonl` and `/tmp/a2-compound-archive-hidden-kimi.jsonl`.
 - OpenCode GLM at the 1800s attempt timeout produced no patches across 7 observed attempts on 2026-05-21; 2026-05-22 fibonacci calibration at 200k/3600s also timed out with tokens=0/no patch. Direct `opencode --print-logs` smoke exposed upstream ZAI 429 `Insufficient balance or no resource package`. After subscription restore, `pi/zai/glm-5.1` worked through Pi with the existing Pi `zai` API key.
-- A² now supports `pi` / `pi/<model_id>` provider routing. Pi/ZAI GLM fibonacci calibration passed attempt 1 with token accounting in `/tmp/a2-pi-zai-fibonacci-json-usage.jsonl`; `compound-hidden` N=3 scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3 in `/tmp/a2-compound-hidden-pi-zai-glm.jsonl`.
+- A² now supports `pi` / `pi/<model_id>` provider routing. Pi/ZAI GLM fibonacci calibration passed attempt 1 with token accounting in `/tmp/a2-pi-zai-fibonacci-json-usage.jsonl`. Pi/ZAI GLM scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3 on all three current compound fixtures: `/tmp/a2-compound-hidden-pi-zai-glm.jsonl`, `/tmp/a2-compound-membrane-pi-zai-glm.jsonl`, and `/tmp/a2-compound-archive-pi-zai-glm.jsonl`.
 
 See `todos/self-correction-loop-recovery.md` for the structural recovery sequence.
 
@@ -26,8 +26,10 @@ See `todos/self-correction-loop-recovery.md` for the structural recovery sequenc
 - [x] Re-run `compound-hidden` N≥3 with Minimax after the prompt/lineage fixes. Completed 2026-05-21 after hidden candidate-worktree verifier wiring: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 - [x] Run `compound-hidden` with Kimi after Minimax loop behavior is understood. Completed 2026-05-21 after hidden candidate-worktree verifier wiring: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 - [x] Recheck GLM provider availability before rerunning `compound-hidden`; completed 2026-05-22 by adding/using `pi/zai/glm-5.1`. Pi/ZAI fibonacci passed attempt 1 and `compound-hidden` N=3 scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-pi-zai-fibonacci-json-usage.jsonl` and `/tmp/a2-compound-hidden-pi-zai-glm.jsonl`.
-- [ ] Run Pi/ZAI GLM N≥3 on `compound-membrane-hidden` and score the JSONL result.
-- [ ] Run Pi/ZAI GLM N≥3 on `compound-archive-hidden` and score the JSONL result.
+- [x] Run Pi/ZAI GLM N≥3 on `compound-membrane-hidden` and score the JSONL result. Completed 2026-05-24: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Result: `/tmp/a2-compound-membrane-pi-zai-glm.jsonl`.
+- [x] Run Pi/ZAI GLM N≥3 on `compound-archive-hidden` and score the JSONL result. Completed 2026-05-24: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Result: `/tmp/a2-compound-archive-pi-zai-glm.jsonl`.
+- [ ] Add a broader loop-shaped fixture beyond visible-core-plus-hidden-second-crate regressions.
+- [ ] Design anti-repeat ablation benchmark: candidate verifier enabled + anti-repeat enabled vs candidate verifier enabled + anti-repeat disabled.
 - [x] Run `compound-archive-hidden` N≥3 with Minimax and Kimi after smoke-only injection success. Completed 2026-05-22; both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 - [x] Refresh stale `Cargo.lock` observed by sentinel during Pi/ZAI validation. Completed 2026-05-22 with `cargo generate-lockfile --offline`; sentinel then passed 6/6.
 - [x] Add a second hard fixture after `compound-hidden` self-corrects at least once. Completed 2026-05-18 with `compound-membrane-hidden`; after hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-21 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.

@@ -1,7 +1,7 @@
 # Self-Correction Loop Recovery TODO
 
 Created: 2026-05-10
-Updated: 2026-05-23
+Updated: 2026-05-24
 
 ## Current status
 
@@ -21,11 +21,12 @@ Working:
 - `compound-membrane-hidden` self-corrected with hidden candidate-worktree verifier wiring for Minimax N=3 and Kimi N=3 on 2026-05-21: both resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-minimax.jsonl` and `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-kimi.jsonl`.
 - `compound-archive-hidden` self-corrected with hidden candidate-worktree verifier wiring for Minimax N=3 and Kimi N=3 on 2026-05-22: both resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-archive-hidden-minimax.jsonl` and `/tmp/a2-compound-archive-hidden-kimi.jsonl`.
 - Pi/ZAI GLM provider routing is implemented. 2026-05-22 `pi/zai/glm-5.1` fibonacci calibration passed attempt 1 with token accounting; `compound-hidden` N=3 scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-pi-zai-fibonacci-json-usage.jsonl` and `/tmp/a2-compound-hidden-pi-zai-glm.jsonl`.
+- Pi/ZAI GLM on 2026-05-24 scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3 on `compound-membrane-hidden` and `compound-archive-hidden`. Results: `/tmp/a2-compound-membrane-pi-zai-glm.jsonl` and `/tmp/a2-compound-archive-pi-zai-glm.jsonl`.
 - Sentinel passed 6/6 after refreshing stale `Cargo.lock` with `cargo generate-lockfile --offline` during Pi/ZAI validation.
 
 Not working / not yet resolved:
 
-- Pi/ZAI GLM recovery under hidden candidate-worktree verifier wiring is validated for `compound-hidden` only; `compound-membrane-hidden` and `compound-archive-hidden` remain unvalidated for Pi/ZAI. Prior OpenCode GLM route timed out while ZAI balance was unavailable.
+- No current-fixture/provider recovery gap remains for Minimax, Kimi, or Pi/ZAI GLM on the three current compound fixtures. Broader loop-shaped fixtures and anti-repeat ablation are not yet implemented.
 
 ## Recovery sequence
 
@@ -37,11 +38,11 @@ Implemented in order:
 4. `todos/anti-repeat-retry-strategy.md`
 5. `todos/worktree-task-verifier.md`
 
-Remaining recovery work is validation rather than missing core plumbing. As of 2026-05-23, Minimax and Kimi both have N=3 self-correction results on all three compound fixtures after hidden candidate-worktree verifier wiring, and Pi/ZAI GLM has N=3 on `compound-hidden`.
+Remaining recovery work is fixture expansion and ablation rather than missing core plumbing. As of 2026-05-24, Minimax, Kimi, and Pi/ZAI GLM each have N=3 self-correction results on all three current compound fixtures after hidden candidate-worktree verifier wiring.
 
 ## Benchmark gate
 
-After each structural change, run the changed fixture or `compound-hidden` N=3 with available non-Claude providers:
+After each structural change or new fixture, run the changed fixture or `compound-hidden` N=3 with available non-Claude providers:
 
 ```bash
 bench/self_correction.py --fixture compound-hidden \

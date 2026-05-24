@@ -1,13 +1,13 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-05-23
+**Last updated:** 2026-05-24
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
 
 A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies its own source code. It uses AI model CLIs (Claude, Codex, Gemini, OpenCode, Pi) as "food set" models that edit code in git worktrees, then the system verifies, scores, and optionally applies the patches to its own germline.
 
-## Current Numbers (as of 2026-05-23)
+## Current Numbers (as of 2026-05-24)
 
 | Metric | Value |
 |--------|-------|
@@ -20,7 +20,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 | Benchmark (Claude) | untested on current task set |
 | A² value-add on single-pass tasks | None measurable |
 | Self-correction loop (Minimax/Kimi current compound fixtures) | each provider resolved/self-corrected 3/3 on `compound-hidden`, `compound-membrane-hidden`, and `compound-archive-hidden` after hidden candidate verifier wiring |
-| Self-correction loop (Pi/ZAI GLM) | resolved/self-corrected 3/3 on `compound-hidden`; `compound-membrane-hidden` and `compound-archive-hidden` not yet run |
+| Self-correction loop (Pi/ZAI GLM) | resolved/self-corrected 3/3 on `compound-hidden`, `compound-membrane-hidden`, and `compound-archive-hidden` |
 | 4-provider smoke (2026-04-16) | 4/4 PASS (gemini, glm-5.1, minimax-2.7, kimi k2.5) post ContextPack wiring |
 
 ## Verify State (run these first)
@@ -117,7 +117,7 @@ cargo run -p a2ctl -- sentinel --workspace .
 | codex | gpt-5.4 | **OUT OF QUOTA** | Don't use until reset |
 | gemini | gemini-3.1-pro-preview | **OUT OF CAPACITY** | 2026-04-28 self-correction smoke hit repeated 429 capacity errors; previous bench 5/5, ~67s/task |
 | opencode/glm | zai-coding-plan/glm-5.1 | Not currently used | 2026-05-22 direct `opencode --print-logs` smoke returned `Insufficient balance or no resource package` before subscription restore; prefer Pi/ZAI route below. Previous bench was 5/5 when provider was funded, 10-15min/task. |
-| pi/zai | zai/glm-5.1 | Available | Added 2026-05-22. Uses Pi's built-in ZAI provider and existing `~/.pi/agent/auth.json` `zai` API key. Fibonacci calibration passed attempt 1 with token accounting (`/tmp/a2-pi-zai-fibonacci-json-usage.jsonl`); `compound-hidden` N=3 resolved/self-corrected 3/3 via Pi/ZAI (`/tmp/a2-compound-hidden-pi-zai-glm.jsonl`; run preceded parsed Pi token usage). |
+| pi/zai | zai/glm-5.1 | Available | Added 2026-05-22. Uses Pi's built-in ZAI provider and existing `~/.pi/agent/auth.json` `zai` API key. Fibonacci calibration passed attempt 1 with token accounting (`/tmp/a2-pi-zai-fibonacci-json-usage.jsonl`); all three current compound fixtures resolved/self-corrected 3/3 via Pi/ZAI (`/tmp/a2-compound-hidden-pi-zai-glm.jsonl`, `/tmp/a2-compound-membrane-pi-zai-glm.jsonl`, `/tmp/a2-compound-archive-pi-zai-glm.jsonl`). |
 | opencode/kimi | kimi-for-coding/k2p5 | Available | 2026-04-16 smoke PASS (75s, 12k tokens); sometimes empty historically |
 | opencode/minimax | minimax-coding-plan/MiniMax-M2.7 | Available | 2026-04-28 self-correction PASS attempt 1 (70s model time, 17.6k tokens); 2026-04-16 smoke PASS |
 
@@ -153,9 +153,9 @@ const DEFAULT_STAGNATION_WINDOW: usize = 3;
 
 ## What To Do Next
 
-ContextPack is wired and self-correction harnesses exist. The current gap is no longer "build a loop benchmark"; it is "make the loop recover." Minimax and Kimi now have N=3 self-correction success on all three current compound fixtures after hidden candidate-worktree verifier wiring. Pi/ZAI GLM has N=3 self-correction success on `compound-hidden`; remaining validation is Pi/ZAI GLM on the other compound fixtures and broader loop-shaped fixtures.
+ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/ZAI GLM now have N=3 self-correction success on all three current compound fixtures after hidden candidate-worktree verifier wiring. Remaining work is broader loop-shaped fixtures and ablations rather than current-fixture/provider recovery.
 
-### Current loop status (2026-05-23)
+### Current loop status (2026-05-24)
 
 **Working:**
 - Prior lineage reaches retry attempts for a pinned `TaskId`.
@@ -177,6 +177,8 @@ ContextPack is wired and self-correction harnesses exist. The current gap is no 
 - `compound-archive-hidden` with Minimax on 2026-05-22 after hidden candidate-worktree verifier wiring resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2_archive/src/store.rs` and verified clean. Results: `/tmp/a2-compound-archive-hidden-minimax.jsonl`.
 - `compound-archive-hidden` with Kimi on 2026-05-22 after hidden candidate-worktree verifier wiring resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2_archive/src/store.rs` and verified clean. Results: `/tmp/a2-compound-archive-hidden-kimi.jsonl`.
 - `compound-hidden` with Pi/ZAI GLM on 2026-05-22 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2ctl/src/main.rs` and verified clean. Results: `/tmp/a2-compound-hidden-pi-zai-glm.jsonl`.
+- `compound-membrane-hidden` with Pi/ZAI GLM on 2026-05-24 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2_membrane/src/policy.rs` and verified clean. Results: `/tmp/a2-compound-membrane-pi-zai-glm.jsonl`.
+- `compound-archive-hidden` with Pi/ZAI GLM on 2026-05-24 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2_archive/src/store.rs` and verified clean. Results: `/tmp/a2-compound-archive-pi-zai-glm.jsonl`.
 - The 2026-05-20 Minimax/Kimi reruns happened after candidate verifier code existed but before the self-correction harness passed verifier commands, so those reruns exercised post-apply verification/retry context rather than candidate-worktree verifier scoring.
 - `compound-hidden` with Kimi on 2026-05-20 after anti-repeat + task-verifier code changes resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. Results: `/tmp/a2-compound-after-task-verifier-kimi.jsonl`.
 - `compound-hidden` with Minimax on 2026-05-20 after anti-repeat + task-verifier code changes resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2ctl/src/main.rs` and verified clean. Results: `/tmp/a2-compound-after-task-verifier-minimax.jsonl`.
@@ -184,11 +186,10 @@ ContextPack is wired and self-correction harnesses exist. The current gap is no 
 - `compound-hidden` with Kimi on 2026-05-18 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2ctl/src/main.rs` and verified clean.
 
 **Not yet validated:**
-- Pi/ZAI GLM recovery beyond `compound-hidden` after hidden candidate-worktree verifier wiring. 2026-05-22 Pi/ZAI `compound-hidden` N=3 resolved/self-corrected 3/3; `compound-membrane-hidden` and `compound-archive-hidden` are not yet run with Pi/ZAI.
-- Loop recovery beyond Minimax/Kimi and the three current compound fixtures after candidate-worktree task verifier execution.
+- Loop recovery beyond the three current compound fixtures after candidate-worktree task verifier execution.
 - Cross-provider/fixture benchmark impact of anti-repeat retry strategy beyond the current self-correction fixtures.
 
-**Structural solution direction:** Minimax/Kimi now have N=3 loop recovery on all three current compound fixtures with hidden candidate-worktree verifier wiring. Pi/ZAI GLM has N=3 loop recovery on `compound-hidden`; remaining validation is Pi/ZAI on the other compound fixtures and adding broader loop-shaped fixtures. Dedicated todos live in `todos/`.
+**Structural solution direction:** Minimax, Kimi, and Pi/ZAI GLM now have N=3 loop recovery on all three current compound fixtures with hidden candidate-worktree verifier wiring. Remaining work is adding broader loop-shaped fixtures and measuring anti-repeat contribution. Dedicated todos live in `todos/`.
 
 ### Completed prerequisites (2026-04-23)
 
@@ -208,12 +209,12 @@ ContextPack is wired and self-correction harnesses exist. The current gap is no 
 - [x] **Populate verifier-derived relevant files.** Completed 2026-05-12. Failed structured verifier output containing Rust source paths now populates `ContextPack.relevant_files`, and `WorktreeCatalyst` renders those paths in prompts. See `todos/verifier-derived-relevant-files.md`.
 - [x] **Add anti-repeat retry strategy.** Completed 2026-05-20. Retry context now emits an `anti_repeat_retry` motif when prior failed patch touched files do not overlap unresolved verifier-derived source paths; repeated touched-file sets are counted, and WorktreeCatalyst prompts explicitly warn not to repeat the prior patch shape alone. See `todos/anti-repeat-retry-strategy.md`.
 - [x] **Run task-specific verifier in candidate worktrees before promotion scoring.** Completed 2026-05-20. `TaskContract.verification_commands` carries shell verifier commands; `WorktreeCatalyst` runs them in the candidate worktree, maps outcomes into `TestResults` plus structured `ExternalVerification`, and `run_workcell` persists those verifier records into lineage before promotion. `a2ctl bench` wires TOML `[verify]` commands, and JSONL run input accepts optional `verification_commands`. See `todos/worktree-task-verifier.md`.
-- [ ] **Run `compound-hidden` N≥3 per available non-Claude provider after each structural change.** Current factual result after hidden candidate-worktree verifier wiring: Minimax N=3 and Kimi N=3 on `compound-hidden` on 2026-05-21 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-with-hidden-worktree-verifier-minimax.jsonl` and `/tmp/a2-compound-with-hidden-worktree-verifier-kimi.jsonl`. Minimax N=3 and Kimi N=3 on `compound-membrane-hidden` on 2026-05-21 both also scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Results: `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-minimax.jsonl` and `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-kimi.jsonl`. Minimax/Kimi N=3 on `compound-archive-hidden` on 2026-05-22 also scored resolved/self-corrected 3/3. Pi/ZAI GLM N=3 on `compound-hidden` on 2026-05-22 scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; results: `/tmp/a2-compound-hidden-pi-zai-glm.jsonl`. Prior OpenCode GLM route timed out while ZAI balance was unavailable; prefer `pi/zai/glm-5.1`. Prior structured retry-context results: Minimax N=3 on 2026-05-16 and Kimi N=3 on 2026-05-18 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
+- [x] **Run current compound fixtures N≥3 per available non-Claude provider after hidden candidate verifier wiring.** Minimax and Kimi scored resolved/self-corrected 3/3 on `compound-hidden`, `compound-membrane-hidden`, and `compound-archive-hidden`. Pi/ZAI GLM scored resolved/self-corrected 3/3 on `compound-hidden` (`/tmp/a2-compound-hidden-pi-zai-glm.jsonl`), `compound-membrane-hidden` (`/tmp/a2-compound-membrane-pi-zai-glm.jsonl`), and `compound-archive-hidden` (`/tmp/a2-compound-archive-pi-zai-glm.jsonl`). In all Pi/ZAI membrane/archive runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched the hidden-regression crate and verified clean. Prior OpenCode GLM route timed out while ZAI balance was unavailable; prefer `pi/zai/glm-5.1`.
 - [x] **Add a second compound fixture after one self-correction success.** Completed 2026-05-18. `bench/self_correction.py` now includes `compound-membrane-hidden`, which combines the visible `a2_core` Fibonacci regression with a hidden `a2_membrane` deny-overrides-allow regression. Smoke-only injection verified both failures. After hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-21 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 
 ### Loop-shaped benchmarks
 
-1. **Self-correction benchmark** *(implemented 2026-04-28 as `bench/self_correction.py` + `bench/self_correction_score.py`)*: isolated git worktree, pinned task ID, core run-path lineage reconciliation, JSONL results. Fixtures: `fibonacci` (too easy: Minimax N=3 pass@1 3/3, loop 0/3; Pi/ZAI GLM passed attempt 1 on 2026-05-22), `compound-hidden` (harder: Minimax/Kimi runs before structured retry context failed attempts 1-3; after structured verifier records + retry acceptance criteria + verifier-derived relevant files, Minimax N=3 on 2026-05-16 and Kimi N=3 on 2026-05-18 resolved on attempt 2 in all runs; after hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-21 resolved on attempt 2 in all runs; Pi/ZAI GLM N=3 on 2026-05-22 resolved on attempt 2 in all runs), `compound-membrane-hidden` (added 2026-05-18; visible `a2_core` Fibonacci regression plus hidden `a2_membrane` deny-overrides-allow regression; Minimax N=3 on 2026-05-18 resolved on attempt 2 in all runs; after hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-21 resolved on attempt 2 in all runs), `compound-archive-hidden` (added 2026-05-22; visible `a2_core` Fibonacci regression plus hidden `a2_archive` lineage ordering regression; smoke-only injection verified both failures; after hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-22 resolved on attempt 2 in all runs).
+1. **Self-correction benchmark** *(implemented 2026-04-28 as `bench/self_correction.py` + `bench/self_correction_score.py`)*: isolated git worktree, pinned task ID, core run-path lineage reconciliation, JSONL results. Fixtures: `fibonacci` (too easy: Minimax N=3 pass@1 3/3, loop 0/3; Pi/ZAI GLM passed attempt 1 on 2026-05-22), `compound-hidden` (harder: Minimax/Kimi runs before structured retry context failed attempts 1-3; after structured verifier records + retry acceptance criteria + verifier-derived relevant files, Minimax N=3 on 2026-05-16 and Kimi N=3 on 2026-05-18 resolved on attempt 2 in all runs; after hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-21 resolved on attempt 2 in all runs; Pi/ZAI GLM N=3 on 2026-05-22 resolved on attempt 2 in all runs), `compound-membrane-hidden` (added 2026-05-18; visible `a2_core` Fibonacci regression plus hidden `a2_membrane` deny-overrides-allow regression; Minimax N=3 on 2026-05-18 resolved on attempt 2 in all runs; after hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-21 resolved on attempt 2 in all runs; Pi/ZAI GLM N=3 on 2026-05-24 resolved on attempt 2 in all runs), `compound-archive-hidden` (added 2026-05-22; visible `a2_core` Fibonacci regression plus hidden `a2_archive` lineage ordering regression; smoke-only injection verified both failures; after hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-22 resolved on attempt 2 in all runs; Pi/ZAI GLM N=3 on 2026-05-24 resolved on attempt 2 in all runs).
 2. **Multi-round benchmark**: N iterations on the same task, measure score improvement over rounds. Can now reuse the self-correction harness pattern.
 3. **Adversarial drift** (Fontana Level 0): can A² detect and reject a "promotion" that actually degrades the system? Philosophically load-bearing for the autopoiesis claim.
 4. **Cross-task transfer**: solve task A, measure if task B is faster/better because lineage carried over.
@@ -297,3 +298,5 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-05-21 | `compound-membrane-hidden` Minimax N=3 with hidden candidate verifier | Minimax scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs fixed `a2_core` on attempt 1 and fixed `a2_membrane` on attempt 2. |
 | 2026-05-21 | `compound-membrane-hidden` Kimi N=3 with hidden candidate verifier | Kimi scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs fixed `a2_core` on attempt 1 and fixed `a2_membrane` on attempt 2. |
 | 2026-05-22 | Refresh Cargo.lock after sentinel lockfile check | During Pi/ZAI validation, sentinel initially passed 5/6 with stale `Cargo.lock`; `cargo generate-lockfile --offline` refreshed compatible cached package versions and sentinel passed 6/6; commit `433adc8`. |
+| 2026-05-24 | `compound-membrane-hidden` Pi/ZAI GLM N=3 with hidden candidate verifier | Pi/ZAI GLM scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs fixed `a2_core` on attempt 1 and `a2_membrane` on attempt 2; result `/tmp/a2-compound-membrane-pi-zai-glm.jsonl`. |
+| 2026-05-24 | `compound-archive-hidden` Pi/ZAI GLM N=3 with hidden candidate verifier | Pi/ZAI GLM scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs fixed `a2_core` on attempt 1 and `a2_archive` on attempt 2; result `/tmp/a2-compound-archive-pi-zai-glm.jsonl`. |
