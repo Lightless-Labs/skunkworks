@@ -288,3 +288,8 @@ Search `docs/solutions/` before implementing. Key findings:
 - `todos/architect-pyramid-summaries.md` — implemented; prompt-size validated; latency still bad due provider/scheduling
 - `todos/test-evolution.md` — challenges beyond sudoku/chess/rubiks
 - `todos/testable-core.md` — separate pure orchestration from provider I/O to enable deterministic replays
+
+## Autopilot update 1779711298225
+
+2026-05-25: Advanced the autonomous project loop task by making the remaining bounded repair/escalation contract explicit in todos/autonomous-project-loop.md, including repair budget, hard-stop behavior, report requirements, and no-partial-application invariants.
+

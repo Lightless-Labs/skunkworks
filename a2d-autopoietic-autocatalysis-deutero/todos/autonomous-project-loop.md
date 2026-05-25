@@ -5,6 +5,7 @@
 **Enhanced:** 2026-05-24 — structured monitor logs
 **Enhanced:** 2026-05-24 — temp-worktree validation
 **Enhanced:** 2026-05-24 — real-tree apply and local commit gate
+**Enhanced:** 2026-05-25 — bounded repair/escalation contract captured
 **Plan:** `docs/plans/autonomous-project-loop.md`
 
 ## Context
@@ -26,11 +27,25 @@ The inner challenge metabolism is bounded and self-adaptive, but no command owns
 - [x] Autopilot emits structured monitor logs under `.a2d/autopilot/`, including prompts/provider outputs as artifacts and parse/path-gate outcomes as JSONL events.
 - [x] Patchsets are path-gated and validated in a temp worktree before real application.
 - [x] Source/mechanism self-modifications go through self-sandbox/cargo-test gates. Path gate identifies eligible source self-modification, temp validation requires the source target to exist, and `cargo test` is injected when needed.
-- Docs/todos/plans changes are limited to approved markdown paths.
+- [x] Docs/todos/plans changes are limited to approved markdown paths.
 - [ ] Failed validation creates a typed `project_validation_report` and routes to a bounded repair/escalation loop instead of immediately waiting for a human. Validation report exists; repair/escalation remains open.
 - Protected-file changes are rejected as hard safety stops; eligible source self-modifications are not.
 - [x] Passing non-dry-run iterations apply changes, rerun gates, update handoff, and make an atomic local git commit.
 - [ ] Failure after repair/escalation budget stops the loop with a clear report and a machine-readable monitor log; no silent partial application. Rollback exists for failed real-tree validation; bounded repair/escalation remains open.
+
+## Bounded repair/escalation contract
+
+The remaining implementation gap is not another unconstrained provider retry. It should be a typed, bounded continuation of the same gated patchset flow:
+
+1. When parse, path-gate, temp-worktree validation, or real-tree validation fails, write a `project_validation_report` artifact and emit a JSONL monitor event that names the failed phase.
+2. Treat protected-file edits, traversal attempts, invalid replacement paths, and non-eligible mechanism edits as hard safety stops. These must not be repaired automatically in-place.
+3. For repairable failures, re-prompt the project-work provider with the original `project_state`, selected `project_task`, rejected `project_patchset`, and `project_validation_report`.
+4. Require the repair response to use the same typed `project_patchset` JSON contract. Do not accept shell commands or free-form instructions as repairs.
+5. Apply the same parse, path, temp-worktree, source self-sandbox, and validation gates to each repair patchset.
+6. Keep a small explicit repair budget, initially one repair attempt per autopilot iteration.
+7. If the budget is exhausted, stop the iteration with a clear failed status, leave the real working tree unchanged unless rollback has succeeded after a real-tree gate failure, and record the final report in the monitor log.
+
+This contract is the next executable slice for closing the two remaining repair/escalation acceptance criteria.
 
 ## Notes
 
