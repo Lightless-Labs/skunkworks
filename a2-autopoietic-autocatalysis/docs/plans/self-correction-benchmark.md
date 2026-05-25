@@ -74,11 +74,11 @@ Conclusion: the harness now distinguishes three cases: easy pass@1, loop exercis
 
 ## Follow-up TODOs
 
-- [ ] Render prior external verification failures prominently in the catalyst prompt instead of relying on compact motif snippets.
-- [ ] Persist post-apply verification outcome in the main `a2ctl run`/lineage path; remove benchmark-only lineage reconciliation once the core path records truth.
-- [ ] Add attempt diff/touched-file summaries to self-correction JSONL records.
-- [ ] Re-run `compound-hidden` N≥3 after motif/run-path changes.
-- [ ] Add a second hard fixture once at least one provider self-corrects `compound-hidden`.
+- [x] Render prior external verification failures prominently in the catalyst prompt instead of relying on compact motif snippets. Completed 2026-05-01.
+- [x] Persist post-apply verification outcome in the main `a2ctl run`/lineage path; remove benchmark-only lineage reconciliation once the core path records truth. Completed 2026-05-01.
+- [x] Add attempt diff/touched-file summaries to self-correction JSONL records. Completed 2026-05-01.
+- [x] Re-run `compound-hidden` N≥3 after motif/run-path changes. Completed 2026-05-21 after candidate-worktree verifier wiring.
+- [x] Add a second hard fixture once at least one provider self-corrects `compound-hidden`. Completed 2026-05-18 with `compound-membrane-hidden`.
 
 ## Implementation Steps
 

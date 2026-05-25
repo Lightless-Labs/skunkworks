@@ -11,7 +11,8 @@
 
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
-use std::io::{self, BufRead};
+use std::fs;
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -66,6 +67,33 @@ enum Commands {
         /// keeping prior lineage and verifier-derived retry context enabled.
         #[arg(long)]
         disable_anti_repeat_retry: bool,
+    },
+    /// Continuously pick project work, execute workcells, verify, and log evidence.
+    Autopilot {
+        /// Workspace root path (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Provider(s) to use. Comma-separated list for round-robin cycling.
+        #[arg(long, default_value = "pi/zai/glm-5.1")]
+        provider: String,
+        /// Maximum autopilot iterations before stopping.
+        #[arg(long, default_value = "3")]
+        max_iterations: usize,
+        /// Maximum token budget per task.
+        #[arg(long, default_value = "100000")]
+        max_tokens: u64,
+        /// Maximum wall-clock time per task in seconds.
+        #[arg(long, default_value = "1800")]
+        timeout: u64,
+        /// Auto-apply promoted patches via git apply.
+        #[arg(long)]
+        apply: bool,
+        /// Only discover and log candidate work; do not call a model.
+        #[arg(long)]
+        dry_run: bool,
+        /// Directory for durable autopilot logs, relative to workspace unless absolute.
+        #[arg(long, default_value = ".a2/autopilot")]
+        log_dir: String,
     },
     /// Scan the workspace for TODO/FIXME comments and emit task descriptions.
     /// With --run, pipe discoveries directly into the run loop.
@@ -430,6 +458,227 @@ async fn main() {
             }
 
             print!("{}", render_summary_table(&rows));
+        }
+        Commands::Autopilot {
+            workspace,
+            provider,
+            max_iterations,
+            max_tokens,
+            timeout,
+            apply,
+            dry_run,
+            log_dir,
+        } => {
+            if max_iterations == 0 {
+                eprintln!("--max-iterations must be greater than zero");
+                std::process::exit(1);
+            }
+
+            let workspace_root = PathBuf::from(&workspace);
+            let candidates = match collect_autopilot_candidates(&workspace_root) {
+                Ok(candidates) => candidates,
+                Err(e) => {
+                    eprintln!("Autopilot discovery failed: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let run_dir = autopilot_run_dir(&workspace_root, Path::new(&log_dir));
+            if let Err(e) = fs::create_dir_all(&run_dir) {
+                eprintln!("Autopilot log setup failed: {e}");
+                std::process::exit(1);
+            }
+            log_autopilot_event(
+                &run_dir,
+                "run_started",
+                serde_json::json!({
+                    "workspace": workspace_root.display().to_string(),
+                    "provider": provider,
+                    "max_iterations": max_iterations,
+                    "max_tokens": max_tokens,
+                    "timeout": timeout,
+                    "apply": apply,
+                    "dry_run": dry_run,
+                }),
+            );
+            log_autopilot_event(
+                &run_dir,
+                "candidates_discovered",
+                serde_json::json!({
+                    "count": candidates.len(),
+                    "candidates": candidates.iter().map(autopilot_candidate_json).collect::<Vec<_>>(),
+                }),
+            );
+
+            println!("A² Autopilot run: {}", run_dir.display());
+            println!("Discovered {} candidate tasks", candidates.len());
+            if candidates.is_empty() {
+                println!("No candidate work found; stopping.");
+                return;
+            }
+
+            if dry_run {
+                for candidate in candidates.iter().take(max_iterations) {
+                    println!("- {} [{}]", candidate.title, candidate.source);
+                }
+                println!("[dry run — no model calls]");
+                return;
+            }
+
+            if apply {
+                match tracked_workspace_changes(&workspace_root) {
+                    Ok(changes) if !changes.trim().is_empty() => {
+                        eprintln!(
+                            "Autopilot apply requires a clean tracked workspace. Current changes:\n{changes}"
+                        );
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        eprintln!("Autopilot dirty-check failed: {e}");
+                        std::process::exit(1);
+                    }
+                    _ => {}
+                }
+            }
+
+            let budget = build_budget(max_tokens, timeout);
+            let ingester = a2_sensorium::ingest::Ingester::new(budget.clone());
+            let provider_names: Vec<&str> = provider
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            let mut providers: Vec<Box<dyn a2_core::traits::ModelProvider>> = Vec::new();
+            for name in &provider_names {
+                providers.push(build_provider(name).await);
+            }
+            if providers.is_empty() {
+                eprintln!("No valid providers specified.");
+                std::process::exit(1);
+            }
+
+            let catalyst =
+                a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root.clone());
+            let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
+            let lineage_db = workspace_root.join("lineage.sqlite");
+            let governor = match rusqlite::Connection::open(&lineage_db)
+                .map_err(|e| format!("open lineage db: {e}"))
+                .and_then(|conn| {
+                    a2_archive::SqliteLineageStore::new(conn)
+                        .map_err(|e| format!("init lineage store: {e}"))
+                }) {
+                Ok(store) => a2d::Governor::with_stagnation_detector(
+                    a2_core::id::GermlineVersion::new(),
+                    budget,
+                    a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
+                )
+                .with_lineage_store(std::sync::Arc::new(store)),
+                Err(e) => {
+                    eprintln!("[lineage store unavailable: {e}]");
+                    a2d::Governor::with_stagnation_detector(
+                        a2_core::id::GermlineVersion::new(),
+                        budget,
+                        a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
+                    )
+                }
+            };
+
+            let mut rows = Vec::new();
+            for (iteration, candidate) in candidates.iter().take(max_iterations).enumerate() {
+                let mut task = ingester.ingest(a2_sensorium::ingest::RawSignal {
+                    origin: "autopilot".into(),
+                    content: candidate.description.clone(),
+                    risk_tier: a2_sensorium::ingest::RiskTier::Low,
+                    metadata: vec![("source".into(), candidate.source.clone())],
+                });
+                task.id = a2_core::id::TaskId::from_external_key(&candidate.id);
+                task.title = candidate.title.clone();
+
+                let provider = providers[iteration % providers.len()].as_ref();
+                log_autopilot_event(
+                    &run_dir,
+                    "iteration_started",
+                    serde_json::json!({
+                        "iteration": iteration + 1,
+                        "task_id": task.id.to_string(),
+                        "candidate": autopilot_candidate_json(candidate),
+                        "model": requested_model(provider),
+                    }),
+                );
+
+                match run_task(&governor, task, &catalyst, provider, &evaluator).await {
+                    Ok(outcome) => {
+                        let mut apply_ok = false;
+                        let mut verify_ok = false;
+                        let mut apply_note = None;
+                        if apply
+                            && let a2_core::protocol::PromotionDecision::PromoteGermline { .. } =
+                                &outcome.decision
+                            && let Some(patch) = &outcome.result.patch
+                        {
+                            let apply_outcome =
+                                apply_and_verify_patch(&patch.diff, &workspace_root);
+                            apply_ok = apply_outcome.applied;
+                            verify_ok = apply_outcome.verified;
+                            apply_note = Some(apply_outcome.note.clone());
+                            if let Err(e) = governor
+                                .reconcile_lineage_apply_outcome(
+                                    &outcome.lineage.id,
+                                    apply_outcome.applied,
+                                    apply_outcome.verified,
+                                    apply_outcome.note,
+                                    apply_outcome.external_verification,
+                                )
+                                .await
+                            {
+                                eprintln!("[lineage reconciliation failed: {e}]");
+                            }
+                        }
+                        governor.record_apply_outcome(apply_ok, verify_ok);
+                        log_autopilot_event(
+                            &run_dir,
+                            "iteration_completed",
+                            serde_json::json!({
+                                "iteration": iteration + 1,
+                                "task_id": outcome.task_id.to_string(),
+                                "decision": format_promotion_decision(&outcome.decision),
+                                "tokens": outcome.result.tokens_used,
+                                "duration_secs": outcome.result.duration_secs,
+                                "patch_produced": outcome.result.patch.is_some(),
+                                "apply_ok": apply_ok,
+                                "verify_ok": verify_ok,
+                                "apply_note": apply_note,
+                            }),
+                        );
+                        rows.push(run_summary_row(&candidate.title, provider, &outcome));
+                    }
+                    Err(e) => {
+                        log_autopilot_event(
+                            &run_dir,
+                            "iteration_failed",
+                            serde_json::json!({
+                                "iteration": iteration + 1,
+                                "candidate": autopilot_candidate_json(candidate),
+                                "error": e.to_string(),
+                            }),
+                        );
+                        rows.push(RunSummaryRow {
+                            title: candidate.title.clone(),
+                            model: requested_model(provider),
+                            tokens: 0,
+                            duration_secs: 0.0,
+                            decision: format!("error: {e}"),
+                        });
+                    }
+                }
+            }
+
+            log_autopilot_event(
+                &run_dir,
+                "run_completed",
+                serde_json::json!({"iterations": rows.len()}),
+            );
+            print!("{}", render_summary_table(&rows));
+            println!("Autopilot log: {}", run_dir.display());
         }
         Commands::Scan {
             workspace,
@@ -1088,6 +1337,161 @@ fn derive_run_title(problem_statement: &str) -> &str {
         .unwrap_or("stdin task")
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AutopilotCandidate {
+    id: String,
+    title: String,
+    description: String,
+    source: String,
+}
+
+fn collect_autopilot_candidates(root: &Path) -> io::Result<Vec<AutopilotCandidate>> {
+    let mut candidates = Vec::new();
+    for rel_dir in ["todos", "docs/plans"] {
+        collect_markdown_checklist_candidates(root, &root.join(rel_dir), &mut candidates)?;
+    }
+
+    for (index, task) in scan_workspace(root)?.into_iter().enumerate() {
+        candidates.push(AutopilotCandidate {
+            id: format!("autopilot:scan:{index}"),
+            title: derive_run_title(&task).chars().take(96).collect(),
+            description: format!(
+                "Resolve the scanned source-code work item.\n\n{task}\n\nUpdate code and tests as needed. Run the smallest relevant verification before finishing."
+            ),
+            source: "scan".into(),
+        });
+    }
+
+    Ok(candidates)
+}
+
+fn collect_markdown_checklist_candidates(
+    root: &Path,
+    dir: &Path,
+    candidates: &mut Vec<AutopilotCandidate>,
+) -> io::Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+
+    let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            collect_markdown_checklist_candidates(root, &path, candidates)?;
+        } else if file_type.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("md")
+        {
+            collect_markdown_file_candidates(root, &path, candidates)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_markdown_file_candidates(
+    root: &Path,
+    path: &Path,
+    candidates: &mut Vec<AutopilotCandidate>,
+) -> io::Result<()> {
+    let content = fs::read_to_string(path)?;
+    let rel = relative_path(root, path);
+    for (index, line) in content.lines().enumerate() {
+        let Some(item) = unchecked_markdown_item(line) else {
+            continue;
+        };
+        let line_number = index + 1;
+        candidates.push(AutopilotCandidate {
+            id: format!("autopilot:checklist:{}:{line_number}", rel),
+            title: item.chars().take(96).collect(),
+            description: format!(
+                "Resolve unchecked project work item from {rel}:{line_number}.\n\nItem: {item}\n\nImplement the smallest safe improvement, update the checklist or handoff documentation when the work is complete, and run the smallest relevant verification before finishing."
+            ),
+            source: format!("{rel}:{line_number}"),
+        });
+    }
+    Ok(())
+}
+
+fn unchecked_markdown_item(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let item = trimmed
+        .strip_prefix("- [ ]")
+        .or_else(|| trimmed.strip_prefix("* [ ]"))?
+        .trim();
+    if item.is_empty() {
+        None
+    } else {
+        Some(item.to_string())
+    }
+}
+
+fn relative_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+fn autopilot_run_dir(workspace_root: &Path, log_dir: &Path) -> PathBuf {
+    let base = if log_dir.is_absolute() {
+        log_dir.to_path_buf()
+    } else {
+        workspace_root.join(log_dir)
+    };
+    base.join("runs").join(format!(
+        "run-{}",
+        chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
+    ))
+}
+
+fn autopilot_candidate_json(candidate: &AutopilotCandidate) -> serde_json::Value {
+    serde_json::json!({
+        "id": candidate.id,
+        "title": candidate.title,
+        "source": candidate.source,
+    })
+}
+
+fn log_autopilot_event(run_dir: &Path, event: &str, payload: serde_json::Value) {
+    if let Err(e) = append_autopilot_event(run_dir, event, payload) {
+        eprintln!("[autopilot log failed: {e}]");
+    }
+}
+
+fn append_autopilot_event(
+    run_dir: &Path,
+    event: &str,
+    payload: serde_json::Value,
+) -> io::Result<()> {
+    fs::create_dir_all(run_dir)?;
+    let path = run_dir.join("events.jsonl");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let record = serde_json::json!({
+        "at": chrono::Utc::now().to_rfc3339(),
+        "event": event,
+        "payload": payload,
+    });
+    serde_json::to_writer(&mut file, &record).map_err(io::Error::other)?;
+    writeln!(file)?;
+    Ok(())
+}
+
+fn tracked_workspace_changes(root: &Path) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=no"])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("git status: {e}"))?;
+    if !output.status.success() {
+        return Err(command_failure_message("git status --porcelain", &output));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 fn scan_workspace(root: &Path) -> io::Result<Vec<String>> {
     let mut tasks = Vec::new();
     scan_dir(root, root, &mut tasks)?;
@@ -1220,10 +1624,10 @@ fn find_comment_start(line: &str) -> Option<(usize, &'static str)> {
             continue;
         }
 
-        if let Some(marker) = markers
-            .iter()
-            .find(|marker| line[index..].starts_with(**marker))
-        {
+        if let Some(marker) = markers.iter().find(|marker| {
+            line.get(index..)
+                .is_some_and(|tail| tail.starts_with(**marker))
+        }) {
             return Some((index, *marker));
         }
 
@@ -1828,6 +2232,65 @@ fn test_fibonacci() {
     }
 
     #[test]
+    fn detects_unchecked_markdown_items_for_autopilot() {
+        assert_eq!(
+            unchecked_markdown_item("- [ ] Design continuous loop").as_deref(),
+            Some("Design continuous loop")
+        );
+        assert_eq!(unchecked_markdown_item("- [x] Done"), None);
+        assert_eq!(unchecked_markdown_item("plain text"), None);
+    }
+
+    #[test]
+    fn autopilot_collects_checklist_and_scan_candidates() {
+        let root = unique_test_dir("autopilot");
+        std::fs::create_dir_all(root.join("todos")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("todos/work.md"),
+            "# Work\n\n- [ ] Add resident loop\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/lib.rs"), "// TODO: wire liveness monitor\n").unwrap();
+
+        let candidates = collect_autopilot_candidates(&root).unwrap();
+
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.title == "Add resident loop")
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.title.contains("Resolve TODO in src/lib.rs"))
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.id.starts_with("autopilot:"))
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autopilot_event_log_is_jsonl() {
+        let root = unique_test_dir("autopilot-log");
+        let run_dir = root.join(".a2/autopilot/runs/run-test");
+
+        append_autopilot_event(&run_dir, "test_event", serde_json::json!({"ok": true})).unwrap();
+
+        let content = std::fs::read_to_string(run_dir.join("events.jsonl")).unwrap();
+        let line = content.lines().next().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(parsed["event"], "test_event");
+        assert_eq!(parsed["payload"]["ok"], true);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn scans_workspace_for_todo_and_fixme_comments() {
         let root = unique_test_dir("comments");
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -1853,6 +2316,7 @@ fn test_fibonacci() {
     #[test]
     fn ignores_non_task_mentions_inside_comments_and_strings() {
         assert!(find_scan_marker("/// Scan TODO/FIXME comments and emit tasks.").is_none());
+        assert!(find_scan_marker("A² text before // TODO: real unicode line").is_some());
         assert!(find_scan_marker("let s = \"// TODO: not a comment\";").is_none());
         assert_eq!(
             find_scan_marker("let x = 1; // TODO: real comment"),
