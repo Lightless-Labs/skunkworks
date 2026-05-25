@@ -10,7 +10,7 @@
 //!   a2ctl status                       — show system health
 
 use clap::{Parser, Subcommand};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -190,6 +190,117 @@ struct BenchTaskCase {
     task: BenchTaskSpec,
     verify: BenchVerifySpec,
     setup: BenchSetupSpec,
+}
+
+// ---------------------------------------------------------------------------
+// Autopilot run summary — persisted as run_summary.json per autopilot run.
+// ---------------------------------------------------------------------------
+
+/// Aggregated summary of an entire autopilot run, written to
+/// `<log_dir>/runs/run-<timestamp>/run_summary.json` on completion.
+#[derive(Serialize)]
+struct AutopilotRunSummary {
+    run_id: String,
+    workspace: String,
+    provider: String,
+    max_iterations: usize,
+    started_at: String,
+    completed_at: String,
+    total_iterations: usize,
+    total_tokens: u64,
+    total_duration_secs: f64,
+    patches_produced: usize,
+    applied_count: usize,
+    verified_count: usize,
+    iterations: Vec<AutopilotIterationSummary>,
+}
+
+/// Per-iteration detail within an autopilot run.
+#[derive(Serialize)]
+struct AutopilotIterationSummary {
+    iteration: usize,
+    task_id: String,
+    candidate_id: String,
+    candidate_source: String,
+    candidate_title: String,
+    model: String,
+    tokens: u64,
+    duration_secs: f64,
+    decision: String,
+    patch_produced: bool,
+    patch_stats: Option<PatchStats>,
+    verifier_focus: Vec<String>,
+    apply_ok: bool,
+    verify_ok: bool,
+    apply_note: Option<String>,
+}
+
+/// Patch statistics extracted from the candidate diff.
+#[derive(Serialize)]
+struct PatchStats {
+    files_touched: Vec<String>,
+    diff_lines: usize,
+    diff_bytes: usize,
+}
+
+fn extract_patch_stats(diff: &str) -> PatchStats {
+    let files = extract_diff_files(diff);
+    PatchStats {
+        files_touched: files,
+        diff_lines: diff.lines().count(),
+        diff_bytes: diff.len(),
+    }
+}
+
+fn extract_diff_files(diff: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    for line in diff.lines() {
+        if let Some(rest) = line.strip_prefix("+++ ") {
+            let path = rest.strip_prefix("b/").unwrap_or(rest).trim();
+            if !path.is_empty()
+                && path != "/dev/null"
+                && path != "dev/null"
+                && !files.iter().any(|f| f == path)
+            {
+                files.push(path.to_string());
+            }
+        }
+    }
+    files
+}
+
+/// Extract verifier failure focus and failing test names from the lineage
+/// record and the candidate patch's worktree verifications.
+fn extract_verifier_focus(outcome: &a2d::GovernorOutcome) -> Vec<String> {
+    let mut focus = Vec::new();
+    let push_unique = |focus: &mut Vec<String>, item: String| {
+        if !item.trim().is_empty() && !focus.iter().any(|f| f == &item) {
+            focus.push(item);
+        }
+    };
+    for verification in outcome.lineage.external_verifications.iter().rev() {
+        if !verification.passed {
+            for item in verification.failure_focus.iter() {
+                push_unique(&mut focus, item.clone());
+            }
+            for test in verification.failing_tests.iter() {
+                push_unique(&mut focus, test.clone());
+            }
+        }
+    }
+    if let Some(patch) = &outcome.result.patch {
+        for verification in patch.worktree_verifications.iter().rev() {
+            if !verification.passed {
+                for item in verification.failure_focus.iter() {
+                    push_unique(&mut focus, item.clone());
+                }
+                for test in verification.failing_tests.iter() {
+                    push_unique(&mut focus, test.clone());
+                }
+            }
+        }
+    }
+    focus
 }
 
 #[derive(Debug, Deserialize)]
@@ -600,6 +711,8 @@ async fn main() {
                 }
             };
 
+            let started_at = chrono::Utc::now().to_rfc3339();
+            let mut iteration_summaries: Vec<AutopilotIterationSummary> = Vec::new();
             let mut rows = Vec::new();
             for (iteration, candidate) in candidates.iter().take(max_iterations).enumerate() {
                 let mut task = ingester.ingest(a2_sensorium::ingest::RawSignal {
@@ -652,16 +765,65 @@ async fn main() {
                             }
                         }
                         governor.record_apply_outcome(apply_ok, verify_ok);
+                        let patch_stats = outcome
+                            .result
+                            .patch
+                            .as_ref()
+                            .map(|p| extract_patch_stats(&p.diff));
+                        let patch_stats_json = patch_stats.as_ref().map(|s| {
+                            serde_json::json!({
+                                "files_touched": &s.files_touched,
+                                "diff_lines": s.diff_lines,
+                                "diff_bytes": s.diff_bytes,
+                            })
+                        });
+                        let verifier_focus = extract_verifier_focus(&outcome);
+                        let model_attr = outcome
+                            .result
+                            .patch
+                            .as_ref()
+                            .map(|p| {
+                                format!(
+                                    "{}/{}",
+                                    p.model_attribution.provider, p.model_attribution.model
+                                )
+                            })
+                            .unwrap_or_else(|| requested_model(provider));
+                        let decision_str = format_promotion_decision(&outcome.decision);
+
+                        iteration_summaries.push(AutopilotIterationSummary {
+                            iteration: iteration + 1,
+                            task_id: outcome.task_id.to_string(),
+                            candidate_id: candidate.id.clone(),
+                            candidate_source: candidate.source.clone(),
+                            candidate_title: candidate.title.clone(),
+                            model: model_attr.clone(),
+                            tokens: outcome.result.tokens_used,
+                            duration_secs: outcome.result.duration_secs,
+                            decision: decision_str.clone(),
+                            patch_produced: outcome.result.patch.is_some(),
+                            patch_stats,
+                            verifier_focus: verifier_focus.clone(),
+                            apply_ok,
+                            verify_ok,
+                            apply_note: apply_note.clone(),
+                        });
+
                         log_autopilot_event(
                             &run_dir,
                             "iteration_completed",
                             serde_json::json!({
                                 "iteration": iteration + 1,
                                 "task_id": outcome.task_id.to_string(),
-                                "decision": format_promotion_decision(&outcome.decision),
+                                "candidate_id": candidate.id,
+                                "candidate_source": candidate.source,
+                                "model": model_attr,
+                                "decision": decision_str,
                                 "tokens": outcome.result.tokens_used,
                                 "duration_secs": outcome.result.duration_secs,
                                 "patch_produced": outcome.result.patch.is_some(),
+                                "patch_stats": patch_stats_json,
+                                "verifier_focus": verifier_focus,
                                 "apply_ok": apply_ok,
                                 "verify_ok": verify_ok,
                                 "apply_note": apply_note,
@@ -670,30 +832,100 @@ async fn main() {
                         rows.push(run_summary_row(&candidate.title, provider, &outcome));
                     }
                     Err(e) => {
+                        let model_attr = requested_model(provider);
+                        let decision_str = format!("error: {e}");
                         log_autopilot_event(
                             &run_dir,
                             "iteration_failed",
                             serde_json::json!({
                                 "iteration": iteration + 1,
+                                "candidate_id": candidate.id,
+                                "candidate_source": candidate.source,
                                 "candidate": autopilot_candidate_json(candidate),
+                                "model": &model_attr,
                                 "error": e.to_string(),
                             }),
                         );
-                        rows.push(RunSummaryRow {
-                            title: candidate.title.clone(),
-                            model: requested_model(provider),
+                        iteration_summaries.push(AutopilotIterationSummary {
+                            iteration: iteration + 1,
+                            task_id: String::new(),
+                            candidate_id: candidate.id.clone(),
+                            candidate_source: candidate.source.clone(),
+                            candidate_title: candidate.title.clone(),
+                            model: model_attr.clone(),
                             tokens: 0,
                             duration_secs: 0.0,
-                            decision: format!("error: {e}"),
+                            decision: decision_str.clone(),
+                            patch_produced: false,
+                            patch_stats: None,
+                            verifier_focus: Vec::new(),
+                            apply_ok: false,
+                            verify_ok: false,
+                            apply_note: None,
+                        });
+                        rows.push(RunSummaryRow {
+                            title: candidate.title.clone(),
+                            model: model_attr,
+                            tokens: 0,
+                            duration_secs: 0.0,
+                            decision: decision_str,
                         });
                     }
                 }
             }
 
+            let completed_at = chrono::Utc::now().to_rfc3339();
+            let total_tokens: u64 = iteration_summaries.iter().map(|s| s.tokens).sum();
+            let total_duration_secs: f64 =
+                iteration_summaries.iter().map(|s| s.duration_secs).sum();
+            let patches_produced = iteration_summaries
+                .iter()
+                .filter(|s| s.patch_produced)
+                .count();
+            let applied_count = iteration_summaries.iter().filter(|s| s.apply_ok).count();
+            let verified_count = iteration_summaries.iter().filter(|s| s.verify_ok).count();
+
+            let run_summary = AutopilotRunSummary {
+                run_id: run_dir
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+                workspace: workspace_root.display().to_string(),
+                provider: provider.clone(),
+                max_iterations,
+                started_at,
+                completed_at,
+                total_iterations: iteration_summaries.len(),
+                total_tokens,
+                total_duration_secs,
+                patches_produced,
+                applied_count,
+                verified_count,
+                iterations: iteration_summaries,
+            };
+
+            let summary_path = run_dir.join("run_summary.json");
+            match serde_json::to_string_pretty(&run_summary) {
+                Ok(json) => {
+                    if let Err(e) = fs::write(&summary_path, json) {
+                        eprintln!("[failed to write run summary: {e}]");
+                    }
+                }
+                Err(e) => eprintln!("[failed to serialize run summary: {e}]"),
+            }
+
             log_autopilot_event(
                 &run_dir,
                 "run_completed",
-                serde_json::json!({"iterations": rows.len()}),
+                serde_json::json!({
+                    "iterations": run_summary.total_iterations,
+                    "total_tokens": run_summary.total_tokens,
+                    "total_duration_secs": run_summary.total_duration_secs,
+                    "patches_produced": run_summary.patches_produced,
+                    "applied_count": run_summary.applied_count,
+                    "verified_count": run_summary.verified_count,
+                }),
             );
             print!("{}", render_summary_table(&rows));
             println!("Autopilot log: {}", run_dir.display());
@@ -2392,6 +2624,176 @@ fn test_fibonacci() {
         let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
         assert_eq!(parsed["event"], "test_event");
         assert_eq!(parsed["payload"]["ok"], true);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn extract_diff_files_extracts_touched_paths() {
+        let diff = "diff --git a/crates/a2ctl/src/main.rs b/crates/a2ctl/src/main.rs\n\
+                    --- a/crates/a2ctl/src/main.rs\n\
+                    +++ b/crates/a2ctl/src/main.rs\n\
+                    +@@ -1,3 +1,4 @@\n\
+                    +use x;\n\
+                    diff --git a/crates/a2_core/src/lib.rs b/crates/a2_core/src/lib.rs\n\
+                    +++ b/crates/a2_core/src/lib.rs\n\
+                    ++new line";
+
+        let files = extract_diff_files(diff);
+        assert_eq!(
+            files,
+            vec![
+                "crates/a2ctl/src/main.rs".to_string(),
+                "crates/a2_core/src/lib.rs".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_diff_files_skips_dev_null_and_duplicates() {
+        let diff = "+++ b/dev/null\n\
+                    +++ /dev/null\n\
+                    +++ b/src/main.rs\n\
+                    +++ b/src/main.rs";
+        let files = extract_diff_files(diff);
+        assert_eq!(files, vec!["src/main.rs".to_string()]);
+    }
+
+    #[test]
+    fn extract_patch_stats_computes_lines_and_bytes() {
+        let diff = "+++ b/foo.rs\n+line1\n+line2";
+        let stats = extract_patch_stats(diff);
+        assert_eq!(stats.files_touched, vec!["foo.rs".to_string()]);
+        assert_eq!(stats.diff_lines, 3);
+        assert_eq!(stats.diff_bytes, diff.len());
+    }
+
+    #[test]
+    fn autopilot_run_summary_serializes_to_json() {
+        let summary = AutopilotRunSummary {
+            run_id: "run-20260525T120000Z".into(),
+            workspace: "/tmp/workspace".into(),
+            provider: "claude".into(),
+            max_iterations: 3,
+            started_at: "2026-05-25T12:00:00Z".into(),
+            completed_at: "2026-05-25T12:01:00Z".into(),
+            total_iterations: 2,
+            total_tokens: 4500,
+            total_duration_secs: 30.5,
+            patches_produced: 1,
+            applied_count: 1,
+            verified_count: 0,
+            iterations: vec![
+                AutopilotIterationSummary {
+                    iteration: 1,
+                    task_id: "task-abc".into(),
+                    candidate_id: "autopilot:scan:0".into(),
+                    candidate_source: "scan".into(),
+                    candidate_title: "Fix bug".into(),
+                    model: "claude/claude-sonnet-4-6".into(),
+                    tokens: 3000,
+                    duration_secs: 20.0,
+                    decision: "promote_germline::Prompt".into(),
+                    patch_produced: true,
+                    patch_stats: Some(PatchStats {
+                        files_touched: vec!["src/main.rs".into()],
+                        diff_lines: 12,
+                        diff_bytes: 340,
+                    }),
+                    verifier_focus: vec!["assertion failed: x".into()],
+                    apply_ok: true,
+                    verify_ok: false,
+                    apply_note: Some("[external verify: FAIL] cargo test exited 101".into()),
+                },
+                AutopilotIterationSummary {
+                    iteration: 2,
+                    task_id: String::new(),
+                    candidate_id: "autopilot:scan:1".into(),
+                    candidate_source: "scan".into(),
+                    candidate_title: "Add test".into(),
+                    model: "claude/claude-sonnet-4-6".into(),
+                    tokens: 1500,
+                    duration_secs: 10.5,
+                    decision: "error: timeout".into(),
+                    patch_produced: false,
+                    patch_stats: None,
+                    verifier_focus: vec![],
+                    apply_ok: false,
+                    verify_ok: false,
+                    apply_note: None,
+                },
+            ],
+        };
+
+        let json = serde_json::to_string_pretty(&summary).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["run_id"], "run-20260525T120000Z");
+        assert_eq!(parsed["total_iterations"], 2);
+        assert_eq!(parsed["total_tokens"], 4500);
+        assert_eq!(parsed["patches_produced"], 1);
+        assert_eq!(parsed["iterations"][0]["candidate_source"], "scan");
+        assert_eq!(parsed["iterations"][0]["model"], "claude/claude-sonnet-4-6");
+        assert_eq!(
+            parsed["iterations"][0]["patch_stats"]["files_touched"][0],
+            "src/main.rs"
+        );
+        assert_eq!(parsed["iterations"][0]["patch_stats"]["diff_lines"], 12);
+        assert_eq!(
+            parsed["iterations"][0]["verifier_focus"][0],
+            "assertion failed: x"
+        );
+        assert_eq!(parsed["iterations"][0]["apply_ok"], true);
+        assert_eq!(parsed["iterations"][0]["verify_ok"], false);
+        assert!(parsed["iterations"][1]["patch_stats"].is_null());
+    }
+
+    #[test]
+    fn autopilot_run_summary_writes_to_file() {
+        let root = unique_test_dir("autopilot-summary");
+        let run_dir = root.join(".a2/autopilot/runs/run-test-summary");
+        std::fs::create_dir_all(&run_dir).unwrap();
+
+        let summary = AutopilotRunSummary {
+            run_id: "run-test-summary".into(),
+            workspace: "/tmp/ws".into(),
+            provider: "claude".into(),
+            max_iterations: 1,
+            started_at: "2026-05-25T12:00:00Z".into(),
+            completed_at: "2026-05-25T12:00:30Z".into(),
+            total_iterations: 1,
+            total_tokens: 500,
+            total_duration_secs: 5.0,
+            patches_produced: 1,
+            applied_count: 1,
+            verified_count: 1,
+            iterations: vec![AutopilotIterationSummary {
+                iteration: 1,
+                task_id: "t1".into(),
+                candidate_id: "c1".into(),
+                candidate_source: "explicit".into(),
+                candidate_title: "Test".into(),
+                model: "test/noop".into(),
+                tokens: 500,
+                duration_secs: 5.0,
+                decision: "promote_germline::Prompt".into(),
+                patch_produced: true,
+                patch_stats: None,
+                verifier_focus: vec![],
+                apply_ok: true,
+                verify_ok: true,
+                apply_note: None,
+            }],
+        };
+
+        let summary_path = run_dir.join("run_summary.json");
+        let json = serde_json::to_string_pretty(&summary).unwrap();
+        std::fs::write(&summary_path, &json).unwrap();
+
+        let content = std::fs::read_to_string(&summary_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["run_id"], "run-test-summary");
+        assert_eq!(parsed["iterations"][0]["candidate_source"], "explicit");
 
         std::fs::remove_dir_all(root).unwrap();
     }

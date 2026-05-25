@@ -29,11 +29,12 @@ It should:
 5. Run up to `--max-iterations` workcells using configured providers.
 6. Optionally apply promoted patches via the existing apply + verification path when `--apply` is explicit.
 7. Write durable JSONL events under `.a2/autopilot/runs/<run-id>/events.jsonl`.
-8. Support `--dry-run` for monitoring candidate selection without model calls.
+8. Write `run_summary.json` with per-iteration candidate source, model attribution, patch stats, verifier focus, and apply/rebuild outcome.
+9. Support `--dry-run` for monitoring candidate selection without model calls.
 
 ## Follow-up Slices
 
-- [ ] Persist richer run summaries with per-iteration patch stats and verifier focus.
+- [x] Persist richer run summaries with per-iteration patch stats and verifier focus. Completed 2026-05-25 via autopilot self-iteration on explicit task `autopilot:explicit:c3569160d99bb4d4`; applied and verified clean.
 - [ ] Add stop conditions for repeated failure classes, budget exhaustion, and provider quota failures.
 - [ ] Add a resident/daemon wrapper once the CLI loop is reliable.
 - [ ] Teach autopilot to update checklist state only after verified application.
