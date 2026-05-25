@@ -88,6 +88,12 @@ enum Commands {
         /// Auto-apply promoted patches via git apply.
         #[arg(long)]
         apply: bool,
+        /// Explicit task to run instead of discovering project work. May be repeated.
+        #[arg(long)]
+        task: Vec<String>,
+        /// File containing an explicit task to run instead of discovering project work. May be repeated.
+        #[arg(long)]
+        task_file: Vec<String>,
         /// Only discover and log candidate work; do not call a model.
         #[arg(long)]
         dry_run: bool,
@@ -466,6 +472,8 @@ async fn main() {
             max_tokens,
             timeout,
             apply,
+            task,
+            task_file,
             dry_run,
             log_dir,
         } => {
@@ -475,11 +483,21 @@ async fn main() {
             }
 
             let workspace_root = PathBuf::from(&workspace);
-            let candidates = match collect_autopilot_candidates(&workspace_root) {
-                Ok(candidates) => candidates,
-                Err(e) => {
-                    eprintln!("Autopilot discovery failed: {e}");
-                    std::process::exit(1);
+            let candidates = if task.is_empty() && task_file.is_empty() {
+                match collect_autopilot_candidates(&workspace_root) {
+                    Ok(candidates) => candidates,
+                    Err(e) => {
+                        eprintln!("Autopilot discovery failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                match explicit_autopilot_candidates(&workspace_root, &task, &task_file) {
+                    Ok(candidates) => candidates,
+                    Err(e) => {
+                        eprintln!("Autopilot explicit task setup failed: {e}");
+                        std::process::exit(1);
+                    }
                 }
             };
             let run_dir = autopilot_run_dir(&workspace_root, Path::new(&log_dir));
@@ -1363,6 +1381,58 @@ fn collect_autopilot_candidates(root: &Path) -> io::Result<Vec<AutopilotCandidat
     }
 
     Ok(candidates)
+}
+
+fn explicit_autopilot_candidates(
+    root: &Path,
+    tasks: &[String],
+    task_files: &[String],
+) -> io::Result<Vec<AutopilotCandidate>> {
+    let mut candidates = Vec::new();
+    for (index, task) in tasks.iter().enumerate() {
+        candidates.push(explicit_autopilot_candidate(
+            &format!("task:{index}"),
+            task,
+            &format!("--task[{index}]"),
+        ));
+    }
+
+    for task_file in task_files {
+        let path = PathBuf::from(task_file);
+        let full_path = if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        };
+        let content = fs::read_to_string(&full_path)?;
+        let source = format!("--task-file:{}", relative_path(root, &full_path));
+        candidates.push(explicit_autopilot_candidate(&source, &content, &source));
+    }
+
+    Ok(candidates)
+}
+
+fn explicit_autopilot_candidate(key: &str, task: &str, source: &str) -> AutopilotCandidate {
+    let title = derive_run_title(task).chars().take(96).collect::<String>();
+    AutopilotCandidate {
+        id: format!("autopilot:explicit:{}", stable_text_fingerprint(key, task)),
+        title,
+        description: format!(
+            "Run the explicit autopilot task below as a self-improvement iteration for this repository.\n\nTask:\n{task}\n\nAs you work, improve the project where needed, update relevant docs/todos when complete, and run the smallest relevant verification before finishing."
+        ),
+        source: source.into(),
+    }
+}
+
+fn stable_text_fingerprint(key: &str, value: &str) -> String {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for byte in key.bytes().chain(std::iter::once(0)).chain(value.bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
 }
 
 fn collect_markdown_checklist_candidates(
@@ -2270,6 +2340,42 @@ fn test_fibonacci() {
                 .iter()
                 .all(|candidate| candidate.id.starts_with("autopilot:"))
         );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_autopilot_task_becomes_stable_candidate() {
+        let root = unique_test_dir("autopilot-explicit");
+        let task = "Improve autopilot summaries".to_string();
+
+        let first = explicit_autopilot_candidates(&root, std::slice::from_ref(&task), &[]).unwrap();
+        let second = explicit_autopilot_candidates(&root, &[task], &[]).unwrap();
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].title, "Improve autopilot summaries");
+        assert_eq!(first[0].source, "--task[0]");
+        assert_eq!(first[0].id, second[0].id);
+        assert!(first[0].description.contains("explicit autopilot task"));
+    }
+
+    #[test]
+    fn explicit_autopilot_task_file_becomes_candidate() {
+        let root = unique_test_dir("autopilot-task-file");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("task.txt"), "Add task-file support\nwith details").unwrap();
+
+        let candidates = explicit_autopilot_candidates(
+            &root,
+            &[],
+            &[root.join("task.txt").display().to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].title, "Add task-file support");
+        assert!(candidates[0].source.contains("--task-file:"));
+        assert!(candidates[0].description.contains("with details"));
 
         std::fs::remove_dir_all(root).unwrap();
     }

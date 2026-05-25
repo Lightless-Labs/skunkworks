@@ -11,7 +11,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 | Metric | Value |
 |--------|-------|
-| Tests | 93 Rust + 10 self-correction Python tests |
+| Tests | 95 Rust + 10 self-correction Python tests |
 | Sentinels | 6/6 PASS |
 | Crates | 11 |
 | Benchmark (OpenCode/GLM via A²) | 5/5 (with 100k token / 1800s budget) |
@@ -168,7 +168,7 @@ ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/
 - Retry context includes verifier-derived relevant files when verifier output names Rust source paths.
 - Retry context includes `anti_repeat_retry` warnings when latest failed patch touched files do not overlap unresolved verifier-derived Rust source paths; repeated failed touched-file sets are counted.
 - Anti-repeat retry can be disabled for ablation via `a2ctl run --disable-anti-repeat-retry`; `bench/self_correction.py --disable-anti-repeat` forwards the flag and records `anti_repeat_retry_enabled`/`ablation` in JSONL. `bench/self_correction_score.py` reports ablation cohorts when enabled and disabled records are scored together.
-- `a2ctl autopilot` exists as the in-repo continuous self-iteration entrypoint. It discovers unchecked checklist items in `todos/` and `docs/plans/`, adds code TODO/FIXME scan candidates, pins stable task IDs from candidate source locations, logs JSONL events under `.a2/autopilot/runs/<run-id>/events.jsonl`, supports `--dry-run`, and only mutates the workspace when `--apply` is explicit.
+- `a2ctl autopilot` exists as the in-repo continuous self-iteration entrypoint. It accepts explicit tasks via repeated `--task` and `--task-file`; otherwise it discovers unchecked checklist items in `todos/` and `docs/plans/` plus code TODO/FIXME scan candidates. It pins stable task IDs from explicit task content or candidate source locations, logs JSONL events under `.a2/autopilot/runs/<run-id>/events.jsonl`, supports `--dry-run`, and only mutates the workspace when `--apply` is explicit.
 - Task-specific verifier commands are represented on `TaskContract` and run inside candidate worktrees before promotion scoring; verifier results are stored on `PatchBundle.worktree_verifications` and copied into `LineageRecord.external_verifications`. Verifier commands are not rendered into the initial prompt; failures surface through structured lineage after an attempted patch.
 - `bench/self_correction.py` passes each fixture's verifier command via JSONL `verification_commands` as of 2026-05-21. Verifier commands are system-side metadata and are not rendered in the initial prompt.
 - A² supports `pi` and `pi/<model_id>` providers as of 2026-05-22. Default `pi` model is `zai/glm-5.1`; explicit form is `pi/zai/glm-5.1`. WorktreeCatalyst runs `pi --mode json --no-session --print` from the candidate worktree and parses final text plus token usage.
@@ -313,4 +313,4 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-05-24 | `compound-sensorium-same-crate-hidden` Minimax N=3 with hidden candidate verifier | Minimax scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; result `/tmp/a2-sensorium-same-crate-minimax.jsonl`. |
 | 2026-05-24 | `compound-sensorium-same-crate-hidden` Kimi N=3 with hidden candidate verifier | Kimi scored resolved 3/3, pass@1 1/3, loop exercised 2/3, self-corrected 2/3; result `/tmp/a2-sensorium-same-crate-kimi.jsonl`. |
 | 2026-05-24 | Add anti-repeat ablation command surface | `a2ctl run --disable-anti-repeat-retry` disables only the anti-repeat retry motif while retaining prior lineage, verifier-derived relevant files, retry acceptance criteria, and candidate-worktree verifiers; `bench/self_correction.py --disable-anti-repeat` records cohort fields and the scorer can print enabled/disabled cohorts. |
-| 2026-05-25 | Add in-repo autopilot command | `a2ctl autopilot` discovers unchecked checklist work in `todos/` and `docs/plans/`, includes code TODO/FIXME scan tasks, logs run events to `.a2/autopilot/runs/<run-id>/events.jsonl`, supports dry-run planning, and requires explicit `--apply` for workspace mutation. |
+| 2026-05-25 | Add in-repo autopilot command | `a2ctl autopilot` accepts explicit tasks through `--task`/`--task-file`, otherwise discovers unchecked checklist work in `todos/` and `docs/plans/` plus code TODO/FIXME scan tasks; it logs run events to `.a2/autopilot/runs/<run-id>/events.jsonl`, supports dry-run planning, and requires explicit `--apply` for workspace mutation. |

@@ -22,13 +22,14 @@ Add `a2ctl autopilot` as the in-repo control loop entrypoint.
 
 It should:
 
-1. Discover candidate work from unchecked markdown checklist items in `todos/` and `docs/plans/`.
-2. Include source-code `TODO`/`FIXME` scan results as lower-structure candidate work.
-3. Pin stable task IDs from candidate source locations so lineage survives repeated autopilot runs.
-4. Run up to `--max-iterations` workcells using configured providers.
-5. Optionally apply promoted patches via the existing apply + verification path when `--apply` is explicit.
-6. Write durable JSONL events under `.a2/autopilot/runs/<run-id>/events.jsonl`.
-7. Support `--dry-run` for monitoring candidate selection without model calls.
+1. Accept explicit work through repeated `--task` and `--task-file` flags.
+2. Discover candidate work from unchecked markdown checklist items in `todos/` and `docs/plans/` when no explicit task is supplied.
+3. Include source-code `TODO`/`FIXME` scan results as lower-structure candidate work.
+4. Pin stable task IDs from explicit task content or candidate source locations so lineage survives repeated autopilot runs.
+5. Run up to `--max-iterations` workcells using configured providers.
+6. Optionally apply promoted patches via the existing apply + verification path when `--apply` is explicit.
+7. Write durable JSONL events under `.a2/autopilot/runs/<run-id>/events.jsonl`.
+8. Support `--dry-run` for monitoring candidate selection without model calls.
 
 ## Follow-up Slices
 
