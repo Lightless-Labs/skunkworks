@@ -294,3 +294,8 @@ Search `docs/solutions/` before implementing. Key findings:
 
 2026-05-25: Advanced the autonomous project loop task by making the remaining bounded repair/escalation contract explicit in todos/autonomous-project-loop.md, including repair budget, hard-stop behavior, report requirements, and no-partial-application invariants.
 
+
+## Autopilot update 1779713332097
+
+Advanced autonomous project loop task by specifying the provider-diverse repair escalation contract: repair attempts must record the attempted provider topology, may escalate to an alternate provider/model after the primary maintainer provider fails, preserve the same typed project_patchset contract and safety gates, and stop with a machine-readable report when escalation budget is exhausted.
+

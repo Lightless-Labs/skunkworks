@@ -7,6 +7,7 @@
 **Enhanced:** 2026-05-24 — real-tree apply and local commit gate
 **Enhanced:** 2026-05-25 — bounded repair loop
 **Enhanced:** 2026-05-25 — bounded repair/escalation contract captured
+**Enhanced:** 2026-05-25 — provider-diverse repair escalation contract captured
 **Plan:** `docs/plans/autonomous-project-loop.md`
 
 ## Context
@@ -47,7 +48,17 @@ The remaining implementation gap is not another unconstrained provider retry. It
 6. Keep a small explicit repair budget, initially one repair attempt per autopilot iteration.
 7. If the budget is exhausted, stop the iteration with a clear failed status, leave the real working tree unchanged unless rollback has succeeded after a real-tree gate failure, and record the final report in the monitor log.
 
-This contract is the next executable slice for closing the two remaining repair/escalation acceptance criteria.
+## Provider-diverse escalation contract
+
+Provider-diverse repair should be a bounded extension of the repair loop, not a second uncontrolled agent path:
+
+1. Record the primary maintainer provider/model used for the original project patchset in the monitor log and in each repair prompt artifact.
+2. On the first repairable failure, retry with the same provider only if no alternate project-maintainer provider is configured or healthy.
+3. When an alternate provider/model is configured and circuit-breaker policy allows it, escalate exactly one repair attempt to that alternate provider/model before declaring the repair budget exhausted.
+4. The escalated provider receives the same structured inputs as normal repair: original `project_state`, selected `project_task`, rejected `project_patchset`, `project_validation_report`, and the prior provider/model metadata.
+5. Escalated repair output must still be typed `project_patchset` JSON and must pass the identical parse, path, temp-worktree, source self-sandbox, validation, rollback, handoff, and commit gates.
+6. Monitor events must make provider diversity auditable by naming the attempted provider/model, escalation reason, repair attempt index, and terminal outcome.
+7. Provider-diverse escalation must never override hard safety stops for protected paths, traversal, invalid replacement paths, or non-eligible mechanism edits.
 
 ## Notes
 
