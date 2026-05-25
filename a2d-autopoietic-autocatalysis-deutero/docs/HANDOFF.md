@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-05-24 (session 15 — autonomous project loop gap captured)
+**Last updated:** 2026-05-25 (session 15 — autopilot outer loop live-validated with Pi)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-140 commits. 163 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 32 compound learnings.
+201 commits. 178 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 32 compound learnings.
 
 ## Clean-session pickup
 
@@ -38,10 +38,11 @@
 - **Compounding self-modification is unproven:** the only live architect patch in `sudoku 5` was irrelevant (`prime.rs`) and was reverted; relevance gate now prevents that class.
 - **Escalation rungs 4–6 are missing:** rungs 0–3 detect loops but do not reliably halt degradation.
 - **Benchmark coverage is narrow:** sudoku is validated; chess/rubiks need stronger acceptance tests and live runs.
+- **Autopilot still has autonomy gaps:** repair attempts currently use the assigned maintainer provider only (no provider-diverse escalation yet); project state is collected once before the iteration loop, so multi-iteration runs can use stale state after a commit; task selection still prefers `todos/autonomous-project-loop.md` even after much of it is satisfied.
 
 ### Best next moves
 
-1. **Close the outer autonomous project loop with gated self-modification:** current A²D can run bounded challenge/topology cycles when invoked, but it still lacks the repo-maintenance loop the human/coding assistant has been doing: read handoff/todos, choose task, self-modify code/docs, run gates, repair/escalate failures, commit, update handoff, repeat. This must not become a docs-only task runner; eligible source self-modification is expected through self-sandbox/cargo-test gates. Plan: `docs/plans/autonomous-project-loop.md`; todo: `todos/autonomous-project-loop.md`.
+1. **Finish autopilot autonomy hardening:** the outer loop now selects `todos/autonomous-project-loop.md`, invokes Pi, gates patchsets, temp-validates, real-validates, commits, logs evidence, and has same-provider bounded repair. Next gaps are provider-diverse repair escalation, multi-iteration state refresh after commits, and task selection that stops reselecting already-satisfied work. Plan: `docs/plans/autonomous-project-loop.md`; todo: `todos/autonomous-project-loop.md`.
 2. **Strengthen durable provider-policy gates:** `provider_policy` now persists beside `germline.json`; next safety step is bounded topology-comparison gating before durable policy changes become defaults.
 3. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
 4. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
@@ -66,6 +67,8 @@
 - **Provider circuit breaker:** provider invocation failures/timeouts temporarily cool down the failing provider and route subsequent invocations to healthy alternatives; cooldown expiry makes the original provider eligible again.
 - **CLI provider filesystem isolation:** CLI providers now run in an empty temp cwd, so coding tools cannot directly mutate the repo outside the `SystemPatch` + self-sandbox path.
 - **OpenCode write-output recovery:** OpenCode NDJSON parsing now handles current `/part/text`, legacy top-level `/text`, and `write` tool payloads. If the model writes the artifact then says only `Done.`, A²D recovers the written content instead of wasting the invocation.
+- **Outer autopilot loop is live for project work:** `a2d autopilot` builds project state, selects a task, invokes Pi as maintainer, requires typed `ProjectPatchset` JSON, path-gates changes, temp-worktree validates, real-tree validates, updates handoff, commits locally, and writes monitor JSONL/artifacts under `.a2d/autopilot/`.
+- **Autopilot repair is bounded:** parse/path/temp/real/provider failures route to repair prompts with original context, previous output, and mechanical failure evidence; `--repair-attempts N` / `A2D_AUTOPILOT_REPAIR_ATTEMPTS` controls budget.
 
 ### What happened this session
 
@@ -76,8 +79,10 @@
 - **Autopilot real-tree apply/commit gate landed.** Patchsets that pass temp validation are applied to the real tree, validation commands rerun, `handoff_update` is appended to `docs/HANDOFF.md` when no explicit handoff replacement is present, touched paths are `git add`ed and committed locally, and validation/commit failures restore original file contents plus reset touched paths. Events/artifacts: `real_tree_apply_started`, `real_tree_apply_completed`, `apply-report.json`. Git dirtiness is scoped to the current project path (`git status --short -- .`) so sibling workspace changes do not block A²D autopilot.
 - **First non-dry autopilot run exposed a provider-context/provider-choice gap.** Run `run-1779708405080-0` invoked Kimi/OpenCode on `todos/autonomous-project-loop.md`; the provider ran in isolated cwd, tried to read repo files with tools, got denied/not found, and returned empty parsed output. Monitor logs captured raw output (`raw_output_bytes=15409`) and `patchset_parse_failed`. A prompt/context fix alone was insufficient: run `run-1779708596310-0` still tried tool reads and returned empty output.
 - **Maintainer moved to Pi.** Added a `CliProvider::pi` integration and assigned the outer-loop `maintainer` role to `pi/default` instead of falling through to OpenCode/Kimi. Pi is invoked in non-interactive ephemeral artifact mode (`--print --no-session --no-tools --no-context-files --no-extensions --no-skills --no-prompt-templates --no-themes`) so it emits a typed patchset while A²D remains responsible for gated application. Maintainer prompt still includes full selected task content.
-- **Validation:** `cargo test` passes (177 passing, 2 ignored). Next: rerun non-dry autopilot with Pi maintainer and inspect monitor logs/outcome.
+- **Pi maintainer live validation passed.** Non-dry `cargo run -q -p a2d -- autopilot --iterations 1` on this project selected `todos/autonomous-project-loop.md`, invoked `pi/default`, produced a valid patchset, passed temp `cargo test`, passed real `cargo test`, and committed `dc864dd Autopilot: capture bounded repair contract`. Monitor run: `.a2d/autopilot/runs/run-1779711206673-0/`.
 - **Autopilot bounded repair loop landed.** `a2d autopilot` now supports `--repair-attempts N` / `A2D_AUTOPILOT_REPAIR_ATTEMPTS` (default 1). Parse failures, path-gate rejections, temp-worktree validation failures, real-tree validation/apply failures, and provider invocation failures are converted into repair prompts containing the original task/context, previous output, and mechanical failure report. Repair attempts are logged with `repair_attempt_started`, `repair_output_received`, and `repair_budget_exhausted`; per-attempt artifacts live under `iteration-N/attempt-M/`.
+- **Repair-enabled autopilot live validation passed.** Non-dry `cargo run -q -p a2d -- autopilot --iterations 1 --repair-attempts 1` selected `todos/autonomous-project-loop.md`, invoked `pi/default`, did not need repair because attempt 0 passed, temp/real `cargo test` passed, and autopilot committed `0c3fc0d Autopilot: capture provider-diverse repair escalation contract`. Monitor run: `.a2d/autopilot/runs/run-1779713261084-0/`.
+- **Validation:** latest full `cargo test` passes (178 passing, 2 ignored).
 
 - **Provider policy lineage persistence landed.** `LineageArchive` now reads/writes `provider-policy.json` beside `germline.json`; normal runtime loads persisted provider policy through the same mechanical gate used for model-proposed policy artifacts; accepted non-regressing provider-policy changes are committed to lineage. `A2D_GERMLINE=seed` bypasses persisted policy, while topology comparison keeps seed on defaults and lets evolved mode include lineage policy. Plan updated: `docs/plans/provider-policy-artifact.md`. Learning: `docs/solutions/architectural-insights/provider-policy-lineage-persistence-2026-05-23.md`.
 - **Validation:** `cargo test` passes (163 passing, 2 ignored). `cargo run -q -p a2d -- status` confirms lineage-loaded 7-enzyme RAF remains 100% closed.

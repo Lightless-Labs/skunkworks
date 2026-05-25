@@ -31,10 +31,12 @@ The inner challenge metabolism is bounded and self-adaptive, but no command owns
 - [x] Source/mechanism self-modifications go through self-sandbox/cargo-test gates. Path gate identifies eligible source self-modification, temp validation requires the source target to exist, and `cargo test` is injected when needed.
 - [x] Docs/todos/plans changes are limited to approved markdown paths.
 - [x] Failed validation creates a typed `project_validation_report` and routes to a bounded repair/escalation loop instead of immediately waiting for a human. Parse, path, temp-validation, real-apply, and provider invocation failures now route to bounded repair attempts.
-- Protected-file changes are rejected as hard safety stops; eligible source self-modifications are not.
+- [x] Protected-file changes are rejected as hard safety stops; eligible source self-modifications are not.
 - [x] Passing non-dry-run iterations apply changes, rerun gates, update handoff, and make an atomic local git commit.
 - [x] Failure after repair/escalation budget stops the loop with a clear report and a machine-readable monitor log; no silent partial application. Rollback exists for failed real-tree validation and `repair_budget_exhausted` records terminal failure.
 - [ ] Provider-diverse escalation for repair attempts. Current repair loop uses the assigned maintainer provider; model/provider swap remains open.
+- [ ] Refresh `project_state` after each committed iteration so `--iterations N` does not select from stale handoff/todo/git status.
+- [ ] Improve task selection/completion detection so autopilot does not keep selecting already-satisfied `todos/autonomous-project-loop.md` work.
 
 ## Bounded repair/escalation contract
 
