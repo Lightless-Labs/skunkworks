@@ -416,8 +416,10 @@ fn build_registry() -> ProviderRegistry {
         "opencode/deepseek-v4-flash-free",
     )));
     let glm = registry.register(Box::new(CliProvider::opencode("zai-coding-plan/glm-5.1")));
+    let pi = registry.register(Box::new(CliProvider::pi(None)));
 
     registry.assign(EnzymeId::from("evolver"), 0);
+    registry.assign(EnzymeId::from("maintainer"), pi);
     for enzyme in ["tester", "architect"] {
         registry.assign(EnzymeId::from(enzyme), glm);
     }
@@ -2417,11 +2419,16 @@ mod tests {
             registry.provider_for(&EnzymeId::from("architect")).name(),
             "opencode/zai-coding-plan/glm-5.1"
         );
+        assert_eq!(
+            registry.provider_for(&EnzymeId::from("maintainer")).name(),
+            "pi/default"
+        );
         assert!(
             registry
                 .providers()
                 .contains(&"opencode/opencode/deepseek-v4-flash-free")
         );
+        assert!(registry.providers().contains(&"pi/default"));
     }
 
     #[test]

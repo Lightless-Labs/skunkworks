@@ -79,6 +79,46 @@ impl CliProvider {
         }
     }
 
+    /// Create a Pi CLI provider.
+    ///
+    /// Pi is the repo-maintenance/coding-agent harness used for the outer
+    /// project loop. Run it in non-interactive ephemeral mode and disable tools
+    /// for typed artifact-production roles; A²D applies any proposed changes
+    /// through its own patchset gates rather than allowing direct provider
+    /// filesystem mutation.
+    pub fn pi(model: Option<&str>) -> Self {
+        let model = model.map(str::to_string);
+        let name = model
+            .as_ref()
+            .map(|model| format!("pi/{model}"))
+            .unwrap_or_else(|| "pi/default".to_string());
+        Self {
+            name,
+            command: "pi".to_string(),
+            args_builder: Box::new(move |req: &InvocationRequest| {
+                let mut args = vec![
+                    "--print".to_string(),
+                    "--no-session".to_string(),
+                    "--no-tools".to_string(),
+                    "--no-context-files".to_string(),
+                    "--no-extensions".to_string(),
+                    "--no-skills".to_string(),
+                    "--no-prompt-templates".to_string(),
+                    "--no-themes".to_string(),
+                    "--system-prompt".to_string(),
+                    req.system.clone(),
+                ];
+                if let Some(model) = &model {
+                    args.push("--model".to_string());
+                    args.push(model.clone());
+                }
+                args.push(req.prompt.clone());
+                args
+            }),
+            output_parser: Box::new(|output: &str| (output.to_string(), None)),
+        }
+    }
+
     /// Create an OpenCode CLI provider.
     ///
     /// Uses `--format json` to get clean NDJSON output without ANSI codes.
@@ -330,6 +370,25 @@ mod tests {
     fn non_glm_providers_keep_shorter_default_timeout() {
         assert_eq!(default_timeout_secs("opencode/kimi-for-coding/k2p5"), 300);
         assert_eq!(default_timeout_secs("gemini/gemini-3-pro"), 300);
+        assert_eq!(default_timeout_secs("pi/default"), 300);
+    }
+
+    #[test]
+    fn pi_provider_is_ephemeral_no_tools_artifact_mode() {
+        let provider = CliProvider::pi(None);
+        let request = InvocationRequest {
+            enzyme_id: a2d_core::types::EnzymeId::from("maintainer"),
+            system: "system".to_string(),
+            prompt: "prompt".to_string(),
+            max_tokens: 100,
+        };
+
+        assert_eq!(provider.name(), "pi/default");
+        let args = (provider.args_builder)(&request);
+        assert!(args.contains(&"--print".to_string()));
+        assert!(args.contains(&"--no-session".to_string()));
+        assert!(args.contains(&"--no-tools".to_string()));
+        assert!(args.contains(&"--system-prompt".to_string()));
     }
 
     #[test]
