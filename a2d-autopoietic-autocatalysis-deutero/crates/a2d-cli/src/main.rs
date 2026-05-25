@@ -497,6 +497,7 @@ struct ProjectState {
 struct ProjectDoc {
     path: String,
     title: String,
+    body: String,
     body_preview: String,
 }
 
@@ -960,6 +961,7 @@ fn collect_markdown_docs(root: &Path, dir: &Path, docs: &mut Vec<ProjectDoc>) {
             path: relative.to_string_lossy().replace('\\', "/"),
             title: first_markdown_title(&body).unwrap_or_else(|| "Untitled".to_string()),
             body_preview: preview(&body, 1200),
+            body,
         });
     }
 }
@@ -1002,6 +1004,7 @@ fn select_project_task(state: &ProjectState) -> Option<ProjectTask> {
 fn maintainer_system_prompt() -> String {
     "You are A²D's outer-loop maintainer enzyme. Your job is gated autonomous self-modification of this repository.\n\
      Return JSON only. Do not run shell commands. Do not describe changes outside JSON.\n\
+     Filesystem tools are unavailable and unnecessary: use only the project_state and file contents provided in the prompt.\n\
      Produce a project_patchset with: commit_message, validation_commands, handoff_update, replacements.\n\
      replacements must be complete file contents. Source self-modification is allowed for eligible mechanism files; protected files are not.\n\
      Prefer one small atomic change that advances the selected project_task."
@@ -1022,6 +1025,15 @@ fn build_maintainer_prompt(state: &ProjectState, task: &ProjectTask) -> String {
         .collect::<Vec<_>>()
         .join("\n");
 
+    let selected_doc = state
+        .todos
+        .iter()
+        .chain(state.plans.iter())
+        .find(|doc| doc.path == task.source_path);
+    let selected_doc_body = selected_doc
+        .map(|doc| doc.body.as_str())
+        .unwrap_or("selected task body unavailable");
+
     format!(
         "PROJECT_STATE\n\
          git_status:\n{}\n\n\
@@ -1034,6 +1046,8 @@ fn build_maintainer_prompt(state: &ProjectState, task: &ProjectTask) -> String {
          objective: {}\n\
          allows_self_modification: {}\n\
          acceptance_gates:\n{}\n\n\
+         SELECTED_TASK_FILE_CONTENT\n\
+         ```markdown\n{}\n```\n\n\
          OUTPUT CONTRACT\n\
          Return exactly one JSON object matching:\n\
          {{\"commit_message\":\"Autopilot: ...\",\"validation_commands\":[\"cargo test\"],\"handoff_update\":\"...\",\"replacements\":[{{\"path\":\"relative/path\",\"new_content\":\"complete file content\"}}]}}",
@@ -1049,7 +1063,8 @@ fn build_maintainer_prompt(state: &ProjectState, task: &ProjectTask) -> String {
             .iter()
             .map(|gate| format!("- {gate}"))
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n"),
+        selected_doc_body,
     )
 }
 
@@ -2607,11 +2622,13 @@ mod tests {
                 ProjectDoc {
                     path: "todos/provider-policy-topology-gate.md".to_string(),
                     title: "Provider Policy Gate".to_string(),
+                    body: "Gate provider policies".to_string(),
                     body_preview: "Gate provider policies".to_string(),
                 },
                 ProjectDoc {
                     path: "todos/autonomous-project-loop.md".to_string(),
                     title: "Autonomous Project Loop".to_string(),
+                    body: "Allow gated self-modification of crates/ source".to_string(),
                     body_preview: "Allow gated self-modification of crates/ source".to_string(),
                 },
             ],
