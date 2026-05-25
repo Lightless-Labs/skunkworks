@@ -5,6 +5,7 @@
 **Enhanced:** 2026-05-24 — structured monitor logs for external steering
 **Enhanced:** 2026-05-24 — temp-worktree patchset validation
 **Enhanced:** 2026-05-24 — gated real-tree apply and local commit
+**Enhanced:** 2026-05-25 — bounded repair loop
 
 ## Problem
 
@@ -67,8 +68,9 @@ Implemented first slice on 2026-05-24:
 - Every autopilot run emits structured JSONL events plus per-run artifacts under `.a2d/autopilot/` so an external monitor/steerer can evaluate both model outputs and mechanical outcomes.
 - Gated patchsets are copied into a temp worktree, replacements are applied there first, allowlisted validation commands can run there, source self-modification requires an existing source target and injects `cargo test` when needed, and the validation report is logged as JSON before any real-tree application.
 - Patchsets that pass temp validation are applied to the real tree, validation commands rerun, handoff updates are appended when needed, touched paths are committed locally, and failures roll back original file contents before stopping.
+- Failed parse, path-gate, temp-worktree validation, real-tree validation/apply, or provider invocation now routes to a bounded repair prompt with the original task/context, previous output, and mechanical failure report. Configure with `--repair-attempts N` or `A2D_AUTOPILOT_REPAIR_ATTEMPTS` (default 1).
 
-Next slice: bounded repair/escalation on failed parse/path/temp/real validation, followed by multi-iteration state refresh after commits.
+Next slice: provider escalation/diversity for repair attempts and multi-iteration state refresh after commits.
 
 ### Loop state artifacts
 
@@ -129,6 +131,9 @@ Current event types include:
 - `temp_worktree_validation_completed`
 - `real_tree_apply_started`
 - `real_tree_apply_completed`
+- `repair_attempt_started`
+- `repair_output_received`
+- `repair_budget_exhausted`
 - `run_stopped_after_temp_validation`
 - `run_stopped_before_apply`
 

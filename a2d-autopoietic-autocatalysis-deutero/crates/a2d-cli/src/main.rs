@@ -451,6 +451,7 @@ struct AutopilotConfig {
     iterations: usize,
     dry_run: bool,
     allow_dirty: bool,
+    repair_attempts: usize,
 }
 
 impl AutopilotConfig {
@@ -459,6 +460,10 @@ impl AutopilotConfig {
             iterations: 1,
             dry_run: false,
             allow_dirty: false,
+            repair_attempts: env::var("A2D_AUTOPILOT_REPAIR_ATTEMPTS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(1),
         };
 
         let mut idx = 0;
@@ -477,6 +482,12 @@ impl AutopilotConfig {
                 "--allow-dirty" => {
                     config.allow_dirty = true;
                     idx += 1;
+                }
+                "--repair-attempts" => {
+                    if let Some(value) = args.get(idx + 1).and_then(|value| value.parse().ok()) {
+                        config.repair_attempts = value;
+                    }
+                    idx += 2;
                 }
                 _ => idx += 1,
             }
@@ -651,6 +662,7 @@ fn run_autopilot(config: AutopilotConfig) {
             "iterations": config.iterations,
             "dry_run": config.dry_run,
             "allow_dirty": config.allow_dirty,
+            "repair_attempts": config.repair_attempts,
         }),
     );
     println!("Autopilot run id: {}", logger.run_id);
@@ -736,187 +748,283 @@ fn run_autopilot(config: AutopilotConfig) {
 
         let registry = build_registry();
         let provider = registry.provider_for(&EnzymeId::from("maintainer"));
-        println!("Invoking maintainer via {}...", provider.name());
-        logger.event(
-            "maintainer_invocation_started",
-            json!({"iteration": iteration, "provider": provider.name()}),
-        );
-        let response = match provider.invoke(&InvocationRequest {
-            enzyme_id: EnzymeId::from("maintainer"),
-            system: maintainer_system_prompt(),
-            prompt,
-            max_tokens: 12_000,
-        }) {
-            Ok(response) => response,
-            Err(error) => {
-                println!("Maintainer invocation failed: {error}");
-                logger.event(
-                    "maintainer_invocation_failed",
-                    json!({"iteration": iteration, "provider": provider.name(), "error": error.to_string()}),
-                );
-                return;
-            }
-        };
+        let original_prompt = prompt.clone();
+        let mut attempt_prompt = prompt;
+        let max_attempts = config.repair_attempts + 1;
 
-        let output_path = logger.artifact(
-            &format!("iteration-{iteration}/maintainer-output.txt"),
-            &response.text,
-        );
-        if let Some(raw) = &response.raw_output {
+        for attempt in 0..max_attempts {
+            if attempt == 0 {
+                println!("Invoking maintainer via {}...", provider.name());
+                logger.event(
+                    "maintainer_invocation_started",
+                    json!({"iteration": iteration, "attempt": attempt, "provider": provider.name()}),
+                );
+            } else {
+                println!(
+                    "Invoking repair attempt {}/{} via {}...",
+                    attempt,
+                    config.repair_attempts,
+                    provider.name()
+                );
+                logger.event(
+                    "repair_attempt_started",
+                    json!({"iteration": iteration, "attempt": attempt, "provider": provider.name()}),
+                );
+            }
+
+            let response = match provider.invoke(&InvocationRequest {
+                enzyme_id: EnzymeId::from("maintainer"),
+                system: maintainer_system_prompt(),
+                prompt: attempt_prompt.clone(),
+                max_tokens: 12_000,
+            }) {
+                Ok(response) => response,
+                Err(error) => {
+                    let failure = format!("maintainer invocation failed: {error}");
+                    logger.event(
+                        "maintainer_invocation_failed",
+                        json!({"iteration": iteration, "attempt": attempt, "provider": provider.name(), "error": error.to_string()}),
+                    );
+                    if attempt + 1 < max_attempts {
+                        attempt_prompt = build_repair_prompt(&original_prompt, "", &failure);
+                        continue;
+                    }
+                    println!("Maintainer invocation failed: {error}");
+                    logger.event(
+                        "repair_budget_exhausted",
+                        json!({"iteration": iteration, "attempt": attempt, "failure": failure}),
+                    );
+                    return;
+                }
+            };
+
+            let output_path = logger.artifact(
+                &format!("iteration-{iteration}/attempt-{attempt}/maintainer-output.txt"),
+                &response.text,
+            );
+            if let Some(raw) = &response.raw_output {
+                logger.artifact(
+                    &format!("iteration-{iteration}/attempt-{attempt}/maintainer-raw-output.txt"),
+                    raw,
+                );
+            }
+            logger.event(
+                if attempt == 0 {
+                    "maintainer_output_received"
+                } else {
+                    "repair_output_received"
+                },
+                json!({
+                    "iteration": iteration,
+                    "attempt": attempt,
+                    "provider": provider.name(),
+                    "output_bytes": response.text.len(),
+                    "raw_output_bytes": response.raw_output.as_ref().map(|raw| raw.len()),
+                    "artifact": output_path.to_string_lossy(),
+                    "output_preview": preview(&response.text, 1200),
+                }),
+            );
+
+            let patchset = match parse_project_patchset(&response.text) {
+                Ok(patchset) => patchset,
+                Err(error) => {
+                    let failure = format!("patchset parse failed: {error}");
+                    println!("Maintainer returned malformed project_patchset: {error}");
+                    println!("Parsed output preview: {}", preview(&response.text, 1200));
+                    logger.event(
+                        "patchset_parse_failed",
+                        json!({
+                            "iteration": iteration,
+                            "attempt": attempt,
+                            "error": error.to_string(),
+                            "output_artifact": output_path.to_string_lossy(),
+                        }),
+                    );
+                    if attempt + 1 < max_attempts {
+                        attempt_prompt =
+                            build_repair_prompt(&original_prompt, &response.text, &failure);
+                        continue;
+                    }
+                    logger.event(
+                        "repair_budget_exhausted",
+                        json!({"iteration": iteration, "attempt": attempt, "failure": failure}),
+                    );
+                    return;
+                }
+            };
+
+            let patchset_summary = serde_json::to_string_pretty(&json!({
+                "commit_message": patchset.commit_message,
+                "validation_commands": patchset.validation_commands,
+                "handoff_update": patchset.handoff_update,
+                "replacements": patchset.replacements.iter().map(|replacement| json!({
+                    "path": replacement.path,
+                    "new_content_bytes": replacement.new_content.len(),
+                    "new_content_preview": preview(&replacement.new_content, 400),
+                })).collect::<Vec<_>>(),
+            }))
+            .unwrap_or_default();
             logger.artifact(
-                &format!("iteration-{iteration}/maintainer-raw-output.txt"),
-                raw,
+                &format!("iteration-{iteration}/attempt-{attempt}/patchset-summary.json"),
+                &patchset_summary,
             );
-        }
-        logger.event(
-            "maintainer_output_received",
-            json!({
-                "iteration": iteration,
-                "provider": provider.name(),
-                "output_bytes": response.text.len(),
-                "raw_output_bytes": response.raw_output.as_ref().map(|raw| raw.len()),
-                "artifact": output_path.to_string_lossy(),
-                "output_preview": preview(&response.text, 1200),
-            }),
-        );
 
-        let patchset = match parse_project_patchset(&response.text) {
-            Ok(patchset) => patchset,
-            Err(error) => {
-                println!("Maintainer returned malformed project_patchset: {error}");
-                println!("Parsed output preview: {}", preview(&response.text, 1200));
+            let gate = validate_project_patchset_paths(&patchset);
+            println!("Patchset replacements: {}", patchset.replacements.len());
+            println!("Commit message: {}", patchset.commit_message);
+            if !patchset.validation_commands.is_empty() {
+                println!("Validation commands: {:?}", patchset.validation_commands);
+            }
+            if !patchset.handoff_update.trim().is_empty() {
+                println!(
+                    "Handoff update: {}",
+                    compact_one_line(&patchset.handoff_update, 240)
+                );
+            }
+            logger.event(
+                "patchset_path_gate_evaluated",
+                json!({
+                    "iteration": iteration,
+                    "attempt": attempt,
+                    "accepted": gate.accepted,
+                    "rejected": gate.rejected,
+                    "requires_cargo_test": gate.requires_cargo_test,
+                    "replacement_paths": patchset.replacements.iter().map(|replacement| replacement.path.clone()).collect::<Vec<_>>(),
+                }),
+            );
+            if !gate.accepted {
+                let failure = format!("path gate rejected patchset: {}", gate.rejected.join("; "));
+                println!("Patchset rejected by path gate:");
+                for reason in &gate.rejected {
+                    println!("  - {reason}");
+                }
+                if attempt + 1 < max_attempts {
+                    attempt_prompt =
+                        build_repair_prompt(&original_prompt, &response.text, &failure);
+                    continue;
+                }
                 logger.event(
-                    "patchset_parse_failed",
-                    json!({
-                        "iteration": iteration,
-                        "error": error.to_string(),
-                        "output_artifact": output_path.to_string_lossy(),
-                    }),
+                    "repair_budget_exhausted",
+                    json!({"iteration": iteration, "attempt": attempt, "failure": failure}),
                 );
                 return;
             }
-        };
-
-        let patchset_summary = serde_json::to_string_pretty(&json!({
-            "commit_message": patchset.commit_message,
-            "validation_commands": patchset.validation_commands,
-            "handoff_update": patchset.handoff_update,
-            "replacements": patchset.replacements.iter().map(|replacement| json!({
-                "path": replacement.path,
-                "new_content_bytes": replacement.new_content.len(),
-                "new_content_preview": preview(&replacement.new_content, 400),
-            })).collect::<Vec<_>>(),
-        }))
-        .unwrap_or_default();
-        logger.artifact(
-            &format!("iteration-{iteration}/patchset-summary.json"),
-            &patchset_summary,
-        );
-
-        let gate = validate_project_patchset_paths(&patchset);
-        println!("Patchset replacements: {}", patchset.replacements.len());
-        println!("Commit message: {}", patchset.commit_message);
-        if !patchset.validation_commands.is_empty() {
-            println!("Validation commands: {:?}", patchset.validation_commands);
-        }
-        if !patchset.handoff_update.trim().is_empty() {
-            println!(
-                "Handoff update: {}",
-                compact_one_line(&patchset.handoff_update, 240)
-            );
-        }
-        logger.event(
-            "patchset_path_gate_evaluated",
-            json!({
-                "iteration": iteration,
-                "accepted": gate.accepted,
-                "rejected": gate.rejected,
-                "requires_cargo_test": gate.requires_cargo_test,
-                "replacement_paths": patchset.replacements.iter().map(|replacement| replacement.path.clone()).collect::<Vec<_>>(),
-            }),
-        );
-        if !gate.accepted {
-            println!("Patchset rejected by path gate:");
-            for reason in gate.rejected {
-                println!("  - {reason}");
+            if gate.requires_cargo_test {
+                println!(
+                    "Patchset includes eligible source self-modification; cargo test/self-sandbox required before apply."
+                );
             }
-            return;
-        }
-        if gate.requires_cargo_test {
-            println!(
-                "Patchset includes eligible source self-modification; cargo test/self-sandbox required before apply."
-            );
-        }
 
-        let validation = validate_project_patchset_in_temp_worktree(&root, &patchset, &gate);
-        let validation_json = project_validation_report_json(&validation);
-        logger.artifact(
-            &format!("iteration-{iteration}/validation-report.json"),
-            &serde_json::to_string_pretty(&validation_json).unwrap_or_default(),
-        );
-        logger.event(
-            "temp_worktree_validation_completed",
-            json!({
-                "iteration": iteration,
-                "accepted": validation.accepted,
-                "errors": validation.errors,
-                "worktree_path": validation.worktree_path.to_string_lossy(),
-                "commands": validation.command_results.iter().map(|result| json!({
-                    "command": result.command,
-                    "success": result.success,
-                    "status": result.status,
-                    "stdout_preview": result.stdout_preview,
-                    "stderr_preview": result.stderr_preview,
-                })).collect::<Vec<_>>(),
-            }),
-        );
-        if !validation.accepted {
-            println!("Temp-worktree validation failed:");
-            for error in validation.errors {
-                println!("  - {error}");
+            let validation = validate_project_patchset_in_temp_worktree(&root, &patchset, &gate);
+            let validation_json = project_validation_report_json(&validation);
+            logger.artifact(
+                &format!("iteration-{iteration}/attempt-{attempt}/validation-report.json"),
+                &serde_json::to_string_pretty(&validation_json).unwrap_or_default(),
+            );
+            logger.event(
+                "temp_worktree_validation_completed",
+                json!({
+                    "iteration": iteration,
+                    "attempt": attempt,
+                    "accepted": validation.accepted,
+                    "errors": validation.errors,
+                    "worktree_path": validation.worktree_path.to_string_lossy(),
+                    "commands": validation.command_results.iter().map(|result| json!({
+                        "command": result.command,
+                        "success": result.success,
+                        "status": result.status,
+                        "stdout_preview": result.stdout_preview,
+                        "stderr_preview": result.stderr_preview,
+                    })).collect::<Vec<_>>(),
+                }),
+            );
+            if !validation.accepted {
+                let failure = format!(
+                    "temp-worktree validation failed: {}",
+                    validation.errors.join("; ")
+                );
+                println!("Temp-worktree validation failed:");
+                for error in &validation.errors {
+                    println!("  - {error}");
+                }
+                if attempt + 1 < max_attempts {
+                    attempt_prompt = build_repair_prompt(
+                        &original_prompt,
+                        &response.text,
+                        &format!("{failure}\n{}", validation_json),
+                    );
+                    continue;
+                }
+                logger.event(
+                    "repair_budget_exhausted",
+                    json!({"iteration": iteration, "attempt": attempt, "failure": failure}),
+                );
+                return;
             }
-            return;
-        }
 
-        println!(
-            "Patchset passed temp-worktree validation. Applying to real tree and committing..."
-        );
-        logger.event("real_tree_apply_started", json!({"iteration": iteration}));
-        let apply_report = apply_validated_patchset_to_real_tree(&root, &patchset, &gate);
-        let apply_json = project_apply_report_json(&apply_report);
-        logger.artifact(
-            &format!("iteration-{iteration}/apply-report.json"),
-            &serde_json::to_string_pretty(&apply_json).unwrap_or_default(),
-        );
-        logger.event(
-            "real_tree_apply_completed",
-            json!({
-                "iteration": iteration,
-                "accepted": apply_report.accepted,
-                "committed": apply_report.committed,
-                "commit_hash": apply_report.commit_hash,
-                "errors": apply_report.errors,
-                "touched_paths": apply_report.touched_paths,
-                "commands": apply_report.command_results.iter().map(|result| json!({
-                    "command": result.command,
-                    "success": result.success,
-                    "status": result.status,
-                    "stdout_preview": result.stdout_preview,
-                    "stderr_preview": result.stderr_preview,
-                })).collect::<Vec<_>>(),
-            }),
-        );
-        if apply_report.accepted {
             println!(
-                "Autopilot committed {}",
-                apply_report.commit_hash.as_deref().unwrap_or("unknown")
+                "Patchset passed temp-worktree validation. Applying to real tree and committing..."
             );
-        } else {
+            logger.event(
+                "real_tree_apply_started",
+                json!({"iteration": iteration, "attempt": attempt}),
+            );
+            let apply_report = apply_validated_patchset_to_real_tree(&root, &patchset, &gate);
+            let apply_json = project_apply_report_json(&apply_report);
+            logger.artifact(
+                &format!("iteration-{iteration}/attempt-{attempt}/apply-report.json"),
+                &serde_json::to_string_pretty(&apply_json).unwrap_or_default(),
+            );
+            logger.event(
+                "real_tree_apply_completed",
+                json!({
+                    "iteration": iteration,
+                    "attempt": attempt,
+                    "accepted": apply_report.accepted,
+                    "committed": apply_report.committed,
+                    "commit_hash": apply_report.commit_hash,
+                    "errors": apply_report.errors,
+                    "touched_paths": apply_report.touched_paths,
+                    "commands": apply_report.command_results.iter().map(|result| json!({
+                        "command": result.command,
+                        "success": result.success,
+                        "status": result.status,
+                        "stdout_preview": result.stdout_preview,
+                        "stderr_preview": result.stderr_preview,
+                    })).collect::<Vec<_>>(),
+                }),
+            );
+            if apply_report.accepted {
+                println!(
+                    "Autopilot committed {}",
+                    apply_report.commit_hash.as_deref().unwrap_or("unknown")
+                );
+                return;
+            }
+
+            let failure = format!(
+                "real-tree application failed: {}",
+                apply_report.errors.join("; ")
+            );
             println!("Real-tree application failed and was rolled back:");
-            for error in apply_report.errors {
+            for error in &apply_report.errors {
                 println!("  - {error}");
             }
+            if attempt + 1 < max_attempts {
+                attempt_prompt = build_repair_prompt(
+                    &original_prompt,
+                    &response.text,
+                    &format!("{failure}\n{}", apply_json),
+                );
+                continue;
+            }
+            logger.event(
+                "repair_budget_exhausted",
+                json!({"iteration": iteration, "attempt": attempt, "failure": failure}),
+            );
+            return;
         }
+
         return;
     }
 }
@@ -1067,6 +1175,22 @@ fn build_maintainer_prompt(state: &ProjectState, task: &ProjectTask) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         selected_doc_body,
+    )
+}
+
+fn build_repair_prompt(original_prompt: &str, failed_output: &str, failure_report: &str) -> String {
+    format!(
+        "The previous autopilot maintainer attempt failed mechanical gates.\n\
+         You must repair the output, not explain the failure. Return exactly one ProjectPatchset JSON object.\n\n\
+         FAILURE_REPORT\n```text\n{}\n```\n\n\
+         PREVIOUS_OUTPUT\n```text\n{}\n```\n\n\
+         ORIGINAL_TASK_AND_CONTEXT\n{}\n\n\
+         OUTPUT CONTRACT\n\
+         Return exactly one JSON object matching:\n\
+         {{\"commit_message\":\"Autopilot: ...\",\"validation_commands\":[\"cargo test\"],\"handoff_update\":\"...\",\"replacements\":[{{\"path\":\"relative/path\",\"new_content\":\"complete file content\"}}]}}",
+        failure_report,
+        preview(failed_output, 6000),
+        original_prompt,
     )
 }
 
@@ -2612,6 +2736,8 @@ mod tests {
             "3".to_string(),
             "--dry-run".to_string(),
             "--allow-dirty".to_string(),
+            "--repair-attempts".to_string(),
+            "2".to_string(),
         ];
 
         let config = AutopilotConfig::parse(&args);
@@ -2619,6 +2745,20 @@ mod tests {
         assert_eq!(config.iterations, 3);
         assert!(config.dry_run);
         assert!(config.allow_dirty);
+        assert_eq!(config.repair_attempts, 2);
+    }
+
+    #[test]
+    fn repair_prompt_carries_failure_output_and_original_context() {
+        let prompt = build_repair_prompt("ORIGINAL TASK", "not json", "patchset parse failed: EOF");
+
+        assert!(prompt.contains("FAILURE_REPORT"));
+        assert!(prompt.contains("patchset parse failed"));
+        assert!(prompt.contains("PREVIOUS_OUTPUT"));
+        assert!(prompt.contains("not json"));
+        assert!(prompt.contains("ORIGINAL_TASK_AND_CONTEXT"));
+        assert!(prompt.contains("ORIGINAL TASK"));
+        assert!(prompt.contains("ProjectPatchset JSON"));
     }
 
     #[test]

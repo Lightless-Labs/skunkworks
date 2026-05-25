@@ -5,6 +5,7 @@
 **Enhanced:** 2026-05-24 — structured monitor logs
 **Enhanced:** 2026-05-24 — temp-worktree validation
 **Enhanced:** 2026-05-24 — real-tree apply and local commit gate
+**Enhanced:** 2026-05-25 — bounded repair loop
 **Enhanced:** 2026-05-25 — bounded repair/escalation contract captured
 **Plan:** `docs/plans/autonomous-project-loop.md`
 
@@ -28,10 +29,11 @@ The inner challenge metabolism is bounded and self-adaptive, but no command owns
 - [x] Patchsets are path-gated and validated in a temp worktree before real application.
 - [x] Source/mechanism self-modifications go through self-sandbox/cargo-test gates. Path gate identifies eligible source self-modification, temp validation requires the source target to exist, and `cargo test` is injected when needed.
 - [x] Docs/todos/plans changes are limited to approved markdown paths.
-- [ ] Failed validation creates a typed `project_validation_report` and routes to a bounded repair/escalation loop instead of immediately waiting for a human. Validation report exists; repair/escalation remains open.
+- [x] Failed validation creates a typed `project_validation_report` and routes to a bounded repair/escalation loop instead of immediately waiting for a human. Parse, path, temp-validation, real-apply, and provider invocation failures now route to bounded repair attempts.
 - Protected-file changes are rejected as hard safety stops; eligible source self-modifications are not.
 - [x] Passing non-dry-run iterations apply changes, rerun gates, update handoff, and make an atomic local git commit.
-- [ ] Failure after repair/escalation budget stops the loop with a clear report and a machine-readable monitor log; no silent partial application. Rollback exists for failed real-tree validation; bounded repair/escalation remains open.
+- [x] Failure after repair/escalation budget stops the loop with a clear report and a machine-readable monitor log; no silent partial application. Rollback exists for failed real-tree validation and `repair_budget_exhausted` records terminal failure.
+- [ ] Provider-diverse escalation for repair attempts. Current repair loop uses the assigned maintainer provider; model/provider swap remains open.
 
 ## Bounded repair/escalation contract
 
