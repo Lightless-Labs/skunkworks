@@ -1,6 +1,8 @@
 # Provider Policy Topology Gate
 
 **Created:** 2026-05-23
+**Started:** 2026-05-26 — bounded current-vs-proposed comparison gate implemented
+**Plan:** `docs/plans/provider-policy-topology-gate.md`
 **Depends on:** `provider_policy` typed artifact and lineage persistence (implemented 2026-05-23).
 
 ## Problem
@@ -36,10 +38,10 @@ Minimal acceptance rule:
 
 ## Acceptance Criteria
 
-- Unit test: valid provider policy can be accepted in memory but withheld from lineage when the gate fails.
-- Unit test: a clearly better mock policy is persisted.
-- CLI smoke: comparison output includes current/proposed policy names and policy deltas.
-- Live bounded run: a provider-policy proposal does not become durable without comparison evidence.
+- [x] Unit test: valid provider policy can be accepted in memory but withheld from lineage when the gate fails.
+- [x] Unit test: a clearly better mock policy is persisted.
+- [x] CLI smoke: comparison output includes current/proposed policy names and policy deltas.
+- [ ] Live bounded run: a real provider-policy proposal does not become durable without comparison evidence.
 
 ## Notes
 

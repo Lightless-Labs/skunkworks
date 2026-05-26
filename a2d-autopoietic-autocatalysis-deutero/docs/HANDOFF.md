@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-05-26 (session 16 — autopilot autonomy hardening landed)
+**Last updated:** 2026-05-26 (session 17 — provider-policy topology gate landed)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-207 commits. 180 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 32 compound learnings.
+208 commits. 183 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 32 compound learnings.
 
 ## Clean-session pickup
 
@@ -25,7 +25,7 @@
 - **Coder no longer starves feedback metabolism after success:** a successful code-producing invocation ends the cycle so benchmark feedback can become the next cycle's food. Scheduler priority is dynamic: coder first before code exists; once mechanical fitness exists, evolver → architect → tester → coder.
 - **Evolver consumes mechanical fitness directly:** seed and loaded lineage germlines now use `fitness_report` as the evolver reactant; `test_results` is optional supporting evidence, not a gate. This routes sandbox outcome evidence directly into adaptation.
 - **Provider health is metabolic food:** metabolism emits a mechanical `provider_health_report` artifact with unavailable providers, cooldown/failure counters, recent invocation outcomes, and coder candidate portfolio evidence. Seed/loaded germlines route it to evolver and architect so provider-role degradation is visible to the system, not just to humans reading logs.
-- **Provider policy is now a typed, gated, durable artifact:** `provider_policy` serializes active role-provider assignments; enzymes that produce it can propose assignment changes, but the metabolism accepts only known-enzyme/registered-provider changes and records accepted/rejected policy records in lineage. Current policy is routed to evolver/architect as catalyst context. Accepted non-regressing policy is persisted as lineage `provider-policy.json` and reloaded through the same mechanical gate on later runs.
+- **Provider policy is now typed, gated, durable, and comparison-gated:** `provider_policy` serializes active role-provider assignments; enzymes that produce it can propose assignment changes, but the metabolism accepts only known-enzyme/registered-provider changes and records accepted/rejected policy records in lineage. Current policy is routed to evolver/architect as catalyst context. Accepted non-regressing policy now must also pass a bounded current-vs-proposed provider-policy comparison before `provider-policy.json` is persisted in lineage.
 - **GLM is off the coder/evolver critical path:** coder default is Kimi k2.6 with DeepSeek v4 flash fallback; evolver is explicitly assigned to Kimi k2.6 after GLM evolver timeouts starved feedback metabolism. Non-parallel evolver fallback is role-isolated, so it should not route to tester/architect GLM after Kimi/DeepSeek cooldowns. GLM 5.1 remains assigned to tester/architect only.
 - **Failed rung-2 consultation is bounded:** if consultation times out/fails, the workcell fails immediately instead of spending a second full provider timeout on the primary invocation.
 - **Timeouts are bounded but provider-specific:** GLM 5.1 now gets 900s by default; other CLI providers default to 300s; `A2D_PROVIDER_TIMEOUT_SECS` overrides.
@@ -40,10 +40,11 @@
 - **Escalation rungs 4–6 are missing:** rungs 0–3 detect loops but do not reliably halt degradation.
 - **Benchmark coverage is narrow:** sudoku is validated; chess/rubiks need stronger acceptance tests and live runs.
 - **Autopilot still has unproven live repair diversity:** provider-diverse repair routing is unit-covered and dry-run task-selection was smoke-validated, but a live failed patchset has not yet exercised the Pi → alternate-provider repair path.
+- **Provider-policy gate still needs a real proposal run:** the bounded comparison gate, persistence guard, and CLI smoke are implemented; a live metabolism run with an actual provider_policy proposal has not yet demonstrated rejection/acceptance end-to-end.
 
 ### Best next moves
 
-1. **Strengthen durable provider-policy gates:** `provider_policy` now persists beside `germline.json`; next safety step is bounded topology/current-vs-proposed comparison before durable policy changes become defaults. Dry-run task selection now advances to `todos/provider-policy-topology-gate.md` after the autonomous-project-loop todo became checkbox-complete.
+1. **Live-validate a real provider-policy proposal through the new gate:** induce a bounded provider_policy proposal and confirm no durable `provider-policy.json` commit occurs without comparison evidence; inspect current/proposed deltas and decision output.
 2. **Live-validate provider-diverse autopilot repair:** induce or wait for a repairable parse/path/temp-validation failure and confirm monitor logs show Pi primary plus alternate-provider repair metadata and that the identical gates still apply.
 3. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
 4. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
@@ -70,11 +71,13 @@
 - **OpenCode write-output recovery:** OpenCode NDJSON parsing now handles current `/part/text`, legacy top-level `/text`, and `write` tool payloads. If the model writes the artifact then says only `Done.`, A²D recovers the written content instead of wasting the invocation.
 - **Outer autopilot loop is live for project work:** `a2d autopilot` builds project state, selects a task, invokes Pi as maintainer, requires typed `ProjectPatchset` JSON, path-gates changes, temp-worktree validates, real-tree validates, updates handoff, commits locally, and writes monitor JSONL/artifacts under `.a2d/autopilot/`.
 - **Autopilot repair is bounded and provider-diverse:** parse/path/temp/real/provider failures route to repair prompts with original context, previous output, mechanical failure evidence, and provider-attempt metadata; `--repair-attempts N` / `A2D_AUTOPILOT_REPAIR_ATTEMPTS` controls budget, with repair attempt 1 using the configured alternate maintainer provider when available.
+- **Provider-policy comparisons are now inspectable:** `a2d compare-provider-policy <challenge> <cycles> [policy-json|@path]` runs current and proposed policies with persistence disabled, prints policy deltas, and reports a gate decision.
 
 ### What happened this session
 
-- **Autopilot autonomy hardening landed.** `a2d autopilot` now records maintainer provider topology, sends provider-attempt metadata in repair prompts, and routes repair attempt 1 to the configured alternate maintainer provider when one exists (Pi primary → Kimi alternate in the current registry). Multi-iteration runs refresh `project_state` after each committed iteration and stop if the refreshed tree is dirty. Task selection now skips checkbox-completed todos, so after marking `todos/autonomous-project-loop.md` complete the dry-run selector advances to `todos/provider-policy-topology-gate.md`.
-- **Validation:** `cargo test` passes (180 passing, 2 ignored). `cargo run -q -p a2d -- autopilot --iterations 1 --dry-run --allow-dirty` selects `todos/provider-policy-topology-gate.md` without invoking providers or modifying tracked files.
+- **Provider-policy topology gate landed.** Added `docs/plans/provider-policy-topology-gate.md`, `a2d compare-provider-policy`, current-vs-proposed policy comparison runs, deterministic gate decisions, and `commit_provider_policy_if_gate_accepts`. Runtime provider-policy lineage persistence now requires bounded comparison evidence after in-memory schema/provider/enzyme acceptance and non-regression. Gate rejects missing fitness evidence, worse best fitness, zero-fitness inconclusive comparisons, material invocation increases, and material wall-clock increases. Provider-policy snapshots are filtered to current germline enzymes so outer-loop-only assignments such as `maintainer` are not durably written as challenge-metabolism policy.
+- **Provider-policy gate validation:** `cargo test` passes (183 passing, 2 ignored). CLI smoke passed: `A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 cargo run -q -p a2d -- compare-provider-policy sudoku 1` printed `current`/`proposed` policy modes, `no assignment changes`, and rejected due missing fitness evidence without lineage persistence.
+- **Autopilot autonomy hardening remains landed.** `a2d autopilot` records maintainer provider topology, sends provider-attempt metadata in repair prompts, routes repair attempt 1 to the configured alternate maintainer provider when one exists (Pi primary → Kimi alternate in the current registry), refreshes `project_state` after commits, and skips checkbox-completed todos.
 
 - **Autonomous project loop gap captured and corrected toward self-modification.** The missing loop is now explicit: A²D has an inner challenge metabolism, but not the outer repo-maintenance loop currently performed by the human/coding assistant (`read handoff/todos → choose task → self-modify code/docs → run gates → repair/escalate → commit → update handoff → repeat`). Added plan `docs/plans/autonomous-project-loop.md` and todo `todos/autonomous-project-loop.md` for a bounded `a2d autopilot` command with typed `project_state`, `project_task`, `project_patchset`, validation reports, repair/escalation, handoff, and commit gates. Important correction: self-modification is the target behavior, not a non-goal; the safety property is gated self-modification, not absence of self-modification.
 - **First executable autopilot surface landed.** `a2d autopilot` now parses `--iterations`, `--dry-run`, and `--allow-dirty`; builds `ProjectState` from handoff/todos/plans/git/status; selects `todos/autonomous-project-loop.md` first; emits a maintainer prompt that explicitly allows eligible source self-modification; defines typed `ProjectPatchset` JSON; parses fenced JSON; and path-gates patchsets, rejecting traversal/protected files while accepting eligible source self-modification with required cargo-test gating. Non-dry-run can invoke the maintainer provider and gate the returned patchset, but temp-worktree validation/application/repair/commit remains the next slice.
@@ -265,6 +268,7 @@ Failure Report + Fitness + System Code ──→ Architect ──→ System Patc
 a2d challenge sudoku 3        # 3 cycles of sudoku
 A2D_GERMLINE=seed a2d challenge sudoku 3  # force 4-enzyme seed topology
 a2d compare-topologies sudoku 3           # seed vs evolved without persistence
+a2d compare-provider-policy sudoku 1      # current vs proposed provider policy without persistence
 a2d challenge chess 3
 a2d challenge rubiks 3
 
@@ -274,7 +278,7 @@ a2d enzymes                   # List enzyme definitions (now includes architect)
 a2d lineage                   # Git log of germline evolution
 
 # Run tests
-cargo test                    # 180 tests passing (2 ignored integration)
+cargo test                    # 183 tests passing (2 ignored integration)
 cargo test -- --ignored       # Run integration tests (slow, compiles in temp dir)
 
 # Check OpenCode model IDs
@@ -291,7 +295,7 @@ Search `docs/solutions/` before implementing. Key findings:
 
 ## Todos
 
-- `todos/provider-policy-topology-gate.md` — gate durable provider-policy changes with bounded topology/current-vs-proposed comparisons
+- `todos/provider-policy-topology-gate.md` — mostly implemented; remaining live validation with a real provider_policy proposal
 - `todos/autonomous-project-loop.md` — checkbox-complete for current slice; future refinements may deepen task semantics or live repair-diversity validation
 - `todos/bounded-live-benchmarks.md` — `sudoku 5` completed with 100% best fitness; remaining provider waste: GLM timeouts + architect no-materialized-output
 - `todos/escalation-rungs-4-6.md` — model swap → multi-model consensus → Darwinian isolation (rungs 0–3 live; provider_policy now available as durable provider-assignment mechanism)

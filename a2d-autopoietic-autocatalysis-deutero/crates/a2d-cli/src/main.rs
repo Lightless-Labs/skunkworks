@@ -48,13 +48,19 @@ fn main() {
             let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(3);
             run_topology_comparison(challenge_name, num_cycles);
         }
+        "compare-provider-policy" | "policy-gate" => {
+            let challenge_name = if arg2.is_empty() { "sudoku" } else { arg2 };
+            let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
+            let proposed_policy_arg = args.get(4).map(String::as_str);
+            run_provider_policy_comparison_cli(challenge_name, num_cycles, proposed_policy_arg);
+        }
         "autopilot" => run_autopilot(AutopilotConfig::parse(&args[2..])),
         "status" => show_status(),
         "enzymes" => list_enzymes(),
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|challenge|compare-topologies|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|challenge|compare-topologies|compare-provider-policy|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -98,6 +104,8 @@ fn load_lineage_germline() -> Option<Germline> {
 enum TopologyMode {
     Seed,
     Evolved,
+    CurrentPolicy,
+    ProposedPolicy,
 }
 
 impl TopologyMode {
@@ -105,6 +113,8 @@ impl TopologyMode {
         match self {
             TopologyMode::Seed => "seed",
             TopologyMode::Evolved => "evolved",
+            TopologyMode::CurrentPolicy => "current",
+            TopologyMode::ProposedPolicy => "proposed",
         }
     }
 }
@@ -112,7 +122,9 @@ impl TopologyMode {
 fn load_germline_for_topology(mode: TopologyMode) -> Germline {
     match mode {
         TopologyMode::Seed => seed_germline(),
-        TopologyMode::Evolved => load_lineage_germline().unwrap_or_else(seed_germline),
+        TopologyMode::Evolved | TopologyMode::CurrentPolicy | TopologyMode::ProposedPolicy => {
+            load_lineage_germline().unwrap_or_else(seed_germline)
+        }
     }
 }
 
@@ -483,6 +495,22 @@ fn apply_loaded_provider_policy(
         .map(|enzyme| enzyme.id.clone())
         .collect::<BTreeSet<_>>();
     registry.apply_policy(policy, &valid_enzyme_ids)
+}
+
+fn provider_policy_for_germline(policy: &ProviderPolicy, germline: &Germline) -> ProviderPolicy {
+    let valid_enzyme_ids = germline
+        .enzymes()
+        .into_iter()
+        .map(|enzyme| enzyme.id.0.clone())
+        .collect::<BTreeSet<_>>();
+    ProviderPolicy {
+        assignments: policy
+            .assignments
+            .iter()
+            .filter(|(enzyme, _)| valid_enzyme_ids.contains(*enzyme))
+            .map(|(enzyme, provider)| (enzyme.clone(), provider.clone()))
+            .collect(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2025,6 +2053,8 @@ fn run_cycle(num_cycles: usize, requirements: &str) {
 
     for cycle_num in 1..=num_cycles {
         println!("\nRunning cycle {cycle_num}/{num_cycles}...");
+        let provider_policy_before_cycle =
+            provider_policy_for_germline(&metabolism.provider_policy(), metabolism.germline());
         let report = metabolism.run_cycle();
 
         total_mutations += report.accepted_mutations;
@@ -2119,8 +2149,29 @@ fn run_cycle(num_cycles: usize, requirements: &str) {
             if regressed {
                 println!("  ⚠ Fitness regressed — skipping provider policy commit");
             } else if let Some(ref archive) = archive {
-                match archive.commit_provider_policy(&metabolism.provider_policy(), &report) {
-                    Ok(hash) => println!("  Provider policy lineage: {hash}"),
+                let proposed_policy = provider_policy_for_germline(
+                    &metabolism.provider_policy(),
+                    metabolism.germline(),
+                );
+                let gate = run_provider_policy_gate(
+                    metabolism.germline().clone(),
+                    &provider_policy_gate_challenge("sudoku"),
+                    provider_policy_gate_cycles(),
+                    &provider_policy_before_cycle,
+                    &proposed_policy,
+                );
+                print_provider_policy_gate_summary(&gate);
+                match commit_provider_policy_if_gate_accepts(
+                    archive,
+                    &proposed_policy,
+                    &report,
+                    &gate.decision,
+                ) {
+                    Ok(Some(hash)) => println!("  Provider policy lineage: {hash}"),
+                    Ok(None) => println!(
+                        "  ⚠ Provider policy gate rejected durable commit: {}",
+                        gate.decision.reason
+                    ),
                     Err(e) => eprintln!("  Provider policy lineage error: {e}"),
                 }
             }
@@ -2273,6 +2324,8 @@ fn run_challenge(name: &str, num_cycles: usize) {
 
     for cycle_num in 1..=num_cycles {
         println!("\nCycle {cycle_num}/{num_cycles}...");
+        let provider_policy_before_cycle =
+            provider_policy_for_germline(&metabolism.provider_policy(), metabolism.germline());
         let report = metabolism.run_cycle();
 
         for entry in &report.lineage {
@@ -2329,8 +2382,26 @@ fn run_challenge(name: &str, num_cycles: usize) {
             }
             if report.accepted_provider_policy_changes > 0 && delta >= 0.0 {
                 if let Some(ref archive) = archive {
-                    match archive.commit_provider_policy(&metabolism.provider_policy(), &report) {
-                        Ok(hash) => print!(" [policy: {hash}]"),
+                    let proposed_policy = provider_policy_for_germline(
+                        &metabolism.provider_policy(),
+                        metabolism.germline(),
+                    );
+                    let gate = run_provider_policy_gate(
+                        metabolism.germline().clone(),
+                        challenge.name,
+                        provider_policy_gate_cycles(),
+                        &provider_policy_before_cycle,
+                        &proposed_policy,
+                    );
+                    print_provider_policy_gate_summary(&gate);
+                    match commit_provider_policy_if_gate_accepts(
+                        archive,
+                        &proposed_policy,
+                        &report,
+                        &gate.decision,
+                    ) {
+                        Ok(Some(hash)) => print!(" [policy: {hash}]"),
+                        Ok(None) => print!(" [policy gate rejected: {}]", gate.decision.reason),
                         Err(e) => print!(" [policy lineage error: {e}]"),
                     }
                 }
@@ -2411,6 +2482,323 @@ fn run_topology_comparison(name: &str, num_cycles: usize) {
         invocation_delta,
         wall_delta
     );
+}
+
+#[derive(Debug, Clone)]
+struct ProviderPolicyGateEvidence {
+    current: TopologyRunSummary,
+    proposed: TopologyRunSummary,
+    deltas: Vec<String>,
+    decision: ProviderPolicyGateDecision,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ProviderPolicyGateDecision {
+    accepted: bool,
+    reason: String,
+    fitness_delta: f64,
+    invocation_delta: isize,
+    wall_delta_secs: f64,
+}
+
+fn run_provider_policy_comparison_cli(
+    name: &str,
+    num_cycles: usize,
+    proposed_policy_arg: Option<&str>,
+) {
+    println!("A²D Provider Policy Comparison: {name} ({num_cycles} cycles each)");
+    println!("═══════════════════");
+    println!("Persistence disabled: no lineage commits and no accepted patches applied.\n");
+
+    let germline = load_or_seed_germline();
+    let current_registry = build_runtime_registry(&germline);
+    let current_policy =
+        provider_policy_for_germline(&current_registry.current_policy(), &germline);
+    let proposed_policy = match parse_provider_policy_arg(proposed_policy_arg, &current_policy) {
+        Ok(policy) => policy,
+        Err(error) => {
+            eprintln!("Invalid proposed provider policy: {error}");
+            std::process::exit(2);
+        }
+    };
+
+    let evidence = run_provider_policy_gate(
+        germline,
+        name,
+        num_cycles,
+        &current_policy,
+        &proposed_policy,
+    );
+    print_provider_policy_gate_summary(&evidence);
+}
+
+fn parse_provider_policy_arg(
+    proposed_policy_arg: Option<&str>,
+    current_policy: &ProviderPolicy,
+) -> Result<ProviderPolicy, String> {
+    let Some(arg) = proposed_policy_arg else {
+        return Ok(current_policy.clone());
+    };
+    let json = if let Some(path) = arg.strip_prefix('@') {
+        fs::read_to_string(path).map_err(|error| format!("failed to read {path}: {error}"))?
+    } else {
+        arg.to_string()
+    };
+    serde_json::from_str(&json).map_err(|error| error.to_string())
+}
+
+fn run_provider_policy_gate(
+    germline: Germline,
+    challenge_name: &str,
+    num_cycles: usize,
+    current_policy: &ProviderPolicy,
+    proposed_policy: &ProviderPolicy,
+) -> ProviderPolicyGateEvidence {
+    println!("Provider policy gate: current vs proposed");
+    for delta in provider_policy_deltas(current_policy, proposed_policy) {
+        println!("  policy delta: {delta}");
+    }
+
+    let current = run_challenge_for_provider_policy(
+        challenge_name,
+        num_cycles,
+        germline.clone(),
+        current_policy,
+        TopologyMode::CurrentPolicy,
+    );
+    let proposed = run_challenge_for_provider_policy(
+        challenge_name,
+        num_cycles,
+        germline,
+        proposed_policy,
+        TopologyMode::ProposedPolicy,
+    );
+    let deltas = provider_policy_deltas(current_policy, proposed_policy);
+    let decision = decide_provider_policy_gate(&current, &proposed);
+
+    ProviderPolicyGateEvidence {
+        current,
+        proposed,
+        deltas,
+        decision,
+    }
+}
+
+fn run_challenge_for_provider_policy(
+    name: &str,
+    num_cycles: usize,
+    germline: Germline,
+    policy: &ProviderPolicy,
+    mode: TopologyMode,
+) -> TopologyRunSummary {
+    let challenge = load_challenge_or_exit(name);
+    let challenge_name = challenge.name.to_string();
+    let requirements = challenge.requirements;
+    let mut benchmark = challenge.benchmark;
+    benchmark.acceptance_test = challenge.acceptance_test;
+
+    let enzyme_count = germline.enzymes().len();
+    let mut registry = build_registry();
+    let valid_enzyme_ids = germline
+        .enzymes()
+        .into_iter()
+        .map(|enzyme| enzyme.id.clone())
+        .collect::<BTreeSet<_>>();
+    let application = registry.apply_policy(policy, &valid_enzyme_ids);
+    if !application.accepted.is_empty() || !application.rejected.is_empty() {
+        println!(
+            "{} policy application: {} accepted, {} rejected assignments",
+            mode.label(),
+            application.accepted.len(),
+            application.rejected.len()
+        );
+    }
+
+    let mut metabolism = apply_runtime_env(
+        Metabolism::new(germline, registry)
+            .with_benchmark(benchmark)
+            .with_project_root(project_root()),
+    );
+    seed_initial_runtime_artifacts(&mut metabolism, requirements);
+
+    println!(
+        "{} policy: {} enzymes; running {} cycle(s)...",
+        mode.label(),
+        enzyme_count,
+        num_cycles
+    );
+
+    let started = Instant::now();
+    let mut summary = TopologyRunSummary::new(mode, &challenge_name, num_cycles, enzyme_count);
+
+    for cycle_num in 1..=num_cycles {
+        let report = metabolism.run_cycle();
+        summary.record_cycle(cycle_num, &report);
+        print!(
+            "  cycle {cycle_num}: {} invocations, {} failures, {} killed, {} mutations, {} patches",
+            report.invocations,
+            report.failed,
+            report.killed,
+            report.accepted_mutations,
+            report.accepted_patches,
+        );
+        if let Some(ref fitness) = report.fitness {
+            print!(
+                " | fitness {:.0}% ({}/{})",
+                fitness.fitness * 100.0,
+                fitness.passed,
+                fitness.total
+            );
+        }
+        if report.capped {
+            print!(" [invocation-capped]");
+        }
+        if report.wall_clock_capped {
+            print!(" [wall-clock-capped]");
+        }
+        println!();
+        print_topology_lineage(&report);
+        print_candidate_evaluations(&report);
+    }
+
+    summary.elapsed_secs = started.elapsed().as_secs_f64();
+    println!(
+        "  => best {:.0}% ({}/{}), full fitness at cycle {}, {:.1}s\n",
+        summary.best_fitness * 100.0,
+        summary.best_passed,
+        summary.best_total,
+        summary.full_fitness_display(),
+        summary.elapsed_secs,
+    );
+    summary
+}
+
+fn provider_policy_deltas(current: &ProviderPolicy, proposed: &ProviderPolicy) -> Vec<String> {
+    let mut enzymes = current.assignments.keys().cloned().collect::<BTreeSet<_>>();
+    enzymes.extend(proposed.assignments.keys().cloned());
+
+    let mut deltas = Vec::new();
+    for enzyme in enzymes {
+        let before = current.assignments.get(&enzyme);
+        let after = proposed.assignments.get(&enzyme);
+        if before != after {
+            deltas.push(format!(
+                "{enzyme}: {} -> {}",
+                before.map(String::as_str).unwrap_or("∅"),
+                after.map(String::as_str).unwrap_or("∅")
+            ));
+        }
+    }
+
+    if deltas.is_empty() {
+        deltas.push("no assignment changes".to_string());
+    }
+    deltas
+}
+
+fn decide_provider_policy_gate(
+    current: &TopologyRunSummary,
+    proposed: &TopologyRunSummary,
+) -> ProviderPolicyGateDecision {
+    let fitness_delta = proposed.best_fitness - current.best_fitness;
+    let invocation_delta = proposed.total_invocations as isize - current.total_invocations as isize;
+    let wall_delta_secs = proposed.elapsed_secs - current.elapsed_secs;
+    let invocation_slack = std::cmp::max(1, current.total_invocations / 4) as isize;
+    let wall_slack = current.elapsed_secs.mul_add(0.25, 5.0);
+
+    let (accepted, reason) = if current.best_total == 0 || proposed.best_total == 0 {
+        (false, "missing fitness evidence".to_string())
+    } else if fitness_delta < -f64::EPSILON {
+        (false, "proposed policy has worse best fitness".to_string())
+    } else if current.best_fitness == 0.0 && proposed.best_fitness == 0.0 {
+        (false, "zero-fitness comparison is inconclusive".to_string())
+    } else if invocation_delta > invocation_slack {
+        (
+            false,
+            format!(
+                "proposed policy materially increases invocations by {invocation_delta} (slack {invocation_slack})"
+            ),
+        )
+    } else if wall_delta_secs > wall_slack {
+        (
+            false,
+            format!(
+                "proposed policy materially increases wall-clock by {wall_delta_secs:.1}s (slack {wall_slack:.1}s)"
+            ),
+        )
+    } else {
+        (
+            true,
+            "proposed policy is non-regressing within bounded comparison".to_string(),
+        )
+    };
+
+    ProviderPolicyGateDecision {
+        accepted,
+        reason,
+        fitness_delta,
+        invocation_delta,
+        wall_delta_secs,
+    }
+}
+
+fn print_provider_policy_gate_summary(evidence: &ProviderPolicyGateEvidence) {
+    println!("Provider policy comparison summary");
+    println!("Policy deltas:");
+    for delta in &evidence.deltas {
+        println!("  - {delta}");
+    }
+    println!(
+        "{:<9} {:>7} {:>12} {:>10} {:>12} {:>12} {:>10}",
+        "Policy", "Enzymes", "Best", "Full@", "Wall(s)", "Invocations", "Failures"
+    );
+    for summary in [&evidence.current, &evidence.proposed] {
+        println!(
+            "{:<9} {:>7} {:>11.0}% {:>10} {:>12.1} {:>12} {:>10}",
+            summary.topology.label(),
+            summary.enzymes,
+            summary.best_fitness * 100.0,
+            summary.full_fitness_display(),
+            summary.elapsed_secs,
+            summary.total_invocations,
+            summary.provider_failures,
+        );
+    }
+    println!(
+        "Provider policy gate: {} — {} (fitness {:+.0}pp, invocations {:+}, wall {:+.1}s)",
+        if evidence.decision.accepted {
+            "ACCEPT"
+        } else {
+            "REJECT"
+        },
+        evidence.decision.reason,
+        evidence.decision.fitness_delta * 100.0,
+        evidence.decision.invocation_delta,
+        evidence.decision.wall_delta_secs,
+    );
+}
+
+fn commit_provider_policy_if_gate_accepts(
+    archive: &LineageArchive,
+    policy: &ProviderPolicy,
+    report: &CycleReport,
+    decision: &ProviderPolicyGateDecision,
+) -> Result<Option<String>, std::io::Error> {
+    if !decision.accepted {
+        return Ok(None);
+    }
+    archive.commit_provider_policy(policy, report).map(Some)
+}
+
+fn provider_policy_gate_cycles() -> usize {
+    env::var("A2D_PROVIDER_POLICY_GATE_CYCLES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1)
+}
+
+fn provider_policy_gate_challenge(default: &str) -> String {
+    env::var("A2D_PROVIDER_POLICY_GATE_CHALLENGE").unwrap_or_else(|_| default.to_string())
 }
 
 fn run_challenge_for_topology(
@@ -2644,6 +3032,21 @@ mod tests {
         }
     }
 
+    fn policy_summary(
+        mode: TopologyMode,
+        fitness_value: f64,
+        invocations: usize,
+        wall_secs: f64,
+    ) -> TopologyRunSummary {
+        let mut summary = TopologyRunSummary::new(mode, "sudoku", 1, 4);
+        summary.best_fitness = fitness_value;
+        summary.best_total = 6;
+        summary.best_passed = (fitness_value * 6.0).round() as usize;
+        summary.total_invocations = invocations;
+        summary.elapsed_secs = wall_secs;
+        summary
+    }
+
     fn topology_entry(outcome: a2d_core::workcell::WorkcellOutcome) -> InvocationLineage {
         InvocationLineage {
             cycle: 1,
@@ -2683,6 +3086,82 @@ mod tests {
 
         assert!(formatted.ends_with('…'));
         assert!(formatted.chars().count() < 320);
+    }
+
+    #[test]
+    fn provider_policy_gate_rejects_worse_fitness_and_withholds_lineage() {
+        let current = policy_summary(TopologyMode::CurrentPolicy, 0.83, 4, 20.0);
+        let proposed = policy_summary(TopologyMode::ProposedPolicy, 0.67, 4, 20.0);
+        let decision = decide_provider_policy_gate(&current, &proposed);
+        let root = std::env::temp_dir().join(format!(
+            "a2d-provider-policy-gate-reject-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let archive = LineageArchive::init(&root).unwrap();
+        let policy = ProviderPolicy {
+            assignments: BTreeMap::from([(
+                "coder".to_string(),
+                "opencode/kimi-for-coding/k2p6".to_string(),
+            )]),
+        };
+        let report = CycleReport {
+            accepted_provider_policy_changes: 1,
+            ..Default::default()
+        };
+
+        let committed =
+            commit_provider_policy_if_gate_accepts(&archive, &policy, &report, &decision).unwrap();
+
+        assert!(!decision.accepted);
+        assert!(committed.is_none());
+        assert!(archive.read_provider_policy().is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn provider_policy_gate_persists_clearly_better_policy() {
+        let current = policy_summary(TopologyMode::CurrentPolicy, 0.67, 4, 20.0);
+        let proposed = policy_summary(TopologyMode::ProposedPolicy, 0.83, 4, 21.0);
+        let decision = decide_provider_policy_gate(&current, &proposed);
+        let root = std::env::temp_dir().join(format!(
+            "a2d-provider-policy-gate-accept-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let archive = LineageArchive::init(&root).unwrap();
+        let policy = ProviderPolicy {
+            assignments: BTreeMap::from([(
+                "tester".to_string(),
+                "opencode/zai-coding-plan/glm-5.1".to_string(),
+            )]),
+        };
+        let report = CycleReport {
+            accepted_provider_policy_changes: 1,
+            ..Default::default()
+        };
+
+        let committed =
+            commit_provider_policy_if_gate_accepts(&archive, &policy, &report, &decision).unwrap();
+
+        assert!(decision.accepted, "{}", decision.reason);
+        assert!(committed.is_some());
+        assert_eq!(archive.read_provider_policy().unwrap(), policy);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn provider_policy_deltas_name_current_and_proposed_assignments() {
+        let current = ProviderPolicy {
+            assignments: BTreeMap::from([("coder".to_string(), "old".to_string())]),
+        };
+        let proposed = ProviderPolicy {
+            assignments: BTreeMap::from([("coder".to_string(), "new".to_string())]),
+        };
+
+        let deltas = provider_policy_deltas(&current, &proposed);
+
+        assert_eq!(deltas, vec!["coder: old -> new"]);
     }
 
     #[test]
