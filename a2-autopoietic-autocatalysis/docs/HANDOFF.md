@@ -1,6 +1,6 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-05-24
+**Last updated:** 2026-05-26
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -27,7 +27,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 ```bash
 cd /Users/thomas/Projects/lightless-labs/skunkworks/a2-autopoietic-autocatalysis
-cargo test                                    # expect pass (89 Rust tests)
+cargo test                                    # expect pass (103 Rust tests)
 cargo run -p a2ctl -- sentinel --workspace .  # expect 6/6 PASS
 ```
 
@@ -193,7 +193,7 @@ ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/
 **Not yet validated:**
 - Loop recovery beyond the four current compound fixtures after candidate-worktree task verifier execution.
 - N≥3 anti-repeat ablation runs comparing candidate verifier enabled + anti-repeat enabled vs candidate verifier enabled + anti-repeat disabled.
-- Autopilot follow-up slices in `docs/plans/continuous-self-iteration.md`: richer summaries, stop conditions, resident wrapper, verified checklist updates, and dashboard-friendly aggregate logs.
+- Autopilot follow-up slices in `docs/plans/continuous-self-iteration.md`: verified checklist updates, resident wrapper, and dashboard-friendly aggregate logs. Verified checklist updates are the next active slice: mark checklist candidates complete only after `--apply` produced an applied + verified outcome, and log the update.
 
 **Structural solution direction:** Minimax, Kimi, and Pi/ZAI GLM now have N=3 validation on the three original compound fixtures and on the same-crate Sensorium fixture. Kimi had pass@1 1/3 on Sensorium, so its self-correction count there is 2/3 rather than 3/3. Remaining work is more fixture diversity and measuring anti-repeat contribution. Dedicated todos live in `todos/`.
 
