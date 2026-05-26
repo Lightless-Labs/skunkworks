@@ -234,6 +234,15 @@ struct AutopilotIterationSummary {
     apply_ok: bool,
     verify_ok: bool,
     apply_note: Option<String>,
+    checklist_update: Option<ChecklistUpdateSummary>,
+}
+
+/// Result of marking a checklist-sourced autopilot task complete.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct ChecklistUpdateSummary {
+    path: String,
+    line: usize,
+    status: String,
 }
 
 /// Patch statistics extracted from the candidate diff.
@@ -300,6 +309,67 @@ fn is_provider_quota_failure(value: &str) -> bool {
         || lower.contains("429")
         || lower.contains("capacity")
         || lower.contains("insufficient balance")
+}
+
+fn checklist_source_location(source: &str) -> Option<(&str, usize)> {
+    let (path, line) = source.rsplit_once(':')?;
+    if !(path.starts_with("todos/") || path.starts_with("docs/plans/")) {
+        return None;
+    }
+    let line = line.parse::<usize>().ok()?;
+    if line == 0 {
+        return None;
+    }
+    Some((path, line))
+}
+
+fn mark_checklist_item_completed(
+    root: &Path,
+    candidate: &AutopilotCandidate,
+) -> io::Result<Option<ChecklistUpdateSummary>> {
+    let Some((relative_path, line_number)) = checklist_source_location(&candidate.source) else {
+        return Ok(None);
+    };
+
+    let path = root.join(relative_path);
+    let content = fs::read_to_string(&path)?;
+    let mut lines = content.lines().map(String::from).collect::<Vec<_>>();
+    let Some(line) = lines.get_mut(line_number.saturating_sub(1)) else {
+        return Ok(Some(ChecklistUpdateSummary {
+            path: relative_path.into(),
+            line: line_number,
+            status: "missing_line".into(),
+        }));
+    };
+
+    let trimmed = line.trim_start();
+    let indent_len = line.len() - trimmed.len();
+    let indent = &line[..indent_len];
+    let status = if let Some(rest) = trimmed.strip_prefix("- [ ]") {
+        *line = format!("{indent}- [x]{rest}");
+        "marked_complete"
+    } else if let Some(rest) = trimmed.strip_prefix("* [ ]") {
+        *line = format!("{indent}* [x]{rest}");
+        "marked_complete"
+    } else if trimmed.starts_with("- [x]") || trimmed.starts_with("* [x]") {
+        "already_complete"
+    } else {
+        "not_unchecked_item"
+    };
+
+    if status == "marked_complete" {
+        let mut updated = lines.join("\n");
+        if content.ends_with('\n') {
+            updated.push('\n');
+        }
+        fs::write(&path, updated)?;
+    }
+
+    Ok(Some(ChecklistUpdateSummary {
+        path: relative_path.into(),
+        line: line_number,
+        status: status.into(),
+    }))
 }
 
 fn extract_diff_files(diff: &str) -> Vec<String> {
@@ -816,6 +886,30 @@ async fn main() {
                             }
                         }
                         governor.record_apply_outcome(apply_ok, verify_ok);
+                        let checklist_update = if apply_ok && verify_ok {
+                            match mark_checklist_item_completed(&workspace_root, candidate) {
+                                Ok(update) => update,
+                                Err(e) => Some(ChecklistUpdateSummary {
+                                    path: candidate.source.clone(),
+                                    line: 0,
+                                    status: format!("failed: {e}"),
+                                }),
+                            }
+                        } else {
+                            None
+                        };
+                        if let Some(update) = &checklist_update {
+                            log_autopilot_event(
+                                &run_dir,
+                                "checklist_update",
+                                serde_json::json!({
+                                    "iteration": iteration + 1,
+                                    "path": update.path,
+                                    "line": update.line,
+                                    "status": update.status,
+                                }),
+                            );
+                        }
                         let patch_stats = outcome
                             .result
                             .patch
@@ -858,6 +952,7 @@ async fn main() {
                             apply_ok,
                             verify_ok,
                             apply_note: apply_note.clone(),
+                            checklist_update: checklist_update.clone(),
                         });
 
                         log_autopilot_event(
@@ -878,6 +973,7 @@ async fn main() {
                                 "apply_ok": apply_ok,
                                 "verify_ok": verify_ok,
                                 "apply_note": apply_note,
+                                "checklist_update": checklist_update,
                             }),
                         );
                         rows.push(run_summary_row(&candidate.title, provider, &outcome));
@@ -913,6 +1009,7 @@ async fn main() {
                             apply_ok: false,
                             verify_ok: false,
                             apply_note: None,
+                            checklist_update: None,
                         });
                         rows.push(RunSummaryRow {
                             title: candidate.title.clone(),
@@ -2774,6 +2871,11 @@ fn test_fibonacci() {
                     apply_ok: true,
                     verify_ok: false,
                     apply_note: Some("[external verify: FAIL] cargo test exited 101".into()),
+                    checklist_update: Some(ChecklistUpdateSummary {
+                        path: "docs/plans/work.md".into(),
+                        line: 4,
+                        status: "marked_complete".into(),
+                    }),
                 },
                 AutopilotIterationSummary {
                     iteration: 2,
@@ -2791,6 +2893,7 @@ fn test_fibonacci() {
                     apply_ok: false,
                     verify_ok: false,
                     apply_note: None,
+                    checklist_update: None,
                 },
             ],
         };
@@ -2819,6 +2922,10 @@ fn test_fibonacci() {
         );
         assert_eq!(parsed["iterations"][0]["apply_ok"], true);
         assert_eq!(parsed["iterations"][0]["verify_ok"], false);
+        assert_eq!(
+            parsed["iterations"][0]["checklist_update"]["status"],
+            "marked_complete"
+        );
         assert!(parsed["iterations"][1]["patch_stats"].is_null());
     }
 
@@ -2858,6 +2965,7 @@ fn test_fibonacci() {
                 apply_ok: true,
                 verify_ok: true,
                 apply_note: None,
+                checklist_update: None,
             }],
         };
 
@@ -2871,6 +2979,67 @@ fn test_fibonacci() {
         assert_eq!(parsed["iterations"][0]["candidate_source"], "explicit");
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checklist_source_location_accepts_only_project_checklists() {
+        assert_eq!(
+            checklist_source_location("docs/plans/continuous-self-iteration.md:40"),
+            Some(("docs/plans/continuous-self-iteration.md", 40))
+        );
+        assert_eq!(
+            checklist_source_location("todos/autopilot.md:2"),
+            Some(("todos/autopilot.md", 2))
+        );
+        assert_eq!(checklist_source_location("--task[0]"), None);
+        assert_eq!(checklist_source_location("scan"), None);
+        assert_eq!(checklist_source_location("docs/plans/file.md:0"), None);
+    }
+
+    #[test]
+    fn mark_checklist_item_completed_checks_only_target_line() {
+        let root = unique_test_dir("checklist-update");
+        std::fs::create_dir_all(root.join("docs/plans")).unwrap();
+        std::fs::write(
+            root.join("docs/plans/work.md"),
+            "# Work\n\n- [ ] first\n- [ ] second\n",
+        )
+        .unwrap();
+        let candidate = AutopilotCandidate {
+            id: "autopilot:checklist:docs/plans/work.md:4".into(),
+            title: "second".into(),
+            description: "second".into(),
+            source: "docs/plans/work.md:4".into(),
+        };
+
+        let update = mark_checklist_item_completed(&root, &candidate)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(update.path, "docs/plans/work.md");
+        assert_eq!(update.line, 4);
+        assert_eq!(update.status, "marked_complete");
+        let content = std::fs::read_to_string(root.join("docs/plans/work.md")).unwrap();
+        assert!(content.contains("- [ ] first"));
+        assert!(content.contains("- [x] second"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mark_checklist_item_completed_ignores_non_checklist_sources() {
+        let root = unique_test_dir("checklist-update-ignore");
+        let candidate = AutopilotCandidate {
+            id: "autopilot:explicit:abc".into(),
+            title: "explicit".into(),
+            description: "explicit".into(),
+            source: "--task[0]".into(),
+        };
+
+        let update = mark_checklist_item_completed(&root, &candidate).unwrap();
+
+        assert_eq!(update, None);
+        std::fs::remove_dir_all(root).ok();
     }
 
     fn autopilot_iteration_for_stop_test(
@@ -2895,6 +3064,7 @@ fn test_fibonacci() {
             apply_ok: false,
             verify_ok,
             apply_note: None,
+            checklist_update: None,
         }
     }
 

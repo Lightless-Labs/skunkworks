@@ -11,7 +11,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 | Metric | Value |
 |--------|-------|
-| Tests | 103 Rust + 10 self-correction Python tests |
+| Tests | 106 Rust + 10 self-correction Python tests |
 | Sentinels | 6/6 PASS |
 | Crates | 11 |
 | Benchmark (OpenCode/GLM via A²) | 5/5 (with 100k token / 1800s budget) |
@@ -27,7 +27,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 ```bash
 cd /Users/thomas/Projects/lightless-labs/skunkworks/a2-autopoietic-autocatalysis
-cargo test                                    # expect pass (103 Rust tests)
+cargo test                                    # expect pass (106 Rust tests)
 cargo run -p a2ctl -- sentinel --workspace .  # expect 6/6 PASS
 ```
 
@@ -169,6 +169,7 @@ ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/
 - Retry context includes `anti_repeat_retry` warnings when latest failed patch touched files do not overlap unresolved verifier-derived Rust source paths; repeated failed touched-file sets are counted.
 - Anti-repeat retry can be disabled for ablation via `a2ctl run --disable-anti-repeat-retry`; `bench/self_correction.py --disable-anti-repeat` forwards the flag and records `anti_repeat_retry_enabled`/`ablation` in JSONL. `bench/self_correction_score.py` reports ablation cohorts when enabled and disabled records are scored together.
 - `a2ctl autopilot` exists as the in-repo continuous self-iteration entrypoint. It accepts explicit tasks via repeated `--task` and `--task-file`; otherwise it discovers unchecked checklist items in `todos/` and `docs/plans/` plus code TODO/FIXME scan candidates. It pins stable task IDs from explicit task content or candidate source locations, logs JSONL events under `.a2/autopilot/runs/<run-id>/events.jsonl`, writes `run_summary.json` with per-iteration patch stats/verifier focus/model/apply fields plus `stop_reason`, supports `--dry-run`, and only mutates the workspace when `--apply` is explicit.
+- Autopilot checklist candidates now update their own source checklist only after verified application (`apply_ok && verify_ok`). The update is restricted to `todos/...:<line>` and `docs/plans/...:<line>` sources, converts the exact line from `- [ ]`/`* [ ]` to checked, logs a `checklist_update` event, and stores the update summary in `run_summary.json`.
 - Task-specific verifier commands are represented on `TaskContract` and run inside candidate worktrees before promotion scoring; verifier results are stored on `PatchBundle.worktree_verifications` and copied into `LineageRecord.external_verifications`. Verifier commands are not rendered into the initial prompt; failures surface through structured lineage after an attempted patch.
 - `bench/self_correction.py` passes each fixture's verifier command via JSONL `verification_commands` as of 2026-05-21. Verifier commands are system-side metadata and are not rendered in the initial prompt.
 - A² supports `pi` and `pi/<model_id>` providers as of 2026-05-22. Default `pi` model is `zai/glm-5.1`; explicit form is `pi/zai/glm-5.1`. WorktreeCatalyst runs `pi --mode json --no-session --print` from the candidate worktree and parses final text plus token usage.
@@ -193,7 +194,7 @@ ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/
 **Not yet validated:**
 - Loop recovery beyond the four current compound fixtures after candidate-worktree task verifier execution.
 - N≥3 anti-repeat ablation runs comparing candidate verifier enabled + anti-repeat enabled vs candidate verifier enabled + anti-repeat disabled.
-- Autopilot follow-up slices in `docs/plans/continuous-self-iteration.md`: verified checklist updates, resident wrapper, and dashboard-friendly aggregate logs. Verified checklist updates are the next active slice: mark checklist candidates complete only after `--apply` produced an applied + verified outcome, and log the update.
+- Autopilot follow-up slices in `docs/plans/continuous-self-iteration.md`: resident wrapper and dashboard-friendly aggregate logs.
 
 **Structural solution direction:** Minimax, Kimi, and Pi/ZAI GLM now have N=3 validation on the three original compound fixtures and on the same-crate Sensorium fixture. Kimi had pass@1 1/3 on Sensorium, so its self-correction count there is 2/3 rather than 3/3. Remaining work is more fixture diversity and measuring anti-repeat contribution. Dedicated todos live in `todos/`.
 
@@ -316,3 +317,4 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-05-25 | Add in-repo autopilot command | `a2ctl autopilot` accepts explicit tasks through `--task`/`--task-file`, otherwise discovers unchecked checklist work in `todos/` and `docs/plans/` plus code TODO/FIXME scan tasks; it logs run events to `.a2/autopilot/runs/<run-id>/events.jsonl`, supports dry-run planning, and requires explicit `--apply` for workspace mutation. |
 | 2026-05-25 | First in-repo autopilot self-iteration | Ran `a2ctl autopilot --provider pi/zai/glm-5.1 --task "Persist richer autopilot run summaries..." --max-iterations 1 --apply`; workcell used 88,384 tokens over 731.9s, applied cleanly, and `verify_and_rebuild` passed. Patch added `run_summary.json` generation and richer `iteration_completed` event fields. |
 | 2026-05-26 | Add autopilot stop reasons after over-budget self-iteration | A stop-condition autopilot attempt produced a patch but exceeded the 100k token budget (114,820 tokens) and was discarded. Follow-up implementation added `autopilot_stopped` events and `run_summary.json.stop_reason` for budget exhaustion, provider quota, repeated failure class, and max-iteration stops. |
+| 2026-05-26 | Add verified checklist updates | Autopilot now marks checklist-sourced candidates complete only after `apply_ok && verify_ok`; source parsing is limited to `todos/...:<line>` and `docs/plans/...:<line>`, and updates are logged in `checklist_update` events plus `run_summary.json.iterations[].checklist_update`. |
