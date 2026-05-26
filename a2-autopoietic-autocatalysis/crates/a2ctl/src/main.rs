@@ -1078,6 +1078,9 @@ async fn main() {
                 }
                 Err(e) => eprintln!("[failed to serialize run summary: {e}]"),
             }
+            if let Err(e) = append_autopilot_run_index(&run_dir, &run_summary) {
+                eprintln!("[failed to append autopilot run index: {e}]");
+            }
 
             log_autopilot_event(
                 &run_dir,
@@ -1944,6 +1947,62 @@ fn append_autopilot_event(
     });
     serde_json::to_writer(&mut file, &record).map_err(io::Error::other)?;
     writeln!(file)?;
+    Ok(())
+}
+
+fn append_autopilot_run_index(run_dir: &Path, summary: &AutopilotRunSummary) -> io::Result<()> {
+    let base_dir = run_dir
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| io::Error::other("autopilot run dir has no log base"))?;
+    fs::create_dir_all(base_dir)?;
+
+    let compact_iterations = summary
+        .iterations
+        .iter()
+        .map(|iteration| {
+            serde_json::json!({
+                "iteration": iteration.iteration,
+                "candidate_id": &iteration.candidate_id,
+                "candidate_source": &iteration.candidate_source,
+                "candidate_title": &iteration.candidate_title,
+                "model": &iteration.model,
+                "tokens": iteration.tokens,
+                "duration_secs": iteration.duration_secs,
+                "decision": &iteration.decision,
+                "patch_produced": iteration.patch_produced,
+                "apply_ok": iteration.apply_ok,
+                "verify_ok": iteration.verify_ok,
+            })
+        })
+        .collect::<Vec<_>>();
+    let record = serde_json::json!({
+        "at": chrono::Utc::now().to_rfc3339(),
+        "run_id": &summary.run_id,
+        "workspace": &summary.workspace,
+        "provider": &summary.provider,
+        "max_iterations": summary.max_iterations,
+        "total_iterations": summary.total_iterations,
+        "total_tokens": summary.total_tokens,
+        "total_duration_secs": summary.total_duration_secs,
+        "patches_produced": summary.patches_produced,
+        "applied_count": summary.applied_count,
+        "verified_count": summary.verified_count,
+        "stop_reason": &summary.stop_reason,
+        "run_dir": run_dir.display().to_string(),
+        "events_path": run_dir.join("events.jsonl").display().to_string(),
+        "summary_path": run_dir.join("run_summary.json").display().to_string(),
+        "iterations": compact_iterations,
+    });
+
+    let mut index = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(base_dir.join("run_index.jsonl"))?;
+    serde_json::to_writer(&mut index, &record).map_err(io::Error::other)?;
+    writeln!(index)?;
+    let latest = serde_json::to_string_pretty(&record).map_err(io::Error::other)?;
+    fs::write(base_dir.join("latest_run.json"), latest)?;
     Ok(())
 }
 
@@ -2977,6 +3036,79 @@ fn test_fibonacci() {
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed["run_id"], "run-test-summary");
         assert_eq!(parsed["iterations"][0]["candidate_source"], "explicit");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autopilot_run_index_appends_dashboard_record_and_latest_pointer() {
+        let root = unique_test_dir("autopilot-index");
+        let run_dir = root.join(".a2/autopilot/runs/run-test-index");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let summary = AutopilotRunSummary {
+            run_id: "run-test-index".into(),
+            workspace: "/tmp/ws".into(),
+            provider: "pi/zai/glm-5.1".into(),
+            max_iterations: 2,
+            started_at: "2026-05-26T12:00:00Z".into(),
+            completed_at: "2026-05-26T12:01:00Z".into(),
+            total_iterations: 1,
+            total_tokens: 1234,
+            total_duration_secs: 42.0,
+            patches_produced: 1,
+            applied_count: 1,
+            verified_count: 1,
+            stop_reason: "completed".into(),
+            iterations: vec![AutopilotIterationSummary {
+                iteration: 1,
+                task_id: "task-abc".into(),
+                candidate_id: "autopilot:explicit:abc".into(),
+                candidate_source: "--task[0]".into(),
+                candidate_title: "Improve logs".into(),
+                model: "pi/zai/glm-5.1".into(),
+                tokens: 1234,
+                duration_secs: 42.0,
+                decision: "promote_germline::Prompt".into(),
+                patch_produced: true,
+                patch_stats: None,
+                verifier_focus: vec![],
+                apply_ok: true,
+                verify_ok: true,
+                apply_note: None,
+                checklist_update: None,
+            }],
+        };
+
+        append_autopilot_run_index(&run_dir, &summary).unwrap();
+
+        let base_dir = root.join(".a2/autopilot");
+        let index = std::fs::read_to_string(base_dir.join("run_index.jsonl")).unwrap();
+        let records = index.lines().collect::<Vec<_>>();
+        assert_eq!(records.len(), 1);
+        let record: serde_json::Value = serde_json::from_str(records[0]).unwrap();
+        assert_eq!(record["run_id"], "run-test-index");
+        assert_eq!(record["total_tokens"], 1234);
+        assert_eq!(record["verified_count"], 1);
+        assert_eq!(record["iterations"][0]["candidate_title"], "Improve logs");
+        assert_eq!(record["iterations"][0]["verify_ok"], true);
+        assert!(
+            record["events_path"]
+                .as_str()
+                .unwrap()
+                .ends_with("events.jsonl")
+        );
+        assert!(
+            record["summary_path"]
+                .as_str()
+                .unwrap()
+                .ends_with("run_summary.json")
+        );
+
+        let latest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(base_dir.join("latest_run.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(latest["run_id"], "run-test-index");
 
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -1,7 +1,7 @@
 # Continuous Self-Iteration Plan
 
 **Created:** 2026-05-25
-**Status:** Initial autopilot loop plus verified checklist updates implemented 2026-05-26
+**Status:** Initial autopilot loop, verified checklist updates, and aggregate run logs implemented 2026-05-26
 **Scope:** Make A² continuously pick, execute, verify, and log self-improvement work inside this repository.
 
 ## Goal
@@ -38,4 +38,4 @@ It should:
 - [x] Add stop conditions for repeated failure classes, budget exhaustion, and provider quota failures. Completed 2026-05-26 after the first stop-condition autopilot attempt exceeded budget; `autopilot_stopped` events and `run_summary.json.stop_reason` now distinguish budget, quota, repeated-failure, and max-iteration stops.
 - [ ] Add a resident/daemon wrapper once the CLI loop is reliable.
 - [x] Teach autopilot to update checklist state only after verified application. Completed 2026-05-26. Checklist-sourced candidates (`todos/...:<line>` or `docs/plans/...:<line>`) are marked `- [x]` only after `apply_ok && verify_ok`; updates are captured in `checklist_update` events and per-iteration `run_summary.json` fields.
-- [ ] Add dashboard-friendly aggregate logs.
+- [x] Add dashboard-friendly aggregate logs. Completed 2026-05-26. Each completed autopilot run appends a compact record to `.a2/autopilot/run_index.jsonl` and updates `.a2/autopilot/latest_run.json` with the latest run pointer, summary metrics, stop reason, paths, and compact iteration outcomes.
