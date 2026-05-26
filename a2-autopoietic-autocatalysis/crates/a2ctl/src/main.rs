@@ -212,6 +212,7 @@ struct AutopilotRunSummary {
     patches_produced: usize,
     applied_count: usize,
     verified_count: usize,
+    stop_reason: String,
     iterations: Vec<AutopilotIterationSummary>,
 }
 
@@ -250,6 +251,55 @@ fn extract_patch_stats(diff: &str) -> PatchStats {
         diff_lines: diff.lines().count(),
         diff_bytes: diff.len(),
     }
+}
+
+fn autopilot_stop_reason(
+    summaries: &[AutopilotIterationSummary],
+    max_tokens: u64,
+    max_iterations: usize,
+) -> Option<String> {
+    let total_tokens: u64 = summaries.iter().map(|summary| summary.tokens).sum();
+    if max_tokens > 0 && total_tokens >= max_tokens {
+        return Some(format!(
+            "budget_exhausted: used {total_tokens} tokens, limit {max_tokens}"
+        ));
+    }
+
+    if let Some(latest) = summaries.last()
+        && is_provider_quota_failure(&latest.decision)
+    {
+        return Some(format!("provider_quota_failure: {}", latest.decision));
+    }
+
+    if summaries.len() >= 2 {
+        let latest = &summaries[summaries.len() - 1];
+        let previous = &summaries[summaries.len() - 2];
+        if !latest.verify_ok
+            && !previous.verify_ok
+            && latest.decision == previous.decision
+            && latest.patch_produced == previous.patch_produced
+        {
+            return Some(format!(
+                "repeated_failure_class: decision='{}', patch_produced={}",
+                latest.decision, latest.patch_produced
+            ));
+        }
+    }
+
+    if summaries.len() >= max_iterations {
+        return Some(format!("max_iterations_reached: {max_iterations}"));
+    }
+
+    None
+}
+
+fn is_provider_quota_failure(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("quota")
+        || lower.contains("rate limit")
+        || lower.contains("429")
+        || lower.contains("capacity")
+        || lower.contains("insufficient balance")
 }
 
 fn extract_diff_files(diff: &str) -> Vec<String> {
@@ -713,6 +763,7 @@ async fn main() {
 
             let started_at = chrono::Utc::now().to_rfc3339();
             let mut iteration_summaries: Vec<AutopilotIterationSummary> = Vec::new();
+            let mut stop_reason = None;
             let mut rows = Vec::new();
             for (iteration, candidate) in candidates.iter().take(max_iterations).enumerate() {
                 let mut task = ingester.ingest(a2_sensorium::ingest::RawSignal {
@@ -872,6 +923,21 @@ async fn main() {
                         });
                     }
                 }
+
+                if let Some(reason) =
+                    autopilot_stop_reason(&iteration_summaries, max_tokens, max_iterations)
+                {
+                    log_autopilot_event(
+                        &run_dir,
+                        "autopilot_stopped",
+                        serde_json::json!({
+                            "iteration": iteration + 1,
+                            "reason": reason,
+                        }),
+                    );
+                    stop_reason = Some(reason);
+                    break;
+                }
             }
 
             let completed_at = chrono::Utc::now().to_rfc3339();
@@ -902,6 +968,7 @@ async fn main() {
                 patches_produced,
                 applied_count,
                 verified_count,
+                stop_reason: stop_reason.unwrap_or_else(|| "completed".into()),
                 iterations: iteration_summaries,
             };
 
@@ -925,6 +992,7 @@ async fn main() {
                     "patches_produced": run_summary.patches_produced,
                     "applied_count": run_summary.applied_count,
                     "verified_count": run_summary.verified_count,
+                    "stop_reason": run_summary.stop_reason,
                 }),
             );
             print!("{}", render_summary_table(&rows));
@@ -2683,6 +2751,8 @@ fn test_fibonacci() {
             patches_produced: 1,
             applied_count: 1,
             verified_count: 0,
+            stop_reason: "repeated_failure_class: decision='error: timeout', patch_produced=false"
+                .into(),
             iterations: vec![
                 AutopilotIterationSummary {
                     iteration: 1,
@@ -2732,6 +2802,10 @@ fn test_fibonacci() {
         assert_eq!(parsed["total_iterations"], 2);
         assert_eq!(parsed["total_tokens"], 4500);
         assert_eq!(parsed["patches_produced"], 1);
+        assert_eq!(
+            parsed["stop_reason"],
+            "repeated_failure_class: decision='error: timeout', patch_produced=false"
+        );
         assert_eq!(parsed["iterations"][0]["candidate_source"], "scan");
         assert_eq!(parsed["iterations"][0]["model"], "claude/claude-sonnet-4-6");
         assert_eq!(
@@ -2767,6 +2841,7 @@ fn test_fibonacci() {
             patches_produced: 1,
             applied_count: 1,
             verified_count: 1,
+            stop_reason: "completed".into(),
             iterations: vec![AutopilotIterationSummary {
                 iteration: 1,
                 task_id: "t1".into(),
@@ -2796,6 +2871,72 @@ fn test_fibonacci() {
         assert_eq!(parsed["iterations"][0]["candidate_source"], "explicit");
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn autopilot_iteration_for_stop_test(
+        tokens: u64,
+        decision: &str,
+        patch_produced: bool,
+        verify_ok: bool,
+    ) -> AutopilotIterationSummary {
+        AutopilotIterationSummary {
+            iteration: 1,
+            task_id: "task".into(),
+            candidate_id: "candidate".into(),
+            candidate_source: "test".into(),
+            candidate_title: "test".into(),
+            model: "test/noop".into(),
+            tokens,
+            duration_secs: 1.0,
+            decision: decision.into(),
+            patch_produced,
+            patch_stats: None,
+            verifier_focus: vec![],
+            apply_ok: false,
+            verify_ok,
+            apply_note: None,
+        }
+    }
+
+    #[test]
+    fn autopilot_stop_reason_detects_budget_exhaustion() {
+        let summaries = vec![autopilot_iteration_for_stop_test(
+            101,
+            "discard (task not completed)",
+            true,
+            false,
+        )];
+
+        let reason = autopilot_stop_reason(&summaries, 100, 3).unwrap();
+
+        assert!(reason.contains("budget_exhausted"));
+        assert!(reason.contains("used 101 tokens"));
+    }
+
+    #[test]
+    fn autopilot_stop_reason_detects_provider_quota_failure() {
+        let summaries = vec![autopilot_iteration_for_stop_test(
+            0,
+            "error: provider returned 429 insufficient balance",
+            false,
+            false,
+        )];
+
+        let reason = autopilot_stop_reason(&summaries, 1000, 3).unwrap();
+
+        assert!(reason.contains("provider_quota_failure"));
+    }
+
+    #[test]
+    fn autopilot_stop_reason_detects_repeated_failure_class() {
+        let summaries = vec![
+            autopilot_iteration_for_stop_test(10, "discard (task not completed)", true, false),
+            autopilot_iteration_for_stop_test(12, "discard (task not completed)", true, false),
+        ];
+
+        let reason = autopilot_stop_reason(&summaries, 1000, 3).unwrap();
+
+        assert!(reason.contains("repeated_failure_class"));
     }
 
     #[test]

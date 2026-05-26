@@ -35,7 +35,7 @@ It should:
 ## Follow-up Slices
 
 - [x] Persist richer run summaries with per-iteration patch stats and verifier focus. Completed 2026-05-25 via autopilot self-iteration on explicit task `autopilot:explicit:c3569160d99bb4d4`; applied and verified clean.
-- [ ] Add stop conditions for repeated failure classes, budget exhaustion, and provider quota failures.
+- [x] Add stop conditions for repeated failure classes, budget exhaustion, and provider quota failures. Completed 2026-05-26 after the first stop-condition autopilot attempt exceeded budget; `autopilot_stopped` events and `run_summary.json.stop_reason` now distinguish budget, quota, repeated-failure, and max-iteration stops.
 - [ ] Add a resident/daemon wrapper once the CLI loop is reliable.
 - [ ] Teach autopilot to update checklist state only after verified application.
 - [ ] Add dashboard-friendly aggregate logs.
