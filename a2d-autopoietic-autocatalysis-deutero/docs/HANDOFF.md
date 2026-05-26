@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-05-25 (session 15 — autopilot outer loop live-validated with Pi)
+**Last updated:** 2026-05-26 (session 16 — autopilot autonomy hardening landed)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-201 commits. 178 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 32 compound learnings.
+207 commits. 180 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 32 compound learnings.
 
 ## Clean-session pickup
 
@@ -29,6 +29,7 @@
 - **GLM is off the coder/evolver critical path:** coder default is Kimi k2.6 with DeepSeek v4 flash fallback; evolver is explicitly assigned to Kimi k2.6 after GLM evolver timeouts starved feedback metabolism. Non-parallel evolver fallback is role-isolated, so it should not route to tester/architect GLM after Kimi/DeepSeek cooldowns. GLM 5.1 remains assigned to tester/architect only.
 - **Failed rung-2 consultation is bounded:** if consultation times out/fails, the workcell fails immediately instead of spending a second full provider timeout on the primary invocation.
 - **Timeouts are bounded but provider-specific:** GLM 5.1 now gets 900s by default; other CLI providers default to 300s; `A2D_PROVIDER_TIMEOUT_SECS` overrides.
+- **Autopilot autonomy hardening landed:** repair attempt 1 escalates from Pi to the configured alternate maintainer provider when available, repair prompts and monitor events record provider topology/attempt metadata, project state refreshes after committed iterations, and checkbox-completed todos are skipped by task selection.
 
 ### What is not working / unproven
 
@@ -38,12 +39,12 @@
 - **Compounding self-modification is unproven:** the only live architect patch in `sudoku 5` was irrelevant (`prime.rs`) and was reverted; relevance gate now prevents that class.
 - **Escalation rungs 4–6 are missing:** rungs 0–3 detect loops but do not reliably halt degradation.
 - **Benchmark coverage is narrow:** sudoku is validated; chess/rubiks need stronger acceptance tests and live runs.
-- **Autopilot still has autonomy gaps:** repair attempts currently use the assigned maintainer provider only (no provider-diverse escalation yet); project state is collected once before the iteration loop, so multi-iteration runs can use stale state after a commit; task selection still prefers `todos/autonomous-project-loop.md` even after much of it is satisfied.
+- **Autopilot still has unproven live repair diversity:** provider-diverse repair routing is unit-covered and dry-run task-selection was smoke-validated, but a live failed patchset has not yet exercised the Pi → alternate-provider repair path.
 
 ### Best next moves
 
-1. **Finish autopilot autonomy hardening:** the outer loop now selects `todos/autonomous-project-loop.md`, invokes Pi, gates patchsets, temp-validates, real-validates, commits, logs evidence, and has same-provider bounded repair. Next gaps are provider-diverse repair escalation, multi-iteration state refresh after commits, and task selection that stops reselecting already-satisfied work. Plan: `docs/plans/autonomous-project-loop.md`; todo: `todos/autonomous-project-loop.md`.
-2. **Strengthen durable provider-policy gates:** `provider_policy` now persists beside `germline.json`; next safety step is bounded topology-comparison gating before durable policy changes become defaults.
+1. **Strengthen durable provider-policy gates:** `provider_policy` now persists beside `germline.json`; next safety step is bounded topology/current-vs-proposed comparison before durable policy changes become defaults. Dry-run task selection now advances to `todos/provider-policy-topology-gate.md` after the autonomous-project-loop todo became checkbox-complete.
+2. **Live-validate provider-diverse autopilot repair:** induce or wait for a repairable parse/path/temp-validation failure and confirm monitor logs show Pi primary plus alternate-provider repair metadata and that the identical gates still apply.
 3. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
 4. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
 5. **Live-validate empty-output diagnostics and architect no-op contract** during a run that reaches architect; confirm failures expose useful parsed/raw previews and legitimate no-change decisions route as `NOOP` artifacts.
@@ -68,9 +69,12 @@
 - **CLI provider filesystem isolation:** CLI providers now run in an empty temp cwd, so coding tools cannot directly mutate the repo outside the `SystemPatch` + self-sandbox path.
 - **OpenCode write-output recovery:** OpenCode NDJSON parsing now handles current `/part/text`, legacy top-level `/text`, and `write` tool payloads. If the model writes the artifact then says only `Done.`, A²D recovers the written content instead of wasting the invocation.
 - **Outer autopilot loop is live for project work:** `a2d autopilot` builds project state, selects a task, invokes Pi as maintainer, requires typed `ProjectPatchset` JSON, path-gates changes, temp-worktree validates, real-tree validates, updates handoff, commits locally, and writes monitor JSONL/artifacts under `.a2d/autopilot/`.
-- **Autopilot repair is bounded:** parse/path/temp/real/provider failures route to repair prompts with original context, previous output, and mechanical failure evidence; `--repair-attempts N` / `A2D_AUTOPILOT_REPAIR_ATTEMPTS` controls budget.
+- **Autopilot repair is bounded and provider-diverse:** parse/path/temp/real/provider failures route to repair prompts with original context, previous output, mechanical failure evidence, and provider-attempt metadata; `--repair-attempts N` / `A2D_AUTOPILOT_REPAIR_ATTEMPTS` controls budget, with repair attempt 1 using the configured alternate maintainer provider when available.
 
 ### What happened this session
+
+- **Autopilot autonomy hardening landed.** `a2d autopilot` now records maintainer provider topology, sends provider-attempt metadata in repair prompts, and routes repair attempt 1 to the configured alternate maintainer provider when one exists (Pi primary → Kimi alternate in the current registry). Multi-iteration runs refresh `project_state` after each committed iteration and stop if the refreshed tree is dirty. Task selection now skips checkbox-completed todos, so after marking `todos/autonomous-project-loop.md` complete the dry-run selector advances to `todos/provider-policy-topology-gate.md`.
+- **Validation:** `cargo test` passes (180 passing, 2 ignored). `cargo run -q -p a2d -- autopilot --iterations 1 --dry-run --allow-dirty` selects `todos/provider-policy-topology-gate.md` without invoking providers or modifying tracked files.
 
 - **Autonomous project loop gap captured and corrected toward self-modification.** The missing loop is now explicit: A²D has an inner challenge metabolism, but not the outer repo-maintenance loop currently performed by the human/coding assistant (`read handoff/todos → choose task → self-modify code/docs → run gates → repair/escalate → commit → update handoff → repeat`). Added plan `docs/plans/autonomous-project-loop.md` and todo `todos/autonomous-project-loop.md` for a bounded `a2d autopilot` command with typed `project_state`, `project_task`, `project_patchset`, validation reports, repair/escalation, handoff, and commit gates. Important correction: self-modification is the target behavior, not a non-goal; the safety property is gated self-modification, not absence of self-modification.
 - **First executable autopilot surface landed.** `a2d autopilot` now parses `--iterations`, `--dry-run`, and `--allow-dirty`; builds `ProjectState` from handoff/todos/plans/git/status; selects `todos/autonomous-project-loop.md` first; emits a maintainer prompt that explicitly allows eligible source self-modification; defines typed `ProjectPatchset` JSON; parses fenced JSON; and path-gates patchsets, rejecting traversal/protected files while accepting eligible source self-modification with required cargo-test gating. Non-dry-run can invoke the maintainer provider and gate the returned patchset, but temp-worktree validation/application/repair/commit remains the next slice.
@@ -270,7 +274,7 @@ a2d enzymes                   # List enzyme definitions (now includes architect)
 a2d lineage                   # Git log of germline evolution
 
 # Run tests
-cargo test                    # 163 tests passing (2 ignored integration)
+cargo test                    # 180 tests passing (2 ignored integration)
 cargo test -- --ignored       # Run integration tests (slow, compiles in temp dir)
 
 # Check OpenCode model IDs
@@ -287,8 +291,8 @@ Search `docs/solutions/` before implementing. Key findings:
 
 ## Todos
 
-- `todos/autonomous-project-loop.md` — close the outer repo-maintenance loop with bounded `a2d autopilot`: select task, propose typed patchset, validate, commit, update handoff, repeat
 - `todos/provider-policy-topology-gate.md` — gate durable provider-policy changes with bounded topology/current-vs-proposed comparisons
+- `todos/autonomous-project-loop.md` — checkbox-complete for current slice; future refinements may deepen task semantics or live repair-diversity validation
 - `todos/bounded-live-benchmarks.md` — `sudoku 5` completed with 100% best fitness; remaining provider waste: GLM timeouts + architect no-materialized-output
 - `todos/escalation-rungs-4-6.md` — model swap → multi-model consensus → Darwinian isolation (rungs 0–3 live; provider_policy now available as durable provider-assignment mechanism)
 - `todos/architect-pyramid-summaries.md` — implemented; prompt-size validated; latency still bad due provider/scheduling

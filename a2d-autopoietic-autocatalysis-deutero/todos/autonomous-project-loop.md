@@ -8,6 +8,7 @@
 **Enhanced:** 2026-05-25 — bounded repair loop
 **Enhanced:** 2026-05-25 — bounded repair/escalation contract captured
 **Enhanced:** 2026-05-25 — provider-diverse repair escalation contract captured
+**Enhanced:** 2026-05-26 — provider-diverse repair, state refresh, and completed-task filtering implemented
 **Plan:** `docs/plans/autonomous-project-loop.md`
 
 ## Context
@@ -34,9 +35,9 @@ The inner challenge metabolism is bounded and self-adaptive, but no command owns
 - [x] Protected-file changes are rejected as hard safety stops; eligible source self-modifications are not.
 - [x] Passing non-dry-run iterations apply changes, rerun gates, update handoff, and make an atomic local git commit.
 - [x] Failure after repair/escalation budget stops the loop with a clear report and a machine-readable monitor log; no silent partial application. Rollback exists for failed real-tree validation and `repair_budget_exhausted` records terminal failure.
-- [ ] Provider-diverse escalation for repair attempts. Current repair loop uses the assigned maintainer provider; model/provider swap remains open.
-- [ ] Refresh `project_state` after each committed iteration so `--iterations N` does not select from stale handoff/todo/git status.
-- [ ] Improve task selection/completion detection so autopilot does not keep selecting already-satisfied `todos/autonomous-project-loop.md` work.
+- [x] Provider-diverse escalation for repair attempts. Repair attempt 1 now routes to the configured alternate maintainer provider when available, while monitor events and repair prompts record primary/attempted provider metadata.
+- [x] Refresh `project_state` after each committed iteration so `--iterations N` does not select from stale handoff/todo/git status.
+- [x] Improve task selection/completion detection so autopilot does not keep selecting already-satisfied checkbox todos.
 
 ## Bounded repair/escalation contract
 

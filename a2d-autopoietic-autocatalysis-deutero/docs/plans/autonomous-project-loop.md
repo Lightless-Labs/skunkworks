@@ -6,6 +6,7 @@
 **Enhanced:** 2026-05-24 — temp-worktree patchset validation
 **Enhanced:** 2026-05-24 — gated real-tree apply and local commit
 **Enhanced:** 2026-05-25 — bounded repair loop
+**Enhanced:** 2026-05-26 — provider-diverse repair, state refresh, and completed-task filtering
 
 ## Problem
 
@@ -70,7 +71,9 @@ Implemented first slice on 2026-05-24:
 - Patchsets that pass temp validation are applied to the real tree, validation commands rerun, handoff updates are appended when needed, touched paths are committed locally, and failures roll back original file contents before stopping.
 - Failed parse, path-gate, temp-worktree validation, real-tree validation/apply, or provider invocation now routes to a bounded repair prompt with the original task/context, previous output, and mechanical failure report. Configure with `--repair-attempts N` or `A2D_AUTOPILOT_REPAIR_ATTEMPTS` (default 1).
 
-Next slice: provider escalation/diversity for repair attempts and multi-iteration state refresh after commits.
+Implemented on 2026-05-26: provider-diverse repair escalation, multi-iteration state refresh after commits, and checkbox-based completed-task filtering for task selection.
+
+Next slice: durable provider-policy topology gating, or deeper task completion semantics once more todos acquire machine-readable acceptance markers.
 
 ### Loop state artifacts
 
@@ -119,10 +122,12 @@ Current event types include:
 
 - `run_started`
 - `project_state_collected`
+- `project_state_refreshed`
 - `artifact_written`
 - `task_selected`
 - `maintainer_prompt_built`
 - `dry_run_stop`
+- `maintainer_provider_topology`
 - `maintainer_invocation_started`
 - `maintainer_invocation_failed`
 - `maintainer_output_received`
@@ -222,7 +227,7 @@ Given the current handoff, the likely first autopilot task is `todos/provider-po
 
 Unit tests:
 
-- task selector ignores completed or dependency-blocked todos;
+- task selector ignores completed checkbox todos;
 - project patch parser rejects malformed JSON;
 - path gate rejects absolute and traversal paths;
 - docs-only patch can be validated without `cargo test`;

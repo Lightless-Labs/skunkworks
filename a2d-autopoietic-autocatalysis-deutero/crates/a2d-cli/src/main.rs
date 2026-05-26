@@ -10,7 +10,7 @@ use a2d_core::challenges;
 use a2d_core::germline::Germline;
 use a2d_core::lineage::LineageArchive;
 use a2d_core::metabolism::{CycleReport, InvocationLineage, Metabolism};
-use a2d_core::provider::{InvocationRequest, ProviderPolicy, ProviderRegistry};
+use a2d_core::provider::{InvocationRequest, Provider, ProviderPolicy, ProviderRegistry};
 use a2d_core::self_sandbox;
 use a2d_core::types::{ArtifactType, EnzymeDef, EnzymeId};
 use a2d_providers::cli::CliProvider;
@@ -427,6 +427,45 @@ fn build_registry() -> ProviderRegistry {
     registry
 }
 
+fn autopilot_provider_for_attempt<'a>(
+    registry: &'a ProviderRegistry,
+    enzyme_id: &EnzymeId,
+    attempt: usize,
+) -> AutopilotProviderAttempt<'a> {
+    let primary = registry.provider_for(enzyme_id);
+    let alternate = registry.alternative_provider_for(enzyme_id);
+    let provider_topology = registry
+        .providers()
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+    if attempt == 1 && alternate.name() != primary.name() {
+        return AutopilotProviderAttempt {
+            provider: alternate,
+            primary_provider: primary.name().to_string(),
+            provider_topology,
+            escalated: true,
+            escalation_reason: "first repair attempt uses configured alternate maintainer provider"
+                .to_string(),
+        };
+    }
+
+    AutopilotProviderAttempt {
+        provider: primary,
+        primary_provider: primary.name().to_string(),
+        provider_topology,
+        escalated: false,
+        escalation_reason: if attempt == 0 {
+            "primary maintainer attempt".to_string()
+        } else if alternate.name() == primary.name() {
+            "no alternate maintainer provider configured".to_string()
+        } else {
+            "alternate repair attempt already consumed; returning to primary provider".to_string()
+        },
+    }
+}
+
 fn load_lineage_provider_policy() -> Option<ProviderPolicy> {
     let dir = lineage_dir();
     let archive = LineageArchive::init(&dir).ok()?;
@@ -494,6 +533,27 @@ impl AutopilotConfig {
         }
 
         config
+    }
+}
+
+struct AutopilotProviderAttempt<'a> {
+    provider: &'a dyn Provider,
+    primary_provider: String,
+    provider_topology: Vec<String>,
+    escalated: bool,
+    escalation_reason: String,
+}
+
+impl AutopilotProviderAttempt<'_> {
+    fn metadata_text(&self, attempt: usize) -> String {
+        format!(
+            "attempt: {attempt}\nprimary_provider: {}\nattempted_provider: {}\nescalated: {}\nescalation_reason: {}\nregistered_providers: {}",
+            self.primary_provider,
+            self.provider.name(),
+            self.escalated,
+            self.escalation_reason,
+            self.provider_topology.join(", ")
+        )
     }
 }
 
@@ -668,7 +728,7 @@ fn run_autopilot(config: AutopilotConfig) {
     println!("Autopilot run id: {}", logger.run_id);
     println!("Autopilot logs: {}", logger.run_log.to_string_lossy());
 
-    let state = collect_project_state(&root);
+    let mut state = collect_project_state(&root);
     logger.event(
         "project_state_collected",
         json!({
@@ -692,7 +752,7 @@ fn run_autopilot(config: AutopilotConfig) {
         return;
     }
 
-    for iteration in 1..=config.iterations {
+    'iterations: for iteration in 1..=config.iterations {
         println!("\nIteration {iteration}/{}", config.iterations);
         let Some(task) = select_project_task(&state) else {
             println!("No actionable project task found.");
@@ -747,17 +807,41 @@ fn run_autopilot(config: AutopilotConfig) {
         }
 
         let registry = build_registry();
-        let provider = registry.provider_for(&EnzymeId::from("maintainer"));
+        let maintainer_id = EnzymeId::from("maintainer");
+        let primary_provider = registry.provider_for(&maintainer_id).name().to_string();
+        let provider_topology = registry.providers();
+        logger.event(
+            "maintainer_provider_topology",
+            json!({
+                "iteration": iteration,
+                "primary_provider": primary_provider,
+                "registered_providers": provider_topology,
+                "repair_escalation": "attempt 1 uses the configured alternate provider when one is available",
+            }),
+        );
         let original_prompt = prompt.clone();
         let mut attempt_prompt = prompt;
         let max_attempts = config.repair_attempts + 1;
 
         for attempt in 0..max_attempts {
+            let provider_attempt =
+                autopilot_provider_for_attempt(&registry, &maintainer_id, attempt);
+            let provider = provider_attempt.provider;
+            let provider_metadata = provider_attempt.metadata_text(attempt);
+
             if attempt == 0 {
                 println!("Invoking maintainer via {}...", provider.name());
                 logger.event(
                     "maintainer_invocation_started",
-                    json!({"iteration": iteration, "attempt": attempt, "provider": provider.name()}),
+                    json!({
+                        "iteration": iteration,
+                        "attempt": attempt,
+                        "provider": provider.name(),
+                        "primary_provider": provider_attempt.primary_provider,
+                        "registered_providers": provider_attempt.provider_topology,
+                        "escalated": provider_attempt.escalated,
+                        "escalation_reason": provider_attempt.escalation_reason,
+                    }),
                 );
             } else {
                 println!(
@@ -768,12 +852,20 @@ fn run_autopilot(config: AutopilotConfig) {
                 );
                 logger.event(
                     "repair_attempt_started",
-                    json!({"iteration": iteration, "attempt": attempt, "provider": provider.name()}),
+                    json!({
+                        "iteration": iteration,
+                        "attempt": attempt,
+                        "provider": provider.name(),
+                        "primary_provider": provider_attempt.primary_provider,
+                        "registered_providers": provider_attempt.provider_topology,
+                        "escalated": provider_attempt.escalated,
+                        "escalation_reason": provider_attempt.escalation_reason,
+                    }),
                 );
             }
 
             let response = match provider.invoke(&InvocationRequest {
-                enzyme_id: EnzymeId::from("maintainer"),
+                enzyme_id: maintainer_id.clone(),
                 system: maintainer_system_prompt(),
                 prompt: attempt_prompt.clone(),
                 max_tokens: 12_000,
@@ -786,7 +878,8 @@ fn run_autopilot(config: AutopilotConfig) {
                         json!({"iteration": iteration, "attempt": attempt, "provider": provider.name(), "error": error.to_string()}),
                     );
                     if attempt + 1 < max_attempts {
-                        attempt_prompt = build_repair_prompt(&original_prompt, "", &failure);
+                        attempt_prompt =
+                            build_repair_prompt(&original_prompt, "", &failure, &provider_metadata);
                         continue;
                     }
                     println!("Maintainer invocation failed: {error}");
@@ -841,8 +934,12 @@ fn run_autopilot(config: AutopilotConfig) {
                         }),
                     );
                     if attempt + 1 < max_attempts {
-                        attempt_prompt =
-                            build_repair_prompt(&original_prompt, &response.text, &failure);
+                        attempt_prompt = build_repair_prompt(
+                            &original_prompt,
+                            &response.text,
+                            &failure,
+                            &provider_metadata,
+                        );
                         continue;
                     }
                     logger.event(
@@ -899,8 +996,12 @@ fn run_autopilot(config: AutopilotConfig) {
                     println!("  - {reason}");
                 }
                 if attempt + 1 < max_attempts {
-                    attempt_prompt =
-                        build_repair_prompt(&original_prompt, &response.text, &failure);
+                    attempt_prompt = build_repair_prompt(
+                        &original_prompt,
+                        &response.text,
+                        &failure,
+                        &provider_metadata,
+                    );
                     continue;
                 }
                 logger.event(
@@ -952,6 +1053,7 @@ fn run_autopilot(config: AutopilotConfig) {
                         &original_prompt,
                         &response.text,
                         &format!("{failure}\n{}", validation_json),
+                        &provider_metadata,
                     );
                     continue;
                 }
@@ -999,6 +1101,39 @@ fn run_autopilot(config: AutopilotConfig) {
                     "Autopilot committed {}",
                     apply_report.commit_hash.as_deref().unwrap_or("unknown")
                 );
+                if iteration < config.iterations {
+                    state = collect_project_state(&root);
+                    logger.event(
+                        "project_state_refreshed",
+                        json!({
+                            "completed_iteration": iteration,
+                            "next_iteration": iteration + 1,
+                            "todos": state.todos.len(),
+                            "plans": state.plans.len(),
+                            "git_dirty": !state.git_status.trim().is_empty(),
+                            "git_status_preview": preview(&state.git_status, 1200),
+                            "a2d_status_preview": preview(&state.a2d_status, 1200),
+                        }),
+                    );
+                    logger.artifact(
+                        &format!(
+                            "iteration-{iteration}/refreshed-project-state-handoff-preview.txt"
+                        ),
+                        &state.handoff_preview,
+                    );
+                    if !config.allow_dirty && !state.git_status.trim().is_empty() {
+                        println!(
+                            "Working tree is dirty after committed iteration; autopilot stops before the next self-modification."
+                        );
+                        println!("{}", state.git_status);
+                        logger.event(
+                            "run_stopped_dirty_worktree_after_refresh",
+                            json!({"iteration": iteration, "git_status": state.git_status}),
+                        );
+                        return;
+                    }
+                    continue 'iterations;
+                }
                 return;
             }
 
@@ -1015,6 +1150,7 @@ fn run_autopilot(config: AutopilotConfig) {
                     &original_prompt,
                     &response.text,
                     &format!("{failure}\n{}", apply_json),
+                    &provider_metadata,
                 );
                 continue;
             }
@@ -1085,8 +1221,18 @@ fn select_project_task(state: &ProjectState) -> Option<ProjectTask> {
 
     let doc = preferred
         .iter()
-        .find_map(|path| state.todos.iter().find(|doc| doc.path == *path))
-        .or_else(|| state.todos.first())?;
+        .find_map(|path| {
+            state
+                .todos
+                .iter()
+                .find(|doc| doc.path == *path && project_doc_is_actionable(doc))
+        })
+        .or_else(|| {
+            state
+                .todos
+                .iter()
+                .find(|doc| project_doc_is_actionable(doc))
+        })?;
 
     let allows_self_modification = doc.path == "todos/autonomous-project-loop.md"
         || doc.body_preview.contains("self-modification")
@@ -1109,6 +1255,25 @@ fn select_project_task(state: &ProjectState) -> Option<ProjectTask> {
         ],
         allows_self_modification,
     })
+}
+
+fn project_doc_is_actionable(doc: &ProjectDoc) -> bool {
+    let mut saw_checkbox = false;
+    for line in doc.body.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("- [ ]") || trimmed.starts_with("* [ ]") {
+            return true;
+        }
+        if trimmed.starts_with("- [x]")
+            || trimmed.starts_with("- [X]")
+            || trimmed.starts_with("* [x]")
+            || trimmed.starts_with("* [X]")
+        {
+            saw_checkbox = true;
+        }
+    }
+
+    !saw_checkbox
 }
 
 fn maintainer_system_prompt() -> String {
@@ -1178,16 +1343,23 @@ fn build_maintainer_prompt(state: &ProjectState, task: &ProjectTask) -> String {
     )
 }
 
-fn build_repair_prompt(original_prompt: &str, failed_output: &str, failure_report: &str) -> String {
+fn build_repair_prompt(
+    original_prompt: &str,
+    failed_output: &str,
+    failure_report: &str,
+    provider_metadata: &str,
+) -> String {
     format!(
         "The previous autopilot maintainer attempt failed mechanical gates.\n\
          You must repair the output, not explain the failure. Return exactly one ProjectPatchset JSON object.\n\n\
+         PROVIDER_ATTEMPT_METADATA\n```text\n{}\n```\n\n\
          FAILURE_REPORT\n```text\n{}\n```\n\n\
          PREVIOUS_OUTPUT\n```text\n{}\n```\n\n\
          ORIGINAL_TASK_AND_CONTEXT\n{}\n\n\
          OUTPUT CONTRACT\n\
          Return exactly one JSON object matching:\n\
          {{\"commit_message\":\"Autopilot: ...\",\"validation_commands\":[\"cargo test\"],\"handoff_update\":\"...\",\"replacements\":[{{\"path\":\"relative/path\",\"new_content\":\"complete file content\"}}]}}",
+        provider_metadata,
         failure_report,
         preview(failed_output, 6000),
         original_prompt,
@@ -2556,6 +2728,32 @@ mod tests {
     }
 
     #[test]
+    fn autopilot_repair_escalates_first_repair_attempt_to_alternate_provider() {
+        let registry = build_registry();
+        let maintainer = EnzymeId::from("maintainer");
+
+        let initial = autopilot_provider_for_attempt(&registry, &maintainer, 0);
+        let first_repair = autopilot_provider_for_attempt(&registry, &maintainer, 1);
+        let later_repair = autopilot_provider_for_attempt(&registry, &maintainer, 2);
+
+        assert_eq!(initial.provider.name(), "pi/default");
+        assert!(!initial.escalated);
+        assert_eq!(
+            first_repair.provider.name(),
+            "opencode/kimi-for-coding/k2p6"
+        );
+        assert!(first_repair.escalated);
+        assert_eq!(first_repair.primary_provider, "pi/default");
+        assert_eq!(later_repair.provider.name(), "pi/default");
+        assert!(!later_repair.escalated);
+        assert!(
+            first_repair
+                .metadata_text(1)
+                .contains("registered_providers")
+        );
+    }
+
+    #[test]
     fn loaded_provider_policy_applies_to_registered_known_enzyme() {
         let germline = seed_germline();
         let mut registry = build_registry();
@@ -2750,8 +2948,16 @@ mod tests {
 
     #[test]
     fn repair_prompt_carries_failure_output_and_original_context() {
-        let prompt = build_repair_prompt("ORIGINAL TASK", "not json", "patchset parse failed: EOF");
+        let prompt = build_repair_prompt(
+            "ORIGINAL TASK",
+            "not json",
+            "patchset parse failed: EOF",
+            "primary_provider: pi/default\nattempted_provider: opencode/kimi-for-coding/k2p6",
+        );
 
+        assert!(prompt.contains("PROVIDER_ATTEMPT_METADATA"));
+        assert!(prompt.contains("primary_provider: pi/default"));
+        assert!(prompt.contains("attempted_provider: opencode/kimi-for-coding/k2p6"));
         assert!(prompt.contains("FAILURE_REPORT"));
         assert!(prompt.contains("patchset parse failed"));
         assert!(prompt.contains("PREVIOUS_OUTPUT"));
@@ -2793,6 +2999,35 @@ mod tests {
                 .iter()
                 .any(|gate| gate.contains("self-modification"))
         );
+    }
+
+    #[test]
+    fn autopilot_task_selector_skips_completed_checkbox_todos() {
+        let state = ProjectState {
+            handoff_preview: String::new(),
+            todos: vec![
+                ProjectDoc {
+                    path: "todos/autonomous-project-loop.md".to_string(),
+                    title: "Autonomous Project Loop".to_string(),
+                    body: "# Done\n\n- [x] first\n- [x] second\n".to_string(),
+                    body_preview: "# Done\n\n- [x] first\n- [x] second\n".to_string(),
+                },
+                ProjectDoc {
+                    path: "todos/provider-policy-topology-gate.md".to_string(),
+                    title: "Provider Policy Gate".to_string(),
+                    body: "# Provider Policy Gate\n\n- [ ] implement bounded gate\n".to_string(),
+                    body_preview: "# Provider Policy Gate\n\n- [ ] implement bounded gate\n"
+                        .to_string(),
+                },
+            ],
+            plans: Vec::new(),
+            git_status: String::new(),
+            a2d_status: String::new(),
+        };
+
+        let task = select_project_task(&state).unwrap();
+
+        assert_eq!(task.source_path, "todos/provider-policy-topology-gate.md");
     }
 
     #[test]
