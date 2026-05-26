@@ -5,7 +5,7 @@
 
 ## System State
 
-208 commits. 183 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 32 compound learnings.
+210 commits. 183 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 32 compound learnings.
 
 ## Clean-session pickup
 
