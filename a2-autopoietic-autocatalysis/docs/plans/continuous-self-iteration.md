@@ -1,7 +1,7 @@
 # Continuous Self-Iteration Plan
 
 **Created:** 2026-05-25
-**Status:** Initial autopilot loop, verified checklist updates, and aggregate run logs implemented 2026-05-26
+**Status:** Initial autopilot loop, resident wrapper, verified checklist updates, and aggregate run logs implemented 2026-05-27
 **Scope:** Make A² continuously pick, execute, verify, and log self-improvement work inside this repository.
 
 ## Goal
@@ -36,6 +36,6 @@ It should:
 
 - [x] Persist richer run summaries with per-iteration patch stats and verifier focus. Completed 2026-05-25 via autopilot self-iteration on explicit task `autopilot:explicit:c3569160d99bb4d4`; applied and verified clean.
 - [x] Add stop conditions for repeated failure classes, budget exhaustion, and provider quota failures. Completed 2026-05-26 after the first stop-condition autopilot attempt exceeded budget; `autopilot_stopped` events and `run_summary.json.stop_reason` now distinguish budget, quota, repeated-failure, and max-iteration stops.
-- [ ] Add a resident/daemon wrapper once the CLI loop is reliable.
+- [x] Add a resident/daemon wrapper once the CLI loop is reliable. Completed 2026-05-27. `a2ctl autopilot-resident` repeatedly invokes the normal `autopilot` command on `--interval-secs`, supports bounded `--max-runs` smoke/cron operation or `0` for until-interrupted residency, forwards provider/budget/task/apply/dry-run/log options, and writes resident events plus per-run stdout/stderr under `.a2/autopilot/resident/<resident-id>/`.
 - [x] Teach autopilot to update checklist state only after verified application. Completed 2026-05-26. Checklist-sourced candidates (`todos/...:<line>` or `docs/plans/...:<line>`) are marked `- [x]` only after `apply_ok && verify_ok`; updates are captured in `checklist_update` events and per-iteration `run_summary.json` fields.
 - [x] Add dashboard-friendly aggregate logs. Completed 2026-05-26. Each completed autopilot run appends a compact record to `.a2/autopilot/run_index.jsonl` and updates `.a2/autopilot/latest_run.json` with the latest run pointer, summary metrics, stop reason, paths, and compact iteration outcomes.

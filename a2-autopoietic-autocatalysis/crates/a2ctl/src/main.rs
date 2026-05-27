@@ -101,6 +101,45 @@ enum Commands {
         #[arg(long, default_value = ".a2/autopilot")]
         log_dir: String,
     },
+    /// Run autopilot repeatedly on a fixed interval and keep durable resident logs.
+    AutopilotResident {
+        /// Workspace root path (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Provider(s) to use. Comma-separated list for round-robin cycling.
+        #[arg(long, default_value = "pi/zai/glm-5.1")]
+        provider: String,
+        /// Maximum autopilot iterations per resident run.
+        #[arg(long, default_value = "3")]
+        max_iterations: usize,
+        /// Maximum token budget per autopilot task.
+        #[arg(long, default_value = "100000")]
+        max_tokens: u64,
+        /// Maximum wall-clock time per autopilot task in seconds.
+        #[arg(long, default_value = "1800")]
+        timeout: u64,
+        /// Seconds to sleep between autopilot runs.
+        #[arg(long, default_value = "3600")]
+        interval_secs: u64,
+        /// Number of resident runs before stopping. Use 0 to run until interrupted.
+        #[arg(long, default_value = "0")]
+        max_runs: usize,
+        /// Auto-apply promoted patches via git apply.
+        #[arg(long)]
+        apply: bool,
+        /// Explicit task forwarded to each autopilot run. May be repeated.
+        #[arg(long)]
+        task: Vec<String>,
+        /// File containing an explicit task forwarded to each autopilot run. May be repeated.
+        #[arg(long)]
+        task_file: Vec<String>,
+        /// Forward --dry-run to autopilot; discovers and logs without model calls.
+        #[arg(long)]
+        dry_run: bool,
+        /// Directory for durable autopilot logs, relative to workspace unless absolute.
+        #[arg(long, default_value = ".a2/autopilot")]
+        log_dir: String,
+    },
     /// Scan the workspace for TODO/FIXME comments and emit task descriptions.
     /// With --run, pipe discoveries directly into the run loop.
     Scan {
@@ -243,6 +282,25 @@ struct ChecklistUpdateSummary {
     path: String,
     line: usize,
     status: String,
+}
+
+/// Configuration for the resident autopilot wrapper. Each resident tick invokes
+/// the normal `a2ctl autopilot` command so the CLI loop remains the single
+/// implementation of work discovery, execution, apply, verification, and logs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ResidentAutopilotConfig {
+    workspace: String,
+    provider: String,
+    max_iterations: usize,
+    max_tokens: u64,
+    timeout: u64,
+    interval_secs: u64,
+    max_runs: usize,
+    apply: bool,
+    task: Vec<String>,
+    task_file: Vec<String>,
+    dry_run: bool,
+    log_dir: String,
 }
 
 /// Patch statistics extracted from the candidate diff.
@@ -1098,6 +1156,39 @@ async fn main() {
             print!("{}", render_summary_table(&rows));
             println!("Autopilot log: {}", run_dir.display());
         }
+        Commands::AutopilotResident {
+            workspace,
+            provider,
+            max_iterations,
+            max_tokens,
+            timeout,
+            interval_secs,
+            max_runs,
+            apply,
+            task,
+            task_file,
+            dry_run,
+            log_dir,
+        } => {
+            let config = ResidentAutopilotConfig {
+                workspace,
+                provider,
+                max_iterations,
+                max_tokens,
+                timeout,
+                interval_secs,
+                max_runs,
+                apply,
+                task,
+                task_file,
+                dry_run,
+                log_dir,
+            };
+            if let Err(e) = run_autopilot_resident(&config) {
+                eprintln!("Autopilot resident failed: {e}");
+                std::process::exit(1);
+            }
+        }
         Commands::Scan {
             workspace,
             run,
@@ -1915,6 +2006,132 @@ fn autopilot_run_dir(workspace_root: &Path, log_dir: &Path) -> PathBuf {
     ))
 }
 
+fn autopilot_resident_dir(workspace_root: &Path, log_dir: &Path) -> PathBuf {
+    let base = if log_dir.is_absolute() {
+        log_dir.to_path_buf()
+    } else {
+        workspace_root.join(log_dir)
+    };
+    base.join("resident").join(format!(
+        "resident-{}",
+        chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
+    ))
+}
+
+fn resident_autopilot_args(config: &ResidentAutopilotConfig) -> Vec<String> {
+    let mut args = vec![
+        "autopilot".to_string(),
+        "--workspace".to_string(),
+        config.workspace.clone(),
+        "--provider".to_string(),
+        config.provider.clone(),
+        "--max-iterations".to_string(),
+        config.max_iterations.to_string(),
+        "--max-tokens".to_string(),
+        config.max_tokens.to_string(),
+        "--timeout".to_string(),
+        config.timeout.to_string(),
+        "--log-dir".to_string(),
+        config.log_dir.clone(),
+    ];
+    if config.apply {
+        args.push("--apply".to_string());
+    }
+    if config.dry_run {
+        args.push("--dry-run".to_string());
+    }
+    for task in &config.task {
+        args.push("--task".to_string());
+        args.push(task.clone());
+    }
+    for task_file in &config.task_file {
+        args.push("--task-file".to_string());
+        args.push(task_file.clone());
+    }
+    args
+}
+
+fn run_autopilot_resident(config: &ResidentAutopilotConfig) -> io::Result<()> {
+    let workspace_root = PathBuf::from(&config.workspace);
+    let resident_dir = autopilot_resident_dir(&workspace_root, Path::new(&config.log_dir));
+    fs::create_dir_all(&resident_dir)?;
+    log_autopilot_event(
+        &resident_dir,
+        "resident_started",
+        serde_json::json!({
+            "workspace": &config.workspace,
+            "provider": &config.provider,
+            "max_iterations": config.max_iterations,
+            "max_tokens": config.max_tokens,
+            "timeout": config.timeout,
+            "interval_secs": config.interval_secs,
+            "max_runs": config.max_runs,
+            "apply": config.apply,
+            "dry_run": config.dry_run,
+        }),
+    );
+    println!("A² Autopilot resident: {}", resident_dir.display());
+
+    let mut run_count = 0usize;
+    loop {
+        if config.max_runs > 0 && run_count >= config.max_runs {
+            log_autopilot_event(
+                &resident_dir,
+                "resident_stopped",
+                serde_json::json!({
+                    "reason": format!("max_runs_reached: {}", config.max_runs),
+                    "runs": run_count,
+                }),
+            );
+            break;
+        }
+
+        run_count += 1;
+        let args = resident_autopilot_args(config);
+        log_autopilot_event(
+            &resident_dir,
+            "resident_run_started",
+            serde_json::json!({
+                "run": run_count,
+                "args": &args,
+            }),
+        );
+
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args(&args)
+            .current_dir(&workspace_root)
+            .output()?;
+        fs::write(
+            resident_dir.join(format!("run-{run_count:04}.stdout")),
+            &output.stdout,
+        )?;
+        fs::write(
+            resident_dir.join(format!("run-{run_count:04}.stderr")),
+            &output.stderr,
+        )?;
+        io::stdout().write_all(&output.stdout)?;
+        io::stderr().write_all(&output.stderr)?;
+
+        log_autopilot_event(
+            &resident_dir,
+            "resident_run_completed",
+            serde_json::json!({
+                "run": run_count,
+                "success": output.status.success(),
+                "exit_code": output.status.code(),
+                "stdout_path": resident_dir.join(format!("run-{run_count:04}.stdout")).display().to_string(),
+                "stderr_path": resident_dir.join(format!("run-{run_count:04}.stderr")).display().to_string(),
+            }),
+        );
+
+        if config.max_runs > 0 && run_count >= config.max_runs {
+            continue;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(config.interval_secs));
+    }
+    Ok(())
+}
+
 fn autopilot_candidate_json(candidate: &AutopilotCandidate) -> serde_json::Value {
     serde_json::json!({
         "id": candidate.id,
@@ -2545,7 +2762,7 @@ fn command_failure_message(label: &str, output: &std::process::Output) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -3038,6 +3255,68 @@ fn test_fibonacci() {
         assert_eq!(parsed["iterations"][0]["candidate_source"], "explicit");
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resident_autopilot_args_forward_bounded_loop_options() {
+        let config = ResidentAutopilotConfig {
+            workspace: "/tmp/ws".into(),
+            provider: "pi/zai/glm-5.1,opencode/minimax".into(),
+            max_iterations: 2,
+            max_tokens: 90000,
+            timeout: 1200,
+            interval_secs: 30,
+            max_runs: 4,
+            apply: false,
+            task: vec!["improve summaries".into()],
+            task_file: vec!["task.md".into()],
+            dry_run: true,
+            log_dir: ".a2/autopilot".into(),
+        };
+
+        let args = resident_autopilot_args(&config);
+
+        assert_eq!(args[0], "autopilot");
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--workspace", "/tmp/ws"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--max-iterations", "2"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--max-tokens", "90000"])
+        );
+        assert!(args.windows(2).any(|pair| pair == ["--timeout", "1200"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--task", "improve summaries"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--task-file", "task.md"])
+        );
+        assert!(args.iter().any(|arg| arg == "--dry-run"));
+        assert!(!args.iter().any(|arg| arg == "--apply"));
+    }
+
+    #[test]
+    fn autopilot_resident_dir_lives_under_log_base() {
+        let root = PathBuf::from("/tmp/a2-workspace");
+        let relative = autopilot_resident_dir(&root, Path::new(".a2/autopilot"));
+        assert!(relative.starts_with("/tmp/a2-workspace/.a2/autopilot/resident"));
+        assert!(
+            relative
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("resident-")
+        );
+
+        let absolute = autopilot_resident_dir(&root, Path::new("/tmp/a2-autopilot-logs"));
+        assert!(absolute.starts_with("/tmp/a2-autopilot-logs/resident"));
     }
 
     #[test]
