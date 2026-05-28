@@ -1,8 +1,8 @@
 # Flux
 
-Flux is a skunkworks "stray thought" sidecar for coding agents. It listens to agent lifecycle hooks, asks a second configurable LLM for a short creative nudge, then injects that nudge back into the active session as a **stray thought**.
+Flux is a skunkworks "stray thought" sidecar for coding agents. It listens to agent lifecycle hooks, asks a second configurable LLM for a bounded note, then injects that note back into the active session as a **stray thought**.
 
-Goal: help agents escape tunnel vision, retries, spirals, and over-committed plans without handing control to a full sub-agent.
+Goal: help agents escape tunnel vision, retries, spirals, long-running dead ends, and over-committed plans without handing control to a full sub-agent.
 
 ## What it bootstraps
 
@@ -29,10 +29,12 @@ export ANTHROPIC_API_KEY=...
 
 Users can configure:
 
-- model pool (`models[]`), including provider, model id, base URL, max tokens, temperature, and API key env var,
-- random injections (`randomInjections`),
+- model definitions (`models[]`), including provider, model id, base URL, max tokens, temperature, and API key env var,
+- per-trigger model pools (`modelPools`), keyed by trigger name, trigger kind, or `default`,
+- random injections (`randomInjections`) and random frequency (`random.probability`, `random.minIntervalMs`, `random.afterEvents`),
 - delivery mode (`steer`, `followUp`, `nextTurn`, `stdout`, `file`),
-- trigger list (`triggers[]`), probabilities, throttles, and loop patterns,
+- trigger list (`triggers[]`), probabilities, throttles, loop patterns, and optional `modelPool` / `promptPool` names,
+- per-trigger weighted prompt profile pools (`promptProfiles`),
 - context window limits.
 
 ## Pi usage
@@ -76,6 +78,16 @@ node /absolute/path/to/flux/dist/src/adapters/codex/hook.js --host=codex
 
 See `examples/` for scaffold settings. Host plugin APIs move quickly, so these adapters intentionally expose a conservative hook CLI: read JSON on stdin, emit JSON with `additionalContext`/`instructions`, and never fail the host agent.
 
+## Prompt/model selection
+
+Flux uses a neutral base system prompt plus trigger/profile-specific instructions. That means `random` can ask for a lateral nudge, while `loop-detected` can ask for kind-but-honest critical feedback about what the agent has been trying relative to the apparent task.
+
+Selection order:
+
+1. Model pool: trigger name → trigger kind → `default` → any usable model.
+2. Prompt profile pool: trigger name → trigger kind → `default`.
+3. Within a prompt pool, profiles are selected by `weight`.
+
 ## Design note
 
-I like your trigger-system instinct. It keeps "ADHD brain" whimsical without hard-coding randomness everywhere: random nudges become just one trigger among manual, external, loop-detected, tool-specific, or future signals.
+The trigger system keeps "ADHD brain" whimsical without hard-coding randomness everywhere: random nudges become just one trigger among manual, external, loop-detected, tool-specific, or future signals.

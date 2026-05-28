@@ -6,6 +6,11 @@ import type { FluxConfig } from "./types.ts";
 export const DEFAULT_CONFIG: FluxConfig = {
 	enabled: true,
 	randomInjections: true,
+	random: {
+		probability: 0.18,
+		minIntervalMs: 180_000,
+		afterEvents: 2,
+	},
 	delivery: "steer",
 	displayThoughts: true,
 	triggerTurn: true,
@@ -34,14 +39,16 @@ export const DEFAULT_CONFIG: FluxConfig = {
 			maxTokens: 420,
 		},
 	],
+	modelPools: {
+		default: ["openai-default", "anthropic-default"],
+		random: ["openai-default", "anthropic-default"],
+		"loop-detected": ["anthropic-default", "openai-default"],
+	},
 	triggers: [
 		{
 			name: "random-turn-end",
 			kind: "random",
 			enabled: true,
-			probability: 0.18,
-			minIntervalMs: 180_000,
-			afterEvents: 2,
 		},
 		{
 			name: "loop-language",
@@ -54,12 +61,72 @@ export const DEFAULT_CONFIG: FluxConfig = {
 	],
 	prompt: {
 		system: [
-			"You are Flux, an ADHD-brain sidecar for a coding agent.",
-			"Generate one concise stray thought that may help the main agent escape tunnel vision.",
-			"Be specific to the visible context. Prefer creative reframes, cheap checks, overlooked constraints, or alternative hypotheses.",
-			"Do not command the agent. Do not repeat its plan. Do not be verbose. Output only the stray thought text.",
+			"You are Flux, a secondary model asked to add a bounded note to a coding-agent session.",
+			"Follow the selected trigger/profile instructions. Use only the supplied context snapshot.",
+			"Do not pretend to have acted in the workspace. Do not call tools. Output only the requested note.",
 		].join("\n"),
-		style: "Prefix is added by the host. Keep the thought under 120 words.",
+		style: "Write one concise note for the main agent. The host will add any prefix.",
+	},
+	promptProfiles: {
+		default: [
+			{
+				name: "useful-note",
+				weight: 1,
+				style: "Write one concise, context-specific note that could help the main agent. Avoid generic encouragement.",
+			},
+		],
+		random: [
+			{
+				name: "lateral-check",
+				weight: 2,
+				style:
+					"Offer one lateral, context-specific thought: an overlooked edge case, constraint, cheap validation, or alternative hypothesis. Keep it under 120 words.",
+			},
+			{
+				name: "weird-reframe",
+				weight: 1,
+				style:
+					"Offer one playful but technically grounded reframe that may reveal a different path. Keep it useful, concrete, and under 120 words.",
+			},
+		],
+		"loop-detected": [
+			{
+				name: "kind-critical-feedback",
+				weight: 2,
+				style:
+					"The main agent may be looping or spending a long time without progress. Provide kind but honest critical feedback comparing what it has been doing against the apparent current task or goal. Name one likely mismatch, untested assumption, or course correction. Keep it under 160 words.",
+			},
+			{
+				name: "break-loop-smallest-check",
+				weight: 1,
+				style:
+					"The main agent may be repeating itself. Suggest one smallest possible check, reproduction, or state inspection that could break the loop. Be specific to the context and under 120 words.",
+			},
+		],
+		"tool-result": [
+			{
+				name: "tool-output-implication",
+				weight: 1,
+				style:
+					"The main agent just received tool output. Point out one implication, anomaly, or next check it might otherwise miss. Do not summarize the whole output.",
+			},
+		],
+		manual: [
+			{
+				name: "requested-nudge",
+				weight: 1,
+				style:
+					"A user, plugin, or the main agent explicitly requested a Flux note. Prioritize high-signal usefulness over randomness; give one actionable perspective grounded in the context.",
+			},
+		],
+		external: [
+			{
+				name: "external-trigger",
+				weight: 1,
+				style:
+					"Another extension or plugin requested a Flux note. Use the payload reason if present, and provide one concise note grounded in the session context.",
+			},
+		],
 	},
 	storage: {},
 };

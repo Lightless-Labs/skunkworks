@@ -35,25 +35,49 @@ export interface FluxModelSpec {
 	thinkingEffort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | string;
 }
 
+export interface PromptProfile {
+	name: string;
+	/** Weighted random selection within a trigger's profile pool. */
+	weight?: number;
+	/** System prompt for this profile. Falls back to prompt.system. */
+	system?: string;
+	/** Trigger/profile-specific instruction placed before the context snapshot. */
+	style: string;
+}
+
+export interface RandomFrequencyConfig {
+	/** Probability in [0, 1] for random triggers when they observe a matching event. */
+	probability: number;
+	/** Minimum milliseconds between random injections. */
+	minIntervalMs: number;
+	/** Do not randomly inject before this many observed events. */
+	afterEvents: number;
+}
+
 export interface TriggerConfig {
 	name: string;
 	kind: TriggerKind;
 	enabled?: boolean;
-	/** Probability in [0, 1] for random/probabilistic triggers. */
+	/** Probability in [0, 1] for this trigger. Random triggers fall back to random.probability. */
 	probability?: number;
-	/** Minimum milliseconds between firings for this trigger. */
+	/** Minimum milliseconds between firings. Random triggers fall back to random.minIntervalMs. */
 	minIntervalMs?: number;
-	/** Only fire after this many observed events. */
+	/** Only fire after this many observed events. Random triggers fall back to random.afterEvents. */
 	afterEvents?: number;
 	/** Tool names this trigger applies to, if relevant. */
 	tools?: string[];
 	/** Regex patterns used by heuristic triggers. */
 	patterns?: string[];
+	/** Optional named model pool override. Defaults to trigger name, kind, then default. */
+	modelPool?: string;
+	/** Optional named prompt profile pool override. Defaults to trigger name, kind, then default. */
+	promptPool?: string;
 }
 
 export interface FluxConfig {
 	enabled: boolean;
 	randomInjections: boolean;
+	random: RandomFrequencyConfig;
 	delivery: DeliveryMode;
 	displayThoughts: boolean;
 	triggerTurn: boolean;
@@ -64,11 +88,15 @@ export interface FluxConfig {
 		maxChars: number;
 	};
 	models: FluxModelSpec[];
+	/** Per-trigger/kind pools of model names. Keys may be trigger names, trigger kinds, or "default". */
+	modelPools: Record<string, string[]>;
 	triggers: TriggerConfig[];
 	prompt: {
 		system: string;
 		style: string;
 	};
+	/** Per-trigger/kind pools of prompt profiles. Keys may be trigger names, trigger kinds, or "default". */
+	promptProfiles: Record<string, PromptProfile[]>;
 	storage: {
 		thoughtLog?: string;
 	};
@@ -112,6 +140,7 @@ export interface StrayThought {
 	id: string;
 	createdAt: string;
 	model: string;
+	promptProfile?: string;
 	trigger: TriggerEvent;
 	content: string;
 	contextDigest: string;

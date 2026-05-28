@@ -42,15 +42,17 @@ export function shouldFireTrigger(
 		if (trigger.enabled === false) continue;
 		if (!triggerKindMatches(trigger, event.kind)) continue;
 		if (trigger.kind === "random" && !config.randomInjections) continue;
-		if (trigger.afterEvents && state.observedEvents < trigger.afterEvents) continue;
+		const afterEvents = trigger.afterEvents ?? (trigger.kind === "random" ? config.random.afterEvents : undefined);
+		if (afterEvents && state.observedEvents < afterEvents) continue;
 		const last = state.lastTriggerAt[trigger.name] ?? 0;
-		if (trigger.minIntervalMs && event.timestamp - last < trigger.minIntervalMs) continue;
+		const minIntervalMs = trigger.minIntervalMs ?? (trigger.kind === "random" ? config.random.minIntervalMs : undefined);
+		if (minIntervalMs && event.timestamp - last < minIntervalMs) continue;
 		if (trigger.tools?.length && event.payload && typeof event.payload === "object") {
 			const toolName = String((event.payload as Record<string, unknown>).toolName ?? (event.payload as Record<string, unknown>).name ?? "");
 			if (!trigger.tools.includes(toolName)) continue;
 		}
 		if (trigger.kind === "loop-detected" && !matchesLoopPattern(snapshot, trigger)) continue;
-		const p = trigger.probability ?? (trigger.kind === "random" ? 0.1 : 1);
+		const p = trigger.probability ?? (trigger.kind === "random" ? config.random.probability : 1);
 		if (p < 1 && random() > p) continue;
 		state.lastTriggerAt[trigger.name] = event.timestamp;
 		return trigger;

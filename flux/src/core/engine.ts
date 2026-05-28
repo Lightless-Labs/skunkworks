@@ -3,15 +3,38 @@ import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { digestSnapshot, formatSnapshotForPrompt } from "./context.ts";
 import { callSidecarModel, pickModel } from "./modelClient.ts";
-import type { AgentContextSnapshot, FluxConfig, FluxState, StrayThought, TriggerEvent } from "./types.ts";
+import type { AgentContextSnapshot, FluxConfig, FluxState, PromptProfile, StrayThought, TriggerEvent } from "./types.ts";
 
-export function buildThoughtPrompt(config: FluxConfig, snapshot: AgentContextSnapshot, trigger: TriggerEvent): string {
+function weightedPick<T extends { weight?: number }>(items: T[], random = Math.random): T | undefined {
+	if (items.length === 0) return undefined;
+	const total = items.reduce((sum, item) => sum + Math.max(0, item.weight ?? 1), 0);
+	if (total <= 0) return items[0];
+	let cursor = random() * total;
+	for (const item of items) {
+		cursor -= Math.max(0, item.weight ?? 1);
+		if (cursor <= 0) return item;
+	}
+	return items[items.length - 1];
+}
+
+export function selectPromptProfile(config: FluxConfig, trigger: TriggerEvent, random = Math.random): PromptProfile {
+	const pool =
+		(trigger.name && config.promptProfiles[trigger.name]) || config.promptProfiles[trigger.kind] || config.promptProfiles.default || [];
+	return weightedPick(pool, random) ?? { name: "fallback", style: config.prompt.style, system: config.prompt.system };
+}
+
+export function buildThoughtPrompt(
+	config: FluxConfig,
+	snapshot: AgentContextSnapshot,
+	trigger: TriggerEvent,
+	profile = selectPromptProfile(config, trigger),
+): string {
 	return [
-		config.prompt.style,
+		profile.style || config.prompt.style,
 		`Trigger: ${trigger.name ?? trigger.kind}`,
 		"Agent context snapshot:",
 		formatSnapshotForPrompt(snapshot, config),
-		"Return exactly one stray thought.",
+		"Return exactly one note. Do not include preamble, labels, markdown headings, or multiple options.",
 	].join("\n\n");
 }
 
@@ -22,13 +45,15 @@ export async function generateStrayThought(
 	trigger: TriggerEvent,
 	signal?: AbortSignal,
 ): Promise<StrayThought> {
-	const model = pickModel(config);
-	const prompt = buildThoughtPrompt(config, snapshot, trigger);
-	const content = await callSidecarModel(model, config.prompt.system, prompt, signal);
+	const model = pickModel(config, trigger);
+	const profile = selectPromptProfile(config, trigger);
+	const prompt = buildThoughtPrompt(config, snapshot, trigger, profile);
+	const content = await callSidecarModel(model, profile.system ?? config.prompt.system, prompt, signal);
 	const thought: StrayThought = {
 		id: randomUUID(),
 		createdAt: new Date().toISOString(),
 		model: `${model.provider}/${model.model}`,
+		promptProfile: profile.name,
 		trigger,
 		content: normalizeThought(content),
 		contextDigest: digestSnapshot(snapshot),
@@ -40,7 +65,7 @@ export async function generateStrayThought(
 
 export function normalizeThought(content: string): string {
 	return content
-		.replace(/^\s*(stray thought|thought|suggestion)\s*:\s*/i, "")
+		.replace(/^\s*(stray thought|thought|suggestion|note|feedback)\s*:\s*/i, "")
 		.trim()
 		.replace(/^['\"]|['\"]$/g, "");
 }

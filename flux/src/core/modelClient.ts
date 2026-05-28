@@ -1,9 +1,24 @@
-import type { FluxConfig, FluxModelSpec } from "./types.ts";
+import type { FluxConfig, FluxModelSpec, TriggerEvent } from "./types.ts";
 
 export class FluxModelError extends Error {}
 
-export function pickModel(config: FluxConfig, random = Math.random): FluxModelSpec {
-	const usable = config.models.filter((model) => Boolean(model.apiKey || (model.apiKeyEnv && process.env[model.apiKeyEnv])));
+function isUsable(model: FluxModelSpec): boolean {
+	return Boolean(model.apiKey || (model.apiKeyEnv && process.env[model.apiKeyEnv]));
+}
+
+export function resolveModelPool(config: FluxConfig, trigger?: TriggerEvent): FluxModelSpec[] {
+	const byName = new Map(config.models.map((model) => [model.name, model]));
+	const poolNames = trigger
+		? (trigger.name && config.modelPools[trigger.name]) || config.modelPools[trigger.kind] || config.modelPools.default
+		: config.modelPools.default;
+	const pooled = (poolNames ?? []).map((name) => byName.get(name)).filter((model): model is FluxModelSpec => Boolean(model));
+	const usablePooled = pooled.filter(isUsable);
+	if (usablePooled.length > 0) return usablePooled;
+	return config.models.filter(isUsable);
+}
+
+export function pickModel(config: FluxConfig, trigger?: TriggerEvent, random = Math.random): FluxModelSpec {
+	const usable = resolveModelPool(config, trigger);
 	if (usable.length === 0) {
 		throw new FluxModelError("No usable Flux sidecar models. Configure .flux/config.json models with apiKeyEnv/apiKey.");
 	}
