@@ -2,6 +2,7 @@
 
 **Created:** 2026-05-22
 **Enhanced:** 2026-05-23 — provider policy lineage persistence
+**Addendum:** 2026-05-28 — durability now routes through the bounded provider-policy topology gate; live runtime proposal validated rejection without fitness evidence
 
 ## Goal
 
@@ -40,10 +41,10 @@ Rules:
 1. Normal runtime loads `provider-policy.json` when present and mechanically reapplies it to the default live provider registry.
 2. `A2D_GERMLINE=seed` bypasses lineage provider policy, preserving seed-mode comparisons.
 3. `compare-topologies` keeps seed on hardcoded defaults and lets evolved topology load lineage policy, so the evolved system can include both topology and provider-policy lineage.
-4. Runtime commits accepted provider-policy changes through `LineageArchive::commit_provider_policy` when the cycle did not regress.
+4. Runtime commits accepted provider-policy changes through `LineageArchive::commit_provider_policy` only after the cycle did not regress and the bounded provider-policy topology gate accepts the current-vs-proposed comparison.
 
 ## Follow-ups
 
 - Add a lightweight provider-policy enzyme only after bounded tests show it does not starve coder/feedback metabolism.
-- Gate durable provider-policy changes with repeated bounded topology comparisons before making them durable defaults.
+- Consider repeated bounded topology comparisons before making high-impact provider-policy changes durable defaults; the first bounded current-vs-proposed gate is implemented and live-validated.
 - Consider a combined lineage commit for cycles that change both germline and provider policy, rather than two sequential lineage commits.

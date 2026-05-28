@@ -2,6 +2,7 @@
 
 **Created:** 2026-05-23
 **Started:** 2026-05-26 — bounded current-vs-proposed comparison gate implemented
+**Completed:** 2026-05-28 — live runtime provider_policy proposal rejected for missing comparison evidence; no durable lineage policy written
 **Plan:** `docs/plans/provider-policy-topology-gate.md`
 **Depends on:** `provider_policy` typed artifact and lineage persistence (implemented 2026-05-23).
 
@@ -41,8 +42,12 @@ Minimal acceptance rule:
 - [x] Unit test: valid provider policy can be accepted in memory but withheld from lineage when the gate fails.
 - [x] Unit test: a clearly better mock policy is persisted.
 - [x] CLI smoke: comparison output includes current/proposed policy names and policy deltas.
-- [ ] Live bounded run: a real provider-policy proposal does not become durable without comparison evidence.
+- [x] Live bounded run: a real provider-policy proposal does not become durable without comparison evidence.
 
 ## Notes
 
 This is the next safety step after `provider-policy-lineage-persistence-2026-05-23.md`. Provider routing is now an evolvable mechanism; durable evolution needs outcome evidence, not just schema validity.
+
+## Live validation
+
+2026-05-28: Temporarily installed a probe lineage germline with a `maintainer` enzyme that produced a real `provider_policy` artifact via `pi/default`, proposing `maintainer: pi/default -> opencode/kimi-for-coding/k2p6`. Runtime accepted the policy in memory (`Provider policy accepted: 1`), then the durability gate ran current-vs-proposed comparison and rejected persistence for missing fitness evidence. Confirmed `.a2d/lineage/provider-policy.json` was absent afterward. Log: `/tmp/a2d-provider-policy-runtime-proposal-20260528162751.log`. Learning: `docs/solutions/architectural-insights/provider-policy-runtime-proposals-must-stay-comparison-gated-2026-05-28.md`.

@@ -2,6 +2,7 @@
 
 **Created:** 2026-05-26
 **Started:** 2026-05-26 — bounded current-vs-proposed gate implemented
+**Completed:** 2026-05-28 — live runtime provider_policy proposal exercised and durability was rejected without fitness evidence
 **Todo:** `todos/provider-policy-topology-gate.md`
 
 ## Goal
@@ -35,7 +36,7 @@ Implemented on 2026-05-26:
 - [x] Unit test: valid provider policy can be accepted in memory but withheld from lineage when comparison evidence fails.
 - [x] Unit test: a clearly better mock policy is persisted.
 - [x] CLI smoke: provider-policy comparison output names `current` and `proposed` policy modes and prints policy deltas.
-- [ ] Live bounded run: a real provider-policy proposal does not become durable without comparison evidence.
+- [x] Live bounded run: a real provider-policy proposal does not become durable without comparison evidence.
 
 ## Non-goals
 
@@ -51,3 +52,5 @@ Implemented on 2026-05-26:
 ```bash
 A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 cargo run -p a2d -- compare-provider-policy sudoku 1
 ```
+
+- Live runtime proposal validation (2026-05-28): temporarily installed a probe lineage germline whose `maintainer` enzyme emitted a real `provider_policy` artifact through `pi/default`, proposing `maintainer: pi/default -> opencode/kimi-for-coding/k2p6`. The cycle accepted the policy in memory, ran the bounded current-vs-proposed durability gate, rejected lineage persistence for missing fitness evidence, and left no `.a2d/lineage/provider-policy.json`. Log: `/tmp/a2d-provider-policy-runtime-proposal-20260528162751.log`.

@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-05-26 (session 17 — provider-policy topology gate landed)
+**Last updated:** 2026-05-28 (session 18 — provider-policy runtime proposal gate validated)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-210 commits. 183 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 32 compound learnings.
+217 commits. 183 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 33 compound learnings.
 
 ## Clean-session pickup
 
@@ -25,7 +25,7 @@
 - **Coder no longer starves feedback metabolism after success:** a successful code-producing invocation ends the cycle so benchmark feedback can become the next cycle's food. Scheduler priority is dynamic: coder first before code exists; once mechanical fitness exists, evolver → architect → tester → coder.
 - **Evolver consumes mechanical fitness directly:** seed and loaded lineage germlines now use `fitness_report` as the evolver reactant; `test_results` is optional supporting evidence, not a gate. This routes sandbox outcome evidence directly into adaptation.
 - **Provider health is metabolic food:** metabolism emits a mechanical `provider_health_report` artifact with unavailable providers, cooldown/failure counters, recent invocation outcomes, and coder candidate portfolio evidence. Seed/loaded germlines route it to evolver and architect so provider-role degradation is visible to the system, not just to humans reading logs.
-- **Provider policy is now typed, gated, durable, and comparison-gated:** `provider_policy` serializes active role-provider assignments; enzymes that produce it can propose assignment changes, but the metabolism accepts only known-enzyme/registered-provider changes and records accepted/rejected policy records in lineage. Current policy is routed to evolver/architect as catalyst context. Accepted non-regressing policy now must also pass a bounded current-vs-proposed provider-policy comparison before `provider-policy.json` is persisted in lineage.
+- **Provider policy is now typed, gated, durable, comparison-gated, and live-validated:** `provider_policy` serializes active role-provider assignments; enzymes that produce it can propose assignment changes, but the metabolism accepts only known-enzyme/registered-provider changes and records accepted/rejected policy records in lineage. Current policy is routed to evolver/architect as catalyst context. Accepted non-regressing policy now must also pass a bounded current-vs-proposed provider-policy comparison before `provider-policy.json` is persisted in lineage. A live probe accepted a real runtime `provider_policy` proposal in memory, rejected durability for missing fitness evidence, and left no `.a2d/lineage/provider-policy.json`.
 - **GLM is off the coder/evolver critical path:** coder default is Kimi k2.6 with DeepSeek v4 flash fallback; evolver is explicitly assigned to Kimi k2.6 after GLM evolver timeouts starved feedback metabolism. Non-parallel evolver fallback is role-isolated, so it should not route to tester/architect GLM after Kimi/DeepSeek cooldowns. GLM 5.1 remains assigned to tester/architect only.
 - **Failed rung-2 consultation is bounded:** if consultation times out/fails, the workcell fails immediately instead of spending a second full provider timeout on the primary invocation.
 - **Timeouts are bounded but provider-specific:** GLM 5.1 now gets 900s by default; other CLI providers default to 300s; `A2D_PROVIDER_TIMEOUT_SECS` overrides.
@@ -40,14 +40,14 @@
 - **Escalation rungs 4–6 are missing:** rungs 0–3 detect loops but do not reliably halt degradation.
 - **Benchmark coverage is narrow:** sudoku is validated; chess/rubiks need stronger acceptance tests and live runs.
 - **Autopilot still has unproven live repair diversity:** provider-diverse repair routing is unit-covered and dry-run task-selection was smoke-validated, but a live failed patchset has not yet exercised the Pi → alternate-provider repair path.
-- **Provider-policy gate still needs a real proposal run:** the bounded comparison gate, persistence guard, and CLI smoke are implemented; a live metabolism run with an actual provider_policy proposal has not yet demonstrated rejection/acceptance end-to-end.
+- **Provider-policy usefulness remains unproven:** the runtime/durability safety path is live-validated, but no benchmark-useful provider-policy proposal has yet shown improved challenge outcomes.
 
 ### Best next moves
 
-1. **Live-validate a real provider-policy proposal through the new gate:** induce a bounded provider_policy proposal and confirm no durable `provider-policy.json` commit occurs without comparison evidence; inspect current/proposed deltas and decision output.
-2. **Live-validate provider-diverse autopilot repair:** induce or wait for a repairable parse/path/temp-validation failure and confirm monitor logs show Pi primary plus alternate-provider repair metadata and that the identical gates still apply.
-3. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
-4. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
+1. **Live-validate provider-diverse autopilot repair:** induce or wait for a repairable parse/path/temp-validation failure and confirm monitor logs show Pi primary plus alternate-provider repair metadata and that the identical gates still apply.
+2. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
+3. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
+4. **Find a benchmark-useful provider-policy proposal path:** runtime proposal safety is validated, but the live 7-enzyme topology still has no default policy-management enzyme; add one only if bounded tests show it does not starve coder/feedback metabolism.
 5. **Live-validate empty-output diagnostics and architect no-op contract** during a run that reaches architect; confirm failures expose useful parsed/raw previews and legitimate no-change decisions route as `NOOP` artifacts.
 6. **Implement escalation rungs 4–6**: forced model swap, multi-model consensus with mechanical selection, Darwinian isolation.
 7. **Expand acceptance tests**: chess castling/en-passant/checkmate/legal-move invariants; Rubiks scramble-solve roundtrip.
@@ -74,6 +74,10 @@
 - **Provider-policy comparisons are now inspectable:** `a2d compare-provider-policy <challenge> <cycles> [policy-json|@path]` runs current and proposed policies with persistence disabled, prints policy deltas, and reports a gate decision.
 
 ### What happened this session
+
+- **Provider-policy runtime proposal gate live validation completed.** Temporarily installed a probe lineage germline whose `maintainer` enzyme produced a real `provider_policy` artifact via `pi/default`, proposing `maintainer: pi/default -> opencode/kimi-for-coding/k2p6`. Runtime accepted the policy in memory (`Provider policy accepted: 1`), ran the bounded current-vs-proposed durability gate, rejected lineage persistence for missing fitness evidence, and left no `.a2d/lineage/provider-policy.json`. Log: `/tmp/a2d-provider-policy-runtime-proposal-20260528162751.log`.
+- **Provider-policy topology-gate todo/plan completed.** Updated `todos/provider-policy-topology-gate.md` and `docs/plans/provider-policy-topology-gate.md`; added learning `docs/solutions/architectural-insights/provider-policy-runtime-proposals-must-stay-comparison-gated-2026-05-28.md`.
+- **Validation:** `cargo test` passes (183 passing, 2 ignored). Also ran `cargo run -q -p a2d -- status` and a bounded explicit `compare-provider-policy sudoku 1` proposal; the latter rejected a slower proposed policy and confirmed no provider-policy lineage file was written.
 
 - **Provider-policy topology gate landed.** Added `docs/plans/provider-policy-topology-gate.md`, `a2d compare-provider-policy`, current-vs-proposed policy comparison runs, deterministic gate decisions, and `commit_provider_policy_if_gate_accepts`. Runtime provider-policy lineage persistence now requires bounded comparison evidence after in-memory schema/provider/enzyme acceptance and non-regression. Gate rejects missing fitness evidence, worse best fitness, zero-fitness inconclusive comparisons, material invocation increases, and material wall-clock increases. Provider-policy snapshots are filtered to current germline enzymes so outer-loop-only assignments such as `maintainer` are not durably written as challenge-metabolism policy.
 - **Provider-policy gate validation:** `cargo test` passes (183 passing, 2 ignored). CLI smoke passed: `A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 cargo run -q -p a2d -- compare-provider-policy sudoku 1` printed `current`/`proposed` policy modes, `no assignment changes`, and rejected due missing fitness evidence without lineage persistence.
@@ -295,7 +299,7 @@ Search `docs/solutions/` before implementing. Key findings:
 
 ## Todos
 
-- `todos/provider-policy-topology-gate.md` — mostly implemented; remaining live validation with a real provider_policy proposal
+- `todos/provider-policy-topology-gate.md` — completed; live runtime proposal was rejected durably without fitness evidence. Future work is a benchmark-useful provider-policy proposal path, not the safety gate itself.
 - `todos/autonomous-project-loop.md` — checkbox-complete for current slice; future refinements may deepen task semantics or live repair-diversity validation
 - `todos/bounded-live-benchmarks.md` — `sudoku 5` completed with 100% best fitness; remaining provider waste: GLM timeouts + architect no-materialized-output
 - `todos/escalation-rungs-4-6.md` — model swap → multi-model consensus → Darwinian isolation (rungs 0–3 live; provider_policy now available as durable provider-assignment mechanism)
