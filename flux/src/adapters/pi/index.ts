@@ -1,7 +1,9 @@
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { loadConfig } from "../../core/config.ts";
+import { DEFAULT_CONFIG, loadConfig } from "../../core/config.ts";
 import { snapshotFromGenericPayload, textFromUnknown } from "../../core/context.ts";
 import { generateStrayThought, renderThoughtForAgent } from "../../core/engine.ts";
 import { createInitialState, shouldFireTrigger } from "../../core/triggers.ts";
@@ -11,6 +13,29 @@ const CUSTOM_TYPE = "flux:stray-thought";
 
 function messageText(message: any): string {
 	return textFromUnknown(message?.content ?? message?.text ?? "");
+}
+
+function cloneDefaultConfig(): FluxConfig {
+	return JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as FluxConfig;
+}
+
+function writeConfigFile(path: string, config: FluxConfig): void {
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+}
+
+function formatConfigSummary(config: FluxConfig, path?: string): string {
+	const random = config.random;
+	const pools = Object.entries(config.modelPools)
+		.map(([name, models]) => `${name}: ${models.join(", ")}`)
+		.join("; ");
+	return [
+		`Flux config: ${path ?? "defaults (not written)"}`,
+		`enabled=${config.enabled}, random=${config.randomInjections}`,
+		`random.frequency probability=${random.probability}, minIntervalMs=${random.minIntervalMs}, afterEvents=${random.afterEvents}`,
+		`models=${config.models.map((model) => model.name).join(", ") || "none"}`,
+		`modelPools=${pools || "none"}`,
+	].join("\n");
 }
 
 function snapshotFromPi(ctx: ExtensionContext, config: FluxConfig, hostPayload?: unknown): AgentContextSnapshot {
@@ -215,13 +240,112 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("flux", {
-		description: "Manage Flux: /flux status | on | off | random on|off | think [reason] | reload",
+		description:
+			"Manage Flux: /flux status | on | off | random on|off | think [reason] | reload | config [status|init|edit|random|models|prompts]",
 		handler: async (args, ctx) => {
 			const parts = args.trim().split(/\s+/).filter(Boolean);
 			const command = parts[0] ?? "status";
+			const configPath = () => loaded.path ?? join(ctx.cwd, ".flux", "config.json");
+			const persistLoadedConfig = () => {
+				writeConfigFile(configPath(), loaded.config);
+				refreshConfig(ctx.cwd);
+				randomEnabled = loaded.config.randomInjections;
+			};
+
 			if (command === "reload") {
 				refreshConfig(ctx.cwd);
+				randomEnabled = loaded.config.randomInjections;
 				ctx.ui.notify(`Flux config reloaded${loaded.path ? ` from ${loaded.path}` : " (defaults)"}`, "info");
+				return;
+			}
+			if (command === "config") {
+				const subcommand = parts[1] ?? "status";
+				if (subcommand === "status" || subcommand === "path") {
+					ctx.ui.notify(formatConfigSummary(loaded.config, loaded.path), "info");
+					return;
+				}
+				if (subcommand === "init") {
+					const path = configPath();
+					if (existsSync(path)) {
+						ctx.ui.notify(`Flux config already exists: ${path}`, "warning");
+						return;
+					}
+					writeConfigFile(path, cloneDefaultConfig());
+					refreshConfig(ctx.cwd);
+					randomEnabled = loaded.config.randomInjections;
+					ctx.ui.notify(`Created Flux config: ${path}`, "info");
+					return;
+				}
+				if (subcommand === "edit") {
+					const path = configPath();
+					if (!ctx.hasUI) {
+						ctx.ui.notify(`Edit ${path} manually, then run /flux reload.`, "info");
+						return;
+					}
+					const edited = await ctx.ui.editor("Edit Flux config JSON", JSON.stringify(loaded.config, null, 2));
+					if (edited === undefined) return;
+					let parsed: FluxConfig;
+					try {
+						parsed = JSON.parse(edited) as FluxConfig;
+					} catch (error) {
+						ctx.ui.notify(`Invalid JSON: ${error instanceof Error ? error.message : String(error)}`, "error");
+						return;
+					}
+					writeConfigFile(path, parsed);
+					refreshConfig(ctx.cwd);
+					randomEnabled = loaded.config.randomInjections;
+					ctx.ui.notify(`Saved and reloaded Flux config: ${path}`, "info");
+					return;
+				}
+				if (subcommand === "random") {
+					const field = parts[2] as keyof FluxConfig["random"] | undefined;
+					const value = parts[3];
+					if (!field || value === undefined) {
+						ctx.ui.notify(
+							`Usage: /flux config random probability <0..1> | minIntervalMs <ms> | afterEvents <count>\nCurrent: ${JSON.stringify(loaded.config.random)}`,
+							"info",
+						);
+						return;
+					}
+					if (!(field in loaded.config.random)) {
+						ctx.ui.notify(`Unknown random field: ${field}`, "error");
+						return;
+					}
+					const numeric = Number(value);
+					if (!Number.isFinite(numeric)) {
+						ctx.ui.notify(`Expected numeric value for ${field}`, "error");
+						return;
+					}
+					if (field === "probability" && (numeric < 0 || numeric > 1)) {
+						ctx.ui.notify("Probability must be between 0 and 1.", "error");
+						return;
+					}
+					loaded.config.random[field] = numeric;
+					persistLoadedConfig();
+					ctx.ui.notify(`Set Flux random.${field}=${numeric} in ${loaded.path}`, "info");
+					return;
+				}
+				if (subcommand === "models") {
+					const lines = [
+						"Flux models:",
+						...loaded.config.models.map((model) => `- ${model.name}: ${model.provider}/${model.model}`),
+						"Model pools:",
+						...Object.entries(loaded.config.modelPools).map(([name, models]) => `- ${name}: ${models.join(", ")}`),
+					];
+					ctx.ui.notify(lines.join("\n"), "info");
+					return;
+				}
+				if (subcommand === "prompts") {
+					const lines = [
+						"Flux prompt profiles:",
+						...Object.entries(loaded.config.promptProfiles).map(
+							([name, profiles]) => `- ${name}: ${profiles.map((profile) => `${profile.name}(${profile.weight ?? 1})`).join(", ")}`,
+						),
+					];
+					ctx.ui.notify(lines.join("\n"), "info");
+					return;
+				}
+				ctx.ui.notify("Usage: /flux config status | init | edit | random | models | prompts", "info");
 				return;
 			}
 			if (command === "on" || command === "off") {
@@ -247,10 +371,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 				);
 				return;
 			}
-			ctx.ui.notify(
-				`Flux ${loaded.config.enabled ? "on" : "off"}; random ${randomEnabled ? "on" : "off"}; models ${loaded.config.models.length}; config ${loaded.path ?? "defaults"}`,
-				"info",
-			);
+			ctx.ui.notify(formatConfigSummary(loaded.config, loaded.path), "info");
 		},
 	});
 }
