@@ -1,7 +1,7 @@
 # Self-Correction Loop TODOs
 
 Created: 2026-04-28
-Updated: 2026-05-24
+Updated: 2026-05-28
 
 Current facts:
 
@@ -16,6 +16,7 @@ Current facts:
 - OpenCode GLM at the 1800s attempt timeout produced no patches across 7 observed attempts on 2026-05-21; 2026-05-22 fibonacci calibration at 200k/3600s also timed out with tokens=0/no patch. Direct `opencode --print-logs` smoke exposed upstream ZAI 429 `Insufficient balance or no resource package`. After subscription restore, `pi/zai/glm-5.1` worked through Pi with the existing Pi `zai` API key.
 - A² now supports `pi` / `pi/<model_id>` provider routing. Pi/ZAI GLM fibonacci calibration passed attempt 1 with token accounting in `/tmp/a2-pi-zai-fibonacci-json-usage.jsonl`. Pi/ZAI GLM scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3 on the three original compound fixtures: `/tmp/a2-compound-hidden-pi-zai-glm.jsonl`, `/tmp/a2-compound-membrane-pi-zai-glm.jsonl`, and `/tmp/a2-compound-archive-pi-zai-glm.jsonl`.
 - `compound-sensorium-same-crate-hidden` was added 2026-05-24 to move beyond visible-core-plus-hidden-second-crate fixtures. It injects visible high-risk priority and hidden title truncation regressions in `crates/a2_sensorium/src/ingest.rs`; smoke-only injection verified both failures. Pi/ZAI GLM and Minimax N=3 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Kimi N=3 scored resolved 3/3, pass@1 1/3, loop exercised 2/3, self-corrected 2/3. Results: `/tmp/a2-sensorium-same-crate-pi-zai-glm.jsonl`, `/tmp/a2-sensorium-same-crate-minimax.jsonl`, `/tmp/a2-sensorium-same-crate-kimi.jsonl`.
+- Anti-repeat ablation N=3 on `compound-hidden` with Minimax completed 2026-05-28. Enabled cohort: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; resolved attempts were 3, 2, 2. Disabled cohort: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all resolved on attempt 2. Result: `/tmp/a2-anti-repeat-ablation-compound-hidden-minimax-20260528T122327Z.jsonl`.
 
 See `todos/self-correction-loop-recovery.md` for the structural recovery sequence.
 
@@ -32,6 +33,7 @@ See `todos/self-correction-loop-recovery.md` for the structural recovery sequenc
 - [x] Add a broader loop-shaped fixture beyond visible-core-plus-hidden-second-crate regressions. Completed 2026-05-24 with `compound-sensorium-same-crate-hidden`; Pi/ZAI GLM and Minimax N=3 scored resolved/self-corrected 3/3; Kimi N=3 scored resolved 3/3 and self-corrected 2/3.
 - [x] Run `compound-sensorium-same-crate-hidden` N≥3 with Minimax and Kimi. Completed 2026-05-24; results: `/tmp/a2-sensorium-same-crate-minimax.jsonl`, `/tmp/a2-sensorium-same-crate-kimi.jsonl`.
 - [x] Design anti-repeat ablation benchmark: candidate verifier enabled + anti-repeat enabled vs candidate verifier enabled + anti-repeat disabled. Completed 2026-05-24 with `a2ctl run --disable-anti-repeat-retry`, `bench/self_correction.py --disable-anti-repeat`, JSONL `anti_repeat_retry_enabled`/`ablation` fields, and scorer cohort reporting.
+- [x] Run first N≥3 anti-repeat ablation cohort. Completed 2026-05-28 on `compound-hidden` with Minimax. Enabled and disabled cohorts both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Result: `/tmp/a2-anti-repeat-ablation-compound-hidden-minimax-20260528T122327Z.jsonl`.
 - [x] Run `compound-archive-hidden` N≥3 with Minimax and Kimi after smoke-only injection success. Completed 2026-05-22; both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 - [x] Refresh stale `Cargo.lock` observed by sentinel during Pi/ZAI validation. Completed 2026-05-22 with `cargo generate-lockfile --offline`; sentinel then passed 6/6.
 - [x] Add a second hard fixture after `compound-hidden` self-corrects at least once. Completed 2026-05-18 with `compound-membrane-hidden`; after hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-21 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.

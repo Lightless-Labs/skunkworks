@@ -1,6 +1,6 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-05-27
+**Last updated:** 2026-05-28
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -185,6 +185,7 @@ ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/
 - `compound-sensorium-same-crate-hidden` was added on 2026-05-24. It injects two regressions in `crates/a2_sensorium/src/ingest.rs`: visible `RiskTier::High` priority behavior and hidden title truncation behavior. Smoke-only injection verified both failures. Pi/ZAI GLM resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched `a2_sensorium/src/ingest.rs` with +1/-1 and failed the hidden verifier; attempt 2 touched the same file with +2/-2 and verified clean. Results: `/tmp/a2-sensorium-same-crate-pi-zai-glm.jsonl`.
 - `compound-sensorium-same-crate-hidden` with Minimax on 2026-05-24 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. All runs touched `a2_sensorium/src/ingest.rs` on attempts 1 and 2. Results: `/tmp/a2-sensorium-same-crate-minimax.jsonl`.
 - `compound-sensorium-same-crate-hidden` with Kimi on 2026-05-24 resolved 3/3 runs; pass@1 was 1/3; loop exercised 2/3; self-corrected 2/3. Two runs resolved on attempt 2 after prior lineage; one run resolved on attempt 1. Results: `/tmp/a2-sensorium-same-crate-kimi.jsonl`.
+- Anti-repeat ablation on `compound-hidden` with Minimax on 2026-05-28 completed N=3 per cohort. Enabled cohort: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; resolved attempts were 3, 2, 2. Disabled cohort: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all resolved on attempt 2. Result: `/tmp/a2-anti-repeat-ablation-compound-hidden-minimax-20260528T122327Z.jsonl`.
 - The 2026-05-20 Minimax/Kimi reruns happened after candidate verifier code existed but before the self-correction harness passed verifier commands, so those reruns exercised post-apply verification/retry context rather than candidate-worktree verifier scoring.
 - `compound-hidden` with Kimi on 2026-05-20 after anti-repeat + task-verifier code changes resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. Results: `/tmp/a2-compound-after-task-verifier-kimi.jsonl`.
 - `compound-hidden` with Minimax on 2026-05-20 after anti-repeat + task-verifier code changes resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2ctl/src/main.rs` and verified clean. Results: `/tmp/a2-compound-after-task-verifier-minimax.jsonl`.
@@ -193,7 +194,7 @@ ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/
 
 **Not yet validated:**
 - Loop recovery beyond the four current compound fixtures after candidate-worktree task verifier execution.
-- N≥3 anti-repeat ablation runs comparing candidate verifier enabled + anti-repeat enabled vs candidate verifier enabled + anti-repeat disabled.
+- Additional anti-repeat ablation coverage beyond the first `compound-hidden`/Minimax N=3 enabled-vs-disabled cohort.
 
 **Structural solution direction:** Minimax, Kimi, and Pi/ZAI GLM now have N=3 validation on the three original compound fixtures and on the same-crate Sensorium fixture. Kimi had pass@1 1/3 on Sensorium, so its self-correction count there is 2/3 rather than 3/3. Remaining work is more fixture diversity and measuring anti-repeat contribution. Dedicated todos live in `todos/`.
 
@@ -215,6 +216,7 @@ ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/
 - [x] **Populate verifier-derived relevant files.** Completed 2026-05-12. Failed structured verifier output containing Rust source paths now populates `ContextPack.relevant_files`, and `WorktreeCatalyst` renders those paths in prompts. See `todos/verifier-derived-relevant-files.md`.
 - [x] **Add anti-repeat retry strategy.** Completed 2026-05-20. Retry context now emits an `anti_repeat_retry` motif when prior failed patch touched files do not overlap unresolved verifier-derived source paths; repeated touched-file sets are counted, and WorktreeCatalyst prompts explicitly warn not to repeat the prior patch shape alone. See `todos/anti-repeat-retry-strategy.md`.
 - [x] **Design anti-repeat ablation benchmark.** Completed 2026-05-24. `a2ctl run --disable-anti-repeat-retry` disables only the anti-repeat retry motif; `bench/self_correction.py --disable-anti-repeat` forwards it; JSONL records carry `anti_repeat_retry_enabled`/`ablation`; the scorer prints cohorts when paired enabled/disabled runs are in one log.
+- [x] **Run first N≥3 anti-repeat ablation cohort.** Completed 2026-05-28 on `compound-hidden` with Minimax. Enabled and disabled cohorts both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Result: `/tmp/a2-anti-repeat-ablation-compound-hidden-minimax-20260528T122327Z.jsonl`.
 - [x] **Add in-repo autopilot entrypoint.** Completed 2026-05-25. `a2ctl autopilot` can discover project work from `todos/`, `docs/plans/`, and code TODO/FIXME comments, run bounded workcell iterations, optionally apply verified promoted patches, and write durable JSONL event logs under `.a2/autopilot/`. See `docs/plans/continuous-self-iteration.md`.
 - [x] **Add dashboard-friendly aggregate autopilot logs.** Completed 2026-05-26. Completed autopilot runs append compact records to `.a2/autopilot/run_index.jsonl` and update `.a2/autopilot/latest_run.json` with summary metrics, stop reason, log paths, and compact iteration outcomes.
 - [x] **Add resident autopilot wrapper.** Completed 2026-05-27. `a2ctl autopilot-resident` repeatedly invokes the normal autopilot command on `--interval-secs`, supports `--max-runs` for bounded smoke/cron operation or `0` for until-interrupted residency, forwards provider/budget/task/apply/dry-run/log options, and writes resident events plus per-run stdout/stderr under `.a2/autopilot/resident/<resident-id>/`.
@@ -321,3 +323,4 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-05-26 | Add verified checklist updates | Autopilot now marks checklist-sourced candidates complete only after `apply_ok && verify_ok`; source parsing is limited to `todos/...:<line>` and `docs/plans/...:<line>`, and updates are logged in `checklist_update` events plus `run_summary.json.iterations[].checklist_update`. |
 | 2026-05-26 | Add aggregate autopilot run logs | Completed autopilot runs append one compact dashboard record to `.a2/autopilot/run_index.jsonl` and overwrite `.a2/autopilot/latest_run.json` with the latest run record. |
 | 2026-05-27 | Add resident autopilot wrapper | `a2ctl autopilot-resident` repeatedly invokes `a2ctl autopilot`, forwards normal autopilot options, logs resident events under `.a2/autopilot/resident/<resident-id>/events.jsonl`, and stores per-run stdout/stderr files. |
+| 2026-05-28 | First anti-repeat ablation cohort | `compound-hidden` with Minimax completed N=3 enabled and N=3 disabled anti-repeat cohorts. Both cohorts scored resolved/self-corrected 3/3 with pass@1 0/3. Result: `/tmp/a2-anti-repeat-ablation-compound-hidden-minimax-20260528T122327Z.jsonl`. |
