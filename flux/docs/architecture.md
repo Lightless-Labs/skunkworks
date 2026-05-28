@@ -35,7 +35,7 @@ Resolution order:
 - prompt pool: trigger name → trigger kind → `default`;
 - model pool: trigger name → trigger kind → `default` → any usable configured model.
 
-Prompt profiles support `weight`, so a trigger can randomly rotate between several cognitive modes. For example, `random` can select between lateral edge-case checks and playful reframes, while `loop-detected` can select between critical feedback and smallest-next-check suggestions.
+Prompt profiles support `weight`, so a trigger can randomly rotate between several cognitive modes. For example, `random` can select between narrow local sparks, ambient/global inspiration, and playful reframes, while `loop-detected` can select between critical feedback and smallest-next-check suggestions.
 
 ## Context contract
 

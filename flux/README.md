@@ -88,7 +88,7 @@ See `examples/` for scaffold settings. Host plugin APIs move quickly, so these a
 
 ## Prompt/model selection
 
-Flux uses a neutral base system prompt plus trigger/profile-specific instructions. That means `random` can ask for a lateral nudge, while `loop-detected` can ask for kind-but-honest critical feedback about what the agent has been trying relative to the apparent task.
+Flux uses a neutral base system prompt plus trigger/profile-specific instructions. That means `random` can rotate between narrow local sparks, more global “inspiration hit me” notes, and playful reframes, while `loop-detected` can ask for kind-but-honest critical feedback about what the agent has been trying relative to the apparent task.
 
 Selection order:
 
