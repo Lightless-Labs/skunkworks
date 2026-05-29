@@ -20,6 +20,7 @@ Latest Flux commits on `main`:
 - `c86bc32 Add Flux configuration command`
 - `b2f5f50 Broaden random Flux prompt pool`
 - `9c6e928 Add Flux core selection tests`
+- `fa0e09b Use host-native Flux model callers`
 
 Implemented surfaces:
 
