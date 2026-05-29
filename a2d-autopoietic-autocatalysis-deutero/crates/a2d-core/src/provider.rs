@@ -221,6 +221,12 @@ impl ProviderRegistry {
             .position(|provider| provider.name() == provider_name)
     }
 
+    /// Get a provider by registered provider name.
+    pub fn provider_named(&self, provider_name: &str) -> Option<&dyn Provider> {
+        self.provider_index_by_name(provider_name)
+            .map(|idx| self.providers[idx].as_ref())
+    }
+
     /// Get the provider for an enzyme (falls back to default).
     pub fn provider_for(&self, enzyme_id: &EnzymeId) -> &dyn Provider {
         let idx = self
@@ -677,5 +683,14 @@ mod tests {
 
         let names = registry.providers();
         assert_eq!(names, vec!["default", "claude", "codex"]);
+    }
+
+    #[test]
+    fn registry_finds_provider_by_name() {
+        let mut registry = ProviderRegistry::new(Box::new(MockProvider::new("default", "")));
+        registry.register(Box::new(MockProvider::new("claude", "")));
+
+        assert_eq!(registry.provider_named("claude").unwrap().name(), "claude");
+        assert!(registry.provider_named("missing").is_none());
     }
 }

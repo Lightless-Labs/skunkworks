@@ -443,6 +443,7 @@ fn autopilot_provider_for_attempt<'a>(
     registry: &'a ProviderRegistry,
     enzyme_id: &EnzymeId,
     attempt: usize,
+    configured_repair_provider: Option<&str>,
 ) -> AutopilotProviderAttempt<'a> {
     let primary = registry.provider_for(enzyme_id);
     let alternate = registry.alternative_provider_for(enzyme_id);
@@ -452,15 +453,35 @@ fn autopilot_provider_for_attempt<'a>(
         .map(str::to_string)
         .collect::<Vec<_>>();
 
-    if attempt == 1 && alternate.name() != primary.name() {
-        return AutopilotProviderAttempt {
-            provider: alternate,
-            primary_provider: primary.name().to_string(),
-            provider_topology,
-            escalated: true,
-            escalation_reason: "first repair attempt uses configured alternate maintainer provider"
-                .to_string(),
-        };
+    if attempt == 1 {
+        if let Some(provider_name) =
+            configured_repair_provider.filter(|name| !name.trim().is_empty())
+        {
+            if let Some(configured) = registry.provider_named(provider_name) {
+                if configured.name() != primary.name() {
+                    return AutopilotProviderAttempt {
+                        provider: configured,
+                        primary_provider: primary.name().to_string(),
+                        provider_topology,
+                        escalated: true,
+                        escalation_reason: format!(
+                            "first repair attempt uses configured repair provider {provider_name}"
+                        ),
+                    };
+                }
+            }
+        }
+
+        if alternate.name() != primary.name() {
+            return AutopilotProviderAttempt {
+                provider: alternate,
+                primary_provider: primary.name().to_string(),
+                provider_topology,
+                escalated: true,
+                escalation_reason:
+                    "first repair attempt uses configured alternate maintainer provider".to_string(),
+            };
+        }
     }
 
     AutopilotProviderAttempt {
@@ -470,6 +491,13 @@ fn autopilot_provider_for_attempt<'a>(
         escalated: false,
         escalation_reason: if attempt == 0 {
             "primary maintainer attempt".to_string()
+        } else if configured_repair_provider
+            .is_some_and(|name| registry.provider_named(name).is_none())
+        {
+            format!(
+                "configured repair provider {} is not registered; returning to primary provider",
+                configured_repair_provider.unwrap_or_default()
+            )
         } else if alternate.name() == primary.name() {
             "no alternate maintainer provider configured".to_string()
         } else {
@@ -519,6 +547,7 @@ struct AutopilotConfig {
     dry_run: bool,
     allow_dirty: bool,
     repair_attempts: usize,
+    repair_provider: Option<String>,
 }
 
 impl AutopilotConfig {
@@ -531,6 +560,9 @@ impl AutopilotConfig {
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(1),
+            repair_provider: env::var("A2D_AUTOPILOT_REPAIR_PROVIDER")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
         };
 
         let mut idx = 0;
@@ -553,6 +585,13 @@ impl AutopilotConfig {
                 "--repair-attempts" => {
                     if let Some(value) = args.get(idx + 1).and_then(|value| value.parse().ok()) {
                         config.repair_attempts = value;
+                    }
+                    idx += 2;
+                }
+                "--repair-provider" => {
+                    if let Some(value) = args.get(idx + 1).filter(|value| !value.trim().is_empty())
+                    {
+                        config.repair_provider = Some(value.clone());
                     }
                     idx += 2;
                 }
@@ -585,7 +624,10 @@ impl AutopilotProviderAttempt<'_> {
     }
 }
 
-fn autopilot_fault_injection_for_attempt(setting: Option<&str>, attempt: usize) -> Option<&'static str> {
+fn autopilot_fault_injection_for_attempt(
+    setting: Option<&str>,
+    attempt: usize,
+) -> Option<&'static str> {
     let normalized = setting?.trim().to_ascii_lowercase().replace('-', "_");
     match (normalized.as_str(), attempt) {
         ("attempt0_parse_failure" | "parse_attempt0" | "parse_failure", 0) => {
@@ -768,6 +810,7 @@ fn run_autopilot(config: AutopilotConfig) {
             "dry_run": config.dry_run,
             "allow_dirty": config.allow_dirty,
             "repair_attempts": config.repair_attempts,
+            "repair_provider": config.repair_provider,
         }),
     );
     println!("Autopilot run id: {}", logger.run_id);
@@ -861,7 +904,8 @@ fn run_autopilot(config: AutopilotConfig) {
                 "iteration": iteration,
                 "primary_provider": primary_provider,
                 "registered_providers": provider_topology,
-                "repair_escalation": "attempt 1 uses the configured alternate provider when one is available",
+                "repair_escalation": "attempt 1 uses A2D_AUTOPILOT_REPAIR_PROVIDER/--repair-provider when registered, otherwise the configured alternate provider",
+                "configured_repair_provider": config.repair_provider,
             }),
         );
         let original_prompt = prompt.clone();
@@ -869,8 +913,12 @@ fn run_autopilot(config: AutopilotConfig) {
         let max_attempts = config.repair_attempts + 1;
 
         for attempt in 0..max_attempts {
-            let provider_attempt =
-                autopilot_provider_for_attempt(&registry, &maintainer_id, attempt);
+            let provider_attempt = autopilot_provider_for_attempt(
+                &registry,
+                &maintainer_id,
+                attempt,
+                config.repair_provider.as_deref(),
+            );
             let provider = provider_attempt.provider;
             let provider_metadata = provider_attempt.metadata_text(attempt);
 
@@ -3245,9 +3293,9 @@ mod tests {
         let registry = build_registry();
         let maintainer = EnzymeId::from("maintainer");
 
-        let initial = autopilot_provider_for_attempt(&registry, &maintainer, 0);
-        let first_repair = autopilot_provider_for_attempt(&registry, &maintainer, 1);
-        let later_repair = autopilot_provider_for_attempt(&registry, &maintainer, 2);
+        let initial = autopilot_provider_for_attempt(&registry, &maintainer, 0, None);
+        let first_repair = autopilot_provider_for_attempt(&registry, &maintainer, 1, None);
+        let later_repair = autopilot_provider_for_attempt(&registry, &maintainer, 2, None);
 
         assert_eq!(initial.provider.name(), "pi/default");
         assert!(!initial.escalated);
@@ -3264,6 +3312,32 @@ mod tests {
                 .metadata_text(1)
                 .contains("registered_providers")
         );
+    }
+
+    #[test]
+    fn autopilot_repair_uses_configured_registered_provider() {
+        let registry = build_registry();
+        let maintainer = EnzymeId::from("maintainer");
+
+        let first_repair = autopilot_provider_for_attempt(
+            &registry,
+            &maintainer,
+            1,
+            Some("opencode/opencode/deepseek-v4-flash-free"),
+        );
+        let missing = autopilot_provider_for_attempt(&registry, &maintainer, 1, Some("missing"));
+
+        assert_eq!(
+            first_repair.provider.name(),
+            "opencode/opencode/deepseek-v4-flash-free"
+        );
+        assert!(first_repair.escalated);
+        assert!(
+            first_repair
+                .escalation_reason
+                .contains("configured repair provider")
+        );
+        assert_eq!(missing.provider.name(), "opencode/kimi-for-coding/k2p6");
     }
 
     #[test]
@@ -3449,6 +3523,8 @@ mod tests {
             "--allow-dirty".to_string(),
             "--repair-attempts".to_string(),
             "2".to_string(),
+            "--repair-provider".to_string(),
+            "opencode/opencode/deepseek-v4-flash-free".to_string(),
         ];
 
         let config = AutopilotConfig::parse(&args);
@@ -3457,6 +3533,10 @@ mod tests {
         assert!(config.dry_run);
         assert!(config.allow_dirty);
         assert_eq!(config.repair_attempts, 2);
+        assert_eq!(
+            config.repair_provider.as_deref(),
+            Some("opencode/opencode/deepseek-v4-flash-free")
+        );
     }
 
     #[test]
