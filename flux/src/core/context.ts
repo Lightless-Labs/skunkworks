@@ -3,7 +3,12 @@ import type { AgentContextSnapshot, AgentMessage, AgentToolEvent, FluxConfig, Ho
 
 function clamp(text: string, maxChars: number): string {
 	if (text.length <= maxChars) return text;
-	return `${text.slice(0, maxChars)}\n…[truncated ${text.length - maxChars} chars]`;
+	let marker = `\n…[truncated ${text.length - maxChars} chars]`;
+	let keepChars = Math.max(0, maxChars - marker.length);
+	marker = `\n…[truncated ${text.length - keepChars} chars]`;
+	keepChars = Math.max(0, maxChars - marker.length);
+	if (keepChars === 0) return marker.slice(0, maxChars);
+	return `${text.slice(0, keepChars)}${marker}`;
 }
 
 export function textFromUnknown(value: unknown): string {

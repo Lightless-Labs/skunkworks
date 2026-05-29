@@ -31,6 +31,7 @@ Implemented surfaces:
 - **Claude Code hook scaffold:** `src/adapters/claude-code/hook.ts`, `claude-code-plugin.json`, `examples/claude-code-settings.json`.
 - **Codex hook scaffold:** `src/adapters/codex/hook.ts`, `codex-plugin.json`, `examples/codex-config.toml`.
 - **Core:** config loading, trigger matching, bounded context snapshots, prompt-profile selection, per-trigger model pools, Anthropic/OpenAI-compatible model calls, thought logging.
+- **Core tests:** `test/core-selection.test.ts` covers config/deep merge, trigger frequency overrides, loop matching, prompt-profile/model-pool resolution, and context formatting/clamping.
 
 Generated/ignored local artifacts:
 
@@ -44,6 +45,7 @@ Run from `flux/`:
 ```bash
 npm install --ignore-scripts
 npm run check
+npm test
 npm run build
 node dist/bin/flux-hook.js --host=generic <<'JSON'
 {"event":"turn_end","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"}]}
@@ -143,7 +145,7 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 
 - Pi integration compiles but has not been live-tested inside an interactive Pi session with real API keys.
 - Claude Code and Codex integration files are hook/plugin scaffolds; host-specific hook output contracts need validation against current host versions.
-- No automated unit tests exist yet for config merging, trigger frequency, prompt-profile weighted selection, or model-pool resolution.
+- Core selection/config/trigger/context logic now has automated coverage, but provider HTTP clients and host adapters still need focused tests.
 - Sidecar model calls support Anthropic and OpenAI-compatible chat completions only.
 - `thinkingEffort` is typed in config but not sent to providers yet.
 - `delivery: "stdout" | "file"` exists in the type but Pi delivery currently maps non-followUp/non-nextTurn to `steer`; hook CLI writes JSON to stdout. Clarify/implement file delivery before documenting it as complete.
@@ -151,11 +153,10 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 
 ## Best Next Moves
 
-1. Add unit tests for core config/trigger/prompt/model selection logic. See `todos/test-core-selection.md`.
-2. Live-test the Pi extension in interactive Pi with a real sidecar model config. See `todos/live-validate-pi-extension.md`.
-3. Validate and harden Claude Code / Codex hook contracts against current host docs/behavior. See `todos/host-hook-contracts.md`.
-4. Improve `/flux config` UX for adding/removing models and prompt profiles without hand-editing full JSON. See `todos/config-command-ux.md`.
-5. Decide whether `stdout`/`file` delivery are real cross-host features or should be removed from the shared type until implemented.
+1. Live-test the Pi extension in interactive Pi with a real sidecar model config. See `todos/live-validate-pi-extension.md`.
+2. Validate and harden Claude Code / Codex hook contracts against current host docs/behavior. See `todos/host-hook-contracts.md`.
+3. Improve `/flux config` UX for adding/removing models and prompt profiles without hand-editing full JSON. See `todos/config-command-ux.md`.
+4. Decide whether `stdout`/`file` delivery are real cross-host features or should be removed from the shared type until implemented.
 
 ## Important Files
 
@@ -167,6 +168,7 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 | `src/core/engine.ts` | Prompt-profile selection, thought generation/logging |
 | `src/core/modelClient.ts` | Anthropic/OpenAI-compatible calls and model-pool resolution |
 | `src/core/context.ts` | Bounded host context snapshots |
+| `test/core-selection.test.ts` | Node test coverage for core selection/config/trigger/context behavior |
 | `src/core/hookCli.ts` | Generic stdin/stdout hook runner for Claude Code/Codex/generic hooks |
 | `src/adapters/pi/index.ts` | Pi extension |
 | `.flux/config.example.json` | User-facing config template |

@@ -53,7 +53,8 @@ export function shouldFireTrigger(
 		}
 		if (trigger.kind === "loop-detected" && !matchesLoopPattern(snapshot, trigger)) continue;
 		const p = trigger.probability ?? (trigger.kind === "random" ? config.random.probability : 1);
-		if (p < 1 && random() > p) continue;
+		if (p <= 0) continue;
+		if (p < 1 && random() >= p) continue;
 		state.lastTriggerAt[trigger.name] = event.timestamp;
 		return trigger;
 	}
