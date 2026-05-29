@@ -5,7 +5,7 @@
 
 ## System State
 
-222 commits. 184 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 34 compound learnings.
+225 commits. 186 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 34 compound learnings.
 
 ## Clean-session pickup
 
@@ -29,7 +29,7 @@
 - **GLM is off the coder/evolver critical path:** coder default is Kimi k2.6 with DeepSeek v4 flash fallback; evolver is explicitly assigned to Kimi k2.6 after GLM evolver timeouts starved feedback metabolism. Non-parallel evolver fallback is role-isolated, so it should not route to tester/architect GLM after Kimi/DeepSeek cooldowns. GLM 5.1 remains assigned to tester/architect only.
 - **Failed rung-2 consultation is bounded:** if consultation times out/fails, the workcell fails immediately instead of spending a second full provider timeout on the primary invocation.
 - **Timeouts are bounded but provider-specific:** GLM 5.1 now gets 900s by default; other CLI providers default to 300s; `A2D_PROVIDER_TIMEOUT_SECS` overrides.
-- **Autopilot autonomy hardening landed and repair-diversity is live-observed:** repair attempt 1 escalates from Pi to the configured alternate maintainer provider when available, repair prompts and monitor events record provider topology/attempt metadata, project state refreshes after committed iterations, and checkbox-completed todos are skipped by task selection. An opt-in fault-injection harness (`A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure`) now forces a repairable parse failure for live validation; run `run-1780061191713-0` confirmed Pi primary → Kimi alternate routing and bounded budget exhaustion without partial apply.
+- **Autopilot autonomy hardening landed and repair-diversity is live-observed:** repair attempt 1 escalates from Pi to the configured alternate maintainer provider when available, repair prompts and monitor events record provider topology/attempt metadata, project state refreshes after committed iterations, and checkbox-completed todos are skipped by task selection. An opt-in fault-injection harness (`A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure`) now forces a repairable parse failure for live validation; run `run-1780061191713-0` confirmed Pi primary → Kimi alternate routing and bounded budget exhaustion without partial apply. `A2D_AUTOPILOT_REPAIR_PROVIDER` / `--repair-provider` can now target a specific registered repair provider; DeepSeek probes confirmed routing but not successful repair.
 
 ### What is not working / unproven
 
@@ -39,12 +39,12 @@
 - **Compounding self-modification is unproven:** the only live architect patch in `sudoku 5` was irrelevant (`prime.rs`) and was reverted; relevance gate now prevents that class.
 - **Escalation rungs 4–6 are missing:** rungs 0–3 detect loops but do not reliably halt degradation.
 - **Benchmark coverage is narrow:** sudoku is validated; chess/rubiks need stronger acceptance tests and live runs.
-- **Autopilot successful alternate repair remains unproven:** live fault injection exercised Pi → Kimi repair routing, but Kimi timed out before producing a repaired patchset, so parse/path/temp/real-tree gates on an alternate-provider repair output are still unvalidated.
+- **Autopilot successful alternate repair remains unproven:** live fault injection exercised Pi → Kimi and Pi → DeepSeek repair routing, but Kimi/DeepSeek either timed out or produced a zero-replacement patchset, so temp/real-tree gates on a valid alternate-provider repair output are still unvalidated.
 - **Provider-policy usefulness remains unproven:** the runtime/durability safety path is live-validated, but no benchmark-useful provider-policy proposal has yet shown improved challenge outcomes.
 
 ### Best next moves
 
-1. **Make autopilot repair provider selection healthier/configurable, then validate a successful alternate repair output:** live routing works, but Kimi timed out at 90s. Prefer an explicit fast repair provider (for example DeepSeek when healthy) or provider-policy-backed maintainer repair assignment before rerunning the fault-injection probe through parse/path/temp/real-tree gates.
+1. **Make alternate-provider autopilot repair produce a gate-passing patchset:** provider selection is now configurable and routing is live-validated. Next improve repair prompt/gating semantics or provider topology so the configured alternate returns at least one valid replacement and reaches temp/real-tree validation.
 2. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
 3. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
 4. **Find a benchmark-useful provider-policy proposal path:** runtime proposal safety is validated, but the live 7-enzyme topology still has no default policy-management enzyme; add one only if bounded tests show it does not starve coder/feedback metabolism.
@@ -78,7 +78,9 @@
 - **Autopilot repair-diversity fault injection landed.** Added opt-in `A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure`, which preserves the live provider call but replaces attempt 0's parsed output with malformed `ProjectPatchset` text after provider return. The monitor logs an `autopilot_fault_injected` event with provider, attempt, fault, and original output size. Added unit coverage for attempt-scoped fault selection.
 - **Live Pi → alternate-provider repair routing validated.** Ran `A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure A2D_PROVIDER_TIMEOUT_SECS=90 cargo run -q -p a2d -- autopilot --iterations 1 --repair-attempts 1`. Attempt 0 invoked `pi/default`; fault injection forced `patchset_parse_failed`; repair attempt 1 escalated to `opencode/kimi-for-coding/k2p6` with `escalated: true` and primary/topology metadata; Kimi timed out after 90s; `repair_budget_exhausted` stopped cleanly with no partial apply/commit. Monitor run: `.a2d/autopilot/runs/run-1780061191713-0/`; console log: `/tmp/a2d-autopilot-repair-diversity-20260529132612.log`.
 - **Learning documented:** `docs/solutions/runtime-bugs/autopilot-repair-diversity-live-validation-2026-05-29.md`. Updated `todos/autonomous-project-loop.md` and `docs/plans/autonomous-project-loop.md`. Important remaining gap: successful alternate-provider repair output has not passed normal gates because Kimi timed out.
-- **Validation:** `cargo test` passes (184 passing, 2 ignored).
+- **Configurable autopilot repair provider landed.** Added `ProviderRegistry::provider_named`, `A2D_AUTOPILOT_REPAIR_PROVIDER`, and `a2d autopilot --repair-provider <registered-provider-name>`. Repair attempt 1 now uses the configured registered provider when it differs from the primary; otherwise it falls back to the previous alternate-provider behavior. Monitor logs include `configured_repair_provider`. Unit coverage: provider lookup, CLI flag/env plumbing, and configured DeepSeek repair selection.
+- **Configured DeepSeek repair probes ran.** `run-1780062413070-0` with 120s timeout: primary Pi timed out, repair attempt 1 routed to `opencode/opencode/deepseek-v4-flash-free`, DeepSeek returned a typed patchset with zero replacements, and the path gate rejected it cleanly. `run-1780062590484-0` with 300s timeout: primary Pi returned, fault injection forced parse failure, repair attempt 1 routed to DeepSeek, then DeepSeek timed out. No partial apply/commit occurred.
+- **Validation:** `cargo test` passes (186 passing, 2 ignored).
 
 - **Provider-policy runtime proposal gate live validation completed.** Temporarily installed a probe lineage germline whose `maintainer` enzyme produced a real `provider_policy` artifact via `pi/default`, proposing `maintainer: pi/default -> opencode/kimi-for-coding/k2p6`. Runtime accepted the policy in memory (`Provider policy accepted: 1`), ran the bounded current-vs-proposed durability gate, rejected lineage persistence for missing fitness evidence, and left no `.a2d/lineage/provider-policy.json`. Log: `/tmp/a2d-provider-policy-runtime-proposal-20260528162751.log`.
 - **Provider-policy topology-gate todo/plan completed.** Updated `todos/provider-policy-topology-gate.md` and `docs/plans/provider-policy-topology-gate.md`; added learning `docs/solutions/architectural-insights/provider-policy-runtime-proposals-must-stay-comparison-gated-2026-05-28.md`.

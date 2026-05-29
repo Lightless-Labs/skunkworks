@@ -96,3 +96,27 @@ Not yet validated:
 ## Follow-up
 
 The repair path should support a configurable or healthier alternate maintainer provider. Kimi k2p6 is currently the default alternate because the registry default is the coder provider; a faster explicit repair provider (for example DeepSeek v4 flash when healthy) may make successful repair validation more reliable without changing the primary Pi maintainer path.
+
+## Addendum: configurable repair provider
+
+Implemented after the first validation run:
+
+- `A2D_AUTOPILOT_REPAIR_PROVIDER=<registered-provider-name>`;
+- `a2d autopilot --repair-provider <registered-provider-name>`;
+- `ProviderRegistry::provider_named` for exact registered-provider lookup;
+- monitor logs include `configured_repair_provider` in `maintainer_provider_topology`;
+- repair attempt 1 uses the configured provider when registered and different from primary, otherwise falls back to the previous alternate-provider behavior.
+
+Validation:
+
+```text
+cargo test
+33 CLI tests + 134 core tests + 11 bootstrap + 7 provider + 1 doctest = 186 passing, 2 ignored
+```
+
+Live probes with `opencode/opencode/deepseek-v4-flash-free` as the configured repair provider:
+
+1. `run-1780062413070-0` (`A2D_PROVIDER_TIMEOUT_SECS=120`): primary `pi/default` timed out; repair attempt 1 used DeepSeek and returned a typed patchset, but it contained zero replacements and was correctly rejected by the path gate (`patchset must contain at least one replacement`).
+2. `run-1780062590484-0` (`A2D_PROVIDER_TIMEOUT_SECS=300`): primary `pi/default` returned, fault injection forced parse failure, repair attempt 1 used DeepSeek, and DeepSeek timed out after 300s.
+
+So configurability is implemented and live-observed, but a successful alternate-provider repair that passes path/temp/real-tree gates remains unproven. The remaining bottleneck is provider reliability/latency and repair prompt quality, not inability to route to a chosen repair provider.

@@ -7,7 +7,7 @@
 **Enhanced:** 2026-05-24 — gated real-tree apply and local commit
 **Enhanced:** 2026-05-25 — bounded repair loop
 **Enhanced:** 2026-05-26 — provider-diverse repair, state refresh, and completed-task filtering
-**Enhanced:** 2026-05-29 — repair-path fault injection added and live Pi → alternate-provider escalation validated; alternate Kimi timed out before producing a repair patchset
+**Enhanced:** 2026-05-29 — repair-path fault injection added and live Pi → alternate-provider escalation validated; alternate repair provider is now configurable, but successful alternate repair remains unproven
 
 ## Problem
 
@@ -74,9 +74,9 @@ Implemented first slice on 2026-05-24:
 
 Implemented on 2026-05-26: provider-diverse repair escalation, multi-iteration state refresh after commits, and checkbox-based completed-task filtering for task selection.
 
-Enhanced on 2026-05-29: added opt-in repair-path fault injection via `A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure` so live runs can deterministically exercise parse-failure repair without waiting for a provider mistake. Live run `run-1780061191713-0` validated Pi primary → Kimi alternate repair routing, provider metadata, bounded failure, and no partial apply; Kimi timed out under the 90s bound, so successful alternate repair output remains unproven.
+Enhanced on 2026-05-29: added opt-in repair-path fault injection via `A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure` so live runs can deterministically exercise parse-failure repair without waiting for a provider mistake. Live run `run-1780061191713-0` validated Pi primary → Kimi alternate repair routing, provider metadata, bounded failure, and no partial apply; Kimi timed out under the 90s bound. Added `A2D_AUTOPILOT_REPAIR_PROVIDER` / `--repair-provider` so repair attempt 1 can target a specific registered provider; DeepSeek live probes showed the configured route works but still did not produce a gate-passing repair (`run-1780062413070-0` returned zero replacements; `run-1780062590484-0` timed out).
 
-Next slice: make the alternate maintainer repair provider configurable or healthier, then validate a repair attempt that produces a typed patchset and reaches the normal parse/path/temp/real-tree gates.
+Next slice: improve repair prompt/gating semantics or provider topology enough that the configured alternate repair provider produces a typed patchset with at least one valid replacement and reaches temp/real-tree validation.
 
 ### Loop state artifacts
 
