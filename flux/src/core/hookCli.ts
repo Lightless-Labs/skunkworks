@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { loadConfig } from "./config.ts";
 import { snapshotFromGenericPayload } from "./context.ts";
 import { generateStrayThought, renderThoughtForAgent } from "./engine.ts";
+import { createHostCliModelCaller } from "./hostCliModelClient.ts";
 import { createInitialState, shouldFireTrigger } from "./triggers.ts";
 import type { HostKind, TriggerEvent, TriggerKind } from "./types.ts";
 
@@ -61,6 +62,7 @@ function output(host: HostKind, rendered: string, thought: unknown, fired: boole
 
 export async function runHookCli(options: HookCliOptions): Promise<void> {
 	try {
+		if (process.env.FLUX_SUPPRESS === "1") return output(options.host, "", undefined, false);
 		const cwd = process.cwd();
 		const { config } = loadConfig(cwd);
 		const raw = await readStdin();
@@ -72,7 +74,9 @@ export async function runHookCli(options: HookCliOptions): Promise<void> {
 		const trigger = force ? { name: "hook", kind: event.kind, enabled: true } : shouldFireTrigger(config, state, event, snapshot);
 		if (!config.enabled || !trigger) return output(options.host, "", undefined, false);
 		event.name = trigger.name;
-		const thought = await generateStrayThought(config, state, snapshot, event);
+		const thought = await generateStrayThought(config, state, snapshot, event, {
+			modelCaller: createHostCliModelCaller(options.host, snapshot.cwd),
+		});
 		output(options.host, renderThoughtForAgent(thought), thought, true);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);

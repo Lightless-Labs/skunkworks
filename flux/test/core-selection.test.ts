@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { DEFAULT_CONFIG, loadConfig } from "../src/core/config.ts";
 import { formatSnapshotForPrompt } from "../src/core/context.ts";
-import { selectPromptProfile } from "../src/core/engine.ts";
+import { generateStrayThought, selectPromptProfile } from "../src/core/engine.ts";
 import { resolveModelPool } from "../src/core/modelClient.ts";
 import { createInitialState, shouldFireTrigger } from "../src/core/triggers.ts";
 import type { AgentContextSnapshot, FluxConfig, FluxModelSpec, TriggerEvent } from "../src/core/types.ts";
@@ -180,6 +180,23 @@ test("resolveModelPool resolves trigger name, then kind, then default, then any 
 		resolveModelPool(config, event({ name: "unusable-pool", kind: "external" })).map((spec) => spec.name),
 		["name-model", "kind-model", "default-model"],
 	);
+});
+
+test("generateStrayThought can use an injected host-native model caller", async () => {
+	const config = cloneConfig();
+	config.storage = {};
+	const state = createInitialState();
+	const thought = await generateStrayThought(config, state, snapshot(), event({ kind: "manual", name: "manual" }), {
+		modelCaller: async ({ systemPrompt, prompt }) => {
+			assert.match(systemPrompt, /Flux/);
+			assert.match(prompt, /Agent context snapshot/);
+			return { content: "Note: use the host model", model: "pi/test-model" };
+		},
+	});
+
+	assert.equal(thought.model, "pi/test-model");
+	assert.equal(thought.content, "use the host model");
+	assert.equal(state.lastThought, thought);
 });
 
 test("formatSnapshotForPrompt includes recent context and clamps long snapshots", () => {

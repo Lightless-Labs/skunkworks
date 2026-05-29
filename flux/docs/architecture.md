@@ -7,14 +7,15 @@ Flux is split into a small host-neutral core and thin host adapters.
 - `config.ts` loads `.flux/config.json`, `flux.config.json`, or `~/.config/flux/config.json`.
 - `triggers.ts` decides whether an observed event should generate a stray thought.
 - `context.ts` builds bounded context snapshots from host session data.
-- `modelClient.ts` calls a configured sidecar model pool (Anthropic or OpenAI-compatible APIs), selected by trigger name/kind when configured.
-- `engine.ts` selects a weighted prompt profile, turns a snapshot into a logged `StrayThought`, and records the model/profile used.
+- `modelClient.ts` calls a configured direct-provider sidecar model pool (Anthropic or OpenAI-compatible APIs), selected by trigger name/kind when configured.
+- `hostCliModelClient.ts` calls host CLIs for Claude Code and Codex hook integrations, with recursion suppression.
+- `engine.ts` selects a weighted prompt profile, turns a snapshot into a logged `StrayThought`, and records the model/profile used. Adapters can inject a host-native model caller.
 
 ## Adapters
 
-- `src/adapters/pi/index.ts` is a Pi package extension. It listens to `turn_end` and `tool_result`, registers `/flux`, registers the `flux_stray_thought` tool, and listens for `pi.events.emit("flux:trigger", payload)` from other extensions.
-- `src/adapters/claude-code/hook.ts` is a command hook entrypoint. It expects hook JSON on stdin and returns JSON with `additionalContext`/`hookSpecificOutput`.
-- `src/adapters/codex/hook.ts` uses the same hook CLI and returns generic instruction JSON for hook-capable Codex runtimes.
+- `src/adapters/pi/index.ts` is a Pi package extension. It listens to `turn_end` and `tool_result`, registers `/flux`, registers the `flux_stray_thought` tool, listens for `pi.events.emit("flux:trigger", payload)` from other extensions, and generates thoughts through Pi's selected/authenticated model.
+- `src/adapters/claude-code/hook.ts` is a command hook entrypoint. It expects hook JSON on stdin, asks the authenticated `claude` CLI for the thought, and returns JSON with `additionalContext`/`hookSpecificOutput`.
+- `src/adapters/codex/hook.ts` uses the same hook CLI, asks `codex exec` for the thought, and returns generic instruction JSON for hook-capable Codex runtimes.
 
 ## Trigger model
 
@@ -33,7 +34,8 @@ The base system prompt is deliberately neutral: it says Flux is a bounded second
 Resolution order:
 
 - prompt pool: trigger name → trigger kind → `default`;
-- model pool: trigger name → trigger kind → `default` → any usable configured model.
+- model execution: host-native caller when the adapter provides one, otherwise direct-provider fallback;
+- direct-provider fallback model pool: trigger name → trigger kind → `default` → any usable configured model.
 
 Prompt profiles support `weight`, so a trigger can randomly rotate between several cognitive modes. For example, `random` can select between narrow local sparks, ambient/global inspiration, and playful reframes, while `loop-detected` can select between critical feedback and smallest-next-check suggestions.
 

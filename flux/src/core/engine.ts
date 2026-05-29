@@ -3,7 +3,29 @@ import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { digestSnapshot, formatSnapshotForPrompt } from "./context.ts";
 import { callSidecarModel, pickModel } from "./modelClient.ts";
-import type { AgentContextSnapshot, FluxConfig, FluxState, PromptProfile, StrayThought, TriggerEvent } from "./types.ts";
+import type { AgentContextSnapshot, FluxConfig, FluxState, HostKind, PromptProfile, StrayThought, TriggerEvent } from "./types.ts";
+
+export interface ThoughtModelRequest {
+	config: FluxConfig;
+	snapshot: AgentContextSnapshot;
+	trigger: TriggerEvent;
+	profile: PromptProfile;
+	systemPrompt: string;
+	prompt: string;
+	signal?: AbortSignal;
+}
+
+export interface ThoughtModelResponse {
+	content: string;
+	model: string;
+}
+
+export type ThoughtModelCaller = (request: ThoughtModelRequest) => Promise<ThoughtModelResponse>;
+
+export interface GenerateStrayThoughtOptions {
+	signal?: AbortSignal;
+	modelCaller?: ThoughtModelCaller;
+}
 
 function weightedPick<T extends { weight?: number }>(items: T[], random = Math.random): T | undefined {
 	if (items.length === 0) return undefined;
@@ -43,24 +65,47 @@ export async function generateStrayThought(
 	state: FluxState,
 	snapshot: AgentContextSnapshot,
 	trigger: TriggerEvent,
-	signal?: AbortSignal,
+	options: GenerateStrayThoughtOptions | AbortSignal = {},
 ): Promise<StrayThought> {
-	const model = pickModel(config, trigger);
+	const normalizedOptions = isAbortSignal(options) ? { signal: options } : options;
 	const profile = selectPromptProfile(config, trigger);
+	const systemPrompt = profile.system ?? config.prompt.system;
 	const prompt = buildThoughtPrompt(config, snapshot, trigger, profile);
-	const content = await callSidecarModel(model, profile.system ?? config.prompt.system, prompt, signal);
+	const response = normalizedOptions.modelCaller
+		? await normalizedOptions.modelCaller({ config, snapshot, trigger, profile, systemPrompt, prompt, signal: normalizedOptions.signal })
+		: await callConfiguredSidecarModel(config, trigger, systemPrompt, prompt, normalizedOptions.signal);
 	const thought: StrayThought = {
 		id: randomUUID(),
 		createdAt: new Date().toISOString(),
-		model: `${model.provider}/${model.model}`,
+		model: response.model,
 		promptProfile: profile.name,
 		trigger,
-		content: normalizeThought(content),
+		content: normalizeThought(response.content),
 		contextDigest: digestSnapshot(snapshot),
 	};
 	state.lastThought = thought;
 	appendThoughtLog(config, thought);
 	return thought;
+}
+
+function isAbortSignal(value: GenerateStrayThoughtOptions | AbortSignal): value is AbortSignal {
+	return typeof AbortSignal !== "undefined" && value instanceof AbortSignal;
+}
+
+async function callConfiguredSidecarModel(
+	config: FluxConfig,
+	trigger: TriggerEvent,
+	systemPrompt: string,
+	prompt: string,
+	signal?: AbortSignal,
+): Promise<ThoughtModelResponse> {
+	const model = pickModel(config, trigger);
+	const content = await callSidecarModel(model, systemPrompt, prompt, signal);
+	return { content, model: `${model.provider}/${model.model}` };
+}
+
+export function hostNativeModelLabel(host: HostKind, detail = "host"): string {
+	return `${host}/${detail}`;
 }
 
 export function normalizeThought(content: string): string {

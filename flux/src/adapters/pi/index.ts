@@ -5,7 +5,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { DEFAULT_CONFIG, loadConfig } from "../../core/config.ts";
 import { snapshotFromGenericPayload, textFromUnknown } from "../../core/context.ts";
-import { generateStrayThought, renderThoughtForAgent } from "../../core/engine.ts";
+import { generateStrayThought, hostNativeModelLabel, renderThoughtForAgent, type ThoughtModelCaller } from "../../core/engine.ts";
 import { createInitialState, shouldFireTrigger } from "../../core/triggers.ts";
 import type { AgentContextSnapshot, AgentMessage, AgentToolEvent, FluxConfig, FluxState, TriggerEvent } from "../../core/types.ts";
 
@@ -36,6 +36,58 @@ function formatConfigSummary(config: FluxConfig, path?: string): string {
 		`models=${config.models.map((model) => model.name).join(", ") || "none"}`,
 		`modelPools=${pools || "none"}`,
 	].join("\n");
+}
+
+type PiMessage = {
+	role: "user";
+	content: Array<{ type: "text"; text: string }>;
+	timestamp: number;
+};
+
+type PiComplete = (
+	model: NonNullable<ExtensionContext["model"]>,
+	input: { systemPrompt: string; messages: PiMessage[] },
+	options: { apiKey: string; headers?: Record<string, string>; signal?: AbortSignal },
+) => Promise<{ stopReason?: string; content: Array<{ type: string; text?: string }> }>;
+
+async function loadPiComplete(): Promise<PiComplete> {
+	const importer = Function("specifier", "return import(specifier)") as (specifier: string) => Promise<{ complete: PiComplete }>;
+	try {
+		return (await importer("@earendil-works/pi-ai")).complete;
+	} catch (error) {
+		const codingAgentUrl = import.meta.resolve("@earendil-works/pi-coding-agent");
+		const bundledPiAiUrl = new URL("../node_modules/@earendil-works/pi-ai/dist/index.js", codingAgentUrl).href;
+		try {
+			return (await importer(bundledPiAiUrl)).complete;
+		} catch {
+			throw error;
+		}
+	}
+}
+
+function createPiModelCaller(ctx: ExtensionContext, signal?: AbortSignal): ThoughtModelCaller {
+	return async ({ systemPrompt, prompt }) => {
+		if (!ctx.model) throw new Error("No Pi model selected for Flux host-native sidecar generation.");
+		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+		if (!auth.ok || !auth.apiKey) throw new Error(auth.ok ? `No API key for ${ctx.model.provider}` : auth.error);
+		const complete = await loadPiComplete();
+		const userMessage: PiMessage = {
+			role: "user",
+			content: [{ type: "text", text: prompt }],
+			timestamp: Date.now(),
+		};
+		const response = await complete(
+			ctx.model,
+			{ systemPrompt, messages: [userMessage] },
+			{ apiKey: auth.apiKey, headers: auth.headers, signal },
+		);
+		if (response.stopReason === "aborted") throw new Error("Flux Pi sidecar generation was aborted.");
+		const content = response.content
+			.filter((part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string")
+			.map((part) => part.text)
+			.join("\n");
+		return { content, model: hostNativeModelLabel("pi", `${ctx.model.provider}/${ctx.model.id}`) };
+	};
 }
 
 function snapshotFromPi(ctx: ExtensionContext, config: FluxConfig, hostPayload?: unknown): AgentContextSnapshot {
@@ -101,7 +153,10 @@ async function runFlux(
 		: shouldFireTrigger(config, state, event, snapshot);
 	if (!trigger) return;
 	const triggerEvent = { ...event, name: trigger.name };
-	const thought = await generateStrayThought(config, state, snapshot, triggerEvent, ctx.signal);
+	const thought = await generateStrayThought(config, state, snapshot, triggerEvent, {
+		signal: ctx.signal,
+		modelCaller: createPiModelCaller(ctx, ctx.signal),
+	});
 	const content = renderThoughtForAgent(thought);
 	const display = options.display ?? config.displayThoughts;
 	piSendMessage(content, thought, config, options.triggerTurn ?? config.triggerTurn, display);
@@ -228,7 +283,10 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 				timestamp: Date.now(),
 				payload: { reason: params.reason },
 			};
-			const thought = await generateStrayThought(loaded.config, state, snapshotFromPi(ctx, loaded.config, params), trigger, signal);
+			const thought = await generateStrayThought(loaded.config, state, snapshotFromPi(ctx, loaded.config, params), trigger, {
+				signal,
+				modelCaller: createPiModelCaller(ctx, signal),
+			});
 			if (params.display ?? true) {
 				pi.sendMessage(
 					{ customType: CUSTOM_TYPE, content: renderThoughtForAgent(thought), display: true, details: thought },

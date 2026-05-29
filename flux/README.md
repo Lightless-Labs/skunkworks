@@ -9,7 +9,7 @@ Goal: help agents escape tunnel vision, retries, spirals, long-running dead ends
 - **Pi extension**: `src/adapters/pi/index.ts`
 - **Claude Code hook/plugin scaffold**: `src/adapters/claude-code/hook.ts`, `claude-code-plugin.json`, `examples/claude-code-settings.json`
 - **Codex hook/plugin scaffold**: `src/adapters/codex/hook.ts`, `codex-plugin.json`, `examples/codex-config.toml`
-- **Provider-agnostic core**: config, triggers, context capture, model calls, and thought logging
+- **Provider-agnostic core**: config, triggers, context capture, host-native/direct model calls, and thought logging
 
 ## Configuration
 
@@ -19,7 +19,7 @@ Copy the example config:
 cp .flux/config.example.json .flux/config.json
 ```
 
-Then set at least one API key referenced by the configured model pool:
+When Flux runs as a Pi extension, Claude Code hook, or Codex hook, it uses the host's authenticated model path by default. For generic hooks or direct-provider fallback, set at least one API key referenced by the configured model pool:
 
 ```bash
 export OPENAI_API_KEY=...
@@ -90,7 +90,14 @@ See `examples/` for scaffold settings. Host plugin APIs move quickly, so these a
 
 Flux uses a neutral base system prompt plus trigger/profile-specific instructions. That means `random` can rotate between narrow local sparks, more global “inspiration hit me” notes, and playful reframes, while `loop-detected` can ask for kind-but-honest critical feedback about what the agent has been trying relative to the apparent task.
 
-Selection order:
+Model execution is host-native when possible:
+
+- Pi extension: Pi selected model + Pi auth.
+- Claude Code hook: `claude` CLI print mode.
+- Codex hook: `codex exec` in read-only ephemeral mode.
+- Generic hook/fallback: configured direct provider model pool.
+
+Selection order for direct-provider fallback:
 
 1. Model pool: trigger name → trigger kind → `default` → any usable model.
 2. Prompt profile pool: trigger name → trigger kind → `default`.
