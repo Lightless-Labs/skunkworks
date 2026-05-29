@@ -585,6 +585,23 @@ impl AutopilotProviderAttempt<'_> {
     }
 }
 
+fn autopilot_fault_injection_for_attempt(setting: Option<&str>, attempt: usize) -> Option<&'static str> {
+    let normalized = setting?.trim().to_ascii_lowercase().replace('-', "_");
+    match (normalized.as_str(), attempt) {
+        ("attempt0_parse_failure" | "parse_attempt0" | "parse_failure", 0) => {
+            Some("attempt0_parse_failure")
+        }
+        _ => None,
+    }
+}
+
+fn configured_autopilot_fault_injection(attempt: usize) -> Option<&'static str> {
+    autopilot_fault_injection_for_attempt(
+        env::var("A2D_AUTOPILOT_FAULT_INJECTION").ok().as_deref(),
+        attempt,
+    )
+}
+
 #[derive(Debug, Clone)]
 struct ProjectState {
     handoff_preview: String,
@@ -892,7 +909,7 @@ fn run_autopilot(config: AutopilotConfig) {
                 );
             }
 
-            let response = match provider.invoke(&InvocationRequest {
+            let mut response = match provider.invoke(&InvocationRequest {
                 enzyme_id: maintainer_id.clone(),
                 system: maintainer_system_prompt(),
                 prompt: attempt_prompt.clone(),
@@ -918,6 +935,23 @@ fn run_autopilot(config: AutopilotConfig) {
                     return;
                 }
             };
+
+            if let Some(fault) = configured_autopilot_fault_injection(attempt) {
+                let original_output_bytes = response.text.len();
+                response.text = format!(
+                    "INTENTIONAL_AUTOPILOT_FAULT[{fault}]: malformed ProjectPatchset for repair-path validation"
+                );
+                logger.event(
+                    "autopilot_fault_injected",
+                    json!({
+                        "iteration": iteration,
+                        "attempt": attempt,
+                        "provider": provider.name(),
+                        "fault": fault,
+                        "original_output_bytes": original_output_bytes,
+                    }),
+                );
+            }
 
             let output_path = logger.artifact(
                 &format!("iteration-{iteration}/attempt-{attempt}/maintainer-output.txt"),
@@ -3423,6 +3457,24 @@ mod tests {
         assert!(config.dry_run);
         assert!(config.allow_dirty);
         assert_eq!(config.repair_attempts, 2);
+    }
+
+    #[test]
+    fn autopilot_fault_injection_only_targets_configured_attempt() {
+        assert_eq!(
+            autopilot_fault_injection_for_attempt(Some("attempt0_parse_failure"), 0),
+            Some("attempt0_parse_failure")
+        );
+        assert_eq!(
+            autopilot_fault_injection_for_attempt(Some("parse-attempt0"), 0),
+            Some("attempt0_parse_failure")
+        );
+        assert_eq!(
+            autopilot_fault_injection_for_attempt(Some("attempt0_parse_failure"), 1),
+            None
+        );
+        assert_eq!(autopilot_fault_injection_for_attempt(Some("off"), 0), None);
+        assert_eq!(autopilot_fault_injection_for_attempt(None, 0), None);
     }
 
     #[test]
