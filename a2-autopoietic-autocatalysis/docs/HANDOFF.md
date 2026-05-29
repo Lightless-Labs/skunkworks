@@ -1,6 +1,6 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-05-28
+**Last updated:** 2026-05-29
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -11,7 +11,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 | Metric | Value |
 |--------|-------|
-| Tests | 109 Rust + 10 self-correction Python tests |
+| Tests | 109 Rust + 11 self-correction Python tests |
 | Sentinels | 6/6 PASS |
 | Crates | 11 |
 | Benchmark (OpenCode/GLM via A²) | 5/5 (with 100k token / 1800s budget) |
@@ -153,9 +153,9 @@ const DEFAULT_STAGNATION_WINDOW: usize = 3;
 
 ## What To Do Next
 
-ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/ZAI GLM now have N=3 self-correction success on all three original compound fixtures after hidden candidate-worktree verifier wiring. `compound-sensorium-same-crate-hidden` was added on 2026-05-24 to move beyond visible-core-plus-hidden-second-crate regressions. Pi/ZAI GLM and Minimax resolved/self-corrected it 3/3; Kimi resolved 3/3 with pass@1 1/3 and self-corrected 2/3. Remaining work is more fixture diversity and ablations.
+ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/ZAI GLM now have N=3 self-correction success on all three original compound fixtures after hidden candidate-worktree verifier wiring. `compound-sensorium-same-crate-hidden` was added on 2026-05-24 to move beyond visible-core-plus-hidden-second-crate regressions. Pi/ZAI GLM and Minimax resolved/self-corrected it 3/3; Kimi resolved 3/3 with pass@1 1/3 and self-corrected 2/3. `compound-raf-same-crate-hidden` was added on 2026-05-29 and smoke-only injection verified both RAF failures. Minimax resolved it 3/3 with pass@1 1/3 and self-corrected 2/3. Remaining work is additional provider validation on newer fixtures and ablations.
 
-### Current loop status (2026-05-24)
+### Current loop status (2026-05-29)
 
 **Working:**
 - Prior lineage reaches retry attempts for a pinned `TaskId`.
@@ -185,6 +185,8 @@ ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/
 - `compound-sensorium-same-crate-hidden` was added on 2026-05-24. It injects two regressions in `crates/a2_sensorium/src/ingest.rs`: visible `RiskTier::High` priority behavior and hidden title truncation behavior. Smoke-only injection verified both failures. Pi/ZAI GLM resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched `a2_sensorium/src/ingest.rs` with +1/-1 and failed the hidden verifier; attempt 2 touched the same file with +2/-2 and verified clean. Results: `/tmp/a2-sensorium-same-crate-pi-zai-glm.jsonl`.
 - `compound-sensorium-same-crate-hidden` with Minimax on 2026-05-24 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. All runs touched `a2_sensorium/src/ingest.rs` on attempts 1 and 2. Results: `/tmp/a2-sensorium-same-crate-minimax.jsonl`.
 - `compound-sensorium-same-crate-hidden` with Kimi on 2026-05-24 resolved 3/3 runs; pass@1 was 1/3; loop exercised 2/3; self-corrected 2/3. Two runs resolved on attempt 2 after prior lineage; one run resolved on attempt 1. Results: `/tmp/a2-sensorium-same-crate-kimi.jsonl`.
+- `compound-raf-same-crate-hidden` was added on 2026-05-29. It injects two regressions in `crates/a2_raf/src/graph.rs`: visible single-node RAF connectivity behavior and hidden empty-graph repair coverage behavior. Smoke-only injection verified both failures. Result: `/tmp/a2-raf-fixture-smoke.jsonl`.
+- `compound-raf-same-crate-hidden` with Minimax on 2026-05-29 resolved 3/3 runs; pass@1 was 1/3; loop exercised 2/3; self-corrected 2/3. One run resolved on attempt 1; two runs failed attempt 1 and resolved on attempt 2 after prior lineage. Result: `/tmp/a2-raf-same-crate-minimax-20260529T212431Z.jsonl`.
 - Anti-repeat ablation on `compound-hidden` with Minimax on 2026-05-28 completed N=3 per cohort. Enabled cohort: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; resolved attempts were 3, 2, 2. Disabled cohort: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all resolved on attempt 2. Result: `/tmp/a2-anti-repeat-ablation-compound-hidden-minimax-20260528T122327Z.jsonl`.
 - Anti-repeat ablation on `compound-sensorium-same-crate-hidden` with Minimax on 2026-05-28 completed N=3 per cohort. Enabled cohort: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all resolved on attempt 2. Disabled cohort: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all resolved on attempt 2. All attempts touched `a2_sensorium/src/ingest.rs`; first attempts were +1/-1 and resolved attempts were +2/-2 except one enabled run at +4/-2. Result: `/tmp/a2-anti-repeat-ablation-sensorium-minimax-20260528T221811Z.jsonl`.
 - The 2026-05-20 Minimax/Kimi reruns happened after candidate verifier code existed but before the self-correction harness passed verifier commands, so those reruns exercised post-apply verification/retry context rather than candidate-worktree verifier scoring.
@@ -194,10 +196,10 @@ ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/
 - `compound-hidden` with Kimi on 2026-05-18 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2ctl/src/main.rs` and verified clean.
 
 **Not yet validated:**
-- Loop recovery beyond the four current compound fixtures after candidate-worktree task verifier execution.
+- `compound-raf-same-crate-hidden` with Kimi and Pi/ZAI GLM after Minimax N=3.
 - Additional anti-repeat ablation coverage beyond the two Minimax fixture cohorts (`compound-hidden` and `compound-sensorium-same-crate-hidden`).
 
-**Structural solution direction:** Minimax, Kimi, and Pi/ZAI GLM now have N=3 validation on the three original compound fixtures and on the same-crate Sensorium fixture. Kimi had pass@1 1/3 on Sensorium, so its self-correction count there is 2/3 rather than 3/3. Remaining work is more fixture diversity and measuring anti-repeat contribution. Dedicated todos live in `todos/`.
+**Structural solution direction:** Minimax, Kimi, and Pi/ZAI GLM now have N=3 validation on the three original compound fixtures and on the same-crate Sensorium fixture. Kimi had pass@1 1/3 on Sensorium, so its self-correction count there is 2/3 rather than 3/3. The same-crate RAF fixture has smoke-only verification and Minimax N=3; Kimi and Pi/ZAI GLM remain to run. Remaining work is more fixture diversity and measuring anti-repeat contribution. Dedicated todos live in `todos/`.
 
 ### Completed prerequisites (2026-04-23)
 
@@ -327,3 +329,5 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-05-27 | Add resident autopilot wrapper | `a2ctl autopilot-resident` repeatedly invokes `a2ctl autopilot`, forwards normal autopilot options, logs resident events under `.a2/autopilot/resident/<resident-id>/events.jsonl`, and stores per-run stdout/stderr files. |
 | 2026-05-28 | First anti-repeat ablation cohort | `compound-hidden` with Minimax completed N=3 enabled and N=3 disabled anti-repeat cohorts. Both cohorts scored resolved/self-corrected 3/3 with pass@1 0/3. Result: `/tmp/a2-anti-repeat-ablation-compound-hidden-minimax-20260528T122327Z.jsonl`. |
 | 2026-05-28 | Same-crate anti-repeat ablation cohort | `compound-sensorium-same-crate-hidden` with Minimax completed N=3 enabled and N=3 disabled anti-repeat cohorts. Both cohorts scored resolved/self-corrected 3/3 with pass@1 0/3; all runs resolved on attempt 2. Result: `/tmp/a2-anti-repeat-ablation-sensorium-minimax-20260528T221811Z.jsonl`. |
+| 2026-05-29 | Add same-crate RAF self-correction fixture | `compound-raf-same-crate-hidden` injects visible single-node RAF connectivity and hidden empty-graph repair coverage regressions in `crates/a2_raf/src/graph.rs`; smoke-only injection verified both failures. Result: `/tmp/a2-raf-fixture-smoke.jsonl`. |
+| 2026-05-29 | `compound-raf-same-crate-hidden` Minimax N=3 | Minimax resolved 3/3 runs; pass@1 was 1/3; loop exercised 2/3; self-corrected 2/3. One run resolved on attempt 1; two resolved on attempt 2 after prior lineage. Result: `/tmp/a2-raf-same-crate-minimax-20260529T212431Z.jsonl`. |

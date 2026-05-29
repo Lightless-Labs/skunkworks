@@ -2,7 +2,7 @@
 
 ## Self-Correction Benchmark
 
-`bench/self_correction.py` is the first loop-shaped A² benchmark. It creates an isolated git worktree, injects a deterministic `a2_core::fibonacci` regression, commits that bug only in the isolated branch, and runs repeated `a2ctl run --apply` attempts with the same JSONL `task_id`.
+`bench/self_correction.py` is the first loop-shaped A² benchmark. It creates an isolated git worktree, injects a deterministic fixture regression, commits that bug only in the isolated branch, and runs repeated `a2ctl run --apply` attempts with the same JSONL `task_id`.
 
 Smoke the fixture without a model:
 
@@ -24,6 +24,23 @@ bench/self_correction.py --fixture compound-hidden \
   --provider opencode/minimax-coding-plan/MiniMax-M2.7 \
   --attempts 3 \
   --results bench/self-correction-compound-results.jsonl
+```
+
+Current loop-shaped fixtures:
+
+- `fibonacci` — visible one-crate `a2_core` regression; usually too easy.
+- `compound-hidden` — visible `a2_core`, hidden `a2ctl` TODO scanner regression.
+- `compound-membrane-hidden` — visible `a2_core`, hidden `a2_membrane` deny-overrides-allow regression.
+- `compound-archive-hidden` — visible `a2_core`, hidden `a2_archive` lineage ordering regression.
+- `compound-sensorium-same-crate-hidden` — visible and hidden regressions in `a2_sensorium`.
+- `compound-raf-same-crate-hidden` — visible and hidden regressions in `a2_raf` graph edge-case behavior.
+
+Smoke a specific fixture without a model:
+
+```bash
+bench/self_correction.py --fixture compound-raf-same-crate-hidden \
+  --smoke-only \
+  --results /tmp/a2-raf-fixture-smoke.jsonl
 ```
 
 Each JSONL result includes:

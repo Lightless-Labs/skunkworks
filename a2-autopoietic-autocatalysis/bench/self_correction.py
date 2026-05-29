@@ -55,6 +55,38 @@ SENSORIUM_PRIORITY_BUG_OLD = "RiskTier::High => Priority::Low, // Untrusted sign
 SENSORIUM_PRIORITY_BUG_NEW = "RiskTier::High => Priority::Normal, // Untrusted signals get lower priority."
 SENSORIUM_TRUNCATE_BUG_OLD = "let mut t = s[..max - 3].to_string();"
 SENSORIUM_TRUNCATE_BUG_NEW = "let mut t = s[..max].to_string();"
+RAF_TASK_ID = "self-correction-compound-raf-same-crate-hidden-regressions"
+RAF_DESCRIPTION = """\
+The workspace contains a regression. `cargo test -p a2_raf single_node_is_not_repairable` fails.
+Diagnose the root cause and fix the implementation. Do not assume the failing
+function name is the location of the bug; inspect the code and make the minimal
+change that restores the test. Run `cargo test -p a2_raf single_node_is_not_repairable` before
+finishing.
+"""
+RAF_SINGLE_NODE_BUG_OLD = """\
+        if node_count < 2 {
+            return false;
+        }
+"""
+RAF_SINGLE_NODE_BUG_NEW = """\
+        if node_count < 2 {
+            return true;
+        }
+"""
+RAF_EMPTY_COVERAGE_BUG_OLD = """\
+        if node_count == 0 {
+            return 0.0;
+        }
+
+        let covered = self
+"""
+RAF_EMPTY_COVERAGE_BUG_NEW = """\
+        if node_count == 0 {
+            return 1.0;
+        }
+
+        let covered = self
+"""
 FNV_OFFSET_128 = 0x6C62_272E_07BB_0142_62B8_2175_6295_C58D
 FNV_PRIME_128 = 0x0000_0000_0100_0000_0000_0000_0000_013B
 
@@ -174,6 +206,28 @@ FIXTURES: dict[str, Fixture] = {
                 "crates/a2_sensorium/src/ingest.rs",
                 SENSORIUM_TRUNCATE_BUG_OLD,
                 SENSORIUM_TRUNCATE_BUG_NEW,
+            ),
+        ),
+    ),
+    "compound-raf-same-crate-hidden": Fixture(
+        name="compound-raf-same-crate-hidden",
+        task_id=RAF_TASK_ID,
+        description=RAF_DESCRIPTION,
+        verify_command=(
+            "cargo test -p a2_raf single_node_is_not_repairable; single=$?; "
+            "cargo test -p a2_raf empty_graph_has_no_coverage_or_connectivity; empty=$?; "
+            "test $single -eq 0 -a $empty -eq 0"
+        ),
+        replacements=(
+            Replacement(
+                "crates/a2_raf/src/graph.rs",
+                RAF_SINGLE_NODE_BUG_OLD,
+                RAF_SINGLE_NODE_BUG_NEW,
+            ),
+            Replacement(
+                "crates/a2_raf/src/graph.rs",
+                RAF_EMPTY_COVERAGE_BUG_OLD,
+                RAF_EMPTY_COVERAGE_BUG_NEW,
             ),
         ),
     ),
@@ -392,7 +446,7 @@ def inject_fixture(workspace: Path, fixture: Fixture) -> None:
         path.write_text(content.replace(replacement.old, replacement.new, 1), encoding="utf-8")
 
 
-def commit_bug(workspace: Path) -> None:
+def commit_bug(workspace: Path, fixture: Fixture) -> None:
     git(["add", "-A"], workspace)
     git(
         [
@@ -402,7 +456,7 @@ def commit_bug(workspace: Path) -> None:
             "user.email=a2-self-correction@example.invalid",
             "commit",
             "-m",
-            "bench: inject fibonacci regression",
+            f"bench: inject {fixture.name} regression",
         ],
         workspace,
     )
@@ -544,7 +598,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
         create_worktree(source_git_root, worktree_root, branch)
         created = True
         inject_fixture(workspace, fixture)
-        commit_bug(workspace)
+        commit_bug(workspace, fixture)
 
         initial = verify(workspace, fixture)
         if initial.returncode == 0:
@@ -637,6 +691,16 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(
             [replacement.path for replacement in fixture.replacements],
             ["crates/a2_sensorium/src/ingest.rs", "crates/a2_sensorium/src/ingest.rs"],
+        )
+
+    def test_compound_raf_fixture_is_same_crate_multi_bug(self) -> None:
+        fixture = FIXTURES["compound-raf-same-crate-hidden"]
+        self.assertEqual(fixture.task_id, RAF_TASK_ID)
+        self.assertIn("single_node_is_not_repairable", fixture.verify_command)
+        self.assertIn("empty_graph_has_no_coverage_or_connectivity", fixture.verify_command)
+        self.assertEqual(
+            [replacement.path for replacement in fixture.replacements],
+            ["crates/a2_raf/src/graph.rs", "crates/a2_raf/src/graph.rs"],
         )
 
     def test_result_record_reports_prior_lineage(self) -> None:

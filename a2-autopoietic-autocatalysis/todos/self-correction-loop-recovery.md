@@ -25,11 +25,13 @@ Working:
 - `compound-sensorium-same-crate-hidden` was added 2026-05-24 as a same-crate multi-bug fixture in `a2_sensorium/src/ingest.rs`; smoke-only injection verified both failures. Pi/ZAI GLM and Minimax both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Kimi scored resolved 3/3, pass@1 1/3, loop exercised 2/3, self-corrected 2/3. Results: `/tmp/a2-sensorium-same-crate-pi-zai-glm.jsonl`, `/tmp/a2-sensorium-same-crate-minimax.jsonl`, `/tmp/a2-sensorium-same-crate-kimi.jsonl`.
 - Anti-repeat ablation N=3 on `compound-hidden` with Minimax completed 2026-05-28. Enabled cohort: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; resolved attempts were 3, 2, 2. Disabled cohort: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all resolved on attempt 2. Result: `/tmp/a2-anti-repeat-ablation-compound-hidden-minimax-20260528T122327Z.jsonl`.
 - Anti-repeat ablation N=3 on `compound-sensorium-same-crate-hidden` with Minimax completed 2026-05-28. Enabled and disabled cohorts both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs resolved on attempt 2. Result: `/tmp/a2-anti-repeat-ablation-sensorium-minimax-20260528T221811Z.jsonl`.
+- `compound-raf-same-crate-hidden` was added 2026-05-29 to add same-crate loop diversity in `a2_raf`. It injects visible single-node RAF connectivity and hidden empty-graph repair coverage regressions in `crates/a2_raf/src/graph.rs`; smoke-only injection verified both failures. Result: `/tmp/a2-raf-fixture-smoke.jsonl`.
+- `compound-raf-same-crate-hidden` with Minimax on 2026-05-29 resolved 3/3 runs; pass@1 1/3; loop exercised 2/3; self-corrected 2/3. Result: `/tmp/a2-raf-same-crate-minimax-20260529T212431Z.jsonl`.
 - Sentinel passed 6/6 after refreshing stale `Cargo.lock` with `cargo generate-lockfile --offline` during Pi/ZAI validation.
 
 Not working / not yet resolved:
 
-- More fixture diversity beyond the current four compound fixtures is not yet implemented.
+- `compound-raf-same-crate-hidden` has not yet been run N≥3 with Kimi or Pi/ZAI GLM.
 
 ## Recovery sequence
 
@@ -41,7 +43,7 @@ Implemented in order:
 4. `todos/anti-repeat-retry-strategy.md`
 5. `todos/worktree-task-verifier.md`
 
-Remaining recovery work is fixture expansion and additional ablation coverage rather than missing core plumbing. As of 2026-05-24, Minimax, Kimi, and Pi/ZAI GLM each have N=3 self-correction results on the three original compound fixtures after hidden candidate-worktree verifier wiring. On `compound-sensorium-same-crate-hidden`, Pi/ZAI GLM and Minimax self-corrected 3/3; Kimi resolved 3/3 with self-correction 2/3 because one run passed on attempt 1. Two Minimax anti-repeat ablation cohorts completed 2026-05-28: `compound-hidden` and `compound-sensorium-same-crate-hidden` both had enabled and disabled cohorts resolve/self-correct 3/3.
+Remaining recovery work is fixture expansion, provider validation for newer fixtures, and additional ablation coverage rather than missing core plumbing. As of 2026-05-24, Minimax, Kimi, and Pi/ZAI GLM each have N=3 self-correction results on the three original compound fixtures after hidden candidate-worktree verifier wiring. On `compound-sensorium-same-crate-hidden`, Pi/ZAI GLM and Minimax self-corrected 3/3; Kimi resolved 3/3 with self-correction 2/3 because one run passed on attempt 1. Two Minimax anti-repeat ablation cohorts completed 2026-05-28: `compound-hidden` and `compound-sensorium-same-crate-hidden` both had enabled and disabled cohorts resolve/self-correct 3/3. `compound-raf-same-crate-hidden` was smoke-verified on 2026-05-29; Minimax resolved 3/3 with pass@1 1/3 and self-corrected 2/3; Kimi and Pi/ZAI GLM still need N≥3 provider runs.
 
 ## Benchmark gate
 
