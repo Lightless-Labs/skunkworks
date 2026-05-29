@@ -9,6 +9,7 @@
 **Enhanced:** 2026-05-25 — bounded repair/escalation contract captured
 **Enhanced:** 2026-05-25 — provider-diverse repair escalation contract captured
 **Enhanced:** 2026-05-26 — provider-diverse repair, state refresh, and completed-task filtering implemented
+**Enhanced:** 2026-05-29 — repair-path fault injection added and live Pi → alternate-provider escalation validated; alternate Kimi timed out before producing a repair patchset
 **Plan:** `docs/plans/autonomous-project-loop.md`
 
 ## Context
@@ -35,7 +36,7 @@ The inner challenge metabolism is bounded and self-adaptive, but no command owns
 - [x] Protected-file changes are rejected as hard safety stops; eligible source self-modifications are not.
 - [x] Passing non-dry-run iterations apply changes, rerun gates, update handoff, and make an atomic local git commit.
 - [x] Failure after repair/escalation budget stops the loop with a clear report and a machine-readable monitor log; no silent partial application. Rollback exists for failed real-tree validation and `repair_budget_exhausted` records terminal failure.
-- [x] Provider-diverse escalation for repair attempts. Repair attempt 1 now routes to the configured alternate maintainer provider when available, while monitor events and repair prompts record primary/attempted provider metadata.
+- [x] Provider-diverse escalation for repair attempts. Repair attempt 1 now routes to the configured alternate maintainer provider when available, while monitor events and repair prompts record primary/attempted provider metadata. Live fault-injection run `run-1780061191713-0` validated Pi primary → Kimi alternate routing and bounded budget exhaustion; successful alternate-provider repair output is still unproven because Kimi timed out under the 90s bound.
 - [x] Refresh `project_state` after each committed iteration so `--iterations N` does not select from stale handoff/todo/git status.
 - [x] Improve task selection/completion detection so autopilot does not keep selecting already-satisfied checkbox todos.
 
@@ -62,6 +63,10 @@ Provider-diverse repair should be a bounded extension of the repair loop, not a 
 5. Escalated repair output must still be typed `project_patchset` JSON and must pass the identical parse, path, temp-worktree, source self-sandbox, validation, rollback, handoff, and commit gates.
 6. Monitor events must make provider diversity auditable by naming the attempted provider/model, escalation reason, repair attempt index, and terminal outcome.
 7. Provider-diverse escalation must never override hard safety stops for protected paths, traversal, invalid replacement paths, or non-eligible mechanism edits.
+
+## Live validation notes
+
+2026-05-29: Added explicit repair-path fault injection (`A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure`) and ran `cargo run -q -p a2d -- autopilot --iterations 1 --repair-attempts 1`. Attempt 0 invoked `pi/default`, fault injection forced a parse failure, repair attempt 1 escalated to `opencode/kimi-for-coding/k2p6`, and the bounded repair budget exhausted after Kimi timed out at 90s. Monitor run: `.a2d/autopilot/runs/run-1780061191713-0/`; console log: `/tmp/a2d-autopilot-repair-diversity-20260529132612.log`. Learning: `docs/solutions/runtime-bugs/autopilot-repair-diversity-live-validation-2026-05-29.md`.
 
 ## Notes
 

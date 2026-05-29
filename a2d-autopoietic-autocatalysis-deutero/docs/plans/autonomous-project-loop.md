@@ -7,6 +7,7 @@
 **Enhanced:** 2026-05-24 — gated real-tree apply and local commit
 **Enhanced:** 2026-05-25 — bounded repair loop
 **Enhanced:** 2026-05-26 — provider-diverse repair, state refresh, and completed-task filtering
+**Enhanced:** 2026-05-29 — repair-path fault injection added and live Pi → alternate-provider escalation validated; alternate Kimi timed out before producing a repair patchset
 
 ## Problem
 
@@ -73,7 +74,9 @@ Implemented first slice on 2026-05-24:
 
 Implemented on 2026-05-26: provider-diverse repair escalation, multi-iteration state refresh after commits, and checkbox-based completed-task filtering for task selection.
 
-Next slice: durable provider-policy topology gating, or deeper task completion semantics once more todos acquire machine-readable acceptance markers.
+Enhanced on 2026-05-29: added opt-in repair-path fault injection via `A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure` so live runs can deterministically exercise parse-failure repair without waiting for a provider mistake. Live run `run-1780061191713-0` validated Pi primary → Kimi alternate repair routing, provider metadata, bounded failure, and no partial apply; Kimi timed out under the 90s bound, so successful alternate repair output remains unproven.
+
+Next slice: make the alternate maintainer repair provider configurable or healthier, then validate a repair attempt that produces a typed patchset and reaches the normal parse/path/temp/real-tree gates.
 
 ### Loop state artifacts
 
@@ -139,6 +142,7 @@ Current event types include:
 - `repair_attempt_started`
 - `repair_output_received`
 - `repair_budget_exhausted`
+- `autopilot_fault_injected` (explicit validation mode only)
 - `run_stopped_after_temp_validation`
 - `run_stopped_before_apply`
 
