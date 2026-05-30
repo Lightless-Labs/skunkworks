@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { DEFAULT_CONFIG, loadConfig } from "../src/core/config.ts";
 import { formatSnapshotForPrompt } from "../src/core/context.ts";
+import { isDeliveryMode, piDeliverAs, supportedDeliveryModes } from "../src/core/delivery.ts";
 import { generateStrayThought, selectPromptProfile } from "../src/core/engine.ts";
 import { resolveModelPool } from "../src/core/modelClient.ts";
 import { createInitialState, shouldFireTrigger } from "../src/core/triggers.ts";
@@ -180,6 +181,16 @@ test("resolveModelPool resolves trigger name, then kind, then default, then any 
 		resolveModelPool(config, event({ name: "unusable-pool", kind: "external" })).map((spec) => spec.name),
 		["name-model", "kind-model", "default-model"],
 	);
+});
+
+test("delivery modes are limited to agent message delivery, not hook transports", () => {
+	assert.equal(isDeliveryMode("steer"), true);
+	assert.equal(isDeliveryMode("followUp"), true);
+	assert.equal(isDeliveryMode("nextTurn"), true);
+	assert.equal(isDeliveryMode("stdout"), false);
+	assert.equal(isDeliveryMode("file"), false);
+	assert.equal(piDeliverAs("stdout"), undefined);
+	assert.match(supportedDeliveryModes(), /steer/);
 });
 
 test("generateStrayThought can use an injected host-native model caller", async () => {

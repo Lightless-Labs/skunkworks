@@ -10,7 +10,7 @@ export type TriggerKind =
 	| "tool-result"
 	| "loop-detected";
 
-export type DeliveryMode = "steer" | "followUp" | "nextTurn" | "stdout" | "file";
+export type DeliveryMode = "steer" | "followUp" | "nextTurn";
 
 export interface FluxModelSpec {
 	/** Arbitrary label for status and telemetry. */

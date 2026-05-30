@@ -32,7 +32,7 @@ Users can configure:
 - model definitions (`models[]`), including provider, model id, base URL, max tokens, temperature, and API key env var,
 - per-trigger model pools (`modelPools`), keyed by trigger name, trigger kind, or `default`,
 - random injections (`randomInjections`) and random frequency (`random.probability`, `random.minIntervalMs`, `random.afterEvents`),
-- delivery mode (`steer`, `followUp`, `nextTurn`, `stdout`, `file`),
+- Pi/session delivery mode (`steer`, `followUp`, `nextTurn`); hook integrations always write their host JSON response to stdout,
 - trigger list (`triggers[]`), probabilities, throttles, loop patterns, and optional `modelPool` / `promptPool` names,
 - per-trigger weighted prompt profile pools (`promptProfiles`),
 - context window limits.

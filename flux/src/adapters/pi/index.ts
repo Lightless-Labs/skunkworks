@@ -5,6 +5,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { DEFAULT_CONFIG, loadConfig } from "../../core/config.ts";
 import { snapshotFromGenericPayload, textFromUnknown } from "../../core/context.ts";
+import { piDeliverAs, supportedDeliveryModes } from "../../core/delivery.ts";
 import { generateStrayThought, hostNativeModelLabel, renderThoughtForAgent, type ThoughtModelCaller } from "../../core/engine.ts";
 import { createInitialState, shouldFireTrigger } from "../../core/triggers.ts";
 import type { AgentContextSnapshot, AgentMessage, AgentToolEvent, FluxConfig, FluxState, TriggerEvent } from "../../core/types.ts";
@@ -183,6 +184,14 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 	};
 
 	piSendMessage = (content, thought, config, triggerTurn, display) => {
+		const deliverAs = piDeliverAs(config.delivery);
+		if (!deliverAs) {
+			currentCtx?.ui.notify(
+				`Flux delivery mode "${String(config.delivery)}" is not supported by the Pi adapter. Use ${supportedDeliveryModes()}. Hook integrations always emit their host JSON on stdout.`,
+				"error",
+			);
+			return;
+		}
 		pi.sendMessage(
 			{
 				customType: CUSTOM_TYPE,
@@ -190,7 +199,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 				display,
 				details: thought,
 			},
-			{ deliverAs: config.delivery === "followUp" ? "followUp" : config.delivery === "nextTurn" ? "nextTurn" : "steer", triggerTurn },
+			{ deliverAs, triggerTurn },
 		);
 	};
 

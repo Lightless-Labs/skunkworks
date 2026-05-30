@@ -1,6 +1,6 @@
 # Flux Handoff — Read This First
 
-**Last updated:** 2026-05-28
+**Last updated:** 2026-05-30
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -35,6 +35,7 @@ Implemented surfaces:
 - **Core:** config loading, trigger matching, bounded context snapshots, prompt-profile selection, per-trigger model pools, Anthropic/OpenAI-compatible model calls, thought logging.
 - **Core tests:** `test/core-selection.test.ts` covers config/deep merge, trigger frequency overrides, loop matching, prompt-profile/model-pool resolution, injected model callers, and context formatting/clamping. `test/hook-cli.test.ts` covers host hook event-kind inference, fixture snapshot extraction, and output shapes.
 - **Host-native model path in progress:** Pi adapter now calls Pi's selected/authenticated model; Claude/Codex hook CLI paths call their host CLIs with `FLUX_SUPPRESS=1` to avoid recursive hook triggering. Pi JSON-mode smoke for `/flux think` and `flux_stray_thought` passed on 2026-05-30. See `todos/host-native-models.md`.
+- **Delivery semantics clarified:** shared `DeliveryMode` is now only Pi/session message delivery (`steer`, `followUp`, `nextTurn`). Hook CLIs still emit host JSON on stdout as transport. Stale Pi configs using unsupported modes warn instead of silently mapping to `steer`. See `todos/delivery-semantics.md`.
 
 Generated/ignored local artifacts:
 
@@ -151,7 +152,6 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 - Core selection/config/trigger/context logic now has automated coverage, but provider HTTP clients and host adapters still need focused tests.
 - Sidecar model calls support Anthropic and OpenAI-compatible chat completions only.
 - `thinkingEffort` is typed in config but not sent to providers yet.
-- `delivery: "stdout" | "file"` exists in the type but Pi delivery currently maps non-followUp/non-nextTurn to `steer`; hook CLI writes JSON to stdout. Clarify/implement file delivery before documenting it as complete.
 - Config command UX is JSON-editor based. It is functional but not friendly for model/prompt-pool edits beyond full JSON editing.
 
 ## Best Next Moves
@@ -159,7 +159,6 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 1. Finish live-testing the Pi extension in interactive TUI mode using Pi's host-native model path. See `todos/live-validate-pi-extension.md` and `todos/host-native-models.md`.
 2. Finish validating Claude Code / Codex hook contracts against current docs and live hook contexts. Fixture/output-shape tests are in place. See `todos/host-hook-contracts.md`.
 3. Improve `/flux config` UX for adding/removing models and prompt profiles without hand-editing full JSON. See `todos/config-command-ux.md`.
-4. Decide whether `stdout`/`file` delivery are real cross-host features or should be removed from the shared type until implemented.
 
 ## Important Files
 
