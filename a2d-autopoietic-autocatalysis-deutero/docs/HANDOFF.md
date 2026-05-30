@@ -323,3 +323,8 @@ Search `docs/solutions/` before implementing. Key findings:
 
 Advanced autonomous project loop task by specifying the provider-diverse repair escalation contract: repair attempts must record the attempted provider topology, may escalate to an alternate provider/model after the primary maintainer provider fails, preserve the same typed project_patchset contract and safety gates, and stop with a machine-readable report when escalation budget is exhausted.
 
+
+## Autopilot update 1780125323289
+
+todos/escalation-rungs-4-6.md: added Implementation Status section noting rung 4-6 code still absent from invocation pipeline and pointing to next-action targets
+

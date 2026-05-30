@@ -4,6 +4,7 @@
 **Empirical update:** 2026-04-17 — live sudoku run confirms rungs 0–3 alone don't halt output repetition.
 **Provider-health update:** 2026-04-23 — provider failures/timeouts now open a temporary provider-level circuit breaker and route subsequent invocations to healthy alternatives; this is not full rung 4 history-aware model swap.
 **Provider-policy update:** 2026-05-23 — provider assignment is now a typed, gated, durable `provider_policy` artifact persisted as lineage `provider-policy.json`. This gives rung 4+ a safer mechanism for provider-role changes, but durable policy still needs topology-comparison gating.
+**Implementation-status update:** 2026-05-29 — rungs 4–6 handler code has not been added to `invoke_scheduled` escalation branching. The circuit-breaker and provider-policy infrastructure exists but the swap/consensus logic in `metabolism_workcell.rs` is still the next implementation target.
 **Depends on:** Rungs 0-3 (implemented), cycle iteration/firing cap (implemented), cycle wall-clock cap (implemented), provider-policy topology gate (`todos/provider-policy-topology-gate.md`).
 
 ## What's Built (observed firing live 2026-04-17)
@@ -19,6 +20,18 @@ All 4 rungs layer: rung 3 includes awareness + consultation + clean session.
 ## Empirical motivation for rungs 4–6
 
 Live run on sudoku (Kimi/Gemini/GLM), 2026-04-17: every dynamic enzyme climbed through rungs 0→1→2→3 within cycle 1 without producing fitness-improving output. Evolver entered rung 4 (unimplemented) — behaved as rung 3 since no handler exists. Rungs 4–6 are the next differentiated intervention. See `docs/solutions/architectural-insights/escalation-ladder-detects-but-doesnt-halt-degradation-2026-04-17.md`.
+
+## Implementation Status
+
+- **Rung 4 (swap with history):** NOT IMPLEMENTED. `invoke_scheduled` in `metabolism_workcell.rs` matches on `escalation_rung` but has no arm for rung ≥ 4 beyond falling through to rung-3 logic. Need to add `ProviderRegistry::swap_provider()` and wire it at `enzyme_loop_count >= 4`.
+- **Rung 5 (swap + clean):** NOT IMPLEMENTED. Will reuse rung-4 swap + rung-3 clean-session code path.
+- **Rung 6 (multi-model consensus):** NOT IMPLEMENTED. Requires parallel invocation and fitness-based selection.
+- **Provider circuit breaker:** IMPLEMENTED (adjacent to rung 4). Temporary cooldown + reroute works. Durable policy swap via `provider-policy.json` exists but topology gate is not yet wired.
+
+Next-action targets:
+1. `src/metabolism_workcell.rs` — add rung-4 arm in escalation_rung match
+2. `src/provider_registry.rs` — add `swap_provider(enzyme_id, alternative)`
+3. Write mock tests before live tests (per test plan below)
 
 ## Rung 2 status
 
