@@ -26,38 +26,33 @@ function parsePayload(raw: string): unknown {
 	}
 }
 
-function inferKind(payload: unknown): TriggerKind {
+export function inferKind(payload: unknown): TriggerKind {
 	const record = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
 	const name = String(record.hook_event_name ?? record.event ?? record.type ?? "").toLowerCase();
-	if (/tool.*result|posttool|tool_response/.test(name)) return "tool-result";
+	if (/tool.*result|post[_-]?tool|posttool|tool_response/.test(name)) return "tool-result";
 	if (/tool/.test(name)) return "tool-call";
-	if (/stop|turn.*end|assistant.*end|response.*done/.test(name)) return "turn-end";
+	if (/stop|post[_-]?turn|turn.*end|assistant.*end|response.*done/.test(name)) return "turn-end";
 	if (/start|prompt|user/.test(name)) return "turn-start";
 	if (/flux|manual|external/.test(name)) return "external";
 	return "external";
 }
 
-function output(host: HostKind, rendered: string, thought: unknown, fired: boolean) {
-	if (!fired) {
-		process.stdout.write(JSON.stringify({ continue: true, flux: { fired: false } }) + "\n");
-		return;
-	}
+export function formatHookOutput(host: HostKind, rendered: string, thought: unknown, fired: boolean): Record<string, unknown> {
+	if (!fired) return { continue: true, flux: { fired: false } };
 	if (host === "claude-code") {
-		process.stdout.write(
-			JSON.stringify({
-				continue: true,
-				hookSpecificOutput: { hookEventName: "Flux", additionalContext: rendered },
-				additionalContext: rendered,
-				flux: thought,
-			}) + "\n",
-		);
-		return;
+		return {
+			continue: true,
+			hookSpecificOutput: { hookEventName: "Flux", additionalContext: rendered },
+			additionalContext: rendered,
+			flux: thought,
+		};
 	}
-	if (host === "codex") {
-		process.stdout.write(JSON.stringify({ continue: true, instructions: rendered, additionalContext: rendered, flux: thought }) + "\n");
-		return;
-	}
-	process.stdout.write(JSON.stringify({ continue: true, additionalContext: rendered, flux: thought }) + "\n");
+	if (host === "codex") return { continue: true, instructions: rendered, additionalContext: rendered, flux: thought };
+	return { continue: true, additionalContext: rendered, flux: thought };
+}
+
+function output(host: HostKind, rendered: string, thought: unknown, fired: boolean) {
+	process.stdout.write(JSON.stringify(formatHookOutput(host, rendered, thought, fired)) + "\n");
 }
 
 export async function runHookCli(options: HookCliOptions): Promise<void> {
