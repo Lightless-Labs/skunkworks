@@ -87,6 +87,18 @@ RAF_EMPTY_COVERAGE_BUG_NEW = """\
 
         let covered = self
 """
+EVAL_TASK_ID = "self-correction-compound-eval-same-crate-hidden-regressions"
+EVAL_DESCRIPTION = """\
+The workspace contains a regression. `cargo test -p a2_eval failing_tests_score_incomplete` fails.
+Diagnose the root cause and fix the implementation. Do not assume the failing
+test name is the only broken behavior; inspect the code and make the minimal
+change that restores the test. Run `cargo test -p a2_eval failing_tests_score_incomplete` before
+finishing.
+"""
+EVAL_TESTS_BUG_OLD = "results.failed == 0"
+EVAL_TESTS_BUG_NEW = "results.passed > 0"
+EVAL_BUDGET_BUG_OLD = "total <= self.token_ceiling"
+EVAL_BUDGET_BUG_NEW = "total >= self.token_ceiling"
 FNV_OFFSET_128 = 0x6C62_272E_07BB_0142_62B8_2175_6295_C58D
 FNV_PRIME_128 = 0x0000_0000_0100_0000_0000_0000_0000_013B
 
@@ -228,6 +240,28 @@ FIXTURES: dict[str, Fixture] = {
                 "crates/a2_raf/src/graph.rs",
                 RAF_EMPTY_COVERAGE_BUG_OLD,
                 RAF_EMPTY_COVERAGE_BUG_NEW,
+            ),
+        ),
+    ),
+    "compound-eval-same-crate-hidden": Fixture(
+        name="compound-eval-same-crate-hidden",
+        task_id=EVAL_TASK_ID,
+        description=EVAL_DESCRIPTION,
+        verify_command=(
+            "cargo test -p a2_eval failing_tests_score_incomplete; tests=$?; "
+            "cargo test -p a2_eval over_budget_scores_incomplete; budget=$?; "
+            "test $tests -eq 0 -a $budget -eq 0"
+        ),
+        replacements=(
+            Replacement(
+                "crates/a2_eval/src/seed.rs",
+                EVAL_TESTS_BUG_OLD,
+                EVAL_TESTS_BUG_NEW,
+            ),
+            Replacement(
+                "crates/a2_eval/src/seed.rs",
+                EVAL_BUDGET_BUG_OLD,
+                EVAL_BUDGET_BUG_NEW,
             ),
         ),
     ),
@@ -701,6 +735,16 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(
             [replacement.path for replacement in fixture.replacements],
             ["crates/a2_raf/src/graph.rs", "crates/a2_raf/src/graph.rs"],
+        )
+
+    def test_compound_eval_fixture_is_same_crate_multi_bug(self) -> None:
+        fixture = FIXTURES["compound-eval-same-crate-hidden"]
+        self.assertEqual(fixture.task_id, EVAL_TASK_ID)
+        self.assertIn("failing_tests_score_incomplete", fixture.verify_command)
+        self.assertIn("over_budget_scores_incomplete", fixture.verify_command)
+        self.assertEqual(
+            [replacement.path for replacement in fixture.replacements],
+            ["crates/a2_eval/src/seed.rs", "crates/a2_eval/src/seed.rs"],
         )
 
     def test_result_record_reports_prior_lineage(self) -> None:

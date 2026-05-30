@@ -34,6 +34,7 @@ Current loop-shaped fixtures:
 - `compound-archive-hidden` — visible `a2_core`, hidden `a2_archive` lineage ordering regression.
 - `compound-sensorium-same-crate-hidden` — visible and hidden regressions in `a2_sensorium`.
 - `compound-raf-same-crate-hidden` — visible and hidden regressions in `a2_raf` graph edge-case behavior.
+- `compound-eval-same-crate-hidden` — visible and hidden regressions in `a2_eval` seed scoring behavior.
 
 Smoke a specific fixture without a model:
 
