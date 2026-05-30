@@ -92,9 +92,36 @@ impl WorktreeCatalyst {
             .await;
     }
 
-    /// Capture `git diff` from the worktree (uncommitted changes).
-    async fn capture_diff(&self, worktree_path: &Path) -> A2Result<String> {
-        // Stage all changes (including untracked files) so they appear in the diff
+    async fn current_head(&self, worktree_path: &Path) -> A2Result<String> {
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(worktree_path)
+            .output()
+            .await
+            .map_err(|e| {
+                A2Error::CatalystFailure(self.id.clone(), format!("git rev-parse HEAD: {e}"))
+            })?;
+
+        if !output.status.success() {
+            return Err(A2Error::CatalystFailure(
+                self.id.clone(),
+                format!(
+                    "git rev-parse HEAD failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            ));
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// Capture all changes from the worktree relative to its original base commit.
+    ///
+    /// The agent may leave changes unstaged, staged, or committed on the temporary
+    /// worktree branch. Staging first plus diffing against the pre-agent base commit
+    /// captures all three cases.
+    async fn capture_diff(&self, worktree_path: &Path, base_commit: &str) -> A2Result<String> {
+        // Stage all changes (including untracked files) so they appear in the diff.
         let _ = Command::new("git")
             .args(["add", "-A"])
             .current_dir(worktree_path)
@@ -102,7 +129,7 @@ impl WorktreeCatalyst {
             .await;
 
         let output = Command::new("git")
-            .args(["diff", "--staged", "--no-color"])
+            .args(["diff", "--no-color", base_commit])
             .current_dir(worktree_path)
             .output()
             .await
@@ -677,6 +704,7 @@ impl Catalyst for WorktreeCatalyst {
             .to_string_lossy()
             .to_string();
 
+        let base_commit = self.current_head(&worktree_path).await?;
         let prompt = self.build_prompt(task, context);
 
         // Run the agent in the worktree
@@ -698,7 +726,7 @@ impl Catalyst for WorktreeCatalyst {
         };
 
         // Capture what the agent actually changed
-        let diff = self.capture_diff(&worktree_path).await?;
+        let diff = self.capture_diff(&worktree_path, &base_commit).await?;
 
         let verification_result = self.run_task_verifications(task, &worktree_path).await;
 
@@ -869,7 +897,11 @@ mod tests {
         .unwrap();
 
         // git diff should capture the change.
-        let diff = catalyst.capture_diff(&worktree_path).await.unwrap();
+        let base_commit = catalyst.current_head(&worktree_path).await.unwrap();
+        let diff = catalyst
+            .capture_diff(&worktree_path, &base_commit)
+            .await
+            .unwrap();
 
         catalyst
             .cleanup_worktree(&worktree_path, &branch_name)
@@ -883,6 +915,51 @@ mod tests {
         assert!(
             diff.contains("+modified by mock edit"),
             "diff must contain the inserted line; got:\n{diff}"
+        );
+    }
+
+    #[tokio::test]
+    async fn worktree_catalyst_captures_agent_commits() {
+        let repo_dir = std::env::temp_dir().join(format!("a2-test-{}", uuid::Uuid::now_v7()));
+        fs::create_dir_all(&repo_dir).unwrap();
+        init_git_repo(&repo_dir).await;
+
+        let catalyst = WorktreeCatalyst::new(repo_dir.clone());
+        let worktree_path = catalyst.create_worktree().await.unwrap();
+        let branch_name = worktree_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let base_commit = catalyst.current_head(&worktree_path).await.unwrap();
+
+        fs::write(
+            worktree_path.join("README.md"),
+            "# repo\ncommitted by mock agent\n",
+        )
+        .unwrap();
+        for args in [vec!["add", "README.md"], vec!["commit", "-m", "agent edit"]] {
+            Command::new("git")
+                .args(&args)
+                .current_dir(&worktree_path)
+                .output()
+                .await
+                .unwrap();
+        }
+
+        let diff = catalyst
+            .capture_diff(&worktree_path, &base_commit)
+            .await
+            .unwrap();
+
+        catalyst
+            .cleanup_worktree(&worktree_path, &branch_name)
+            .await;
+        let _ = fs::remove_dir_all(&repo_dir);
+
+        assert!(
+            diff.contains("+committed by mock agent"),
+            "diff must include committed worktree changes; got:\n{diff}"
         );
     }
 

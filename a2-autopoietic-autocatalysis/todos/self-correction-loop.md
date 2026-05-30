@@ -1,7 +1,7 @@
 # Self-Correction Loop TODOs
 
 Created: 2026-04-28
-Updated: 2026-05-28
+Updated: 2026-05-30
 
 Current facts:
 
@@ -20,6 +20,9 @@ Current facts:
 - Anti-repeat ablation N=3 on `compound-sensorium-same-crate-hidden` with Minimax completed 2026-05-28. Enabled and disabled cohorts both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all runs resolved on attempt 2. Result: `/tmp/a2-anti-repeat-ablation-sensorium-minimax-20260528T221811Z.jsonl`.
 - `compound-raf-same-crate-hidden` was added 2026-05-29 to add same-crate loop diversity in `a2_raf`. It injects visible single-node RAF connectivity and hidden empty-graph repair coverage regressions in `crates/a2_raf/src/graph.rs`; smoke-only injection verified both failures. Result: `/tmp/a2-raf-fixture-smoke.jsonl`.
 - `compound-raf-same-crate-hidden` with Minimax on 2026-05-29 resolved 3/3 runs; pass@1 1/3; loop exercised 2/3; self-corrected 2/3. Result: `/tmp/a2-raf-same-crate-minimax-20260529T212431Z.jsonl`.
+- `compound-raf-same-crate-hidden` with Kimi on 2026-05-30 resolved 3/3 runs; pass@1 3/3; loop exercised 0/3; self-corrected 0/3. Result: `/tmp/a2-raf-same-crate-kimi-20260530T071018Z.jsonl`.
+- `compound-raf-same-crate-hidden` with Pi/ZAI GLM on 2026-05-30 resolved 3/3 runs; pass@1 3/3; loop exercised 0/3; self-corrected 0/3. One run had empty captured patch stats despite verifier success. Result: `/tmp/a2-raf-same-crate-pi-zai-glm-20260530T072430Z.jsonl`.
+- WorktreeCatalyst now captures committed worktree changes by diffing against the pre-agent base commit after staging. See `docs/solutions/logic-errors/worktree-agent-commits-hidden-from-diff-20260530.md`.
 
 See `todos/self-correction-loop-recovery.md` for the structural recovery sequence.
 
@@ -40,7 +43,9 @@ See `todos/self-correction-loop-recovery.md` for the structural recovery sequenc
 - [x] Run same-crate N≥3 anti-repeat ablation cohort. Completed 2026-05-28 on `compound-sensorium-same-crate-hidden` with Minimax. Enabled and disabled cohorts both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. Result: `/tmp/a2-anti-repeat-ablation-sensorium-minimax-20260528T221811Z.jsonl`.
 - [x] Add a RAF same-crate fixture after Sensorium same-crate coverage. Completed 2026-05-29 with `compound-raf-same-crate-hidden`; smoke-only injection verified the visible and hidden failures. Result: `/tmp/a2-raf-fixture-smoke.jsonl`.
 - [x] Run `compound-raf-same-crate-hidden` N≥3 with an available non-Claude provider and score the JSONL result. Completed 2026-05-29 with Minimax: resolved 3/3, pass@1 1/3, loop exercised 2/3, self-corrected 2/3. Result: `/tmp/a2-raf-same-crate-minimax-20260529T212431Z.jsonl`.
-- [ ] Run `compound-raf-same-crate-hidden` N≥3 with Kimi and Pi/ZAI GLM.
+- [x] Run `compound-raf-same-crate-hidden` N≥3 with Kimi and Pi/ZAI GLM. Completed 2026-05-30. Kimi and Pi/ZAI GLM both resolved 3/3 with pass@1 3/3, loop exercised 0/3, self-corrected 0/3. Results: `/tmp/a2-raf-same-crate-kimi-20260530T071018Z.jsonl`, `/tmp/a2-raf-same-crate-pi-zai-glm-20260530T072430Z.jsonl`.
+- [x] Capture committed candidate worktree changes. Completed 2026-05-30 after the Pi/ZAI RAF run produced one verifier-success record with empty patch stats; `WorktreeCatalyst` now diffs against the pre-agent base commit after staging, with a regression test for agent commits.
+- [ ] Rerun a provider/fixture combination after committed-worktree diff capture fix and confirm patch stats are populated on verifier-success attempts.
 - [x] Run `compound-archive-hidden` N≥3 with Minimax and Kimi after smoke-only injection success. Completed 2026-05-22; both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 - [x] Refresh stale `Cargo.lock` observed by sentinel during Pi/ZAI validation. Completed 2026-05-22 with `cargo generate-lockfile --offline`; sentinel then passed 6/6.
 - [x] Add a second hard fixture after `compound-hidden` self-corrects at least once. Completed 2026-05-18 with `compound-membrane-hidden`; after hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-21 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
