@@ -1392,6 +1392,8 @@ fn maintainer_system_prompt() -> String {
      Filesystem tools are unavailable and unnecessary: use only the project_state and file contents provided in the prompt.\n\
      Produce a project_patchset with: commit_message, validation_commands, handoff_update, replacements.\n\
      replacements must be complete file contents. Source self-modification is allowed for eligible mechanism files; protected files are not.\n\
+     The path gate rejects empty patchsets: replacements MUST contain at least one file replacement.\n\
+     For docs/todo/plan tasks, update the selected markdown file or a directly relevant markdown file with a small concrete improvement.\n\
      Prefer one small atomic change that advances the selected project_task."
         .to_string()
 }
@@ -1435,7 +1437,9 @@ fn build_maintainer_prompt(state: &ProjectState, task: &ProjectTask) -> String {
          ```markdown\n{}\n```\n\n\
          OUTPUT CONTRACT\n\
          Return exactly one JSON object matching:\n\
-         {{\"commit_message\":\"Autopilot: ...\",\"validation_commands\":[\"cargo test\"],\"handoff_update\":\"...\",\"replacements\":[{{\"path\":\"relative/path\",\"new_content\":\"complete file content\"}}]}}",
+         {{\"commit_message\":\"Autopilot: ...\",\"validation_commands\":[\"cargo test\"],\"handoff_update\":\"...\",\"replacements\":[{{\"path\":\"relative/path\",\"new_content\":\"complete file content\"}}]}}\n\
+         The replacements array MUST NOT be empty. The path gate rejects replacements: [].\n\
+         If the task is documentation/todo/plan work, replace source_path or another approved markdown file with complete updated content.",
         state.git_status,
         state.a2d_status,
         state.handoff_preview,
@@ -1466,6 +1470,11 @@ fn build_repair_prompt(
          FAILURE_REPORT\n```text\n{}\n```\n\n\
          PREVIOUS_OUTPUT\n```text\n{}\n```\n\n\
          ORIGINAL_TASK_AND_CONTEXT\n{}\n\n\
+         REPAIR REQUIREMENTS\n\
+         - Do not return replacements: []. Empty patchsets fail the path gate.\n\
+         - Include at least one complete file replacement that directly advances the original task.\n\
+         - For markdown/todo/plan tasks, update source_path or another approved markdown file using complete file content from ORIGINAL_TASK_AND_CONTEXT.\n\
+         - Preserve the same typed ProjectPatchset contract; do not return shell commands or prose outside JSON.\n\n\
          OUTPUT CONTRACT\n\
          Return exactly one JSON object matching:\n\
          {{\"commit_message\":\"Autopilot: ...\",\"validation_commands\":[\"cargo test\"],\"handoff_update\":\"...\",\"replacements\":[{{\"path\":\"relative/path\",\"new_content\":\"complete file content\"}}]}}",
@@ -3576,6 +3585,37 @@ mod tests {
         assert!(prompt.contains("ORIGINAL_TASK_AND_CONTEXT"));
         assert!(prompt.contains("ORIGINAL TASK"));
         assert!(prompt.contains("ProjectPatchset JSON"));
+        assert!(prompt.contains("Do not return replacements: []"));
+        assert!(prompt.contains("at least one complete file replacement"));
+    }
+
+    #[test]
+    fn maintainer_prompt_forbids_empty_replacements() {
+        let state = ProjectState {
+            handoff_preview: String::new(),
+            todos: vec![ProjectDoc {
+                path: "todos/example.md".to_string(),
+                title: "Example".to_string(),
+                body: "# Example\n\n- [ ] Do docs work".to_string(),
+                body_preview: "# Example".to_string(),
+            }],
+            plans: Vec::new(),
+            git_status: String::new(),
+            a2d_status: String::new(),
+        };
+        let task = ProjectTask {
+            source_path: "todos/example.md".to_string(),
+            objective: "Advance docs".to_string(),
+            acceptance_gates: vec!["typed project_patchset JSON only".to_string()],
+            allows_self_modification: false,
+        };
+
+        let system = maintainer_system_prompt();
+        let prompt = build_maintainer_prompt(&state, &task);
+
+        assert!(system.contains("replacements MUST contain at least one"));
+        assert!(prompt.contains("replacements array MUST NOT be empty"));
+        assert!(prompt.contains("replace source_path"));
     }
 
     #[test]
