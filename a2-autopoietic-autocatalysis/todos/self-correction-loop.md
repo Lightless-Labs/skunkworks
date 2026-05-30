@@ -23,6 +23,7 @@ Current facts:
 - `compound-raf-same-crate-hidden` with Kimi on 2026-05-30 resolved 3/3 runs; pass@1 3/3; loop exercised 0/3; self-corrected 0/3. Result: `/tmp/a2-raf-same-crate-kimi-20260530T071018Z.jsonl`.
 - `compound-raf-same-crate-hidden` with Pi/ZAI GLM on 2026-05-30 resolved 3/3 runs; pass@1 3/3; loop exercised 0/3; self-corrected 0/3. One run had empty captured patch stats despite verifier success. Result: `/tmp/a2-raf-same-crate-pi-zai-glm-20260530T072430Z.jsonl`.
 - WorktreeCatalyst now captures committed worktree changes by diffing against the pre-agent base commit after staging. See `docs/solutions/logic-errors/worktree-agent-commits-hidden-from-diff-20260530.md`.
+- Post-fix Pi/ZAI GLM smoke on `compound-raf-same-crate-hidden` on 2026-05-30 resolved 1/1 run on attempt 2. Patch stats were populated on both attempts: failed attempt +1/-1, resolved attempt +2/-2. Result: `/tmp/a2-raf-same-crate-pi-zai-glm-post-diff-fix-20260530T073729Z.jsonl`.
 
 See `todos/self-correction-loop-recovery.md` for the structural recovery sequence.
 
@@ -45,7 +46,8 @@ See `todos/self-correction-loop-recovery.md` for the structural recovery sequenc
 - [x] Run `compound-raf-same-crate-hidden` N≥3 with an available non-Claude provider and score the JSONL result. Completed 2026-05-29 with Minimax: resolved 3/3, pass@1 1/3, loop exercised 2/3, self-corrected 2/3. Result: `/tmp/a2-raf-same-crate-minimax-20260529T212431Z.jsonl`.
 - [x] Run `compound-raf-same-crate-hidden` N≥3 with Kimi and Pi/ZAI GLM. Completed 2026-05-30. Kimi and Pi/ZAI GLM both resolved 3/3 with pass@1 3/3, loop exercised 0/3, self-corrected 0/3. Results: `/tmp/a2-raf-same-crate-kimi-20260530T071018Z.jsonl`, `/tmp/a2-raf-same-crate-pi-zai-glm-20260530T072430Z.jsonl`.
 - [x] Capture committed candidate worktree changes. Completed 2026-05-30 after the Pi/ZAI RAF run produced one verifier-success record with empty patch stats; `WorktreeCatalyst` now diffs against the pre-agent base commit after staging, with a regression test for agent commits.
-- [ ] Rerun a provider/fixture combination after committed-worktree diff capture fix and confirm patch stats are populated on verifier-success attempts.
+- [x] Rerun a provider/fixture combination after committed-worktree diff capture fix and confirm patch stats are populated on verifier-success attempts. Completed 2026-05-30 with one Pi/ZAI GLM `compound-raf-same-crate-hidden` smoke: attempt 1 failed with `touched_file_count=1`, +1/-1; attempt 2 resolved with `touched_file_count=1`, +2/-2. Result: `/tmp/a2-raf-same-crate-pi-zai-glm-post-diff-fix-20260530T073729Z.jsonl`.
+- [ ] Run N≥3 post-fix confirmation that verifier-success attempts keep populated patch stats after committed-worktree diff capture.
 - [x] Run `compound-archive-hidden` N≥3 with Minimax and Kimi after smoke-only injection success. Completed 2026-05-22; both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 - [x] Refresh stale `Cargo.lock` observed by sentinel during Pi/ZAI validation. Completed 2026-05-22 with `cargo generate-lockfile --offline`; sentinel then passed 6/6.
 - [x] Add a second hard fixture after `compound-hidden` self-corrects at least once. Completed 2026-05-18 with `compound-membrane-hidden`; after hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-21 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
