@@ -34,7 +34,7 @@ Implemented surfaces:
 - **Codex hook scaffold:** `src/adapters/codex/hook.ts`, `codex-plugin.json`, `examples/codex-config.toml`.
 - **Core:** config loading, trigger matching, bounded context snapshots, prompt-profile selection, per-trigger model pools, Anthropic/OpenAI-compatible model calls, thought logging.
 - **Core tests:** `test/core-selection.test.ts` covers config/deep merge, trigger frequency overrides, loop matching, prompt-profile/model-pool resolution, injected model callers, and context formatting/clamping.
-- **Host-native model path in progress:** Pi adapter now calls Pi's selected/authenticated model; Claude/Codex hook CLI paths call their host CLIs with `FLUX_SUPPRESS=1` to avoid recursive hook triggering. See `todos/host-native-models.md`.
+- **Host-native model path in progress:** Pi adapter now calls Pi's selected/authenticated model; Claude/Codex hook CLI paths call their host CLIs with `FLUX_SUPPRESS=1` to avoid recursive hook triggering. Pi JSON-mode smoke for `/flux think` and `flux_stray_thought` passed on 2026-05-30. See `todos/host-native-models.md`.
 
 Generated/ignored local artifacts:
 
@@ -146,7 +146,7 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 
 ## Current Limitations / Unvalidated Areas
 
-- Pi integration compiles and uses Pi-authenticated model access, but has not been live-tested inside an interactive Pi session.
+- Pi integration compiles and uses Pi-authenticated model access. Non-interactive JSON-mode smoke passed; full interactive TUI validation is still pending.
 - Claude Code and Codex integrations now have host-CLI sidecar callers, but host-specific hook output contracts and real hook behavior still need validation against current host versions.
 - Core selection/config/trigger/context logic now has automated coverage, but provider HTTP clients and host adapters still need focused tests.
 - Sidecar model calls support Anthropic and OpenAI-compatible chat completions only.
@@ -156,7 +156,7 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 
 ## Best Next Moves
 
-1. Live-test the Pi extension in interactive Pi using Pi's host-native model path. See `todos/live-validate-pi-extension.md` and `todos/host-native-models.md`.
+1. Finish live-testing the Pi extension in interactive TUI mode using Pi's host-native model path. See `todos/live-validate-pi-extension.md` and `todos/host-native-models.md`.
 2. Validate and harden Claude Code / Codex hook contracts and host-CLI generation in real hook contexts. See `todos/host-hook-contracts.md`.
 3. Improve `/flux config` UX for adding/removing models and prompt profiles without hand-editing full JSON. See `todos/config-command-ux.md`.
 4. Decide whether `stdout`/`file` delivery are real cross-host features or should be removed from the shared type until implemented.

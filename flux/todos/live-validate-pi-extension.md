@@ -5,17 +5,19 @@
 
 ## Context
 
-`src/adapters/pi/index.ts` compiles and uses documented Pi extension APIs, but the extension has not yet been exercised in an interactive Pi session with a real sidecar model config.
+`src/adapters/pi/index.ts` compiles and uses documented Pi extension APIs. Flux now uses Pi's host-native selected/authenticated model path instead of requiring a separate sidecar model config when running as a Pi extension.
+
+A non-interactive Pi JSON-mode smoke was run on 2026-05-30 and confirmed host-native generation for `/flux think` and the `flux_stray_thought` tool. Full interactive TUI validation is still pending.
 
 ## Acceptance Criteria
 
-- [ ] Create `.flux/config.json` from `.flux/config.example.json` with at least one usable API-key-backed model.
-- [ ] Start Pi from `flux/` with `pi -e ./src/adapters/pi/index.ts`.
+- [x] Confirm Pi host-native model generation works without a Flux-specific sidecar API key config in non-interactive JSON mode.
+- [ ] Start Pi from `flux/` with `pi -e ./src/adapters/pi/index.ts` in interactive TUI mode.
 - [ ] Confirm startup shows Flux status and no extension load errors.
 - [ ] Run `/flux status` and verify it reports config path, enabled/random state, models, and random frequency.
 - [ ] Run `/flux config prompts` and `/flux config models`.
-- [ ] Run `/flux think smoke test` and verify a `flux:stray-thought` message is injected and rendered.
-- [ ] Trigger `flux_stray_thought` from the agent and verify it returns tool content plus optional displayed custom message.
+- [x] Run `/flux think smoke test` in JSON mode and verify a `flux:stray-thought` custom message is injected.
+- [x] Trigger `flux_stray_thought` from the agent in JSON mode and verify it returns tool content plus optional displayed custom message.
 - [ ] With `random.probability=1` and low `minIntervalMs`, verify `turn_end` can auto-inject.
 - [ ] With `/flux random off`, verify random triggers stop while manual `/flux think` still works.
 - [ ] Emit `pi.events.emit("flux:trigger", { reason: "smoke" })` from a small companion extension or temporary command and verify external trigger injection.
@@ -23,4 +25,16 @@
 
 ## Notes
 
-Use a cheap sidecar model first. The Flux sidecar should only receive bounded snapshots, not filesystem/shell tools.
+Pi smoke commands used:
+
+```bash
+pi --no-extensions -e ./src/adapters/pi/index.ts --no-session --mode json -p "/flux think smoke test"
+
+pi --no-extensions -e ./src/adapters/pi/index.ts --no-session --mode json \
+  --tools flux_stray_thought \
+  -p "Use the flux_stray_thought tool with reason smoke test, then stop."
+```
+
+The `/flux think` command disables `triggerTurn` in non-UI print/json mode to avoid stale-context errors after the smoke custom message is emitted. In interactive/RPC modes it still triggers a turn.
+
+The Flux sidecar should only receive bounded snapshots, not filesystem/shell tools.

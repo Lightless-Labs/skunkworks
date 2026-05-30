@@ -51,14 +51,14 @@ type PiComplete = (
 ) => Promise<{ stopReason?: string; content: Array<{ type: string; text?: string }> }>;
 
 async function loadPiComplete(): Promise<PiComplete> {
-	const importer = Function("specifier", "return import(specifier)") as (specifier: string) => Promise<{ complete: PiComplete }>;
 	try {
-		return (await importer("@earendil-works/pi-ai")).complete;
+		// @ts-ignore: pi-ai is provided by the host Pi runtime; Flux keeps it out of direct core deps.
+		return ((await import("@earendil-works/pi-ai")) as { complete: PiComplete }).complete;
 	} catch (error) {
 		const codingAgentUrl = import.meta.resolve("@earendil-works/pi-coding-agent");
 		const bundledPiAiUrl = new URL("../node_modules/@earendil-works/pi-ai/dist/index.js", codingAgentUrl).href;
 		try {
-			return (await importer(bundledPiAiUrl)).complete;
+			return ((await import(bundledPiAiUrl)) as { complete: PiComplete }).complete;
 		} catch {
 			throw error;
 		}
@@ -425,7 +425,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 					ctx,
 					{ host: "pi", kind: "manual", name: "flux command", timestamp: Date.now(), payload: { reason: parts.slice(1).join(" ") } },
 					snapshotFromPi(ctx, loaded.config, { reason: parts.slice(1).join(" ") }),
-					{ force: true, triggerTurn: true },
+					{ force: true, triggerTurn: ctx.hasUI },
 				);
 				return;
 			}
