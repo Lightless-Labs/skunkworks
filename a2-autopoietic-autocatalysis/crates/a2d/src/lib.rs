@@ -320,17 +320,44 @@ impl Governor {
     /// Stage 0 promotion: if tests pass and fitness looks good, flag for human review.
     /// Otherwise discard.
     fn stage0_promote(&self, result: &WorkcellResult) -> PromotionDecision {
-        match &result.fitness {
-            Some(f) if f.somatic.task_completed => {
-                // B0: all germline mutations require human review.
-                PromotionDecision::PromoteGermline {
-                    mutation_scope: MutationScope::Prompt,
-                }
-            }
-            _ => PromotionDecision::Discard {
-                reason: "task not completed or evaluation failed".into(),
-            },
+        let completed_by_fitness = result
+            .fitness
+            .as_ref()
+            .is_some_and(|fitness| fitness.somatic.task_completed);
+
+        if completed_by_fitness || self.external_verifier_backstop_completed(result) {
+            // B0: all germline mutations require human review.
+            return PromotionDecision::PromoteGermline {
+                mutation_scope: MutationScope::Prompt,
+            };
         }
+
+        PromotionDecision::Discard {
+            reason: "task not completed or evaluation failed".into(),
+        }
+    }
+
+    /// Independent task verifiers are allowed to rescue a candidate from a corrupted
+    /// mutable evaluator, but only when they are explicit, all pass, tests are clean,
+    /// and the outer governor budget still allows the patch.
+    fn external_verifier_backstop_completed(&self, result: &WorkcellResult) -> bool {
+        let Some(patch) = &result.patch else {
+            return false;
+        };
+        if patch.worktree_verifications.is_empty() {
+            return false;
+        }
+        if !patch
+            .worktree_verifications
+            .iter()
+            .all(|verification| verification.passed)
+        {
+            return false;
+        }
+        if patch.test_results.failed != 0 {
+            return false;
+        }
+        result.tokens_used <= self.default_budget.max_tokens
     }
 
     fn record_round_outcome(&self, result: &WorkcellResult, decision: &PromotionDecision) {
@@ -540,6 +567,55 @@ mod tests {
         }
     }
 
+    struct VerifiedCatalyst(CatalystId);
+
+    #[async_trait::async_trait]
+    impl Catalyst for VerifiedCatalyst {
+        fn id(&self) -> &CatalystId {
+            &self.0
+        }
+        fn name(&self) -> &str {
+            "verified"
+        }
+        async fn execute(
+            &self,
+            task: &TaskContract,
+            _ctx: &ContextPack,
+            _model: &dyn ModelProvider,
+        ) -> A2Result<PatchBundle> {
+            Ok(PatchBundle {
+                id: PatchId::new(),
+                task_id: task.id.clone(),
+                workcell_id: WorkcellId::new(),
+                diff: "+verified".into(),
+                rationale: "candidate verifier passed".into(),
+                test_results: TestResults {
+                    passed: 1,
+                    failed: 0,
+                    skipped: 0,
+                    details: vec![],
+                },
+                worktree_verifications: vec![ExternalVerification {
+                    passed: true,
+                    command: "cargo test -p a2_eval hidden".into(),
+                    exit_code: Some(0),
+                    failing_tests: vec![],
+                    failure_focus: vec![],
+                    stdout_excerpt: "ok".into(),
+                    stderr_excerpt: String::new(),
+                    verified_at: Utc::now(),
+                }],
+                model_attribution: ModelAttribution {
+                    provider: "test".into(),
+                    model: "verified".into(),
+                    tokens_in: 100,
+                    tokens_out: 50,
+                },
+                created_at: Utc::now(),
+            })
+        }
+    }
+
     struct PassEvaluator;
 
     #[async_trait::async_trait]
@@ -554,6 +630,32 @@ mod tests {
                 task_id: task.id.clone(),
                 somatic: SomaticFitness {
                     task_completed: true,
+                    tests_pass: true,
+                    acceptance_met: vec![true],
+                    tokens_used: 150,
+                    duration_secs: 0.1,
+                },
+                germline: None,
+                organizational: None,
+                evaluated_at: Utc::now(),
+            })
+        }
+    }
+
+    struct CorruptEvaluator;
+
+    #[async_trait::async_trait]
+    impl Evaluator for CorruptEvaluator {
+        async fn evaluate(
+            &self,
+            _patch: &PatchBundle,
+            task: &TaskContract,
+        ) -> A2Result<FitnessRecord> {
+            Ok(FitnessRecord {
+                eval_id: EvalId::new(),
+                task_id: task.id.clone(),
+                somatic: SomaticFitness {
+                    task_completed: false,
                     tests_pass: true,
                     acceptance_met: vec![true],
                     tokens_used: 150,
@@ -668,6 +770,52 @@ mod tests {
                 &EchoCatalyst(CatalystId::new()),
                 &NoopModel,
                 &PassEvaluator,
+            )
+            .await
+            .unwrap();
+
+        assert!(outcome.result.patch.is_some());
+        assert!(matches!(
+            outcome.decision,
+            PromotionDecision::PromoteGermline { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn candidate_verifier_backstop_promotes_when_mutable_evaluator_is_corrupt() {
+        let gov = Governor::new(
+            GermlineVersion::new(),
+            Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 10,
+            },
+        );
+
+        let task = TaskContract {
+            id: TaskId::new(),
+            title: "repair evaluator".into(),
+            description: "candidate verifier is authoritative".into(),
+            acceptance_criteria: vec!["verifier passes".into()],
+            verification_commands: vec![],
+            budget: Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 10,
+            },
+            priority: Priority::Normal,
+            source: TaskSource::External {
+                origin: "test".into(),
+            },
+            created_at: Utc::now(),
+        };
+
+        let outcome = gov
+            .run_task(
+                task,
+                &VerifiedCatalyst(CatalystId::new()),
+                &NoopModel,
+                &CorruptEvaluator,
             )
             .await
             .unwrap();
