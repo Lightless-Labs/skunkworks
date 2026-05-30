@@ -47,6 +47,17 @@ This captures uncommitted, staged, and committed worktree changes in one patch.
 
 Add a WorktreeCatalyst test that edits a temporary worktree, commits the edit, and asserts that `capture_diff()` still contains the committed line.
 
+## Addendum: PWD must match the candidate worktree
+
+A post-fix Pi/ZAI RAF confirmation still produced a verifier-success record with an empty captured patch. The provider process reported the candidate worktree as cwd, but the safe default is to make the process environment agree with `current_dir` for all model CLIs:
+
+```rust
+.current_dir(worktree_path)
+.env("PWD", worktree_path)
+```
+
+Provider CLIs and their tool subprocesses may consult `PWD` as well as the OS current directory. If those disagree, a model can appear to run in the candidate worktree while some tool operations resolve paths against the source task workspace.
+
 ## Reporting discipline
 
-If a benchmark record has `resolved=true` but an empty patch/diff and no reconciliation, treat it as a capture-path signal, not clean evidence that A² promoted a useful patch. Record the exact JSONL fields and inspect the worktree capture path before drawing benchmark conclusions.
+If a benchmark record has `resolved=true` but an empty patch/diff and no reconciliation, treat it as a capture-path or workspace-isolation signal, not clean evidence that A² promoted a useful patch. Record the exact JSONL fields and inspect the worktree capture/isolation path before drawing benchmark conclusions.

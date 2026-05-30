@@ -30,12 +30,13 @@ Working:
 - `compound-raf-same-crate-hidden` with Kimi on 2026-05-30 resolved 3/3 runs; pass@1 3/3; loop exercised 0/3; self-corrected 0/3. Result: `/tmp/a2-raf-same-crate-kimi-20260530T071018Z.jsonl`.
 - `compound-raf-same-crate-hidden` with Pi/ZAI GLM on 2026-05-30 resolved 3/3 runs; pass@1 3/3; loop exercised 0/3; self-corrected 0/3. One run had empty captured patch stats despite verifier success. Result: `/tmp/a2-raf-same-crate-pi-zai-glm-20260530T072430Z.jsonl`.
 - WorktreeCatalyst now captures committed worktree changes by diffing against the pre-agent base commit after staging. See `docs/solutions/logic-errors/worktree-agent-commits-hidden-from-diff-20260530.md`.
-- Post-fix Pi/ZAI GLM smoke on `compound-raf-same-crate-hidden` on 2026-05-30 resolved 1/1 run on attempt 2. Patch stats were populated on both attempts: failed attempt +1/-1, resolved attempt +2/-2. Result: `/tmp/a2-raf-same-crate-pi-zai-glm-post-diff-fix-20260530T073729Z.jsonl`.
+- Post-base-diff-fix Pi/ZAI GLM N=3 on `compound-raf-same-crate-hidden` on 2026-05-30 resolved 3/3 runs; pass@1 2/3; loop exercised 1/3; self-corrected 1/3. Two verifier-success attempts had populated patch stats; one pass@1 attempt still had empty patch stats and no reconciliation. Result: `/tmp/a2-raf-same-crate-pi-zai-glm-post-diff-fix-20260530T073729Z.jsonl`.
+- WorktreeCatalyst now sets `PWD` to the candidate worktree for all provider subprocesses so environment-based path resolution matches `current_dir`.
 - Sentinel passed 6/6 after refreshing stale `Cargo.lock` with `cargo generate-lockfile --offline` during Pi/ZAI validation.
 
 Not working / not yet resolved:
 
-- N≥3 post-fix confirmation has not yet been run for verifier-success patch stats after the committed-worktree diff capture change.
+- N≥3 post-PWD confirmation has not yet been run for verifier-success patch stats after provider subprocess environment alignment.
 
 ## Recovery sequence
 
@@ -47,7 +48,7 @@ Implemented in order:
 4. `todos/anti-repeat-retry-strategy.md`
 5. `todos/worktree-task-verifier.md`
 
-Remaining recovery work is fixture expansion, N≥3 post-fix validation for committed-worktree diff capture, and additional ablation coverage rather than missing core plumbing. As of 2026-05-24, Minimax, Kimi, and Pi/ZAI GLM each have N=3 self-correction results on the three original compound fixtures after hidden candidate-worktree verifier wiring. On `compound-sensorium-same-crate-hidden`, Pi/ZAI GLM and Minimax self-corrected 3/3; Kimi resolved 3/3 with self-correction 2/3 because one run passed on attempt 1. Two Minimax anti-repeat ablation cohorts completed 2026-05-28: `compound-hidden` and `compound-sensorium-same-crate-hidden` both had enabled and disabled cohorts resolve/self-correct 3/3. `compound-raf-same-crate-hidden` was smoke-verified on 2026-05-29; Minimax resolved 3/3 with pass@1 1/3 and self-corrected 2/3; Kimi and Pi/ZAI GLM resolved 3/3 with pass@1 3/3. The Pi/ZAI RAF run exposed an empty-patch/verifier-success capture gap, fixed on 2026-05-30 by diffing against the pre-agent worktree base commit; one post-fix Pi/ZAI RAF smoke populated patch stats on the resolved attempt.
+Remaining recovery work is fixture expansion, N≥3 post-PWD validation for verifier-success patch stats, and additional ablation coverage rather than missing core plumbing. As of 2026-05-24, Minimax, Kimi, and Pi/ZAI GLM each have N=3 self-correction results on the three original compound fixtures after hidden candidate-worktree verifier wiring. On `compound-sensorium-same-crate-hidden`, Pi/ZAI GLM and Minimax self-corrected 3/3; Kimi resolved 3/3 with self-correction 2/3 because one run passed on attempt 1. Two Minimax anti-repeat ablation cohorts completed 2026-05-28: `compound-hidden` and `compound-sensorium-same-crate-hidden` both had enabled and disabled cohorts resolve/self-correct 3/3. `compound-raf-same-crate-hidden` was smoke-verified on 2026-05-29; Minimax resolved 3/3 with pass@1 1/3 and self-corrected 2/3; Kimi and Pi/ZAI GLM resolved 3/3 with pass@1 3/3. The Pi/ZAI RAF run exposed an empty-patch/verifier-success capture gap; diff capture now compares against the pre-agent worktree base commit and provider subprocesses now receive `PWD=<candidate worktree>`.
 
 ## Benchmark gate
 

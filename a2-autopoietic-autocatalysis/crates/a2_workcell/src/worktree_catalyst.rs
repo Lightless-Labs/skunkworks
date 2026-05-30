@@ -358,6 +358,7 @@ impl WorktreeCatalyst {
                 "--dangerously-skip-permissions",
             ])
             .current_dir(worktree_path)
+            .env("PWD", worktree_path)
             .stdin(std::process::Stdio::null())
             .output()
             .await
@@ -416,6 +417,7 @@ impl WorktreeCatalyst {
             ])
             .arg("--json")
             .current_dir(worktree_path)
+            .env("PWD", worktree_path)
             .stdin(std::process::Stdio::null())
             .output()
             .await
@@ -465,6 +467,7 @@ impl WorktreeCatalyst {
                 "-p", prompt, "--model", model_id, "-s", "false", "-y", "-o", "text",
             ])
             .current_dir(worktree_path)
+            .env("PWD", worktree_path)
             .stdin(std::process::Stdio::null())
             .output()
             .await
@@ -486,6 +489,8 @@ impl WorktreeCatalyst {
             .args(["run", "--format", "json", "--model", model_id, "--dir"])
             .arg(worktree_path)
             .arg(prompt)
+            .current_dir(worktree_path)
+            .env("PWD", worktree_path)
             .stdin(std::process::Stdio::null())
             .output()
             .await
@@ -535,6 +540,7 @@ impl WorktreeCatalyst {
             ])
             .arg(prompt)
             .current_dir(worktree_path)
+            .env("PWD", worktree_path)
             .stdin(std::process::Stdio::null())
             .output()
             .await
