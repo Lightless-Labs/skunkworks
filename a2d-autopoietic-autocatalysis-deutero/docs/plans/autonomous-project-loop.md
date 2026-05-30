@@ -7,7 +7,8 @@
 **Enhanced:** 2026-05-24 — gated real-tree apply and local commit
 **Enhanced:** 2026-05-25 — bounded repair loop
 **Enhanced:** 2026-05-26 — provider-diverse repair, state refresh, and completed-task filtering
-**Enhanced:** 2026-05-29 — repair-path fault injection added and live Pi → alternate-provider escalation validated; alternate repair provider is now configurable, but successful alternate repair remains unproven
+**Enhanced:** 2026-05-29 — repair-path fault injection added and live Pi → alternate-provider escalation validated; alternate repair provider is configurable
+**Enhanced:** 2026-05-30 — tightened repair prompts and live-validated a DeepSeek alternate repair through path/temp/real-tree gates
 
 ## Problem
 
@@ -74,9 +75,11 @@ Implemented first slice on 2026-05-24:
 
 Implemented on 2026-05-26: provider-diverse repair escalation, multi-iteration state refresh after commits, and checkbox-based completed-task filtering for task selection.
 
-Enhanced on 2026-05-29: added opt-in repair-path fault injection via `A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure` so live runs can deterministically exercise parse-failure repair without waiting for a provider mistake. Live run `run-1780061191713-0` validated Pi primary → Kimi alternate repair routing, provider metadata, bounded failure, and no partial apply; Kimi timed out under the 90s bound. Added `A2D_AUTOPILOT_REPAIR_PROVIDER` / `--repair-provider` so repair attempt 1 can target a specific registered provider; DeepSeek live probes showed the configured route works but still did not produce a gate-passing repair (`run-1780062413070-0` returned zero replacements; `run-1780062590484-0` timed out).
+Enhanced on 2026-05-29: added opt-in repair-path fault injection via `A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure` so live runs can deterministically exercise parse-failure repair without waiting for a provider mistake. Live run `run-1780061191713-0` validated Pi primary → Kimi alternate repair routing, provider metadata, bounded failure, and no partial apply; Kimi timed out under the 90s bound. Added `A2D_AUTOPILOT_REPAIR_PROVIDER` / `--repair-provider` so repair attempt 1 can target a specific registered provider; DeepSeek live probes showed the configured route works but initially did not produce a gate-passing repair (`run-1780062413070-0` returned zero replacements; `run-1780062590484-0` timed out).
 
-Next slice: improve repair prompt/gating semantics or provider topology enough that the configured alternate repair provider produces a typed patchset with at least one valid replacement and reaches temp/real-tree validation.
+Enhanced on 2026-05-30: tightened maintainer/repair prompts to explicitly forbid empty `replacements` and require docs/todo/plan tasks to update an approved markdown file. Live run `run-1780125199376-0` validated the full alternate repair path: Pi attempt 0 fault-injected parse failure → DeepSeek repair output with one replacement → path gate → temp `cargo test` → real-tree `cargo test` → local commit `ab43b71`. Follow-up: mechanical gates accepted the patch, but the generated todo text referenced non-existent source files before correction; semantic claim validation remains a gap.
+
+Next slice: add semantic/project-reference validation for autopilot documentation/planning outputs, then implement escalation rung 4 in the actual mechanism files.
 
 ### Loop state artifacts
 

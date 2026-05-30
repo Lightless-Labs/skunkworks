@@ -4,7 +4,7 @@
 **Empirical update:** 2026-04-17 — live sudoku run confirms rungs 0–3 alone don't halt output repetition.
 **Provider-health update:** 2026-04-23 — provider failures/timeouts now open a temporary provider-level circuit breaker and route subsequent invocations to healthy alternatives; this is not full rung 4 history-aware model swap.
 **Provider-policy update:** 2026-05-23 — provider assignment is now a typed, gated, durable `provider_policy` artifact persisted as lineage `provider-policy.json`. This gives rung 4+ a safer mechanism for provider-role changes, but durable policy still needs topology-comparison gating.
-**Implementation-status update:** 2026-05-29 — rungs 4–6 handler code has not been added to `invoke_scheduled` escalation branching. The circuit-breaker and provider-policy infrastructure exists but the swap/consensus logic in `metabolism_workcell.rs` is still the next implementation target.
+**Implementation-status update:** 2026-05-29 — rungs 4–6 handler code has not been added to `invoke_scheduled` escalation branching. The circuit-breaker and provider-policy infrastructure exists, but swap/consensus logic still belongs in the current mechanism files (`crates/a2d-core/src/metabolism.rs` and `crates/a2d-core/src/provider.rs`).
 **Depends on:** Rungs 0-3 (implemented), cycle iteration/firing cap (implemented), cycle wall-clock cap (implemented), provider-policy topology gate (`todos/provider-policy-topology-gate.md`).
 
 ## What's Built (observed firing live 2026-04-17)
@@ -29,8 +29,8 @@ Live run on sudoku (Kimi/Gemini/GLM), 2026-04-17: every dynamic enzyme climbed t
 - **Provider circuit breaker:** IMPLEMENTED (adjacent to rung 4). Temporary cooldown + reroute works. Durable policy swap via `provider-policy.json` exists but topology gate is not yet wired.
 
 Next-action targets:
-1. `src/metabolism_workcell.rs` — add rung-4 arm in escalation_rung match
-2. `src/provider_registry.rs` — add `swap_provider(enzyme_id, alternative)`
+1. `crates/a2d-core/src/metabolism.rs` — add rung-4 provider override in `invoke_scheduled` / provider-selection flow
+2. `crates/a2d-core/src/provider.rs` — add non-persistent alternative-provider selection helpers if the existing `alternative_provider_for*` APIs are insufficient
 3. Write mock tests before live tests (per test plan below)
 
 ## Rung 2 status

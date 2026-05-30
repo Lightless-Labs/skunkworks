@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-05-29 (session 19 — autopilot repair-diversity path live-validated)
+**Last updated:** 2026-05-30 (session 20 — alternate-provider autopilot repair reached commit gate)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-225 commits. 186 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 34 compound learnings.
+231 commits. 187 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 34 compound learnings.
 
 ## Clean-session pickup
 
@@ -29,7 +29,7 @@
 - **GLM is off the coder/evolver critical path:** coder default is Kimi k2.6 with DeepSeek v4 flash fallback; evolver is explicitly assigned to Kimi k2.6 after GLM evolver timeouts starved feedback metabolism. Non-parallel evolver fallback is role-isolated, so it should not route to tester/architect GLM after Kimi/DeepSeek cooldowns. GLM 5.1 remains assigned to tester/architect only.
 - **Failed rung-2 consultation is bounded:** if consultation times out/fails, the workcell fails immediately instead of spending a second full provider timeout on the primary invocation.
 - **Timeouts are bounded but provider-specific:** GLM 5.1 now gets 900s by default; other CLI providers default to 300s; `A2D_PROVIDER_TIMEOUT_SECS` overrides.
-- **Autopilot autonomy hardening landed and repair-diversity is live-observed:** repair attempt 1 escalates from Pi to the configured alternate maintainer provider when available, repair prompts and monitor events record provider topology/attempt metadata, project state refreshes after committed iterations, and checkbox-completed todos are skipped by task selection. An opt-in fault-injection harness (`A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure`) now forces a repairable parse failure for live validation; run `run-1780061191713-0` confirmed Pi primary → Kimi alternate routing and bounded budget exhaustion without partial apply. `A2D_AUTOPILOT_REPAIR_PROVIDER` / `--repair-provider` can now target a specific registered repair provider; DeepSeek probes confirmed routing but not successful repair.
+- **Autopilot autonomy hardening landed and repair-diversity is live-validated through commit:** repair attempt 1 escalates from Pi to the configured alternate maintainer provider when available, repair prompts and monitor events record provider topology/attempt metadata, project state refreshes after committed iterations, and checkbox-completed todos are skipped by task selection. An opt-in fault-injection harness (`A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure`) now forces a repairable parse failure for live validation. `A2D_AUTOPILOT_REPAIR_PROVIDER` / `--repair-provider` can target a specific registered repair provider. Run `run-1780125199376-0` validated Pi primary → fault-injected parse failure → DeepSeek repair output → path gate → temp `cargo test` → real-tree `cargo test` → local commit `ab43b71`.
 
 ### What is not working / unproven
 
@@ -39,18 +39,17 @@
 - **Compounding self-modification is unproven:** the only live architect patch in `sudoku 5` was irrelevant (`prime.rs`) and was reverted; relevance gate now prevents that class.
 - **Escalation rungs 4–6 are missing:** rungs 0–3 detect loops but do not reliably halt degradation.
 - **Benchmark coverage is narrow:** sudoku is validated; chess/rubiks need stronger acceptance tests and live runs.
-- **Autopilot successful alternate repair remains unproven:** live fault injection exercised Pi → Kimi and Pi → DeepSeek repair routing, but Kimi/DeepSeek either timed out or produced a zero-replacement patchset, so temp/real-tree gates on a valid alternate-provider repair output are still unvalidated.
+- **Autopilot semantic validation remains shallow:** alternate-provider repair can now pass mechanical gates and commit, but the successful DeepSeek patch included inaccurate source-file references that required correction. Mechanical path/temp/real gates are not sufficient to validate documentation/planning claims.
 - **Provider-policy usefulness remains unproven:** the runtime/durability safety path is live-validated, but no benchmark-useful provider-policy proposal has yet shown improved challenge outcomes.
 
 ### Best next moves
 
-1. **Make alternate-provider autopilot repair produce a gate-passing patchset:** provider selection is now configurable and routing is live-validated. Next improve repair prompt/gating semantics or provider topology so the configured alternate returns at least one valid replacement and reaches temp/real-tree validation.
-2. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
-3. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
-4. **Find a benchmark-useful provider-policy proposal path:** runtime proposal safety is validated, but the live 7-enzyme topology still has no default policy-management enzyme; add one only if bounded tests show it does not starve coder/feedback metabolism.
-5. **Live-validate empty-output diagnostics and architect no-op contract** during a run that reaches architect; confirm failures expose useful parsed/raw previews and legitimate no-change decisions route as `NOOP` artifacts.
-6. **Implement escalation rungs 4–6**: forced model swap, multi-model consensus with mechanical selection, Darwinian isolation.
-7. **Expand acceptance tests**: chess castling/en-passant/checkmate/legal-move invariants; Rubiks scramble-solve roundtrip.
+1. **Add semantic/project-reference validation for autopilot docs/planning outputs:** the repair path can now commit, but accepted text referenced non-existent source files. Gate markdown replacements for referenced repo paths before commit, or add a validation report warning/failure when code-path claims do not exist.
+2. **Implement escalation rung 4 in the actual mechanism files:** use `crates/a2d-core/src/metabolism.rs` and `crates/a2d-core/src/provider.rs`; start with ephemeral provider override + mock tests, not durable provider-policy mutation.
+3. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
+4. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
+5. **Find a benchmark-useful provider-policy proposal path:** runtime proposal safety is validated, but the live 7-enzyme topology still has no default policy-management enzyme; add one only if bounded tests show it does not starve coder/feedback metabolism.
+6. **Expand acceptance tests**: chess castling/en-passant/checkmate/legal-move invariants; Rubiks scramble-solve roundtrip.
 
 ### What works
 
@@ -74,6 +73,11 @@
 - **Provider-policy comparisons are now inspectable:** `a2d compare-provider-policy <challenge> <cycles> [policy-json|@path]` runs current and proposed policies with persistence disabled, prints policy deltas, and reports a gate decision.
 
 ### What happened this session
+
+- **Autopilot repair prompt tightened against empty patchsets.** Maintainer and repair prompts now explicitly state that `replacements` must be non-empty, that empty patchsets fail the path gate, and that docs/todo/plan work should update the selected markdown file or another approved markdown file with complete content. Added unit coverage (`maintainer_prompt_forbids_empty_replacements`) and strengthened repair prompt assertions.
+- **Alternate-provider repair path reached commit gate.** Ran `A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure A2D_AUTOPILOT_REPAIR_PROVIDER=opencode/opencode/deepseek-v4-flash-free A2D_PROVIDER_TIMEOUT_SECS=180 cargo run -q -p a2d -- autopilot --iterations 1 --repair-attempts 1`. Attempt 0 invoked `pi/default`, fault injection forced parse failure, repair attempt 1 used DeepSeek, returned a typed patchset with one replacement, passed path gate, passed temp `cargo test`, passed real-tree `cargo test`, and committed `ab43b71`. Monitor run: `.a2d/autopilot/runs/run-1780125199376-0/`; console log: `/tmp/a2d-autopilot-repair-deepseek-tightprompt-20260530071316.log`.
+- **Autopilot semantic gap found and corrected manually.** The committed todo update named non-existent files (`metabolism_workcell.rs`, `provider_registry.rs`). Corrected `todos/escalation-rungs-4-6.md` to point to actual mechanism files: `crates/a2d-core/src/metabolism.rs` and `crates/a2d-core/src/provider.rs`. This shows mechanical gates validate parse/path/tests/commit, not semantic truth of planning claims.
+- **Validation:** `cargo test` passes (187 passing, 2 ignored).
 
 - **Autopilot repair-diversity fault injection landed.** Added opt-in `A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure`, which preserves the live provider call but replaces attempt 0's parsed output with malformed `ProjectPatchset` text after provider return. The monitor logs an `autopilot_fault_injected` event with provider, attempt, fault, and original output size. Added unit coverage for attempt-scoped fault selection.
 - **Live Pi → alternate-provider repair routing validated.** Ran `A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure A2D_PROVIDER_TIMEOUT_SECS=90 cargo run -q -p a2d -- autopilot --iterations 1 --repair-attempts 1`. Attempt 0 invoked `pi/default`; fault injection forced `patchset_parse_failed`; repair attempt 1 escalated to `opencode/kimi-for-coding/k2p6` with `escalated: true` and primary/topology metadata; Kimi timed out after 90s; `repair_budget_exhausted` stopped cleanly with no partial apply/commit. Monitor run: `.a2d/autopilot/runs/run-1780061191713-0/`; console log: `/tmp/a2d-autopilot-repair-diversity-20260529132612.log`.

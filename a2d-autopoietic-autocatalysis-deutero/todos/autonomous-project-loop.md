@@ -9,7 +9,8 @@
 **Enhanced:** 2026-05-25 — bounded repair/escalation contract captured
 **Enhanced:** 2026-05-25 — provider-diverse repair escalation contract captured
 **Enhanced:** 2026-05-26 — provider-diverse repair, state refresh, and completed-task filtering implemented
-**Enhanced:** 2026-05-29 — repair-path fault injection added and live Pi → alternate-provider escalation validated; alternate repair provider is now configurable, but successful alternate repair remains unproven
+**Enhanced:** 2026-05-29 — repair-path fault injection added and live Pi → alternate-provider escalation validated; alternate repair provider is configurable
+**Enhanced:** 2026-05-30 — tightened repair prompts and live-validated a DeepSeek alternate repair through path/temp/real-tree gates
 **Plan:** `docs/plans/autonomous-project-loop.md`
 
 ## Context
@@ -36,7 +37,7 @@ The inner challenge metabolism is bounded and self-adaptive, but no command owns
 - [x] Protected-file changes are rejected as hard safety stops; eligible source self-modifications are not.
 - [x] Passing non-dry-run iterations apply changes, rerun gates, update handoff, and make an atomic local git commit.
 - [x] Failure after repair/escalation budget stops the loop with a clear report and a machine-readable monitor log; no silent partial application. Rollback exists for failed real-tree validation and `repair_budget_exhausted` records terminal failure.
-- [x] Provider-diverse escalation for repair attempts. Repair attempt 1 now routes to the configured alternate maintainer provider when available, while monitor events and repair prompts record primary/attempted provider metadata. Live fault-injection run `run-1780061191713-0` validated Pi primary → Kimi alternate routing and bounded budget exhaustion. `A2D_AUTOPILOT_REPAIR_PROVIDER` / `--repair-provider` now allows an explicit registered repair provider; DeepSeek probes validated routing but still failed to reach a gate-passing repair (`run-1780062413070-0` zero replacements; `run-1780062590484-0` timeout).
+- [x] Provider-diverse escalation for repair attempts. Repair attempt 1 now routes to the configured alternate maintainer provider when available, while monitor events and repair prompts record primary/attempted provider metadata. Live fault-injection run `run-1780061191713-0` validated Pi primary → Kimi alternate routing and bounded budget exhaustion. `A2D_AUTOPILOT_REPAIR_PROVIDER` / `--repair-provider` now allows an explicit registered repair provider; DeepSeek probes validated routing. After prompt tightening, run `run-1780125199376-0` validated a DeepSeek repair output through path gate, temp `cargo test`, real-tree `cargo test`, and commit.
 - [x] Refresh `project_state` after each committed iteration so `--iterations N` does not select from stale handoff/todo/git status.
 - [x] Improve task selection/completion detection so autopilot does not keep selecting already-satisfied checkbox todos.
 
@@ -67,6 +68,8 @@ Provider-diverse repair should be a bounded extension of the repair loop, not a 
 ## Live validation notes
 
 2026-05-29: Added explicit repair-path fault injection (`A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure`) and ran `cargo run -q -p a2d -- autopilot --iterations 1 --repair-attempts 1`. Attempt 0 invoked `pi/default`, fault injection forced a parse failure, repair attempt 1 escalated to `opencode/kimi-for-coding/k2p6`, and the bounded repair budget exhausted after Kimi timed out at 90s. Monitor run: `.a2d/autopilot/runs/run-1780061191713-0/`; console log: `/tmp/a2d-autopilot-repair-diversity-20260529132612.log`. Added configurable repair provider support and probed DeepSeek: `run-1780062413070-0` proved configured routing and path-gate rejection of zero replacements; `run-1780062590484-0` proved configured routing after parse-failure injection but DeepSeek timed out. Learning: `docs/solutions/runtime-bugs/autopilot-repair-diversity-live-validation-2026-05-29.md`.
+
+2026-05-30: Tightened maintainer/repair prompts to explicitly forbid empty `replacements` and require markdown tasks to update an approved markdown file. Reran the configured DeepSeek fault-injection probe; `run-1780125199376-0` reached the full repair path and committed `ab43b71` after path gate, temp `cargo test`, and real-tree `cargo test`. Follow-up: generated todo text referenced non-existent source files before correction, so semantic project-reference validation is still needed.
 
 ## Notes
 

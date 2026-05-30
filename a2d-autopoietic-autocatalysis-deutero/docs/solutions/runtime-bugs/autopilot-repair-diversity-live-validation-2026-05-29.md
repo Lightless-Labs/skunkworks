@@ -120,3 +120,39 @@ Live probes with `opencode/opencode/deepseek-v4-flash-free` as the configured re
 2. `run-1780062590484-0` (`A2D_PROVIDER_TIMEOUT_SECS=300`): primary `pi/default` returned, fault injection forced parse failure, repair attempt 1 used DeepSeek, and DeepSeek timed out after 300s.
 
 So configurability is implemented and live-observed, but a successful alternate-provider repair that passes path/temp/real-tree gates remains unproven. The remaining bottleneck is provider reliability/latency and repair prompt quality, not inability to route to a chosen repair provider.
+
+## Addendum: prompt tightening produced a gate-passing alternate repair
+
+The zero-replacement failure became a prompt/gate-contract finding: repair prompts said to return a `ProjectPatchset`, but did not explicitly warn that empty `replacements` fail the path gate. The maintainer and repair prompts now state that `replacements` must be non-empty, and docs/todo/plan work should update the selected markdown file or another approved markdown file with complete content. Unit coverage asserts both initial and repair prompts forbid empty replacements.
+
+Validation:
+
+```text
+cargo test
+34 CLI tests + 134 core tests + 11 bootstrap + 7 provider + 1 doctest = 187 passing, 2 ignored
+```
+
+Live success:
+
+```bash
+A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure \
+A2D_AUTOPILOT_REPAIR_PROVIDER=opencode/opencode/deepseek-v4-flash-free \
+A2D_PROVIDER_TIMEOUT_SECS=180 \
+cargo run -q -p a2d -- autopilot --iterations 1 --repair-attempts 1
+```
+
+Run: `.a2d/autopilot/runs/run-1780125199376-0/`  
+Console log: `/tmp/a2d-autopilot-repair-deepseek-tightprompt-20260530071316.log`
+
+Observed path:
+
+```text
+pi/default attempt 0 → fault-injected parse failure
+DeepSeek repair attempt 1 → typed patchset with 1 replacement
+path gate accepted
+temp-worktree cargo test accepted
+real-tree cargo test accepted
+local commit ab43b71
+```
+
+This validates the full mechanical repair path through alternate-provider output and both validation gates. Follow-up: the generated todo update named non-existent implementation files; a human/assistant correction fixed those paths to `crates/a2d-core/src/metabolism.rs` and `crates/a2d-core/src/provider.rs`. This exposes the next quality gate: successful mechanical validation is not the same as semantic accuracy of planning/documentation claims.
