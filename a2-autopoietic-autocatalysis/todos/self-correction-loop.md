@@ -27,6 +27,7 @@ Current facts:
 - WorktreeCatalyst now sets `PWD` to the candidate worktree for all provider subprocesses so environment-based path resolution matches `current_dir`.
 - Post-PWD Pi/ZAI GLM N=3 on `compound-raf-same-crate-hidden` on 2026-05-30 resolved 3/3 runs; pass@1 2/3; loop exercised 1/3; self-corrected 1/3. All verifier-success attempts had `touched_file_count=1` and populated +2/-2 patch stats; empty verifier-success patch stats were 0/3 runs. Result: `/tmp/a2-raf-same-crate-pi-zai-glm-post-pwd-20260530T075028Z.jsonl`.
 - `compound-eval-same-crate-hidden` was added 2026-05-30 to add same-crate loop diversity in `a2_eval`. It injects visible failing-test scoring and hidden token-budget scoring regressions in `crates/a2_eval/src/seed.rs`; smoke-only injection verified both failures. Result: `/tmp/a2-eval-fixture-smoke.jsonl`.
+- `compound-eval-same-crate-hidden` with Minimax on 2026-05-30 resolved 0/3 runs; pass@1 0/3; loop exercised 3/3; self-corrected 0/3. Each run exhausted three attempts and still failed both verifier tests. Result: `/tmp/a2-eval-same-crate-minimax-20260530T080351Z.jsonl`.
 
 See `todos/self-correction-loop-recovery.md` for the structural recovery sequence.
 
@@ -53,7 +54,8 @@ See `todos/self-correction-loop-recovery.md` for the structural recovery sequenc
 - [x] Align provider subprocess `PWD` with candidate worktree. Completed 2026-05-30; WorktreeCatalyst sets `PWD` for Claude, Codex, Gemini, OpenCode, and Pi subprocesses in addition to `current_dir`.
 - [x] Run N≥3 post-PWD confirmation that verifier-success attempts keep populated patch stats. Completed 2026-05-30 with Pi/ZAI GLM `compound-raf-same-crate-hidden`: resolved 3/3, pass@1 2/3, loop exercised 1/3, self-corrected 1/3. All verifier-success attempts had `touched_file_count=1` and populated +2/-2 patch stats. Result: `/tmp/a2-raf-same-crate-pi-zai-glm-post-pwd-20260530T075028Z.jsonl`.
 - [x] Add an Eval same-crate fixture after RAF same-crate coverage. Completed 2026-05-30 with `compound-eval-same-crate-hidden`; smoke-only injection verified the visible and hidden failures. Result: `/tmp/a2-eval-fixture-smoke.jsonl`.
-- [ ] Run `compound-eval-same-crate-hidden` N≥3 with an available non-Claude provider and score the JSONL result.
+- [x] Run `compound-eval-same-crate-hidden` N≥3 with an available non-Claude provider and score the JSONL result. Completed 2026-05-30 with Minimax: resolved 0/3, pass@1 0/3, loop exercised 3/3, self-corrected 0/3. Result: `/tmp/a2-eval-same-crate-minimax-20260530T080351Z.jsonl`.
+- [ ] Run `compound-eval-same-crate-hidden` N≥3 with Kimi and Pi/ZAI GLM after Minimax 0/3.
 - [x] Run `compound-archive-hidden` N≥3 with Minimax and Kimi after smoke-only injection success. Completed 2026-05-22; both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 - [x] Refresh stale `Cargo.lock` observed by sentinel during Pi/ZAI validation. Completed 2026-05-22 with `cargo generate-lockfile --offline`; sentinel then passed 6/6.
 - [x] Add a second hard fixture after `compound-hidden` self-corrects at least once. Completed 2026-05-18 with `compound-membrane-hidden`; after hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-21 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.

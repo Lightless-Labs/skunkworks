@@ -34,11 +34,12 @@ Working:
 - WorktreeCatalyst now sets `PWD` to the candidate worktree for all provider subprocesses so environment-based path resolution matches `current_dir`.
 - Post-PWD Pi/ZAI GLM N=3 on `compound-raf-same-crate-hidden` on 2026-05-30 resolved 3/3 runs; pass@1 2/3; loop exercised 1/3; self-corrected 1/3. All verifier-success attempts had `touched_file_count=1` and populated +2/-2 patch stats; empty verifier-success patch stats were 0/3 runs. Result: `/tmp/a2-raf-same-crate-pi-zai-glm-post-pwd-20260530T075028Z.jsonl`.
 - `compound-eval-same-crate-hidden` was added 2026-05-30 to add same-crate loop diversity in `a2_eval`. It injects visible failing-test scoring and hidden token-budget scoring regressions in `crates/a2_eval/src/seed.rs`; smoke-only injection verified both failures. Result: `/tmp/a2-eval-fixture-smoke.jsonl`.
+- `compound-eval-same-crate-hidden` with Minimax on 2026-05-30 resolved 0/3 runs; pass@1 0/3; loop exercised 3/3; self-corrected 0/3. Each run exhausted three attempts and still failed both verifier tests. Result: `/tmp/a2-eval-same-crate-minimax-20260530T080351Z.jsonl`.
 - Sentinel passed 6/6 after refreshing stale `Cargo.lock` with `cargo generate-lockfile --offline` during Pi/ZAI validation.
 
 Not working / not yet resolved:
 
-- `compound-eval-same-crate-hidden` has not yet been run N≥3 with real providers.
+- `compound-eval-same-crate-hidden` has not yet been run N≥3 with Kimi or Pi/ZAI GLM.
 
 ## Recovery sequence
 
@@ -50,7 +51,7 @@ Implemented in order:
 4. `todos/anti-repeat-retry-strategy.md`
 5. `todos/worktree-task-verifier.md`
 
-Remaining recovery work is fixture expansion, provider validation for newer fixtures, and additional ablation coverage rather than missing core plumbing. As of 2026-05-24, Minimax, Kimi, and Pi/ZAI GLM each have N=3 self-correction results on the three original compound fixtures after hidden candidate-worktree verifier wiring. On `compound-sensorium-same-crate-hidden`, Pi/ZAI GLM and Minimax self-corrected 3/3; Kimi resolved 3/3 with self-correction 2/3 because one run passed on attempt 1. Two Minimax anti-repeat ablation cohorts completed 2026-05-28: `compound-hidden` and `compound-sensorium-same-crate-hidden` both had enabled and disabled cohorts resolve/self-correct 3/3. `compound-raf-same-crate-hidden` was smoke-verified on 2026-05-29; Minimax resolved 3/3 with pass@1 1/3 and self-corrected 2/3; Kimi resolved 3/3 with pass@1 3/3. Pi/ZAI GLM post-PWD on RAF resolved 3/3 with pass@1 2/3 and self-corrected 1/3; all verifier-success attempts had populated patch stats. `compound-eval-same-crate-hidden` was smoke-verified on 2026-05-30 and still needs N≥3 provider runs.
+Remaining recovery work is fixture expansion, provider validation for newer fixtures, and additional ablation coverage rather than missing core plumbing. As of 2026-05-24, Minimax, Kimi, and Pi/ZAI GLM each have N=3 self-correction results on the three original compound fixtures after hidden candidate-worktree verifier wiring. On `compound-sensorium-same-crate-hidden`, Pi/ZAI GLM and Minimax self-corrected 3/3; Kimi resolved 3/3 with self-correction 2/3 because one run passed on attempt 1. Two Minimax anti-repeat ablation cohorts completed 2026-05-28: `compound-hidden` and `compound-sensorium-same-crate-hidden` both had enabled and disabled cohorts resolve/self-correct 3/3. `compound-raf-same-crate-hidden` was smoke-verified on 2026-05-29; Minimax resolved 3/3 with pass@1 1/3 and self-corrected 2/3; Kimi resolved 3/3 with pass@1 3/3. Pi/ZAI GLM post-PWD on RAF resolved 3/3 with pass@1 2/3 and self-corrected 1/3; all verifier-success attempts had populated patch stats. `compound-eval-same-crate-hidden` was smoke-verified on 2026-05-30; Minimax resolved 0/3 and Kimi/Pi-ZAI GLM still need N≥3 provider runs.
 
 ## Benchmark gate
 
