@@ -99,6 +99,38 @@ EVAL_TESTS_BUG_OLD = "results.failed == 0"
 EVAL_TESTS_BUG_NEW = "results.passed > 0"
 EVAL_BUDGET_BUG_OLD = "total <= self.token_ceiling"
 EVAL_BUDGET_BUG_NEW = "total >= self.token_ceiling"
+BROKER_TASK_ID = "self-correction-compound-broker-same-crate-hidden-regressions"
+BROKER_DESCRIPTION = """\
+The workspace contains a regression. `cargo test -p a2_broker test_parse_gemini_usage_from_flat_stats` fails.
+Diagnose the root cause and fix the implementation. Do not assume the failing
+test name is the only broken behavior; inspect the code and make the minimal
+change that restores the test. Run `cargo test -p a2_broker test_parse_gemini_usage_from_flat_stats` before
+finishing.
+"""
+BROKER_GEMINI_OUTPUT_BUG_OLD = """\
+    let tokens_out = stats
+        .get("output_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+"""
+BROKER_GEMINI_OUTPUT_BUG_NEW = """\
+    let tokens_out = stats
+        .get("input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+"""
+BROKER_PI_CACHE_BUG_OLD = """\
+                + usage
+                    .get("cacheWrite")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+"""
+BROKER_PI_CACHE_BUG_NEW = """\
+                + usage
+                    .get("cache_write")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+"""
 FNV_OFFSET_128 = 0x6C62_272E_07BB_0142_62B8_2175_6295_C58D
 FNV_PRIME_128 = 0x0000_0000_0100_0000_0000_0000_0000_013B
 
@@ -262,6 +294,28 @@ FIXTURES: dict[str, Fixture] = {
                 "crates/a2_eval/src/seed.rs",
                 EVAL_BUDGET_BUG_OLD,
                 EVAL_BUDGET_BUG_NEW,
+            ),
+        ),
+    ),
+    "compound-broker-same-crate-hidden": Fixture(
+        name="compound-broker-same-crate-hidden",
+        task_id=BROKER_TASK_ID,
+        description=BROKER_DESCRIPTION,
+        verify_command=(
+            "cargo test -p a2_broker test_parse_gemini_usage_from_flat_stats; gemini=$?; "
+            "cargo test -p a2_broker test_parse_pi_jsonl_extracts_final_text_and_usage; pi=$?; "
+            "test $gemini -eq 0 -a $pi -eq 0"
+        ),
+        replacements=(
+            Replacement(
+                "crates/a2_broker/src/broker.rs",
+                BROKER_GEMINI_OUTPUT_BUG_OLD,
+                BROKER_GEMINI_OUTPUT_BUG_NEW,
+            ),
+            Replacement(
+                "crates/a2_broker/src/broker.rs",
+                BROKER_PI_CACHE_BUG_OLD,
+                BROKER_PI_CACHE_BUG_NEW,
             ),
         ),
     ),
@@ -745,6 +799,16 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(
             [replacement.path for replacement in fixture.replacements],
             ["crates/a2_eval/src/seed.rs", "crates/a2_eval/src/seed.rs"],
+        )
+
+    def test_compound_broker_fixture_is_same_crate_multi_bug(self) -> None:
+        fixture = FIXTURES["compound-broker-same-crate-hidden"]
+        self.assertEqual(fixture.task_id, BROKER_TASK_ID)
+        self.assertIn("test_parse_gemini_usage_from_flat_stats", fixture.verify_command)
+        self.assertIn("test_parse_pi_jsonl_extracts_final_text_and_usage", fixture.verify_command)
+        self.assertEqual(
+            [replacement.path for replacement in fixture.replacements],
+            ["crates/a2_broker/src/broker.rs", "crates/a2_broker/src/broker.rs"],
         )
 
     def test_result_record_reports_prior_lineage(self) -> None:
