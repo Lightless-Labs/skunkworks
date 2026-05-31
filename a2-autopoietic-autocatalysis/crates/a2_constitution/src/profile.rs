@@ -125,3 +125,46 @@ impl BootstrapProfile {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use a2_core::protocol::Budget;
+
+    fn test_hard_shell() -> HardShell {
+        HardShell {
+            root_of_trust_hash: "root".to_string(),
+            constitutional_spec_hash: "constitution".to_string(),
+            frozen_sentinel_hash: "sentinel".to_string(),
+            max_budget: Budget {
+                max_tokens: 1_000,
+                max_duration_secs: 60,
+                max_calls: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn b1_does_not_require_human_review() {
+        assert!(BootstrapProfile::B0.human_review_required());
+        assert!(!BootstrapProfile::B1.human_review_required());
+        assert!(!BootstrapProfile::B2.human_review_required());
+    }
+
+    #[test]
+    fn b2_network_allowlist_is_quarantine_and_lineage_only() {
+        let policy = BootstrapProfile::B2.boundary_policy(test_hard_shell());
+
+        let NetworkPolicy::AllowList(endpoints) = policy.soft_membrane.network_policy else {
+            panic!("B2 should use an explicit network allowlist");
+        };
+
+        assert_eq!(
+            endpoints,
+            vec![
+                "quarantine://sensorium".to_string(),
+                "lineage://archive".to_string(),
+            ]
+        );
+    }
+}

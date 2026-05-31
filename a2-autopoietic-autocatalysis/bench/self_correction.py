@@ -131,6 +131,18 @@ BROKER_PI_CACHE_BUG_NEW = """\
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
 """
+CONSTITUTION_TASK_ID = "self-correction-compound-constitution-same-crate-hidden-regressions"
+CONSTITUTION_DESCRIPTION = """\
+The workspace contains a regression. `cargo test -p a2_constitution b1_does_not_require_human_review` fails.
+Diagnose the root cause and fix the implementation. Do not assume the failing
+test name is the only broken behavior; inspect the code and make the minimal
+change that restores the test. Run `cargo test -p a2_constitution b1_does_not_require_human_review` before
+finishing.
+"""
+CONSTITUTION_HUMAN_REVIEW_BUG_OLD = "matches!(self, Self::B0)"
+CONSTITUTION_HUMAN_REVIEW_BUG_NEW = "matches!(self, Self::B0 | Self::B1)"
+CONSTITUTION_NETWORK_BUG_OLD = '"lineage://archive".to_string(),'
+CONSTITUTION_NETWORK_BUG_NEW = '"production://write".to_string(),'
 FNV_OFFSET_128 = 0x6C62_272E_07BB_0142_62B8_2175_6295_C58D
 FNV_PRIME_128 = 0x0000_0000_0100_0000_0000_0000_0000_013B
 
@@ -316,6 +328,28 @@ FIXTURES: dict[str, Fixture] = {
                 "crates/a2_broker/src/broker.rs",
                 BROKER_PI_CACHE_BUG_OLD,
                 BROKER_PI_CACHE_BUG_NEW,
+            ),
+        ),
+    ),
+    "compound-constitution-same-crate-hidden": Fixture(
+        name="compound-constitution-same-crate-hidden",
+        task_id=CONSTITUTION_TASK_ID,
+        description=CONSTITUTION_DESCRIPTION,
+        verify_command=(
+            "cargo test -p a2_constitution b1_does_not_require_human_review; human=$?; "
+            "cargo test -p a2_constitution b2_network_allowlist_is_quarantine_and_lineage_only; network=$?; "
+            "test $human -eq 0 -a $network -eq 0"
+        ),
+        replacements=(
+            Replacement(
+                "crates/a2_constitution/src/profile.rs",
+                CONSTITUTION_HUMAN_REVIEW_BUG_OLD,
+                CONSTITUTION_HUMAN_REVIEW_BUG_NEW,
+            ),
+            Replacement(
+                "crates/a2_constitution/src/profile.rs",
+                CONSTITUTION_NETWORK_BUG_OLD,
+                CONSTITUTION_NETWORK_BUG_NEW,
             ),
         ),
     ),
@@ -809,6 +843,16 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(
             [replacement.path for replacement in fixture.replacements],
             ["crates/a2_broker/src/broker.rs", "crates/a2_broker/src/broker.rs"],
+        )
+
+    def test_compound_constitution_fixture_is_same_crate_multi_bug(self) -> None:
+        fixture = FIXTURES["compound-constitution-same-crate-hidden"]
+        self.assertEqual(fixture.task_id, CONSTITUTION_TASK_ID)
+        self.assertIn("b1_does_not_require_human_review", fixture.verify_command)
+        self.assertIn("b2_network_allowlist_is_quarantine_and_lineage_only", fixture.verify_command)
+        self.assertEqual(
+            [replacement.path for replacement in fixture.replacements],
+            ["crates/a2_constitution/src/profile.rs", "crates/a2_constitution/src/profile.rs"],
         )
 
     def test_result_record_reports_prior_lineage(self) -> None:
