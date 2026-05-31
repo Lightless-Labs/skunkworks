@@ -4,6 +4,7 @@
 **Completed:** 2026-04-28
 **Verified:** 2026-04-28 — `--self-test`, `--smoke-only`, Minimax N=3 real-provider run, and one Kimi smoke.
 **Addendum:** 2026-04-28 — `compound-hidden` exercises prior lineage but did not self-correct; next work is loop recovery, not harness creation.
+**Addendum:** 2026-05-31 — Added `compound-constitution-same-crate-hidden` to extend same-crate fixture diversity into bootstrap-profile behavior; smoke-only injection verified both failures and Minimax N=3 resolved 3/3 with pass@1 2/3 and self-corrected 1/3.
 
 ## Goal
 
@@ -79,6 +80,7 @@ Conclusion: the harness now distinguishes three cases: easy pass@1, loop exercis
 - [x] Add attempt diff/touched-file summaries to self-correction JSONL records. Completed 2026-05-01.
 - [x] Re-run `compound-hidden` N≥3 after motif/run-path changes. Completed 2026-05-21 after candidate-worktree verifier wiring.
 - [x] Add a second hard fixture once at least one provider self-corrects `compound-hidden`. Completed 2026-05-18 with `compound-membrane-hidden`.
+- [x] Add additional same-crate fixture diversity beyond Sensorium/RAF/Eval/Broker. Completed 2026-05-31 with `compound-constitution-same-crate-hidden`.
 
 ## Implementation Steps
 
