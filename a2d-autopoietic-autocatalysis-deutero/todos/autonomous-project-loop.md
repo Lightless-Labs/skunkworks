@@ -11,6 +11,7 @@
 **Enhanced:** 2026-05-26 — provider-diverse repair, state refresh, and completed-task filtering implemented
 **Enhanced:** 2026-05-29 — repair-path fault injection added and live Pi → alternate-provider escalation validated; alternate repair provider is configurable
 **Enhanced:** 2026-05-30 — tightened repair prompts and live-validated a DeepSeek alternate repair through path/temp/real-tree gates
+**Enhanced:** 2026-05-31 — semantic project-reference validation added for autopilot markdown outputs
 **Plan:** `docs/plans/autonomous-project-loop.md`
 
 ## Context
@@ -33,6 +34,7 @@ The inner challenge metabolism is bounded and self-adaptive, but no command owns
 - [x] Patchsets are path-gated and validated in a temp worktree before real application.
 - [x] Source/mechanism self-modifications go through self-sandbox/cargo-test gates. Path gate identifies eligible source self-modification, temp validation requires the source target to exist, and `cargo test` is injected when needed.
 - [x] Docs/todos/plans changes are limited to approved markdown paths.
+- [x] Markdown replacements and `handoff_update` are semantically checked for repo path references during temp-worktree validation, so invented `crates/...`, `docs/...`, `todos/...`, `examples/...`, and `research/...` paths fail before real-tree apply/commit.
 - [x] Failed validation creates a typed `project_validation_report` and routes to a bounded repair/escalation loop instead of immediately waiting for a human. Parse, path, temp-validation, real-apply, and provider invocation failures now route to bounded repair attempts.
 - [x] Protected-file changes are rejected as hard safety stops; eligible source self-modifications are not.
 - [x] Passing non-dry-run iterations apply changes, rerun gates, update handoff, and make an atomic local git commit.
@@ -70,6 +72,8 @@ Provider-diverse repair should be a bounded extension of the repair loop, not a 
 2026-05-29: Added explicit repair-path fault injection (`A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure`) and ran `cargo run -q -p a2d -- autopilot --iterations 1 --repair-attempts 1`. Attempt 0 invoked `pi/default`, fault injection forced a parse failure, repair attempt 1 escalated to `opencode/kimi-for-coding/k2p6`, and the bounded repair budget exhausted after Kimi timed out at 90s. Monitor run: `.a2d/autopilot/runs/run-1780061191713-0/`; console log: `/tmp/a2d-autopilot-repair-diversity-20260529132612.log`. Added configurable repair provider support and probed DeepSeek: `run-1780062413070-0` proved configured routing and path-gate rejection of zero replacements; `run-1780062590484-0` proved configured routing after parse-failure injection but DeepSeek timed out. Learning: `docs/solutions/runtime-bugs/autopilot-repair-diversity-live-validation-2026-05-29.md`.
 
 2026-05-30: Tightened maintainer/repair prompts to explicitly forbid empty `replacements` and require markdown tasks to update an approved markdown file. Reran the configured DeepSeek fault-injection probe; `run-1780125199376-0` reached the full repair path and committed `ab43b71` after path gate, temp `cargo test`, and real-tree `cargo test`. Follow-up: generated todo text referenced non-existent source files before correction, so semantic project-reference validation is still needed.
+
+2026-05-31: Added semantic project-reference validation to the autopilot temp-worktree gate. Markdown replacements and `handoff_update` now fail validation if they reference repo paths that do not exist after patch application; maintainer/repair prompts warn providers not to invent repo paths. Unit coverage includes the previous failure shape (`metabolism_workcell.rs`, `provider_registry.rs`) and an accepted case for existing paths with anchors/line suffixes.
 
 ## Notes
 

@@ -1394,6 +1394,7 @@ fn maintainer_system_prompt() -> String {
      replacements must be complete file contents. Source self-modification is allowed for eligible mechanism files; protected files are not.\n\
      The path gate rejects empty patchsets: replacements MUST contain at least one file replacement.\n\
      For docs/todo/plan tasks, update the selected markdown file or a directly relevant markdown file with a small concrete improvement.\n\
+     Markdown replacements are semantically gated: any referenced repo path such as crates/... or docs/... must exist after the patch.\n\
      Prefer one small atomic change that advances the selected project_task."
         .to_string()
 }
@@ -1439,7 +1440,8 @@ fn build_maintainer_prompt(state: &ProjectState, task: &ProjectTask) -> String {
          Return exactly one JSON object matching:\n\
          {{\"commit_message\":\"Autopilot: ...\",\"validation_commands\":[\"cargo test\"],\"handoff_update\":\"...\",\"replacements\":[{{\"path\":\"relative/path\",\"new_content\":\"complete file content\"}}]}}\n\
          The replacements array MUST NOT be empty. The path gate rejects replacements: [].\n\
-         If the task is documentation/todo/plan work, replace source_path or another approved markdown file with complete updated content.",
+         If the task is documentation/todo/plan work, replace source_path or another approved markdown file with complete updated content.\n\
+         Do not claim repo paths that are absent: markdown replacements and handoff_update fail validation when referenced crates/..., docs/..., todos/..., examples/..., or research/... paths do not exist after the patch.",
         state.git_status,
         state.a2d_status,
         state.handoff_preview,
@@ -1474,6 +1476,7 @@ fn build_repair_prompt(
          - Do not return replacements: []. Empty patchsets fail the path gate.\n\
          - Include at least one complete file replacement that directly advances the original task.\n\
          - For markdown/todo/plan tasks, update source_path or another approved markdown file using complete file content from ORIGINAL_TASK_AND_CONTEXT.\n\
+         - Do not invent repo paths. Markdown replacements and handoff_update fail validation when referenced crates/..., docs/..., todos/..., examples/..., or research/... paths do not exist after the patch.\n\
          - Preserve the same typed ProjectPatchset contract; do not return shell commands or prose outside JSON.\n\n\
          OUTPUT CONTRACT\n\
          Return exactly one JSON object matching:\n\
@@ -1592,6 +1595,11 @@ fn validate_project_patchset_in_temp_worktree(
         }
     }
 
+    errors.extend(validate_patchset_markdown_references(
+        &worktree_path,
+        patchset,
+    ));
+
     for command in rejected_validation_commands(patchset) {
         errors.push(format!(
             "validation command is not in the allowlist: {command}"
@@ -1620,6 +1628,160 @@ fn validate_project_patchset_in_temp_worktree(
         command_results,
         worktree_path,
     }
+}
+
+fn validate_patchset_markdown_references(root: &Path, patchset: &ProjectPatchset) -> Vec<String> {
+    let mut errors = Vec::new();
+    for replacement in &patchset.replacements {
+        let path = replacement.path.replace('\\', "/");
+        if is_markdown_path(&path) {
+            errors.extend(validate_markdown_project_references(
+                root,
+                &path,
+                &replacement.new_content,
+            ));
+        }
+    }
+
+    if !patchset.handoff_update.trim().is_empty() {
+        errors.extend(validate_markdown_project_references(
+            root,
+            "handoff_update",
+            &patchset.handoff_update,
+        ));
+    }
+
+    errors
+}
+
+fn validate_markdown_project_references(root: &Path, source: &str, text: &str) -> Vec<String> {
+    markdown_project_reference_candidates(text)
+        .into_iter()
+        .filter_map(|reference| {
+            if path_is_unsafe(&reference) {
+                return Some(format!(
+                    "{source}: referenced repo path is unsafe: {reference}"
+                ));
+            }
+            if root.join(&reference).exists() {
+                None
+            } else {
+                Some(format!(
+                    "{source}: referenced repo path does not exist: {reference}"
+                ))
+            }
+        })
+        .collect()
+}
+
+fn markdown_project_reference_candidates(text: &str) -> Vec<String> {
+    let mut candidates = BTreeSet::new();
+    let mut token = String::new();
+
+    for ch in text.chars() {
+        if ch.is_whitespace()
+            || matches!(
+                ch,
+                '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '<' | '>' | ','
+            )
+        {
+            insert_markdown_reference_candidate(&mut candidates, &token);
+            token.clear();
+        } else {
+            token.push(ch);
+        }
+    }
+    insert_markdown_reference_candidate(&mut candidates, &token);
+
+    candidates.into_iter().collect()
+}
+
+fn insert_markdown_reference_candidate(candidates: &mut BTreeSet<String>, raw: &str) {
+    let Some(candidate) = normalize_markdown_reference_candidate(raw) else {
+        return;
+    };
+    if is_repo_path_reference(&candidate) {
+        candidates.insert(candidate);
+    }
+}
+
+fn normalize_markdown_reference_candidate(raw: &str) -> Option<String> {
+    let mut candidate = raw
+        .trim_matches(|ch: char| {
+            matches!(
+                ch,
+                '`' | '*'
+                    | '_'
+                    | '~'
+                    | '!'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '<'
+                    | '>'
+                    | '"'
+                    | '\''
+                    | ','
+                    | ';'
+                    | '.'
+            )
+        })
+        .to_string();
+
+    if candidate.is_empty()
+        || candidate.contains("://")
+        || candidate.contains(char::is_whitespace)
+        || candidate
+            .chars()
+            .any(|ch| matches!(ch, '*' | '?' | '[' | ']' | '{' | '}' | '$'))
+    {
+        return None;
+    }
+
+    if let Some((before_anchor, _)) = candidate.split_once('#') {
+        candidate = before_anchor.to_string();
+    }
+
+    if let Some((path, suffix)) = candidate.rsplit_once(':') {
+        if suffix.chars().all(|ch| ch.is_ascii_digit() || ch == '-')
+            && suffix.chars().any(|ch| ch.is_ascii_digit())
+        {
+            candidate = path.to_string();
+        }
+    }
+
+    candidate = candidate
+        .trim_end_matches(|ch: char| matches!(ch, ':' | ',' | ';' | '.'))
+        .to_string();
+
+    if candidate.is_empty() {
+        None
+    } else {
+        Some(candidate)
+    }
+}
+
+fn is_repo_path_reference(path: &str) -> bool {
+    path.starts_with("crates/")
+        || path.starts_with("docs/")
+        || path.starts_with("todos/")
+        || path.starts_with("examples/")
+        || path.starts_with("research/")
+        || matches!(
+            path,
+            "Cargo.toml"
+                | "Cargo.lock"
+                | "MODULE.bazel"
+                | "README.md"
+                | "AGENTS.md"
+                | "CLAUDE.md"
+                | "CONSTITUTION.md"
+        )
+}
+
+fn is_markdown_path(path: &str) -> bool {
+    path.ends_with(".md")
 }
 
 fn validation_commands_for_patchset(
@@ -3761,6 +3923,82 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(report.worktree_path.join("docs/plans/example.md")).unwrap(),
             "# New\n"
+        );
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(report.worktree_path);
+    }
+
+    #[test]
+    fn temp_worktree_validation_accepts_existing_markdown_repo_references() {
+        let root = std::env::temp_dir().join(format!(
+            "a2d-autopilot-doc-ref-validation-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("docs/plans")).unwrap();
+        std::fs::create_dir_all(root.join("crates/a2d-core/src")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(root.join("docs/plans/example.md"), "# Old\n").unwrap();
+        std::fs::write(root.join("crates/a2d-core/src/metabolism.rs"), "").unwrap();
+        let patchset = ProjectPatchset {
+            commit_message: "Autopilot: docs".to_string(),
+            validation_commands: Vec::new(),
+            handoff_update: "Validated docs/plans/example.md.".to_string(),
+            replacements: vec![ProjectFileReplacement {
+                path: "docs/plans/example.md".to_string(),
+                new_content: "# New\n\nSee `crates/a2d-core/src/metabolism.rs:42` and [this plan](docs/plans/example.md#validation).\n".to_string(),
+            }],
+        };
+        let gate = validate_project_patchset_paths(&patchset);
+
+        let report = validate_project_patchset_in_temp_worktree(&root, &patchset, &gate);
+
+        assert!(report.accepted, "{:?}", report.errors);
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(report.worktree_path);
+    }
+
+    #[test]
+    fn temp_worktree_validation_rejects_missing_markdown_repo_references() {
+        let root = std::env::temp_dir().join(format!(
+            "a2d-autopilot-missing-doc-ref-validation-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("docs/plans")).unwrap();
+        std::fs::create_dir_all(root.join("crates/a2d-core/src")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(root.join("docs/plans/example.md"), "# Old\n").unwrap();
+        std::fs::write(root.join("crates/a2d-core/src/metabolism.rs"), "").unwrap();
+        let patchset = ProjectPatchset {
+            commit_message: "Autopilot: docs".to_string(),
+            validation_commands: Vec::new(),
+            handoff_update: String::new(),
+            replacements: vec![ProjectFileReplacement {
+                path: "docs/plans/example.md".to_string(),
+                new_content: "# New\n\nNext touch `crates/a2d-core/src/metabolism_workcell.rs` before `crates/a2d-core/src/provider_registry.rs`.\n".to_string(),
+            }],
+        };
+        let gate = validate_project_patchset_paths(&patchset);
+
+        let report = validate_project_patchset_in_temp_worktree(&root, &patchset, &gate);
+
+        assert!(!report.accepted);
+        assert!(
+            report.errors.iter().any(|error| error.contains(
+                "referenced repo path does not exist: crates/a2d-core/src/metabolism_workcell.rs"
+            )),
+            "{:?}",
+            report.errors
+        );
+        assert!(
+            report.errors.iter().any(|error| error.contains(
+                "referenced repo path does not exist: crates/a2d-core/src/provider_registry.rs"
+            )),
+            "{:?}",
+            report.errors
         );
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(report.worktree_path);

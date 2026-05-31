@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-05-30 (session 20 — alternate-provider autopilot repair reached commit gate)
+**Last updated:** 2026-05-31 (session 21 — autopilot markdown repo-reference validation landed)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-231 commits. 187 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 34 compound learnings.
+252 commits. 189 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 35 compound learnings.
 
 ## Clean-session pickup
 
@@ -30,6 +30,7 @@
 - **Failed rung-2 consultation is bounded:** if consultation times out/fails, the workcell fails immediately instead of spending a second full provider timeout on the primary invocation.
 - **Timeouts are bounded but provider-specific:** GLM 5.1 now gets 900s by default; other CLI providers default to 300s; `A2D_PROVIDER_TIMEOUT_SECS` overrides.
 - **Autopilot autonomy hardening landed and repair-diversity is live-validated through commit:** repair attempt 1 escalates from Pi to the configured alternate maintainer provider when available, repair prompts and monitor events record provider topology/attempt metadata, project state refreshes after committed iterations, and checkbox-completed todos are skipped by task selection. An opt-in fault-injection harness (`A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure`) now forces a repairable parse failure for live validation. `A2D_AUTOPILOT_REPAIR_PROVIDER` / `--repair-provider` can target a specific registered repair provider. Run `run-1780125199376-0` validated Pi primary → fault-injected parse failure → DeepSeek repair output → path gate → temp `cargo test` → real-tree `cargo test` → local commit `ab43b71`.
+- **Autopilot markdown outputs now have repo-reference validation:** temp-worktree validation scans markdown replacements and `handoff_update` for repo-path claims (`crates/...`, `docs/...`, `todos/...`, `examples/...`, `research/...`, and root manifest/doc files), normalizes anchors/line suffixes, and rejects paths that do not exist after patch application. This catches the exact semantic gap from `run-1780125199376-0` before real-tree apply/commit.
 
 ### What is not working / unproven
 
@@ -39,17 +40,16 @@
 - **Compounding self-modification is unproven:** the only live architect patch in `sudoku 5` was irrelevant (`prime.rs`) and was reverted; relevance gate now prevents that class.
 - **Escalation rungs 4–6 are missing:** rungs 0–3 detect loops but do not reliably halt degradation.
 - **Benchmark coverage is narrow:** sudoku is validated; chess/rubiks need stronger acceptance tests and live runs.
-- **Autopilot semantic validation remains shallow:** alternate-provider repair can now pass mechanical gates and commit, but the successful DeepSeek patch included inaccurate source-file references that required correction. Mechanical path/temp/real gates are not sufficient to validate documentation/planning claims.
+- **Autopilot semantic validation is still partial:** markdown repo-path claims are now checked mechanically, but broader documentation/planning truth claims remain outside the gate. Mechanical path/temp/real gates plus repo-reference checks still do not validate causal correctness, performance claims, or design adequacy.
 - **Provider-policy usefulness remains unproven:** the runtime/durability safety path is live-validated, but no benchmark-useful provider-policy proposal has yet shown improved challenge outcomes.
 
 ### Best next moves
 
-1. **Add semantic/project-reference validation for autopilot docs/planning outputs:** the repair path can now commit, but accepted text referenced non-existent source files. Gate markdown replacements for referenced repo paths before commit, or add a validation report warning/failure when code-path claims do not exist.
-2. **Implement escalation rung 4 in the actual mechanism files:** use `crates/a2d-core/src/metabolism.rs` and `crates/a2d-core/src/provider.rs`; start with ephemeral provider override + mock tests, not durable provider-policy mutation.
-3. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
-4. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
-5. **Find a benchmark-useful provider-policy proposal path:** runtime proposal safety is validated, but the live 7-enzyme topology still has no default policy-management enzyme; add one only if bounded tests show it does not starve coder/feedback metabolism.
-6. **Expand acceptance tests**: chess castling/en-passant/checkmate/legal-move invariants; Rubiks scramble-solve roundtrip.
+1. **Implement escalation rung 4 in the actual mechanism files:** use `crates/a2d-core/src/metabolism.rs` and `crates/a2d-core/src/provider.rs`; start with ephemeral provider override + mock tests, not durable provider-policy mutation.
+2. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
+3. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
+4. **Find a benchmark-useful provider-policy proposal path:** runtime proposal safety is validated, but the live 7-enzyme topology still has no default policy-management enzyme; add one only if bounded tests show it does not starve coder/feedback metabolism.
+5. **Expand acceptance tests**: chess castling/en-passant/checkmate/legal-move invariants; Rubiks scramble-solve roundtrip.
 
 ### What works
 
@@ -73,6 +73,9 @@
 - **Provider-policy comparisons are now inspectable:** `a2d compare-provider-policy <challenge> <cycles> [policy-json|@path]` runs current and proposed policies with persistence disabled, prints policy deltas, and reports a gate decision.
 
 ### What happened this session
+
+- **Autopilot markdown repo-reference validation landed.** Temp-worktree validation now scans markdown replacements and `handoff_update` for repo-path references, normalizes anchors/line suffixes, and rejects invented or unsafe repo paths before real-tree apply/commit. Maintainer and repair prompts now warn that absent `crates/...`, `docs/...`, `todos/...`, `examples/...`, and `research/...` claims fail validation. Added unit coverage for the previous failure shape (`metabolism_workcell.rs`, `provider_registry.rs`) and an accepted existing-path case. Documented learning: `docs/solutions/runtime-bugs/autopilot-markdown-reference-validation-2026-05-31.md`.
+- **Validation:** initial pickup `cargo test` passed before changes (187 passing, 2 ignored). Post-change `cargo test` passes (189 passing, 2 ignored). `cargo run -q -p a2d -- autopilot --iterations 1 --dry-run` correctly stopped on dirty tree; `--dry-run --allow-dirty` built project state, selected `todos/escalation-rungs-4-6.md`, emitted monitor artifacts, and stopped before provider invocation.
 
 - **Autopilot repair prompt tightened against empty patchsets.** Maintainer and repair prompts now explicitly state that `replacements` must be non-empty, that empty patchsets fail the path gate, and that docs/todo/plan work should update the selected markdown file or another approved markdown file with complete content. Added unit coverage (`maintainer_prompt_forbids_empty_replacements`) and strengthened repair prompt assertions.
 - **Alternate-provider repair path reached commit gate.** Ran `A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure A2D_AUTOPILOT_REPAIR_PROVIDER=opencode/opencode/deepseek-v4-flash-free A2D_PROVIDER_TIMEOUT_SECS=180 cargo run -q -p a2d -- autopilot --iterations 1 --repair-attempts 1`. Attempt 0 invoked `pi/default`, fault injection forced parse failure, repair attempt 1 used DeepSeek, returned a typed patchset with one replacement, passed path gate, passed temp `cargo test`, passed real-tree `cargo test`, and committed `ab43b71`. Monitor run: `.a2d/autopilot/runs/run-1780125199376-0/`; console log: `/tmp/a2d-autopilot-repair-deepseek-tightprompt-20260530071316.log`.
@@ -219,13 +222,13 @@ Gemini is temporarily disabled from the default live registry due repeated capac
 
 ## Critical Path — What to Do Next
 
-### 1. Make topology comparisons diagnosable enough to act on
+### 1. Implement rungs 4–6: model swap → multi-model consensus → Darwinian isolation
 
-The latest bounded comparison reports total failures but not which non-coder enzyme/provider failed unless `A2D_TRACE=1` is enabled. Add per-lineage failure details to `compare-topologies`, then rerun a bounded seed-vs-evolved comparison. The key question is now whether evolved topology overhead (lineage-added decomposition enzymes and extra feedback invocations) helps outcomes or just burns provider windows.
+Rungs 0–3 detect degradation but don't halt it. Start rung 4 in `crates/a2d-core/src/metabolism.rs` and `crates/a2d-core/src/provider.rs` with an ephemeral provider override plus mock tests, not durable provider-policy mutation. The next live question is whether swapping the coder's provider at rung 4 produces different output. Refinery patterns belong in the metabolism, not as a crate dependency.
 
-### 2. Implement rungs 4–6: model swap → multi-model consensus → Darwinian isolation
+### 2. Address architect/tester provider latency
 
-Rungs 0–3 detect degradation but don't halt it. With the cycle cap in place (2026-04-19), benchmarks can now actually complete — next step is to observe whether swapping the coder's provider at rung 4 produces different output. Refinery patterns in the metabolism, not a crate dependency.
+Latest role-isolated runs still had GLM architect timeouts and tester fallback latency. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
 
 ### 3. Evaluate evolved 7-enzyme topology
 
@@ -293,7 +296,7 @@ a2d enzymes                   # List enzyme definitions (now includes architect)
 a2d lineage                   # Git log of germline evolution
 
 # Run tests
-cargo test                    # 183 tests passing (2 ignored integration)
+cargo test                    # 189 tests passing (2 ignored integration)
 cargo test -- --ignored       # Run integration tests (slow, compiles in temp dir)
 
 # Check OpenCode model IDs
@@ -311,7 +314,7 @@ Search `docs/solutions/` before implementing. Key findings:
 ## Todos
 
 - `todos/provider-policy-topology-gate.md` — completed; live runtime proposal was rejected durably without fitness evidence. Future work is a benchmark-useful provider-policy proposal path, not the safety gate itself.
-- `todos/autonomous-project-loop.md` — checkbox-complete for current slice; live repair-diversity routing validated with fault injection, but successful alternate-provider repair output still needs validation after repair provider selection improves
+- `todos/autonomous-project-loop.md` — checkbox-complete for current slice; live repair-diversity routing validated with fault injection, successful DeepSeek repair reached commit, and markdown repo-reference validation now catches invented source-file claims; broader semantic claim validation remains partial
 - `todos/bounded-live-benchmarks.md` — `sudoku 5` completed with 100% best fitness; remaining provider waste: GLM timeouts + architect no-materialized-output
 - `todos/escalation-rungs-4-6.md` — model swap → multi-model consensus → Darwinian isolation (rungs 0–3 live; provider_policy now available as durable provider-assignment mechanism)
 - `todos/architect-pyramid-summaries.md` — implemented; prompt-size validated; latency still bad due provider/scheduling

@@ -9,6 +9,7 @@
 **Enhanced:** 2026-05-26 — provider-diverse repair, state refresh, and completed-task filtering
 **Enhanced:** 2026-05-29 — repair-path fault injection added and live Pi → alternate-provider escalation validated; alternate repair provider is configurable
 **Enhanced:** 2026-05-30 — tightened repair prompts and live-validated a DeepSeek alternate repair through path/temp/real-tree gates
+**Enhanced:** 2026-05-31 — semantic project-reference validation added for autopilot markdown outputs
 
 ## Problem
 
@@ -71,6 +72,7 @@ Implemented first slice on 2026-05-24:
 - Every autopilot run emits structured JSONL events plus per-run artifacts under `.a2d/autopilot/` so an external monitor/steerer can evaluate both model outputs and mechanical outcomes.
 - Gated patchsets are copied into a temp worktree, replacements are applied there first, allowlisted validation commands can run there, source self-modification requires an existing source target and injects `cargo test` when needed, and the validation report is logged as JSON before any real-tree application.
 - Patchsets that pass temp validation are applied to the real tree, validation commands rerun, handoff updates are appended when needed, touched paths are committed locally, and failures roll back original file contents before stopping.
+- Markdown replacements and `handoff_update` are semantically checked in the temp worktree: repo path references must exist after the patch is applied, catching invented source-file claims before commit.
 - Failed parse, path-gate, temp-worktree validation, real-tree validation/apply, or provider invocation now routes to a bounded repair prompt with the original task/context, previous output, and mechanical failure report. Configure with `--repair-attempts N` or `A2D_AUTOPILOT_REPAIR_ATTEMPTS` (default 1).
 
 Implemented on 2026-05-26: provider-diverse repair escalation, multi-iteration state refresh after commits, and checkbox-based completed-task filtering for task selection.
@@ -79,7 +81,9 @@ Enhanced on 2026-05-29: added opt-in repair-path fault injection via `A2D_AUTOPI
 
 Enhanced on 2026-05-30: tightened maintainer/repair prompts to explicitly forbid empty `replacements` and require docs/todo/plan tasks to update an approved markdown file. Live run `run-1780125199376-0` validated the full alternate repair path: Pi attempt 0 fault-injected parse failure → DeepSeek repair output with one replacement → path gate → temp `cargo test` → real-tree `cargo test` → local commit `ab43b71`. Follow-up: mechanical gates accepted the patch, but the generated todo text referenced non-existent source files before correction; semantic claim validation remains a gap.
 
-Next slice: add semantic/project-reference validation for autopilot documentation/planning outputs, then implement escalation rung 4 in the actual mechanism files.
+Implemented on 2026-05-31: autopilot temp-worktree validation now scans markdown replacements and `handoff_update` for repo path references (`crates/...`, `docs/...`, `todos/...`, `examples/...`, `research/...`, and root manifest/docs files) and rejects patchsets when those references do not exist after the patch is applied to the temp worktree. Maintainer and repair prompts now warn providers not to invent repo paths. This closes the specific gap found after run `run-1780125199376-0`, where mechanically valid markdown referenced non-existent mechanism files.
+
+Next slice: implement escalation rung 4 in the actual mechanism files.
 
 ### Loop state artifacts
 
