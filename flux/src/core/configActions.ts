@@ -1,4 +1,4 @@
-import type { FluxConfig } from "./types.ts";
+import type { FluxConfig, FluxModelSpec } from "./types.ts";
 
 export interface ConfigActionResult {
 	ok: boolean;
@@ -48,6 +48,51 @@ export function setRandomFrequency(config: FluxConfig, field: string | undefined
 	if ((field === "minIntervalMs" || field === "afterEvents") && numeric < 0) return err(`${field} must be non-negative.`);
 	config.random[field as keyof FluxConfig["random"]] = numeric;
 	return ok(`Set Flux random.${field}=${numeric}`);
+}
+
+function parseKeyValueOptions(tokens: string[]): Record<string, string> {
+	const options: Record<string, string> = {};
+	for (const token of tokens) {
+		const index = token.indexOf("=");
+		if (index <= 0) continue;
+		options[token.slice(0, index)] = token.slice(index + 1);
+	}
+	return options;
+}
+
+export function upsertModel(config: FluxConfig, parts: string[]): ConfigActionResult {
+	const [name, provider, modelId, ...optionTokens] = parts;
+	if (!name || !provider || !modelId) {
+		return err(
+			"Usage: /flux config model <name> <openai-compatible|anthropic> <model-id> [apiKeyEnv=ENV] [baseUrl=URL] [maxTokens=N] [temperature=N]",
+		);
+	}
+	if (provider !== "openai-compatible" && provider !== "anthropic") {
+		return err("Provider must be openai-compatible or anthropic.");
+	}
+	const options = parseKeyValueOptions(optionTokens);
+	const existing = config.models.find((model) => model.name === name);
+	const next: FluxModelSpec = {
+		...(existing ?? {}),
+		name,
+		provider,
+		model: modelId,
+	};
+	if (options.apiKeyEnv !== undefined) next.apiKeyEnv = options.apiKeyEnv;
+	if (options.baseUrl !== undefined) next.baseUrl = options.baseUrl;
+	if (options.maxTokens !== undefined) {
+		const maxTokens = Number(options.maxTokens);
+		if (!Number.isInteger(maxTokens) || maxTokens <= 0) return err("maxTokens must be a positive integer.");
+		next.maxTokens = maxTokens;
+	}
+	if (options.temperature !== undefined) {
+		const temperature = Number(options.temperature);
+		if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) return err("temperature must be between 0 and 2.");
+		next.temperature = temperature;
+	}
+	if (existing) Object.assign(existing, next);
+	else config.models.push(next);
+	return ok(`${existing ? "Updated" : "Added"} Flux model ${name}: ${provider}/${modelId}`);
 }
 
 export function setModelPool(config: FluxConfig, poolName: string | undefined, rawModels: string | undefined): ConfigActionResult {

@@ -10,6 +10,7 @@ import {
 	setModelPool,
 	setPersistentRandomEnabled,
 	setRandomFrequency,
+	upsertModel,
 	validateFluxConfig,
 } from "../../core/configActions.ts";
 import { snapshotFromGenericPayload, textFromUnknown } from "../../core/context.ts";
@@ -317,7 +318,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 
 	pi.registerCommand("flux", {
 		description:
-			"Manage Flux: /flux status | on | off | random on|off | think [reason] | reload | config [status|init|edit|set|random|pool|models|prompts]",
+			"Manage Flux: /flux status | on | off | random on|off | think [reason] | reload | config [status|init|edit|set|random|model|pool|models|prompts]",
 		handler: async (args, ctx) => {
 			const parts = args.trim().split(/\s+/).filter(Boolean);
 			const command = parts[0] ?? "status";
@@ -422,6 +423,16 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 					ctx.ui.notify(`${result.message} in ${loaded.path}`, "info");
 					return;
 				}
+				if (subcommand === "model") {
+					const result = upsertModel(loaded.config, parts.slice(2));
+					if (!result.ok) {
+						ctx.ui.notify(result.message, "error");
+						return;
+					}
+					if (!persistLoadedConfig()) return;
+					ctx.ui.notify(`${result.message} in ${loaded.path}`, "info");
+					return;
+				}
 				if (subcommand === "pool") {
 					const result = setModelPool(loaded.config, parts[2], parts.slice(3).join(" "));
 					if (!result.ok) {
@@ -446,7 +457,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 					ctx.ui.notify(formatPromptProfiles(loaded.config), "info");
 					return;
 				}
-				ctx.ui.notify("Usage: /flux config status | init | edit | set enabled | random | pool | models | prompts", "info");
+				ctx.ui.notify("Usage: /flux config status | init | edit | set enabled | random | model | pool | models | prompts", "info");
 				return;
 			}
 			if (command === "on" || command === "off") {

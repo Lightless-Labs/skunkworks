@@ -65,6 +65,7 @@ Pi commands/tools:
 - `/flux config random probability 0.1` updates random frequency and persists it
 - `/flux config random minIntervalMs 300000`
 - `/flux config random afterEvents 3`
+- `/flux config model cheap-openai-compatible openai-compatible gpt-4.1-mini apiKeyEnv=OPENAI_API_KEY` adds or updates a model definition
 - `/flux config pool random cheap-openai-compatible,anthropic-haiku` assigns a model pool
 - `/flux config models` lists models and model pools
 - `/flux config prompts` lists prompt profile pools with styles

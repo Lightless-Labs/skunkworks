@@ -13,7 +13,7 @@ Useful next step: make common config operations safe and discoverable without re
 
 - [x] Add `/flux config set enabled true|false` or decide runtime-only `/flux on|off` is enough.
 - [x] Add `/flux config random on|off` if persistent random enable/disable should be separate from runtime `/flux random on|off`.
-- [ ] Add a command to add/update a model definition, or provide an interactive editor flow for model fields.
+- [x] Add a command to add/update a model definition, or provide an interactive editor flow for model fields.
 - [x] Add a command to assign a model pool: e.g. `/flux config pool random haiku,gpt-mini`.
 - [x] Add a command to list full prompt profile styles, not just names/weights.
 - [ ] Add a command or editor flow to add/update prompt profiles under a trigger kind/name.
@@ -27,4 +27,4 @@ The simplest acceptable path may be interactive Pi UI dialogs rather than dense 
 
 ## Progress
 
-2026-05-30: Added persistent `/flux config set enabled true|false`, `/flux config random on|off`, `/flux config pool <pool> <models>`, full prompt-style listing, config validation before command-written persistence, and explicit `0600` chmod after config writes. Model-definition and prompt-profile editing beyond the JSON editor remain open.
+2026-05-30: Added persistent `/flux config set enabled true|false`, `/flux config random on|off`, `/flux config model <name> <provider> <model-id> [key=value...]`, `/flux config pool <pool> <models>`, full prompt-style listing, config validation before command-written persistence, and explicit `0600` chmod after config writes. Prompt-profile editing beyond the JSON editor remains open.

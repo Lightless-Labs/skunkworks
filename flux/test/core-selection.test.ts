@@ -10,6 +10,7 @@ import {
 	setModelPool,
 	setPersistentRandomEnabled,
 	setRandomFrequency,
+	upsertModel,
 	validateFluxConfig,
 } from "../src/core/configActions.ts";
 import { formatSnapshotForPrompt } from "../src/core/context.ts";
@@ -202,12 +203,15 @@ test("config actions validate and mutate common slash-command settings", () => {
 	assert.equal(config.randomInjections, false);
 	assert.equal(setRandomFrequency(config, "probability", "0.25").ok, true);
 	assert.equal(config.random.probability, 0.25);
-	assert.equal(setModelPool(config, "random", "fast,careful").ok, true);
-	assert.deepEqual(config.modelPools.random, ["fast", "careful"]);
+	assert.equal(upsertModel(config, ["tiny", "openai-compatible", "gpt-mini", "apiKeyEnv=OPENAI_API_KEY", "maxTokens=123"]).ok, true);
+	assert.equal(config.models.find((spec) => spec.name === "tiny")?.maxTokens, 123);
+	assert.equal(setModelPool(config, "random", "fast,careful,tiny").ok, true);
+	assert.deepEqual(config.modelPools.random, ["fast", "careful", "tiny"]);
 	assert.equal(validateFluxConfig(config).ok, true);
 
 	assert.equal(setConfigEnabled(config, "maybe").ok, false);
 	assert.equal(setRandomFrequency(config, "probability", "2").ok, false);
+	assert.equal(upsertModel(config, ["bad", "unknown", "model"]).ok, false);
 	assert.equal(setModelPool(config, "manual", "missing").ok, false);
 });
 

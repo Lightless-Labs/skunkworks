@@ -105,6 +105,7 @@ Runtime Pi config commands:
 /flux config random probability 0.1
 /flux config random minIntervalMs 300000
 /flux config random afterEvents 3
+/flux config model model-a openai-compatible gpt-4.1-mini apiKeyEnv=OPENAI_API_KEY
 /flux config pool random model-a,model-b
 /flux config models
 /flux config prompts
@@ -155,13 +156,13 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 - Core selection/config/trigger/context logic now has automated coverage, but provider HTTP clients and host adapters still need focused tests.
 - Sidecar model calls support Anthropic and OpenAI-compatible chat completions only.
 - `thinkingEffort` is typed in config but not sent to providers yet.
-- Config command UX now covers persistent enable/random toggles, random frequency, model-pool assignment, and full prompt-style listing. Model-definition edits and prompt-profile edits beyond the full JSON editor are still not friendly.
+- Config command UX now covers persistent enable/random toggles, random frequency, add/update model definitions, model-pool assignment, and full prompt-style listing. Prompt-profile edits beyond the full JSON editor are still not friendly.
 
 ## Best Next Moves
 
 1. Finish live-testing the Pi extension in interactive TUI mode using Pi's host-native model path. See `todos/live-validate-pi-extension.md` and `todos/host-native-models.md`.
 2. Finish validating Claude Code / Codex hook contracts against current docs and live hook contexts. Fixture/output-shape tests are in place. See `todos/host-hook-contracts.md`.
-3. Continue `/flux config` UX for adding/removing model definitions and prompt profiles without hand-editing full JSON. See `todos/config-command-ux.md`.
+3. Continue `/flux config` UX for adding/removing prompt profiles without hand-editing full JSON. See `todos/config-command-ux.md`.
 
 ## Important Files
 
