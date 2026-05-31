@@ -94,11 +94,11 @@ async function callCodexCli(prompt: string, systemPrompt: string, cwd: string | 
 	const outputPath = join(tmp, "last-message.txt");
 	try {
 		const args = [
+			"--ask-for-approval",
+			"never",
 			"exec",
 			"--sandbox",
 			"read-only",
-			"--ask-for-approval",
-			"never",
 			"--ephemeral",
 			"--skip-git-repo-check",
 			"--output-last-message",
