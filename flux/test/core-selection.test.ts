@@ -11,6 +11,7 @@ import {
 	setPersistentRandomEnabled,
 	setRandomFrequency,
 	upsertModel,
+	upsertPromptProfile,
 	validateFluxConfig,
 } from "../src/core/configActions.ts";
 import { formatSnapshotForPrompt } from "../src/core/context.ts";
@@ -207,12 +208,15 @@ test("config actions validate and mutate common slash-command settings", () => {
 	assert.equal(config.models.find((spec) => spec.name === "tiny")?.maxTokens, 123);
 	assert.equal(setModelPool(config, "random", "fast,careful,tiny").ok, true);
 	assert.deepEqual(config.modelPools.random, ["fast", "careful", "tiny"]);
+	assert.equal(upsertPromptProfile(config, ["manual", "sharp-nudge", "2", "Ask", "one", "sharp", "question."]).ok, true);
+	assert.equal(config.promptProfiles.manual?.find((profile) => profile.name === "sharp-nudge")?.style, "Ask one sharp question.");
 	assert.equal(validateFluxConfig(config).ok, true);
 
 	assert.equal(setConfigEnabled(config, "maybe").ok, false);
 	assert.equal(setRandomFrequency(config, "probability", "2").ok, false);
 	assert.equal(upsertModel(config, ["bad", "unknown", "model"]).ok, false);
 	assert.equal(setModelPool(config, "manual", "missing").ok, false);
+	assert.equal(upsertPromptProfile(config, ["manual", "bad", "-1", "style"]).ok, false);
 });
 
 test("formatPromptProfiles includes profile styles, not only names", () => {

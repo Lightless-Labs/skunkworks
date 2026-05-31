@@ -67,6 +67,7 @@ Pi commands/tools:
 - `/flux config random afterEvents 3`
 - `/flux config model cheap-openai-compatible openai-compatible gpt-4.1-mini apiKeyEnv=OPENAI_API_KEY` adds or updates a model definition
 - `/flux config pool random cheap-openai-compatible,anthropic-haiku` assigns a model pool
+- `/flux config prompt manual sharper-question 1 Ask one sharp question grounded in the session.` adds or updates a prompt profile
 - `/flux config models` lists models and model pools
 - `/flux config prompts` lists prompt profile pools with styles
 - `flux_stray_thought` tool lets the agent request a thought

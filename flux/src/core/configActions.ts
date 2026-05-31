@@ -1,4 +1,4 @@
-import type { FluxConfig, FluxModelSpec } from "./types.ts";
+import type { FluxConfig, FluxModelSpec, PromptProfile } from "./types.ts";
 
 export interface ConfigActionResult {
 	ok: boolean;
@@ -132,12 +132,37 @@ export function validateFluxConfig(config: FluxConfig): ConfigActionResult {
 			if (!modelNames.has(model)) return err(`Model pool ${pool} references unknown model: ${model}`);
 		}
 	}
+	for (const [pool, profiles] of Object.entries(config.promptProfiles)) {
+		for (const profile of profiles) {
+			if (!profile.name) return err(`Prompt pool ${pool} contains a profile without a name.`);
+			if (!profile.style) return err(`Prompt profile ${pool}/${profile.name} must have a style.`);
+			if (profile.weight !== undefined && (!Number.isFinite(profile.weight) || profile.weight < 0)) {
+				return err(`Prompt profile ${pool}/${profile.name} weight must be non-negative.`);
+			}
+		}
+	}
 	try {
 		JSON.stringify(config);
 	} catch (error) {
 		return err(`Flux config is not JSON-serializable: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	return ok("Flux config validated");
+}
+
+export function upsertPromptProfile(config: FluxConfig, parts: string[]): ConfigActionResult {
+	const [pool, name, weightText, ...styleParts] = parts;
+	const style = styleParts.join(" ").trim();
+	if (!pool || !name || !weightText || !style) {
+		return err("Usage: /flux config prompt <pool> <profile-name> <weight> <style text...>");
+	}
+	const weight = Number(weightText);
+	if (!Number.isFinite(weight) || weight < 0) return err("Prompt profile weight must be a non-negative number.");
+	const profiles = (config.promptProfiles[pool] ??= []);
+	const existing = profiles.find((profile) => profile.name === name);
+	const next: PromptProfile = { ...(existing ?? {}), name, weight, style };
+	if (existing) Object.assign(existing, next);
+	else profiles.push(next);
+	return ok(`${existing ? "Updated" : "Added"} Flux prompt profile ${pool}/${name}`);
 }
 
 export function formatPromptProfiles(config: FluxConfig): string {
