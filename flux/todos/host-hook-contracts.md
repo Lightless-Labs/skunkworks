@@ -28,3 +28,5 @@ They currently implement a conservative contract: read JSON from stdin, infer ev
 Do not let hook failures break the host agent. The current behavior of emitting `{ "continue": true, "flux": { "error": ... } }` on errors should be preserved or mapped to the host's safe-continue equivalent.
 
 2026-05-30: Added representative fixture payloads under `test/fixtures/` for Claude `Stop`, Claude `PostToolUse`, Codex `post_turn`, and Codex `post_tool`; added non-network tests for event-kind inference, snapshot extraction, and host output shapes. Still need exact current host docs/schema validation and real hook-context live smokes.
+
+2026-05-31: Checked local CLI surfaces (`claude` 2.1.119, `codex-cli` 0.130.0) for host-native sidecar invocation. Claude print-mode flags still match. Codex approval policy must be passed before the `exec` subcommand; fixed the caller and covered argv construction in tests. Stdout hook response schemas still need current docs/live hook validation.

@@ -31,3 +31,5 @@ Direct provider keys in `.flux/config.json` remain useful as a generic/fallback 
 Host CLI callers set `FLUX_SUPPRESS=1` for child processes so nested host hook invocations do not recursively trigger Flux.
 
 2026-05-30: Pi JSON-mode smoke confirmed `/flux think smoke test` emits a `flux:stray-thought` custom message with `model: pi/openai-codex/gpt-5.5`, and an agent-triggered `flux_stray_thought` call returns tool content plus an optional displayed custom message. Full interactive TUI validation remains open.
+
+2026-05-31: Local Codex CLI 0.130.0 validation showed `--ask-for-approval never` is a top-level option, not an `exec` subcommand option. Updated the host-native Codex caller to pass approval policy before `exec`, and added non-network host CLI argv coverage for Codex and Claude. Real hook-context live smokes remain open.

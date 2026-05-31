@@ -1,6 +1,6 @@
 # Flux Handoff — Read This First
 
-**Last updated:** 2026-05-30
+**Last updated:** 2026-05-31
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -26,6 +26,8 @@ Latest Flux commits on `main`:
 - `8e9bd2a Add Flux model config command`
 - `b1eca30 Add Flux prompt config command`
 - `5bac099 Test Flux direct model clients`
+- `ac4371e Update Flux handoff latest commit`
+- `fbeca67 Fix Flux Codex host CLI invocation`
 
 Implemented surfaces:
 
@@ -38,8 +40,8 @@ Implemented surfaces:
 - **Claude Code hook scaffold:** `src/adapters/claude-code/hook.ts`, `claude-code-plugin.json`, `examples/claude-code-settings.json`.
 - **Codex hook scaffold:** `src/adapters/codex/hook.ts`, `codex-plugin.json`, `examples/codex-config.toml`.
 - **Core:** config loading, trigger matching, bounded context snapshots, prompt-profile selection, per-trigger model pools, Anthropic/OpenAI-compatible model calls, thought logging.
-- **Core tests:** `test/core-selection.test.ts` covers config/deep merge, config command mutations/validation, trigger frequency overrides, loop matching, prompt-profile/model-pool resolution, injected model callers, and context formatting/clamping. `test/hook-cli.test.ts` covers host hook event-kind inference, fixture snapshot extraction, and output shapes. `test/model-client.test.ts` covers non-network OpenAI-compatible and Anthropic request/response/error handling.
-- **Host-native model path in progress:** Pi adapter now calls Pi's selected/authenticated model; Claude/Codex hook CLI paths call their host CLIs with `FLUX_SUPPRESS=1` to avoid recursive hook triggering. Pi JSON-mode smoke for `/flux think` and `flux_stray_thought` passed on 2026-05-30. See `todos/host-native-models.md`.
+- **Core tests:** `test/core-selection.test.ts` covers config/deep merge, config command mutations/validation, trigger frequency overrides, loop matching, prompt-profile/model-pool resolution, injected model callers, and context formatting/clamping. `test/hook-cli.test.ts` covers host hook event-kind inference, fixture snapshot extraction, and output shapes. `test/model-client.test.ts` covers non-network OpenAI-compatible and Anthropic request/response/error handling. `test/host-cli-model-client.test.ts` covers non-network Claude/Codex host CLI argv/stdin construction.
+- **Host-native model path in progress:** Pi adapter now calls Pi's selected/authenticated model; Claude/Codex hook CLI paths call their host CLIs with `FLUX_SUPPRESS=1` to avoid recursive hook triggering. Pi JSON-mode smoke for `/flux think` and `flux_stray_thought` passed on 2026-05-30. Local CLI surface check on 2026-05-31 used `claude` 2.1.119 and `codex-cli` 0.130.0; Codex requires `--ask-for-approval never` before the `exec` subcommand. See `todos/host-native-models.md`.
 - **Delivery semantics clarified:** shared `DeliveryMode` is now only Pi/session message delivery (`steer`, `followUp`, `nextTurn`). Hook CLIs still emit host JSON on stdout as transport. Stale Pi configs using unsupported modes warn instead of silently mapping to `steer`. See `todos/delivery-semantics.md`.
 
 Generated/ignored local artifacts:
@@ -159,7 +161,7 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 
 - Pi integration compiles and uses Pi-authenticated model access. Non-interactive JSON-mode smoke passed; full interactive TUI validation is still pending.
 - Claude Code and Codex integrations now have host-CLI sidecar callers plus fixture/output-shape tests, but exact host-specific hook output contracts and real hook behavior still need validation against current host versions.
-- Core selection/config/trigger/context logic and direct-provider HTTP clients now have automated coverage, but host adapters still need focused tests.
+- Core selection/config/trigger/context logic, direct-provider HTTP clients, and host CLI argv construction now have automated coverage; host adapters still need focused/live tests.
 - Sidecar model calls support Anthropic and OpenAI-compatible chat completions only.
 - `thinkingEffort` is typed in config but not sent to providers yet.
 - Config command UX now covers persistent enable/random toggles, random frequency, add/update model definitions, model-pool assignment, add/update prompt profiles, and full prompt-style listing.
@@ -186,6 +188,7 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 | `test/core-selection.test.ts` | Node test coverage for core selection/config/trigger/context behavior |
 | `test/hook-cli.test.ts` | Node test coverage for hook event inference, fixture snapshots, and host output shapes |
 | `test/model-client.test.ts` | Non-network tests for direct-provider request/response/error handling |
+| `test/host-cli-model-client.test.ts` | Non-network tests for Claude/Codex host CLI invocation argv/stdin |
 | `test/fixtures/` | Representative Claude/Codex hook payload fixtures |
 | `src/core/hookCli.ts` | Generic stdin/stdout hook runner for Claude Code/Codex/generic hooks |
 | `src/adapters/pi/index.ts` | Pi extension |
