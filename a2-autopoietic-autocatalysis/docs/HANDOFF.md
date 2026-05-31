@@ -1,17 +1,17 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-05-30
+**Last updated:** 2026-05-31
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
 
 A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies its own source code. It uses AI model CLIs (Claude, Codex, Gemini, OpenCode, Pi) as "food set" models that edit code in git worktrees, then the system verifies, scores, and optionally applies the patches to its own germline.
 
-## Current Numbers (as of 2026-05-27)
+## Current Numbers (as of 2026-05-31)
 
 | Metric | Value |
 |--------|-------|
-| Tests | 110 Rust + 13 self-correction Python tests |
+| Tests | 111 Rust + 13 self-correction Python tests |
 | Sentinels | 6/6 PASS |
 | Crates | 11 |
 | Benchmark (OpenCode/GLM via A²) | 5/5 (with 100k token / 1800s budget) |
@@ -21,13 +21,14 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 | A² value-add on single-pass tasks | None measurable |
 | Self-correction loop (Minimax/Kimi original compound fixtures) | each provider resolved/self-corrected 3/3 on `compound-hidden`, `compound-membrane-hidden`, and `compound-archive-hidden` after hidden candidate verifier wiring |
 | Self-correction loop (Pi/ZAI GLM) | resolved/self-corrected 3/3 on `compound-hidden`, `compound-membrane-hidden`, `compound-archive-hidden`, and `compound-sensorium-same-crate-hidden` |
+| Self-correction loop (Minimax same-crate Broker) | resolved/self-corrected 3/3 on `compound-broker-same-crate-hidden` |
 | 4-provider smoke (2026-04-16) | 4/4 PASS (gemini, glm-5.1, minimax-2.7, kimi k2.5) post ContextPack wiring |
 
 ## Verify State (run these first)
 
 ```bash
 cd /Users/thomas/Projects/lightless-labs/skunkworks/a2-autopoietic-autocatalysis
-cargo test                                    # expect pass (106 Rust tests)
+cargo test                                    # expect pass (111 Rust tests)
 cargo run -p a2ctl -- sentinel --workspace .  # expect 6/6 PASS
 ```
 
@@ -155,9 +156,9 @@ const DEFAULT_STAGNATION_WINDOW: usize = 3;
 
 ## What To Do Next
 
-ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/ZAI GLM now have N=3 self-correction success on all three original compound fixtures after hidden candidate-worktree verifier wiring. `compound-sensorium-same-crate-hidden` was added on 2026-05-24 to move beyond visible-core-plus-hidden-second-crate regressions. Pi/ZAI GLM and Minimax resolved/self-corrected it 3/3; Kimi resolved 3/3 with pass@1 1/3 and self-corrected 2/3. `compound-raf-same-crate-hidden` was added on 2026-05-29 and smoke-only injection verified both RAF failures. Minimax resolved it 3/3 with pass@1 1/3 and self-corrected 2/3. Kimi and Pi/ZAI GLM resolved it 3/3 with pass@1 3/3. During the Pi/ZAI run, one resolved attempt had an empty captured patch; WorktreeCatalyst now captures committed worktree changes by diffing against the pre-agent base commit. A post-base-diff-fix Pi/ZAI RAF N=3 still produced one verifier-success attempt with empty patch stats; provider subprocesses now receive `PWD=<candidate worktree>` alongside `current_dir`. Post-PWD Pi/ZAI RAF N=3 had no empty verifier-success patch stats. `compound-eval-same-crate-hidden` was added on 2026-05-30 and smoke-only injection verified both eval failures. Minimax, Kimi, and Pi/ZAI GLM each looped on it for N=3 without resolving; Kimi's attempts were provider-side `high risk` rejections. Failure-mode analysis found candidate verifiers could pass while the injected evaluator bug discarded the patch, so the Governor now has an independent candidate-verifier promotion backstop. Post-backstop Pi/ZAI GLM resolved the eval fixture 3/3 on attempt 1. `compound-broker-same-crate-hidden` was added on 2026-05-30 and smoke-only injection verified both broker provider-usage parsing failures. A first Minimax run resolved/self-corrected 1/1 on attempt 3; N≥3 validation remains. Remaining work is broker N≥3 validation, more fixture diversity, and ablations.
+ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/ZAI GLM now have N=3 self-correction success on all three original compound fixtures after hidden candidate-worktree verifier wiring. `compound-sensorium-same-crate-hidden` was added on 2026-05-24 to move beyond visible-core-plus-hidden-second-crate regressions. Pi/ZAI GLM and Minimax resolved/self-corrected it 3/3; Kimi resolved 3/3 with pass@1 1/3 and self-corrected 2/3. `compound-raf-same-crate-hidden` was added on 2026-05-29 and smoke-only injection verified both RAF failures. Minimax resolved it 3/3 with pass@1 1/3 and self-corrected 2/3. Kimi and Pi/ZAI GLM resolved it 3/3 with pass@1 3/3. During the Pi/ZAI run, one resolved attempt had an empty captured patch; WorktreeCatalyst now captures committed worktree changes by diffing against the pre-agent base commit. A post-base-diff-fix Pi/ZAI RAF N=3 still produced one verifier-success attempt with empty patch stats; provider subprocesses now receive `PWD=<candidate worktree>` alongside `current_dir`. Post-PWD Pi/ZAI RAF N=3 had no empty verifier-success patch stats. `compound-eval-same-crate-hidden` was added on 2026-05-30 and smoke-only injection verified both eval failures. Minimax, Kimi, and Pi/ZAI GLM each looped on it for N=3 without resolving; Kimi's attempts were provider-side `high risk` rejections. Failure-mode analysis found candidate verifiers could pass while the injected evaluator bug discarded the patch, so the Governor now has an independent candidate-verifier promotion backstop. Post-backstop Pi/ZAI GLM resolved the eval fixture 3/3 on attempt 1. `compound-broker-same-crate-hidden` was added on 2026-05-30 and smoke-only injection verified both broker provider-usage parsing failures. Minimax resolved/self-corrected it 3/3 with pass@1 0/3. Remaining work is more fixture diversity and ablations.
 
-### Current loop status (2026-05-30)
+### Current loop status (2026-05-31)
 
 **Working:**
 - Prior lineage reaches retry attempts for a pinned `TaskId`.
@@ -203,7 +204,7 @@ ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/
 - Governor Stage 0 promotion now has an external-verifier backstop: if a patch exists, explicit candidate worktree verifiers all passed, candidate test results have zero failures, and the outer Governor token budget is still respected, the Governor can promote even when the mutable evaluator reports `task_completed=false`. See `docs/solutions/logic-errors/bugged-evaluator-blocks-self-repair-20260530.md`.
 - Post-backstop `compound-eval-same-crate-hidden` with Pi/ZAI GLM on 2026-05-30 resolved 3/3 runs; pass@1 was 3/3; loop exercised 0/3; self-corrected 0/3. All runs promoted, applied, reconciled through the core path, and passed both verifier tests on attempt 1. Result: `/tmp/a2-eval-same-crate-pi-zai-glm-post-backstop-20260530T084550Z.jsonl`.
 - `compound-broker-same-crate-hidden` was added on 2026-05-30. It injects two regressions in `crates/a2_broker/src/broker.rs`: visible Gemini flat usage output-token parsing behavior and hidden Pi cache-write token accounting behavior. Smoke-only injection verified both failures. Result: `/tmp/a2-broker-fixture-smoke.jsonl`.
-- `compound-broker-same-crate-hidden` with Minimax on 2026-05-30 resolved 1/1 run; pass@1 was 0/1; loop exercised 1/1; self-corrected 1/1. The run resolved on attempt 3 after two over-budget discarded attempts that still failed both verifier tests. Result: `/tmp/a2-broker-same-crate-minimax-20260530T204745Z.jsonl`.
+- `compound-broker-same-crate-hidden` with Minimax on 2026-05-30/31 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. The first run resolved on attempt 3; the two 2026-05-31 runs resolved on attempt 2. Result: `/tmp/a2-broker-same-crate-minimax-20260530T204745Z.jsonl`.
 - Anti-repeat ablation on `compound-hidden` with Minimax on 2026-05-28 completed N=3 per cohort. Enabled cohort: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; resolved attempts were 3, 2, 2. Disabled cohort: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all resolved on attempt 2. Result: `/tmp/a2-anti-repeat-ablation-compound-hidden-minimax-20260528T122327Z.jsonl`.
 - Anti-repeat ablation on `compound-sensorium-same-crate-hidden` with Minimax on 2026-05-28 completed N=3 per cohort. Enabled cohort: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all resolved on attempt 2. Disabled cohort: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3; all resolved on attempt 2. All attempts touched `a2_sensorium/src/ingest.rs`; first attempts were +1/-1 and resolved attempts were +2/-2 except one enabled run at +4/-2. Result: `/tmp/a2-anti-repeat-ablation-sensorium-minimax-20260528T221811Z.jsonl`.
 - The 2026-05-20 Minimax/Kimi reruns happened after candidate verifier code existed but before the self-correction harness passed verifier commands, so those reruns exercised post-apply verification/retry context rather than candidate-worktree verifier scoring.
@@ -213,11 +214,10 @@ ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/
 - `compound-hidden` with Kimi on 2026-05-18 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2ctl/src/main.rs` and verified clean.
 
 **Not yet validated:**
-- `compound-broker-same-crate-hidden` N≥3 real-provider validation beyond the first Minimax run.
 - Additional fixture diversity beyond Broker/Eval/RAF/Sensorium same-crate fixtures.
 - Additional anti-repeat ablation coverage beyond the two Minimax fixture cohorts (`compound-hidden` and `compound-sensorium-same-crate-hidden`).
 
-**Structural solution direction:** Minimax, Kimi, and Pi/ZAI GLM now have N=3 validation on the three original compound fixtures and on the same-crate Sensorium fixture. Kimi had pass@1 1/3 on Sensorium, so its self-correction count there is 2/3 rather than 3/3. The same-crate RAF fixture has smoke-only verification and N=3 results for Minimax, Kimi, and Pi/ZAI GLM; Kimi and Pi/ZAI solved it on attempt 1 in every run. The same-crate Broker fixture has smoke-only verification and one Minimax self-correction run, but no real-provider N≥3 result yet. Remaining work is broker N≥3 validation, more fixture diversity, and measuring anti-repeat contribution. Dedicated todos live in `todos/`.
+**Structural solution direction:** Minimax, Kimi, and Pi/ZAI GLM now have N=3 validation on the three original compound fixtures and on the same-crate Sensorium fixture. Kimi had pass@1 1/3 on Sensorium, so its self-correction count there is 2/3 rather than 3/3. The same-crate RAF fixture has smoke-only verification and N=3 results for Minimax, Kimi, and Pi/ZAI GLM; Kimi and Pi/ZAI solved it on attempt 1 in every run. The same-crate Broker fixture has smoke-only verification and N=3 results for Minimax. Remaining work is more fixture diversity and measuring anti-repeat contribution. Dedicated todos live in `todos/`.
 
 ### Completed prerequisites (2026-04-23)
 
@@ -246,7 +246,7 @@ ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/
 - [x] **Run original compound fixtures N≥3 per available non-Claude provider after hidden candidate verifier wiring.** Minimax and Kimi scored resolved/self-corrected 3/3 on `compound-hidden`, `compound-membrane-hidden`, and `compound-archive-hidden`. Pi/ZAI GLM scored resolved/self-corrected 3/3 on `compound-hidden` (`/tmp/a2-compound-hidden-pi-zai-glm.jsonl`), `compound-membrane-hidden` (`/tmp/a2-compound-membrane-pi-zai-glm.jsonl`), and `compound-archive-hidden` (`/tmp/a2-compound-archive-pi-zai-glm.jsonl`). In all Pi/ZAI membrane/archive runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched the hidden-regression crate and verified clean. Prior OpenCode GLM route timed out while ZAI balance was unavailable; prefer `pi/zai/glm-5.1`.
 - [x] **Add a second compound fixture after one self-correction success.** Completed 2026-05-18. `bench/self_correction.py` now includes `compound-membrane-hidden`, which combines the visible `a2_core` Fibonacci regression with a hidden `a2_membrane` deny-overrides-allow regression. Smoke-only injection verified both failures. After hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-21 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 - [x] **Add a Broker same-crate fixture after Eval same-crate coverage.** Completed 2026-05-30 with `compound-broker-same-crate-hidden`; smoke-only injection verified visible Gemini flat usage output-token parsing and hidden Pi cache-write token accounting failures. Result: `/tmp/a2-broker-fixture-smoke.jsonl`.
-- [ ] **Run `compound-broker-same-crate-hidden` N≥3 with an available non-Claude provider and score the JSONL result.** One Minimax run completed 2026-05-30: resolved/self-corrected 1/1 on attempt 3; result `/tmp/a2-broker-same-crate-minimax-20260530T204745Z.jsonl`.
+- [x] **Run `compound-broker-same-crate-hidden` N≥3 with an available non-Claude provider and score the JSONL result.** Completed 2026-05-31 with Minimax: resolved/self-corrected 3/3, pass@1 0/3, loop exercised 3/3. Result: `/tmp/a2-broker-same-crate-minimax-20260530T204745Z.jsonl`.
 
 ### Loop-shaped benchmarks
 
@@ -366,3 +366,4 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-05-30 | Post-backstop `compound-eval-same-crate-hidden` Pi/ZAI GLM N=3 | Pi/ZAI GLM resolved 3/3 runs; pass@1 was 3/3; loop exercised 0/3; self-corrected 0/3. All runs promoted, applied, reconciled through the core path, and passed both verifier tests on attempt 1. Result: `/tmp/a2-eval-same-crate-pi-zai-glm-post-backstop-20260530T084550Z.jsonl`. |
 | 2026-05-30 | Add same-crate Broker self-correction fixture | `compound-broker-same-crate-hidden` injects visible Gemini flat usage output-token parsing and hidden Pi cache-write token accounting regressions in `crates/a2_broker/src/broker.rs`; smoke-only injection verified both failures. Result: `/tmp/a2-broker-fixture-smoke.jsonl`. |
 | 2026-05-30 | First `compound-broker-same-crate-hidden` Minimax run | Minimax resolved 1/1 run; pass@1 was 0/1; loop exercised 1/1; self-corrected 1/1. It resolved on attempt 3 after two over-budget discarded attempts that still failed both verifier tests. Result: `/tmp/a2-broker-same-crate-minimax-20260530T204745Z.jsonl`. |
+| 2026-05-31 | `compound-broker-same-crate-hidden` Minimax N=3 | Minimax resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. The two 2026-05-31 runs appended to `/tmp/a2-broker-same-crate-minimax-20260530T204745Z.jsonl` resolved on attempt 2. |
