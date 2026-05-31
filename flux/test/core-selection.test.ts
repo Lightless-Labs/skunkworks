@@ -4,6 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DEFAULT_CONFIG, loadConfig } from "../src/core/config.ts";
+import {
+	formatPromptProfiles,
+	setConfigEnabled,
+	setModelPool,
+	setPersistentRandomEnabled,
+	setRandomFrequency,
+	validateFluxConfig,
+} from "../src/core/configActions.ts";
 import { formatSnapshotForPrompt } from "../src/core/context.ts";
 import { isDeliveryMode, piDeliverAs, supportedDeliveryModes } from "../src/core/delivery.ts";
 import { generateStrayThought, selectPromptProfile } from "../src/core/engine.ts";
@@ -181,6 +189,33 @@ test("resolveModelPool resolves trigger name, then kind, then default, then any 
 		resolveModelPool(config, event({ name: "unusable-pool", kind: "external" })).map((spec) => spec.name),
 		["name-model", "kind-model", "default-model"],
 	);
+});
+
+test("config actions validate and mutate common slash-command settings", () => {
+	const config = cloneConfig();
+	config.models = [model("fast", "key"), model("careful", "key")];
+	config.modelPools = { default: ["fast"] };
+
+	assert.equal(setConfigEnabled(config, "false").ok, true);
+	assert.equal(config.enabled, false);
+	assert.equal(setPersistentRandomEnabled(config, "off").ok, true);
+	assert.equal(config.randomInjections, false);
+	assert.equal(setRandomFrequency(config, "probability", "0.25").ok, true);
+	assert.equal(config.random.probability, 0.25);
+	assert.equal(setModelPool(config, "random", "fast,careful").ok, true);
+	assert.deepEqual(config.modelPools.random, ["fast", "careful"]);
+	assert.equal(validateFluxConfig(config).ok, true);
+
+	assert.equal(setConfigEnabled(config, "maybe").ok, false);
+	assert.equal(setRandomFrequency(config, "probability", "2").ok, false);
+	assert.equal(setModelPool(config, "manual", "missing").ok, false);
+});
+
+test("formatPromptProfiles includes profile styles, not only names", () => {
+	const formatted = formatPromptProfiles(cloneConfig());
+	assert.match(formatted, /Flux prompt profiles/);
+	assert.match(formatted, /local-spark/);
+	assert.match(formatted, /Offer one narrow/);
 });
 
 test("delivery modes are limited to agent message delivery, not hook transports", () => {

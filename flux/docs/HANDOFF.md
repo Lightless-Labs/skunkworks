@@ -100,9 +100,12 @@ Runtime Pi config commands:
 /flux config status
 /flux config init
 /flux config edit
+/flux config set enabled true|false
+/flux config random on|off
 /flux config random probability 0.1
 /flux config random minIntervalMs 300000
 /flux config random afterEvents 3
+/flux config pool random model-a,model-b
 /flux config models
 /flux config prompts
 ```
@@ -152,13 +155,13 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 - Core selection/config/trigger/context logic now has automated coverage, but provider HTTP clients and host adapters still need focused tests.
 - Sidecar model calls support Anthropic and OpenAI-compatible chat completions only.
 - `thinkingEffort` is typed in config but not sent to providers yet.
-- Config command UX is JSON-editor based. It is functional but not friendly for model/prompt-pool edits beyond full JSON editing.
+- Config command UX now covers persistent enable/random toggles, random frequency, model-pool assignment, and full prompt-style listing. Model-definition edits and prompt-profile edits beyond the full JSON editor are still not friendly.
 
 ## Best Next Moves
 
 1. Finish live-testing the Pi extension in interactive TUI mode using Pi's host-native model path. See `todos/live-validate-pi-extension.md` and `todos/host-native-models.md`.
 2. Finish validating Claude Code / Codex hook contracts against current docs and live hook contexts. Fixture/output-shape tests are in place. See `todos/host-hook-contracts.md`.
-3. Improve `/flux config` UX for adding/removing models and prompt profiles without hand-editing full JSON. See `todos/config-command-ux.md`.
+3. Continue `/flux config` UX for adding/removing model definitions and prompt profiles without hand-editing full JSON. See `todos/config-command-ux.md`.
 
 ## Important Files
 
@@ -166,6 +169,8 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 |------|---------|
 | `src/core/types.ts` | Shared config/event/snapshot/thought types |
 | `src/core/config.ts` | Defaults, discovery, deep merge |
+| `src/core/configActions.ts` | Reusable config mutation/validation helpers for `/flux config` |
+| `src/core/delivery.ts` | Shared delivery mode validation helpers |
 | `src/core/triggers.ts` | Trigger matching, random frequency/throttle logic |
 | `src/core/engine.ts` | Prompt-profile selection, thought generation/logging |
 | `src/core/modelClient.ts` | Anthropic/OpenAI-compatible direct-provider calls and model-pool resolution |

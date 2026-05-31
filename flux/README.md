@@ -60,11 +60,14 @@ Pi commands/tools:
 - `/flux config status` shows the resolved config and key settings
 - `/flux config init` writes `.flux/config.json` from defaults
 - `/flux config edit` opens the full JSON config in an editor and reloads it after save
+- `/flux config set enabled true|false` persists Flux enablement
+- `/flux config random on|off` persists random injection enablement
 - `/flux config random probability 0.1` updates random frequency and persists it
 - `/flux config random minIntervalMs 300000`
 - `/flux config random afterEvents 3`
+- `/flux config pool random cheap-openai-compatible,anthropic-haiku` assigns a model pool
 - `/flux config models` lists models and model pools
-- `/flux config prompts` lists prompt profile pools
+- `/flux config prompts` lists prompt profile pools with styles
 - `flux_stray_thought` tool lets the agent request a thought
 - Other Pi extensions can call `pi.events.emit("flux:trigger", { reason: "..." })`
 

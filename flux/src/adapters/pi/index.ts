@@ -1,9 +1,17 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { DEFAULT_CONFIG, loadConfig } from "../../core/config.ts";
+import {
+	formatPromptProfiles,
+	setConfigEnabled,
+	setModelPool,
+	setPersistentRandomEnabled,
+	setRandomFrequency,
+	validateFluxConfig,
+} from "../../core/configActions.ts";
 import { snapshotFromGenericPayload, textFromUnknown } from "../../core/context.ts";
 import { piDeliverAs, supportedDeliveryModes } from "../../core/delivery.ts";
 import { generateStrayThought, hostNativeModelLabel, renderThoughtForAgent, type ThoughtModelCaller } from "../../core/engine.ts";
@@ -23,6 +31,7 @@ function cloneDefaultConfig(): FluxConfig {
 function writeConfigFile(path: string, config: FluxConfig): void {
 	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+	chmodSync(path, 0o600);
 }
 
 function formatConfigSummary(config: FluxConfig, path?: string): string {
@@ -308,15 +317,24 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 
 	pi.registerCommand("flux", {
 		description:
-			"Manage Flux: /flux status | on | off | random on|off | think [reason] | reload | config [status|init|edit|random|models|prompts]",
+			"Manage Flux: /flux status | on | off | random on|off | think [reason] | reload | config [status|init|edit|set|random|pool|models|prompts]",
 		handler: async (args, ctx) => {
 			const parts = args.trim().split(/\s+/).filter(Boolean);
 			const command = parts[0] ?? "status";
 			const configPath = () => loaded.path ?? join(ctx.cwd, ".flux", "config.json");
-			const persistLoadedConfig = () => {
-				writeConfigFile(configPath(), loaded.config);
+			const persistLoadedConfig = (): boolean => {
+				const validation = validateFluxConfig(loaded.config);
+				if (!validation.ok) {
+					ctx.ui.notify(validation.message, "error");
+					return false;
+				}
+				const path = configPath();
+				const nextRandomEnabled = loaded.config.randomInjections;
+				writeConfigFile(path, loaded.config);
 				refreshConfig(ctx.cwd);
-				randomEnabled = loaded.config.randomInjections;
+				randomEnabled = nextRandomEnabled;
+				loaded.config.randomInjections = randomEnabled;
+				return true;
 			};
 
 			if (command === "reload") {
@@ -358,38 +376,60 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 						ctx.ui.notify(`Invalid JSON: ${error instanceof Error ? error.message : String(error)}`, "error");
 						return;
 					}
+					const validation = validateFluxConfig(parsed);
+					if (!validation.ok) {
+						ctx.ui.notify(validation.message, "error");
+						return;
+					}
 					writeConfigFile(path, parsed);
 					refreshConfig(ctx.cwd);
 					randomEnabled = loaded.config.randomInjections;
 					ctx.ui.notify(`Saved and reloaded Flux config: ${path}`, "info");
 					return;
 				}
+				if (subcommand === "set") {
+					if (parts[2] !== "enabled") {
+						ctx.ui.notify("Usage: /flux config set enabled true|false", "info");
+						return;
+					}
+					const result = setConfigEnabled(loaded.config, parts[3]);
+					if (!result.ok) {
+						ctx.ui.notify(result.message, "error");
+						return;
+					}
+					if (!persistLoadedConfig()) return;
+					ctx.ui.setStatus("flux", loaded.config.enabled ? "flux:on" : "flux:off");
+					ctx.ui.notify(`${result.message} in ${loaded.path}`, "info");
+					return;
+				}
 				if (subcommand === "random") {
-					const field = parts[2] as keyof FluxConfig["random"] | undefined;
-					const value = parts[3];
-					if (!field || value === undefined) {
-						ctx.ui.notify(
-							`Usage: /flux config random probability <0..1> | minIntervalMs <ms> | afterEvents <count>\nCurrent: ${JSON.stringify(loaded.config.random)}`,
-							"info",
-						);
+					if (parts[2] === "on" || parts[2] === "off") {
+						const result = setPersistentRandomEnabled(loaded.config, parts[2]);
+						if (!result.ok) {
+							ctx.ui.notify(result.message, "error");
+							return;
+						}
+						if (!persistLoadedConfig()) return;
+						ctx.ui.notify(`${result.message} in ${loaded.path}`, "info");
 						return;
 					}
-					if (!(field in loaded.config.random)) {
-						ctx.ui.notify(`Unknown random field: ${field}`, "error");
+					const result = setRandomFrequency(loaded.config, parts[2], parts[3]);
+					if (!result.ok) {
+						ctx.ui.notify(result.message, "error");
 						return;
 					}
-					const numeric = Number(value);
-					if (!Number.isFinite(numeric)) {
-						ctx.ui.notify(`Expected numeric value for ${field}`, "error");
+					if (!persistLoadedConfig()) return;
+					ctx.ui.notify(`${result.message} in ${loaded.path}`, "info");
+					return;
+				}
+				if (subcommand === "pool") {
+					const result = setModelPool(loaded.config, parts[2], parts.slice(3).join(" "));
+					if (!result.ok) {
+						ctx.ui.notify(result.message, "error");
 						return;
 					}
-					if (field === "probability" && (numeric < 0 || numeric > 1)) {
-						ctx.ui.notify("Probability must be between 0 and 1.", "error");
-						return;
-					}
-					loaded.config.random[field] = numeric;
-					persistLoadedConfig();
-					ctx.ui.notify(`Set Flux random.${field}=${numeric} in ${loaded.path}`, "info");
+					if (!persistLoadedConfig()) return;
+					ctx.ui.notify(`${result.message} in ${loaded.path}`, "info");
 					return;
 				}
 				if (subcommand === "models") {
@@ -403,16 +443,10 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 					return;
 				}
 				if (subcommand === "prompts") {
-					const lines = [
-						"Flux prompt profiles:",
-						...Object.entries(loaded.config.promptProfiles).map(
-							([name, profiles]) => `- ${name}: ${profiles.map((profile) => `${profile.name}(${profile.weight ?? 1})`).join(", ")}`,
-						),
-					];
-					ctx.ui.notify(lines.join("\n"), "info");
+					ctx.ui.notify(formatPromptProfiles(loaded.config), "info");
 					return;
 				}
-				ctx.ui.notify("Usage: /flux config status | init | edit | random | models | prompts", "info");
+				ctx.ui.notify("Usage: /flux config status | init | edit | set enabled | random | pool | models | prompts", "info");
 				return;
 			}
 			if (command === "on" || command === "off") {
