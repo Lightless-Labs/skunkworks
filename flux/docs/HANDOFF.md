@@ -25,6 +25,7 @@ Latest Flux commits on `main`:
 - `e490d2c Improve Flux config commands`
 - `8e9bd2a Add Flux model config command`
 - `b1eca30 Add Flux prompt config command`
+- `5bac099 Test Flux direct model clients`
 
 Implemented surfaces:
 
