@@ -163,6 +163,34 @@ WORKCELL_ZERO_BUDGET_BUG_NEW = """\
         return (text.to_string(), 0, false);
     }
 """
+A2D_TASK_ID = "self-correction-compound-a2d-same-crate-hidden-regressions"
+A2D_DESCRIPTION = """\
+The workspace contains a regression. `cargo test -p a2d flat_rounds_trigger_stagnation_after_window_size` fails.
+Diagnose the root cause and fix the implementation. Do not assume the failing
+test name is the only broken behavior; inspect the code and make the minimal
+change that restores the test. Run `cargo test -p a2d flat_rounds_trigger_stagnation_after_window_size` before
+finishing.
+"""
+A2D_STAGNATION_WINDOW_BUG_OLD = """\
+        if window == 0 || self.rounds.len() < window {
+            return false;
+        }
+"""
+A2D_STAGNATION_WINDOW_BUG_NEW = """\
+        if window == 0 || self.rounds.len() <= window {
+            return false;
+        }
+"""
+A2D_VERIFIER_BACKSTOP_BUG_OLD = """\
+        if patch.worktree_verifications.is_empty() {
+            return false;
+        }
+"""
+A2D_VERIFIER_BACKSTOP_BUG_NEW = """\
+        if !patch.worktree_verifications.is_empty() {
+            return false;
+        }
+"""
 FNV_OFFSET_128 = 0x6C62_272E_07BB_0142_62B8_2175_6295_C58D
 FNV_PRIME_128 = 0x0000_0000_0100_0000_0000_0000_0000_013B
 
@@ -392,6 +420,28 @@ FIXTURES: dict[str, Fixture] = {
                 "crates/a2_workcell/src/catalyst.rs",
                 WORKCELL_ZERO_BUDGET_BUG_OLD,
                 WORKCELL_ZERO_BUDGET_BUG_NEW,
+            ),
+        ),
+    ),
+    "compound-a2d-same-crate-hidden": Fixture(
+        name="compound-a2d-same-crate-hidden",
+        task_id=A2D_TASK_ID,
+        description=A2D_DESCRIPTION,
+        verify_command=(
+            "cargo test -p a2d flat_rounds_trigger_stagnation_after_window_size; stagnation=$?; "
+            "cargo test -p a2d candidate_verifier_backstop_promotes_when_mutable_evaluator_is_corrupt; backstop=$?; "
+            "test $stagnation -eq 0 -a $backstop -eq 0"
+        ),
+        replacements=(
+            Replacement(
+                "crates/a2d/src/lib.rs",
+                A2D_STAGNATION_WINDOW_BUG_OLD,
+                A2D_STAGNATION_WINDOW_BUG_NEW,
+            ),
+            Replacement(
+                "crates/a2d/src/lib.rs",
+                A2D_VERIFIER_BACKSTOP_BUG_OLD,
+                A2D_VERIFIER_BACKSTOP_BUG_NEW,
             ),
         ),
     ),
@@ -905,6 +955,16 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(
             [replacement.path for replacement in fixture.replacements],
             ["crates/a2_workcell/src/catalyst.rs", "crates/a2_workcell/src/catalyst.rs"],
+        )
+
+    def test_compound_a2d_fixture_is_same_crate_multi_bug(self) -> None:
+        fixture = FIXTURES["compound-a2d-same-crate-hidden"]
+        self.assertEqual(fixture.task_id, A2D_TASK_ID)
+        self.assertIn("flat_rounds_trigger_stagnation_after_window_size", fixture.verify_command)
+        self.assertIn("candidate_verifier_backstop_promotes_when_mutable_evaluator_is_corrupt", fixture.verify_command)
+        self.assertEqual(
+            [replacement.path for replacement in fixture.replacements],
+            ["crates/a2d/src/lib.rs", "crates/a2d/src/lib.rs"],
         )
 
     def test_result_record_reports_prior_lineage(self) -> None:
