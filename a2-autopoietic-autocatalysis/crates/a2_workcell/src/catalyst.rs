@@ -391,6 +391,23 @@ mod tests {
     }
 
     #[test]
+    fn uses_last_diff_block_when_model_self_corrects() {
+        let text = "First draft:\n```diff\n--- a/foo.rs\n+++ b/foo.rs\n+wrong\n```\n\nFinal patch:\n```diff\n--- a/foo.rs\n+++ b/foo.rs\n+right\n```\n\n## Rationale\nUse the corrected patch.";
+        let (diff, rationale) = split_response(text);
+        assert!(diff.contains("+right"));
+        assert!(!diff.contains("+wrong"));
+        assert!(rationale.contains("Use the corrected patch."));
+    }
+
+    #[test]
+    fn zero_line_budget_truncates_all_content() {
+        let (snippet, lines_used, truncated) = truncate_to_line_limit("alpha\nbeta\n", 0);
+        assert!(snippet.is_empty());
+        assert_eq!(lines_used, 0);
+        assert!(truncated);
+    }
+
+    #[test]
     fn strips_structured_diff_and_rationale_headings() {
         let text = "## Diff\n\n```diff\n--- a/foo.rs\n+++ b/foo.rs\n+fixed\n```\n\n## Rationale\nImproves the prompt structure.\n\n## Test Suggestions\n- cargo test -p a2_workcell";
         let (diff, rationale) = split_response(text);

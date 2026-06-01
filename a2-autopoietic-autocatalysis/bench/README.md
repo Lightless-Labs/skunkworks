@@ -37,6 +37,7 @@ Current loop-shaped fixtures:
 - `compound-eval-same-crate-hidden` — visible and hidden regressions in `a2_eval` seed scoring behavior.
 - `compound-broker-same-crate-hidden` — visible and hidden regressions in `a2_broker` provider usage parsing.
 - `compound-constitution-same-crate-hidden` — visible and hidden regressions in `a2_constitution` bootstrap profile behavior.
+- `compound-workcell-same-crate-hidden` — visible and hidden regressions in `a2_workcell` catalyst response parsing and prompt context truncation.
 
 Smoke a specific fixture without a model:
 

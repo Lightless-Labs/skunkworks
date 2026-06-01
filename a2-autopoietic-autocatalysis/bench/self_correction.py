@@ -143,6 +143,26 @@ CONSTITUTION_HUMAN_REVIEW_BUG_OLD = "matches!(self, Self::B0)"
 CONSTITUTION_HUMAN_REVIEW_BUG_NEW = "matches!(self, Self::B0 | Self::B1)"
 CONSTITUTION_NETWORK_BUG_OLD = '"lineage://archive".to_string(),'
 CONSTITUTION_NETWORK_BUG_NEW = '"production://write".to_string(),'
+WORKCELL_TASK_ID = "self-correction-compound-workcell-same-crate-hidden-regressions"
+WORKCELL_DESCRIPTION = """\
+The workspace contains a regression. `cargo test -p a2_workcell uses_last_diff_block_when_model_self_corrects` fails.
+Diagnose the root cause and fix the implementation. Do not assume the failing
+test name is the only broken behavior; inspect the code and make the minimal
+change that restores the test. Run `cargo test -p a2_workcell uses_last_diff_block_when_model_self_corrects` before
+finishing.
+"""
+WORKCELL_LAST_DIFF_BUG_OLD = 'if let Some(start) = text.rfind("```diff") {'
+WORKCELL_LAST_DIFF_BUG_NEW = 'if let Some(start) = text.find("```diff") {'
+WORKCELL_ZERO_BUDGET_BUG_OLD = """\
+    if max_lines == 0 {
+        return (String::new(), 0, !text.is_empty());
+    }
+"""
+WORKCELL_ZERO_BUDGET_BUG_NEW = """\
+    if max_lines == 0 {
+        return (text.to_string(), 0, false);
+    }
+"""
 FNV_OFFSET_128 = 0x6C62_272E_07BB_0142_62B8_2175_6295_C58D
 FNV_PRIME_128 = 0x0000_0000_0100_0000_0000_0000_0000_013B
 
@@ -350,6 +370,28 @@ FIXTURES: dict[str, Fixture] = {
                 "crates/a2_constitution/src/profile.rs",
                 CONSTITUTION_NETWORK_BUG_OLD,
                 CONSTITUTION_NETWORK_BUG_NEW,
+            ),
+        ),
+    ),
+    "compound-workcell-same-crate-hidden": Fixture(
+        name="compound-workcell-same-crate-hidden",
+        task_id=WORKCELL_TASK_ID,
+        description=WORKCELL_DESCRIPTION,
+        verify_command=(
+            "cargo test -p a2_workcell uses_last_diff_block_when_model_self_corrects; diff=$?; "
+            "cargo test -p a2_workcell zero_line_budget_truncates_all_content; budget=$?; "
+            "test $diff -eq 0 -a $budget -eq 0"
+        ),
+        replacements=(
+            Replacement(
+                "crates/a2_workcell/src/catalyst.rs",
+                WORKCELL_LAST_DIFF_BUG_OLD,
+                WORKCELL_LAST_DIFF_BUG_NEW,
+            ),
+            Replacement(
+                "crates/a2_workcell/src/catalyst.rs",
+                WORKCELL_ZERO_BUDGET_BUG_OLD,
+                WORKCELL_ZERO_BUDGET_BUG_NEW,
             ),
         ),
     ),
@@ -853,6 +895,16 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(
             [replacement.path for replacement in fixture.replacements],
             ["crates/a2_constitution/src/profile.rs", "crates/a2_constitution/src/profile.rs"],
+        )
+
+    def test_compound_workcell_fixture_is_same_crate_multi_bug(self) -> None:
+        fixture = FIXTURES["compound-workcell-same-crate-hidden"]
+        self.assertEqual(fixture.task_id, WORKCELL_TASK_ID)
+        self.assertIn("uses_last_diff_block_when_model_self_corrects", fixture.verify_command)
+        self.assertIn("zero_line_budget_truncates_all_content", fixture.verify_command)
+        self.assertEqual(
+            [replacement.path for replacement in fixture.replacements],
+            ["crates/a2_workcell/src/catalyst.rs", "crates/a2_workcell/src/catalyst.rs"],
         )
 
     def test_result_record_reports_prior_lineage(self) -> None:
