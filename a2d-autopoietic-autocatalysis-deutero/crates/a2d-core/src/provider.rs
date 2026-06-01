@@ -256,13 +256,44 @@ impl ProviderRegistry {
         unavailable_provider_names: &std::collections::BTreeSet<String>,
     ) -> &dyn Provider {
         let assigned_idx = self.assigned_index(enzyme_id);
-        let alternative = self.alternative_provider_excluding_index(assigned_idx);
-        if !unavailable_provider_names.contains(alternative.name()) {
-            return alternative;
-        }
+        self.alternative_provider_for_index_avoiding(assigned_idx, unavailable_provider_names)
+    }
+
+    /// Ephemeral provider swap for escalation rung 4+. This deliberately does
+    /// not mutate provider assignments or provider_policy; it only chooses a
+    /// different provider for the current invocation. If no non-assigned
+    /// provider is available, fall back to the assigned provider so the failure
+    /// is explicit in single-provider deployments.
+    pub fn swapped_provider_for_avoiding(
+        &self,
+        enzyme_id: &EnzymeId,
+        unavailable_provider_names: &std::collections::BTreeSet<String>,
+    ) -> &dyn Provider {
+        let assigned_idx = self.assigned_index(enzyme_id);
+        self.alternative_provider_for_index_avoiding(assigned_idx, unavailable_provider_names)
+    }
+
+    /// Role-isolated variant of the rung-4 ephemeral swap. It excludes
+    /// providers explicitly assigned to other enzymes, preventing an escalated
+    /// evolver/coder from consuming tester/architect provider windows.
+    pub fn role_isolated_swapped_provider_for_avoiding(
+        &self,
+        enzyme_id: &EnzymeId,
+        unavailable_provider_names: &std::collections::BTreeSet<String>,
+    ) -> &dyn Provider {
+        let assigned_idx = self.assigned_index(enzyme_id);
+        let assigned_elsewhere = self
+            .assignments
+            .iter()
+            .filter(|(assigned_enzyme, _)| *assigned_enzyme != enzyme_id)
+            .map(|(_, idx)| *idx)
+            .collect::<std::collections::BTreeSet<_>>();
 
         for (idx, provider) in self.providers.iter().enumerate() {
-            if idx != assigned_idx && !unavailable_provider_names.contains(provider.name()) {
+            if idx != assigned_idx
+                && !assigned_elsewhere.contains(&idx)
+                && !unavailable_provider_names.contains(provider.name())
+            {
                 return provider.as_ref();
             }
         }
@@ -401,6 +432,25 @@ impl ProviderRegistry {
 
         // Fallback: only one provider registered. Return it anyway.
         self.providers[self.default_provider].as_ref()
+    }
+
+    fn alternative_provider_for_index_avoiding(
+        &self,
+        assigned_idx: usize,
+        unavailable_provider_names: &std::collections::BTreeSet<String>,
+    ) -> &dyn Provider {
+        let alternative = self.alternative_provider_excluding_index(assigned_idx);
+        if !unavailable_provider_names.contains(alternative.name()) {
+            return alternative;
+        }
+
+        for (idx, provider) in self.providers.iter().enumerate() {
+            if idx != assigned_idx && !unavailable_provider_names.contains(provider.name()) {
+                return provider.as_ref();
+            }
+        }
+
+        self.providers[assigned_idx].as_ref()
     }
 
     /// List all registered providers.
@@ -565,6 +615,45 @@ mod tests {
         let registry = ProviderRegistry::new(Box::new(MockProvider::new("only", "only response")));
         let alt = registry.alternative_provider_for(&EnzymeId::from("anything"));
         assert_eq!(alt.name(), "only");
+    }
+
+    #[test]
+    fn swapped_provider_uses_alternative_without_mutating_assignment() {
+        let mut registry =
+            ProviderRegistry::new(Box::new(MockProvider::new("default", "default response")));
+        let primary = registry.register(Box::new(MockProvider::new("primary", "primary response")));
+        registry.register(Box::new(MockProvider::new("backup", "backup response")));
+        registry.assign(EnzymeId::from("coder"), primary);
+
+        let unavailable = std::collections::BTreeSet::new();
+        let swapped =
+            registry.swapped_provider_for_avoiding(&EnzymeId::from("coder"), &unavailable);
+
+        assert_eq!(swapped.name(), "default");
+        assert_eq!(
+            registry.provider_for(&EnzymeId::from("coder")).name(),
+            "primary"
+        );
+    }
+
+    #[test]
+    fn role_isolated_swapped_provider_excludes_other_role_assignments() {
+        let mut registry =
+            ProviderRegistry::new(Box::new(MockProvider::new("kimi", "kimi response")));
+        let deepseek =
+            registry.register(Box::new(MockProvider::new("deepseek", "deepseek response")));
+        let glm = registry.register(Box::new(MockProvider::new("glm", "glm response")));
+
+        registry.assign(EnzymeId::from("evolver"), 0);
+        registry.assign(EnzymeId::from("tester"), glm);
+        registry.assign(EnzymeId::from("architect"), glm);
+
+        let unavailable = std::collections::BTreeSet::new();
+        let provider = registry
+            .role_isolated_swapped_provider_for_avoiding(&EnzymeId::from("evolver"), &unavailable);
+
+        assert_eq!(provider.name(), "deepseek");
+        assert_eq!(deepseek, 1);
     }
 
     #[test]

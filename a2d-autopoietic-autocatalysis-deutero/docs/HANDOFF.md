@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-05-31 (session 21 — autopilot markdown repo-reference validation landed)
+**Last updated:** 2026-05-31 (session 22 — escalation rung 4 ephemeral provider swap landed)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-252 commits. 189 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 35 compound learnings.
+256 commits. 195 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 36 compound learnings.
 
 ## Clean-session pickup
 
@@ -31,6 +31,7 @@
 - **Timeouts are bounded but provider-specific:** GLM 5.1 now gets 900s by default; other CLI providers default to 300s; `A2D_PROVIDER_TIMEOUT_SECS` overrides.
 - **Autopilot autonomy hardening landed and repair-diversity is live-validated through commit:** repair attempt 1 escalates from Pi to the configured alternate maintainer provider when available, repair prompts and monitor events record provider topology/attempt metadata, project state refreshes after committed iterations, and checkbox-completed todos are skipped by task selection. An opt-in fault-injection harness (`A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure`) now forces a repairable parse failure for live validation. `A2D_AUTOPILOT_REPAIR_PROVIDER` / `--repair-provider` can target a specific registered repair provider. Run `run-1780125199376-0` validated Pi primary → fault-injected parse failure → DeepSeek repair output → path gate → temp `cargo test` → real-tree `cargo test` → local commit `ab43b71`.
 - **Autopilot markdown outputs now have repo-reference validation:** temp-worktree validation scans markdown replacements and `handoff_update` for repo-path claims (`crates/...`, `docs/...`, `todos/...`, `examples/...`, `research/...`, and root manifest/doc files), normalizes anchors/line suffixes, and rejects paths that do not exist after patch application. This catches the exact semantic gap from `run-1780125199376-0` before real-tree apply/commit.
+- **Escalation rung 4 is implemented as ephemeral provider swap:** when `enzyme_loop_count >= 4`, `Metabolism::invoke_scheduled` routes the current invocation to a non-assigned provider without mutating provider assignments or durable `provider_policy`. Rung 4 preserves failure history for the swapped model; rung 5+ uses swap + clean-session stripping. Role-isolated swap avoids consuming other-role provider assignments.
 
 ### What is not working / unproven
 
@@ -38,18 +39,19 @@
 - **Architect output contract is brittle:** Kimi architect still produced two no-materialized-`system_patch` failures. Need raw-output previews and/or a valid no-op patch contract.
 - **Evolved topology value is unknown:** the 7-enzyme germline is RAF-closed and reached 100%, but may add latency/invocation overhead rather than useful capability.
 - **Compounding self-modification is unproven:** the only live architect patch in `sudoku 5` was irrelevant (`prime.rs`) and was reverted; relevance gate now prevents that class.
-- **Escalation rungs 4–6 are missing:** rungs 0–3 detect loops but do not reliably halt degradation.
+- **Escalation rungs 5–6 are missing/unproven:** rung 4 now swaps providers ephemerally, but rung 5 still needs explicit tests/lineage clarity and rung 6 generalized multi-model consensus is not implemented.
 - **Benchmark coverage is narrow:** sudoku is validated; chess/rubiks need stronger acceptance tests and live runs.
 - **Autopilot semantic validation is still partial:** markdown repo-path claims are now checked mechanically, but broader documentation/planning truth claims remain outside the gate. Mechanical path/temp/real gates plus repo-reference checks still do not validate causal correctness, performance claims, or design adequacy.
 - **Provider-policy usefulness remains unproven:** the runtime/durability safety path is live-validated, but no benchmark-useful provider-policy proposal has yet shown improved challenge outcomes.
 
 ### Best next moves
 
-1. **Implement escalation rung 4 in the actual mechanism files:** use `crates/a2d-core/src/metabolism.rs` and `crates/a2d-core/src/provider.rs`; start with ephemeral provider override + mock tests, not durable provider-policy mutation.
-2. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
-3. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
-4. **Find a benchmark-useful provider-policy proposal path:** runtime proposal safety is validated, but the live 7-enzyme topology still has no default policy-management enzyme; add one only if bounded tests show it does not starve coder/feedback metabolism.
-5. **Expand acceptance tests**: chess castling/en-passant/checkmate/legal-move invariants; Rubiks scramble-solve roundtrip.
+1. **Finish escalation rung 5 and design rung 6:** add explicit rung-5 tests/lineage clarity for swap + clean session, then generalize multi-provider consensus beyond the coder portfolio.
+2. **Live-validate rung 4 with a deterministic/bounded harness:** force `enzyme_loop_count = 4` without waiting for natural provider flakiness, and confirm lineage shows the provider swap under real registry conditions.
+3. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
+4. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
+5. **Find a benchmark-useful provider-policy proposal path:** runtime proposal safety is validated, but the live 7-enzyme topology still has no default policy-management enzyme; add one only if bounded tests show it does not starve coder/feedback metabolism.
+6. **Expand acceptance tests**: chess castling/en-passant/checkmate/legal-move invariants; Rubiks scramble-solve roundtrip.
 
 ### What works
 
@@ -73,6 +75,10 @@
 - **Provider-policy comparisons are now inspectable:** `a2d compare-provider-policy <challenge> <cycles> [policy-json|@path]` runs current and proposed policies with persistence disabled, prints policy deltas, and reports a gate decision.
 
 ### What happened this session
+
+- **Escalation rung 4 landed.** Added ephemeral provider-swap helpers in `crates/a2d-core/src/provider.rs` and wired `Metabolism::invoke_scheduled` in `crates/a2d-core/src/metabolism.rs` so `enzyme_loop_count >= 4` routes the current invocation to a non-assigned provider without mutating assignments or durable `provider_policy`. Rung 4 preserves failure history; rung 5+ strips failure context. Consultation is skipped at rung 4+ because the alternate provider is now the primary intervention. Added mock coverage for swap firing, non-firing below threshold, reset returning to assigned provider, prompt contents, assignment immutability, and role-isolated swaps.
+- **Escalation plan/todo updated.** Created `docs/plans/escalation-rungs-4-6.md`, updated `todos/escalation-rungs-4-6.md`, and documented learning `docs/solutions/architectural-insights/escalation-rung-4-ephemeral-provider-swap-2026-05-31.md`.
+- **Validation:** `cargo test` passes (195 passing, 2 ignored). `cargo run -q -p a2d -- status` confirms lineage-loaded 7-enzyme RAF remains 100% closed.
 
 - **Autopilot markdown repo-reference validation landed.** Temp-worktree validation now scans markdown replacements and `handoff_update` for repo-path references, normalizes anchors/line suffixes, and rejects invented or unsafe repo paths before real-tree apply/commit. Maintainer and repair prompts now warn that absent `crates/...`, `docs/...`, `todos/...`, `examples/...`, and `research/...` claims fail validation. Added unit coverage for the previous failure shape (`metabolism_workcell.rs`, `provider_registry.rs`) and an accepted existing-path case. Documented learning: `docs/solutions/runtime-bugs/autopilot-markdown-reference-validation-2026-05-31.md`.
 - **Validation:** initial pickup `cargo test` passed before changes (187 passing, 2 ignored). Post-change `cargo test` passes (189 passing, 2 ignored). `cargo run -q -p a2d -- autopilot --iterations 1 --dry-run` correctly stopped on dirty tree; `--dry-run --allow-dirty` built project state, selected `todos/escalation-rungs-4-6.md`, emitted monitor artifacts, and stopped before provider invocation.
@@ -222,15 +228,19 @@ Gemini is temporarily disabled from the default live registry due repeated capac
 
 ## Critical Path — What to Do Next
 
-### 1. Implement rungs 4–6: model swap → multi-model consensus → Darwinian isolation
+### 1. Finish rungs 5–6: clean swapped session → multi-model consensus
 
-Rungs 0–3 detect degradation but don't halt it. Start rung 4 in `crates/a2d-core/src/metabolism.rs` and `crates/a2d-core/src/provider.rs` with an ephemeral provider override plus mock tests, not durable provider-policy mutation. The next live question is whether swapping the coder's provider at rung 4 produces different output. Refinery patterns belong in the metabolism, not as a crate dependency.
+Rung 4 now swaps providers ephemerally when loop counters reach 4. Next: make rung 5 explicit with tests/lineage clarity for swapped clean-session behavior, then implement rung 6 as bounded multi-provider consensus/portfolio selected by mechanical fitness where available. Refinery patterns belong in the metabolism, not as a crate dependency.
 
-### 2. Address architect/tester provider latency
+### 2. Live-validate rung 4
+
+Use a deterministic or bounded harness that forces `enzyme_loop_count = 4` without waiting for natural provider repetition, and confirm real registry lineage shows the provider swap and automatic reset on changed output signature.
+
+### 3. Address architect/tester provider latency
 
 Latest role-isolated runs still had GLM architect timeouts and tester fallback latency. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
 
-### 3. Evaluate evolved 7-enzyme topology
+### 4. Evaluate evolved 7-enzyme topology
 
 The evolver accepted 6 mutations in `sudoku 5`, producing a 7-enzyme RAF-closed topology. Determine whether these extra enzymes improve outcomes or just add latency/invocation overhead. Use `a2d compare-topologies <challenge> <cycles>` for bounded, non-persistent seed-vs-evolved runs.
 
@@ -296,7 +306,7 @@ a2d enzymes                   # List enzyme definitions (now includes architect)
 a2d lineage                   # Git log of germline evolution
 
 # Run tests
-cargo test                    # 189 tests passing (2 ignored integration)
+cargo test                    # 195 tests passing (2 ignored integration)
 cargo test -- --ignored       # Run integration tests (slow, compiles in temp dir)
 
 # Check OpenCode model IDs
@@ -316,7 +326,7 @@ Search `docs/solutions/` before implementing. Key findings:
 - `todos/provider-policy-topology-gate.md` — completed; live runtime proposal was rejected durably without fitness evidence. Future work is a benchmark-useful provider-policy proposal path, not the safety gate itself.
 - `todos/autonomous-project-loop.md` — checkbox-complete for current slice; live repair-diversity routing validated with fault injection, successful DeepSeek repair reached commit, and markdown repo-reference validation now catches invented source-file claims; broader semantic claim validation remains partial
 - `todos/bounded-live-benchmarks.md` — `sudoku 5` completed with 100% best fitness; remaining provider waste: GLM timeouts + architect no-materialized-output
-- `todos/escalation-rungs-4-6.md` — model swap → multi-model consensus → Darwinian isolation (rungs 0–3 live; provider_policy now available as durable provider-assignment mechanism)
+- `todos/escalation-rungs-4-6.md` — model swap → multi-model consensus → Darwinian isolation (rung 4 ephemeral provider swap implemented; rung 5 explicit tests and rung 6 consensus remain)
 - `todos/architect-pyramid-summaries.md` — implemented; prompt-size validated; latency still bad due provider/scheduling
 - `todos/test-evolution.md` — challenges beyond sudoku/chess/rubiks
 - `todos/testable-core.md` — separate pure orchestration from provider I/O to enable deterministic replays

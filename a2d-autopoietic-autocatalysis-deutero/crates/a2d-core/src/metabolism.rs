@@ -160,7 +160,7 @@ pub struct Metabolism {
     // 1+ = current escalation rung. Resets to 0 when the enzyme produces
     // a different signature (escape the loop).
     //
-    // Rungs (target design — rungs 0-3 implemented, 4-6 to come):
+    // Rungs (target design — rungs 0-4 implemented, 5-6 to come):
     //   0: no intervention — enzyme is healthy
     //   1: inject loop awareness into the enzyme's prompt
     //   2: consult another model (advice from a second provider)
@@ -778,18 +778,25 @@ impl Metabolism {
             .copied()
             .unwrap_or(0);
 
-        // Rung 3+: strip failure_report from inputs (clean session).
+        let clean_session = loop_rung == 3 || loop_rung >= 5;
+        let swap_provider = loop_rung >= 4;
+
+        // Rung 3 and rung 5+: strip failure_report from inputs (clean session).
+        // Rung 4 deliberately preserves failure history for the swapped model.
         let mut invocation_inputs = scheduled.inputs.clone();
-        if loop_rung >= 3 {
+        if clean_session {
             invocation_inputs.remove(&ArtifactType::from("failure_report"));
             trace(&format!(
-                "rung 3+ clean session: stripped failure_report from {}",
-                scheduled.enzyme.id
+                "clean-session escalation: stripped failure_report from {} at rung {}",
+                scheduled.enzyme.id, loop_rung
             ));
         }
 
-        // Rung 2+: consult an alternative provider before the primary invocation.
-        let consultation = if loop_rung >= 2 {
+        // Rungs 2-3 consult an alternative provider before the primary
+        // invocation. Rung 4+ uses the alternative provider as the primary
+        // intervention, so consultation is skipped to avoid spending two
+        // provider windows on the same alternate model.
+        let consultation = if (2..=3).contains(&loop_rung) {
             let consultation_prompt = format!(
                 "Another model is stuck producing the same output. \
                  Here's the task: {}\n\n\
@@ -879,7 +886,7 @@ impl Metabolism {
             consultation.as_deref(),
         );
         let mut candidate_evaluations = Vec::new();
-        let (provider_name, response) = if parallelize_enzyme(&scheduled.enzyme) {
+        let (provider_name, response) = if parallelize_enzyme(&scheduled.enzyme) && !swap_provider {
             let (provider_name, response, evaluations) =
                 self.invoke_parallel_candidates(&scheduled.enzyme, &request);
             candidate_evaluations = evaluations;
@@ -891,7 +898,17 @@ impl Metabolism {
                 .provider_for(&scheduled.enzyme.id)
                 .name()
                 .to_string();
-            let provider = if uses_role_isolated_fallback(&scheduled.enzyme.id) {
+            let provider = if swap_provider {
+                if uses_role_isolated_fallback(&scheduled.enzyme.id) {
+                    self.providers.role_isolated_swapped_provider_for_avoiding(
+                        &scheduled.enzyme.id,
+                        &unavailable,
+                    )
+                } else {
+                    self.providers
+                        .swapped_provider_for_avoiding(&scheduled.enzyme.id, &unavailable)
+                }
+            } else if uses_role_isolated_fallback(&scheduled.enzyme.id) {
                 self.providers
                     .role_isolated_provider_for_avoiding(&scheduled.enzyme.id, &unavailable)
             } else {
@@ -900,8 +917,13 @@ impl Metabolism {
             };
             let provider_name = provider.name().to_string();
             if provider_name != assigned_provider_name {
+                let route_reason = if swap_provider {
+                    "rung-4 provider swap"
+                } else {
+                    "provider circuit breaker"
+                };
                 trace(&format!(
-                    "provider circuit breaker: routing {} from {} to {}",
+                    "{route_reason}: routing {} from {} to {}",
                     scheduled.enzyme.id, assigned_provider_name, provider_name
                 ));
             }
@@ -1652,7 +1674,9 @@ fn build_request(
 /// Rung 0: no intervention.
 /// Rung 1: awareness injection — tell the model it's been looping.
 /// Rung 2: awareness + consultation from another model appended.
-/// Rung 3+: awareness + clean session notice (failure context stripped by caller).
+/// Rung 3: awareness + clean session notice (failure context stripped by caller).
+/// Rung 4: awareness + ephemeral provider swap while preserving failure history.
+/// Rung 5+: provider swap + clean session notice.
 fn apply_rung_intervention(base: &str, rung: usize, consultation: Option<&str>) -> String {
     if rung == 0 {
         return base.to_string();
@@ -1684,8 +1708,20 @@ fn apply_rung_intervention(base: &str, rung: usize, consultation: Option<&str>) 
         ));
     }
 
-    // Rung 3+: clean session notice (failure context already stripped by caller).
-    if rung >= 3 {
+    if rung >= 4 {
+        result.push_str(
+            "\n\n=== PROVIDER SWAP ===\n\
+             This invocation is being handled by a different provider/model than \
+             the one that produced the repeated failures. Use the available \
+             failure history to avoid the previous model's local optimum.\n\
+             === END PROVIDER SWAP ===",
+        );
+    }
+
+    // Rung 3 and rung 5+: clean session notice (failure context already
+    // stripped by caller). Rung 4 preserves failure history for the swapped
+    // provider.
+    if rung == 3 || rung >= 5 {
         result.push_str(
             "\n\n=== CLEAN SESSION ===\n\
              Previous failure context has been cleared. You are starting fresh \
@@ -3834,6 +3870,118 @@ mod tests {
     }
 
     #[test]
+    fn rung_4_invokes_swapped_provider_without_consultation() {
+        let enzymes = vec![enzyme("worker", &["requirements"], &["output"], &[])];
+        let germline = Germline::new(enzymes, food(&["requirements"]));
+
+        let swapped = SequenceProvider::new(
+            "swapped",
+            vec![Ok(response(json!({"output": "from-swapped"}), vec![]))],
+        );
+        let mut registry = ProviderRegistry::new(Box::new(swapped));
+        let primary = registry.register(Box::new(SequenceProvider::new(
+            "primary",
+            vec![Err("primary should not be invoked at rung 4".into())],
+        )));
+        registry.assign(EnzymeId::from("worker"), primary);
+
+        let mut metabolism = Metabolism::new(germline, registry);
+        metabolism.seed_artifact(art("requirements"), b"do work".to_vec());
+        metabolism
+            .enzyme_loop_count
+            .insert(EnzymeId::from("worker"), 4);
+
+        let report = metabolism.run_cycle();
+
+        assert_eq!(report.invocations, 1);
+        assert_eq!(report.completed, 1, "{:?}", report.lineage[0].outcome);
+        assert_eq!(report.lineage[0].provider, "swapped");
+        assert_eq!(
+            String::from_utf8_lossy(&metabolism.artifacts.get(&art("output")).unwrap().bytes),
+            "from-swapped"
+        );
+    }
+
+    #[test]
+    fn rung_4_does_not_fire_below_threshold() {
+        let enzymes = vec![enzyme("worker", &["requirements"], &["output"], &[])];
+        let germline = Germline::new(enzymes, food(&["requirements"]));
+
+        let alternate = SequenceProvider::new(
+            "alternate",
+            vec![Ok(response(json!({"output": "from-alternate"}), vec![]))],
+        );
+        let mut registry = ProviderRegistry::new(Box::new(alternate));
+        let primary = registry.register(Box::new(SequenceProvider::new(
+            "primary",
+            vec![Ok(response(json!({"output": "from-primary"}), vec![]))],
+        )));
+        registry.assign(EnzymeId::from("worker"), primary);
+
+        let mut metabolism = Metabolism::new(germline, registry);
+        metabolism.seed_artifact(art("requirements"), b"do work".to_vec());
+        metabolism
+            .enzyme_loop_count
+            .insert(EnzymeId::from("worker"), 1);
+
+        let report = metabolism.run_cycle();
+
+        assert_eq!(report.completed, 1, "{:?}", report.lineage[0].outcome);
+        assert_eq!(report.lineage[0].provider, "primary");
+        assert_eq!(
+            String::from_utf8_lossy(&metabolism.artifacts.get(&art("output")).unwrap().bytes),
+            "from-primary"
+        );
+    }
+
+    #[test]
+    fn rung_4_escape_resets_to_assigned_provider() {
+        let enzymes = vec![enzyme("worker", &["requirements"], &["output"], &[])];
+        let germline = Germline::new(enzymes, food(&["requirements"]));
+
+        let swapped = SequenceProvider::new(
+            "swapped",
+            vec![Ok(response(json!({"output": "fresh"}), vec![]))],
+        );
+        let mut registry = ProviderRegistry::new(Box::new(swapped));
+        let primary = registry.register(Box::new(SequenceProvider::new(
+            "primary",
+            vec![Ok(response(json!({"output": "assigned-again"}), vec![]))],
+        )));
+        registry.assign(EnzymeId::from("worker"), primary);
+
+        let mut previous_outputs = ArtifactStore::new();
+        previous_outputs.insert(art("output"), b"stale".to_vec());
+
+        let mut metabolism = Metabolism::new(germline, registry);
+        metabolism.seed_artifact(art("requirements"), b"do work".to_vec());
+        metabolism
+            .enzyme_loop_count
+            .insert(EnzymeId::from("worker"), 4);
+        metabolism
+            .enzyme_output_hashes
+            .insert(EnzymeId::from("worker"), hash_outputs(&previous_outputs));
+
+        let report1 = metabolism.run_cycle();
+        assert_eq!(report1.lineage[0].provider, "swapped");
+        assert!(
+            report1.loop_escalations.is_empty(),
+            "fresh output should reset rung state: {:?}",
+            report1.loop_escalations
+        );
+
+        metabolism.seed_artifact(art("requirements"), b"do work again".to_vec());
+        let report2 = metabolism.run_cycle();
+
+        assert_eq!(report2.completed, 1, "{:?}", report2.lineage[0].outcome);
+        assert_eq!(report2.lineage[0].provider, "primary");
+        assert_eq!(
+            String::from_utf8_lossy(&metabolism.artifacts.get(&art("output")).unwrap().bytes),
+            "assigned-again"
+        );
+    }
+
+    #[test]
     fn rung_2_consults_alternative_provider() {
         // When loop_rung >= 2, the metabolism should:
         // 1. Call an alternative provider for consultation
@@ -4147,6 +4295,33 @@ mod tests {
         assert!(
             !req.system.contains("CLEAN SESSION"),
             "rung 2 should NOT include clean session (that's rung 3+)"
+        );
+    }
+
+    #[test]
+    fn rung_4_build_request_has_provider_swap_without_clean_session() {
+        let test_enzyme = EnzymeDef {
+            id: EnzymeId::from("coder"),
+            reactants: [art("requirements")].into(),
+            products: [art("code")].into(),
+            catalysts: [art("failure_report")].into(),
+            prompt_template: Some("Write code.".to_string()),
+        };
+
+        let mut inputs = ArtifactStore::new();
+        inputs.insert(art("requirements"), b"build it".to_vec());
+        inputs.insert(art("failure_report"), b"previous compiler error".to_vec());
+
+        let req = build_request(&test_enzyme, &inputs, 4, None);
+
+        assert!(req.system.contains("LOOP DETECTED"));
+        assert!(req.system.contains("escalation rung 4"));
+        assert!(req.system.contains("PROVIDER SWAP"));
+        assert!(req.system.contains("PREVIOUS ATTEMPT FAILED"));
+        assert!(req.system.contains("previous compiler error"));
+        assert!(
+            !req.system.contains("CLEAN SESSION"),
+            "rung 4 should preserve failure history for the swapped provider"
         );
     }
 

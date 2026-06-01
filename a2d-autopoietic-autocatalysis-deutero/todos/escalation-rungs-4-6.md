@@ -5,6 +5,7 @@
 **Provider-health update:** 2026-04-23 — provider failures/timeouts now open a temporary provider-level circuit breaker and route subsequent invocations to healthy alternatives; this is not full rung 4 history-aware model swap.
 **Provider-policy update:** 2026-05-23 — provider assignment is now a typed, gated, durable `provider_policy` artifact persisted as lineage `provider-policy.json`. This gives rung 4+ a safer mechanism for provider-role changes, but durable policy still needs topology-comparison gating.
 **Implementation-status update:** 2026-05-29 — rungs 4–6 handler code has not been added to `invoke_scheduled` escalation branching. The circuit-breaker and provider-policy infrastructure exists, but swap/consensus logic still belongs in the current mechanism files (`crates/a2d-core/src/metabolism.rs` and `crates/a2d-core/src/provider.rs`).
+**Implementation-status update:** 2026-05-31 — rung 4 ephemeral provider swap is implemented and unit-tested in `crates/a2d-core/src/metabolism.rs` and `crates/a2d-core/src/provider.rs`. Rung 4 preserves failure history for the swapped provider; rung 5+ remains the clean-session swap path. Rungs 5–6 are still not implemented as distinct mechanisms beyond the rung-4 swap and existing clean-session behavior.
 **Depends on:** Rungs 0-3 (implemented), cycle iteration/firing cap (implemented), cycle wall-clock cap (implemented), provider-policy topology gate (`todos/provider-policy-topology-gate.md`).
 
 ## What's Built (observed firing live 2026-04-17)
@@ -13,6 +14,7 @@
 - **Rung 1:** Inject awareness ("you're stuck, try fundamentally differently"). Fired for coder, evolver, architect.
 - **Rung 2:** Consult another model (alternative provider gives advice, injected into primary's prompt). Fired for coder and architect.
 - **Rung 3:** Clean session (strip failure_report context, start fresh). Fired for coder and evolver.
+- **Rung 4:** Ephemeral provider swap (implemented 2026-05-31). When an enzyme's loop counter reaches 4, the current invocation routes to a non-assigned provider without mutating durable `provider_policy`; the swap resets automatically when the output signature changes.
 - **Provider circuit breaker (adjacent to rung 4):** provider invocation failures/timeouts temporarily cool down the failed provider and route subsequent invocations to healthy alternatives. Cooldown expiry makes the original provider eligible again, avoiding permanent bans. See `docs/solutions/runtime-bugs/provider-circuit-breaker-temporary-cooldown-2026-04-23.md`.
 
 All 4 rungs layer: rung 3 includes awareness + consultation + clean session.
@@ -23,15 +25,15 @@ Live run on sudoku (Kimi/Gemini/GLM), 2026-04-17: every dynamic enzyme climbed t
 
 ## Implementation Status
 
-- **Rung 4 (swap with history):** NOT IMPLEMENTED. `invoke_scheduled` in `metabolism_workcell.rs` matches on `escalation_rung` but has no arm for rung ≥ 4 beyond falling through to rung-3 logic. Need to add `ProviderRegistry::swap_provider()` and wire it at `enzyme_loop_count >= 4`.
-- **Rung 5 (swap + clean):** NOT IMPLEMENTED. Will reuse rung-4 swap + rung-3 clean-session code path.
+- **Rung 4 (swap with history):** IMPLEMENTED. `invoke_scheduled` in `crates/a2d-core/src/metabolism.rs` now uses an ephemeral provider override at `enzyme_loop_count >= 4`, backed by `ProviderRegistry::swapped_provider_for_avoiding()` and `role_isolated_swapped_provider_for_avoiding()`. It does not mutate provider assignments or durable provider policy.
+- **Rung 5 (swap + clean):** PARTIALLY IMPLEMENTED. The current `loop_rung >= 5` path combines rung-4 provider swap with clean-session failure-context stripping, but it still needs explicit tests/acceptance as its own rung.
 - **Rung 6 (multi-model consensus):** NOT IMPLEMENTED. Requires parallel invocation and fitness-based selection.
 - **Provider circuit breaker:** IMPLEMENTED (adjacent to rung 4). Temporary cooldown + reroute works. Durable policy swap via `provider-policy.json` exists but topology gate is not yet wired.
 
 Next-action targets:
-1. `crates/a2d-core/src/metabolism.rs` — add rung-4 provider override in `invoke_scheduled` / provider-selection flow
-2. `crates/a2d-core/src/provider.rs` — add non-persistent alternative-provider selection helpers if the existing `alternative_provider_for*` APIs are insufficient
-3. Write mock tests before live tests (per test plan below)
+1. Add explicit rung-5 tests and prompt/lineage clarity for swap + clean-session behavior.
+2. Implement rung 6 multi-model consensus with bounded/sequential provider invocation and fitness-based selection.
+3. Live-validate rung 4 under a bounded run or deterministic harness that forces an enzyme to rung 4 without waiting for provider flakiness.
 
 ## Rung 2 status
 
