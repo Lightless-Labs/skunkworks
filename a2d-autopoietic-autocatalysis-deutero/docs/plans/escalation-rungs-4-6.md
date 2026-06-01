@@ -2,6 +2,7 @@
 
 **Created:** 2026-05-31
 **Started:** 2026-05-31 — rung 4 ephemeral provider swap implemented
+**Enhanced:** 2026-06-01 — rung 5 explicit clean swapped-session lineage and prompt coverage added
 **Todo:** `todos/escalation-rungs-4-6.md`
 
 ## Problem
@@ -45,16 +46,27 @@ Coverage added:
 - provider swap helpers avoid mutating assignments;
 - role-isolated swap excludes other-role providers.
 
-## Rung 5 next
+## Rung 5 slice — implemented 2026-06-01
 
-Rung 5 should be the explicit clean-session variant of rung 4:
+Rung 5 is now explicit as the clean-session variant of rung 4:
 
 - provider swap remains active;
-- `failure_report` is stripped;
-- prompt should state that the new model is solving from scratch;
-- tests should assert both swapped provider selection and absence of failure context.
+- `failure_report` is stripped before request construction;
+- invocation lineage records `escalation_rung`, `provider_swap`, and `clean_session`;
+- clean-session lineage records provider-visible inputs, so stripped failure context does not appear as if it reached the provider;
+- provider-health `recent_invocations` carries the same escalation fields;
+- topology lineage output annotates escalated invocations, for example `{rung 5, swap, clean}`.
 
-Current code already applies `clean_session` for `loop_rung >= 5`, but this still needs explicit rung-5 tests and lineage/prompt clarity before considering the rung complete.
+Coverage added:
+
+- rung 5 invokes the swapped provider and not the primary;
+- rung 5 marks swap + clean-session metadata in lineage;
+- rung 5 omits `failure_report` from provider-visible lineage inputs;
+- rung-5 prompt contains provider-swap and clean-session notices while excluding previous-failure and consultation text;
+- topology comparison formatting prints escalation flags;
+- provider-health recent invocation JSON includes escalation fields.
+
+Learning: `docs/solutions/architectural-insights/escalation-rung-5-clean-swapped-session-lineage-2026-06-01.md`.
 
 ## Rung 6 next
 
@@ -71,11 +83,11 @@ The existing coder portfolio is a useful precedent, but rung 6 should be general
 
 ## Validation
 
-Current validation after rung 4:
+Current validation after rung 5:
 
 ```text
 cargo test
-36 CLI tests + 140 core tests + 11 bootstrap + 7 provider + 1 doctest = 195 passing, 2 ignored
+37 CLI tests + 142 core tests + 11 bootstrap + 7 provider + 1 doctest = 198 passing, 2 ignored
 ```
 
-Before live provider validation, prefer a deterministic harness or short bounded run that forces `enzyme_loop_count = 4` without waiting for natural provider repetition.
+Before live provider validation, prefer a deterministic harness or short bounded run that forces `enzyme_loop_count = 4`/`5` without waiting for natural provider repetition.

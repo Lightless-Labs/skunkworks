@@ -92,6 +92,17 @@ pub struct InvocationLineage {
     pub workcell_id: WorkcellId,
     pub enzyme_id: EnzymeId,
     pub provider: String,
+    /// Escalation rung that shaped this invocation. Zero means no active loop
+    /// intervention; values 1+ map to the rung ladder documented in
+    /// `todos/escalation-rungs-4-6.md`.
+    pub escalation_rung: usize,
+    /// True when the invocation used the provider-swap path (rung 4+). This is
+    /// the requested intervention, even if a one-provider registry has no
+    /// alternate provider to route to.
+    pub provider_swap: bool,
+    /// True when failure context was stripped before building the provider
+    /// request (rung 3 and rung 5+).
+    pub clean_session: bool,
     pub inputs: ArtifactStore,
     pub outputs: ArtifactStore,
     pub tool_events: Vec<ToolEvent>,
@@ -863,7 +874,10 @@ impl Metabolism {
                         workcell_id,
                         enzyme_id: scheduled.enzyme.id,
                         provider: alt_provider_name,
-                        inputs: scheduled.inputs,
+                        escalation_rung: loop_rung,
+                        provider_swap: swap_provider,
+                        clean_session,
+                        inputs: invocation_inputs,
                         outputs: ArtifactStore::new(),
                         tool_events: workcell.trace().to_vec(),
                         health,
@@ -917,7 +931,9 @@ impl Metabolism {
             };
             let provider_name = provider.name().to_string();
             if provider_name != assigned_provider_name {
-                let route_reason = if swap_provider {
+                let route_reason = if swap_provider && clean_session {
+                    "rung-5 clean provider swap"
+                } else if swap_provider {
                     "rung-4 provider swap"
                 } else {
                     "provider circuit breaker"
@@ -997,7 +1013,10 @@ impl Metabolism {
             workcell_id,
             enzyme_id: scheduled.enzyme.id,
             provider: provider_name,
-            inputs: scheduled.inputs,
+            escalation_rung: loop_rung,
+            provider_swap: swap_provider,
+            clean_session,
+            inputs: invocation_inputs,
             outputs,
             tool_events: workcell.trace().to_vec(),
             health,
@@ -1462,6 +1481,9 @@ fn provider_report_lineage_entry(entry: &InvocationLineage) -> Value {
         "cycle": entry.cycle,
         "enzyme": entry.enzyme_id.0,
         "provider": entry.provider,
+        "escalation_rung": entry.escalation_rung,
+        "provider_swap": entry.provider_swap,
+        "clean_session": entry.clean_session,
         "outcome": outcome,
         "error": error,
         "candidates": candidates,
@@ -3421,6 +3443,18 @@ mod tests {
             provider_report["recent_invocations"][0]["outcome"],
             "failed"
         );
+        assert_eq!(
+            provider_report["recent_invocations"][0]["escalation_rung"],
+            0
+        );
+        assert_eq!(
+            provider_report["recent_invocations"][0]["provider_swap"],
+            false
+        );
+        assert_eq!(
+            provider_report["recent_invocations"][0]["clean_session"],
+            false
+        );
         assert!(
             provider_report["recent_invocations"][0]["error"]
                 .as_str()
@@ -3896,9 +3930,60 @@ mod tests {
         assert_eq!(report.invocations, 1);
         assert_eq!(report.completed, 1, "{:?}", report.lineage[0].outcome);
         assert_eq!(report.lineage[0].provider, "swapped");
+        assert_eq!(report.lineage[0].escalation_rung, 4);
+        assert!(report.lineage[0].provider_swap);
+        assert!(!report.lineage[0].clean_session);
         assert_eq!(
             String::from_utf8_lossy(&metabolism.artifacts.get(&art("output")).unwrap().bytes),
             "from-swapped"
+        );
+    }
+
+    #[test]
+    fn rung_5_invokes_swapped_provider_with_clean_session_lineage() {
+        let enzymes = vec![enzyme(
+            "worker",
+            &["requirements"],
+            &["output"],
+            &["failure_report"],
+        )];
+        let germline = Germline::new(enzymes, food(&["requirements", "failure_report"]));
+
+        let swapped = SequenceProvider::new(
+            "swapped",
+            vec![Ok(response(json!({"output": "fresh-clean"}), vec![]))],
+        );
+        let mut registry = ProviderRegistry::new(Box::new(swapped));
+        let primary = registry.register(Box::new(SequenceProvider::new(
+            "primary",
+            vec![Err("primary should not be invoked at rung 5".into())],
+        )));
+        registry.assign(EnzymeId::from("worker"), primary);
+
+        let mut metabolism = Metabolism::new(germline, registry);
+        metabolism.seed_artifact(art("requirements"), b"do work".to_vec());
+        metabolism.seed_artifact(art("failure_report"), b"stale failure details".to_vec());
+        metabolism
+            .enzyme_loop_count
+            .insert(EnzymeId::from("worker"), 5);
+
+        let report = metabolism.run_cycle();
+
+        assert_eq!(report.invocations, 1);
+        assert_eq!(report.completed, 1, "{:?}", report.lineage[0].outcome);
+        assert_eq!(report.lineage[0].provider, "swapped");
+        assert_eq!(report.lineage[0].escalation_rung, 5);
+        assert!(report.lineage[0].provider_swap);
+        assert!(report.lineage[0].clean_session);
+        assert!(
+            !report.lineage[0]
+                .inputs
+                .contains_key(&art("failure_report")),
+            "clean-session lineage should record the provider-visible inputs"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&metabolism.artifacts.get(&art("output")).unwrap().bytes),
+            "fresh-clean"
         );
     }
 
@@ -3928,6 +4013,9 @@ mod tests {
 
         assert_eq!(report.completed, 1, "{:?}", report.lineage[0].outcome);
         assert_eq!(report.lineage[0].provider, "primary");
+        assert_eq!(report.lineage[0].escalation_rung, 1);
+        assert!(!report.lineage[0].provider_swap);
+        assert!(!report.lineage[0].clean_session);
         assert_eq!(
             String::from_utf8_lossy(&metabolism.artifacts.get(&art("output")).unwrap().bytes),
             "from-primary"
@@ -4323,6 +4411,31 @@ mod tests {
             !req.system.contains("CLEAN SESSION"),
             "rung 4 should preserve failure history for the swapped provider"
         );
+    }
+
+    #[test]
+    fn rung_5_build_request_has_provider_swap_and_clean_session_without_failure_context() {
+        let test_enzyme = EnzymeDef {
+            id: EnzymeId::from("coder"),
+            reactants: [art("requirements")].into(),
+            products: [art("code")].into(),
+            catalysts: [art("failure_report")].into(),
+            prompt_template: Some("Write code.".to_string()),
+        };
+
+        let mut inputs = ArtifactStore::new();
+        inputs.insert(art("requirements"), b"build it".to_vec());
+        // Rung 5 clean-session stripping happens before build_request, so the
+        // provider-visible inputs intentionally omit failure_report here.
+        let req = build_request(&test_enzyme, &inputs, 5, None);
+
+        assert!(req.system.contains("LOOP DETECTED"));
+        assert!(req.system.contains("escalation rung 5"));
+        assert!(req.system.contains("PROVIDER SWAP"));
+        assert!(req.system.contains("CLEAN SESSION"));
+        assert!(req.system.contains("starting fresh"));
+        assert!(!req.system.contains("PREVIOUS ATTEMPT FAILED"));
+        assert!(!req.system.contains("CONSULTATION FROM ANOTHER MODEL"));
     }
 
     #[test]

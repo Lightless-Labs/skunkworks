@@ -6,6 +6,7 @@
 **Provider-policy update:** 2026-05-23 — provider assignment is now a typed, gated, durable `provider_policy` artifact persisted as lineage `provider-policy.json`. This gives rung 4+ a safer mechanism for provider-role changes, but durable policy still needs topology-comparison gating.
 **Implementation-status update:** 2026-05-29 — rungs 4–6 handler code has not been added to `invoke_scheduled` escalation branching. The circuit-breaker and provider-policy infrastructure exists, but swap/consensus logic still belongs in the current mechanism files (`crates/a2d-core/src/metabolism.rs` and `crates/a2d-core/src/provider.rs`).
 **Implementation-status update:** 2026-05-31 — rung 4 ephemeral provider swap is implemented and unit-tested in `crates/a2d-core/src/metabolism.rs` and `crates/a2d-core/src/provider.rs`. Rung 4 preserves failure history for the swapped provider; rung 5+ remains the clean-session swap path. Rungs 5–6 are still not implemented as distinct mechanisms beyond the rung-4 swap and existing clean-session behavior.
+**Implementation-status update:** 2026-06-01 — rung 5 is now explicit and unit-tested in `crates/a2d-core/src/metabolism.rs`; invocation lineage, provider-health reports, and topology comparison output expose `escalation_rung`, `provider_swap`, and `clean_session`, with clean-session lineage recording provider-visible inputs. Rung 6 consensus remains unimplemented.
 **Depends on:** Rungs 0-3 (implemented), cycle iteration/firing cap (implemented), cycle wall-clock cap (implemented), provider-policy topology gate (`todos/provider-policy-topology-gate.md`).
 
 ## What's Built (observed firing live 2026-04-17)
@@ -26,14 +27,14 @@ Live run on sudoku (Kimi/Gemini/GLM), 2026-04-17: every dynamic enzyme climbed t
 ## Implementation Status
 
 - **Rung 4 (swap with history):** IMPLEMENTED. `invoke_scheduled` in `crates/a2d-core/src/metabolism.rs` now uses an ephemeral provider override at `enzyme_loop_count >= 4`, backed by `ProviderRegistry::swapped_provider_for_avoiding()` and `role_isolated_swapped_provider_for_avoiding()`. It does not mutate provider assignments or durable provider policy.
-- **Rung 5 (swap + clean):** PARTIALLY IMPLEMENTED. The current `loop_rung >= 5` path combines rung-4 provider swap with clean-session failure-context stripping, but it still needs explicit tests/acceptance as its own rung.
-- **Rung 6 (multi-model consensus):** NOT IMPLEMENTED. Requires parallel invocation and fitness-based selection.
+- **Rung 5 (swap + clean):** IMPLEMENTED. The `loop_rung >= 5` path combines provider swap with clean-session failure-context stripping; lineage now records rung/swap/clean metadata and provider-visible inputs, provider-health reports carry escalation fields, and topology comparison prints escalation flags.
+- **Rung 6 (multi-model consensus):** NOT IMPLEMENTED. Requires bounded multi-provider invocation and fitness-based selection.
 - **Provider circuit breaker:** IMPLEMENTED (adjacent to rung 4). Temporary cooldown + reroute works. Durable policy swap via `provider-policy.json` exists but topology gate is not yet wired.
 
 Next-action targets:
-1. Add explicit rung-5 tests and prompt/lineage clarity for swap + clean-session behavior.
-2. Implement rung 6 multi-model consensus with bounded/sequential provider invocation and fitness-based selection.
-3. Live-validate rung 4 under a bounded run or deterministic harness that forces an enzyme to rung 4 without waiting for provider flakiness.
+1. Implement rung 6 multi-model consensus with bounded/sequential provider invocation and fitness-based selection.
+2. Live-validate rung 4/5 under a bounded run or deterministic harness that forces an enzyme to rung 4/5 without waiting for provider flakiness.
+3. Decide whether rung 6 should generalize the existing coder portfolio machinery or use a separate bounded sequential portfolio for all enzymes.
 
 ## Rung 2 status
 

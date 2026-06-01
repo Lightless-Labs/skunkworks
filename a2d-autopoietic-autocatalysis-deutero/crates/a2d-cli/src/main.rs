@@ -3153,8 +3153,23 @@ fn format_topology_lineage_entry(entry: &InvocationLineage) -> String {
         }
         a2d_core::workcell::WorkcellOutcome::Killed { reason } => format!("KILL: {reason:?}"),
     };
+    let escalation = if entry.escalation_rung == 0 {
+        String::new()
+    } else {
+        let mut parts = vec![format!("rung {}", entry.escalation_rung)];
+        if entry.provider_swap {
+            parts.push("swap".to_string());
+        }
+        if entry.clean_session {
+            parts.push("clean".to_string());
+        }
+        format!(" {{{}}}", parts.join(", "))
+    };
 
-    format!("    [{} via {}] {outcome}", entry.enzyme_id, entry.provider)
+    format!(
+        "    [{} via {}{}] {outcome}",
+        entry.enzyme_id, entry.provider, escalation
+    )
 }
 
 fn print_topology_lineage(report: &CycleReport) {
@@ -3306,6 +3321,9 @@ mod tests {
             workcell_id: a2d_core::workcell::WorkcellId("wc-test".to_string()),
             enzyme_id: EnzymeId::from("evolver"),
             provider: "opencode/kimi-for-coding/k2p6".to_string(),
+            escalation_rung: 0,
+            provider_swap: false,
+            clean_session: false,
             inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),
             tool_events: Vec::new(),
@@ -3339,6 +3357,21 @@ mod tests {
 
         assert!(formatted.ends_with('…'));
         assert!(formatted.chars().count() < 320);
+    }
+
+    #[test]
+    fn topology_lineage_entry_shows_escalation_rung_flags() {
+        let mut entry = topology_entry(a2d_core::workcell::WorkcellOutcome::Success {
+            outputs: BTreeMap::new(),
+        });
+        entry.escalation_rung = 5;
+        entry.provider_swap = true;
+        entry.clean_session = true;
+
+        assert_eq!(
+            format_topology_lineage_entry(&entry),
+            "    [evolver via opencode/kimi-for-coding/k2p6 {rung 5, swap, clean}] OK"
+        );
     }
 
     #[test]
