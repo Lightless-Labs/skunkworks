@@ -3,6 +3,7 @@
 **Created:** 2026-05-31
 **Started:** 2026-05-31 — rung 4 ephemeral provider swap implemented
 **Enhanced:** 2026-06-01 — rung 5 explicit clean swapped-session lineage and prompt coverage added
+**Completed:** 2026-06-01 — rung 6 bounded provider consensus implemented
 **Todo:** `todos/escalation-rungs-4-6.md`
 
 ## Problem
@@ -68,26 +69,32 @@ Coverage added:
 
 Learning: `docs/solutions/architectural-insights/escalation-rung-5-clean-swapped-session-lineage-2026-06-01.md`.
 
-## Rung 6 next
+## Rung 6 slice — implemented 2026-06-01
 
-Rung 6 should be a bounded provider portfolio/consensus path:
+Rung 6 is now a bounded provider portfolio/consensus path:
 
-1. collect eligible providers for the enzyme;
-2. invoke them sequentially or with bounded concurrency;
-3. materialize candidate outputs;
-4. if output includes `code` and a benchmark is attached, pick highest fitness;
-5. otherwise record candidates and use a deterministic fallback selection rule;
-6. record candidate evaluations in lineage.
+1. collect role-isolated eligible providers for the enzyme while avoiding cooled-down providers;
+2. cap the portfolio with `A2D_RUNG6_MAX_PROVIDERS` (default 3);
+3. invoke candidates sequentially to avoid unbounded concurrent provider-window consumption;
+4. materialize candidate outputs and record candidate evaluations in lineage;
+5. if output includes `code` and a benchmark is attached, pick highest fitness;
+6. otherwise use a deterministic fallback: first materialized success, then first success, then first error.
 
-The existing coder portfolio is a useful precedent, but rung 6 should be generalized and bounded for non-coder enzymes.
+Coverage added:
+
+- rung 6 selects the higher-fitness code candidate under a benchmark;
+- rung 6 records candidate evaluations and rung/swap/clean metadata;
+- rung 6 works for non-code enzymes by selecting the first materialized success after an earlier provider failure.
+
+Learning: `docs/solutions/architectural-insights/escalation-rung-6-bounded-provider-consensus-2026-06-01.md`.
 
 ## Validation
 
-Current validation after rung 5:
+Current validation after rung 6:
 
 ```text
 cargo test
-37 CLI tests + 142 core tests + 11 bootstrap + 7 provider + 1 doctest = 198 passing, 2 ignored
+37 CLI tests + 144 core tests + 11 bootstrap + 7 provider + 1 doctest = 200 passing, 2 ignored
 ```
 
-Before live provider validation, prefer a deterministic harness or short bounded run that forces `enzyme_loop_count = 4`/`5` without waiting for natural provider repetition.
+Before live provider validation, prefer a deterministic harness or short bounded run that forces `enzyme_loop_count = 4`/`5`/`6` without waiting for natural provider repetition.

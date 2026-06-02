@@ -899,8 +899,14 @@ impl Metabolism {
             loop_rung,
             consultation.as_deref(),
         );
+        let consensus_portfolio = loop_rung >= 6;
         let mut candidate_evaluations = Vec::new();
-        let (provider_name, response) = if parallelize_enzyme(&scheduled.enzyme) && !swap_provider {
+        let (provider_name, response) = if consensus_portfolio {
+            let (provider_name, response, evaluations) =
+                self.invoke_consensus_candidates(&scheduled.enzyme, &request);
+            candidate_evaluations = evaluations;
+            (provider_name, response)
+        } else if parallelize_enzyme(&scheduled.enzyme) && !swap_provider {
             let (provider_name, response, evaluations) =
                 self.invoke_parallel_candidates(&scheduled.enzyme, &request);
             candidate_evaluations = evaluations;
@@ -1028,6 +1034,40 @@ impl Metabolism {
         }
     }
 
+    fn invoke_consensus_candidates(
+        &mut self,
+        enzyme: &EnzymeDef,
+        request: &InvocationRequest,
+    ) -> (
+        String,
+        Result<InvocationResponse, ProviderError>,
+        Vec<CandidateEvaluation>,
+    ) {
+        let unavailable = self.unavailable_provider_names(Instant::now());
+        let candidates = self
+            .providers
+            .parallel_providers_for_avoiding(&enzyme.id, &unavailable);
+        let cap = rung6_provider_cap();
+
+        trace(&format!(
+            "rung-6 provider consensus for {}: {:?}",
+            enzyme.id,
+            candidates
+                .iter()
+                .take(cap)
+                .map(|provider| provider.name())
+                .collect::<Vec<_>>()
+        ));
+
+        let results = candidates
+            .into_iter()
+            .take(cap)
+            .map(|provider| (provider.name().to_string(), provider.invoke(request)))
+            .collect::<Vec<_>>();
+
+        self.select_provider_candidate(enzyme, results)
+    }
+
     fn invoke_parallel_candidates(
         &mut self,
         enzyme: &EnzymeDef,
@@ -1088,6 +1128,18 @@ impl Metabolism {
                 .collect::<Vec<_>>()
         });
 
+        self.select_provider_candidate(enzyme, results)
+    }
+
+    fn select_provider_candidate(
+        &mut self,
+        enzyme: &EnzymeDef,
+        results: Vec<(String, Result<InvocationResponse, ProviderError>)>,
+    ) -> (
+        String,
+        Result<InvocationResponse, ProviderError>,
+        Vec<CandidateEvaluation>,
+    ) {
         let mut evaluations = Vec::new();
         let mut selected_index = None;
         let mut selected_fitness = None::<f64>;
@@ -1166,7 +1218,7 @@ impl Metabolism {
             }
         }
 
-        let selected = selected.expect("parallel invocation has at least one candidate");
+        let selected = selected.expect("portfolio invocation has at least one candidate");
         (selected.0, selected.1, evaluations)
     }
 
@@ -1537,6 +1589,14 @@ fn parallelize_enzyme(enzyme: &EnzymeDef) -> bool {
     }
 
     enzyme.products.contains(&ArtifactType::from("code"))
+}
+
+fn rung6_provider_cap() -> usize {
+    std::env::var("A2D_RUNG6_MAX_PROVIDERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|cap| *cap > 0)
+        .unwrap_or(3)
 }
 
 fn evolver_system_prompt(
@@ -3984,6 +4044,109 @@ mod tests {
         assert_eq!(
             String::from_utf8_lossy(&metabolism.artifacts.get(&art("output")).unwrap().bytes),
             "fresh-clean"
+        );
+    }
+
+    #[test]
+    fn rung_6_consensus_selects_highest_fitness_code_candidate() {
+        let enzymes = vec![enzyme("coder", &["requirements"], &["code"], &[])];
+        let germline = Germline::new(enzymes, food(&["requirements"]));
+
+        let weak_code = "fn main() { println!(\"weak\"); }";
+        let strong_code = r#"
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn works() {
+        assert_eq!(2 + 2, 4);
+    }
+}
+"#;
+
+        let mut registry = ProviderRegistry::new(Box::new(SequenceProvider::new(
+            "weak-first",
+            vec![Ok(response(
+                json!({"code": weak_code}),
+                vec![ToolEvent::Text],
+            ))],
+        )));
+        registry.register(Box::new(SequenceProvider::new(
+            "strong-second",
+            vec![Ok(response(
+                json!({"code": strong_code}),
+                vec![ToolEvent::Text],
+            ))],
+        )));
+
+        let mut metabolism =
+            Metabolism::new(germline, registry).with_benchmark(BenchmarkSuite::default());
+        metabolism.seed_artifact(art("requirements"), b"write code".to_vec());
+        metabolism
+            .enzyme_loop_count
+            .insert(EnzymeId::from("coder"), 6);
+
+        let report = metabolism.run_cycle();
+
+        assert_eq!(report.completed, 1, "{:?}", report.lineage[0].outcome);
+        assert_eq!(report.lineage[0].provider, "strong-second");
+        assert_eq!(report.lineage[0].escalation_rung, 6);
+        assert!(report.lineage[0].provider_swap);
+        assert!(report.lineage[0].clean_session);
+        assert_eq!(report.lineage[0].candidate_evaluations.len(), 2);
+        assert_eq!(
+            report.lineage[0].candidate_evaluations[0]
+                .fitness
+                .as_ref()
+                .unwrap()
+                .passed,
+            2
+        );
+        assert_eq!(
+            report.lineage[0].candidate_evaluations[1]
+                .fitness
+                .as_ref()
+                .unwrap()
+                .passed,
+            3
+        );
+        assert_eq!(report.fitness.as_ref().unwrap().fitness, 1.0);
+    }
+
+    #[test]
+    fn rung_6_consensus_uses_first_materialized_non_code_success() {
+        let enzymes = vec![enzyme("worker", &["requirements"], &["output"], &[])];
+        let germline = Germline::new(enzymes, food(&["requirements"]));
+
+        let mut registry = ProviderRegistry::new(Box::new(SequenceProvider::new(
+            "failing-first",
+            vec![Err("provider down".into())],
+        )));
+        registry.register(Box::new(SequenceProvider::new(
+            "materialized-second",
+            vec![Ok(response(json!({"output": "usable"}), vec![]))],
+        )));
+
+        let mut metabolism = Metabolism::new(germline, registry);
+        metabolism.seed_artifact(art("requirements"), b"do work".to_vec());
+        metabolism
+            .enzyme_loop_count
+            .insert(EnzymeId::from("worker"), 6);
+
+        let report = metabolism.run_cycle();
+
+        assert_eq!(report.completed, 1, "{:?}", report.lineage[0].outcome);
+        assert_eq!(report.lineage[0].provider, "materialized-second");
+        assert_eq!(report.lineage[0].candidate_evaluations.len(), 2);
+        assert_eq!(
+            report.lineage[0].candidate_evaluations[0].error.as_deref(),
+            Some("model invocation failed: provider down")
+        );
+        assert!(report.lineage[0].candidate_evaluations[1].materialized);
+        assert_eq!(
+            String::from_utf8_lossy(&metabolism.artifacts.get(&art("output")).unwrap().bytes),
+            "usable"
         );
     }
 
