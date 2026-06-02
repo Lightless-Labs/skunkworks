@@ -1,7 +1,7 @@
 # Self-Correction Loop Recovery TODO
 
 Created: 2026-05-10
-Updated: 2026-05-30
+Updated: 2026-06-02
 
 ## Current status
 
@@ -46,12 +46,13 @@ Working:
 - `compound-constitution-same-crate-hidden` was added 2026-05-31 in `a2_constitution`; smoke-only injection verified both bootstrap-profile failures and Minimax resolved 3/3 with pass@1 2/3 and self-corrected 1/3. Result: `/tmp/a2-constitution-same-crate-minimax-20260531T183820Z.jsonl`.
 - `compound-workcell-same-crate-hidden` was added 2026-06-01 in `a2_workcell`; smoke-only injection verified both catalyst parsing/truncation failures and Minimax resolved 3/3 with pass@1 1/3 and self-corrected 2/3. Result: `/tmp/a2-workcell-same-crate-minimax-20260601T192100Z.jsonl`.
 - `compound-a2d-same-crate-hidden` was added 2026-06-01 in `a2d`; smoke-only injection verified both stagnation-window and verifier-backstop failures. Result: `/tmp/a2-a2d-fixture-smoke.jsonl`.
+- `compound-a2d-same-crate-hidden` with Minimax on 2026-06-02 resolved 3/3 runs; pass@1 2/3; loop exercised 1/3; self-corrected 1/3. Result: `/tmp/a2-a2d-same-crate-minimax-20260602T062403Z.jsonl`.
 - Sentinel passed 6/6 after refreshing stale `Cargo.lock` with `cargo generate-lockfile --offline` during Pi/ZAI validation.
 
 Not working / not yet resolved:
 
-- `compound-a2d-same-crate-hidden` provider validation is not yet complete; only smoke-only injection verification has run.
 - More fixture diversity beyond current same-crate a2d, Workcell, Constitution, Broker, Sensorium, RAF, and Eval fixtures is not yet implemented.
+- Provider coverage for newer same-crate fixtures beyond Minimax is not yet complete.
 
 ## Recovery sequence
 
@@ -63,7 +64,7 @@ Implemented in order:
 4. `todos/anti-repeat-retry-strategy.md`
 5. `todos/worktree-task-verifier.md`
 
-Remaining recovery work is fixture expansion, provider validation for newer fixtures, and additional ablation coverage rather than missing core plumbing. As of 2026-05-24, Minimax, Kimi, and Pi/ZAI GLM each have N=3 self-correction results on the three original compound fixtures after hidden candidate-worktree verifier wiring. On `compound-sensorium-same-crate-hidden`, Pi/ZAI GLM and Minimax self-corrected 3/3; Kimi resolved 3/3 with self-correction 2/3 because one run passed on attempt 1. Two Minimax anti-repeat ablation cohorts completed 2026-05-28: `compound-hidden` and `compound-sensorium-same-crate-hidden` both had enabled and disabled cohorts resolve/self-correct 3/3. `compound-raf-same-crate-hidden` was smoke-verified on 2026-05-29; Minimax resolved 3/3 with pass@1 1/3 and self-corrected 2/3; Kimi resolved 3/3 with pass@1 3/3. Pi/ZAI GLM post-PWD on RAF resolved 3/3 with pass@1 2/3 and self-corrected 1/3; all verifier-success attempts had populated patch stats. `compound-eval-same-crate-hidden` was smoke-verified on 2026-05-30; Minimax, Kimi, and Pi/ZAI GLM each resolved 0/3. Kimi attempts were upstream high-risk rejections. The failure mode was analyzed on 2026-05-30: candidate patches could pass verifier tests but be discarded by the bugged mutable evaluator. Governor now has an external-verifier backstop; post-backstop Pi/ZAI GLM resolved the eval fixture 3/3 on attempt 1. `compound-broker-same-crate-hidden` was smoke-verified on 2026-05-30 and Minimax reached resolved/self-corrected 3/3 by 2026-05-31. `compound-constitution-same-crate-hidden` and `compound-workcell-same-crate-hidden` have smoke-only verification plus Minimax N=3 results. `compound-a2d-same-crate-hidden` has smoke-only verification and awaits provider validation.
+Remaining recovery work is fixture expansion, provider validation for newer fixtures, and additional ablation coverage rather than missing core plumbing. As of 2026-05-24, Minimax, Kimi, and Pi/ZAI GLM each have N=3 self-correction results on the three original compound fixtures after hidden candidate-worktree verifier wiring. On `compound-sensorium-same-crate-hidden`, Pi/ZAI GLM and Minimax self-corrected 3/3; Kimi resolved 3/3 with self-correction 2/3 because one run passed on attempt 1. Two Minimax anti-repeat ablation cohorts completed 2026-05-28: `compound-hidden` and `compound-sensorium-same-crate-hidden` both had enabled and disabled cohorts resolve/self-correct 3/3. `compound-raf-same-crate-hidden` was smoke-verified on 2026-05-29; Minimax resolved 3/3 with pass@1 1/3 and self-corrected 2/3; Kimi resolved 3/3 with pass@1 3/3. Pi/ZAI GLM post-PWD on RAF resolved 3/3 with pass@1 2/3 and self-corrected 1/3; all verifier-success attempts had populated patch stats. `compound-eval-same-crate-hidden` was smoke-verified on 2026-05-30; Minimax, Kimi, and Pi/ZAI GLM each resolved 0/3. Kimi attempts were upstream high-risk rejections. The failure mode was analyzed on 2026-05-30: candidate patches could pass verifier tests but be discarded by the bugged mutable evaluator. Governor now has an external-verifier backstop; post-backstop Pi/ZAI GLM resolved the eval fixture 3/3 on attempt 1. `compound-broker-same-crate-hidden` was smoke-verified on 2026-05-30 and Minimax reached resolved/self-corrected 3/3 by 2026-05-31. `compound-constitution-same-crate-hidden`, `compound-workcell-same-crate-hidden`, and `compound-a2d-same-crate-hidden` have smoke-only verification plus Minimax N=3 results.
 
 ## Benchmark gate
 
