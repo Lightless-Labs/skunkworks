@@ -39,17 +39,25 @@ Users can configure:
 
 ## Pi usage
 
-Run directly while developing:
+Run directly while developing from `flux/`:
 
 ```bash
 pi -e ./src/adapters/pi/index.ts
 ```
 
-Or install as a Pi package from this directory:
+Install as a local Pi package from the skunkworks repo root:
 
 ```bash
-pi install ./flux
+pi install ./
 ```
+
+Or install from git on another machine without manually cloning the repo:
+
+```bash
+pi install git:git@github.com:Lightless-Labs/skunkworks.git
+```
+
+The repo root exposes Flux through `extensions/flux.ts`, so git/local Pi installs do not require npm publishing.
 
 Pi commands/tools:
 
