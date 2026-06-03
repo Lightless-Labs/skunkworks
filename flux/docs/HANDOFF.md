@@ -1,6 +1,6 @@
 # Flux Handoff — Read This First
 
-**Last updated:** 2026-05-31
+**Last updated:** 2026-06-03
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -28,6 +28,8 @@ Latest Flux commits on `main`:
 - `5bac099 Test Flux direct model clients`
 - `ac4371e Update Flux handoff latest commit`
 - `fbeca67 Fix Flux Codex host CLI invocation`
+- `bb4675b Update Flux host CLI handoff notes`
+- `cab683f Expose Flux as repo-level Pi extension`
 
 Implemented surfaces:
 
@@ -37,6 +39,7 @@ Implemented surfaces:
   - Registers `/flux` command.
   - Registers `flux_stray_thought` tool.
   - Listens for external extension trigger: `pi.events.emit("flux:trigger", payload)`.
+  - Repo root exposes it through `extensions/flux.ts` so another machine can run `pi install git:git@github.com:Lightless-Labs/skunkworks.git` without manual cloning or npm publishing.
 - **Claude Code hook scaffold:** `src/adapters/claude-code/hook.ts`, `claude-code-plugin.json`, `examples/claude-code-settings.json`.
 - **Codex hook scaffold:** `src/adapters/codex/hook.ts`, `codex-plugin.json`, `examples/codex-config.toml`.
 - **Core:** config loading, trigger matching, bounded context snapshots, prompt-profile selection, per-trigger model pools, Anthropic/OpenAI-compatible model calls, thought logging.
@@ -50,6 +53,25 @@ Generated/ignored local artifacts:
 - `node_modules/` exists after `npm install --ignore-scripts` but is ignored.
 
 ## Verify State
+
+Repo-level Pi package smoke from the skunkworks root:
+
+```bash
+pi --no-extensions -e . --no-session --mode json -p "/flux status"
+```
+
+Project-local install smoke from a temporary workspace:
+
+```bash
+pi install -l /Users/thomas/Projects/lightless-labs/skunkworks
+pi --no-session --mode json -p "/flux status"
+```
+
+Install from git on another machine:
+
+```bash
+pi install git:git@github.com:Lightless-Labs/skunkworks.git
+```
 
 Run from `flux/`:
 
@@ -159,7 +181,7 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 
 ## Current Limitations / Unvalidated Areas
 
-- Pi integration compiles and uses Pi-authenticated model access. Non-interactive JSON-mode smoke passed; full interactive TUI validation is still pending.
+- Pi integration compiles and uses Pi-authenticated model access. Non-interactive JSON-mode smoke passed, including repo-level package loading and project-local install loading; full interactive TUI validation is still pending.
 - Claude Code and Codex integrations now have host-CLI sidecar callers plus fixture/output-shape tests, but exact host-specific hook output contracts and real hook behavior still need validation against current host versions.
 - Core selection/config/trigger/context logic, direct-provider HTTP clients, and host CLI argv construction now have automated coverage; host adapters still need focused/live tests.
 - Sidecar model calls support Anthropic and OpenAI-compatible chat completions only.
@@ -192,6 +214,7 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 | `test/fixtures/` | Representative Claude/Codex hook payload fixtures |
 | `src/core/hookCli.ts` | Generic stdin/stdout hook runner for Claude Code/Codex/generic hooks |
 | `src/adapters/pi/index.ts` | Pi extension |
+| `../extensions/flux.ts` | Repo-level Pi package wrapper for git/local installs from skunkworks root |
 | `.flux/config.example.json` | User-facing config template |
 | `README.md` | User-facing usage summary |
 | `docs/architecture.md` | Architecture details |

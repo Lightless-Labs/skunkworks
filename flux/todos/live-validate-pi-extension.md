@@ -12,7 +12,10 @@ A non-interactive Pi JSON-mode smoke was run on 2026-05-30 and confirmed host-na
 ## Acceptance Criteria
 
 - [x] Confirm Pi host-native model generation works without a Flux-specific sidecar API key config in non-interactive JSON mode.
-- [ ] Start Pi from `flux/` with `pi -e ./src/adapters/pi/index.ts` in interactive TUI mode.
+- [x] Expose Flux as a repo-level Pi package/extension wrapper so `pi install git:git@github.com:Lightless-Labs/skunkworks.git` can install it without manual cloning or npm publishing.
+- [x] Smoke repo-level package loading with `pi --no-extensions -e . --no-session --mode json -p "/flux status"`.
+- [x] Smoke project-local install from a temp workspace with `pi install -l /Users/thomas/Projects/lightless-labs/skunkworks`, then `pi --no-session --mode json -p "/flux status"`.
+- [ ] Start Pi from a project with Flux installed (`pi install -l /path/to/skunkworks` or git install) in interactive TUI mode.
 - [ ] Confirm startup shows Flux status and no extension load errors.
 - [ ] Run `/flux status` and verify it reports config path, enabled/random state, models, and random frequency.
 - [ ] Run `/flux config prompts` and `/flux config models`.
@@ -28,6 +31,13 @@ A non-interactive Pi JSON-mode smoke was run on 2026-05-30 and confirmed host-na
 Pi smoke commands used:
 
 ```bash
+pi --no-extensions -e . --no-session --mode json -p "/flux status"
+
+# From a temporary workspace:
+pi install -l /Users/thomas/Projects/lightless-labs/skunkworks
+pi --no-session --mode json -p "/flux status"
+
+cd flux
 pi --no-extensions -e ./src/adapters/pi/index.ts --no-session --mode json -p "/flux think smoke test"
 
 pi --no-extensions -e ./src/adapters/pi/index.ts --no-session --mode json \
