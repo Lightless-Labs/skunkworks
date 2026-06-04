@@ -29,6 +29,7 @@ bench/self_correction.py --fixture compound-hidden \
 Current loop-shaped fixtures:
 
 - `fibonacci` — visible one-crate `a2_core` regression; usually too easy.
+- `compound-core-same-crate-hidden` — visible and hidden regressions in `a2_core`.
 - `compound-hidden` — visible `a2_core`, hidden `a2ctl` TODO scanner regression.
 - `compound-membrane-hidden` — visible `a2_core`, hidden `a2_membrane` deny-overrides-allow regression.
 - `compound-archive-hidden` — visible `a2_core`, hidden `a2_archive` lineage ordering regression.

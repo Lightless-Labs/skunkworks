@@ -37,6 +37,16 @@ finishing.
 FIBONACCI_VERIFY_COMMAND = "cargo test -p a2_core test_fibonacci"
 FIBONACCI_BUG_OLD = "if n == 0 {\n        return 0;\n    }"
 FIBONACCI_BUG_NEW = "if n == 0 {\n        return 1;\n    }"
+CORE_TASK_ID = "self-correction-compound-core-same-crate-hidden-regressions"
+CORE_DESCRIPTION = """\
+The workspace contains a regression. `cargo test -p a2_core test_fibonacci` fails.
+Diagnose the root cause and fix the implementation. Do not assume the failing
+function name is the only broken behavior; inspect the code and make the minimal
+change that restores the test. Run `cargo test -p a2_core test_fibonacci` before
+finishing.
+"""
+CORE_SUMMARY_BUG_OLD = "self.task_completed, self.tests_pass, self.tokens_used, self.duration_secs"
+CORE_SUMMARY_BUG_NEW = "self.task_completed, self.tests_pass, self.tokens_used + 1, self.duration_secs"
 SCAN_BUG_OLD = "if byte == b'\"' {\n            in_double = true;\n            index += 1;\n            continue;\n        }"
 SCAN_BUG_NEW = "if byte == b'\"' {\n            index += 1;\n            continue;\n        }"
 MEMBRANE_BUG_OLD = 'if cap.denied_tools.iter().any(|d| d == tool_name || d == "*") {\n            return false;\n        }'
@@ -244,6 +254,28 @@ FIXTURES: dict[str, Fixture] = {
                 "crates/a2ctl/src/main.rs",
                 SCAN_BUG_OLD,
                 SCAN_BUG_NEW,
+            ),
+        ),
+    ),
+    "compound-core-same-crate-hidden": Fixture(
+        name="compound-core-same-crate-hidden",
+        task_id=CORE_TASK_ID,
+        description=CORE_DESCRIPTION,
+        verify_command=(
+            "cargo test -p a2_core test_fibonacci; fib=$?; "
+            "cargo test -p a2_core test_somatic_summary; summary=$?; "
+            "test $fib -eq 0 -a $summary -eq 0"
+        ),
+        replacements=(
+            Replacement(
+                "crates/a2_core/src/lib.rs",
+                FIBONACCI_BUG_OLD,
+                FIBONACCI_BUG_NEW,
+            ),
+            Replacement(
+                "crates/a2_core/src/protocol.rs",
+                CORE_SUMMARY_BUG_OLD,
+                CORE_SUMMARY_BUG_NEW,
             ),
         ),
     ),
@@ -895,6 +927,16 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(
             [replacement.path for replacement in fixture.replacements],
             ["crates/a2_core/src/lib.rs", "crates/a2_archive/src/store.rs"],
+        )
+
+    def test_compound_core_fixture_is_same_crate_multi_bug(self) -> None:
+        fixture = FIXTURES["compound-core-same-crate-hidden"]
+        self.assertEqual(fixture.task_id, CORE_TASK_ID)
+        self.assertIn("test_fibonacci", fixture.verify_command)
+        self.assertIn("test_somatic_summary", fixture.verify_command)
+        self.assertEqual(
+            [replacement.path for replacement in fixture.replacements],
+            ["crates/a2_core/src/lib.rs", "crates/a2_core/src/protocol.rs"],
         )
 
     def test_compound_sensorium_fixture_is_same_crate_multi_bug(self) -> None:
