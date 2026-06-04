@@ -41,12 +41,13 @@ Implemented surfaces:
   - Registers `flux_stray_thought` tool.
   - Listens for external extension trigger: `pi.events.emit("flux:trigger", payload)`.
   - Repo root exposes it through `extensions/flux.ts` so another machine can run `pi install git:git@github.com:Lightless-Labs/skunkworks.git` without manual cloning or npm publishing.
-- **Claude Code hook scaffold:** `src/adapters/claude-code/hook.ts`, `claude-code-plugin.json`, `examples/claude-code-settings.json`.
-- **Codex hook scaffold:** `src/adapters/codex/hook.ts`, `codex-plugin.json`, `examples/codex-config.toml`.
+- **Claude Code hook/plugin:** `src/adapters/claude-code/hook.ts`, `.claude-plugin/plugin.json`, `hooks/claude-code-hooks.json`, `claude-code-plugin.json`, `examples/claude-code-settings.json`. The skunkworks repo root exposes a Claude marketplace at `../.claude-plugin/marketplace.json` so users can install from git without npm publishing or manual cloning.
+- **Codex hook/plugin:** `src/adapters/codex/hook.ts`, `.codex-plugin/plugin.json`, `hooks/codex-hooks.json`, `codex-plugin.json`, `examples/codex-config.toml`. The skunkworks repo root exposes a Codex marketplace at `../.agents/plugins/marketplace.json` so users can install from git without npm publishing or manual cloning.
 - **Core:** config loading, trigger matching, bounded context snapshots, prompt-profile selection, per-trigger model pools, Anthropic/OpenAI-compatible model calls, thought logging.
-- **Core tests:** `test/core-selection.test.ts` covers config/deep merge, config command mutations/validation, trigger frequency overrides, loop matching, prompt-profile/model-pool resolution, injected model callers, and context formatting/clamping. `test/hook-cli.test.ts` covers host hook event-kind inference, fixture snapshot extraction, and output shapes. `test/model-client.test.ts` covers non-network OpenAI-compatible and Anthropic request/response/error handling. `test/host-cli-model-client.test.ts` covers non-network Claude/Codex host CLI argv/stdin construction.
+- **Core tests:** `test/core-selection.test.ts` covers config/deep merge, config command mutations/validation, trigger frequency overrides, loop matching, prompt-profile/model-pool resolution, injected model callers, and context formatting/clamping. `test/hook-cli.test.ts` covers host hook event-kind inference, fixture snapshot extraction, and output shapes. `test/model-client.test.ts` covers non-network OpenAI-compatible and Anthropic request/response/error handling. `test/host-cli-model-client.test.ts` covers non-network Claude/Codex host CLI argv/stdin construction. `test/plugin-install.test.ts` covers repo-root marketplace manifests, plugin hook wrapper commands, and wrapper safe-fail output.
 - **Host-native model path in progress:** Pi adapter now calls Pi's selected/authenticated model; Claude/Codex hook CLI paths call their host CLIs with `FLUX_SUPPRESS=1` to avoid recursive hook triggering. Pi JSON-mode smoke for `/flux think` and `flux_stray_thought` passed on 2026-05-30. Local CLI surface check on 2026-05-31 used `claude` 2.1.119 and `codex-cli` 0.130.0; Codex requires `--ask-for-approval never` before the `exec` subcommand. See `todos/host-native-models.md`.
 - **Delivery semantics clarified:** shared `DeliveryMode` is now only Pi/session message delivery (`steer`, `followUp`, `nextTurn`). Hook CLIs still emit host JSON on stdout as transport. Stale Pi configs using unsupported modes warn instead of silently mapping to `steer`. See `todos/delivery-semantics.md`.
+- **Repo-installable host hooks:** Claude/Codex plugin hooks run through `scripts/flux-hook-wrapper.mjs`, which builds only hook code (`npm run build:hooks`) on first use if `dist/` is missing/stale. The wrapper always exits 0 and emits host-safe JSON on setup/runtime failure.
 
 Generated/ignored local artifacts:
 
@@ -81,6 +82,7 @@ npm install --ignore-scripts
 npm run check
 npm test
 npm run build
+npm run build:hooks
 node dist/bin/flux-hook.js --host=generic <<'JSON'
 {"event":"turn_end","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"}]}
 JSON
@@ -104,6 +106,24 @@ Expected shape:
 
 ```json
 {"continue":true,"flux":{"error":"No usable Flux sidecar models. Configure .flux/config.json models with apiKeyEnv/apiKey."}}
+```
+
+Install Claude Code from git/local skunkworks root:
+
+```bash
+claude plugin marketplace add Lightless-Labs/skunkworks --sparse .claude-plugin flux
+claude plugin install flux@lightless-labs-skunkworks
+# local checkout alternative:
+claude plugin marketplace add /Users/thomas/Projects/lightless-labs/skunkworks
+```
+
+Install Codex from git/local skunkworks root:
+
+```bash
+codex plugin marketplace add Lightless-Labs/skunkworks --sparse .agents/plugins/marketplace.json --sparse flux
+codex plugin add flux@lightless-labs-skunkworks
+# local checkout alternative:
+codex plugin marketplace add /Users/thomas/Projects/lightless-labs/skunkworks
 ```
 
 ## Configuration Model

@@ -7,8 +7,8 @@ Goal: help agents escape tunnel vision, retries, spirals, long-running dead ends
 ## What it bootstraps
 
 - **Pi extension**: `src/adapters/pi/index.ts`
-- **Claude Code hook/plugin scaffold**: `src/adapters/claude-code/hook.ts`, `claude-code-plugin.json`, `examples/claude-code-settings.json`
-- **Codex hook/plugin scaffold**: `src/adapters/codex/hook.ts`, `codex-plugin.json`, `examples/codex-config.toml`
+- **Claude Code hook/plugin integration**: `src/adapters/claude-code/hook.ts`, `.claude-plugin/plugin.json`, `hooks/claude-code-hooks.json`, `claude-code-plugin.json`, `examples/claude-code-settings.json`
+- **Codex hook/plugin integration**: `src/adapters/codex/hook.ts`, `.codex-plugin/plugin.json`, `hooks/codex-hooks.json`, `codex-plugin.json`, `examples/codex-config.toml`
 - **Provider-agnostic core**: config, triggers, context capture, host-native/direct model calls, and thought logging
 
 ## Configuration
@@ -83,18 +83,43 @@ Pi commands/tools:
 
 ## Claude Code / Codex hooks
 
-Build first:
+Flux can be installed directly from the git-managed skunkworks repo; no npm publish and no manual clone are required. The repo root is a small Claude/Codex marketplace that points at `./flux`.
+
+Claude Code:
+
+```bash
+claude plugin marketplace add Lightless-Labs/skunkworks --sparse .claude-plugin flux
+claude plugin install flux@lightless-labs-skunkworks
+```
+
+Codex:
+
+```bash
+codex plugin marketplace add Lightless-Labs/skunkworks --sparse .agents/plugins/marketplace.json --sparse flux
+codex plugin add flux@lightless-labs-skunkworks
+```
+
+For local development from an existing skunkworks checkout, run the same marketplace add commands with the repo root path instead:
+
+```bash
+claude plugin marketplace add /absolute/path/to/skunkworks
+codex plugin marketplace add /absolute/path/to/skunkworks
+```
+
+The installed hooks call `scripts/flux-hook-wrapper.mjs`. On first use it runs `npm install --ignore-scripts --no-audit --no-fund --include=dev --omit=peer` and `npm run build:hooks` inside the installed Flux copy if `dist/` is missing or stale, then invokes the compiled hook CLI. If setup or Flux itself fails, the wrapper still exits 0 and emits host-safe JSON so the host agent continues.
+
+To avoid first-hook setup latency while developing locally, build first:
 
 ```bash
 npm install
 npm run build
 ```
 
-Then wire the hook command in your host's hook settings. Example hook command:
+Manual hook wiring is still possible with the wrapper command:
 
 ```bash
-node /absolute/path/to/flux/dist/src/adapters/claude-code/hook.js --host=claude-code
-node /absolute/path/to/flux/dist/src/adapters/codex/hook.js --host=codex
+node /absolute/path/to/flux/scripts/flux-hook-wrapper.mjs --host=claude-code
+node /absolute/path/to/flux/scripts/flux-hook-wrapper.mjs --host=codex
 ```
 
 See `examples/` for scaffold settings. Host plugin APIs move quickly, so these adapters intentionally expose a conservative hook CLI: read JSON on stdin, emit JSON with `additionalContext`/`instructions`, and never fail the host agent.

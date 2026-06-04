@@ -17,6 +17,17 @@ Flux is split into a small host-neutral core and thin host adapters.
 - `src/adapters/claude-code/hook.ts` is a command hook entrypoint. It expects hook JSON on stdin, asks the authenticated `claude` CLI for the thought, and returns JSON with `additionalContext`/`hookSpecificOutput` on stdout.
 - `src/adapters/codex/hook.ts` uses the same hook CLI, asks `codex exec` for the thought, and returns generic instruction JSON for hook-capable Codex runtimes.
 
+## Host plugin installation
+
+The skunkworks repo root exposes Flux as local/git marketplaces for Claude Code and Codex:
+
+- `../.claude-plugin/marketplace.json` points Claude Code at `./flux`.
+- `../.agents/plugins/marketplace.json` points Codex at `./flux`.
+- `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` are the host-specific Flux plugin manifests.
+- `hooks/claude-code-hooks.json` and `hooks/codex-hooks.json` call `scripts/flux-hook-wrapper.mjs` through host plugin-root placeholders.
+
+The wrapper is deliberately operational rather than clever: if `dist/bin/flux-hook.js` is missing or stale, it installs only the hook build dependencies (`npm install --ignore-scripts --no-audit --no-fund --include=dev --omit=peer`) and runs `npm run build:hooks`. Any setup/runtime failure is converted to an exit-0 JSON response so hook installation cannot block the host agent.
+
 ## Trigger model
 
 Triggers are data-driven. The initial set contains:
