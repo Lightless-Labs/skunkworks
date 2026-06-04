@@ -224,6 +224,8 @@ test("formatPromptProfiles includes profile styles, not only names", () => {
 	assert.match(formatted, /Flux prompt profiles/);
 	assert.match(formatted, /local-spark/);
 	assert.match(formatted, /Offer one narrow/);
+	assert.match(formatted, /left-field-leap/);
+	assert.match(formatted, /genuinely left-field/);
 });
 
 test("delivery modes are limited to agent message delivery, not hook transports", () => {

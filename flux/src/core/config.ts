@@ -94,6 +94,12 @@ export const DEFAULT_CONFIG: FluxConfig = {
 				style:
 					"Offer one playful but technically grounded reframe that may reveal a different path. Keep it useful, concrete, and under 120 words.",
 			},
+			{
+				name: "left-field-leap",
+				weight: 1,
+				style:
+					"Offer one genuinely left-field idea or suggestion that is still anchored in the supplied context: an unconventional analogy, inversion, adjacent-domain tactic, surprising simplification, or wild-but-cheap experiment. Make it clear why it might be useful, and keep it under 120 words.",
+			},
 		],
 		"loop-detected": [
 			{

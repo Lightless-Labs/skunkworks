@@ -1,6 +1,6 @@
 # Flux Handoff — Read This First
 
-**Last updated:** 2026-06-03
+**Last updated:** 2026-06-04
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -30,6 +30,7 @@ Latest Flux commits on `main`:
 - `fbeca67 Fix Flux Codex host CLI invocation`
 - `bb4675b Update Flux host CLI handoff notes`
 - `cab683f Expose Flux as repo-level Pi extension`
+- `5874325 Document Flux git Pi install path`
 
 Implemented surfaces:
 
@@ -161,6 +162,7 @@ Current default `random` prompt pool:
 - `local-spark` — narrow context-specific edge case / constraint / cheap validation / alternative hypothesis.
 - `ambient-inspiration` — broader/global thought, strategic/aesthetic/cautionary/curiosity-driven, not necessarily an immediate action item.
 - `weird-reframe` — playful but technically grounded reframe.
+- `left-field-leap` — context-anchored left-field idea or suggestion, such as an unconventional analogy, inversion, adjacent-domain tactic, surprising simplification, or wild-but-cheap experiment.
 
 Current default `loop-detected` pool:
 
