@@ -54,13 +54,18 @@ fn main() {
             let proposed_policy_arg = args.get(4).map(String::as_str);
             run_provider_policy_comparison_cli(challenge_name, num_cycles, proposed_policy_arg);
         }
+        "validate-escalation" => {
+            let challenge_name = if arg2.is_empty() { "sudoku" } else { arg2 };
+            let enzyme_id = args.get(3).map(String::as_str).unwrap_or("coder");
+            run_escalation_validation(challenge_name, enzyme_id);
+        }
         "autopilot" => run_autopilot(AutopilotConfig::parse(&args[2..])),
         "status" => show_status(),
         "enzymes" => list_enzymes(),
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|challenge|compare-topologies|compare-provider-policy|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|challenge|compare-topologies|compare-provider-policy|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -2682,6 +2687,138 @@ fn run_challenge(name: &str, num_cycles: usize) {
     );
 }
 
+fn run_escalation_validation(name: &str, enzyme_name: &str) {
+    let challenge = load_challenge_or_exit(name);
+    let enzyme_id = EnzymeId::from(enzyme_name);
+    let failure_report_marker =
+        format!("a2d escalation validation failure marker for {enzyme_name}");
+    let mut results = Vec::new();
+
+    for rung in 4..=6 {
+        let germline = load_germline_for_topology(TopologyMode::Evolved);
+        let registry = build_runtime_registry(&germline);
+        let mut benchmark = challenge.benchmark.clone();
+        benchmark.acceptance_test = challenge.acceptance_test.clone();
+        let mut metabolism = apply_runtime_env(
+            Metabolism::new(germline, registry)
+                .with_benchmark(benchmark)
+                .with_max_invocations_per_cycle(1)
+                .with_project_root(project_root()),
+        );
+        seed_initial_runtime_artifacts(&mut metabolism, challenge.requirements);
+        metabolism.seed_artifact(
+            ArtifactType::from("failure_report"),
+            failure_report_marker.as_bytes().to_vec(),
+        );
+        let provider_policy_before = metabolism.provider_policy();
+
+        let force_error = metabolism
+            .force_escalation_rung_for_validation(&enzyme_id, rung)
+            .err();
+        let report = if force_error.is_none() {
+            Some(metabolism.run_cycle())
+        } else {
+            None
+        };
+        let provider_policy_after = metabolism.provider_policy();
+
+        results.push(escalation_validation_result_json(
+            rung,
+            &enzyme_id,
+            force_error.as_deref(),
+            report.as_ref(),
+            &failure_report_marker,
+            provider_policy_before != provider_policy_after,
+        ));
+    }
+
+    let output = json!({
+        "challenge": challenge.name,
+        "enzyme": enzyme_name,
+        "persistence": "disabled: no lineage commits and no accepted patches applied",
+        "field_contract": "external validation reports use escalation_rung for rung metadata",
+        "results": results,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).expect("validation output must serialize")
+    );
+}
+
+fn escalation_validation_result_json(
+    rung: usize,
+    enzyme_id: &EnzymeId,
+    force_error: Option<&str>,
+    report: Option<&CycleReport>,
+    failure_report_marker: &str,
+    provider_policy_changed: bool,
+) -> Value {
+    let Some(report) = report else {
+        return json!({
+            "requested_rung": rung,
+            "enzyme": enzyme_id.0,
+            "accepted": false,
+            "error": force_error.unwrap_or("validation did not run"),
+            "provider_policy_changed": provider_policy_changed,
+        });
+    };
+
+    let entry = report
+        .lineage
+        .iter()
+        .find(|entry| entry.enzyme_id == *enzyme_id)
+        .or_else(|| report.lineage.first());
+
+    let Some(entry) = entry else {
+        return json!({
+            "requested_rung": rung,
+            "enzyme": enzyme_id.0,
+            "accepted": false,
+            "error": "no invocation ran; selected enzyme may not have ready inputs",
+            "invocations": report.invocations,
+            "provider_policy_changed": provider_policy_changed,
+        });
+    };
+
+    let failure_report_visible = entry
+        .inputs
+        .get(&ArtifactType::from("failure_report"))
+        .is_some_and(|bytes| bytes == failure_report_marker.as_bytes());
+    let outcome = match &entry.outcome {
+        a2d_core::workcell::WorkcellOutcome::Success { .. } => "success".to_string(),
+        a2d_core::workcell::WorkcellOutcome::Failed { error } => format!("failed: {error}"),
+        a2d_core::workcell::WorkcellOutcome::Killed { reason } => format!("killed: {reason:?}"),
+    };
+
+    json!({
+        "requested_rung": rung,
+        "enzyme": entry.enzyme_id.0,
+        "accepted": true,
+        "provider": entry.provider,
+        "outcome": outcome,
+        "escalation_rung": entry.escalation_rung,
+        "provider_swap": entry.provider_swap,
+        "clean_session": entry.clean_session,
+        "failure_report_marker_visible": failure_report_visible,
+        "candidate_evaluation_count": entry.candidate_evaluations.len(),
+        "candidate_evaluations": entry.candidate_evaluations.iter().map(|candidate| json!({
+            "provider": candidate.provider,
+            "materialized": candidate.materialized,
+            "fitness": candidate.fitness.as_ref().map(|fitness| json!({
+                "passed": fitness.passed,
+                "total": fitness.total,
+                "score": fitness.fitness,
+            })),
+            "error": candidate.error,
+        })).collect::<Vec<_>>(),
+        "provider_policy_changed": provider_policy_changed,
+        "serialized_field_check": {
+            "uses_escalation_rung": true,
+            "internal_counter_names_hidden": true,
+        },
+    })
+}
+
 fn run_topology_comparison(name: &str, num_cycles: usize) {
     println!("A²D Topology Comparison: {name} ({num_cycles} cycles each)");
     println!("═══════════════════");
@@ -3372,6 +3509,67 @@ mod tests {
             format_topology_lineage_entry(&entry),
             "    [evolver via opencode/kimi-for-coding/k2p6 {rung 5, swap, clean}] OK"
         );
+    }
+
+    #[test]
+    fn escalation_validation_json_uses_marker_visibility_and_hides_internal_counter_names() {
+        let marker = "seeded validation failure marker";
+        let mut entry = topology_entry(a2d_core::workcell::WorkcellOutcome::Failed {
+            error: "forced timeout".to_string(),
+        });
+        entry
+            .inputs
+            .insert(art("failure_report"), marker.as_bytes().to_vec());
+        entry.escalation_rung = 4;
+        entry.provider_swap = true;
+        let report = CycleReport {
+            invocations: 1,
+            lineage: vec![entry],
+            ..Default::default()
+        };
+
+        let value = escalation_validation_result_json(
+            4,
+            &EnzymeId::from("evolver"),
+            None,
+            Some(&report),
+            marker,
+            false,
+        );
+        let encoded = serde_json::to_string(&value).unwrap();
+
+        assert_eq!(value["failure_report_marker_visible"], true);
+        assert!(encoded.contains("escalation_rung"));
+        assert!(!encoded.contains("loop_rung"));
+        assert!(!encoded.contains("enzyme_loop_count"));
+    }
+
+    #[test]
+    fn escalation_validation_json_does_not_treat_empty_food_failure_report_as_visible() {
+        let marker = "seeded validation failure marker";
+        let mut entry = topology_entry(a2d_core::workcell::WorkcellOutcome::Failed {
+            error: "forced timeout".to_string(),
+        });
+        entry.inputs.insert(art("failure_report"), Vec::new());
+        entry.escalation_rung = 5;
+        entry.provider_swap = true;
+        entry.clean_session = true;
+        let report = CycleReport {
+            invocations: 1,
+            lineage: vec![entry],
+            ..Default::default()
+        };
+
+        let value = escalation_validation_result_json(
+            5,
+            &EnzymeId::from("evolver"),
+            None,
+            Some(&report),
+            marker,
+            false,
+        );
+
+        assert_eq!(value["failure_report_marker_visible"], false);
     }
 
     #[test]

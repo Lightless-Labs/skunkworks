@@ -20,7 +20,7 @@ The coder already had a provider portfolio path, but it was specific to code gen
 
 ## Fix
 
-Rung 6 now invokes a bounded provider portfolio when `enzyme_loop_count >= 6`:
+Rung 6 now invokes a bounded provider portfolio when an enzyme reaches escalation rung 6:
 
 - collects role-isolated eligible providers, avoiding providers currently in cooldown;
 - caps the portfolio size with `A2D_RUNG6_MAX_PROVIDERS` (default: 3, invalid/zero values ignored);

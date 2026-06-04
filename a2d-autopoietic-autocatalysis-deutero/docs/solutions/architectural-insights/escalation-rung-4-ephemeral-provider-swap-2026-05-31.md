@@ -24,7 +24,7 @@ Rung 4 now performs a non-persistent provider swap for the current invocation:
 
 - `ProviderRegistry::swapped_provider_for_avoiding` selects a non-assigned provider while avoiding providers currently in cooldown;
 - `ProviderRegistry::role_isolated_swapped_provider_for_avoiding` does the same while excluding providers assigned to other roles, preserving the existing evolver role-isolation invariant;
-- `Metabolism::invoke_scheduled` uses the swapped provider when `enzyme_loop_count >= 4`;
+- `Metabolism::invoke_scheduled` uses the swapped provider when an enzyme reaches escalation rung 4;
 - the provider assignment and durable `provider_policy` are not mutated;
 - the swap automatically stops when the enzyme escapes the loop and its counter resets;
 - rung 4 preserves `failure_report` history for the new provider, while rung 5+ remains the clean-session variant.

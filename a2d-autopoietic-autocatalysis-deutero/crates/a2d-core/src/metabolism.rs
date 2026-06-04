@@ -171,7 +171,7 @@ pub struct Metabolism {
     // 1+ = current escalation rung. Resets to 0 when the enzyme produces
     // a different signature (escape the loop).
     //
-    // Rungs (target design — rungs 0-4 implemented, 5-6 to come):
+    // Rungs (implemented):
     //   0: no intervention — enzyme is healthy
     //   1: inject loop awareness into the enzyme's prompt
     //   2: consult another model (advice from a second provider)
@@ -291,6 +291,34 @@ impl Metabolism {
             .iter()
             .map(|(artifact_type, stored)| (artifact_type.clone(), stored.bytes.clone()))
             .collect()
+    }
+
+    /// Diagnostic-only hook for bounded live validation of escalation rungs.
+    ///
+    /// This mutates only in-memory loop escalation state. It does not change the
+    /// germline, provider assignments, persisted provider policy, or lineage
+    /// archive. Production adaptation should continue to reach rungs via loop
+    /// detection; this exists so validation harnesses can force rung 4/5/6
+    /// without waiting for organic provider repetition.
+    pub fn force_escalation_rung_for_validation(
+        &mut self,
+        enzyme_id: &EnzymeId,
+        rung: usize,
+    ) -> Result<(), String> {
+        if !(4..=6).contains(&rung) {
+            return Err(format!(
+                "validation forcing only supports escalation rungs 4..=6, got {rung}"
+            ));
+        }
+
+        if self.germline.get_enzyme(enzyme_id).is_none() {
+            return Err(format!(
+                "unknown enzyme for escalation validation: {enzyme_id}"
+            ));
+        }
+
+        self.enzyme_loop_count.insert(enzyme_id.clone(), rung);
+        Ok(())
     }
 
     /// Run the catalytic loop until no enzyme has newly available inputs.
@@ -3457,6 +3485,103 @@ mod tests {
             second_providers,
             vec![("alpha", "fallback"), ("beta", "fallback")]
         );
+    }
+
+    #[test]
+    fn force_escalation_rung_for_validation_rejects_unsupported_inputs() {
+        let enzymes = vec![enzyme("worker", &["requirements"], &["output"], &[])];
+        let germline = Germline::new(enzymes, food(&["requirements"]));
+        let registry = ProviderRegistry::new(Box::new(MockProvider::new(
+            "mock",
+            vec![response(json!({"output": "ok"}), vec![])],
+        )));
+        let mut metabolism = Metabolism::new(germline, registry);
+
+        assert!(
+            metabolism
+                .force_escalation_rung_for_validation(&EnzymeId::from("worker"), 3)
+                .unwrap_err()
+                .contains("4..=6")
+        );
+        assert!(
+            metabolism
+                .force_escalation_rung_for_validation(&EnzymeId::from("missing"), 4)
+                .unwrap_err()
+                .contains("unknown enzyme")
+        );
+    }
+
+    #[test]
+    fn forced_escalation_rung_sets_lineage_without_provider_policy_mutation() {
+        let enzymes = vec![enzyme(
+            "worker",
+            &["requirements"],
+            &["output"],
+            &["failure_report"],
+        )];
+        let germline = Germline::new(enzymes, food(&["requirements", "failure_report"]));
+
+        let swapped = SequenceProvider::new(
+            "swapped",
+            vec![Ok(response(json!({"output": "forced"}), vec![]))],
+        );
+        let mut registry = ProviderRegistry::new(Box::new(swapped));
+        let primary = registry.register(Box::new(SequenceProvider::new(
+            "primary",
+            vec![Err("primary should not be invoked".into())],
+        )));
+        registry.assign(EnzymeId::from("worker"), primary);
+
+        let mut metabolism = Metabolism::new(germline, registry);
+        metabolism.seed_artifact(art("requirements"), b"do work".to_vec());
+        metabolism.seed_artifact(art("failure_report"), b"seeded validation failure".to_vec());
+        let before = metabolism.provider_policy();
+        metabolism
+            .force_escalation_rung_for_validation(&EnzymeId::from("worker"), 5)
+            .unwrap();
+
+        let report = metabolism.run_cycle();
+
+        assert_eq!(metabolism.provider_policy(), before);
+        assert_eq!(report.lineage[0].escalation_rung, 5);
+        assert!(report.lineage[0].provider_swap);
+        assert!(report.lineage[0].clean_session);
+        assert!(
+            !report.lineage[0]
+                .inputs
+                .contains_key(&art("failure_report"))
+        );
+    }
+
+    #[test]
+    fn provider_health_report_uses_external_escalation_field_names() {
+        let enzymes = vec![enzyme("worker", &["requirements"], &["output"], &[])];
+        let germline = Germline::new(enzymes, food(&["requirements"]));
+        let registry = ProviderRegistry::new(Box::new(MockProvider::new(
+            "mock",
+            vec![response(json!({"output": "ok"}), vec![])],
+        )));
+        let mut metabolism = Metabolism::new(germline, registry);
+        metabolism.seed_artifact(art("requirements"), b"do work".to_vec());
+        metabolism
+            .force_escalation_rung_for_validation(&EnzymeId::from("worker"), 4)
+            .unwrap();
+
+        let _ = metabolism.run_cycle();
+        let artifacts = metabolism.artifacts();
+        let provider_report: Value = serde_json::from_slice(
+            artifacts
+                .get(&art("provider_health_report"))
+                .expect("provider health report should be emitted"),
+        )
+        .unwrap();
+        let invocation = &provider_report["recent_invocations"][0];
+
+        assert_eq!(invocation["escalation_rung"], 4);
+        assert_eq!(invocation["provider_swap"], true);
+        assert_eq!(invocation["clean_session"], false);
+        assert!(invocation.get("loop_rung").is_none());
+        assert!(invocation.get("enzyme_loop_count").is_none());
     }
 
     #[test]

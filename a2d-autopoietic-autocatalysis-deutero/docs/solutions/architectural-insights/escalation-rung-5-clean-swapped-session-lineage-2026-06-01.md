@@ -16,7 +16,7 @@ problem_type: architectural-insight
 
 Rung 5 is the clean-session variant of the rung-4 provider swap: once the same enzyme remains stuck after swapped-provider-with-history, the next intervention should ask the alternate provider to solve from a clean context.
 
-The implementation already computed `clean_session` for `loop_rung >= 5`, but rung 5 was not explicit in tests or lineage. Worse, invocation lineage recorded the scheduler inputs rather than the provider-visible inputs, so a clean-session invocation could still appear to include `failure_report` even though it had been stripped before request construction.
+The implementation already computed `clean_session` for rung 5+, but rung 5 was not explicit in tests or lineage. Worse, invocation lineage recorded the scheduler inputs rather than the provider-visible inputs, so a clean-session invocation could still appear to include `failure_report` even though it had been stripped before request construction.
 
 That makes live validation ambiguous: a monitor cannot tell whether rung 5 actually ran clean, or merely reached a high loop count.
 

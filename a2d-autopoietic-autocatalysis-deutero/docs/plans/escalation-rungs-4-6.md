@@ -4,6 +4,7 @@
 **Started:** 2026-05-31 — rung 4 ephemeral provider swap implemented
 **Enhanced:** 2026-06-01 — rung 5 explicit clean swapped-session lineage and prompt coverage added
 **Completed:** 2026-06-01 — rung 6 bounded provider consensus implemented
+**Validated:** 2026-06-04 — deterministic `validate-escalation` harness added and live-smoked with bounded provider timeouts
 **Todo:** `todos/escalation-rungs-4-6.md`
 
 ## Problem
@@ -32,7 +33,7 @@ Rung 4 is the smallest useful non-prompt intervention:
 
 - add `ProviderRegistry::swapped_provider_for_avoiding()`;
 - add `ProviderRegistry::role_isolated_swapped_provider_for_avoiding()` for evolver/role-isolated paths;
-- in `Metabolism::invoke_scheduled`, when `enzyme_loop_count >= 4`, route the current invocation to a non-assigned provider;
+- in `Metabolism::invoke_scheduled`, when the internal escalation counter reaches rung 4, route the current invocation to a non-assigned provider;
 - do not mutate provider assignments or persisted `provider_policy`;
 - preserve `failure_report` at rung 4 so the new model can learn from previous failures;
 - skip rung-2 consultation at rung 4+ because the alternative provider is now the primary intervention;
@@ -90,11 +91,18 @@ Learning: `docs/solutions/architectural-insights/escalation-rung-6-bounded-provi
 
 ## Validation
 
-Current validation after rung 6:
+Current validation after the harness:
 
 ```text
 cargo test
-37 CLI tests + 144 core tests + 11 bootstrap + 7 provider + 1 doctest = 200 passing, 2 ignored
+39 CLI tests + 147 core tests + 11 bootstrap + 7 provider + 1 doctest = 205 passing, 2 ignored
 ```
 
-Before live provider validation, prefer a deterministic harness or short bounded run that forces `enzyme_loop_count = 4`/`5`/`6` without waiting for natural provider repetition.
+A bounded live smoke now exists:
+
+```bash
+A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=2 \
+  cargo run -q -p a2d -- validate-escalation sudoku coder
+```
+
+Observed 2026-06-04: rung 4 routed to DeepSeek with failure history marker visible; rung 5 routed to DeepSeek with clean-session marker stripped; rung 6 invoked a two-provider Kimi + DeepSeek portfolio and recorded two candidate evaluations. Provider calls timed out under the intentional 1s bound, provider policy stayed unchanged, and the JSON report exposed `escalation_rung` without internal counter names.
