@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-06-01 (session 23 — escalation rung 6 bounded provider consensus landed)
+**Last updated:** 2026-06-01 (session 23 — handoff reconciled after rung 6 bounded provider consensus; latest A²D code commit `c347de7`)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-258 commits. 200 tests passing (2 ignored integration). 3 crates (a2d-core, a2d-providers, a2d-cli). 38 compound learnings.
+268 commits at monorepo HEAD; latest A²D code change is `c347de7` (`Implement rung 6 provider consensus`). 200 tests passing (2 ignored integration) at that A²D validation point. 3 crates (a2d-core, a2d-providers, a2d-cli). 38 compound learnings.
 
 ## Clean-session pickup
 
@@ -81,7 +81,7 @@
 - **Validation:** post-rung-6 `cargo test` passes (200 passing, 2 ignored).
 
 - **Escalation rung 5 lineage/prompt clarity landed.** `InvocationLineage` now records `escalation_rung`, `provider_swap`, and `clean_session`; clean-session invocations record provider-visible inputs after `failure_report` stripping; provider-health `recent_invocations` carries the same escalation fields; and topology comparison output prints flags such as `{rung 5, swap, clean}`. Added explicit rung-5 tests for swapped-provider routing, clean-session lineage, and prompt contents. Documented learning: `docs/solutions/architectural-insights/escalation-rung-5-clean-swapped-session-lineage-2026-06-01.md`.
-- **Escalation plan/todo updated for rung 5.** Updated `docs/plans/escalation-rungs-4-6.md` and `todos/escalation-rungs-4-6.md`: rung 5 is now implemented; rung 6 multi-model consensus remains next.
+- **Escalation plan/todo updated for rung 5.** Updated `docs/plans/escalation-rungs-4-6.md` and `todos/escalation-rungs-4-6.md`: rung 5 became implemented; at that point rung 6 multi-model consensus remained next. **Superseded later this session by rung 6 implementation above.**
 - **Validation:** initial pickup `cargo test` passed before changes (195 passing, 2 ignored). Post-change `cargo test` passes (198 passing, 2 ignored).
 
 - **Escalation rung 4 landed.** Added ephemeral provider-swap helpers in `crates/a2d-core/src/provider.rs` and wired `Metabolism::invoke_scheduled` in `crates/a2d-core/src/metabolism.rs` so `enzyme_loop_count >= 4` routes the current invocation to a non-assigned provider without mutating assignments or durable `provider_policy`. Rung 4 preserves failure history; rung 5+ strips failure context. Consultation is skipped at rung 4+ because the alternate provider is now the primary intervention. Added mock coverage for swap firing, non-firing below threshold, reset returning to assigned provider, prompt contents, assignment immutability, and role-isolated swaps.
@@ -351,5 +351,5 @@ Advanced autonomous project loop task by specifying the provider-diverse repair 
 
 ## Autopilot update 1780125323289
 
-todos/escalation-rungs-4-6.md: added Implementation Status section noting rung 4-6 code still absent from invocation pipeline and pointing to next-action targets
+todos/escalation-rungs-4-6.md: added Implementation Status section noting rung 4-6 code still absent from invocation pipeline and pointing to next-action targets. **Superseded:** 2026-06-01 — rung 4 ephemeral swap, rung 5 clean swapped-session lineage, and rung 6 bounded provider consensus are now implemented/unit-tested; remaining work is live validation.
 
