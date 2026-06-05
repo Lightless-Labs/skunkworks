@@ -5,6 +5,7 @@
 **Enhanced:** 2026-06-01 — rung 5 explicit clean swapped-session lineage and prompt coverage added
 **Completed:** 2026-06-01 — rung 6 bounded provider consensus implemented
 **Validated:** 2026-06-04 — deterministic `validate-escalation` harness added and live-smoked with bounded provider timeouts
+**Enhanced:** 2026-06-05 — rung-6 provider eligibility scope made explicitly probeable via `A2D_RUNG6_PROVIDER_SCOPE=broad` while preserving the safe default of assigned + unassigned providers excluding other-role assignments
 **Todo:** `todos/escalation-rungs-4-6.md`
 
 ## Problem
@@ -74,7 +75,9 @@ Learning: `docs/solutions/architectural-insights/escalation-rung-5-clean-swapped
 
 Rung 6 is now a bounded provider portfolio/consensus path:
 
-1. collect role-isolated eligible providers for the enzyme while avoiding cooled-down providers;
+1. collect eligible providers for the enzyme while avoiding cooled-down providers;
+   - default scope includes assigned + unassigned providers, excluding providers explicitly assigned to other enzymes;
+   - opt-in experimental scope `A2D_RUNG6_PROVIDER_SCOPE=broad` includes all healthy registered providers, including other-role assignments, for bounded eligibility probes;
 2. cap the portfolio with `A2D_RUNG6_MAX_PROVIDERS` (default 3);
 3. invoke candidates sequentially to avoid unbounded concurrent provider-window consumption;
 4. materialize candidate outputs and record candidate evaluations in lineage;
@@ -85,7 +88,9 @@ Coverage added:
 
 - rung 6 selects the higher-fitness code candidate under a benchmark;
 - rung 6 records candidate evaluations and rung/swap/clean metadata;
-- rung 6 works for non-code enzymes by selecting the first materialized success after an earlier provider failure.
+- rung 6 works for non-code enzymes by selecting the first materialized success after an earlier provider failure;
+- rung-6 provider scope parsing defaults to assigned + unassigned providers excluding other-role assignments, and accepts broad aliases;
+- broad-scope eligibility includes other-role providers without changing the safe default.
 
 Learning: `docs/solutions/architectural-insights/escalation-rung-6-bounded-provider-consensus-2026-06-01.md`.
 
@@ -95,7 +100,7 @@ Current validation after the harness:
 
 ```text
 cargo test
-39 CLI tests + 147 core tests + 11 bootstrap + 7 provider + 1 doctest = 205 passing, 2 ignored
+39 CLI tests + 149 core tests + 11 bootstrap + 7 provider + 1 doctest = 207 passing, 2 ignored
 ```
 
 A bounded live smoke now exists:
@@ -106,3 +111,18 @@ A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=2 \
 ```
 
 Observed 2026-06-04: rung 4 routed to DeepSeek with failure history marker visible; rung 5 routed to DeepSeek with clean-session marker stripped; rung 6 invoked a two-provider Kimi + DeepSeek portfolio and recorded two candidate evaluations. Provider calls timed out under the intentional 1s bound, provider policy stayed unchanged, and the JSON report exposed `escalation_rung` without internal counter names.
+
+Observed 2026-06-05 after provider-scope enhancement:
+
+```bash
+A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=2 \
+  cargo run -q -p a2d -- validate-escalation sudoku coder
+# rung 6 candidates: Kimi k2p6, DeepSeek v4 flash
+
+A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=4 \
+  A2D_RUNG6_PROVIDER_SCOPE=broad \
+  cargo run -q -p a2d -- validate-escalation sudoku coder
+# rung 6 candidates: Kimi k2p6, DeepSeek v4 flash, GLM 5.1, Pi
+```
+
+JSON artifacts: `/tmp/a2d-validate-escalation-default-scope-20260605.json` and `/tmp/a2d-validate-escalation-broad-scope-20260605.json`.

@@ -41,6 +41,33 @@ struct ScheduledInvocation {
     inputs: ArtifactStore,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rung6ProviderScope {
+    /// Default: preserve role isolation so consensus does not consume providers
+    /// explicitly assigned to other enzymes.
+    RoleIsolated,
+    /// Experimental probe mode: consider every healthy registered provider.
+    /// This is opt-in via A2D_RUNG6_PROVIDER_SCOPE=broad and is intended for
+    /// bounded eligibility experiments, not as the safe default.
+    Broad,
+}
+
+impl Rung6ProviderScope {
+    fn from_env_value(value: Option<&str>) -> Self {
+        match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+            Some("broad" | "all" | "unisolated") => Self::Broad,
+            _ => Self::RoleIsolated,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::RoleIsolated => "role-isolated",
+            Self::Broad => "broad",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MutationRejection {
     pub enzyme_id: Option<EnzymeId>,
@@ -1072,14 +1099,15 @@ impl Metabolism {
         Vec<CandidateEvaluation>,
     ) {
         let unavailable = self.unavailable_provider_names(Instant::now());
-        let candidates = self
-            .providers
-            .parallel_providers_for_avoiding(&enzyme.id, &unavailable);
+        let scope = rung6_provider_scope();
+        let candidates =
+            rung6_providers_for_avoiding(&self.providers, &enzyme.id, &unavailable, scope);
         let cap = rung6_provider_cap();
 
         trace(&format!(
-            "rung-6 provider consensus for {}: {:?}",
+            "rung-6 provider consensus for {} ({} scope): {:?}",
             enzyme.id,
+            scope.label(),
             candidates
                 .iter()
                 .take(cap)
@@ -1625,6 +1653,26 @@ fn rung6_provider_cap() -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|cap| *cap > 0)
         .unwrap_or(3)
+}
+
+fn rung6_provider_scope() -> Rung6ProviderScope {
+    Rung6ProviderScope::from_env_value(std::env::var("A2D_RUNG6_PROVIDER_SCOPE").ok().as_deref())
+}
+
+fn rung6_providers_for_avoiding<'a>(
+    providers: &'a ProviderRegistry,
+    enzyme_id: &EnzymeId,
+    unavailable_provider_names: &BTreeSet<String>,
+    scope: Rung6ProviderScope,
+) -> Vec<&'a dyn crate::provider::Provider> {
+    match scope {
+        Rung6ProviderScope::RoleIsolated => {
+            providers.parallel_providers_for_avoiding(enzyme_id, unavailable_provider_names)
+        }
+        Rung6ProviderScope::Broad => {
+            providers.providers_for_avoiding(enzyme_id, unavailable_provider_names)
+        }
+    }
 }
 
 fn evolver_system_prompt(
@@ -3339,6 +3387,62 @@ mod tests {
         assert!(!uses_role_isolated_fallback(&EnzymeId::from("tester")));
         assert!(!uses_role_isolated_fallback(&EnzymeId::from("architect")));
         assert!(!uses_role_isolated_fallback(&EnzymeId::from("coder")));
+    }
+
+    #[test]
+    fn rung_6_provider_scope_defaults_to_role_isolated_and_accepts_broad_aliases() {
+        assert_eq!(
+            Rung6ProviderScope::from_env_value(None),
+            Rung6ProviderScope::RoleIsolated
+        );
+        assert_eq!(
+            Rung6ProviderScope::from_env_value(Some("")),
+            Rung6ProviderScope::RoleIsolated
+        );
+        assert_eq!(
+            Rung6ProviderScope::from_env_value(Some("role")),
+            Rung6ProviderScope::RoleIsolated
+        );
+        assert_eq!(
+            Rung6ProviderScope::from_env_value(Some("BROAD")),
+            Rung6ProviderScope::Broad
+        );
+        assert_eq!(
+            Rung6ProviderScope::from_env_value(Some(" all ")),
+            Rung6ProviderScope::Broad
+        );
+    }
+
+    #[test]
+    fn rung_6_provider_scope_can_probe_broad_eligibility_without_changing_default() {
+        let mut registry = ProviderRegistry::new(Box::new(MockProvider::new("assigned", vec![])));
+        let other_role = registry.register(Box::new(MockProvider::new("other-role", vec![])));
+        registry.register(Box::new(MockProvider::new("unassigned", vec![])));
+        registry.assign(EnzymeId::from("worker"), 0);
+        registry.assign(EnzymeId::from("tester"), other_role);
+        let unavailable = BTreeSet::new();
+
+        let role_isolated = rung6_providers_for_avoiding(
+            &registry,
+            &EnzymeId::from("worker"),
+            &unavailable,
+            Rung6ProviderScope::RoleIsolated,
+        )
+        .into_iter()
+        .map(|provider| provider.name().to_string())
+        .collect::<Vec<_>>();
+        assert_eq!(role_isolated, vec!["assigned", "unassigned"]);
+
+        let broad = rung6_providers_for_avoiding(
+            &registry,
+            &EnzymeId::from("worker"),
+            &unavailable,
+            Rung6ProviderScope::Broad,
+        )
+        .into_iter()
+        .map(|provider| provider.name().to_string())
+        .collect::<Vec<_>>();
+        assert_eq!(broad, vec!["assigned", "other-role", "unassigned"]);
     }
 
     #[test]

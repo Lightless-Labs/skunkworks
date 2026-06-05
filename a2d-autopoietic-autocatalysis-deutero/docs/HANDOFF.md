@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-06-04 (session 24 — escalation validation harness added and bounded live-smoked; Pi Kimi k2p6/Minimax 3 availability noted)
+**Last updated:** 2026-06-05 (session 25 — rung-6 provider eligibility scope made probeable; default vs broad validation smoked)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-278 commits at monorepo HEAD after this handoff/provider-availability update; latest A²D code change remains `Add escalation validation harness`. 205 tests passing (2 ignored integration) after this session's changes. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
+280 commits at monorepo HEAD after this session's commit; latest A²D code change is `Add rung 6 provider scope probe`. 207 tests passing (2 ignored integration) after this session's changes. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
 
 ## Clean-session pickup
 
@@ -31,7 +31,7 @@
 - **Timeouts are bounded but provider-specific:** GLM 5.1 now gets 900s by default; other CLI providers default to 300s; `A2D_PROVIDER_TIMEOUT_SECS` overrides.
 - **Autopilot autonomy hardening landed and repair-diversity is live-validated through commit:** repair attempt 1 escalates from Pi to the configured alternate maintainer provider when available, repair prompts and monitor events record provider topology/attempt metadata, project state refreshes after committed iterations, and checkbox-completed todos are skipped by task selection. An opt-in fault-injection harness (`A2D_AUTOPILOT_FAULT_INJECTION=attempt0_parse_failure`) now forces a repairable parse failure for live validation. `A2D_AUTOPILOT_REPAIR_PROVIDER` / `--repair-provider` can target a specific registered repair provider. Run `run-1780125199376-0` validated Pi primary → fault-injected parse failure → DeepSeek repair output → path gate → temp `cargo test` → real-tree `cargo test` → local commit `ab43b71`.
 - **Autopilot markdown outputs now have repo-reference validation:** temp-worktree validation scans markdown replacements and `handoff_update` for repo-path claims (`crates/...`, `docs/...`, `todos/...`, `examples/...`, `research/...`, and root manifest/doc files), normalizes anchors/line suffixes, and rejects paths that do not exist after patch application. This catches the exact semantic gap from `run-1780125199376-0` before real-tree apply/commit.
-- **Escalation rungs 4–6 are implemented, inspectable, and now live-smokable:** `Metabolism::invoke_scheduled` escalates beyond prompt shaping at rungs 4+. Rung 4 performs ephemeral provider swap with history; rung 5 adds clean-session failure-context stripping; rung 6 invokes a bounded role-isolated provider consensus (`A2D_RUNG6_MAX_PROVIDERS`, default 3), records candidate evaluations, selects highest code fitness under benchmarks, and falls back deterministically for non-code outputs. Invocation lineage, provider-health reports, topology comparison output, and `validate-escalation` JSON expose `escalation_rung`, `provider_swap`, and `clean_session`.
+- **Escalation rungs 4–6 are implemented, inspectable, live-smokable, and scope-probeable:** `Metabolism::invoke_scheduled` escalates beyond prompt shaping at rungs 4+. Rung 4 performs ephemeral provider swap with history; rung 5 adds clean-session failure-context stripping; rung 6 invokes a bounded provider consensus (`A2D_RUNG6_MAX_PROVIDERS`, default 3), records candidate evaluations, selects highest code fitness under benchmarks, and falls back deterministically for non-code outputs. Default rung-6 eligibility is assigned + unassigned providers while excluding providers assigned to other enzymes; opt-in `A2D_RUNG6_PROVIDER_SCOPE=broad` includes all healthy registered providers for bounded probes. Invocation lineage, provider-health reports, topology comparison output, and `validate-escalation` JSON expose `escalation_rung`, `provider_swap`, and `clean_session`.
 - **Deterministic escalation validation harness exists:** `a2d validate-escalation <challenge> [enzyme]` forces rungs 4/5/6 through a diagnostic-only in-memory API, runs the real runtime registry with persistence disabled, checks non-empty failure-history marker visibility, reports provider-policy immutability, and records rung-6 candidate evaluations.
 
 ### What is not working / unproven
@@ -40,7 +40,7 @@
 - **Architect output contract is brittle:** Kimi architect still produced two no-materialized-`system_patch` failures. Need raw-output previews and/or a valid no-op patch contract.
 - **Evolved topology value is unknown:** the 7-enzyme germline is RAF-closed and reached 100%, but may add latency/invocation overhead rather than useful capability.
 - **Compounding self-modification is unproven:** the only live architect patch in `sudoku 5` was irrelevant (`prime.rs`) and was reverted; relevance gate now prevents that class.
-- **Escalation rungs 4–6 still need quality validation, not mechanism validation:** a bounded live smoke now proves provider swap, clean-session stripping, and rung-6 candidate evaluation under the real registry. Whether those interventions improve challenge outcomes and whether role-isolated eligibility is too conservative remains unproven.
+- **Escalation rungs 4–6 still need quality validation, not mechanism validation:** bounded live smokes now prove provider swap, clean-session stripping, rung-6 candidate evaluation, and default-vs-broad provider eligibility under the real registry. Whether those interventions improve challenge outcomes, whether broad eligibility helps enough to justify other-role provider-window consumption, and whether concurrency is worthwhile remain unproven.
 - **Benchmark coverage is narrow:** sudoku is validated; chess/rubiks need stronger acceptance tests and live runs.
 - **Autopilot semantic validation is still partial:** markdown repo-path claims are now checked mechanically, but broader documentation/planning truth claims remain outside the gate. Mechanical path/temp/real gates plus repo-reference checks still do not validate causal correctness, performance claims, or design adequacy.
 - **Provider-policy usefulness remains unproven:** the runtime/durability safety path is live-validated, but no benchmark-useful provider-policy proposal has yet shown improved challenge outcomes.
@@ -48,7 +48,7 @@
 ### Best next moves
 
 1. **Use the new escalation harness as a regression lane:** run `A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=2 cargo run -q -p a2d -- validate-escalation sudoku coder` after rung/provider-routing changes.
-2. **Probe rung-6 eligibility/concurrency tradeoffs:** determine whether role-isolated sequential consensus is sufficient or whether some enzymes need a broader or timeout-bounded concurrent provider set.
+2. **Probe rung-6 eligibility/concurrency tradeoffs:** compare default sequential consensus (assigned + unassigned providers, excluding other-role assignments) with opt-in broad sequential consensus (`A2D_RUNG6_PROVIDER_SCOPE=broad`) and only then consider a timeout-bounded concurrent provider set.
 3. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
 4. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
 5. **Find a benchmark-useful provider-policy proposal path:** runtime proposal safety is validated, but the live 7-enzyme topology still has no default policy-management enzyme; add one only if bounded tests show it does not starve coder/feedback metabolism.
@@ -76,6 +76,11 @@
 - **Provider-policy comparisons are now inspectable:** `a2d compare-provider-policy <challenge> <cycles> [policy-json|@path]` runs current and proposed policies with persistence disabled, prints policy deltas, and reports a gate decision.
 
 ### What happened this session
+
+- **Rung-6 provider eligibility scope is now mechanically probeable.** Added `A2D_RUNG6_PROVIDER_SCOPE=broad` in `crates/a2d-core/src/metabolism.rs` for opt-in bounded experiments that include all healthy registered providers. The default remains assigned + unassigned providers while excluding providers assigned to other enzymes; broad scope does not mutate provider assignments or durable `provider_policy`. Added unit coverage for scope parsing and default-vs-broad eligibility.
+- **Default vs broad scope smoked through the real validation harness.** Default bounded smoke (`A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=2 cargo run -q -p a2d -- validate-escalation sudoku coder`) recorded rung-6 candidates Kimi k2p6 + DeepSeek. Broad smoke (`A2D_RUNG6_PROVIDER_SCOPE=broad A2D_RUNG6_MAX_PROVIDERS=4 ...`) recorded Kimi k2p6 + DeepSeek + GLM 5.1 + Pi. JSON artifacts: `/tmp/a2d-validate-escalation-default-scope-20260605.json` and `/tmp/a2d-validate-escalation-broad-scope-20260605.json`. This validates eligibility mechanics, not outcome quality.
+- **Escalation plan/todo updated.** Updated `docs/plans/escalation-rungs-4-6.md` and `todos/escalation-rungs-4-6.md` with exact default scope semantics, broad-scope probe command, and next validation targets.
+- **Validation:** initial pickup `cargo test` passed before changes (205 passing, 2 ignored). Post-change `cargo test` passes (207 passing, 2 ignored). Focused `cargo test -p a2d-core rung_6_provider_scope` passed.
 
 - **Deterministic escalation validation harness landed.** Added diagnostic-only `Metabolism::force_escalation_rung_for_validation()` for rungs 4–6 and CLI `a2d validate-escalation <challenge> [enzyme]`. The command runs fresh real-registry metabolisms with persistence disabled, emits JSON using the external `escalation_rung` contract, checks non-empty failure-history marker visibility, records rung-6 candidate evaluations, and reports provider-policy immutability.
 - **Bounded live escalation smoke passed mechanically.** `A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=2 cargo run -q -p a2d -- validate-escalation sudoku coder` proved rung 4 provider swap preserved the seeded failure marker, rung 5 clean session stripped it, and rung 6 recorded two Kimi + DeepSeek candidate evaluations. The provider calls timed out under the intentional 1s bound; this validates mechanism/observability, not outcome quality.
@@ -250,7 +255,7 @@ Rungs 4–6 now provide ephemeral provider swap, clean swapped session, and boun
 
 ### 2. Evaluate rung-6 eligibility/concurrency tradeoffs
 
-Current rung 6 uses role-isolated eligible providers and sequential bounded invocation (`A2D_RUNG6_MAX_PROVIDERS`, default 3). Determine whether role isolation is too conservative for some enzymes and whether timeout-bounded concurrency is worth the loser-wait/provider-window risk.
+Current rung 6 uses sequential bounded invocation (`A2D_RUNG6_MAX_PROVIDERS`, default 3). Default eligibility is assigned + unassigned providers while excluding other-role assignments; `A2D_RUNG6_PROVIDER_SCOPE=broad` opt-in includes all healthy registered providers. Compare default vs broad on bounded challenge runs before considering timeout-bounded concurrency.
 
 ### 3. Address architect/tester provider latency
 
