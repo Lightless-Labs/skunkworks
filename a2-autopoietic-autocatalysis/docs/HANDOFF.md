@@ -1,6 +1,6 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-06-04
+**Last updated:** 2026-06-05
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -106,8 +106,10 @@ echo "fix X" | cargo run -p a2ctl -- run --provider gemini,opencode --apply
 echo "fix X" | cargo run -p a2ctl -- run --provider opencode/kimi-for-coding/k2p5
 echo "fix X" | cargo run -p a2ctl -- run --provider opencode/minimax-coding-plan/MiniMax-M2.7
 
-# Run with ZAI through Pi (added 2026-05-22)
+# Run with models through Pi
 echo "fix X" | cargo run -p a2ctl -- run --provider pi/zai/glm-5.1 --apply
+echo "fix X" | cargo run -p a2ctl -- run --provider pi/kimi-coding/kimi-for-coding --apply
+echo "fix X" | cargo run -p a2ctl -- run --provider pi/minimax/MiniMax-M3 --apply
 
 # Self-correction benchmark (isolated worktree; does not mutate germline)
 bench/self_correction.py --fixture fibonacci --provider opencode/minimax-coding-plan/MiniMax-M2.7 --attempts 3
@@ -128,6 +130,8 @@ cargo run -p a2ctl -- sentinel --workspace .
 | gemini | gemini-3.1-pro-preview | **OUT OF CAPACITY** | 2026-04-28 self-correction smoke hit repeated 429 capacity errors; previous bench 5/5, ~67s/task |
 | opencode/glm | zai-coding-plan/glm-5.1 | Not currently used | 2026-05-22 direct `opencode --print-logs` smoke returned `Insufficient balance or no resource package` before subscription restore; prefer Pi/ZAI route below. Previous bench was 5/5 when provider was funded, 10-15min/task. |
 | pi/zai | zai/glm-5.1 | Available | Added 2026-05-22. Uses Pi's built-in ZAI provider and existing `~/.pi/agent/auth.json` `zai` API key. Fibonacci calibration passed attempt 1 with token accounting (`/tmp/a2-pi-zai-fibonacci-json-usage.jsonl`); the three original compound fixtures and the same-crate Sensorium fixture resolved/self-corrected 3/3 via Pi/ZAI (`/tmp/a2-compound-hidden-pi-zai-glm.jsonl`, `/tmp/a2-compound-membrane-pi-zai-glm.jsonl`, `/tmp/a2-compound-archive-pi-zai-glm.jsonl`, `/tmp/a2-sensorium-same-crate-pi-zai-glm.jsonl`). |
+| pi/kimi-coding | kimi-for-coding | Available | Added to handoff 2026-06-05. `pi --list-models kimi` exposes `kimi-coding/kimi-for-coding` plus explicit `kimi-coding/k2.6-code-preview`; invoke through A² as `pi/kimi-coding/kimi-for-coding` or `pi/kimi-coding/k2.6-code-preview`. Not yet benchmarked in A². |
+| pi/minimax | MiniMax-M3 | Available | Added to handoff 2026-06-05. `pi --list-models minimax` exposes `minimax/MiniMax-M3`; invoke through A² as `pi/minimax/MiniMax-M3`. Not yet benchmarked in A². |
 | opencode/kimi | kimi-for-coding/k2p5 | Available | 2026-04-16 smoke PASS (75s, 12k tokens); sometimes empty historically |
 | opencode/minimax | minimax-coding-plan/MiniMax-M2.7 | Available | 2026-04-28 self-correction PASS attempt 1 (70s model time, 17.6k tokens); 2026-04-16 smoke PASS |
 
@@ -182,7 +186,7 @@ ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/
 - Autopilot checklist candidates now update their own source checklist only after verified application (`apply_ok && verify_ok`). The update is restricted to `todos/...:<line>` and `docs/plans/...:<line>` sources, converts the exact line from `- [ ]`/`* [ ]` to checked, logs a `checklist_update` event, and stores the update summary in `run_summary.json`.
 - Task-specific verifier commands are represented on `TaskContract` and run inside candidate worktrees before promotion scoring; verifier results are stored on `PatchBundle.worktree_verifications` and copied into `LineageRecord.external_verifications`. Verifier commands are not rendered into the initial prompt; failures surface through structured lineage after an attempted patch.
 - `bench/self_correction.py` passes each fixture's verifier command via JSONL `verification_commands` as of 2026-05-21. Verifier commands are system-side metadata and are not rendered in the initial prompt.
-- A² supports `pi` and `pi/<model_id>` providers as of 2026-05-22. Default `pi` model is `zai/glm-5.1`; explicit form is `pi/zai/glm-5.1`. WorktreeCatalyst runs `pi --mode json --no-session --print` from the candidate worktree and parses final text plus token usage.
+- A² supports `pi` and `pi/<model_id>` providers as of 2026-05-22. Default `pi` model is `zai/glm-5.1`; explicit forms include `pi/zai/glm-5.1`, `pi/kimi-coding/kimi-for-coding`, `pi/kimi-coding/k2.6-code-preview`, and `pi/minimax/MiniMax-M3`. WorktreeCatalyst runs `pi --mode json --no-session --print` from the candidate worktree and parses final text plus token usage.
 - `compound-hidden` with Kimi on 2026-05-21 after hidden candidate-worktree verifier wiring resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. Results: `/tmp/a2-compound-with-hidden-worktree-verifier-kimi.jsonl`.
 - `compound-hidden` with Minimax on 2026-05-21 after hidden candidate-worktree verifier wiring resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. Attempt 1 touched only `a2_core/src/lib.rs` and was discarded by candidate verifier; attempt 2 touched both `a2_core/src/lib.rs` and `a2ctl/src/main.rs` and verified clean. Results: `/tmp/a2-compound-with-hidden-worktree-verifier-minimax.jsonl`.
 - `compound-membrane-hidden` with Minimax on 2026-05-21 after hidden candidate-worktree verifier wiring resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2_membrane/src/policy.rs` and verified clean. Results: `/tmp/a2-compound-membrane-with-hidden-worktree-verifier-minimax.jsonl`.
@@ -234,6 +238,7 @@ ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/
 
 **Not yet validated:**
 - Additional fixture diversity beyond Core/a2d/Workcell/Constitution/Broker/Eval/RAF/Sensorium same-crate fixtures.
+- A² benchmark coverage for newly available Pi/Kimi K2.6 (`pi/kimi-coding/kimi-for-coding` or `pi/kimi-coding/k2.6-code-preview`) and Pi/MiniMax 3 (`pi/minimax/MiniMax-M3`).
 - Additional provider coverage for newer same-crate fixtures beyond the Minimax cohorts.
 - Additional anti-repeat ablation coverage beyond the five Minimax fixture cohorts (`compound-hidden`, `compound-sensorium-same-crate-hidden`, `compound-broker-same-crate-hidden`, `compound-raf-same-crate-hidden`, and `compound-a2d-same-crate-hidden`).
 
@@ -292,6 +297,7 @@ Single-pass benchmark scores remain non-evidence for A² loop value.
 
 - Auto-generate benchmark tasks from codebase gaps → raise ceiling continuously
 - Query lineage data for strategy decisions (which model works best on which task type)
+- Test newly available Pi/Kimi K2.6 and Pi/MiniMax 3 on current self-correction fixtures
 - Test Claude on current bench (untested)
 
 ## What NOT To Do
@@ -409,3 +415,4 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-06-02 | a2d anti-repeat ablation | `compound-a2d-same-crate-hidden` with Minimax completed N=3 per cohort. Enabled cohort scored resolved 3/3, pass@1 2/3, loop exercised 1/3, self-corrected 1/3; disabled cohort scored resolved 3/3, pass@1 1/3, loop exercised 2/3, self-corrected 2/3. Result: `/tmp/a2-anti-repeat-ablation-a2d-minimax-20260602T072100Z.jsonl`. |
 | 2026-06-04 | Add same-crate Core self-correction fixture | `compound-core-same-crate-hidden` injects visible Fibonacci base-case and hidden somatic-summary token-rendering regressions in `a2_core`; smoke-only injection verified both failures. Result: `/tmp/a2-core-fixture-smoke.jsonl`. |
 | 2026-06-04 | `compound-core-same-crate-hidden` Minimax N=3 | Minimax resolved/self-corrected 3/3 runs; pass@1 was 0/3; loop exercised 3/3. Result: `/tmp/a2-core-same-crate-minimax-20260604T214318Z.jsonl`. |
+| 2026-06-05 | Record new Pi model availability | `pi --list-models kimi` exposes `kimi-coding/kimi-for-coding` and `kimi-coding/k2.6-code-preview`; `pi --list-models minimax` exposes `minimax/MiniMax-M3`. A² invocation forms are `pi/kimi-coding/kimi-for-coding`, `pi/kimi-coding/k2.6-code-preview`, and `pi/minimax/MiniMax-M3`. |

@@ -1,7 +1,7 @@
 # Self-Correction Loop TODOs
 
 Created: 2026-04-28
-Updated: 2026-05-30
+Updated: 2026-06-05
 
 Current facts:
 
@@ -34,7 +34,13 @@ Current facts:
 - Governor Stage 0 promotion now has an external-verifier backstop for mutable evaluator self-repair: explicit candidate worktree verifiers can carry a patch to the apply/rebuild gate when all verifier commands passed, candidate tests have zero failures, and the outer Governor token budget is respected. See `docs/solutions/logic-errors/bugged-evaluator-blocks-self-repair-20260530.md`.
 - Post-backstop `compound-eval-same-crate-hidden` with Pi/ZAI GLM on 2026-05-30 resolved 3/3 runs; pass@1 3/3; loop exercised 0/3; self-corrected 0/3. All runs promoted, applied, reconciled through the core path, and passed both verifier tests on attempt 1. Result: `/tmp/a2-eval-same-crate-pi-zai-glm-post-backstop-20260530T084550Z.jsonl`.
 - `compound-broker-same-crate-hidden` was added 2026-05-30 to add same-crate loop diversity in `a2_broker`. It injects visible Gemini flat usage output-token parsing and hidden Pi cache-write token accounting regressions in `crates/a2_broker/src/broker.rs`; smoke-only injection verified both failures. Result: `/tmp/a2-broker-fixture-smoke.jsonl`.
-- `compound-broker-same-crate-hidden` with Minimax on 2026-05-30 resolved 1/1 run; pass@1 0/1; loop exercised 1/1; self-corrected 1/1. The run resolved on attempt 3 after two over-budget discarded attempts that still failed both verifier tests. Result: `/tmp/a2-broker-same-crate-minimax-20260530T204745Z.jsonl`.
+- `compound-broker-same-crate-hidden` with Minimax on 2026-05-30/31 resolved 3/3 runs; pass@1 0/3; loop exercised 3/3; self-corrected 3/3. The first run resolved on attempt 3 after two over-budget discarded attempts; the two 2026-05-31 runs resolved on attempt 2. Result: `/tmp/a2-broker-same-crate-minimax-20260530T204745Z.jsonl`.
+- `compound-constitution-same-crate-hidden` was added 2026-05-31 to add same-crate loop diversity in `a2_constitution`. Smoke-only injection verified visible B1 human-review and hidden B2 network allowlist failures. Minimax resolved 3/3 with pass@1 2/3, loop exercised 1/3, self-corrected 1/3. Result: `/tmp/a2-constitution-same-crate-minimax-20260531T183820Z.jsonl`.
+- `compound-workcell-same-crate-hidden` was added 2026-06-01 to cover catalyst response parsing and prompt-context truncation behavior. Smoke-only injection verified both failures. Minimax resolved 3/3 with pass@1 1/3, loop exercised 2/3, self-corrected 2/3. Result: `/tmp/a2-workcell-same-crate-minimax-20260601T192100Z.jsonl`.
+- `compound-a2d-same-crate-hidden` was added 2026-06-01 to cover stagnation-window and verifier-backstop behavior. Smoke-only injection verified both failures. Minimax resolved 3/3 with pass@1 2/3, loop exercised 1/3, self-corrected 1/3; Kimi resolved 3/3 with pass@1 3/3, loop exercised 0/3, self-corrected 0/3. Results: `/tmp/a2-a2d-same-crate-minimax-20260602T062403Z.jsonl` and `/tmp/a2-a2d-same-crate-kimi-20260602T065530Z-n3.jsonl`.
+- Anti-repeat ablation N=3 per cohort on `compound-broker-same-crate-hidden`, `compound-raf-same-crate-hidden`, and `compound-a2d-same-crate-hidden` completed with Minimax by 2026-06-02. Results: `/tmp/a2-anti-repeat-ablation-broker-minimax-20260531T190000Z.jsonl`, `/tmp/a2-anti-repeat-ablation-raf-minimax-20260601T190000Z.jsonl`, and `/tmp/a2-anti-repeat-ablation-a2d-minimax-20260602T072100Z.jsonl`.
+- `compound-core-same-crate-hidden` was added 2026-06-04 to cover same-crate hidden behavior in `a2_core`. Smoke-only injection verified visible Fibonacci and hidden somatic-summary failures. Minimax resolved/self-corrected 3/3 with pass@1 0/3; all runs failed attempt 1 touching only `crates/a2_core/src/lib.rs` and passed attempt 2 touching both `crates/a2_core/src/lib.rs` and `crates/a2_core/src/protocol.rs`. Result: `/tmp/a2-core-same-crate-minimax-20260604T214318Z.jsonl`.
+- New Pi model availability recorded 2026-06-05: `pi --list-models kimi` exposes `kimi-coding/kimi-for-coding` and `kimi-coding/k2.6-code-preview`; `pi --list-models minimax` exposes `minimax/MiniMax-M3`. A² invocation forms are `pi/kimi-coding/kimi-for-coding`, `pi/kimi-coding/k2.6-code-preview`, and `pi/minimax/MiniMax-M3`. These are not yet benchmarked in A².
 
 See `todos/self-correction-loop-recovery.md` for the structural recovery sequence.
 
@@ -67,7 +73,11 @@ See `todos/self-correction-loop-recovery.md` for the structural recovery sequenc
 - [x] Add Governor external-verifier promotion backstop for mutable evaluator self-repair. Completed 2026-05-30; regression test `candidate_verifier_backstop_promotes_when_mutable_evaluator_is_corrupt` covers a verifier-passing patch with a corrupt evaluator.
 - [x] Run post-backstop `compound-eval-same-crate-hidden` N≥3 with Pi/ZAI GLM or Minimax. Completed 2026-05-30 with Pi/ZAI GLM: resolved 3/3, pass@1 3/3, loop exercised 0/3, self-corrected 0/3. Result: `/tmp/a2-eval-same-crate-pi-zai-glm-post-backstop-20260530T084550Z.jsonl`.
 - [x] Add a Broker same-crate fixture after Eval same-crate coverage. Completed 2026-05-30 with `compound-broker-same-crate-hidden`; smoke-only injection verified visible Gemini flat usage output-token parsing and hidden Pi cache-write token accounting failures. Result: `/tmp/a2-broker-fixture-smoke.jsonl`.
-- [ ] Run `compound-broker-same-crate-hidden` N≥3 with an available non-Claude provider and score the JSONL result. One Minimax run completed 2026-05-30: resolved/self-corrected 1/1 on attempt 3; result `/tmp/a2-broker-same-crate-minimax-20260530T204745Z.jsonl`.
+- [x] Run `compound-broker-same-crate-hidden` N≥3 with an available non-Claude provider and score the JSONL result. Completed 2026-05-31 with Minimax: resolved/self-corrected 3/3, pass@1 0/3, loop exercised 3/3; result `/tmp/a2-broker-same-crate-minimax-20260530T204745Z.jsonl`.
 - [x] Run `compound-archive-hidden` N≥3 with Minimax and Kimi after smoke-only injection success. Completed 2026-05-22; both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 - [x] Refresh stale `Cargo.lock` observed by sentinel during Pi/ZAI validation. Completed 2026-05-22 with `cargo generate-lockfile --offline`; sentinel then passed 6/6.
 - [x] Add a second hard fixture after `compound-hidden` self-corrects at least once. Completed 2026-05-18 with `compound-membrane-hidden`; after hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-21 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
+- [x] Add and validate Core same-crate fixture. Completed 2026-06-04 with `compound-core-same-crate-hidden`; smoke-only injection verified both failures and Minimax resolved/self-corrected 3/3 with pass@1 0/3.
+- [ ] Run one N≥3 self-correction fixture with `pi/kimi-coding/kimi-for-coding` or `pi/kimi-coding/k2.6-code-preview` and score the JSONL result.
+- [ ] Run one N≥3 self-correction fixture with `pi/minimax/MiniMax-M3` and score the JSONL result.
+- [ ] Continue provider coverage for newer same-crate fixtures beyond Minimax cohorts.
