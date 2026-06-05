@@ -33,6 +33,7 @@ Latest Flux commits on `main`:
 - `5874325 Document Flux git Pi install path`
 - `c965d4b Add left-field Flux prompt profile`
 - `ef546a1 Make Flux host hooks installable from git`
+- `e815c42 Detect repeated Flux tool-result loops`
 
 Implemented surfaces:
 
@@ -199,6 +200,7 @@ Default loop trigger behavior:
 - Repeat detection watches recent `tool-result` fingerprints and fires after 3 matching errored tool results within the last 12 tool results (`repeatThreshold=3`, `repeatWindowEvents=12`, `repeatRequireError=true`).
 - Fingerprints preserve input numbers to avoid conflating distinct commands, but normalize volatile result numbers, timestamps, UUIDs, temp paths, and long hex strings.
 - Repeat history is held in `FluxState`; this works for long-lived adapters like Pi. Per-invocation hook CLIs need persisted trigger state before repeat history can span separate Claude/Codex hook process launches.
+- Known blind spot: language patterns and repeated tool fingerprints still only catch surface loops. They do not catch "wrong frame with local progress" loops where every step is novel and successful but aimed at the wrong problem. Random injections and the `left-field-leap` prompt profile are intentionally kept as the outside-channel mechanism for that class.
 
 Random injection frequency is controlled by:
 
@@ -217,6 +219,7 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 - Pi integration compiles and uses Pi-authenticated model access. Non-interactive JSON-mode smoke passed, including repo-level package loading and project-local install loading; full interactive TUI validation is still pending.
 - Claude Code and Codex integrations now have host-CLI sidecar callers plus fixture/output-shape tests, but exact host-specific hook output contracts and real hook behavior still need validation against current host versions.
 - Core selection/config/trigger/context logic, language/repeat loop detection, direct-provider HTTP clients, and host CLI argv construction now have automated coverage; host adapters still need focused/live tests.
+- Loop detection remains heuristic: pattern matching and repeat fingerprints can miss wrong-frame-with-local-progress situations. Random/left-field nudges are the current mitigation.
 - Sidecar model calls support Anthropic and OpenAI-compatible chat completions only.
 - `thinkingEffort` is typed in config but not sent to providers yet.
 - Config command UX now covers persistent enable/random toggles, random frequency, add/update model definitions, model-pool assignment, add/update prompt profiles, and full prompt-style listing.

@@ -29,3 +29,5 @@ Keep defaults conservative: repeated successful reads or ordinary status checks 
 Implemented in `src/core/triggers.ts` and enabled on the default `loop-language` trigger with `repeatThreshold=3`, `repeatWindowEvents=12`, and `repeatRequireError=true`. Fingerprinting preserves input numbers so distinct commands stay distinct, while normalizing volatile result numbers, timestamps, temp paths, UUIDs, and long hex strings. Pattern-based `loop-detected` matching still fires on non-tool events.
 
 Note: `FluxState` is currently in-memory. Repeat-loop detection works for long-lived adapters such as the Pi extension; per-invocation hook CLIs will need persisted trigger state if repeat history should span separate Claude/Codex hook process launches.
+
+Known blind spot: repeat fingerprints still only detect surface repetition. They do not catch wrong-frame-with-local-progress loops where each action is distinct and productive-looking but aimed at the wrong problem. Random injections and the `left-field-leap` profile remain the intentional outside-channel mitigation for that class.
