@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-06-04 (session 24 — escalation validation harness added and bounded live-smoked; latest A²D code commit is the commit containing this handoff update)
+**Last updated:** 2026-06-04 (session 24 — escalation validation harness added and bounded live-smoked; Pi Kimi k2p6/Minimax 3 availability noted)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-271 commits at monorepo HEAD; latest A²D code change is `Add escalation validation harness` (the commit containing this handoff update). 205 tests passing (2 ignored integration) after this session's changes. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
+278 commits at monorepo HEAD after this handoff/provider-availability update; latest A²D code change remains `Add escalation validation harness`. 205 tests passing (2 ignored integration) after this session's changes. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
 
 ## Clean-session pickup
 
@@ -240,6 +240,8 @@ Architect: GLM 5.1               (opencode, zai-coding-plan/glm-5.1)
 
 Gemini is temporarily disabled from the default live registry due repeated capacity/quota failures. Codex quota exhausted until April 8th. GLM is deliberately excluded from coder races, evolver assignment, and evolver fallback because live runs showed repeated coder/evolver timeouts and scoped parallelism waits for slow losers.
 
+Pi provider availability for assistant/delegation work now includes Kimi k2p6 (`kimi-for-coding`) and Minimax 3. These are not yet wired into A²D's default runtime registry; verify exact Pi model IDs/capabilities before using them for provider-policy or architect/tester latency experiments.
+
 ## Critical Path — What to Do Next
 
 ### 1. Keep escalation validation in the regression loop
@@ -252,7 +254,7 @@ Current rung 6 uses role-isolated eligible providers and sequential bounded invo
 
 ### 3. Address architect/tester provider latency
 
-Latest role-isolated runs still had GLM architect timeouts and tester fallback latency. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
+Latest role-isolated runs still had GLM architect timeouts and tester fallback latency. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, trying the newly available Pi Kimi k2p6/Minimax 3 lanes, or making their prompts smaller.
 
 ### 4. Evaluate evolved 7-enzyme topology
 
