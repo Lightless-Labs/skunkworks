@@ -33,8 +33,10 @@ The wrapper is deliberately operational rather than clever: if `dist/bin/flux-ho
 Triggers are data-driven. The initial set contains:
 
 1. `random-turn-end` — probabilistic and throttled by `random.probability`, `random.minIntervalMs`, and `random.afterEvents` unless overridden on the trigger.
-2. `loop-language` — deterministic nudge when recent context smells stuck; its default profile asks for kind but honest critical feedback against the apparent task/goal.
+2. `loop-language` — deterministic nudge when recent context smells stuck. It can fire from explicit language patterns in recent user/assistant/tool text, or from repeated tool-result fingerprints when the same errored tool result recurs enough times. Its default profile asks for kind but honest critical feedback against the apparent task/goal.
 3. Manual/external triggers — `/flux think`, `flux_stray_thought`, CLI `--force`, and Pi event bus.
+
+Repeat-based loop detection keeps a schema-safe in-memory rolling history on `FluxState.recentToolFingerprints`. Fingerprints include tool name, normalized input, normalized result, and error/success status. Input numbers are preserved to avoid collapsing distinct commands, while result numbers/timestamps/temp paths/UUIDs are normalized so volatile output does not hide repeated failures.
 
 Future triggers should only need a new `TriggerKind`, a matcher in `triggers.ts`, and config entries.
 

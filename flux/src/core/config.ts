@@ -57,6 +57,9 @@ export const DEFAULT_CONFIG: FluxConfig = {
 			probability: 1,
 			minIntervalMs: 60_000,
 			patterns: ["again", "still failing", "same error", "loop", "stuck", "retry"],
+			repeatThreshold: 3,
+			repeatWindowEvents: 12,
+			repeatRequireError: true,
 		},
 	],
 	prompt: {

@@ -19,7 +19,7 @@ import { isDeliveryMode, piDeliverAs, supportedDeliveryModes } from "../src/core
 import { generateStrayThought, selectPromptProfile } from "../src/core/engine.ts";
 import { resolveModelPool } from "../src/core/modelClient.ts";
 import { createInitialState, shouldFireTrigger } from "../src/core/triggers.ts";
-import type { AgentContextSnapshot, FluxConfig, FluxModelSpec, TriggerEvent } from "../src/core/types.ts";
+import type { AgentContextSnapshot, FluxConfig, FluxModelSpec, FluxState, TriggerEvent } from "../src/core/types.ts";
 
 function cloneConfig(): FluxConfig {
 	return structuredClone(DEFAULT_CONFIG) as FluxConfig;
@@ -148,6 +148,104 @@ test("loop-detected triggers fire only when recent context matches a loop patter
 	assert.equal(regexMatch?.name, "loop");
 });
 
+test("loop-detected triggers on repeated errored tool-result fingerprints", () => {
+	const config = cloneConfig();
+	config.triggers = [
+		{
+			name: "repeat-loop",
+			kind: "loop-detected",
+			enabled: true,
+			probability: 1,
+			patterns: [],
+			repeatThreshold: 3,
+			repeatWindowEvents: 6,
+			repeatRequireError: true,
+		},
+	];
+	const state = createInitialState();
+	const repeatedPayload = (timestamp: number) => ({
+		toolName: "bash",
+		input: { command: "npm test" },
+		result: `failed at 2026-06-04T12:00:${timestamp}Z in /tmp/run-${timestamp} with line ${timestamp}`,
+		isError: true,
+	});
+
+	assert.equal(
+		shouldFireTrigger(config, state, event({ timestamp: 1, kind: "tool-result", payload: repeatedPayload(1) }), snapshot()),
+		undefined,
+	);
+	assert.equal(
+		shouldFireTrigger(config, state, event({ timestamp: 2, kind: "tool-result", payload: repeatedPayload(2) }), snapshot()),
+		undefined,
+	);
+	const fired = shouldFireTrigger(config, state, event({ timestamp: 3, kind: "tool-result", payload: repeatedPayload(3) }), snapshot());
+	assert.equal(fired?.name, "repeat-loop");
+});
+
+test("repeat loop detection ignores non-errors when repeatRequireError is set", () => {
+	const config = cloneConfig();
+	config.triggers = [
+		{
+			name: "repeat-loop",
+			kind: "loop-detected",
+			enabled: true,
+			probability: 1,
+			patterns: [],
+			repeatThreshold: 2,
+			repeatRequireError: true,
+		},
+	];
+	const oldState = { observedEvents: 0, lastTriggerAt: {} } as FluxState;
+	const payload = { toolName: "read", input: { path: "README.md" }, result: "same successful read", isError: false };
+
+	assert.equal(shouldFireTrigger(config, oldState, event({ timestamp: 1, kind: "tool-result", payload }), snapshot()), undefined);
+	assert.equal(shouldFireTrigger(config, oldState, event({ timestamp: 2, kind: "tool-result", payload }), snapshot()), undefined);
+	assert.equal(oldState.recentToolFingerprints?.length, 2);
+});
+
+test("repeat loop detection keeps distinct tool inputs separate", () => {
+	const config = cloneConfig();
+	config.triggers = [
+		{
+			name: "repeat-loop",
+			kind: "loop-detected",
+			enabled: true,
+			probability: 1,
+			patterns: [],
+			repeatThreshold: 2,
+			repeatRequireError: true,
+		},
+	];
+	const state = createInitialState();
+	const first = { toolName: "bash", input: { command: "npm test -- test-a" }, result: "failed", isError: true };
+	const second = { toolName: "bash", input: { command: "npm test -- test-b" }, result: "failed", isError: true };
+
+	assert.equal(shouldFireTrigger(config, state, event({ timestamp: 1, kind: "tool-result", payload: first }), snapshot()), undefined);
+	assert.equal(shouldFireTrigger(config, state, event({ timestamp: 2, kind: "tool-result", payload: second }), snapshot()), undefined);
+});
+
+test("repeat loop detection only fires on tool-result events", () => {
+	const config = cloneConfig();
+	config.triggers = [
+		{
+			name: "repeat-loop",
+			kind: "loop-detected",
+			enabled: true,
+			probability: 1,
+			patterns: [],
+			repeatThreshold: 2,
+			repeatRequireError: true,
+		},
+	];
+	const state = createInitialState();
+	const payload = { toolName: "bash", input: { command: "npm test" }, result: "failed", isError: true };
+
+	assert.equal(shouldFireTrigger(config, state, event({ timestamp: 1, kind: "tool-result", payload }), snapshot()), undefined);
+	assert.equal(shouldFireTrigger(config, state, event({ timestamp: 2, kind: "turn-end" }), snapshot()), undefined);
+	const fired = shouldFireTrigger(config, state, event({ timestamp: 3, kind: "tool-result", payload }), snapshot());
+	assert.equal(fired?.name, "repeat-loop");
+});
+
 test("selectPromptProfile resolves trigger name, then kind, then default and honors weights", () => {
 	const config = cloneConfig();
 	config.promptProfiles = {
@@ -217,6 +315,8 @@ test("config actions validate and mutate common slash-command settings", () => {
 	assert.equal(upsertModel(config, ["bad", "unknown", "model"]).ok, false);
 	assert.equal(setModelPool(config, "manual", "missing").ok, false);
 	assert.equal(upsertPromptProfile(config, ["manual", "bad", "-1", "style"]).ok, false);
+	config.triggers.push({ name: "bad-repeat", kind: "loop-detected", repeatThreshold: 1 });
+	assert.equal(validateFluxConfig(config).ok, false);
 });
 
 test("formatPromptProfiles includes profile styles, not only names", () => {

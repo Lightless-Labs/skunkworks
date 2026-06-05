@@ -68,6 +68,12 @@ export interface TriggerConfig {
 	tools?: string[];
 	/** Regex patterns used by heuristic triggers. */
 	patterns?: string[];
+	/** Fire loop-detected after this many matching recent tool-result fingerprints. Disabled when unset. */
+	repeatThreshold?: number;
+	/** Number of recent tool-result fingerprints to inspect for repeatThreshold. */
+	repeatWindowEvents?: number;
+	/** If true, only errored tool results count toward repeatThreshold. */
+	repeatRequireError?: boolean;
 	/** Optional named model pool override. Defaults to trigger name, kind, then default. */
 	modelPool?: string;
 	/** Optional named prompt profile pool override. Defaults to trigger name, kind, then default. */
@@ -146,8 +152,17 @@ export interface StrayThought {
 	contextDigest: string;
 }
 
+export interface ToolFingerprintEvent {
+	fingerprint: string;
+	toolName: string;
+	isError?: boolean;
+	timestamp: number;
+}
+
 export interface FluxState {
 	observedEvents: number;
 	lastTriggerAt: Record<string, number>;
+	/** Rolling in-memory history used for repeat-based loop detection. Optional for older restored state objects. */
+	recentToolFingerprints?: ToolFingerprintEvent[];
 	lastThought?: StrayThought;
 }

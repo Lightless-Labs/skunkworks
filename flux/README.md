@@ -33,7 +33,7 @@ Users can configure:
 - per-trigger model pools (`modelPools`), keyed by trigger name, trigger kind, or `default`,
 - random injections (`randomInjections`) and random frequency (`random.probability`, `random.minIntervalMs`, `random.afterEvents`),
 - Pi/session delivery mode (`steer`, `followUp`, `nextTurn`); hook integrations always write their host JSON response to stdout,
-- trigger list (`triggers[]`), probabilities, throttles, loop patterns, and optional `modelPool` / `promptPool` names,
+- trigger list (`triggers[]`), probabilities, throttles, loop patterns, repeat-loop settings (`repeatThreshold`, `repeatWindowEvents`, `repeatRequireError`), and optional `modelPool` / `promptPool` names,
 - per-trigger weighted prompt profile pools (`promptProfiles`),
 - context window limits.
 
@@ -126,7 +126,7 @@ See `examples/` for scaffold settings. Host plugin APIs move quickly, so these a
 
 ## Prompt/model selection
 
-Flux uses a neutral base system prompt plus trigger/profile-specific instructions. That means `random` can rotate between narrow local sparks, more global “inspiration hit me” notes, and playful reframes, while `loop-detected` can ask for kind-but-honest critical feedback about what the agent has been trying relative to the apparent task.
+Flux uses a neutral base system prompt plus trigger/profile-specific instructions. That means `random` can rotate between narrow local sparks, more global “inspiration hit me” notes, playful reframes, and left-field leaps, while `loop-detected` can ask for kind-but-honest critical feedback when explicit loop language or repeated errored tool-result fingerprints suggest the agent is stuck.
 
 Model execution is host-native when possible:
 

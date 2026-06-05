@@ -132,6 +132,18 @@ export function validateFluxConfig(config: FluxConfig): ConfigActionResult {
 			if (!modelNames.has(model)) return err(`Model pool ${pool} references unknown model: ${model}`);
 		}
 	}
+	for (const trigger of config.triggers) {
+		if (!trigger.name) return err("Every Flux trigger must have a name.");
+		if (trigger.repeatThreshold !== undefined && (!Number.isInteger(trigger.repeatThreshold) || trigger.repeatThreshold < 2)) {
+			return err(`Trigger ${trigger.name} repeatThreshold must be an integer >= 2.`);
+		}
+		if (trigger.repeatWindowEvents !== undefined && (!Number.isInteger(trigger.repeatWindowEvents) || trigger.repeatWindowEvents < 2)) {
+			return err(`Trigger ${trigger.name} repeatWindowEvents must be an integer >= 2.`);
+		}
+		if (trigger.repeatRequireError !== undefined && typeof trigger.repeatRequireError !== "boolean") {
+			return err(`Trigger ${trigger.name} repeatRequireError must be boolean.`);
+		}
+	}
 	for (const [pool, profiles] of Object.entries(config.promptProfiles)) {
 		for (const profile of profiles) {
 			if (!profile.name) return err(`Prompt pool ${pool} contains a profile without a name.`);

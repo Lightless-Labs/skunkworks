@@ -31,6 +31,8 @@ Latest Flux commits on `main`:
 - `bb4675b Update Flux host CLI handoff notes`
 - `cab683f Expose Flux as repo-level Pi extension`
 - `5874325 Document Flux git Pi install path`
+- `c965d4b Add left-field Flux prompt profile`
+- `ef546a1 Make Flux host hooks installable from git`
 
 Implemented surfaces:
 
@@ -43,7 +45,7 @@ Implemented surfaces:
   - Repo root exposes it through `extensions/flux.ts` so another machine can run `pi install git:git@github.com:Lightless-Labs/skunkworks.git` without manual cloning or npm publishing.
 - **Claude Code hook/plugin:** `src/adapters/claude-code/hook.ts`, `.claude-plugin/plugin.json`, `hooks/claude-code-hooks.json`, `claude-code-plugin.json`, `examples/claude-code-settings.json`. The skunkworks repo root exposes a Claude marketplace at `../.claude-plugin/marketplace.json` so users can install from git without npm publishing or manual cloning.
 - **Codex hook/plugin:** `src/adapters/codex/hook.ts`, `.codex-plugin/plugin.json`, `hooks/codex-hooks.json`, `codex-plugin.json`, `examples/codex-config.toml`. The skunkworks repo root exposes a Codex marketplace at `../.agents/plugins/marketplace.json` so users can install from git without npm publishing or manual cloning.
-- **Core:** config loading, trigger matching, bounded context snapshots, prompt-profile selection, per-trigger model pools, Anthropic/OpenAI-compatible model calls, thought logging.
+- **Core:** config loading, trigger matching, bounded context snapshots, prompt-profile selection, per-trigger model pools, Anthropic/OpenAI-compatible model calls, thought logging. `loop-detected` supports both language pattern matching and repeat-based tool-result fingerprints.
 - **Core tests:** `test/core-selection.test.ts` covers config/deep merge, config command mutations/validation, trigger frequency overrides, loop matching, prompt-profile/model-pool resolution, injected model callers, and context formatting/clamping. `test/hook-cli.test.ts` covers host hook event-kind inference, fixture snapshot extraction, and output shapes. `test/model-client.test.ts` covers non-network OpenAI-compatible and Anthropic request/response/error handling. `test/host-cli-model-client.test.ts` covers non-network Claude/Codex host CLI argv/stdin construction. `test/plugin-install.test.ts` covers repo-root marketplace manifests, plugin hook wrapper commands, and wrapper safe-fail output.
 - **Host-native model path in progress:** Pi adapter now calls Pi's selected/authenticated model; Claude/Codex hook CLI paths call their host CLIs with `FLUX_SUPPRESS=1` to avoid recursive hook triggering. Pi JSON-mode smoke for `/flux think` and `flux_stray_thought` passed on 2026-05-30. Local CLI surface check on 2026-05-31 used `claude` 2.1.119 and `codex-cli` 0.130.0; Codex requires `--ask-for-approval never` before the `exec` subcommand. See `todos/host-native-models.md`.
 - **Delivery semantics clarified:** shared `DeliveryMode` is now only Pi/session message delivery (`steer`, `followUp`, `nextTurn`). Hook CLIs still emit host JSON on stdout as transport. Stale Pi configs using unsupported modes warn instead of silently mapping to `steer`. See `todos/delivery-semantics.md`.
@@ -189,6 +191,15 @@ Current default `loop-detected` pool:
 - `kind-critical-feedback` — honest feedback comparing recent agent activity to apparent task/goal.
 - `break-loop-smallest-check` — smallest concrete check/reproduction/state inspection to break repetition.
 
+Default loop trigger behavior:
+
+- Trigger name: `loop-language`.
+- Trigger kind / prompt pool key: `loop-detected`.
+- Language patterns still match recent user/assistant/tool text, e.g. `same error`, `stuck`, or `retry`.
+- Repeat detection watches recent `tool-result` fingerprints and fires after 3 matching errored tool results within the last 12 tool results (`repeatThreshold=3`, `repeatWindowEvents=12`, `repeatRequireError=true`).
+- Fingerprints preserve input numbers to avoid conflating distinct commands, but normalize volatile result numbers, timestamps, UUIDs, temp paths, and long hex strings.
+- Repeat history is held in `FluxState`; this works for long-lived adapters like Pi. Per-invocation hook CLIs need persisted trigger state before repeat history can span separate Claude/Codex hook process launches.
+
 Random injection frequency is controlled by:
 
 ```json
@@ -205,7 +216,7 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 
 - Pi integration compiles and uses Pi-authenticated model access. Non-interactive JSON-mode smoke passed, including repo-level package loading and project-local install loading; full interactive TUI validation is still pending.
 - Claude Code and Codex integrations now have host-CLI sidecar callers plus fixture/output-shape tests, but exact host-specific hook output contracts and real hook behavior still need validation against current host versions.
-- Core selection/config/trigger/context logic, direct-provider HTTP clients, and host CLI argv construction now have automated coverage; host adapters still need focused/live tests.
+- Core selection/config/trigger/context logic, language/repeat loop detection, direct-provider HTTP clients, and host CLI argv construction now have automated coverage; host adapters still need focused/live tests.
 - Sidecar model calls support Anthropic and OpenAI-compatible chat completions only.
 - `thinkingEffort` is typed in config but not sent to providers yet.
 - Config command UX now covers persistent enable/random toggles, random frequency, add/update model definitions, model-pool assignment, add/update prompt profiles, and full prompt-style listing.
@@ -224,7 +235,7 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 | `src/core/config.ts` | Defaults, discovery, deep merge |
 | `src/core/configActions.ts` | Reusable config mutation/validation helpers for `/flux config` |
 | `src/core/delivery.ts` | Shared delivery mode validation helpers |
-| `src/core/triggers.ts` | Trigger matching, random frequency/throttle logic |
+| `src/core/triggers.ts` | Trigger matching, random frequency/throttle logic, language/repeat loop detection |
 | `src/core/engine.ts` | Prompt-profile selection, thought generation/logging |
 | `src/core/modelClient.ts` | Anthropic/OpenAI-compatible direct-provider calls and model-pool resolution |
 | `src/core/hostCliModelClient.ts` | Claude/Codex host CLI model callers for hook integrations |

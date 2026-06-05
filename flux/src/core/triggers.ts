@@ -1,7 +1,12 @@
-import type { AgentContextSnapshot, FluxConfig, FluxState, TriggerConfig, TriggerEvent, TriggerKind } from "./types.ts";
+import { createHash } from "node:crypto";
+import { textFromUnknown } from "./context.ts";
+import type { AgentContextSnapshot, AgentToolEvent, FluxConfig, FluxState, ToolFingerprintEvent, TriggerConfig, TriggerEvent, TriggerKind } from "./types.ts";
+
+const DEFAULT_REPEAT_WINDOW_EVENTS = 12;
+const MAX_TOOL_FINGERPRINT_HISTORY = 40;
 
 export function createInitialState(): FluxState {
-	return { observedEvents: 0, lastTriggerAt: {} };
+	return { observedEvents: 0, lastTriggerAt: {}, recentToolFingerprints: [] };
 }
 
 function matchesLoopPattern(snapshot: AgentContextSnapshot, trigger: TriggerConfig): boolean {
@@ -28,6 +33,95 @@ function triggerKindMatches(trigger: TriggerConfig, eventKind: TriggerKind): boo
 	return false;
 }
 
+function normalizeFingerprintBase(value: unknown): string {
+	return textFromUnknown(value)
+		.toLowerCase()
+		.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>")
+		.replace(/\b\d{4}-\d{2}-\d{2}t\d{2}:\d{2}:\d{1,2}(?:\.\d+)?z\b/gi, "<timestamp>")
+		.replace(/\b0x[0-9a-f]+\b/gi, "<hex>")
+		.replace(/\b[0-9a-f]{16,}\b/gi, "<hex>")
+		.replace(/\/var\/folders\/\S+|\/tmp\/\S+|\/private\/var\/folders\/\S+/g, "<tmp-path>")
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(0, 4_000);
+}
+
+function normalizeFingerprintResult(value: unknown): string {
+	return normalizeFingerprintBase(value).replace(/\b\d+\b/g, "<number>");
+}
+
+function hashToolFingerprint(toolEvent: AgentToolEvent): string {
+	return createHash("sha256")
+		.update(
+			[
+				normalizeFingerprintBase(toolEvent.name),
+				normalizeFingerprintBase(toolEvent.input),
+				normalizeFingerprintResult(toolEvent.result),
+				toolEvent.isError ? "error" : "ok",
+			].join("\n---\n"),
+		)
+		.digest("hex")
+		.slice(0, 24);
+}
+
+function toolEventFromPayload(payload: unknown): AgentToolEvent | undefined {
+	if (typeof payload !== "object" || payload === null) return undefined;
+	const record = payload as Record<string, unknown>;
+	const name = record.toolName ?? record.name;
+	if (name === undefined) return undefined;
+	return {
+		name: String(name),
+		input: record.input ?? record.args,
+		result: record.result ?? record.content ?? record.details,
+		isError: Boolean(record.isError),
+		timestamp: Number(record.timestamp) || undefined,
+	};
+}
+
+function latestToolEvent(event: TriggerEvent, snapshot: AgentContextSnapshot): AgentToolEvent | undefined {
+	return toolEventFromPayload(event.payload) ?? snapshot.toolEvents.at(-1);
+}
+
+function fingerprintToolEvent(toolEvent: AgentToolEvent, timestamp: number): ToolFingerprintEvent {
+	return {
+		fingerprint: hashToolFingerprint(toolEvent),
+		toolName: toolEvent.name,
+		isError: toolEvent.isError,
+		timestamp,
+	};
+}
+
+function observeToolFingerprint(state: FluxState, event: TriggerEvent, snapshot: AgentContextSnapshot): void {
+	state.recentToolFingerprints ??= [];
+	if (event.kind !== "tool-result") return;
+	const toolEvent = latestToolEvent(event, snapshot);
+	if (!toolEvent) return;
+	state.recentToolFingerprints.push(fingerprintToolEvent(toolEvent, event.timestamp));
+	if (state.recentToolFingerprints.length > MAX_TOOL_FINGERPRINT_HISTORY) {
+		state.recentToolFingerprints.splice(0, state.recentToolFingerprints.length - MAX_TOOL_FINGERPRINT_HISTORY);
+	}
+}
+
+function matchesRepeatedToolFingerprint(state: FluxState, trigger: TriggerConfig): boolean {
+	const threshold = trigger.repeatThreshold;
+	if (!threshold || threshold <= 1) return false;
+	const recent = state.recentToolFingerprints ?? [];
+	const latest = recent.at(-1);
+	if (!latest) return false;
+	const windowSize = trigger.repeatWindowEvents ?? DEFAULT_REPEAT_WINDOW_EVENTS;
+	const window = recent.slice(-windowSize);
+	const matches = window.filter((item) => {
+		if (item.fingerprint !== latest.fingerprint) return false;
+		if (trigger.repeatRequireError && !item.isError) return false;
+		return true;
+	});
+	return matches.length >= threshold;
+}
+
+function matchesLoop(snapshot: AgentContextSnapshot, state: FluxState, trigger: TriggerConfig, event: TriggerEvent): boolean {
+	return matchesLoopPattern(snapshot, trigger) || (event.kind === "tool-result" && matchesRepeatedToolFingerprint(state, trigger));
+}
+
 export function shouldFireTrigger(
 	config: FluxConfig,
 	state: FluxState,
@@ -37,6 +131,7 @@ export function shouldFireTrigger(
 ): TriggerConfig | undefined {
 	if (!config.enabled) return undefined;
 	state.observedEvents += 1;
+	observeToolFingerprint(state, event, snapshot);
 
 	for (const trigger of config.triggers) {
 		if (trigger.enabled === false) continue;
@@ -51,7 +146,7 @@ export function shouldFireTrigger(
 			const toolName = String((event.payload as Record<string, unknown>).toolName ?? (event.payload as Record<string, unknown>).name ?? "");
 			if (!trigger.tools.includes(toolName)) continue;
 		}
-		if (trigger.kind === "loop-detected" && !matchesLoopPattern(snapshot, trigger)) continue;
+		if (trigger.kind === "loop-detected" && !matchesLoop(snapshot, state, trigger, event)) continue;
 		const p = trigger.probability ?? (trigger.kind === "random" ? config.random.probability : 1);
 		if (p <= 0) continue;
 		if (p < 1 && random() >= p) continue;
