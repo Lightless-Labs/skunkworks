@@ -2743,7 +2743,8 @@ fn run_escalation_validation(name: &str, enzyme_name: &str) {
     let mut results = Vec::new();
 
     for rung in 4..=6 {
-        let germline = load_germline_for_topology(TopologyMode::Evolved);
+        let loaded_germline = load_germline_for_topology(TopologyMode::Evolved);
+        let germline = validation_germline_for_enzyme(loaded_germline, &enzyme_id);
         let registry = build_runtime_registry(&germline);
         let mut benchmark = challenge.benchmark.clone();
         benchmark.acceptance_test = challenge.acceptance_test.clone();
@@ -2753,10 +2754,11 @@ fn run_escalation_validation(name: &str, enzyme_name: &str) {
                 .with_max_invocations_per_cycle(1)
                 .with_project_root(project_root()),
         );
-        seed_initial_runtime_artifacts(&mut metabolism, challenge.requirements);
-        metabolism.seed_artifact(
-            ArtifactType::from("failure_report"),
-            failure_report_marker.as_bytes().to_vec(),
+        seed_escalation_validation_artifacts(
+            &mut metabolism,
+            challenge.requirements,
+            &enzyme_id,
+            &failure_report_marker,
         );
         let provider_policy_before = metabolism.provider_policy();
 
@@ -2791,6 +2793,49 @@ fn run_escalation_validation(name: &str, enzyme_name: &str) {
         "{}",
         serde_json::to_string_pretty(&output).expect("validation output must serialize")
     );
+}
+
+fn validation_germline_for_enzyme(germline: Germline, enzyme_id: &EnzymeId) -> Germline {
+    germline
+        .get_enzyme(enzyme_id)
+        .cloned()
+        .map(|enzyme| Germline::new(vec![enzyme], baseline_food()))
+        .unwrap_or(germline)
+}
+
+fn seed_escalation_validation_artifacts(
+    metabolism: &mut Metabolism,
+    requirements: &str,
+    enzyme_id: &EnzymeId,
+    failure_report_marker: &str,
+) {
+    seed_initial_runtime_artifacts(metabolism, requirements);
+    metabolism.seed_artifact(
+        ArtifactType::from("failure_report"),
+        failure_report_marker.as_bytes().to_vec(),
+    );
+
+    match enzyme_id.0.as_str() {
+        "tester" => {
+            metabolism.seed_artifact(
+                ArtifactType::from("code"),
+                b"fn main() { println!(\"diagnostic validation code\"); }".to_vec(),
+            );
+        }
+        "architect" => {
+            metabolism.seed_artifact(
+                ArtifactType::from("fitness_report"),
+                b"diagnostic validation fitness: 0.50 (seeded non-empty)".to_vec(),
+            );
+        }
+        "evolver" => {
+            metabolism.seed_artifact(
+                ArtifactType::from("fitness_report"),
+                b"diagnostic validation fitness: 0.50 (seeded non-empty)".to_vec(),
+            );
+        }
+        _ => {}
+    }
 }
 
 fn escalation_validation_result_json(
@@ -3704,6 +3749,21 @@ mod tests {
         assert!(force_seed_germline(Some("1")));
         assert!(!force_seed_germline(Some("lineage")));
         assert!(!force_seed_germline(None));
+    }
+
+    #[test]
+    fn escalation_validation_germline_isolates_requested_enzyme() {
+        let germline = seed_germline();
+        let isolated = validation_germline_for_enzyme(germline, &EnzymeId::from("architect"));
+        let ids = isolated
+            .enzymes()
+            .into_iter()
+            .map(|enzyme| enzyme.id.0.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["architect"]);
+        assert!(isolated.food().contains(&art("failure_report")));
+        assert!(isolated.food().contains(&art("fitness_report")));
     }
 
     #[test]

@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-06-05 (session 25 — rung-6 scope probe pushed; 30s quality smoke inconclusive; architect/tester override hook added)
+**Last updated:** 2026-06-05 (session 25 — rung-6 scope probe pushed; architect/tester override hook + forced-role diagnostic validation added)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-284 commits at monorepo HEAD after this architect/tester override commit; latest A²D code change is `Add architect tester provider overrides`. 210 tests passing (2 ignored integration) after the override changes. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
+285 commits at monorepo HEAD after this forced-role validation follow-up commit; latest A²D code change is `Enable forced tester architect validation`. 211 tests passing (2 ignored integration) after the diagnostic validation changes. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
 
 ## Clean-session pickup
 
@@ -48,7 +48,7 @@
 ### Best next moves
 
 1. **Use the new escalation harness as a regression lane:** run `A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=2 cargo run -q -p a2d -- validate-escalation sudoku coder` after rung/provider-routing changes.
-2. **Run bounded architect/tester override comparisons:** runtime-only overrides now exist. Compare default GLM tester/architect against `A2D_TESTER_PROVIDER=opencode/kimi-for-coding/k2p6` and/or `A2D_ARCHITECT_PROVIDER=opencode/kimi-for-coding/k2p6` (or DeepSeek) using bounded topology/challenge runs before changing defaults or durable provider policy.
+2. **Run bounded architect/tester override comparisons:** runtime-only overrides now exist and forced-role validation can invoke tester/architect directly. Compare default GLM tester/architect against `A2D_TESTER_PROVIDER=opencode/kimi-for-coding/k2p6` and/or `A2D_ARCHITECT_PROVIDER=opencode/kimi-for-coding/k2p6` (or DeepSeek) using a direct/seeded role comparison or a challenge run that actually reaches those roles before changing defaults or durable provider policy.
 3. **Only continue rung-6 quality work with replicated evidence:** a single 30s default-vs-broad forced-rung smoke is noisy. Repeat only if comparing controlled runs; otherwise avoid mechanism-only escalation work.
 4. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
 5. **Find a benchmark-useful provider-policy proposal path:** runtime proposal safety is validated, but the live 7-enzyme topology still has no default policy-management enzyme; add one only if bounded tests show it does not starve coder/feedback metabolism.
@@ -86,7 +86,9 @@
 
 - **Runtime-only architect/tester provider overrides landed.** Created `docs/plans/architect-tester-provider-latency.md` and `todos/architect-tester-provider-latency.md`. Added `A2D_TESTER_PROVIDER` and `A2D_ARCHITECT_PROVIDER` overrides in `crates/a2d-cli/src/main.rs`, applied after lineage provider-policy loading so they are true runtime experiments and not durable policy. Unknown providers are rejected visibly; non-experimental roles are rejected by the same provider-policy validation gate. Defaults remain GLM for tester/architect when unset.
 - **Override mechanism smoked through a real registry-building command.** Initial `status` probe was discarded because `status` does not build the runtime registry. Corrected smokes used `validate-escalation`: invalid `A2D_TESTER_PROVIDER=missing` printed visible rejection lines; valid tester+architect Kimi overrides printed accepted override lines. Artifacts: `/tmp/a2d-invalid-tester-provider-override-validate-20260605.err`, `/tmp/a2d-valid-tester-architect-provider-override-validate-20260605.err`.
-- **Validation:** `cargo test` passes (210 passing, 2 ignored). Focused override tests pass: `cargo test -p a2d runtime_provider_overrides`; default registry test passes: `cargo test -p a2d live_registry_keeps_glm_off_coder_and_evolver_critical_path`.
+- **Forced tester/architect validation now reaches the intended roles.** `validate-escalation` now uses a validation-only single-enzyme germline plus non-empty seeded inputs for tester/architect/evolver. This avoids coder/evolver priority starving diagnostic role validation. 10s forced-role smokes invoked tester/architect directly (`/tmp/a2d-validate-tester-default-20260605.json`, `/tmp/a2d-validate-tester-kimi-20260605.json`, `/tmp/a2d-validate-architect-kimi-20260605.json`) but timed out, so they validate mechanism not quality.
+- **Latency comparison attempt remained inconclusive.** `compare-topologies sudoku 2` with 20s provider bounds did not reach tester/architect because coder timed out first in both default and override runs. Logs: `/tmp/a2d-latency-default-glm-tester-architect-20260605.log`, `/tmp/a2d-latency-kimi-tester-architect-20260605.log`.
+- **Validation:** `cargo test` passes (211 passing, 2 ignored). Focused override tests pass: `cargo test -p a2d runtime_provider_overrides`; default registry test passes: `cargo test -p a2d live_registry_keeps_glm_off_coder_and_evolver_critical_path`; diagnostic isolation test passes: `cargo test -p a2d escalation_validation_germline_isolates_requested_enzyme`.
 
 - **Deterministic escalation validation harness landed.** Added diagnostic-only `Metabolism::force_escalation_rung_for_validation()` for rungs 4–6 and CLI `a2d validate-escalation <challenge> [enzyme]`. The command runs fresh real-registry metabolisms with persistence disabled, emits JSON using the external `escalation_rung` contract, checks non-empty failure-history marker visibility, records rung-6 candidate evaluations, and reports provider-policy immutability.
 - **Bounded live escalation smoke passed mechanically.** `A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=2 cargo run -q -p a2d -- validate-escalation sudoku coder` proved rung 4 provider swap preserved the seeded failure marker, rung 5 clean session stripped it, and rung 6 recorded two Kimi + DeepSeek candidate evaluations. The provider calls timed out under the intentional 1s bound; this validates mechanism/observability, not outcome quality.
@@ -261,7 +263,7 @@ Rungs 4–6 now provide ephemeral provider swap, clean swapped session, and boun
 
 ### 2. Run bounded architect/tester provider override comparisons
 
-Runtime-only overrides now exist: `A2D_TESTER_PROVIDER=<registered-provider-name>` and `A2D_ARCHITECT_PROVIDER=<registered-provider-name>`. They apply after lineage policy loading and do not persist. Use bounded comparisons to test whether moving tester/architect off GLM reduces timeout waste before changing defaults or provider policy. Example candidates: Kimi k2.6 and DeepSeek v4 flash. Pi Kimi/Minimax lanes remain unverified for A²D runtime; `pi --help` exceeded a 30s probe window this session, so do not wire new Pi model IDs blindly.
+Runtime-only overrides now exist: `A2D_TESTER_PROVIDER=<registered-provider-name>` and `A2D_ARCHITECT_PROVIDER=<registered-provider-name>`. They apply after lineage policy loading and do not persist. Forced-role validation can now seed tester/architect inputs directly, but 10s smokes timed out and topology comparison did not reach those roles because coder timed out first. Use a seeded/direct role comparison or a successful coder cycle to test whether moving tester/architect off GLM reduces timeout waste before changing defaults or provider policy. Example candidates: Kimi k2.6 and DeepSeek v4 flash. Pi Kimi/Minimax lanes remain unverified for A²D runtime; `pi --help` exceeded a 30s probe window this session, so do not wire new Pi model IDs blindly.
 
 ### 3. Evaluate rung-6 eligibility/concurrency tradeoffs only with replicated evidence
 
