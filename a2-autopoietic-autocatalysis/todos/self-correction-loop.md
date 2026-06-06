@@ -1,7 +1,7 @@
 # Self-Correction Loop TODOs
 
 Created: 2026-04-28
-Updated: 2026-06-05
+Updated: 2026-06-06
 
 Current facts:
 
@@ -41,8 +41,11 @@ Current facts:
 - Anti-repeat ablation N=3 per cohort on `compound-broker-same-crate-hidden`, `compound-raf-same-crate-hidden`, and `compound-a2d-same-crate-hidden` completed with Minimax by 2026-06-02. Results: `/tmp/a2-anti-repeat-ablation-broker-minimax-20260531T190000Z.jsonl`, `/tmp/a2-anti-repeat-ablation-raf-minimax-20260601T190000Z.jsonl`, and `/tmp/a2-anti-repeat-ablation-a2d-minimax-20260602T072100Z.jsonl`.
 - `compound-core-same-crate-hidden` was added 2026-06-04 to cover same-crate hidden behavior in `a2_core`. Smoke-only injection verified visible Fibonacci and hidden somatic-summary failures. Minimax resolved/self-corrected 3/3 with pass@1 0/3; all runs failed attempt 1 touching only `crates/a2_core/src/lib.rs` and passed attempt 2 touching both `crates/a2_core/src/lib.rs` and `crates/a2_core/src/protocol.rs`. Result: `/tmp/a2-core-same-crate-minimax-20260604T214318Z.jsonl`.
 - New Pi model availability recorded 2026-06-05: `pi --list-models kimi` exposes `kimi-coding/kimi-for-coding` and `kimi-coding/k2.6-code-preview`; `pi --list-models minimax` exposes `minimax/MiniMax-M3`. A² invocation forms are `pi/kimi-coding/kimi-for-coding`, `pi/kimi-coding/k2.6-code-preview`, and `pi/minimax/MiniMax-M3`.
-- `compound-core-same-crate-hidden` with Pi/Kimi `kimi-for-coding` on 2026-06-05 resolved 3/3 runs; pass@1 2/3; loop exercised 1/3; self-corrected 1/3. The self-corrected run failed attempt 1 after touching only `crates/a2_core/src/lib.rs`, then passed attempt 2 after touching both `crates/a2_core/src/lib.rs` and `crates/a2_core/src/protocol.rs`. Result: `/tmp/a2-core-same-crate-pi-kimi-for-coding-20260605T215455Z.jsonl`.
-- `compound-core-same-crate-hidden` with Pi/MiniMax M3 on 2026-06-05 resolved 3/3 runs; pass@1 3/3; loop exercised 0/3; self-corrected 0/3. Result: `/tmp/a2-core-same-crate-pi-minimax-m3-20260605T221044Z.jsonl`.
+- `compound-core-same-crate-hidden` with Pi/Kimi `kimi-for-coding` on 2026-06-05 resolved 3/3 runs; pass@1 2/3; loop exercised 1/3; self-corrected 1/3. The self-corrected run failed attempt 1 after touching only `crates/a2_core/src/lib.rs`, then passed attempt 2 after touching both `crates/a2_core/src/lib.rs` and `crates/a2_core/src/protocol.rs`. Result: `docs/benchmark-results/self-correction/a2-core-same-crate-pi-kimi-for-coding-20260605T215455Z.jsonl`.
+- `compound-core-same-crate-hidden` with Pi/MiniMax M3 on 2026-06-05 resolved 3/3 runs; pass@1 3/3; loop exercised 0/3; self-corrected 0/3. Result: `docs/benchmark-results/self-correction/a2-core-same-crate-pi-minimax-m3-20260605T221044Z.jsonl`.
+- `compound-workcell-same-crate-hidden` with Pi/Kimi `kimi-for-coding` on 2026-06-06 resolved 3/3 runs; pass@1 3/3; loop exercised 0/3; self-corrected 0/3. Result: `docs/benchmark-results/self-correction/a2-workcell-same-crate-pi-kimi-for-coding-20260606T154718Z.jsonl`.
+- `compound-broker-same-crate-hidden` with Pi/Kimi `kimi-for-coding` on 2026-06-06 resolved 3/3 runs; pass@1 3/3; loop exercised 0/3; self-corrected 0/3. Result: `docs/benchmark-results/self-correction/a2-broker-same-crate-pi-kimi-for-coding-20260606T160801Z.jsonl`.
+- `compound-hidden` with Pi/Kimi `kimi-for-coding` on 2026-06-06 resolved 3/3 runs; pass@1 2/3; loop exercised 1/3; self-corrected 1/3. One run failed attempt 1 after touching only `crates/a2_core/src/lib.rs`, then passed attempt 2 after touching both `crates/a2_core/src/lib.rs` and `crates/a2ctl/src/main.rs`; two runs fixed both files on attempt 1. Result: `docs/benchmark-results/self-correction/a2-compound-hidden-pi-kimi-for-coding-20260606T162419Z.jsonl`. The old `/tmp` Kimi `compound-hidden` logs were not available locally for re-scoring; handoff-recorded older Kimi baselines had pass@1 0/3 and self-corrected 3/3.
 
 See `todos/self-correction-loop-recovery.md` for the structural recovery sequence.
 
@@ -80,6 +83,6 @@ See `todos/self-correction-loop-recovery.md` for the structural recovery sequenc
 - [x] Refresh stale `Cargo.lock` observed by sentinel during Pi/ZAI validation. Completed 2026-05-22 with `cargo generate-lockfile --offline`; sentinel then passed 6/6.
 - [x] Add a second hard fixture after `compound-hidden` self-corrects at least once. Completed 2026-05-18 with `compound-membrane-hidden`; after hidden candidate-worktree verifier wiring, Minimax N=3 and Kimi N=3 on 2026-05-21 both scored resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3.
 - [x] Add and validate Core same-crate fixture. Completed 2026-06-04 with `compound-core-same-crate-hidden`; smoke-only injection verified both failures and Minimax resolved/self-corrected 3/3 with pass@1 0/3.
-- [x] Run one N≥3 self-correction fixture with `pi/kimi-coding/kimi-for-coding` or `pi/kimi-coding/k2.6-code-preview` and score the JSONL result. Completed 2026-06-05 with `pi/kimi-coding/kimi-for-coding` on `compound-core-same-crate-hidden`: resolved 3/3, pass@1 2/3, loop exercised 1/3, self-corrected 1/3. Result: `/tmp/a2-core-same-crate-pi-kimi-for-coding-20260605T215455Z.jsonl`.
-- [x] Run one N≥3 self-correction fixture with `pi/minimax/MiniMax-M3` and score the JSONL result. Completed 2026-06-05 on `compound-core-same-crate-hidden`: resolved 3/3, pass@1 3/3, loop exercised 0/3, self-corrected 0/3. Result: `/tmp/a2-core-same-crate-pi-minimax-m3-20260605T221044Z.jsonl`.
-- [ ] Continue provider coverage for newer same-crate fixtures beyond Minimax cohorts.
+- [x] Run one N≥3 self-correction fixture with `pi/kimi-coding/kimi-for-coding` or `pi/kimi-coding/k2.6-code-preview` and score the JSONL result. Completed 2026-06-05 with `pi/kimi-coding/kimi-for-coding` on `compound-core-same-crate-hidden`: resolved 3/3, pass@1 2/3, loop exercised 1/3, self-corrected 1/3. Result: `docs/benchmark-results/self-correction/a2-core-same-crate-pi-kimi-for-coding-20260605T215455Z.jsonl`.
+- [x] Run one N≥3 self-correction fixture with `pi/minimax/MiniMax-M3` and score the JSONL result. Completed 2026-06-05 on `compound-core-same-crate-hidden`: resolved 3/3, pass@1 3/3, loop exercised 0/3, self-corrected 0/3. Result: `docs/benchmark-results/self-correction/a2-core-same-crate-pi-minimax-m3-20260605T221044Z.jsonl`.
+- [ ] Continue provider coverage for newer same-crate fixtures beyond Minimax and Pi/Kimi Core/Broker/Workcell cohorts; prefer combinations likely to exercise retries, since Pi/Kimi Workcell and Broker were pass@1-only.
