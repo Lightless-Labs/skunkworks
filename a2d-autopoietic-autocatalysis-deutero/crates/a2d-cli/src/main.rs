@@ -403,6 +403,10 @@ fn build_runtime_registry(germline: &Germline) -> ProviderRegistry {
         }
     }
 
+    let application =
+        apply_runtime_provider_overrides(&mut registry, runtime_provider_overrides_from_env());
+    report_runtime_provider_overrides(application);
+
     registry
 }
 
@@ -442,6 +446,50 @@ fn build_registry() -> ProviderRegistry {
     }
 
     registry
+}
+
+fn runtime_provider_overrides_from_env() -> BTreeMap<String, Option<String>> {
+    BTreeMap::from([
+        ("tester".to_string(), env::var("A2D_TESTER_PROVIDER").ok()),
+        (
+            "architect".to_string(),
+            env::var("A2D_ARCHITECT_PROVIDER").ok(),
+        ),
+    ])
+}
+
+fn apply_runtime_provider_overrides(
+    registry: &mut ProviderRegistry,
+    overrides: BTreeMap<String, Option<String>>,
+) -> a2d_core::provider::ProviderPolicyApplication {
+    let assignments = overrides
+        .into_iter()
+        .filter_map(|(enzyme, provider)| provider.map(|provider| (enzyme, provider)))
+        .collect::<BTreeMap<_, _>>();
+    let policy = ProviderPolicy { assignments };
+    let valid_enzyme_ids = BTreeSet::from([EnzymeId::from("tester"), EnzymeId::from("architect")]);
+    registry.apply_policy(&policy, &valid_enzyme_ids)
+}
+
+fn report_runtime_provider_overrides(application: a2d_core::provider::ProviderPolicyApplication) {
+    for accepted in application.accepted {
+        eprintln!(
+            "Runtime provider override: {} {} -> {}",
+            accepted.enzyme_id, accepted.previous_provider, accepted.provider
+        );
+    }
+    for rejected in application.rejected {
+        eprintln!(
+            "Rejected runtime provider override for {} -> {}: {}",
+            rejected
+                .enzyme_id
+                .as_ref()
+                .map(|id| id.0.as_str())
+                .unwrap_or("<unknown>"),
+            rejected.provider.as_deref().unwrap_or("<unknown>"),
+            rejected.reason
+        );
+    }
 }
 
 fn autopilot_provider_for_attempt<'a>(
@@ -3688,6 +3736,75 @@ mod tests {
                 .contains(&"opencode/opencode/deepseek-v4-flash-free")
         );
         assert!(registry.providers().contains(&"pi/default"));
+    }
+
+    #[test]
+    fn runtime_provider_overrides_reassign_tester_and_architect_without_env_mutation() {
+        let mut registry = build_registry();
+        let application = apply_runtime_provider_overrides(
+            &mut registry,
+            BTreeMap::from([
+                (
+                    "tester".to_string(),
+                    Some("opencode/kimi-for-coding/k2p6".to_string()),
+                ),
+                (
+                    "architect".to_string(),
+                    Some("opencode/opencode/deepseek-v4-flash-free".to_string()),
+                ),
+            ]),
+        );
+
+        assert_eq!(application.accepted.len(), 2);
+        assert!(application.rejected.is_empty());
+        assert_eq!(
+            registry.provider_for(&EnzymeId::from("tester")).name(),
+            "opencode/kimi-for-coding/k2p6"
+        );
+        assert_eq!(
+            registry.provider_for(&EnzymeId::from("architect")).name(),
+            "opencode/opencode/deepseek-v4-flash-free"
+        );
+    }
+
+    #[test]
+    fn runtime_provider_overrides_reject_unknown_provider_and_preserve_default() {
+        let mut registry = build_registry();
+        let application = apply_runtime_provider_overrides(
+            &mut registry,
+            BTreeMap::from([("tester".to_string(), Some("missing".to_string()))]),
+        );
+
+        assert!(application.accepted.is_empty());
+        assert_eq!(application.rejected.len(), 1);
+        assert_eq!(application.rejected[0].reason, "provider is not registered");
+        assert_eq!(
+            registry.provider_for(&EnzymeId::from("tester")).name(),
+            "opencode/zai-coding-plan/glm-5.1"
+        );
+    }
+
+    #[test]
+    fn runtime_provider_overrides_ignore_non_experimental_roles() {
+        let mut registry = build_registry();
+        let application = apply_runtime_provider_overrides(
+            &mut registry,
+            BTreeMap::from([(
+                "coder".to_string(),
+                Some("opencode/opencode/deepseek-v4-flash-free".to_string()),
+            )]),
+        );
+
+        assert!(application.accepted.is_empty());
+        assert_eq!(application.rejected.len(), 1);
+        assert_eq!(
+            application.rejected[0].reason,
+            "target enzyme is not in the current germline"
+        );
+        assert_eq!(
+            registry.provider_for(&EnzymeId::from("coder")).name(),
+            "opencode/kimi-for-coding/k2p6"
+        );
     }
 
     #[test]
