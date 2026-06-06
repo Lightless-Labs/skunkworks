@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-06-05 (session 25 — rung-6 provider eligibility scope made probeable; default vs broad validation smoked)
+**Last updated:** 2026-06-05 (session 25 — rung-6 provider eligibility scope made probeable; default vs broad validation smoked; handoff/todo synced before push)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-280 commits at monorepo HEAD after this session's commit; latest A²D code change is `Add rung 6 provider scope probe`. 207 tests passing (2 ignored integration) after this session's changes. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
+282 commits at monorepo HEAD after this handoff/todo sync commit; latest A²D code change remains `Add rung 6 provider scope probe`. 207 tests passing (2 ignored integration) after the scope-probe changes; focused post-commit check `cargo test -p a2d-core rung_6_provider_scope` passes. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
 
 ## Clean-session pickup
 
@@ -80,7 +80,8 @@
 - **Rung-6 provider eligibility scope is now mechanically probeable.** Added `A2D_RUNG6_PROVIDER_SCOPE=broad` in `crates/a2d-core/src/metabolism.rs` for opt-in bounded experiments that include all healthy registered providers. The default remains assigned + unassigned providers while excluding providers assigned to other enzymes; broad scope does not mutate provider assignments or durable `provider_policy`. Added unit coverage for scope parsing and default-vs-broad eligibility.
 - **Default vs broad scope smoked through the real validation harness.** Default bounded smoke (`A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=2 cargo run -q -p a2d -- validate-escalation sudoku coder`) recorded rung-6 candidates Kimi k2p6 + DeepSeek. Broad smoke (`A2D_RUNG6_PROVIDER_SCOPE=broad A2D_RUNG6_MAX_PROVIDERS=4 ...`) recorded Kimi k2p6 + DeepSeek + GLM 5.1 + Pi. JSON artifacts: `/tmp/a2d-validate-escalation-default-scope-20260605.json` and `/tmp/a2d-validate-escalation-broad-scope-20260605.json`. This validates eligibility mechanics, not outcome quality.
 - **Escalation plan/todo updated.** Updated `docs/plans/escalation-rungs-4-6.md` and `todos/escalation-rungs-4-6.md` with exact default scope semantics, broad-scope probe command, and next validation targets.
-- **Validation:** initial pickup `cargo test` passed before changes (205 passing, 2 ignored). Post-change `cargo test` passes (207 passing, 2 ignored). Focused `cargo test -p a2d-core rung_6_provider_scope` passed.
+- **Committed and prepared for push.** Scope-probe implementation committed as `0409195 Add rung 6 provider scope probe`; a follow-up handoff/todo sync commit records current monorepo state before push. Note: monorepo HEAD briefly advanced via sibling A² commit `633e338 docs: record pi model core fixture runs`, so A²D's handoff count was synchronized afterward.
+- **Validation:** initial pickup `cargo test` passed before changes (205 passing, 2 ignored). Post-change `cargo test` passes (207 passing, 2 ignored). Focused `cargo test -p a2d-core rung_6_provider_scope` passed after commit.
 
 - **Deterministic escalation validation harness landed.** Added diagnostic-only `Metabolism::force_escalation_rung_for_validation()` for rungs 4–6 and CLI `a2d validate-escalation <challenge> [enzyme]`. The command runs fresh real-registry metabolisms with persistence disabled, emits JSON using the external `escalation_rung` contract, checks non-empty failure-history marker visibility, records rung-6 candidate evaluations, and reports provider-policy immutability.
 - **Bounded live escalation smoke passed mechanically.** `A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=2 cargo run -q -p a2d -- validate-escalation sudoku coder` proved rung 4 provider swap preserved the seeded failure marker, rung 5 clean session stripped it, and rung 6 recorded two Kimi + DeepSeek candidate evaluations. The provider calls timed out under the intentional 1s bound; this validates mechanism/observability, not outcome quality.

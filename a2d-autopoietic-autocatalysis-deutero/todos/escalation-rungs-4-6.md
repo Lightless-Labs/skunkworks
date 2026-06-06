@@ -10,6 +10,7 @@
 **Implementation-status update:** 2026-06-01 — rung 6 bounded provider consensus is implemented and unit-tested in `crates/a2d-core/src/metabolism.rs`; it invokes a capped role-isolated provider portfolio, records candidate evaluations, selects highest code fitness when benchmarked, and uses deterministic fallback for non-code enzymes.
 **Validation-harness update:** 2026-06-04 — `a2d validate-escalation <challenge> [enzyme]` now forces rungs 4, 5, and 6 through a diagnostic-only in-memory hook, runs the real registry with persistence disabled, and emits JSON using the external `escalation_rung` field contract.
 **Eligibility-scope update:** 2026-06-05 — rung-6 consensus keeps the safe default of assigned + unassigned providers while excluding other-role assignments, and adds opt-in `A2D_RUNG6_PROVIDER_SCOPE=broad` for bounded probes that include all healthy registered providers.
+**Push-sync update:** 2026-06-05 — scope probe is committed as `0409195 Add rung 6 provider scope probe`; next work is outcome-quality comparison of default vs broad scope, not more mechanism proof.
 **Depends on:** Rungs 0-3 (implemented), cycle iteration/firing cap (implemented), cycle wall-clock cap (implemented), provider-policy topology gate (`todos/provider-policy-topology-gate.md`).
 
 ## What's Built (observed firing live 2026-04-17)
@@ -41,6 +42,7 @@ Next-action targets:
 1. Use `a2d validate-escalation sudoku coder` as the bounded smoke harness before changing rung behavior.
 2. Compare default rung-6 scope (assigned + unassigned providers, excluding other-role assignments) against opt-in broad scope (`A2D_RUNG6_PROVIDER_SCOPE=broad`) on bounded challenge runs; keep broad out of defaults unless outcome evidence justifies the extra provider-window consumption.
 3. Decide whether sequential rung-6 consensus is sufficient or whether a timeout-bounded concurrent variant is worth the loser-wait risk.
+4. If bounded outcome evidence stays inconclusive, move to architect/tester provider-latency work rather than continuing mechanism-only escalation validation.
 
 ## Rung 2 status
 
