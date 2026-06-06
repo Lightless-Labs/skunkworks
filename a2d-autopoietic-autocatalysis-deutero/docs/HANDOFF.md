@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-06-05 (session 25 — rung-6 provider eligibility scope made probeable; default vs broad validation smoked; handoff/todo synced before push)
+**Last updated:** 2026-06-05 (session 25 — rung-6 provider eligibility scope made probeable; default vs broad validation smoked; 30s quality smoke inconclusive)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-282 commits at monorepo HEAD after this handoff/todo sync commit; latest A²D code change remains `Add rung 6 provider scope probe`. 207 tests passing (2 ignored integration) after the scope-probe changes; focused post-commit check `cargo test -p a2d-core rung_6_provider_scope` passes. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
+283 commits at monorepo HEAD after this quality-smoke documentation commit; latest A²D code change remains `Add rung 6 provider scope probe`. 207 tests passing (2 ignored integration) after the scope-probe changes; focused post-commit check `cargo test -p a2d-core rung_6_provider_scope` passes. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
 
 ## Clean-session pickup
 
@@ -40,7 +40,7 @@
 - **Architect output contract is brittle:** Kimi architect still produced two no-materialized-`system_patch` failures. Need raw-output previews and/or a valid no-op patch contract.
 - **Evolved topology value is unknown:** the 7-enzyme germline is RAF-closed and reached 100%, but may add latency/invocation overhead rather than useful capability.
 - **Compounding self-modification is unproven:** the only live architect patch in `sudoku 5` was irrelevant (`prime.rs`) and was reverted; relevance gate now prevents that class.
-- **Escalation rungs 4–6 still need quality validation, not mechanism validation:** bounded live smokes now prove provider swap, clean-session stripping, rung-6 candidate evaluation, and default-vs-broad provider eligibility under the real registry. Whether those interventions improve challenge outcomes, whether broad eligibility helps enough to justify other-role provider-window consumption, and whether concurrency is worthwhile remain unproven.
+- **Escalation rungs 4–6 still need quality validation, not mechanism validation:** bounded live smokes now prove provider swap, clean-session stripping, rung-6 candidate evaluation, and default-vs-broad provider eligibility under the real registry. A 30s forced-rung quality smoke was inconclusive: default timed out on Kimi+DeepSeek, broad succeeded via DeepSeek while also spending GLM+Pi timeout windows; because DeepSeek is in both scopes, this is provider variance/noise rather than evidence that broad eligibility helps. Whether rungs improve challenge outcomes and whether concurrency is worthwhile remain unproven.
 - **Benchmark coverage is narrow:** sudoku is validated; chess/rubiks need stronger acceptance tests and live runs.
 - **Autopilot semantic validation is still partial:** markdown repo-path claims are now checked mechanically, but broader documentation/planning truth claims remain outside the gate. Mechanical path/temp/real gates plus repo-reference checks still do not validate causal correctness, performance claims, or design adequacy.
 - **Provider-policy usefulness remains unproven:** the runtime/durability safety path is live-validated, but no benchmark-useful provider-policy proposal has yet shown improved challenge outcomes.
@@ -48,8 +48,8 @@
 ### Best next moves
 
 1. **Use the new escalation harness as a regression lane:** run `A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=2 cargo run -q -p a2d -- validate-escalation sudoku coder` after rung/provider-routing changes.
-2. **Probe rung-6 eligibility/concurrency tradeoffs:** compare default sequential consensus (assigned + unassigned providers, excluding other-role assignments) with opt-in broad sequential consensus (`A2D_RUNG6_PROVIDER_SCOPE=broad`) and only then consider a timeout-bounded concurrent provider set.
-3. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
+2. **Address architect/tester provider latency:** latest role-isolated run still had GLM architect timeout and tester fallback to Kimi timeout. The 30s rung-6 broad smoke also spent extra GLM+Pi timeout windows without proving broad value. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, or making their prompts smaller.
+3. **Only continue rung-6 quality work with replicated evidence:** a single 30s default-vs-broad forced-rung smoke is noisy. Repeat only if comparing controlled runs; otherwise avoid mechanism-only escalation work.
 4. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
 5. **Find a benchmark-useful provider-policy proposal path:** runtime proposal safety is validated, but the live 7-enzyme topology still has no default policy-management enzyme; add one only if bounded tests show it does not starve coder/feedback metabolism.
 6. **Expand acceptance tests**: chess castling/en-passant/checkmate/legal-move invariants; Rubiks scramble-solve roundtrip.
@@ -80,7 +80,8 @@
 - **Rung-6 provider eligibility scope is now mechanically probeable.** Added `A2D_RUNG6_PROVIDER_SCOPE=broad` in `crates/a2d-core/src/metabolism.rs` for opt-in bounded experiments that include all healthy registered providers. The default remains assigned + unassigned providers while excluding providers assigned to other enzymes; broad scope does not mutate provider assignments or durable `provider_policy`. Added unit coverage for scope parsing and default-vs-broad eligibility.
 - **Default vs broad scope smoked through the real validation harness.** Default bounded smoke (`A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=2 cargo run -q -p a2d -- validate-escalation sudoku coder`) recorded rung-6 candidates Kimi k2p6 + DeepSeek. Broad smoke (`A2D_RUNG6_PROVIDER_SCOPE=broad A2D_RUNG6_MAX_PROVIDERS=4 ...`) recorded Kimi k2p6 + DeepSeek + GLM 5.1 + Pi. JSON artifacts: `/tmp/a2d-validate-escalation-default-scope-20260605.json` and `/tmp/a2d-validate-escalation-broad-scope-20260605.json`. This validates eligibility mechanics, not outcome quality.
 - **Escalation plan/todo updated.** Updated `docs/plans/escalation-rungs-4-6.md` and `todos/escalation-rungs-4-6.md` with exact default scope semantics, broad-scope probe command, and next validation targets.
-- **Committed and prepared for push.** Scope-probe implementation committed as `0409195 Add rung 6 provider scope probe`; a follow-up handoff/todo sync commit records current monorepo state before push. Note: monorepo HEAD briefly advanced via sibling A² commit `633e338 docs: record pi model core fixture runs`, so A²D's handoff count was synchronized afterward.
+- **Committed and pushed.** Scope-probe implementation committed as `0409195 Add rung 6 provider scope probe`; handoff/todo sync committed as `77707a0 docs: sync a2d handoff before push` and pushed to `origin/main`.
+- **30s default-vs-broad quality smoke was inconclusive.** Default forced-rung run (`A2D_PROVIDER_TIMEOUT_SECS=30 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=2`) timed out on Kimi + DeepSeek. Broad forced-rung run (`A2D_RUNG6_PROVIDER_SCOPE=broad A2D_RUNG6_MAX_PROVIDERS=4`) timed out on Kimi, GLM, and Pi, but DeepSeek materialized a 6/6 sudoku solution. Because DeepSeek is in both scopes and differed only by stochastic provider behavior, this is not evidence that broad eligibility improves quality; it does show broad can consume extra other-role timeout windows. JSON artifacts: `/tmp/a2d-validate-escalation-default-scope-quality-20260605.json`, `/tmp/a2d-validate-escalation-broad-scope-quality-20260605.json`.
 - **Validation:** initial pickup `cargo test` passed before changes (205 passing, 2 ignored). Post-change `cargo test` passes (207 passing, 2 ignored). Focused `cargo test -p a2d-core rung_6_provider_scope` passed after commit.
 
 - **Deterministic escalation validation harness landed.** Added diagnostic-only `Metabolism::force_escalation_rung_for_validation()` for rungs 4–6 and CLI `a2d validate-escalation <challenge> [enzyme]`. The command runs fresh real-registry metabolisms with persistence disabled, emits JSON using the external `escalation_rung` contract, checks non-empty failure-history marker visibility, records rung-6 candidate evaluations, and reports provider-policy immutability.
@@ -254,13 +255,13 @@ Pi provider availability for assistant/delegation work now includes Kimi k2p6 (`
 
 Rungs 4–6 now provide ephemeral provider swap, clean swapped session, and bounded provider consensus. Use `validate-escalation` after provider-routing or rung changes to confirm real-registry JSON still shows provider swap, clean-session stripping, candidate evaluations, provider-policy immutability, and the external `escalation_rung` field contract.
 
-### 2. Evaluate rung-6 eligibility/concurrency tradeoffs
+### 2. Address architect/tester provider latency
 
-Current rung 6 uses sequential bounded invocation (`A2D_RUNG6_MAX_PROVIDERS`, default 3). Default eligibility is assigned + unassigned providers while excluding other-role assignments; `A2D_RUNG6_PROVIDER_SCOPE=broad` opt-in includes all healthy registered providers. Compare default vs broad on bounded challenge runs before considering timeout-bounded concurrency.
+Latest role-isolated runs still had GLM architect timeouts and tester fallback latency. The 30s broad rung-6 quality smoke also consumed GLM+Pi timeout windows without proving broad-scope value. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, trying the newly available Pi Kimi k2p6/Minimax 3 lanes, or making their prompts smaller.
 
-### 3. Address architect/tester provider latency
+### 3. Evaluate rung-6 eligibility/concurrency tradeoffs only with replicated evidence
 
-Latest role-isolated runs still had GLM architect timeouts and tester fallback latency. Consider moving architect/tester off GLM, giving them cheaper role-local fallbacks, trying the newly available Pi Kimi k2p6/Minimax 3 lanes, or making their prompts smaller.
+Current rung 6 uses sequential bounded invocation (`A2D_RUNG6_MAX_PROVIDERS`, default 3). Default eligibility is assigned + unassigned providers while excluding other-role assignments; `A2D_RUNG6_PROVIDER_SCOPE=broad` opt-in includes all healthy registered providers. A single 30s smoke was inconclusive because DeepSeek is in both scopes. Repeat controlled comparisons before considering timeout-bounded concurrency.
 
 ### 4. Evaluate evolved 7-enzyme topology
 

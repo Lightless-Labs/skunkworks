@@ -11,6 +11,7 @@
 **Validation-harness update:** 2026-06-04 — `a2d validate-escalation <challenge> [enzyme]` now forces rungs 4, 5, and 6 through a diagnostic-only in-memory hook, runs the real registry with persistence disabled, and emits JSON using the external `escalation_rung` field contract.
 **Eligibility-scope update:** 2026-06-05 — rung-6 consensus keeps the safe default of assigned + unassigned providers while excluding other-role assignments, and adds opt-in `A2D_RUNG6_PROVIDER_SCOPE=broad` for bounded probes that include all healthy registered providers.
 **Push-sync update:** 2026-06-05 — scope probe is committed as `0409195 Add rung 6 provider scope probe`; next work is outcome-quality comparison of default vs broad scope, not more mechanism proof.
+**Quality-smoke update:** 2026-06-05 — a 30s forced-rung default-vs-broad smoke was inconclusive: default Kimi+DeepSeek timed out; broad got a 6/6 DeepSeek candidate but also spent GLM+Pi timeout windows. Because DeepSeek is present in both scopes, treat this as provider variance/noise, not a broad-scope win.
 **Depends on:** Rungs 0-3 (implemented), cycle iteration/firing cap (implemented), cycle wall-clock cap (implemented), provider-policy topology gate (`todos/provider-policy-topology-gate.md`).
 
 ## What's Built (observed firing live 2026-04-17)
@@ -40,9 +41,9 @@ Live run on sudoku (Kimi/Gemini/GLM), 2026-04-17: every dynamic enzyme climbed t
 
 Next-action targets:
 1. Use `a2d validate-escalation sudoku coder` as the bounded smoke harness before changing rung behavior.
-2. Compare default rung-6 scope (assigned + unassigned providers, excluding other-role assignments) against opt-in broad scope (`A2D_RUNG6_PROVIDER_SCOPE=broad`) on bounded challenge runs; keep broad out of defaults unless outcome evidence justifies the extra provider-window consumption.
-3. Decide whether sequential rung-6 consensus is sufficient or whether a timeout-bounded concurrent variant is worth the loser-wait risk.
-4. If bounded outcome evidence stays inconclusive, move to architect/tester provider-latency work rather than continuing mechanism-only escalation validation.
+2. Do not promote broad scope based on the 30s smoke; it was noisy and consumed extra provider windows.
+3. If revisiting rung-6 quality, run replicated controlled comparisons where the shared DeepSeek candidate is accounted for.
+4. Move to architect/tester provider-latency work rather than continuing mechanism-only escalation validation.
 
 ## Rung 2 status
 
@@ -58,7 +59,9 @@ Failed rung-2 consultation is now bounded: if consultation fails/timeouts, the w
 - rung 5: provider swap plus clean-session stripping;
 - rung 6: bounded provider consensus with candidate evaluations and fitness/materialization selection.
 
-Use the deterministic harness before and after provider-routing or rung changes. The 2026-06-04 bounded smoke confirmed real-registry JSON shows escalation metadata and that provider assignments/durable `provider_policy` remain unchanged. The 2026-06-05 scope smoke confirmed default rung 6 considers Kimi + DeepSeek for coder, while opt-in broad scope with cap 4 considers Kimi + DeepSeek + GLM + Pi. Remaining validation is whether broader eligibility or concurrency improves challenge outcomes enough to justify cost.
+Use the deterministic harness before and after provider-routing or rung changes. The 2026-06-04 bounded smoke confirmed real-registry JSON shows escalation metadata and that provider assignments/durable `provider_policy` remain unchanged. The 2026-06-05 scope smoke confirmed default rung 6 considers Kimi + DeepSeek for coder, while opt-in broad scope with cap 4 considers Kimi + DeepSeek + GLM + Pi.
+
+A later 30s forced-rung smoke did not prove broad value: default timed out on Kimi + DeepSeek, while broad got 6/6 from DeepSeek and timed out on Kimi + GLM + Pi. Because DeepSeek is shared, this is noisy provider behavior; the extra GLM+Pi windows are a real cost. Remaining validation is whether replicated broader eligibility or concurrency improves challenge outcomes enough to justify cost.
 
 ## Design Decisions for All Rungs
 
