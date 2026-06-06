@@ -3,6 +3,7 @@
 **Created:** 2026-06-05
 **Started:** 2026-06-05 — runtime-only tester/architect provider overrides implemented
 **Enhanced:** 2026-06-05 — `validate-escalation` can isolate tester/architect with non-empty diagnostic inputs so forced-role smokes reach the intended enzyme
+**Validation update:** 2026-06-05 — 30s forced tester comparison produced valid JSON but all candidates timed out; no default provider change justified
 **Plan:** `docs/plans/architect-tester-provider-latency.md`
 **Depends on:** provider circuit breaker, provider-policy topology gate, rung-6 scope probe.
 
@@ -20,7 +21,7 @@ Tester and architect still default to GLM 5.1. GLM is off coder/evolver critical
 - [x] `cargo test` passes. 2026-06-05: 211 passing, 2 ignored after diagnostic validation isolation test.
 - [x] Mechanism smoke exercises a command path that actually builds the runtime registry. 2026-06-05: `validate-escalation` invalid/valid override smokes passed; earlier `status` probe was discarded because `status` does not build the registry.
 - [x] Forced-role validation can reach tester/architect directly. 2026-06-05: `validate-escalation sudoku tester` and `validate-escalation sudoku architect` use a validation-only single-enzyme germline plus non-empty seeded inputs.
-- [ ] A bounded smoke documents whether a faster tester/architect assignment reduces timeout waste. Attempted `compare-topologies sudoku 2` with 20s bounds did not reach tester/architect because coder timed out first; this remains pending.
+- [ ] A bounded smoke documents whether a faster tester/architect assignment reduces timeout waste. Attempted `compare-topologies sudoku 2` with 20s bounds did not reach tester/architect because coder timed out first. Forced tester validation with 30s bounds reached tester but all default/override candidates timed out; this remains pending.
 
 ## Notes
 
@@ -48,4 +49,9 @@ Do not write these to lineage unless the existing provider-policy comparison gat
   - Tester Kimi override: `/tmp/a2d-validate-tester-kimi-20260605.json`
   - Architect Kimi override: `/tmp/a2d-validate-architect-kimi-20260605.json`
   - Result: intended enzymes were invoked directly; 10s provider bound was too tight for quality conclusions.
+- 30s forced tester comparison:
+  - Default: `/tmp/a2d-validate-tester-default-30s-20260605.json`
+  - Kimi override: `/tmp/a2d-validate-tester-kimi-30s-20260605.json`
+  - Stderr inspected; JSON parsed successfully for both runs.
+  - Result: all candidates timed out after 30s, so this is still no evidence for changing tester defaults.
 
