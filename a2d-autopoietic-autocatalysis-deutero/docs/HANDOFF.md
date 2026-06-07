@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-06-05 (session 25 — rung-6 scope probe pushed; architect/tester override hook + forced-role diagnostic validation added; tester 30s comparison inconclusive)
+**Last updated:** 2026-06-05 (session 25 — handoff count synced after Pi Kimi coverage docs)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-286 commits at monorepo HEAD after this tester-smoke documentation commit; latest A²D code change remains `Enable forced tester architect validation`. 211 tests passing (2 ignored integration) after the diagnostic validation changes. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
+290 commits at monorepo HEAD after this handoff-count sync commit; latest committed change before this sync was `docs: record pi kimi archive retry coverage`. Latest A²D code change remains `Enable forced tester architect validation`. 211 tests passing (2 ignored integration) after the diagnostic validation changes. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
 
 ## Clean-session pickup
 
