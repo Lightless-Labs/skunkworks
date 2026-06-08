@@ -1,6 +1,7 @@
 # Test Evolution: Tests Are Part of the Self-Modification Surface
 
 **Created:** 2026-04-06
+**Addendum:** 2026-06-08 — Expanded non-sudoku challenge holdout coverage in `crates/a2d-core/src/challenges.rs`. Chess now has hidden tests for legal-move safety, castling, en passant, and Fool's mate/no-escape. Rubik's now has an explicit callable API plus hidden tests for rotation inverses, quarter-turn order, known inverse roundtrip, solver-on-known-scrambles, and seeded scramble replayability/solve roundtrip. Plan: `docs/plans/challenge-acceptance-test-expansion.md`.
 
 ## The Problem
 

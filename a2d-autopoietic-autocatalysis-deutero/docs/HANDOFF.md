@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-06-05 (session 25 — handoff count synced after Pi Kimi coverage docs)
+**Last updated:** 2026-06-08 (session 26 — expanded chess/Rubik's acceptance tests)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-290 commits at monorepo HEAD after this handoff-count sync commit; latest committed change before this sync was `docs: record pi kimi archive retry coverage`. Latest A²D code change remains `Enable forced tester architect validation`. 211 tests passing (2 ignored integration) after the diagnostic validation changes. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
+291 commits at monorepo HEAD after the challenge acceptance expansion commit. Latest committed change is `Expand challenge acceptance holdouts`. 213 tests passing (2 ignored integration) after the challenge acceptance expansion. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
 
 ## Clean-session pickup
 
@@ -41,7 +41,7 @@
 - **Evolved topology value is unknown:** the 7-enzyme germline is RAF-closed and reached 100%, but may add latency/invocation overhead rather than useful capability.
 - **Compounding self-modification is unproven:** the only live architect patch in `sudoku 5` was irrelevant (`prime.rs`) and was reverted; relevance gate now prevents that class.
 - **Escalation rungs 4–6 still need quality validation, not mechanism validation:** bounded live smokes now prove provider swap, clean-session stripping, rung-6 candidate evaluation, and default-vs-broad provider eligibility under the real registry. A 30s forced-rung quality smoke was inconclusive: default timed out on Kimi+DeepSeek, broad succeeded via DeepSeek while also spending GLM+Pi timeout windows; because DeepSeek is in both scopes, this is provider variance/noise rather than evidence that broad eligibility helps. Whether rungs improve challenge outcomes and whether concurrency is worthwhile remain unproven.
-- **Benchmark coverage is narrow:** sudoku is validated; chess/rubiks need stronger acceptance tests and live runs.
+- **Benchmark live coverage is still narrow:** sudoku is validated live. Chess/Rubik's hidden acceptance suites are now stronger, but post-expansion live runs have not yet proven whether providers can satisfy them.
 - **Autopilot semantic validation is still partial:** markdown repo-path claims are now checked mechanically, but broader documentation/planning truth claims remain outside the gate. Mechanical path/temp/real gates plus repo-reference checks still do not validate causal correctness, performance claims, or design adequacy.
 - **Provider-policy usefulness remains unproven:** the runtime/durability safety path is live-validated, but no benchmark-useful provider-policy proposal has yet shown improved challenge outcomes.
 
@@ -52,7 +52,7 @@
 3. **Only continue rung-6 quality work with replicated evidence:** a single 30s default-vs-broad forced-rung smoke is noisy. Repeat only if comparing controlled runs; otherwise avoid mechanism-only escalation work.
 4. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
 5. **Find a benchmark-useful provider-policy proposal path:** runtime proposal safety is validated, but the live 7-enzyme topology still has no default policy-management enzyme; add one only if bounded tests show it does not starve coder/feedback metabolism.
-6. **Expand acceptance tests**: chess castling/en-passant/checkmate/legal-move invariants; Rubiks scramble-solve roundtrip.
+6. **Run post-expansion chess/Rubik's challenge smokes:** hidden acceptance suites now cover chess castling/en-passant/checkmate/legal-move invariants and Rubik's scramble-solve roundtrip; next step is bounded live validation against providers.
 
 ### What works
 
@@ -76,6 +76,10 @@
 - **Provider-policy comparisons are now inspectable:** `a2d compare-provider-policy <challenge> <cycles> [policy-json|@path]` runs current and proposed policies with persistence disabled, prints policy deltas, and reports a gate decision.
 
 ### What happened this session
+
+- **Chess and Rubik's hidden acceptance coverage expanded.** Created completed plan `docs/plans/challenge-acceptance-test-expansion.md`. Tightened `crates/a2d-core/src/challenges.rs` API contracts for chess and Rubik's so appended holdout tests can target behavior rather than implementation guesses. Chess hidden tests now cover legal-move safety, kingside castling, en passant, and Fool's mate/no-escape. Rubik's hidden tests now cover solved initialization, rotation inverse/order invariants, known inverse roundtrip, solver-on-known-scrambles, and seeded scramble replayability/solve roundtrip. Added challenge-definition unit tests to keep these acceptance dimensions present.
+- **Foundry child reviewers used for acceptance-test design.** Wrote and validated PromptEnvelope artifacts under `.a2d/dispatch/session-20260608/`, dispatched chess and Rubik's reviewer agents via `foundry_team`, and used their recommendations to shape the concrete hidden tests without leaking implementation code.
+- **Validation:** pickup `cargo test` passed before changes (211 passing, 2 ignored). Post-change `cargo test -p a2d-core challenges::tests -- --nocapture` passes (2 focused tests). Full `cargo test` passes (213 passing, 2 ignored).
 
 - **Rung-6 provider eligibility scope is now mechanically probeable.** Added `A2D_RUNG6_PROVIDER_SCOPE=broad` in `crates/a2d-core/src/metabolism.rs` for opt-in bounded experiments that include all healthy registered providers. The default remains assigned + unassigned providers while excluding providers assigned to other enzymes; broad scope does not mutate provider assignments or durable `provider_policy`. Added unit coverage for scope parsing and default-vs-broad eligibility.
 - **Default vs broad scope smoked through the real validation harness.** Default bounded smoke (`A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=2 cargo run -q -p a2d -- validate-escalation sudoku coder`) recorded rung-6 candidates Kimi k2p6 + DeepSeek. Broad smoke (`A2D_RUNG6_PROVIDER_SCOPE=broad A2D_RUNG6_MAX_PROVIDERS=4 ...`) recorded Kimi k2p6 + DeepSeek + GLM 5.1 + Pi. JSON artifacts: `/tmp/a2d-validate-escalation-default-scope-20260605.json` and `/tmp/a2d-validate-escalation-broad-scope-20260605.json`. This validates eligibility mechanics, not outcome quality.
@@ -273,9 +277,9 @@ Current rung 6 uses sequential bounded invocation (`A2D_RUNG6_MAX_PROVIDERS`, de
 
 The evolver accepted 6 mutations in `sudoku 5`, producing a 7-enzyme RAF-closed topology. Determine whether these extra enzymes improve outcomes or just add latency/invocation overhead. Use `a2d compare-topologies <challenge> <cycles>` for bounded, non-persistent seed-vs-evolved runs.
 
-### 4. Add more acceptance tests
+### 4. Live-validate expanded chess/Rubik's acceptance tests
 
-Chess needs: scholar's mate, castling, en passant. Rubiks needs scramble-solve roundtrip.
+Chess hidden tests now cover castling, en passant, legal-move safety, and Fool's mate/no-escape. Rubik's hidden tests now cover rotation inverse/order invariants, known inverse roundtrip, solver-on-known-scrambles, and seeded scramble replayability/solve roundtrip. Next: run bounded `chess` and `rubiks` challenge smokes to see whether the stronger holdouts produce useful provider signal.
 
 ## Architecture Overview
 
@@ -357,7 +361,7 @@ Search `docs/solutions/` before implementing. Key findings:
 - `todos/bounded-live-benchmarks.md` — `sudoku 5` completed with 100% best fitness; remaining provider waste: GLM timeouts + architect no-materialized-output
 - `todos/escalation-rungs-4-6.md` — model swap → clean swap → multi-model consensus (rungs 4–6 implemented/unit-tested; bounded mechanism validation now covered by `validate-escalation`; quality/eligibility work remains)
 - `todos/architect-pyramid-summaries.md` — implemented; prompt-size validated; latency still bad due provider/scheduling
-- `todos/test-evolution.md` — challenges beyond sudoku/chess/rubiks
+- `todos/test-evolution.md` — test evolution surface; latest addendum records expanded chess/Rubik's hidden acceptance coverage; remaining work is live validation and challenges beyond sudoku/chess/rubiks
 - `todos/testable-core.md` — separate pure orchestration from provider I/O to enable deterministic replays
 
 ## Autopilot update 1779711298225
