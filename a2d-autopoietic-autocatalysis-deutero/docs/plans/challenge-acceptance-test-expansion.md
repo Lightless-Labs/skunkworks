@@ -37,3 +37,20 @@ The handoff identified weak non-sudoku acceptance coverage: chess needed castlin
 - `cargo test`
 
 Both passed on 2026-06-08.
+
+## Live smoke follow-up
+
+**2026-06-09:** Ran bounded seed chess smoke after expanding holdouts:
+
+```bash
+A2D_GERMLINE=seed \
+A2D_PROVIDER_TIMEOUT_SECS=180 \
+A2D_MAX_CYCLE_SECS=300 \
+cargo run -p a2d -- challenge chess 1
+```
+
+Result: inconclusive for acceptance quality. The seed coder invocation timed out before producing code, so none of the expanded chess holdouts executed. Log: `/tmp/a2d-chess1-expanded-acceptance-20260609221901.log`.
+
+A trace-only 1s probe confirmed the coder portfolio mechanics were correct: both Kimi k2p6 and DeepSeek v4 flash launched in parallel for `coder`; both timed out under the artificial 1s bound. Log: `/tmp/a2d-chess1-expanded-acceptance-trace-20260609222406.log`.
+
+Next validation should avoid spending more provider windows on the same uncontrolled one-cycle smoke. Prefer either a provider-policy comparison that isolates DeepSeek as coder, a longer controlled chess run, or a replay fixture that injects candidate chess code to exercise the hidden holdouts mechanically.
