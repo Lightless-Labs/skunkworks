@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-06-08 (session 26 — expanded chess/Rubik's acceptance tests)
+**Last updated:** 2026-06-09 (session 26 — expanded chess/Rubik's acceptance tests and chess smoke follow-up)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-294 commits at monorepo HEAD after the challenge acceptance smoke documentation commit. Latest committed change is `Record chess acceptance smoke outcome`. 213 tests passing (2 ignored integration) after the challenge acceptance expansion. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
+295 commits at monorepo HEAD. Latest committed change is `Record Pi ZAI membrane ablation`; latest A²D challenge/acceptance change is `Record chess acceptance smoke outcome`. 213 tests passing (2 ignored integration) after the challenge acceptance expansion. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
 
 ## Clean-session pickup
 
