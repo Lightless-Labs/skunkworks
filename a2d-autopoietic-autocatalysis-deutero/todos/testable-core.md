@@ -1,29 +1,29 @@
 # Testable Core: Mock Everything, Prove Logic Before Live Runs
 
 **Created:** 2026-04-04
+**Reviewed:** 2026-06-10 — Most originally missing mock surfaces are now implemented in `crates/a2d-core/src/metabolism.rs`: fitness degradation tracking, failure-report prompt injection, rungs 4/5/6 routing, highest-fitness portfolio selection, and protected-file `SystemPatch` rejection through the metabolism path. New CLI integration coverage for `score-artifact` lives in `crates/a2d-cli/tests/score_artifact.rs`. Remaining gap: `self_sandbox` directly covers valid/breaking patch acceptance/rejection, but there is still no focused mock metabolism test proving an eligible non-noop architect `SystemPatch` is accepted end-to-end into the pending-patch queue.
 **Context:** Live challenge runs take 10+ minutes per 3-cycle run and depend on flaky external providers. The metabolism logic (scheduling, fitness evaluation, loop detection, escalation) should be testable with mock providers in under a second.
 
 ## What Already Exists
 
 `metabolism::tests` already has `MockProvider` — returns canned responses, tracks call count. The existing tests (routes_artifacts_and_turns_the_cycle, kills_prefailure_workcells, rejects_closure_breaking_mutations) prove scheduling, routing, and gating work.
 
-## What's Missing
+## What's Missing / Current Coverage
 
-### 1. Mock-based fitness degradation test
-Simulate 3 cycles where the coder produces progressively worse code. Verify the metabolism detects and reports the degradation pattern. Currently no test for this — the metabolism happily degrades.
+### 1. Mock-based fitness degradation test — IMPLEMENTED
+`metabolism::tests::fitness_degradation_tracked_across_cycles` now exercises degradation tracking.
 
-### 2. Mock-based architect validation test
-Mock provider returns a `SystemPatch` JSON. Verify the metabolism routes it through `self_sandbox::validate_patch`. With a mock project root, verify protected files are rejected and valid patches are accepted.
+### 2. Mock-based architect validation test — PARTIAL
+`self_sandbox` has direct coverage for protected-file rejection, ineligible-file rejection, valid patch acceptance, and breaking-patch rejection. `metabolism::tests::architect_noop_output_is_successful_patch_record` covers noop parsing/routing. `metabolism::tests::architect_system_patch_to_protected_file_is_rejected_through_metabolism` now proves a mock architect `SystemPatch` is parsed by the metabolism, routed into `self_sandbox::validate_patch`, rejected by the protected-file gate, recorded in invocation lineage, and not added to `pending_patches()`. Still missing: a focused metabolism test where an eligible non-noop `SystemPatch` is accepted end-to-end into `pending_patches()`.
 
-### 3. Mock-based escalation ladder tests (future)
-When loop detection is implemented: mock provider returns the same output 3 times → verify enzyme is halted.
-When clean session is implemented: verify context is reset after 2 degradation cycles.
-When model swap is implemented: verify provider assignment changes after 3 degradation cycles.
-When multi-model is implemented: verify N providers are called and highest-fitness output wins.
+### 3. Mock-based escalation ladder tests — IMPLEMENTED FOR CURRENT RUNGS
+Current coverage includes loop/escalation prompt behavior, rung 4 provider swap, rung 5 clean swapped session, rung 6 consensus candidate selection, and role/scope isolation (`rung_4_*`, `rung_5_*`, `rung_6_*`).
 
-### 4. Mock-based feedback loop test
-Cycle 1: coder produces code that fails 1 test. Verify `failure_report` artifact is populated.
-Cycle 2: coder receives failure_report in its prompt. Verify the prompt contains "PREVIOUS ATTEMPT FAILED".
+### 4. Mock-based feedback loop test — IMPLEMENTED
+Coverage now includes `feedback_loop_populates_failure_report_on_benchmark_failure`, `coder_prompt_includes_failure_report_when_available`, and `feedback_loop_empty_failure_report_on_perfect_fitness`.
+
+### 5. CLI replay integration — IMPLEMENTED
+`crates/a2d-cli/tests/score_artifact.rs` covers file-path and stdin replay through the real binary, verifies hidden-holdout failure, nonzero exit, and diagnostic redaction.
 
 ## Principle
 

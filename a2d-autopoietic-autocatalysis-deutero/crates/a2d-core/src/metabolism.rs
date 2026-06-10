@@ -3382,6 +3382,53 @@ mod tests {
     }
 
     #[test]
+    fn architect_system_patch_to_protected_file_is_rejected_through_metabolism() {
+        let enzymes = vec![enzyme(
+            "architect",
+            &["failure_report", "fitness_report"],
+            &["system_patch"],
+            &[],
+        )];
+        let germline = Germline::new(enzymes, food(&["failure_report", "fitness_report"]));
+        let registry = ProviderRegistry::new(Box::new(MockProvider::new(
+            "architect-provider",
+            vec![response(
+                json!({
+                    "system_patch": {
+                        "action": "patch",
+                        "file_path": "crates/a2d-core/src/germline.rs",
+                        "new_content": "pub fn corrupted_physics() {}"
+                    }
+                }),
+                vec![ToolEvent::Read, ToolEvent::Think, ToolEvent::Write],
+            )],
+        )));
+        let mut metabolism = Metabolism::new(germline, registry).with_project_root(PathBuf::from(
+            "/tmp/a2d-project-root-not-needed-for-protected",
+        ));
+        metabolism.seed_artifact(art("failure_report"), b"benchmark failed".to_vec());
+        metabolism.seed_artifact(art("fitness_report"), b"fitness: 0.50".to_vec());
+
+        let report = metabolism.run_cycle();
+
+        assert_eq!(report.invocations, 1);
+        assert_eq!(report.accepted_patches, 0);
+        assert_eq!(report.rejected_patches, 1);
+        assert!(metabolism.pending_patches().is_empty());
+        let patch = report.lineage[0]
+            .patch
+            .as_ref()
+            .expect("architect invocation should record patch gate result");
+        assert_eq!(patch.accepted.len(), 0);
+        assert_eq!(patch.rejected.len(), 1);
+        assert_eq!(
+            patch.rejected[0].file_path.as_deref(),
+            Some("crates/a2d-core/src/germline.rs")
+        );
+        assert!(patch.rejected[0].reason.contains("Protected file"));
+    }
+
+    #[test]
     fn only_evolver_uses_role_isolated_nonparallel_fallback() {
         assert!(uses_role_isolated_fallback(&EnzymeId::from("evolver")));
         assert!(!uses_role_isolated_fallback(&EnzymeId::from("tester")));
