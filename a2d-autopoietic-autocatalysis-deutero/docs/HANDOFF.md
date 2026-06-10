@@ -5,7 +5,7 @@
 
 ## System State
 
-299 commits at monorepo HEAD. Latest committed change is `Add challenge artifact scoring replay`. Latest A²D challenge/acceptance change is `Add challenge artifact scoring replay`. 218 tests passing (2 ignored integration) after adding holdout-backed artifact replay. 3 crates (a2d-core, a2d-providers, a2d-cli). 40 compound learnings.
+300 commits at monorepo HEAD. Latest committed change is `Record chess artifact replay results`. Latest A²D challenge/acceptance change is `Add challenge artifact scoring replay`; latest challenge replay result is `Record chess artifact replay results`. 218 tests passing (2 ignored integration) after adding holdout-backed artifact replay and documenting chess replay results. 3 crates (a2d-core, a2d-providers, a2d-cli). 40 compound learnings.
 
 ## Clean-session pickup
 
@@ -80,6 +80,7 @@
 
 - **Hidden-holdout artifact replay landed.** Added `Challenge::scoring_benchmark()` and `Challenge::score_artifact()` in `crates/a2d-core/src/challenges.rs`; made raw challenge `benchmark` / `acceptance_test` private so callers cannot accidentally score visible checks only; migrated live challenge, topology comparison, provider-policy comparison, escalation validation, and baseline scoring to the central hidden-acceptance helper. Added `a2d score-artifact <challenge> <path|->` in `crates/a2d-cli/src/main.rs`; it prints case-level fitness, redacts sandbox diagnostics by default to preserve the hidden-test barrier, and exits 2 unless fitness is perfect. Documented learning: `docs/solutions/runtime-bugs/challenge-scoring-must-use-hidden-holdouts-2026-06-10.md`.
 - **Score-artifact validation:** full `cargo test` passes (218 passing, 2 ignored). Negative smoke with `/tmp/a2d-bad-sudoku-artifact.rs` scored 83% (5/6): visible API/local tests passed, hidden acceptance failed `all_tests_pass`, diagnostics were captured but not printed, and shell exit status was 2. Output artifact: `/tmp/a2d-score-artifact-negative-20260610.out`; stderr artifact: `/tmp/a2d-score-artifact-negative-20260610.err`.
+- **Existing chess artifacts replayed against current holdouts.** `chess_engine_single.rs` scored 33% (3/9), exit 2; `chess_engine_temp.rs` scored 22% (2/9), exit 2. Both failed compilation against the current expanded chess contract before hidden behavioral quality could be assessed. Documented in `examples/runs/2026-06-10-chess-artifact-replay.md`; updated `examples/README.md` to mark the old score card as historical/pre-expanded-holdout.
 - **Foundry reviewer used for replay design.** Wrote PromptEnvelope `.a2d/dispatch/session-20260610/score-artifact-reviewer.json` and dispatched via `foundry_team` without an explicit agent after `agent:"reviewer"` was unavailable. The child reviewed risks and recommended centralizing challenge scoring so replay/baseline paths cannot forget hidden acceptance tests.
 
 - **Chess and Rubik's hidden acceptance coverage expanded.** Created completed plan `docs/plans/challenge-acceptance-test-expansion.md`. Tightened `crates/a2d-core/src/challenges.rs` API contracts for chess and Rubik's so appended holdout tests can target behavior rather than implementation guesses. Chess hidden tests now cover legal-move safety, kingside castling, en passant, and Fool's mate/no-escape. Rubik's hidden tests now cover solved initialization, rotation inverse/order invariants, known inverse roundtrip, solver-on-known-scrambles, and seeded scramble replayability/solve roundtrip. Added challenge-definition unit tests to keep these acceptance dimensions present.
@@ -223,9 +224,11 @@
 - **Evolver accepted mutations, but quality is mixed.** `sudoku 5` lineage germline grew to 7 enzymes and stayed RAF-closed; new enzymes increased invocations and wall-clock. Need compare against seed topology and evaluate whether mutations add value.
 - Evolver prompt still says `food set contains: ["requirements"]` — should include all food artifacts.
 
-## Score Card
+## Historical Score Card
 
-| System | Sudoku (6 acceptance tests) | Chess (4 acceptance tests) |
+These chess rows are pre-2026-06-08 expanded holdouts and should not be compared directly with current `a2d score-artifact chess <path>` replay results, which use the stricter current 9-case scoring contract.
+
+| System | Sudoku (6 acceptance tests) | Chess (historical contract) |
 |--------|---------------------------|--------------------------|
 | Gemini 3 Pro one-shot | **100%** (7/7) | **100%** (9/9) |
 | Codex gpt-5.4 one-shot | **100%** (6/6) | **100%** (11/11) |

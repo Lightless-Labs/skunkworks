@@ -4,7 +4,9 @@ Documented runs of the catalytic cycle against real challenges.
 Each run records: configuration, per-cycle results, baseline comparison,
 artifacts produced, and learnings.
 
-## Score Card (2026-04-04)
+## Historical Score Card (2026-04-04, pre-expanded chess holdouts)
+
+These numbers were produced under the original scoring contracts. Current chess scoring has a stricter 9-case replay contract after the 2026-06-08 acceptance expansion, so compare new chess artifacts with `a2d score-artifact chess <path>` rather than mixing them with this historical table.
 
 | System | Sudoku | Chess | Invocations |
 |--------|--------|-------|-------------|
@@ -23,6 +25,7 @@ in the cycle itself, not the coder model (Kimi matches Codex at 83%).
 | 2026-04-02 | [Sudoku Solver](runs/2026-04-02-sudoku-solver.md) | 2 | 83% (5/6) | 100% (Gemini 3) | Honest with 6 acceptance tests |
 | 2026-04-04 | Chess Engine | 1 | 50% (4/8) | 100% (Gemini 3) | No acceptance tests at time of run |
 | 2026-04-04 | Sudoku (Kimi) | 3 | 83% (5/6) | 100% (Gemini 3) | Non-frontier model matches frontier |
+| 2026-06-10 | [Chess Artifact Replay](runs/2026-06-10-chess-artifact-replay.md) | replay | 33% (3/9) / 22% (2/9) | n/a | Existing saved artifacts fail the current expanded chess contract; replay gate exits 2 |
 
 ## What "Better" Means
 
