@@ -46,9 +46,10 @@ Unit coverage proves:
 - a fake Sudoku artifact with visible functions and passing local tests still fails `all_tests_pass` through `score_artifact()`;
 - `establish_baseline()` uses the same hidden-holdout path;
 - `score-artifact` output redacts diagnostic contents;
-- `score-artifact` exits 2 for partial/zero fitness and 0 only for perfect fitness.
+- `score-artifact` exits 2 for partial/zero fitness and 0 only for perfect fitness;
+- CLI integration tests cover both file-path and stdin replay.
 
-Full `cargo test` passes: 218 tests passing, 2 ignored.
+Full `cargo test` passes: 220 tests passing, 2 ignored.
 
 Live smoke:
 
