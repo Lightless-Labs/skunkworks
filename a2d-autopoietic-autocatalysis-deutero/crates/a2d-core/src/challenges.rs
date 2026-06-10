@@ -5,18 +5,16 @@
 //! drives the evolution of its enzyme capabilities.
 
 use crate::benchmark::{BenchmarkCase, BenchmarkSuite, FitnessReport};
-use crate::sandbox;
-use std::time::Duration;
 
 /// A challenge: a task description + benchmark suite for evaluation.
 pub struct Challenge {
     pub name: &'static str,
     pub requirements: &'static str,
-    pub benchmark: BenchmarkSuite,
+    benchmark: BenchmarkSuite,
     /// Acceptance test code appended to the produced artifact before
     /// compilation. The coder never sees this — it's the system's
     /// holdout validation. "Does it do what it's supposed to do?"
-    pub acceptance_test: Option<String>,
+    acceptance_test: Option<String>,
 }
 
 /// Baseline: what a single model produces on the same task, evaluated
@@ -31,24 +29,39 @@ pub struct Baseline {
 }
 
 impl Challenge {
+    /// Benchmark configured exactly as the challenge runtime sees it.
+    ///
+    /// This is the only supported way for callers outside this module to
+    /// obtain a benchmark for a challenge: it attaches the hidden acceptance
+    /// tests so replay/baseline paths cannot accidentally score only visible
+    /// string checks.
+    pub fn scoring_benchmark(&self) -> BenchmarkSuite {
+        let mut benchmark = self.benchmark.clone();
+        benchmark.acceptance_test = self.acceptance_test.clone();
+        benchmark
+    }
+
+    /// Score a generated artifact with this challenge's visible checks and
+    /// hidden acceptance tests.
+    pub fn score_artifact(&self, code_output: &str) -> FitnessReport {
+        self.scoring_benchmark().evaluate(code_output)
+    }
+
     /// Run the challenge requirements through a single model invocation
     /// and evaluate the result with the same benchmark. This is the bar
     /// the catalytic cycle must clear.
     pub fn establish_baseline(&self, code_output: &str, provider_name: &str) -> Baseline {
-        let fitness = self.benchmark.evaluate(code_output);
-        let timeout = Duration::from_secs(self.benchmark.test_timeout_secs);
-        let sandbox_result =
-            if let Some(code) = super::benchmark::extract_rust_code_pub(code_output) {
-                sandbox::evaluate_rust_code(&code, timeout)
-            } else {
-                sandbox::evaluate_rust_code(code_output, timeout)
-            };
+        let fitness = self.score_artifact(code_output);
+        let compiled = fitness
+            .results
+            .iter()
+            .any(|result| result.name == "compiles" && result.passed);
 
         Baseline {
             provider: provider_name.to_string(),
             fitness,
-            compiled: sandbox_result.compiled,
-            tests_passed: sandbox_result.tests_passed,
+            compiled,
+            tests_passed: None,
         }
     }
 }
@@ -578,5 +591,76 @@ mod tests {
         assert!(acceptance.contains("known_sequence_inverse_roundtrip_restores_solved"));
         assert!(challenge.requirements.contains("fn scramble"));
         assert!(challenge.requirements.contains("Option<Vec<Move>>"));
+    }
+
+    #[test]
+    fn scoring_benchmark_carries_acceptance_for_all_challenges() {
+        for challenge in [chess_engine(), sudoku_solver(), rubiks_cube()] {
+            assert!(
+                challenge.scoring_benchmark().acceptance_test.is_some(),
+                "{} scoring benchmark must carry hidden acceptance tests",
+                challenge.name
+            );
+        }
+    }
+
+    #[test]
+    fn score_artifact_uses_sudoku_acceptance_tests() {
+        let report = sudoku_solver().score_artifact(fake_sudoku_artifact_with_bad_solver());
+
+        assert!(case_passed(&report, "compiles"));
+        assert!(case_passed(&report, "has_tests"));
+        assert!(case_passed(&report, "has_parse_fn"));
+        assert!(case_passed(&report, "has_solve_fn"));
+        assert!(case_passed(&report, "has_validate_fn"));
+        assert!(!case_passed(&report, "all_tests_pass"));
+        assert!(report.fitness < 1.0);
+    }
+
+    #[test]
+    fn establish_baseline_uses_acceptance_tests() {
+        let baseline =
+            sudoku_solver().establish_baseline(fake_sudoku_artifact_with_bad_solver(), "fake");
+
+        assert!(baseline.compiled);
+        assert!(!case_passed(&baseline.fitness, "all_tests_pass"));
+        assert!(baseline.fitness.fitness < 1.0);
+    }
+
+    fn case_passed(report: &FitnessReport, name: &str) -> bool {
+        report
+            .results
+            .iter()
+            .any(|result| result.name == name && result.passed)
+    }
+
+    fn fake_sudoku_artifact_with_bad_solver() -> &'static str {
+        r#"
+fn parse(s: &str) -> [[u8; 9]; 9] {
+    let mut grid = [[0u8; 9]; 9];
+    for (idx, ch) in s.chars().take(81).enumerate() {
+        grid[idx / 9][idx % 9] = ch.to_digit(10).unwrap_or(0) as u8;
+    }
+    grid
+}
+
+fn solve(_grid: [[u8; 9]; 9]) -> Option<[[u8; 9]; 9]> {
+    Some([[1u8; 9]; 9])
+}
+
+fn validate(_grid: &[[u8; 9]; 9]) -> bool {
+    true
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn local_smoke_passes() {
+        assert!(true);
+    }
+}
+"#
     }
 }

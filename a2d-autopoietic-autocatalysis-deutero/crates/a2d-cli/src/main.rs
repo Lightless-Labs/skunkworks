@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -48,6 +48,11 @@ fn main() {
             let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(3);
             run_topology_comparison(challenge_name, num_cycles);
         }
+        "score-artifact" => {
+            let challenge_name = if arg2.is_empty() { "sudoku" } else { arg2 };
+            let artifact_path = args.get(3).map(String::as_str).unwrap_or("-");
+            run_score_artifact(challenge_name, artifact_path);
+        }
         "compare-provider-policy" | "policy-gate" => {
             let challenge_name = if arg2.is_empty() { "sudoku" } else { arg2 };
             let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -65,7 +70,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|challenge|compare-topologies|compare-provider-policy|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|challenge|score-artifact|compare-topologies|compare-provider-policy|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -2613,11 +2618,9 @@ fn run_challenge(name: &str, num_cycles: usize) {
 
     let germline = load_or_seed_germline();
     let registry = build_runtime_registry(&germline);
-    let mut benchmark = challenge.benchmark;
-    benchmark.acceptance_test = challenge.acceptance_test;
     let mut metabolism = apply_runtime_env(
         Metabolism::new(germline, registry)
-            .with_benchmark(benchmark)
+            .with_benchmark(challenge.scoring_benchmark())
             .with_project_root(project_root()),
     );
 
@@ -2735,6 +2738,69 @@ fn run_challenge(name: &str, num_cycles: usize) {
     );
 }
 
+fn run_score_artifact(challenge_name: &str, artifact_path: &str) {
+    let challenge = load_challenge_or_exit(challenge_name);
+    let artifact = read_artifact_or_exit(artifact_path);
+    let report = challenge.score_artifact(&artifact);
+    print!("{}", format_score_artifact_report(challenge.name, &report));
+    let exit_code = score_artifact_exit_code(&report);
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
+}
+
+fn read_artifact_or_exit(path_or_dash: &str) -> String {
+    if path_or_dash == "-" {
+        let mut input = String::new();
+        std::io::stdin()
+            .read_to_string(&mut input)
+            .unwrap_or_else(|error| {
+                eprintln!("Failed to read artifact from stdin: {error}");
+                std::process::exit(1);
+            });
+        return input;
+    }
+
+    fs::read_to_string(path_or_dash).unwrap_or_else(|error| {
+        eprintln!("Failed to read artifact {path_or_dash}: {error}");
+        std::process::exit(1);
+    })
+}
+
+fn score_artifact_exit_code(report: &a2d_core::benchmark::FitnessReport) -> i32 {
+    if report.total > 0 && report.passed == report.total {
+        0
+    } else {
+        2
+    }
+}
+
+fn format_score_artifact_report(
+    challenge_name: &str,
+    report: &a2d_core::benchmark::FitnessReport,
+) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("A²D Artifact Score: {challenge_name}\n"));
+    output.push_str("═══════════════════\n");
+    output.push_str(&format!(
+        "Fitness: {:.0}% ({}/{})\n",
+        report.fitness * 100.0,
+        report.passed,
+        report.total
+    ));
+    output.push_str("Cases:\n");
+    for result in &report.results {
+        let marker = if result.passed { "✓" } else { "✗" };
+        output.push_str(&format!("  {marker} {}\n", result.name));
+    }
+    if report.diagnostic.is_some() {
+        output.push_str(
+            "Diagnostic: captured but not printed by score-artifact (hidden acceptance barrier).\n",
+        );
+    }
+    output
+}
+
 fn run_escalation_validation(name: &str, enzyme_name: &str) {
     let challenge = load_challenge_or_exit(name);
     let enzyme_id = EnzymeId::from(enzyme_name);
@@ -2746,11 +2812,9 @@ fn run_escalation_validation(name: &str, enzyme_name: &str) {
         let loaded_germline = load_germline_for_topology(TopologyMode::Evolved);
         let germline = validation_germline_for_enzyme(loaded_germline, &enzyme_id);
         let registry = build_runtime_registry(&germline);
-        let mut benchmark = challenge.benchmark.clone();
-        benchmark.acceptance_test = challenge.acceptance_test.clone();
         let mut metabolism = apply_runtime_env(
             Metabolism::new(germline, registry)
-                .with_benchmark(benchmark)
+                .with_benchmark(challenge.scoring_benchmark())
                 .with_max_invocations_per_cycle(1)
                 .with_project_root(project_root()),
         );
@@ -3077,8 +3141,7 @@ fn run_challenge_for_provider_policy(
     let challenge = load_challenge_or_exit(name);
     let challenge_name = challenge.name.to_string();
     let requirements = challenge.requirements;
-    let mut benchmark = challenge.benchmark;
-    benchmark.acceptance_test = challenge.acceptance_test;
+    let benchmark = challenge.scoring_benchmark();
 
     let enzyme_count = germline.enzymes().len();
     let mut registry = build_registry();
@@ -3292,8 +3355,7 @@ fn run_challenge_for_topology(
     let challenge = load_challenge_or_exit(name);
     let challenge_name = challenge.name.to_string();
     let requirements = challenge.requirements;
-    let mut benchmark = challenge.benchmark;
-    benchmark.acceptance_test = challenge.acceptance_test;
+    let benchmark = challenge.scoring_benchmark();
 
     let germline = load_germline_for_topology(topology);
     let enzyme_count = germline.enzymes().len();
@@ -3528,6 +3590,42 @@ mod tests {
             results: Vec::new(),
             diagnostic: None,
         }
+    }
+
+    #[test]
+    fn score_artifact_exit_code_is_nonzero_unless_perfect() {
+        assert_eq!(score_artifact_exit_code(&fitness(6, 6)), 0);
+        assert_eq!(score_artifact_exit_code(&fitness(5, 6)), 2);
+        assert_eq!(score_artifact_exit_code(&fitness(0, 0)), 2);
+    }
+
+    #[test]
+    fn score_artifact_report_redacts_hidden_diagnostic() {
+        let report = a2d_core::benchmark::FitnessReport {
+            total: 2,
+            passed: 1,
+            failed: 1,
+            fitness: 0.5,
+            results: vec![
+                a2d_core::benchmark::CaseResult {
+                    name: "compiles".to_string(),
+                    passed: true,
+                },
+                a2d_core::benchmark::CaseResult {
+                    name: "all_tests_pass".to_string(),
+                    passed: false,
+                },
+            ],
+            diagnostic: Some("hidden puzzle 800000000003600000 and assertion text".to_string()),
+        };
+
+        let output = format_score_artifact_report("sudoku-solver", &report);
+
+        assert!(output.contains("Fitness: 50% (1/2)"));
+        assert!(output.contains("✗ all_tests_pass"));
+        assert!(output.contains("Diagnostic: captured but not printed"));
+        assert!(!output.contains("800000000003600000"));
+        assert!(!output.contains("assertion text"));
     }
 
     fn policy_summary(

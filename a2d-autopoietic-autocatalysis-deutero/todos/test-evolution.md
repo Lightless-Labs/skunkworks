@@ -3,6 +3,7 @@
 **Created:** 2026-04-06
 **Addendum:** 2026-06-08 — Expanded non-sudoku challenge holdout coverage in `crates/a2d-core/src/challenges.rs`. Chess now has hidden tests for legal-move safety, castling, en passant, and Fool's mate/no-escape. Rubik's now has an explicit callable API plus hidden tests for rotation inverses, quarter-turn order, known inverse roundtrip, solver-on-known-scrambles, and seeded scramble replayability/solve roundtrip. Plan: `docs/plans/challenge-acceptance-test-expansion.md`.
 **Addendum:** 2026-06-09 — Bounded seed chess live smoke was inconclusive: coder timed out before producing code, so the expanded holdouts did not execute. A 1s trace probe confirmed Kimi and DeepSeek did launch in the parallel coder portfolio. Next validation should isolate provider quality or mechanically replay candidate chess code against the holdouts rather than repeating the same one-cycle smoke.
+**Addendum:** 2026-06-10 — Mechanical replay path implemented: `a2d score-artifact <challenge> <path|->` scores a saved artifact through `Challenge::score_artifact()`, which centrally attaches hidden acceptance tests via `Challenge::scoring_benchmark()`. Raw challenge benchmark/acceptance fields are private to prevent visible-only scoring bypasses. Failed replay exits 2 and diagnostics are redacted by default to preserve the hidden-test barrier. This is now the preferred next step for candidate chess/Rubik's code before another slow provider smoke.
 
 ## The Problem
 

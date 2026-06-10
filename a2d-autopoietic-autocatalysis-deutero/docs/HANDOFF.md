@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-06-09 (session 26 — expanded chess/Rubik's acceptance tests and chess smoke follow-up)
+**Last updated:** 2026-06-10 (session 27 — challenge score-artifact replay and hidden-holdout scoring gate)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-295 commits at monorepo HEAD. Latest committed change is `Record Pi ZAI membrane ablation`; latest A²D challenge/acceptance change is `Record chess acceptance smoke outcome`. 213 tests passing (2 ignored integration) after the challenge acceptance expansion. 3 crates (a2d-core, a2d-providers, a2d-cli). 39 compound learnings.
+299 commits at monorepo HEAD. Latest committed change is `Add challenge artifact scoring replay`. Latest A²D challenge/acceptance change is `Add challenge artifact scoring replay`. 218 tests passing (2 ignored integration) after adding holdout-backed artifact replay. 3 crates (a2d-core, a2d-providers, a2d-cli). 40 compound learnings.
 
 ## Clean-session pickup
 
@@ -20,6 +20,7 @@
 - **Architect can abstain explicitly:** architect output contract now accepts `{"action":"noop","reason":"..."}` as a valid no-change decision, separate from malformed/empty provider output. Legacy bare `SystemPatch` JSON remains accepted.
 - **Seed-vs-evolved comparisons are mechanical:** `A2D_GERMLINE=seed` forces the hardcoded 4-enzyme seed germline instead of loading lineage.
 - **Topology comparisons are now one command:** `a2d compare-topologies <challenge> <cycles>` runs seed then lineage-loaded evolved topology side by side without lineage commits or patch application, reporting best fitness, cycle-to-full-fitness, wall-clock, invocations, provider failures, caps, mutations, and patches.
+- **Generated artifacts can be replayed against hidden holdouts:** `a2d score-artifact <challenge> <path|->` scores saved Rust artifacts through the same challenge helper used by live runs. `Challenge::scoring_benchmark()` now attaches hidden acceptance tests centrally, raw benchmark/acceptance fields are private, baseline/topology/provider-policy/escalation paths use the helper, diagnostics stay redacted by default, and failed replay exits 2.
 - **Coder is no longer starved by speculative decomposition:** before code exists, ready invocations prioritize enzymes producing `code`; after mechanical fitness exists, feedback metabolism runs first (`enzyme_defs` → `system_patch` → `test_results` → coder retry). Any failed/killed invocation ends the current cycle before lower-priority ready enzymes run, so provider fallback happens on the next cycle instead of wasting remaining budget on auxiliary products.
 - **Coder dispatch is now a fitness-scored portfolio:** coder invocations run assigned + unassigned fallback providers concurrently by default (`A2D_PARALLEL_CODER=0` disables). Every materialized code candidate is evaluated by the current benchmark/sandbox; the highest-fitness candidate is routed onward, and all candidate fitness/error records are stored in lineage and printed by topology comparison. Note: scoped threads still wait for slow losers before returning, so slow providers must be kept out of the coder portfolio.
 - **Coder no longer starves feedback metabolism after success:** a successful code-producing invocation ends the cycle so benchmark feedback can become the next cycle's food. Scheduler priority is dynamic: coder first before code exists; once mechanical fitness exists, evolver → architect → tester → coder.
@@ -52,7 +53,7 @@
 3. **Only continue rung-6 quality work with replicated evidence:** a single 30s default-vs-broad forced-rung smoke is noisy. Repeat only if comparing controlled runs; otherwise avoid mechanism-only escalation work.
 4. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
 5. **Find a benchmark-useful provider-policy proposal path:** runtime proposal safety is validated, but the live 7-enzyme topology still has no default policy-management enzyme; add one only if bounded tests show it does not starve coder/feedback metabolism.
-6. **Run post-expansion chess/Rubik's challenge smokes:** hidden acceptance suites now cover chess castling/en-passant/checkmate/legal-move invariants and Rubik's scramble-solve roundtrip; next step is bounded live validation against providers.
+6. **Use replay before repeating slow chess/Rubik's smokes:** hidden acceptance suites now cover chess castling/en-passant/checkmate/legal-move invariants and Rubik's scramble-solve roundtrip. If a provider yields a saved candidate, run `a2d score-artifact chess <path>` or `a2d score-artifact rubiks <path>` to isolate holdout quality from provider latency before spending another full live challenge window.
 
 ### What works
 
@@ -76,6 +77,10 @@
 - **Provider-policy comparisons are now inspectable:** `a2d compare-provider-policy <challenge> <cycles> [policy-json|@path]` runs current and proposed policies with persistence disabled, prints policy deltas, and reports a gate decision.
 
 ### What happened this session
+
+- **Hidden-holdout artifact replay landed.** Added `Challenge::scoring_benchmark()` and `Challenge::score_artifact()` in `crates/a2d-core/src/challenges.rs`; made raw challenge `benchmark` / `acceptance_test` private so callers cannot accidentally score visible checks only; migrated live challenge, topology comparison, provider-policy comparison, escalation validation, and baseline scoring to the central hidden-acceptance helper. Added `a2d score-artifact <challenge> <path|->` in `crates/a2d-cli/src/main.rs`; it prints case-level fitness, redacts sandbox diagnostics by default to preserve the hidden-test barrier, and exits 2 unless fitness is perfect. Documented learning: `docs/solutions/runtime-bugs/challenge-scoring-must-use-hidden-holdouts-2026-06-10.md`.
+- **Score-artifact validation:** full `cargo test` passes (218 passing, 2 ignored). Negative smoke with `/tmp/a2d-bad-sudoku-artifact.rs` scored 83% (5/6): visible API/local tests passed, hidden acceptance failed `all_tests_pass`, diagnostics were captured but not printed, and shell exit status was 2. Output artifact: `/tmp/a2d-score-artifact-negative-20260610.out`; stderr artifact: `/tmp/a2d-score-artifact-negative-20260610.err`.
+- **Foundry reviewer used for replay design.** Wrote PromptEnvelope `.a2d/dispatch/session-20260610/score-artifact-reviewer.json` and dispatched via `foundry_team` without an explicit agent after `agent:"reviewer"` was unavailable. The child reviewed risks and recommended centralizing challenge scoring so replay/baseline paths cannot forget hidden acceptance tests.
 
 - **Chess and Rubik's hidden acceptance coverage expanded.** Created completed plan `docs/plans/challenge-acceptance-test-expansion.md`. Tightened `crates/a2d-core/src/challenges.rs` API contracts for chess and Rubik's so appended holdout tests can target behavior rather than implementation guesses. Chess hidden tests now cover legal-move safety, kingside castling, en passant, and Fool's mate/no-escape. Rubik's hidden tests now cover solved initialization, rotation inverse/order invariants, known inverse roundtrip, solver-on-known-scrambles, and seeded scramble replayability/solve roundtrip. Added challenge-definition unit tests to keep these acceptance dimensions present.
 - **Foundry child reviewers used for acceptance-test design.** Wrote and validated PromptEnvelope artifacts under `.a2d/dispatch/session-20260608/`, dispatched chess and Rubik's reviewer agents via `foundry_team`, and used their recommendations to shape the concrete hidden tests without leaking implementation code.
@@ -331,6 +336,7 @@ a2d challenge sudoku 3        # 3 cycles of sudoku
 A2D_GERMLINE=seed a2d challenge sudoku 3  # force 4-enzyme seed topology
 a2d compare-topologies sudoku 3           # seed vs evolved without persistence
 a2d compare-provider-policy sudoku 1      # current vs proposed provider policy without persistence
+a2d score-artifact chess ./candidate.rs   # replay saved artifact against hidden holdouts (exit 2 on failure)
 a2d challenge chess 3
 a2d challenge rubiks 3
 
