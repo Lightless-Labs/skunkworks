@@ -51,6 +51,7 @@ Implemented surfaces:
 - **Host-native model path in progress:** Pi adapter now calls Pi's selected/authenticated model; Claude/Codex hook CLI paths call their host CLIs with `FLUX_SUPPRESS=1` to avoid recursive hook triggering. Pi JSON-mode smoke for `/flux think` and `flux_stray_thought` passed on 2026-05-30. Local CLI surface check on 2026-05-31 used `claude` 2.1.119 and `codex-cli` 0.130.0; Codex requires `--ask-for-approval never` before the `exec` subcommand. See `todos/host-native-models.md`.
 - **Delivery semantics clarified:** shared `DeliveryMode` is now only Pi/session message delivery (`steer`, `followUp`, `nextTurn`). Hook CLIs still emit host JSON on stdout as transport. Stale Pi configs using unsupported modes warn instead of silently mapping to `steer`. See `todos/delivery-semantics.md`.
 - **Repo-installable host hooks:** Claude/Codex plugin hooks run through `scripts/flux-hook-wrapper.mjs`, which builds only hook code (`npm run build:hooks`) on first use if `dist/` is missing/stale. The wrapper always exits 0 and emits host-safe JSON on setup/runtime failure.
+- **Dedicated sidecar model selection proposed:** Flux currently uses the host's active/default model for host-native generation. A new plan in `todos/host-sidecar-model-selection.md` captures configurable sidecar model and thinking-effort selection across **all harnesses** — Pi model registry where available, plus Claude Code/Codex CLI capability discovery/validation — without hard-coding future model names such as Mythos/Fable.
 
 Generated/ignored local artifacts:
 
@@ -228,7 +229,8 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 
 1. Finish live-testing the Pi extension in interactive TUI mode using Pi's host-native model path. See `todos/live-validate-pi-extension.md` and `todos/host-native-models.md`.
 2. Finish validating Claude Code / Codex hook contracts against current docs and live hook contexts. Fixture/output-shape tests are in place. See `todos/host-hook-contracts.md`.
-3. Continue validating host integrations against current Claude Code/Codex contracts and interactive Pi TUI behavior. See `todos/host-hook-contracts.md` and `todos/live-validate-pi-extension.md`.
+3. Implement host-native sidecar model selection beyond Pi: discover/list/select harness-available Flux sidecar models and thinking effort for Pi, Claude Code, and Codex where each host supports it. See `todos/host-sidecar-model-selection.md`.
+4. Continue validating host integrations against current Claude Code/Codex contracts and interactive Pi TUI behavior. See `todos/host-hook-contracts.md` and `todos/live-validate-pi-extension.md`.
 
 ## Important Files
 
@@ -249,6 +251,7 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 | `test/host-cli-model-client.test.ts` | Non-network tests for Claude/Codex host CLI invocation argv/stdin |
 | `test/fixtures/` | Representative Claude/Codex hook payload fixtures |
 | `src/core/hookCli.ts` | Generic stdin/stdout hook runner for Claude Code/Codex/generic hooks |
+| `todos/host-sidecar-model-selection.md` | Plan for configurable host-native sidecar model/thinking selection across Pi, Claude Code, and Codex |
 | `src/adapters/pi/index.ts` | Pi extension |
 | `../extensions/flux.ts` | Repo-level Pi package wrapper for git/local installs from skunkworks root |
 | `.flux/config.example.json` | User-facing config template |
