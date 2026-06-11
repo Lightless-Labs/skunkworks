@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-06-10 (session 27 — challenge score-artifact replay and hidden-holdout scoring gate)
+**Last updated:** 2026-06-10 (session 27 — synced pickup after score-artifact replay/testable-core coverage)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-303 commits at monorepo HEAD. Latest committed change is `Cover architect protected patch routing`. Latest A²D challenge/acceptance change is `Add challenge artifact scoring replay`; latest challenge replay result is `Record chess artifact replay results`. 221 tests passing (2 ignored integration) after adding holdout-backed artifact replay, CLI integration coverage, chess replay documentation, post-change escalation regression validation, and metabolism-level protected-patch routing coverage. 3 crates (a2d-core, a2d-providers, a2d-cli). 40 compound learnings.
+310 commits at monorepo HEAD. Latest committed change is `Sync handoff for new pickup`. Latest A²D implementation/test change is `Cover architect protected patch routing`; latest A²D challenge/acceptance change is `Add challenge artifact scoring replay`; latest challenge replay result is `Record chess artifact replay results`. 221 tests passing (2 ignored integration) after adding holdout-backed artifact replay, CLI integration coverage, chess replay documentation, post-change escalation regression validation, and metabolism-level protected-patch routing coverage. 3 crates (a2d-core, a2d-providers, a2d-cli). 40 compound learnings.
 
 ## Clean-session pickup
 
