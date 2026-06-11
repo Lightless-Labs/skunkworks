@@ -12,6 +12,16 @@ export type TriggerKind =
 
 export type DeliveryMode = "steer" | "followUp" | "nextTurn";
 
+export type HostSidecarModel = "active" | string;
+export type HostSidecarThinkingEffort = "active" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | string;
+
+export interface HostSidecarConfig {
+	/** Host-native sidecar model. "active" means use the harness/session default. */
+	model?: HostSidecarModel;
+	/** Host-native reasoning/thinking effort. "active" means use or omit the harness default. */
+	thinkingEffort?: HostSidecarThinkingEffort;
+}
+
 export interface FluxModelSpec {
 	/** Arbitrary label for status and telemetry. */
 	name: string;
@@ -94,6 +104,8 @@ export interface FluxConfig {
 		maxChars: number;
 	};
 	models: FluxModelSpec[];
+	/** Host-native sidecar model preferences by harness. Direct-provider fallback continues to use models/modelPools. */
+	hostSidecar: Partial<Record<HostKind, HostSidecarConfig>>;
 	/** Per-trigger/kind pools of model names. Keys may be trigger names, trigger kinds, or "default". */
 	modelPools: Record<string, string[]>;
 	triggers: TriggerConfig[];

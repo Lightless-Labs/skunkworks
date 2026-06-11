@@ -36,6 +36,26 @@ async function parseError(response: Response): Promise<string> {
 	return `${response.status} ${response.statusText}${text ? `: ${text.slice(0, 1000)}` : ""}`;
 }
 
+function openAiReasoningEffort(model: FluxModelSpec): string | undefined {
+	const effort = model.thinkingEffort;
+	if (!effort || effort === "off" || effort === "active") return undefined;
+	return effort;
+}
+
+function anthropicThinking(model: FluxModelSpec): { type: "enabled"; budget_tokens: number } | undefined {
+	const effort = model.thinkingEffort;
+	if (!effort || effort === "off" || effort === "active") return undefined;
+	const budgets: Record<string, number> = { minimal: 1024, low: 2048, medium: 4096, high: 8192, xhigh: 16384 };
+	return { type: "enabled", budget_tokens: budgets[effort] ?? 4096 };
+}
+
+function anthropicMaxTokens(model: FluxModelSpec, thinking?: { budget_tokens: number }): number {
+	const requested = model.maxTokens ?? 420;
+	if (!thinking) return requested;
+	// Anthropic requires max_tokens to exceed the thinking budget. Keep sidecar configs terse by raising the cap when needed.
+	return Math.max(requested, thinking.budget_tokens + 420);
+}
+
 export async function callSidecarModel(
 	model: FluxModelSpec,
 	systemPrompt: string,
@@ -69,6 +89,7 @@ async function callOpenAICompatible(
 			],
 			temperature: model.temperature ?? 0.8,
 			max_tokens: model.maxTokens ?? 420,
+			...(openAiReasoningEffort(model) ? { reasoning_effort: openAiReasoningEffort(model) } : {}),
 		}),
 	});
 	if (!response.ok) throw new FluxModelError(await parseError(response));
@@ -85,6 +106,7 @@ async function callAnthropic(
 	signal?: AbortSignal,
 ): Promise<string> {
 	const baseUrl = (model.baseUrl ?? "https://api.anthropic.com/v1").replace(/\/$/, "");
+	const thinking = anthropicThinking(model);
 	const response = await fetch(`${baseUrl}/messages`, {
 		method: "POST",
 		signal,
@@ -98,8 +120,8 @@ async function callAnthropic(
 			model: model.model,
 			system: systemPrompt,
 			messages: [{ role: "user", content: userPrompt }],
-			temperature: model.temperature ?? 0.8,
-			max_tokens: model.maxTokens ?? 420,
+			...(thinking ? { thinking } : { temperature: model.temperature ?? 0.8 }),
+			max_tokens: anthropicMaxTokens(model, thinking),
 		}),
 	});
 	if (!response.ok) throw new FluxModelError(await parseError(response));

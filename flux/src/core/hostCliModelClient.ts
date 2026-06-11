@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ThoughtModelCaller } from "./engine.ts";
 import { hostNativeModelLabel } from "./engine.ts";
-import type { HostKind } from "./types.ts";
+import type { FluxConfig, HostKind } from "./types.ts";
 
 interface SpawnResult {
 	stdout: string;
@@ -80,23 +80,51 @@ function assertSuccess(result: SpawnResult, label: string): void {
 	throw new Error(`${label} failed: ${detail.slice(0, 2_000)}`);
 }
 
-async function callClaudeCli(prompt: string, systemPrompt: string, cwd: string | undefined, signal: AbortSignal | undefined): Promise<string> {
-	const command = process.env.FLUX_CLAUDE_COMMAND || "claude";
-	const args = ["-p", "--no-session-persistence", "--tools", "", "--system-prompt", systemPrompt];
-	const result = await spawnWithInput(command, args, prompt, { cwd, signal, timeoutMs: 120_000 });
-	assertSuccess(result, "claude CLI sidecar");
-	return result.stdout.trim();
+function hostPreference(config: FluxConfig | undefined, host: HostKind): { model?: string; thinkingEffort?: string } {
+	return config?.hostSidecar?.[host] ?? {};
 }
 
-async function callCodexCli(prompt: string, systemPrompt: string, cwd: string | undefined, signal: AbortSignal | undefined): Promise<string> {
+function isActivePreference(value: string | undefined): boolean {
+	return value === undefined || value === "" || value === "active";
+}
+
+async function callClaudeCli(
+	prompt: string,
+	systemPrompt: string,
+	cwd: string | undefined,
+	signal: AbortSignal | undefined,
+	config: FluxConfig,
+): Promise<{ content: string; detail: string }> {
+	const command = process.env.FLUX_CLAUDE_COMMAND || "claude";
+	const preference = hostPreference(config, "claude-code");
+	const args = ["-p", "--no-session-persistence", "--tools", ""];
+	if (!isActivePreference(preference.model)) args.push("--model", preference.model!);
+	// Claude Code thinking/effort flags are not yet validated; do not emit untrusted flags here.
+	args.push("--system-prompt", systemPrompt);
+	const result = await spawnWithInput(command, args, prompt, { cwd, signal, timeoutMs: 120_000 });
+	const detail = isActivePreference(preference.model) ? "claude-cli" : `claude-cli/${preference.model}`;
+	assertSuccess(result, "claude CLI sidecar");
+	return { content: result.stdout.trim(), detail };
+}
+
+async function callCodexCli(
+	prompt: string,
+	systemPrompt: string,
+	cwd: string | undefined,
+	signal: AbortSignal | undefined,
+	config: FluxConfig,
+): Promise<{ content: string; detail: string }> {
 	const command = process.env.FLUX_CODEX_COMMAND || "codex";
+	const preference = hostPreference(config, "codex");
 	const tmp = mkdtempSync(join(tmpdir(), "flux-codex-"));
 	const outputPath = join(tmp, "last-message.txt");
 	try {
-		const args = [
-			"--ask-for-approval",
-			"never",
-			"exec",
+		const args = ["--ask-for-approval", "never", "exec"];
+		if (!isActivePreference(preference.model)) args.push("-m", preference.model!);
+		if (!isActivePreference(preference.thinkingEffort) && preference.thinkingEffort !== "off") {
+			args.push("-c", `model_reasoning_effort=${JSON.stringify(preference.thinkingEffort)}`);
+		}
+		args.push(
 			"--sandbox",
 			"read-only",
 			"--ephemeral",
@@ -104,14 +132,17 @@ async function callCodexCli(prompt: string, systemPrompt: string, cwd: string | 
 			"--output-last-message",
 			outputPath,
 			"-",
-		];
+		);
 		const input = [`System instructions:\n${systemPrompt}`, `User request:\n${prompt}`].join("\n\n");
 		const result = await spawnWithInput(command, args, input, { cwd, signal, timeoutMs: 120_000 });
 		assertSuccess(result, "codex CLI sidecar");
+		const detailParts = ["codex-cli"];
+		if (!isActivePreference(preference.model)) detailParts.push(preference.model!);
+		if (!isActivePreference(preference.thinkingEffort)) detailParts.push(preference.thinkingEffort!);
 		try {
-			return readFileSync(outputPath, "utf8").trim();
+			return { content: readFileSync(outputPath, "utf8").trim(), detail: detailParts.join("/") };
 		} catch {
-			return result.stdout.trim();
+			return { content: result.stdout.trim(), detail: detailParts.join("/") };
 		}
 	} finally {
 		rmSync(tmp, { recursive: true, force: true });
@@ -120,10 +151,12 @@ async function callCodexCli(prompt: string, systemPrompt: string, cwd: string | 
 
 export function createHostCliModelCaller(host: HostKind, cwd?: string): ThoughtModelCaller | undefined {
 	if (host !== "claude-code" && host !== "codex") return undefined;
-	return async ({ prompt, systemPrompt, signal }) => {
+	return async ({ config, prompt, systemPrompt, signal }) => {
 		if (host === "claude-code") {
-			return { content: await callClaudeCli(prompt, systemPrompt, cwd, signal), model: hostNativeModelLabel(host, "claude-cli") };
+			const response = await callClaudeCli(prompt, systemPrompt, cwd, signal, config);
+			return { content: response.content, model: hostNativeModelLabel(host, response.detail) };
 		}
-		return { content: await callCodexCli(prompt, systemPrompt, cwd, signal), model: hostNativeModelLabel(host, "codex-cli") };
+		const response = await callCodexCli(prompt, systemPrompt, cwd, signal, config);
+		return { content: response.content, model: hostNativeModelLabel(host, response.detail) };
 	};
 }

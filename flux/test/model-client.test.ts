@@ -86,6 +86,30 @@ test("callSidecarModel sends Anthropic messages requests", async () => {
 	}
 });
 
+test("callSidecarModel sends direct-provider thinking effort when configured", async () => {
+	let openAiBody: any;
+	let anthropicBody: any;
+	const restore = mockFetch((url, init) => {
+		const body = JSON.parse(String(init.body));
+		if (url.includes("anthropic")) {
+			anthropicBody = body;
+			return Response.json({ content: [{ type: "text", text: "anthropic" }] });
+		}
+		openAiBody = body;
+		return Response.json({ choices: [{ message: { content: "openai" } }] });
+	});
+	try {
+		await callSidecarModel({ name: "oa", provider: "openai-compatible", model: "gpt", apiKey: "secret", thinkingEffort: "high" }, "system", "user");
+		await callSidecarModel({ name: "an", provider: "anthropic", model: "claude", baseUrl: "https://anthropic.test/v1", apiKey: "secret", thinkingEffort: "low" }, "system", "user");
+		assert.equal(openAiBody.reasoning_effort, "high");
+		assert.deepEqual(anthropicBody.thinking, { type: "enabled", budget_tokens: 2048 });
+		assert.equal(anthropicBody.max_tokens, 2468);
+		assert.equal(anthropicBody.temperature, undefined);
+	} finally {
+		restore();
+	}
+});
+
 test("callSidecarModel turns provider failures into FluxModelError", async () => {
 	const restore = mockFetch(() => new Response("bad request details", { status: 400, statusText: "Bad Request" }));
 	try {

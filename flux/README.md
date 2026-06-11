@@ -29,7 +29,8 @@ export ANTHROPIC_API_KEY=...
 
 Users can configure:
 
-- model definitions (`models[]`), including provider, model id, base URL, max tokens, temperature, and API key env var,
+- direct-provider model definitions (`models[]`), including provider, model id, base URL, max tokens, temperature, optional thinking effort, and API key env var,
+- host-native sidecar model preferences (`hostSidecar`) for harness-backed calls, with `active` defaults and optional model/thinking selections where a host supports them,
 - per-trigger model pools (`modelPools`), keyed by trigger name, trigger kind, or `default`,
 - random injections (`randomInjections`) and random frequency (`random.probability`, `random.minIntervalMs`, `random.afterEvents`),
 - Pi/session delivery mode (`steer`, `followUp`, `nextTurn`); hook integrations always write their host JSON response to stdout,
@@ -73,7 +74,12 @@ Pi commands/tools:
 - `/flux config random probability 0.1` updates random frequency and persists it
 - `/flux config random minIntervalMs 300000`
 - `/flux config random afterEvents 3`
-- `/flux config model cheap-openai-compatible openai-compatible gpt-4.1-mini apiKeyEnv=OPENAI_API_KEY` adds or updates a model definition
+- `/flux config model cheap-openai-compatible openai-compatible gpt-4.1-mini apiKeyEnv=OPENAI_API_KEY thinkingEffort=low` adds or updates a direct-provider model definition
+- `/flux config host models` lists available harness models where the host exposes a model registry, currently Pi
+- `/flux config host pi model active|provider/model-id` selects the Pi host-native sidecar model
+- `/flux config host pi thinking active|off|minimal|low|medium|high|xhigh` selects Pi sidecar thinking effort, clamped to model capability
+- `/flux config host codex model active|model-id` and `/flux config host codex thinking active|off|minimal|low|medium|high|xhigh` pass Codex CLI sidecar preferences
+- `/flux config host claude-code model active|model-id` passes a Claude Code CLI sidecar model preference; Claude thinking flags still need live validation
 - `/flux config pool random cheap-openai-compatible,anthropic-haiku` assigns a model pool
 - `/flux config prompt manual sharper-question 1 Ask one sharp question grounded in the session.` adds or updates a prompt profile
 - `/flux config models` lists models and model pools
@@ -130,9 +136,9 @@ Flux uses a neutral base system prompt plus trigger/profile-specific instruction
 
 Model execution is host-native when possible:
 
-- Pi extension: Pi selected model + Pi auth.
-- Claude Code hook: `claude` CLI print mode.
-- Codex hook: `codex exec` in read-only ephemeral mode.
+- Pi extension: Pi selected model + Pi auth by default, or a configured `hostSidecar.pi.model` from Pi's available model registry.
+- Claude Code hook: `claude` CLI print mode, optionally with configured sidecar model. Thinking/effort flags remain unvalidated and are not emitted yet.
+- Codex hook: `codex exec` in read-only ephemeral mode, optionally with configured sidecar model and `model_reasoning_effort`.
 - Generic hook/fallback: configured direct provider model pool.
 
 Selection order for direct-provider fallback:

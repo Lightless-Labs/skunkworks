@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG, loadConfig } from "../src/core/config.ts";
 import {
 	formatPromptProfiles,
 	setConfigEnabled,
+	setHostSidecar,
 	setModelPool,
 	setPersistentRandomEnabled,
 	setRandomFrequency,
@@ -302,10 +303,15 @@ test("config actions validate and mutate common slash-command settings", () => {
 	assert.equal(config.randomInjections, false);
 	assert.equal(setRandomFrequency(config, "probability", "0.25").ok, true);
 	assert.equal(config.random.probability, 0.25);
-	assert.equal(upsertModel(config, ["tiny", "openai-compatible", "gpt-mini", "apiKeyEnv=OPENAI_API_KEY", "maxTokens=123"]).ok, true);
+	assert.equal(upsertModel(config, ["tiny", "openai-compatible", "gpt-mini", "apiKeyEnv=OPENAI_API_KEY", "maxTokens=123", "thinkingEffort=low"]).ok, true);
 	assert.equal(config.models.find((spec) => spec.name === "tiny")?.maxTokens, 123);
+	assert.equal(config.models.find((spec) => spec.name === "tiny")?.thinkingEffort, "low");
 	assert.equal(setModelPool(config, "random", "fast,careful,tiny").ok, true);
 	assert.deepEqual(config.modelPools.random, ["fast", "careful", "tiny"]);
+	assert.equal(setHostSidecar(config, ["codex", "model", "gpt-5.5"]).ok, true);
+	assert.equal(config.hostSidecar.codex?.model, "gpt-5.5");
+	assert.equal(setHostSidecar(config, ["codex", "thinking", "high"]).ok, true);
+	assert.equal(config.hostSidecar.codex?.thinkingEffort, "high");
 	assert.equal(upsertPromptProfile(config, ["manual", "sharp-nudge", "2", "Ask", "one", "sharp", "question."]).ok, true);
 	assert.equal(config.promptProfiles.manual?.find((profile) => profile.name === "sharp-nudge")?.style, "Ask one sharp question.");
 	assert.equal(validateFluxConfig(config).ok, true);

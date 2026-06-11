@@ -46,12 +46,12 @@ Implemented surfaces:
   - Repo root exposes it through `extensions/flux.ts` so another machine can run `pi install git:git@github.com:Lightless-Labs/skunkworks.git` without manual cloning or npm publishing.
 - **Claude Code hook/plugin:** `src/adapters/claude-code/hook.ts`, `.claude-plugin/plugin.json`, `hooks/claude-code-hooks.json`, `claude-code-plugin.json`, `examples/claude-code-settings.json`. The skunkworks repo root exposes a Claude marketplace at `../.claude-plugin/marketplace.json` so users can install from git without npm publishing or manual cloning.
 - **Codex hook/plugin:** `src/adapters/codex/hook.ts`, `.codex-plugin/plugin.json`, `hooks/codex-hooks.json`, `codex-plugin.json`, `examples/codex-config.toml`. The skunkworks repo root exposes a Codex marketplace at `../.agents/plugins/marketplace.json` so users can install from git without npm publishing or manual cloning.
-- **Core:** config loading, trigger matching, bounded context snapshots, prompt-profile selection, per-trigger model pools, Anthropic/OpenAI-compatible model calls, thought logging. `loop-detected` supports both language pattern matching and repeat-based tool-result fingerprints.
-- **Core tests:** `test/core-selection.test.ts` covers config/deep merge, config command mutations/validation, trigger frequency overrides, loop matching, prompt-profile/model-pool resolution, injected model callers, and context formatting/clamping. `test/hook-cli.test.ts` covers host hook event-kind inference, fixture snapshot extraction, and output shapes. `test/model-client.test.ts` covers non-network OpenAI-compatible and Anthropic request/response/error handling. `test/host-cli-model-client.test.ts` covers non-network Claude/Codex host CLI argv/stdin construction. `test/plugin-install.test.ts` covers repo-root marketplace manifests, plugin hook wrapper commands, and wrapper safe-fail output.
-- **Host-native model path in progress:** Pi adapter now calls Pi's selected/authenticated model; Claude/Codex hook CLI paths call their host CLIs with `FLUX_SUPPRESS=1` to avoid recursive hook triggering. Pi JSON-mode smoke for `/flux think` and `flux_stray_thought` passed on 2026-05-30. Local CLI surface check on 2026-05-31 used `claude` 2.1.119 and `codex-cli` 0.130.0; Codex requires `--ask-for-approval never` before the `exec` subcommand. See `todos/host-native-models.md`.
+- **Core:** config loading, trigger matching, bounded context snapshots, prompt-profile selection, host-native sidecar preferences, per-trigger direct-provider model pools, Anthropic/OpenAI-compatible model calls, thought logging. `loop-detected` supports both language pattern matching and repeat-based tool-result fingerprints.
+- **Core tests:** `test/core-selection.test.ts` covers config/deep merge, config command mutations/validation, host sidecar config, trigger frequency overrides, loop matching, prompt-profile/model-pool resolution, injected model callers, and context formatting/clamping. `test/hook-cli.test.ts` covers host hook event-kind inference, fixture snapshot extraction, and output shapes. `test/model-client.test.ts` covers non-network OpenAI-compatible and Anthropic request/response/error handling including direct-provider thinking effort. `test/host-cli-model-client.test.ts` covers non-network Claude/Codex host CLI argv/stdin construction and configured host sidecar model/effort flags. `test/plugin-install.test.ts` covers repo-root marketplace manifests, plugin hook wrapper commands, and wrapper safe-fail output.
+- **Host-native model path in progress:** Pi adapter now calls Pi's selected/authenticated model by default and can select a configured `hostSidecar.pi.model` from Pi's harness registry plus clamped thinking effort. Claude/Codex hook CLI paths call their host CLIs with `FLUX_SUPPRESS=1` to avoid recursive hook triggering; Claude can receive a configured `--model` preference, while Codex can receive configured `-m` and `-c model_reasoning_effort=...`. Pi JSON-mode smoke for `/flux think` and `flux_stray_thought` passed on 2026-05-30. Local CLI surface check on 2026-05-31 used `claude` 2.1.119 and `codex-cli` 0.130.0; Codex requires `--ask-for-approval never` before the `exec` subcommand. See `todos/host-native-models.md`.
 - **Delivery semantics clarified:** shared `DeliveryMode` is now only Pi/session message delivery (`steer`, `followUp`, `nextTurn`). Hook CLIs still emit host JSON on stdout as transport. Stale Pi configs using unsupported modes warn instead of silently mapping to `steer`. See `todos/delivery-semantics.md`.
 - **Repo-installable host hooks:** Claude/Codex plugin hooks run through `scripts/flux-hook-wrapper.mjs`, which builds only hook code (`npm run build:hooks`) on first use if `dist/` is missing/stale. The wrapper always exits 0 and emits host-safe JSON on setup/runtime failure.
-- **Dedicated sidecar model selection proposed:** Flux currently uses the host's active/default model for host-native generation. A new plan in `todos/host-sidecar-model-selection.md` captures configurable sidecar model and thinking-effort selection across **all harnesses** — Pi model registry where available, plus Claude Code/Codex CLI capability discovery/validation — without hard-coding future model names such as Mythos/Fable.
+- **Dedicated sidecar model selection underway:** Flux now has `hostSidecar` config for harness-native sidecar model/thinking preferences across **all harnesses**. Pi uses its model registry for dynamic listing/selection; Codex model and reasoning-effort args are wired; Claude Code model args are wired but thinking flags still need live validation. The abstraction intentionally avoids hard-coding future model names such as Mythos/Fable. See `todos/host-sidecar-model-selection.md`.
 
 Generated/ignored local artifacts:
 
@@ -159,7 +159,13 @@ Runtime Pi config commands:
 /flux config random probability 0.1
 /flux config random minIntervalMs 300000
 /flux config random afterEvents 3
-/flux config model model-a openai-compatible gpt-4.1-mini apiKeyEnv=OPENAI_API_KEY
+/flux config model model-a openai-compatible gpt-4.1-mini apiKeyEnv=OPENAI_API_KEY thinkingEffort=low
+/flux config host models
+/flux config host pi model active|provider/model-id
+/flux config host pi thinking active|off|minimal|low|medium|high|xhigh
+/flux config host codex model active|model-id
+/flux config host codex thinking active|off|minimal|low|medium|high|xhigh
+/flux config host claude-code model active|model-id
 /flux config pool random model-a,model-b
 /flux config prompt manual sharper-question 1 Ask one sharp question grounded in the session.
 /flux config models
@@ -179,7 +185,8 @@ Trigger-specific behavior lives in weighted `promptProfiles`.
 Resolution order:
 
 - Prompt pool: trigger name → trigger kind → `default`.
-- Model pool: trigger name → trigger kind → `default` → any usable configured model.
+- Host-native sidecar model: `hostSidecar[host].model` / `thinkingEffort` when running inside a harness adapter; `active` means use the host/session default.
+- Direct-provider model pool: trigger name → trigger kind → `default` → any usable configured model.
 
 Current default `random` prompt pool:
 
@@ -221,15 +228,15 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 - Claude Code and Codex integrations now have host-CLI sidecar callers plus fixture/output-shape tests, but exact host-specific hook output contracts and real hook behavior still need validation against current host versions.
 - Core selection/config/trigger/context logic, language/repeat loop detection, direct-provider HTTP clients, and host CLI argv construction now have automated coverage; host adapters still need focused/live tests.
 - Loop detection remains heuristic: pattern matching and repeat fingerprints can miss wrong-frame-with-local-progress situations. Random/left-field nudges are the current mitigation.
-- Sidecar model calls support Anthropic and OpenAI-compatible chat completions only.
-- `thinkingEffort` is typed in config but not sent to providers yet.
-- Config command UX now covers persistent enable/random toggles, random frequency, add/update model definitions, model-pool assignment, add/update prompt profiles, and full prompt-style listing.
+- Direct-provider sidecar model calls support Anthropic and OpenAI-compatible chat completions only; thinking effort is best-effort/provider-compatible.
+- Claude Code sidecar model selection emits `--model` when configured, but Claude Code thinking/effort CLI flags remain unvalidated and are not emitted yet.
+- Config command UX now covers persistent enable/random toggles, random frequency, add/update model definitions with thinking effort, host sidecar model/thinking preferences, model-pool assignment, add/update prompt profiles, and full prompt-style listing.
 
 ## Best Next Moves
 
 1. Finish live-testing the Pi extension in interactive TUI mode using Pi's host-native model path. See `todos/live-validate-pi-extension.md` and `todos/host-native-models.md`.
 2. Finish validating Claude Code / Codex hook contracts against current docs and live hook contexts. Fixture/output-shape tests are in place. See `todos/host-hook-contracts.md`.
-3. Implement host-native sidecar model selection beyond Pi: discover/list/select harness-available Flux sidecar models and thinking effort for Pi, Claude Code, and Codex where each host supports it. See `todos/host-sidecar-model-selection.md`.
+3. Live-validate host-native sidecar model selection: Pi registry selection/thinking clamp in TUI, Codex configured `-m`/reasoning effort, and Claude Code configured `--model`. See `todos/host-sidecar-model-selection.md`.
 4. Continue validating host integrations against current Claude Code/Codex contracts and interactive Pi TUI behavior. See `todos/host-hook-contracts.md` and `todos/live-validate-pi-extension.md`.
 
 ## Important Files

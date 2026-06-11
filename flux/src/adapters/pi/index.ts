@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG, loadConfig } from "../../core/config.ts";
 import {
 	formatPromptProfiles,
 	setConfigEnabled,
+	setHostSidecar,
 	setModelPool,
 	setPersistentRandomEnabled,
 	setRandomFrequency,
@@ -46,6 +47,7 @@ function formatConfigSummary(config: FluxConfig, path?: string): string {
 		`enabled=${config.enabled}, random=${config.randomInjections}`,
 		`random.frequency probability=${random.probability}, minIntervalMs=${random.minIntervalMs}, afterEvents=${random.afterEvents}`,
 		`models=${config.models.map((model) => model.name).join(", ") || "none"}`,
+		`hostSidecar=${JSON.stringify(config.hostSidecar)}`,
 		`modelPools=${pools || "none"}`,
 	].join("\n");
 }
@@ -59,46 +61,99 @@ type PiMessage = {
 type PiComplete = (
 	model: NonNullable<ExtensionContext["model"]>,
 	input: { systemPrompt: string; messages: PiMessage[] },
-	options: { apiKey: string; headers?: Record<string, string>; signal?: AbortSignal },
+	options: { apiKey: string; headers?: Record<string, string>; signal?: AbortSignal; reasoning?: string },
 ) => Promise<{ stopReason?: string; content: Array<{ type: string; text?: string }> }>;
 
 async function loadPiComplete(): Promise<PiComplete> {
 	try {
 		// @ts-ignore: pi-ai is provided by the host Pi runtime; Flux keeps it out of direct core deps.
-		return ((await import("@earendil-works/pi-ai")) as { complete: PiComplete }).complete;
+		const piAi = (await import("@earendil-works/pi-ai")) as { complete: PiComplete; completeSimple?: PiComplete };
+		return piAi.completeSimple ?? piAi.complete;
 	} catch (error) {
 		const codingAgentUrl = import.meta.resolve("@earendil-works/pi-coding-agent");
 		const bundledPiAiUrl = new URL("../node_modules/@earendil-works/pi-ai/dist/index.js", codingAgentUrl).href;
 		try {
-			return ((await import(bundledPiAiUrl)) as { complete: PiComplete }).complete;
+			const piAi = (await import(bundledPiAiUrl)) as { complete: PiComplete; completeSimple?: PiComplete };
+			return piAi.completeSimple ?? piAi.complete;
 		} catch {
 			throw error;
 		}
 	}
 }
 
-function createPiModelCaller(ctx: ExtensionContext, signal?: AbortSignal): ThoughtModelCaller {
-	return async ({ systemPrompt, prompt }) => {
+function modelLabel(model: { provider: string; id: string }): string {
+	return `${model.provider}/${model.id}`;
+}
+
+async function resolvePiSidecarModel(ctx: ExtensionContext, config: FluxConfig): Promise<NonNullable<ExtensionContext["model"]>> {
+	const preference = config.hostSidecar.pi?.model ?? "active";
+	if (preference === "active") {
 		if (!ctx.model) throw new Error("No Pi model selected for Flux host-native sidecar generation.");
-		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-		if (!auth.ok || !auth.apiKey) throw new Error(auth.ok ? `No API key for ${ctx.model.provider}` : auth.error);
+		return ctx.model;
+	}
+	const slash = preference.indexOf("/");
+	if (slash > 0) {
+		const found = ctx.modelRegistry.find(preference.slice(0, slash), preference.slice(slash + 1));
+		if (found) return found as NonNullable<ExtensionContext["model"]>;
+	}
+	const available = await Promise.resolve(ctx.modelRegistry.getAvailable());
+	const lower = preference.toLowerCase();
+	const found = available.find((model: any) => model.id?.toLowerCase?.() === lower || model.name?.toLowerCase?.() === lower || modelLabel(model).toLowerCase() === lower);
+	if (found) return found as NonNullable<ExtensionContext["model"]>;
+	throw new Error(`Flux Pi sidecar model not found or unavailable: ${preference}`);
+}
+
+const THINKING_LEVEL_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+function supportedThinkingLevels(model: NonNullable<ExtensionContext["model"]>): string[] {
+	if (!(model as any).reasoning) return ["off"];
+	return THINKING_LEVEL_ORDER.filter((level) => {
+		const mapped = (model as any).thinkingLevelMap?.[level];
+		if (mapped === null) return false;
+		if (level === "xhigh") return mapped !== undefined;
+		return true;
+	});
+}
+
+function clampThinkingLevel(model: NonNullable<ExtensionContext["model"]>, requested: string): string {
+	const supported = supportedThinkingLevels(model);
+	if (supported.includes(requested)) return requested;
+	const requestedIndex = THINKING_LEVEL_ORDER.indexOf(requested);
+	if (requestedIndex === -1) return supported[0] ?? "off";
+	for (let i = requestedIndex; i < THINKING_LEVEL_ORDER.length; i++) if (supported.includes(THINKING_LEVEL_ORDER[i]!)) return THINKING_LEVEL_ORDER[i]!;
+	for (let i = requestedIndex - 1; i >= 0; i--) if (supported.includes(THINKING_LEVEL_ORDER[i]!)) return THINKING_LEVEL_ORDER[i]!;
+	return supported[0] ?? "off";
+}
+
+function resolvePiThinking(model: NonNullable<ExtensionContext["model"]>, config: FluxConfig): string | undefined {
+	const preference = config.hostSidecar.pi?.thinkingEffort ?? "active";
+	if (preference === "active") return undefined;
+	return clampThinkingLevel(model, preference);
+}
+
+function createPiModelCaller(ctx: ExtensionContext, signal?: AbortSignal): ThoughtModelCaller {
+	return async ({ config, systemPrompt, prompt }) => {
+		const model = await resolvePiSidecarModel(ctx, config);
+		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth.ok || !auth.apiKey) throw new Error(auth.ok ? `No API key for ${model.provider}` : auth.error);
 		const complete = await loadPiComplete();
+		const reasoning = resolvePiThinking(model, config);
 		const userMessage: PiMessage = {
 			role: "user",
 			content: [{ type: "text", text: prompt }],
 			timestamp: Date.now(),
 		};
 		const response = await complete(
-			ctx.model,
+			model,
 			{ systemPrompt, messages: [userMessage] },
-			{ apiKey: auth.apiKey, headers: auth.headers, signal },
+			{ apiKey: auth.apiKey, headers: auth.headers, signal, ...(reasoning && reasoning !== "off" ? { reasoning } : {}) },
 		);
 		if (response.stopReason === "aborted") throw new Error("Flux Pi sidecar generation was aborted.");
 		const content = response.content
 			.filter((part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string")
 			.map((part) => part.text)
 			.join("\n");
-		return { content, model: hostNativeModelLabel("pi", `${ctx.model.provider}/${ctx.model.id}`) };
+		return { content, model: hostNativeModelLabel("pi", `${modelLabel(model)}${reasoning ? `:${reasoning}` : ""}`) };
 	};
 }
 
@@ -319,7 +374,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 
 	pi.registerCommand("flux", {
 		description:
-			"Manage Flux: /flux status | on | off | random on|off | think [reason] | reload | config [status|init|edit|set|random|model|pool|prompt|models|prompts]",
+			"Manage Flux: /flux status | on | off | random on|off | think [reason] | reload | config [status|init|edit|set|random|model|host|pool|prompt|models|prompts]",
 		handler: async (args, ctx) => {
 			const parts = args.trim().split(/\s+/).filter(Boolean);
 			const command = parts[0] ?? "status";
@@ -434,6 +489,28 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 					ctx.ui.notify(`${result.message} in ${loaded.path}`, "info");
 					return;
 				}
+				if (subcommand === "host") {
+					if (parts[2] === "models") {
+						const available = await Promise.resolve(ctx.modelRegistry.getAvailable());
+						const lines = [
+							"Available host models:",
+							...available.map((model: any) => {
+								const thinking = supportedThinkingLevels(model).join("|");
+								return `- ${model.provider}/${model.id} (${model.name ?? model.id}; thinking: ${thinking})`;
+							}),
+						];
+						ctx.ui.notify(lines.join("\n"), "info");
+						return;
+					}
+					const result = setHostSidecar(loaded.config, parts.slice(2));
+					if (!result.ok) {
+						ctx.ui.notify(result.message, "error");
+						return;
+					}
+					if (!persistLoadedConfig()) return;
+					ctx.ui.notify(`${result.message} in ${loaded.path}`, "info");
+					return;
+				}
 				if (subcommand === "pool") {
 					const result = setModelPool(loaded.config, parts[2], parts.slice(3).join(" "));
 					if (!result.ok) {
@@ -457,7 +534,9 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 				if (subcommand === "models") {
 					const lines = [
 						"Flux models:",
-						...loaded.config.models.map((model) => `- ${model.name}: ${model.provider}/${model.model}`),
+						...loaded.config.models.map((model) => `- ${model.name}: ${model.provider}/${model.model}${model.thinkingEffort ? `:${model.thinkingEffort}` : ""}`),
+						"Host sidecar:",
+						...Object.entries(loaded.config.hostSidecar).map(([host, settings]) => `- ${host}: model=${settings?.model ?? "active"}, thinking=${settings?.thinkingEffort ?? "active"}`),
 						"Model pools:",
 						...Object.entries(loaded.config.modelPools).map(([name, models]) => `- ${name}: ${models.join(", ")}`),
 					];
@@ -468,7 +547,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 					ctx.ui.notify(formatPromptProfiles(loaded.config), "info");
 					return;
 				}
-				ctx.ui.notify("Usage: /flux config status | init | edit | set enabled | random | model | pool | prompt | models | prompts", "info");
+				ctx.ui.notify("Usage: /flux config status | init | edit | set enabled | random | model | host | pool | prompt | models | prompts", "info");
 				return;
 			}
 			if (command === "on" || command === "off") {

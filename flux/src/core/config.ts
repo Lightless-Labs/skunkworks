@@ -39,6 +39,11 @@ export const DEFAULT_CONFIG: FluxConfig = {
 			maxTokens: 420,
 		},
 	],
+	hostSidecar: {
+		pi: { model: "active", thinkingEffort: "active" },
+		"claude-code": { model: "active", thinkingEffort: "active" },
+		codex: { model: "active", thinkingEffort: "active" },
+	},
 	modelPools: {
 		default: ["openai-default", "anthropic-default"],
 		random: ["openai-default", "anthropic-default"],

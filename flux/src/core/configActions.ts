@@ -1,4 +1,8 @@
-import type { FluxConfig, FluxModelSpec, PromptProfile } from "./types.ts";
+import type { FluxConfig, FluxModelSpec, HostKind, HostSidecarThinkingEffort, PromptProfile } from "./types.ts";
+
+const HOST_KINDS = new Set<HostKind>(["pi", "claude-code", "codex", "generic"]);
+const DIRECT_THINKING_EFFORTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
+const HOST_THINKING_EFFORTS = new Set(["active", ...DIRECT_THINKING_EFFORTS]);
 
 export interface ConfigActionResult {
 	ok: boolean;
@@ -64,7 +68,7 @@ export function upsertModel(config: FluxConfig, parts: string[]): ConfigActionRe
 	const [name, provider, modelId, ...optionTokens] = parts;
 	if (!name || !provider || !modelId) {
 		return err(
-			"Usage: /flux config model <name> <openai-compatible|anthropic> <model-id> [apiKeyEnv=ENV] [baseUrl=URL] [maxTokens=N] [temperature=N]",
+			"Usage: /flux config model <name> <openai-compatible|anthropic> <model-id> [apiKeyEnv=ENV] [baseUrl=URL] [maxTokens=N] [temperature=N] [thinkingEffort=off|minimal|low|medium|high|xhigh]",
 		);
 	}
 	if (provider !== "openai-compatible" && provider !== "anthropic") {
@@ -90,9 +94,42 @@ export function upsertModel(config: FluxConfig, parts: string[]): ConfigActionRe
 		if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) return err("temperature must be between 0 and 2.");
 		next.temperature = temperature;
 	}
+	if (options.thinkingEffort !== undefined) {
+		if (!DIRECT_THINKING_EFFORTS.has(options.thinkingEffort)) {
+			return err("thinkingEffort must be off, minimal, low, medium, high, or xhigh.");
+		}
+		next.thinkingEffort = options.thinkingEffort;
+	}
+	if (options.reasoningEffort !== undefined) {
+		if (!DIRECT_THINKING_EFFORTS.has(options.reasoningEffort)) {
+			return err("reasoningEffort must be off, minimal, low, medium, high, or xhigh.");
+		}
+		next.thinkingEffort = options.reasoningEffort;
+	}
 	if (existing) Object.assign(existing, next);
 	else config.models.push(next);
 	return ok(`${existing ? "Updated" : "Added"} Flux model ${name}: ${provider}/${modelId}`);
+}
+
+export function setHostSidecar(config: FluxConfig, parts: string[]): ConfigActionResult {
+	const [host, field, ...valueParts] = parts;
+	const value = valueParts.join(" ").trim();
+	if (!host || !field || !value) {
+		return err("Usage: /flux config host <pi|claude-code|codex|generic> model <active|provider/model-id> | thinking <active|off|minimal|low|medium|high|xhigh>");
+	}
+	if (!HOST_KINDS.has(host as HostKind)) return err(`Unknown host: ${host}`);
+	const hostKey = host as HostKind;
+	const entry = (config.hostSidecar[hostKey] ??= {});
+	if (field === "model") {
+		entry.model = value;
+		return ok(`Set Flux ${host}.model=${value}`);
+	}
+	if (field === "thinking" || field === "thinkingEffort" || field === "reasoningEffort") {
+		if (!HOST_THINKING_EFFORTS.has(value)) return err("thinking must be active, off, minimal, low, medium, high, or xhigh.");
+		entry.thinkingEffort = value as HostSidecarThinkingEffort;
+		return ok(`Set Flux ${host}.thinkingEffort=${value}`);
+	}
+	return err("Usage: /flux config host <host> model <...> | thinking <...>");
 }
 
 export function setModelPool(config: FluxConfig, poolName: string | undefined, rawModels: string | undefined): ConfigActionResult {
@@ -121,10 +158,25 @@ export function validateFluxConfig(config: FluxConfig): ConfigActionResult {
 	if (!Number.isFinite(config.random.afterEvents) || config.random.afterEvents < 0) {
 		return err("Flux config random.afterEvents must be non-negative.");
 	}
+	if (!config.hostSidecar || typeof config.hostSidecar !== "object") return err("Flux config hostSidecar must be an object.");
+	for (const [host, settings] of Object.entries(config.hostSidecar)) {
+		if (!HOST_KINDS.has(host as HostKind)) return err(`Unknown hostSidecar host: ${host}`);
+		if (settings === undefined) continue;
+		if (settings.model !== undefined && typeof settings.model !== "string") return err(`hostSidecar.${host}.model must be a string.`);
+		if (settings.thinkingEffort !== undefined) {
+			if (typeof settings.thinkingEffort !== "string") return err(`hostSidecar.${host}.thinkingEffort must be a string.`);
+			if (!HOST_THINKING_EFFORTS.has(settings.thinkingEffort)) {
+				return err(`hostSidecar.${host}.thinkingEffort must be active, off, minimal, low, medium, high, or xhigh.`);
+			}
+		}
+	}
 	const modelNames = new Set<string>();
 	for (const model of config.models) {
 		if (!model.name) return err("Every Flux model must have a name.");
 		if (modelNames.has(model.name)) return err(`Duplicate Flux model name: ${model.name}`);
+		if (model.thinkingEffort !== undefined && !DIRECT_THINKING_EFFORTS.has(model.thinkingEffort)) {
+			return err(`Model ${model.name} thinkingEffort must be off, minimal, low, medium, high, or xhigh.`);
+		}
 		modelNames.add(model.name);
 	}
 	for (const [pool, models] of Object.entries(config.modelPools)) {
