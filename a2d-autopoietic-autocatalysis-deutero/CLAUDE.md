@@ -37,6 +37,7 @@ A²D adds: catalytic closure, deutero-learning, mechanical verification, the 85%
 - **Outcomes, not correctness.** A²D converges on outcomes (does the artifact work?), not correctness (is the code right?). The sandbox is the oracle; models are the search strategy. See `docs/solutions/architectural-insights/outcomes-not-correctness-2026-04-04.md`.
 - **No human in the loop.** Degradation triggers mechanical escalation (clean session → model swap → multi-model proposals → Darwinian isolation), not human intervention. See `todos/escalation-ladder.md`.
 - **No unnecessary dependencies.** Borrow patterns from refinery, Gas Town, StrongDM, etc. but implement directly. SQLite or append-only JSONL for persistence, not Dolt. Refinery patterns in the metabolism, not as a crate dependency.
+- **Tests are part of self-modification.** Tests are not protected physics. When the architect changes production semantics, it must evolve the internal tests that encode those semantics in the same atomic `SystemPatch` batch; the self-sandbox validates the combined state, while hidden challenge holdouts remain the behavioral backstop.
 
 ## Process
 

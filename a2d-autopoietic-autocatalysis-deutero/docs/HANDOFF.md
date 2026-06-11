@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-06-11 (session 28 — completed metabolism eligible SystemPatch acceptance coverage)
+**Last updated:** 2026-06-11 (session 28 — added atomic multi-SystemPatch test evolution)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-312 commits at monorepo HEAD. Latest committed change is `Sync handoff after eligible patch coverage`; latest A²D implementation/test change is `Cover architect eligible patch routing`; latest A²D challenge/acceptance change is `Add challenge artifact scoring replay`; latest challenge replay result is `Record chess artifact replay results`. 222 tests passing (2 ignored integration) after adding holdout-backed artifact replay, CLI integration coverage, chess replay documentation, post-change escalation regression validation, metabolism-level protected-patch routing coverage, and metabolism-level eligible-patch acceptance coverage. 3 crates (a2d-core, a2d-providers, a2d-cli). 40 compound learnings.
+315 commits at monorepo HEAD after committing current work. Latest committed change is `Add atomic SystemPatch batches`; latest A²D implementation/test change is `Add atomic SystemPatch batches`; latest A²D challenge/acceptance change is `Add challenge artifact scoring replay`; latest challenge replay result is `Record chess artifact replay results`. 227 tests passing (2 ignored integration) after adding holdout-backed artifact replay, CLI integration coverage, chess replay documentation, post-change escalation regression validation, metabolism-level protected/eligible patch routing coverage, and atomic multi-`SystemPatch` production+test evolution coverage. 3 crates (a2d-core, a2d-providers, a2d-cli). 40 compound learnings.
 
 ## Clean-session pickup
 
@@ -14,7 +14,7 @@
 - **End-to-end metabolism:** requirements route through coder/tester/sandbox/evolver/architect with RAF checks, fitness ratchet, lineage, feedback reports, and provider circuit breaking.
 - **Sudoku can reach full fitness:** latest completed `sudoku 5` live run reached best fitness 100% (6/6): no code → 83% → 100% → 100% → 100%.
 - **Deutero-learning is real now, not theoretical:** the evolver accepted 6 mutations in the `sudoku 5` run; lineage-loaded germline has 7 RAF-closed enzymes.
-- **Autopoiesis is gated and covered through both patch outcomes:** architect patches go through `SystemPatch` + self-sandbox, provider cwd isolation, protected-file rejection, explicit mechanism-file eligibility, metabolism-level protected-patch rejection coverage, and metabolism-level eligible-patch acceptance into `pending_patches()` coverage.
+- **Autopoiesis is gated, atomic, and covered through patch outcomes:** architect patches go through `SystemPatch` + self-sandbox, provider cwd isolation, protected-file rejection, explicit mechanism/test-file eligibility, metabolism-level protected-patch rejection coverage, eligible-patch acceptance into `pending_patches()` coverage, and atomic multi-patch batch validation so production+test changes queue together or not at all.
 - **OpenCode parsing is more robust:** current text events, legacy text events, and `write` tool payloads are recovered.
 - **Empty provider output is diagnosable:** `InvocationResponse` now carries optional raw provider stdout; no-materialized-output failures include sanitized parsed/raw previews, and malformed `SystemPatch` rejections include parsed artifact previews.
 - **Architect can abstain explicitly:** architect output contract now accepts `{"action":"noop","reason":"..."}` as a valid no-change decision, separate from malformed/empty provider output. Legacy bare `SystemPatch` JSON remains accepted.
@@ -77,6 +77,8 @@
 - **Provider-policy comparisons are now inspectable:** `a2d compare-provider-policy <challenge> <cycles> [policy-json|@path]` runs current and proposed policies with persistence disabled, prints policy deltas, and reports a gate decision.
 
 ### What happened this session
+
+- **Atomic test evolution via multi-`SystemPatch` landed.** Created `docs/plans/test-evolution-multipatch.md`. Added `self_sandbox::validate_patches()` in `crates/a2d-core/src/self_sandbox.rs`; it rejects empty/duplicate/protected/ineligible/missing batch members before temp-copy work, applies every patch to one isolated project copy, and runs one `cargo test` on the combined state. `validate_patch()` now delegates to the batch validator. Standalone internal test files `crates/a2d-core/tests/bootstrap.rs` and `crates/a2d-cli/tests/score_artifact.rs` are eligible for architect modification and included by the existing crate-tree copy. `Metabolism::apply_system_patch()` now accepts legacy single patch objects, no-op objects, and JSON arrays (including raw/fenced arrays and `{"system_patch":[...]}` materialization), and only appends to `pending_patches()` after the whole batch validates. Architect prompt, `CLAUDE.md`, `AGENTS.md`, and `todos/test-evolution.md` now state that tests are part of self-modification and must evolve with production semantics in an atomic patch batch. Foundry reviewer `.a2d/dispatch/session-20260611/multipatch-reviewer.json` highlighted the atomicity/materialization traps. Focused validations passed: `cargo test -p a2d-core validate_patches -- --nocapture`, `cargo test -p a2d-core architect_system_patch_batch -- --nocapture`, `cargo test -p a2d-core fenced_json_array_is_extracted_for_system_patch_batches -- --nocapture`, and `cargo test -p a2d-core architect_system_patch_to_ -- --nocapture`. Full `cargo test` passes (227 passing, 2 ignored).
 
 - **Testable-core architect positive path completed.** Added `metabolism::tests::architect_system_patch_to_eligible_file_is_accepted_through_metabolism` in `crates/a2d-core/src/metabolism.rs`. It uses a minimal temp project fixture so a mock architect `SystemPatch` for eligible `crates/a2d-core/src/metabolism.rs` is parsed by metabolism, routed through `self_sandbox::validate_patch`, accepted by `cargo test`, recorded in lineage/report counters, and queued in `pending_patches()`. Verified that the existing protected-file rejection metabolism test remains present; focused `cargo test -p a2d-core 'architect_system_patch_to_' -- --nocapture` passes both acceptance and rejection tests. Full `cargo test` passes (222 passing, 2 ignored). Updated `todos/testable-core.md` to mark the architect validation gap implemented.
 
@@ -353,7 +355,7 @@ a2d enzymes                   # List enzyme definitions (now includes architect)
 a2d lineage                   # Git log of germline evolution
 
 # Run tests
-cargo test                    # 222 tests passing (2 ignored integration)
+cargo test                    # 227 tests passing (2 ignored integration)
 cargo test -- --ignored       # Run integration tests (slow, compiles in temp dir)
 
 # Check OpenCode model IDs
@@ -375,7 +377,7 @@ Search `docs/solutions/` before implementing. Key findings:
 - `todos/bounded-live-benchmarks.md` — `sudoku 5` completed with 100% best fitness; remaining provider waste: GLM timeouts + architect no-materialized-output
 - `todos/escalation-rungs-4-6.md` — model swap → clean swap → multi-model consensus (rungs 4–6 implemented/unit-tested; bounded mechanism validation now covered by `validate-escalation`; quality/eligibility work remains)
 - `todos/architect-pyramid-summaries.md` — implemented; prompt-size validated; latency still bad due provider/scheduling
-- `todos/test-evolution.md` — test evolution surface; latest addendum records expanded chess/Rubik's hidden acceptance coverage; remaining work is live validation and challenges beyond sudoku/chess/rubiks
+- `todos/test-evolution.md` — completed current atomic multi-`SystemPatch` test-evolution slice; future work may broaden test-file eligibility/context, plus live validation and challenges beyond sudoku/chess/rubiks
 - `todos/testable-core.md` — completed current coverage gap: protected `SystemPatch` rejection and eligible `SystemPatch` acceptance are both covered through the metabolism path; broader principle remains to keep orchestration logic mock-testable before live runs
 
 ## Autopilot update 1779711298225

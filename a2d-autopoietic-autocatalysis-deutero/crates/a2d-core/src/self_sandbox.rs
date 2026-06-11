@@ -63,7 +63,9 @@ pub const AUTOMATED_MODIFIABLE_FILES: &[&str] = &[
     "crates/a2d-core/src/provider.rs",
     "crates/a2d-core/src/types.rs",
     "crates/a2d-core/src/workcell.rs",
+    "crates/a2d-core/tests/bootstrap.rs",
     "crates/a2d-cli/src/main.rs",
+    "crates/a2d-cli/tests/score_artifact.rs",
     "crates/a2d-providers/src/claude.rs",
     "crates/a2d-providers/src/cli.rs",
     "crates/a2d-providers/src/lib.rs",
@@ -98,55 +100,88 @@ pub fn is_automated_modifiable(file_path: &str) -> bool {
 /// 4. Copy source tree to temp dir, apply patch
 /// 5. `cargo test` must pass on the modified source
 pub fn validate_patch(project_root: &Path, patch: &SystemPatch) -> SelfSandboxResult {
-    // Gate 1: Protected files — mechanical, not behavioral
-    if is_protected(&patch.file_path) {
+    validate_patches(project_root, std::slice::from_ref(patch))
+}
+
+/// Validate proposed system patches atomically in one isolated copy.
+///
+/// All static gates run before copying the project. If they pass, every patch is
+/// applied to one temp tree and a single `cargo test` validates the combined
+/// state. Callers must not apply or queue any member unless this returns
+/// `accepted: true`.
+pub fn validate_patches(project_root: &Path, patches: &[SystemPatch]) -> SelfSandboxResult {
+    if patches.is_empty() {
         return SelfSandboxResult {
             accepted: false,
             compiled: false,
             tests_passed: false,
             compile_output: String::new(),
             test_output: String::new(),
-            rejection_reason: Some(format!(
-                "Protected file: {} cannot be modified by automated actors (Constitution)",
-                patch.file_path
-            )),
+            rejection_reason: Some("SystemPatch batch is empty".to_string()),
         };
     }
 
-    // Gate 2: Only mechanism files are eligible. Passing cargo test is not a
-    // relevance proof; without this gate the architect can rewrite unrelated
-    // files that happen to compile.
-    if !is_automated_modifiable(&patch.file_path) {
-        return SelfSandboxResult {
-            accepted: false,
-            compiled: false,
-            tests_passed: false,
-            compile_output: String::new(),
-            test_output: String::new(),
-            rejection_reason: Some(format!(
-                "File is not eligible for automated modification: {}",
-                patch.file_path
-            )),
-        };
+    let mut seen_paths = HashSet::new();
+    for patch in patches {
+        let normalized = normalize_patch_path(&patch.file_path);
+        if !seen_paths.insert(normalized) {
+            return SelfSandboxResult {
+                accepted: false,
+                compiled: false,
+                tests_passed: false,
+                compile_output: String::new(),
+                test_output: String::new(),
+                rejection_reason: Some(format!(
+                    "Duplicate SystemPatch target in batch: {}",
+                    patch.file_path
+                )),
+            };
+        }
+
+        if is_protected(&patch.file_path) {
+            return SelfSandboxResult {
+                accepted: false,
+                compiled: false,
+                tests_passed: false,
+                compile_output: String::new(),
+                test_output: String::new(),
+                rejection_reason: Some(format!(
+                    "Protected file: {} cannot be modified by automated actors (Constitution)",
+                    patch.file_path
+                )),
+            };
+        }
+
+        if !is_automated_modifiable(&patch.file_path) {
+            return SelfSandboxResult {
+                accepted: false,
+                compiled: false,
+                tests_passed: false,
+                compile_output: String::new(),
+                test_output: String::new(),
+                rejection_reason: Some(format!(
+                    "File is not eligible for automated modification: {}",
+                    patch.file_path
+                )),
+            };
+        }
+
+        let target = project_root.join(&patch.file_path);
+        if !target.exists() {
+            return SelfSandboxResult {
+                accepted: false,
+                compiled: false,
+                tests_passed: false,
+                compile_output: String::new(),
+                test_output: String::new(),
+                rejection_reason: Some(format!(
+                    "File does not exist: {} — patches modify existing files only",
+                    patch.file_path
+                )),
+            };
+        }
     }
 
-    // Gate 3: Target file must exist
-    let target = project_root.join(&patch.file_path);
-    if !target.exists() {
-        return SelfSandboxResult {
-            accepted: false,
-            compiled: false,
-            tests_passed: false,
-            compile_output: String::new(),
-            test_output: String::new(),
-            rejection_reason: Some(format!(
-                "File does not exist: {} — patches modify existing files only",
-                patch.file_path
-            )),
-        };
-    }
-
-    // Create isolated copy
     let temp_dir = match tempfile::Builder::new()
         .prefix("a2d-self-sandbox-")
         .tempdir()
@@ -164,7 +199,6 @@ pub fn validate_patch(project_root: &Path, patch: &SystemPatch) -> SelfSandboxRe
         }
     };
 
-    // Copy minimal source tree
     if let Err(e) = copy_source_tree(project_root, temp_dir.path()) {
         return SelfSandboxResult {
             accepted: false,
@@ -176,23 +210,23 @@ pub fn validate_patch(project_root: &Path, patch: &SystemPatch) -> SelfSandboxRe
         };
     }
 
-    // Apply the patch
-    let patched_file = temp_dir.path().join(&patch.file_path);
-    if let Some(parent) = patched_file.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    if let Err(e) = fs::write(&patched_file, &patch.new_content) {
-        return SelfSandboxResult {
-            accepted: false,
-            compiled: false,
-            tests_passed: false,
-            compile_output: String::new(),
-            test_output: String::new(),
-            rejection_reason: Some(format!("Failed to write patch: {e}")),
-        };
+    for patch in patches {
+        let patched_file = temp_dir.path().join(&patch.file_path);
+        if let Some(parent) = patched_file.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Err(e) = fs::write(&patched_file, &patch.new_content) {
+            return SelfSandboxResult {
+                accepted: false,
+                compiled: false,
+                tests_passed: false,
+                compile_output: String::new(),
+                test_output: String::new(),
+                rejection_reason: Some(format!("Failed to write patch {}: {e}", patch.file_path)),
+            };
+        }
     }
 
-    // Gate 3: cargo test with 5-minute timeout
     let test_result = Command::new("cargo")
         .arg("test")
         .current_dir(temp_dir.path())
@@ -322,7 +356,13 @@ mod tests {
         assert!(is_automated_modifiable("crates/a2d-core/src/metabolism.rs"));
         assert!(is_automated_modifiable("crates/a2d-core/src/types.rs"));
         assert!(is_automated_modifiable("crates/a2d-core/src/challenges.rs"));
+        assert!(is_automated_modifiable(
+            "crates/a2d-core/tests/bootstrap.rs"
+        ));
         assert!(is_automated_modifiable("crates/a2d-cli/src/main.rs"));
+        assert!(is_automated_modifiable(
+            "crates/a2d-cli/tests/score_artifact.rs"
+        ));
         assert!(is_automated_modifiable("crates/a2d-providers/src/cli.rs"));
     }
 
@@ -405,6 +445,90 @@ mod tests {
         let paths = files.into_iter().map(|(path, _)| path).collect::<Vec<_>>();
 
         assert_eq!(paths, vec!["crates/a2d-core/src/metabolism.rs"]);
+    }
+
+    #[test]
+    fn validate_patches_accepts_combined_production_and_test_change_atomically() {
+        let temp = minimal_workspace_fixture();
+        let prod_patch = SystemPatch {
+            file_path: "crates/a2d-core/src/metabolism.rs".to_string(),
+            new_content: "pub fn answer() -> i32 { 2 }\n".to_string(),
+        };
+        let test_patch = SystemPatch {
+            file_path: "crates/a2d-core/tests/bootstrap.rs".to_string(),
+            new_content: "use a2d_core::answer;\n\n#[test]\nfn answer_matches_contract() {\n    assert_eq!(answer(), 2);\n}\n"
+                .to_string(),
+        };
+
+        assert!(!validate_patch(temp.path(), &prod_patch).accepted);
+        assert!(!validate_patch(temp.path(), &test_patch).accepted);
+
+        let result = validate_patches(temp.path(), &[prod_patch, test_patch]);
+
+        assert!(
+            result.accepted,
+            "combined patch should pass; rejection: {:?}\nstderr: {}\nstdout: {}",
+            result.rejection_reason, result.compile_output, result.test_output
+        );
+    }
+
+    #[test]
+    fn validate_patches_rejects_duplicate_targets_before_temp_apply() {
+        let temp = minimal_workspace_fixture();
+        let patch = SystemPatch {
+            file_path: "crates/a2d-core/src/metabolism.rs".to_string(),
+            new_content: "pub fn answer() -> i32 { 2 }\n".to_string(),
+        };
+
+        let result = validate_patches(temp.path(), &[patch.clone(), patch]);
+
+        assert!(!result.accepted);
+        assert!(
+            result
+                .rejection_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Duplicate SystemPatch target")
+        );
+    }
+
+    fn minimal_workspace_fixture() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            r#"[workspace]
+members = ["crates/a2d-core"]
+resolver = "3"
+"#,
+        )
+        .unwrap();
+        let crate_dir = temp.path().join("crates/a2d-core");
+        fs::create_dir_all(crate_dir.join("src")).unwrap();
+        fs::create_dir_all(crate_dir.join("tests")).unwrap();
+        fs::write(
+            crate_dir.join("Cargo.toml"),
+            r#"[package]
+name = "a2d-core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "a2d_core"
+path = "src/metabolism.rs"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            crate_dir.join("src/metabolism.rs"),
+            "pub fn answer() -> i32 { 1 }\n",
+        )
+        .unwrap();
+        fs::write(
+            crate_dir.join("tests/bootstrap.rs"),
+            "use a2d_core::answer;\n\n#[test]\nfn answer_matches_contract() {\n    assert_eq!(answer(), 1);\n}\n",
+        )
+        .unwrap();
+        temp
     }
 
     #[test]

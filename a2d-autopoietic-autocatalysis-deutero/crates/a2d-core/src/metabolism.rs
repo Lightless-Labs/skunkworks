@@ -1381,65 +1381,33 @@ impl Metabolism {
             }
         };
 
-        let action = value
-            .get("action")
-            .and_then(|action| action.as_str())
-            .map(|action| action.to_ascii_lowercase());
-
-        if action.as_deref() == Some("noop") {
-            let reason = value
-                .get("reason")
-                .and_then(|reason| reason.as_str())
-                .filter(|reason| !reason.trim().is_empty())
-                .unwrap_or("architect reported no source change warranted")
-                .to_string();
-            record.noops.push(reason);
-            return record;
-        }
-
-        if let Some(action) = action.as_deref()
-            && action != "patch"
-        {
-            record.rejected.push(PatchRejection {
-                file_path: None,
-                reason: format!(
-                    "Unknown SystemPatch action {action:?}. Expected \"patch\" or \"noop\". {}",
-                    provider_artifact_preview(&text)
-                ),
-            });
-            return record;
-        }
-
-        let patch: SystemPatch = match serde_json::from_value(value) {
-            Ok(patch) => patch,
-            Err(e) => {
-                record.rejected.push(PatchRejection {
-                    file_path: None,
-                    reason: format!(
-                        "Failed to parse SystemPatch: {e}. {}",
-                        provider_artifact_preview(&text)
-                    ),
-                });
+        let patches = match parse_system_patch_value(value, &text, &mut record) {
+            Some(SystemPatchAction::Noop(reason)) => {
+                record.noops.push(reason);
                 return record;
             }
+            Some(SystemPatchAction::Patches(patches)) => patches,
+            None => return record,
         };
 
         let Some(ref root) = self.project_root else {
             record.rejected.push(PatchRejection {
-                file_path: Some(patch.file_path),
+                file_path: batch_patch_path(&patches),
                 reason: "No project_root configured — cannot validate system patches".to_string(),
             });
             return record;
         };
 
-        let result = self_sandbox::validate_patch(root, &patch);
+        let result = self_sandbox::validate_patches(root, &patches);
 
         if result.accepted {
-            self.pending_patches.push(patch.clone());
-            record.accepted.push(patch.file_path);
+            record
+                .accepted
+                .extend(patches.iter().map(|patch| patch.file_path.clone()));
+            self.pending_patches.extend(patches);
         } else {
             record.rejected.push(PatchRejection {
-                file_path: Some(patch.file_path),
+                file_path: batch_patch_path(&patches),
                 reason: result
                     .rejection_reason
                     .unwrap_or_else(|| "Unknown rejection".to_string()),
@@ -2008,15 +1976,17 @@ fn architect_system_prompt(
          RULES:\n\
          1. Output ONLY valid JSON matching one of these schemas:\n\
             Patch: {{\"action\": \"patch\", \"file_path\": \"crates/...\", \"new_content\": \"...full file content...\"}}\n\
+            Patch batch: [{{\"action\": \"patch\", \"file_path\": \"crates/...\", \"new_content\": \"...full file content...\"}}, ...]\n\
             No-op: {{\"action\": \"noop\", \"reason\": \"why no source change is warranted\"}}\n\
          2. For patches, file_path is relative to project root\n\
          3. For patches, new_content must be the COMPLETE file content (not a diff)\n\
-         4. The modified file must compile and pass all existing tests\n\
-         5. Focus on changes that will improve the cycle's ability to produce working code\n\
-         6. If the failure diagnostic shows the cycle is degrading model output, fix the orchestration\n\
-         7. Prefer minimal, targeted changes over large rewrites\n\
-         8. If no source change is warranted, emit the No-op schema instead of prose, markdown, or an empty answer\n\n\
-         Output the SystemPatch action as JSON. Nothing else."
+         4. The modified combined state must compile and pass all existing tests\n\
+         5. Tests are part of the modifiable system. When changing production semantics, update the tests that encode those semantics in the same patch batch.\n\
+         6. Focus on changes that will improve the cycle's ability to produce working code\n\
+         7. If the failure diagnostic shows the cycle is degrading model output, fix the orchestration\n\
+         8. Prefer minimal, targeted changes over large rewrites\n\
+         9. If no source change is warranted, emit the No-op schema instead of prose, markdown, or an empty answer\n\n\
+         Output the SystemPatch action or batch as JSON. Nothing else."
     )
 }
 
@@ -2205,6 +2175,89 @@ fn format_provider_policy_acceptances(application: &ProviderPolicyApplication) -
         .collect()
 }
 
+enum SystemPatchAction {
+    Noop(String),
+    Patches(Vec<SystemPatch>),
+}
+
+fn parse_system_patch_value(
+    value: Value,
+    original_text: &str,
+    record: &mut PatchRecord,
+) -> Option<SystemPatchAction> {
+    let action = value
+        .get("action")
+        .and_then(|action| action.as_str())
+        .map(|action| action.to_ascii_lowercase());
+
+    if action.as_deref() == Some("noop") {
+        let reason = value
+            .get("reason")
+            .and_then(|reason| reason.as_str())
+            .filter(|reason| !reason.trim().is_empty())
+            .unwrap_or("architect reported no source change warranted")
+            .to_string();
+        return Some(SystemPatchAction::Noop(reason));
+    }
+
+    if let Some(action) = action.as_deref()
+        && action != "patch"
+    {
+        record.rejected.push(PatchRejection {
+            file_path: None,
+            reason: format!(
+                "Unknown SystemPatch action {action:?}. Expected \"patch\" or \"noop\". {}",
+                provider_artifact_preview(original_text)
+            ),
+        });
+        return None;
+    }
+
+    if value.is_array() {
+        return match serde_json::from_value::<Vec<SystemPatch>>(value) {
+            Ok(patches) => Some(SystemPatchAction::Patches(patches)),
+            Err(e) => {
+                record.rejected.push(PatchRejection {
+                    file_path: None,
+                    reason: format!(
+                        "Failed to parse SystemPatch batch: {e}. {}",
+                        provider_artifact_preview(original_text)
+                    ),
+                });
+                None
+            }
+        };
+    }
+
+    match serde_json::from_value::<SystemPatch>(value) {
+        Ok(patch) => Some(SystemPatchAction::Patches(vec![patch])),
+        Err(e) => {
+            record.rejected.push(PatchRejection {
+                file_path: None,
+                reason: format!(
+                    "Failed to parse SystemPatch: {e}. {}",
+                    provider_artifact_preview(original_text)
+                ),
+            });
+            None
+        }
+    }
+}
+
+fn batch_patch_path(patches: &[SystemPatch]) -> Option<String> {
+    match patches {
+        [] => None,
+        [patch] => Some(patch.file_path.clone()),
+        _ => Some(
+            patches
+                .iter()
+                .map(|patch| patch.file_path.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+    }
+}
+
 fn format_patch_summary(record: &PatchRecord) -> String {
     let mut parts = Vec::new();
     for path in &record.accepted {
@@ -2234,17 +2287,21 @@ fn extract_json_from_output(text: &str) -> Option<String> {
         let code_start = start + "```\n".len();
         if let Some(end) = text[code_start..].find("```") {
             let candidate = text[code_start..code_start + end].trim();
-            if candidate.starts_with('{') {
+            if is_json_container(candidate) {
                 return Some(candidate.to_string());
             }
         }
     }
     // Try raw JSON
     let trimmed = text.trim();
-    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+    if is_json_container(trimmed) {
         return Some(trimmed.to_string());
     }
     None
+}
+
+fn is_json_container(text: &str) -> bool {
+    (text.starts_with('{') && text.ends_with('}')) || (text.starts_with('[') && text.ends_with(']'))
 }
 
 fn encode_value(value: &Value) -> Vec<u8> {
@@ -3461,6 +3518,159 @@ mod tests {
             vec!["crates/a2d-core/src/metabolism.rs".to_string()]
         );
         assert!(patch.rejected.is_empty());
+    }
+
+    #[test]
+    fn architect_system_patch_batch_is_accepted_and_queued_atomically_through_metabolism() {
+        let fixture = minimal_architect_workspace_fixture();
+        let prod_patch = json!({
+            "action": "patch",
+            "file_path": "crates/a2d-core/src/metabolism.rs",
+            "new_content": "pub fn answer() -> i32 { 2 }\n"
+        });
+        let test_patch = json!({
+            "action": "patch",
+            "file_path": "crates/a2d-core/tests/bootstrap.rs",
+            "new_content": "use a2d_core::answer;\n\n#[test]\nfn answer_matches_contract() {\n    assert_eq!(answer(), 2);\n}\n"
+        });
+        let enzymes = vec![enzyme(
+            "architect",
+            &["failure_report", "fitness_report"],
+            &["system_patch"],
+            &[],
+        )];
+        let germline = Germline::new(enzymes, food(&["failure_report", "fitness_report"]));
+        let registry = ProviderRegistry::new(Box::new(MockProvider::new(
+            "architect-provider",
+            vec![response(
+                json!({ "system_patch": [prod_patch, test_patch] }),
+                vec![ToolEvent::Read, ToolEvent::Think, ToolEvent::Write],
+            )],
+        )));
+        let mut metabolism =
+            Metabolism::new(germline, registry).with_project_root(fixture.path().to_path_buf());
+        metabolism.seed_artifact(art("failure_report"), b"benchmark failed".to_vec());
+        metabolism.seed_artifact(art("fitness_report"), b"fitness: 0.50".to_vec());
+
+        let report = metabolism.run_cycle();
+
+        assert_eq!(report.accepted_patches, 2);
+        assert_eq!(report.rejected_patches, 0);
+        assert_eq!(metabolism.pending_patches().len(), 2);
+        let accepted = &report.lineage[0].patch.as_ref().unwrap().accepted;
+        assert_eq!(
+            accepted,
+            &vec![
+                "crates/a2d-core/src/metabolism.rs".to_string(),
+                "crates/a2d-core/tests/bootstrap.rs".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn architect_system_patch_batch_failure_queues_no_partial_patches_from_raw_array() {
+        let fixture = minimal_architect_workspace_fixture();
+        let harmless_patch = json!({
+            "action": "patch",
+            "file_path": "crates/a2d-core/src/provider.rs",
+            "new_content": "pub fn harmless() -> bool { true }\n"
+        });
+        let failing_test_patch = json!({
+            "action": "patch",
+            "file_path": "crates/a2d-core/tests/bootstrap.rs",
+            "new_content": "use a2d_core::answer;\n\n#[test]\nfn answer_matches_contract() {\n    assert_eq!(answer(), 999);\n}\n"
+        });
+        let enzymes = vec![enzyme(
+            "architect",
+            &["failure_report", "fitness_report"],
+            &["system_patch"],
+            &[],
+        )];
+        let germline = Germline::new(enzymes, food(&["failure_report", "fitness_report"]));
+        let registry = ProviderRegistry::new(Box::new(MockProvider::new(
+            "architect-provider",
+            vec![response(
+                Value::Array(vec![harmless_patch, failing_test_patch]),
+                vec![ToolEvent::Read, ToolEvent::Think, ToolEvent::Write],
+            )],
+        )));
+        let mut metabolism =
+            Metabolism::new(germline, registry).with_project_root(fixture.path().to_path_buf());
+        metabolism.seed_artifact(art("failure_report"), b"benchmark failed".to_vec());
+        metabolism.seed_artifact(art("fitness_report"), b"fitness: 0.50".to_vec());
+
+        let report = metabolism.run_cycle();
+
+        assert_eq!(report.accepted_patches, 0);
+        assert_eq!(report.rejected_patches, 1);
+        assert!(metabolism.pending_patches().is_empty());
+        let patch = report.lineage[0].patch.as_ref().unwrap();
+        assert!(patch.accepted.is_empty());
+        assert!(patch.rejected[0].reason.contains("cargo test failed"));
+    }
+
+    #[test]
+    fn fenced_json_array_is_extracted_for_system_patch_batches() {
+        let fixture = minimal_architect_workspace_fixture();
+        let output = r#"```json
+[
+  {"action":"patch","file_path":"crates/a2d-core/src/metabolism.rs","new_content":"pub fn answer() -> i32 { 1 }\n"}
+]
+```"#;
+        let germline = Germline::new(Vec::new(), food(&[]));
+        let registry = ProviderRegistry::new(Box::new(MockProvider::new("default", vec![])));
+        let mut metabolism =
+            Metabolism::new(germline, registry).with_project_root(fixture.path().to_path_buf());
+
+        let record = metabolism.apply_system_patch(output.as_bytes());
+
+        assert_eq!(record.accepted, vec!["crates/a2d-core/src/metabolism.rs"]);
+        assert!(record.rejected.is_empty());
+        assert_eq!(metabolism.pending_patches().len(), 1);
+    }
+
+    fn minimal_architect_workspace_fixture() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().expect("fixture tempdir");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            r#"[workspace]
+members = ["crates/a2d-core"]
+resolver = "3"
+"#,
+        )
+        .expect("fixture workspace manifest");
+        let crate_dir = temp.path().join("crates/a2d-core");
+        std::fs::create_dir_all(crate_dir.join("src")).expect("fixture source dir");
+        std::fs::create_dir_all(crate_dir.join("tests")).expect("fixture test dir");
+        std::fs::write(
+            crate_dir.join("Cargo.toml"),
+            r#"[package]
+name = "a2d-core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "a2d_core"
+path = "src/metabolism.rs"
+"#,
+        )
+        .expect("fixture crate manifest");
+        std::fs::write(
+            crate_dir.join("src/metabolism.rs"),
+            "pub fn answer() -> i32 { 1 }\n",
+        )
+        .expect("fixture mechanism source");
+        std::fs::write(
+            crate_dir.join("src/provider.rs"),
+            "pub fn harmless() -> bool { false }\n",
+        )
+        .expect("fixture provider source");
+        std::fs::write(
+            crate_dir.join("tests/bootstrap.rs"),
+            "use a2d_core::answer;\n\n#[test]\nfn answer_matches_contract() {\n    assert_eq!(answer(), 1);\n}\n",
+        )
+        .expect("fixture integration test");
+        temp
     }
 
     #[test]

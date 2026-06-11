@@ -4,6 +4,7 @@
 **Addendum:** 2026-06-08 — Expanded non-sudoku challenge holdout coverage in `crates/a2d-core/src/challenges.rs`. Chess now has hidden tests for legal-move safety, castling, en passant, and Fool's mate/no-escape. Rubik's now has an explicit callable API plus hidden tests for rotation inverses, quarter-turn order, known inverse roundtrip, solver-on-known-scrambles, and seeded scramble replayability/solve roundtrip. Plan: `docs/plans/challenge-acceptance-test-expansion.md`.
 **Addendum:** 2026-06-09 — Bounded seed chess live smoke was inconclusive: coder timed out before producing code, so the expanded holdouts did not execute. A 1s trace probe confirmed Kimi and DeepSeek did launch in the parallel coder portfolio. Next validation should isolate provider quality or mechanically replay candidate chess code against the holdouts rather than repeating the same one-cycle smoke.
 **Addendum:** 2026-06-10 — Mechanical replay path implemented: `a2d score-artifact <challenge> <path|->` scores a saved artifact through `Challenge::score_artifact()`, which centrally attaches hidden acceptance tests via `Challenge::scoring_benchmark()`. Raw challenge benchmark/acceptance fields are private to prevent visible-only scoring bypasses. Failed replay exits 2 and diagnostics are redacted by default to preserve the hidden-test barrier. This is now the preferred next step for candidate chess/Rubik's code before another slow provider smoke.
+**Completed:** 2026-06-11 — Architect multi-`SystemPatch` support landed. `self_sandbox::validate_patches()` validates patch batches atomically in one temp project copy, standalone internal test files are eligible for architect modification, `Metabolism::apply_system_patch()` accepts legacy single patches/noops plus JSON arrays, and mock tests prove combined production+test acceptance plus no partial queue on combined failure. Plan: `docs/plans/test-evolution-multipatch.md`.
 
 ## The Problem
 
@@ -21,8 +22,8 @@ When the architect proposes a change to production code, it must also consider w
 
 ## Implementation Sketch
 
-### 1. Update the architect's system prompt
-Add to `architect_system_prompt()`:
+### 1. Update the architect's system prompt — IMPLEMENTED
+Added to `architect_system_prompt()`:
 
 > Tests are part of the system you can modify. They are NOT protected files.
 >
@@ -34,18 +35,18 @@ Add to `architect_system_prompt()`:
 >
 > You can output multiple SystemPatch objects in a single response — one per file. Use this when a production change requires a test change.
 
-### 2. Multi-patch support in the metabolism
-Currently `apply_system_patch` parses a single `SystemPatch` from the architect's output. Extend to parse `Vec<SystemPatch>` so the architect can ship a production change + test change atomically. Both must validate together (cargo test on the combined modification) before either is applied.
+### 2. Multi-patch support in the metabolism — IMPLEMENTED
+`apply_system_patch` now accepts a single `SystemPatch`, a no-op object, or `Vec<SystemPatch>` JSON (including raw/fenced arrays after artifact materialization). Batches route through `self_sandbox::validate_patches()`, which applies all patches to one temp copy and runs one `cargo test` before any member is queued.
 
-### 3. Test the test evolution capability
-A mock-based test that:
+### 3. Test the test evolution capability — IMPLEMENTED
+Mock/minimal-fixture tests now:
 - Sets up a synthetic project with a production file and a test file
 - Mocks the architect to return a paired patch (production change + test change)
 - Verifies both patches are applied together if cargo test passes on the combined state
 - Verifies neither is applied if cargo test fails
 
-### 4. Document in CLAUDE.md
-Add to design principles: "Tests are not protected. The architect must evolve tests alongside production code when semantics change. The self-sandbox validates the combined state, not each patch in isolation."
+### 4. Document in CLAUDE.md — IMPLEMENTED
+Documented the design principle in `CLAUDE.md` and mirrored it in `AGENTS.md`: tests are not protected physics; the architect must evolve internal tests alongside production semantics in an atomic `SystemPatch` batch; hidden holdouts remain the behavioral backstop.
 
 ## What This Doesn't Solve
 
@@ -56,6 +57,6 @@ So the layered defense is:
 2. **Acceptance tests** verify the system's behavior matches the user's intended outcome
 3. The architect can game (1) by editing both sides; it cannot game (2) because it doesn't see them
 
-## Priority
+## Status
 
-This should be built before the escalation ladder. Otherwise, every escalation rung the architect proposes will be tested against stale logic and either pass falsely or fail falsely.
+Implemented for the current single-repo self-modification surface. Future work may broaden test-file eligibility or improve architect context/full-source inclusion for larger test edits, but the atomic batch mechanism and core coverage are in place.
