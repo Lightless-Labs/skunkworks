@@ -1,7 +1,8 @@
 # Testable Core: Mock Everything, Prove Logic Before Live Runs
 
 **Created:** 2026-04-04
-**Reviewed:** 2026-06-10 — Most originally missing mock surfaces are now implemented in `crates/a2d-core/src/metabolism.rs`: fitness degradation tracking, failure-report prompt injection, rungs 4/5/6 routing, highest-fitness portfolio selection, and protected-file `SystemPatch` rejection through the metabolism path. New CLI integration coverage for `score-artifact` lives in `crates/a2d-cli/tests/score_artifact.rs`. Remaining gap: `self_sandbox` directly covers valid/breaking patch acceptance/rejection, but there is still no focused mock metabolism test proving an eligible non-noop architect `SystemPatch` is accepted end-to-end into the pending-patch queue.
+**Reviewed:** 2026-06-10 — Most originally missing mock surfaces are now implemented in `crates/a2d-core/src/metabolism.rs`: fitness degradation tracking, failure-report prompt injection, rungs 4/5/6 routing, highest-fitness portfolio selection, and protected-file `SystemPatch` rejection through the metabolism path. New CLI integration coverage for `score-artifact` lives in `crates/a2d-cli/tests/score_artifact.rs`.
+**Completed:** 2026-06-11 — Added `metabolism::tests::architect_system_patch_to_eligible_file_is_accepted_through_metabolism`, proving a mock architect `SystemPatch` for an eligible mechanism file is parsed, self-sandboxed against a minimal project fixture, accepted, recorded in lineage/report counters, and queued in `pending_patches()`.
 **Context:** Live challenge runs take 10+ minutes per 3-cycle run and depend on flaky external providers. The metabolism logic (scheduling, fitness evaluation, loop detection, escalation) should be testable with mock providers in under a second.
 
 ## What Already Exists
@@ -13,8 +14,8 @@
 ### 1. Mock-based fitness degradation test — IMPLEMENTED
 `metabolism::tests::fitness_degradation_tracked_across_cycles` now exercises degradation tracking.
 
-### 2. Mock-based architect validation test — PARTIAL
-`self_sandbox` has direct coverage for protected-file rejection, ineligible-file rejection, valid patch acceptance, and breaking-patch rejection. `metabolism::tests::architect_noop_output_is_successful_patch_record` covers noop parsing/routing. `metabolism::tests::architect_system_patch_to_protected_file_is_rejected_through_metabolism` now proves a mock architect `SystemPatch` is parsed by the metabolism, routed into `self_sandbox::validate_patch`, rejected by the protected-file gate, recorded in invocation lineage, and not added to `pending_patches()`. Still missing: a focused metabolism test where an eligible non-noop `SystemPatch` is accepted end-to-end into `pending_patches()`.
+### 2. Mock-based architect validation test — IMPLEMENTED
+`self_sandbox` has direct coverage for protected-file rejection, ineligible-file rejection, valid patch acceptance, and breaking-patch rejection. `metabolism::tests::architect_noop_output_is_successful_patch_record` covers noop parsing/routing. `metabolism::tests::architect_system_patch_to_protected_file_is_rejected_through_metabolism` proves a mock architect `SystemPatch` is parsed by the metabolism, routed into `self_sandbox::validate_patch`, rejected by the protected-file gate, recorded in invocation lineage, and not added to `pending_patches()`. `metabolism::tests::architect_system_patch_to_eligible_file_is_accepted_through_metabolism` proves the positive path: eligible non-noop patches are validated through self-sandbox, counted as accepted, recorded in lineage, and queued in `pending_patches()`.
 
 ### 3. Mock-based escalation ladder tests — IMPLEMENTED FOR CURRENT RUNGS
 Current coverage includes loop/escalation prompt behavior, rung 4 provider swap, rung 5 clean swapped session, rung 6 consensus candidate selection, and role/scope isolation (`rung_4_*`, `rung_5_*`, `rung_6_*`).

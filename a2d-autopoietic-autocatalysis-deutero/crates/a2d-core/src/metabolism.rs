@@ -3382,6 +3382,88 @@ mod tests {
     }
 
     #[test]
+    fn architect_system_patch_to_eligible_file_is_accepted_through_metabolism() {
+        let fixture = tempfile::tempdir().expect("fixture tempdir");
+        let source_dir = fixture.path().join("crates/a2d-core/src");
+        std::fs::create_dir_all(&source_dir).expect("fixture source dir");
+        std::fs::write(
+            fixture.path().join("Cargo.toml"),
+            r#"[package]
+name = "a2d-self-sandbox-fixture"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "crates/a2d-core/src/metabolism.rs"
+"#,
+        )
+        .expect("fixture manifest");
+        std::fs::write(
+            source_dir.join("metabolism.rs"),
+            "pub fn original_marker() -> bool { true }\n",
+        )
+        .expect("fixture source");
+        let patched_source = r#"pub fn accepted_marker() -> bool { true }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn patched_source_passes() {
+        assert!(accepted_marker());
+    }
+}
+"#;
+
+        let enzymes = vec![enzyme(
+            "architect",
+            &["failure_report", "fitness_report"],
+            &["system_patch"],
+            &[],
+        )];
+        let germline = Germline::new(enzymes, food(&["failure_report", "fitness_report"]));
+        let registry = ProviderRegistry::new(Box::new(MockProvider::new(
+            "architect-provider",
+            vec![response(
+                json!({
+                    "system_patch": {
+                        "action": "patch",
+                        "file_path": "crates/a2d-core/src/metabolism.rs",
+                        "new_content": patched_source
+                    }
+                }),
+                vec![ToolEvent::Read, ToolEvent::Think, ToolEvent::Write],
+            )],
+        )));
+        let mut metabolism =
+            Metabolism::new(germline, registry).with_project_root(fixture.path().to_path_buf());
+        metabolism.seed_artifact(art("failure_report"), b"benchmark failed".to_vec());
+        metabolism.seed_artifact(art("fitness_report"), b"fitness: 0.50".to_vec());
+
+        let report = metabolism.run_cycle();
+
+        assert_eq!(report.invocations, 1);
+        assert_eq!(report.accepted_patches, 1);
+        assert_eq!(report.rejected_patches, 0);
+        assert_eq!(metabolism.pending_patches().len(), 1);
+        assert_eq!(
+            metabolism.pending_patches()[0].file_path,
+            "crates/a2d-core/src/metabolism.rs"
+        );
+        assert_eq!(metabolism.pending_patches()[0].new_content, patched_source);
+        let patch = report.lineage[0]
+            .patch
+            .as_ref()
+            .expect("architect invocation should record patch gate result");
+        assert_eq!(
+            patch.accepted,
+            vec!["crates/a2d-core/src/metabolism.rs".to_string()]
+        );
+        assert!(patch.rejected.is_empty());
+    }
+
+    #[test]
     fn architect_system_patch_to_protected_file_is_rejected_through_metabolism() {
         let enzymes = vec![enzyme(
             "architect",

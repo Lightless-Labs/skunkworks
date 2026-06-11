@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-06-10 (session 27 — synced pickup after score-artifact replay/testable-core coverage)
+**Last updated:** 2026-06-11 (session 28 — completed metabolism eligible SystemPatch acceptance coverage)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-310 commits at monorepo HEAD. Latest committed change is `Sync handoff for new pickup`. Latest A²D implementation/test change is `Cover architect protected patch routing`; latest A²D challenge/acceptance change is `Add challenge artifact scoring replay`; latest challenge replay result is `Record chess artifact replay results`. 221 tests passing (2 ignored integration) after adding holdout-backed artifact replay, CLI integration coverage, chess replay documentation, post-change escalation regression validation, and metabolism-level protected-patch routing coverage. 3 crates (a2d-core, a2d-providers, a2d-cli). 40 compound learnings.
+310 commits at monorepo HEAD. Latest committed change is `Sync handoff for new pickup`; current worktree adds metabolism-level eligible `SystemPatch` acceptance coverage and completes `todos/testable-core.md`. Latest A²D implementation/test change is `Cover architect protected patch routing`; latest A²D challenge/acceptance change is `Add challenge artifact scoring replay`; latest challenge replay result is `Record chess artifact replay results`. 222 tests passing (2 ignored integration) after adding holdout-backed artifact replay, CLI integration coverage, chess replay documentation, post-change escalation regression validation, metabolism-level protected-patch routing coverage, and metabolism-level eligible-patch acceptance coverage. 3 crates (a2d-core, a2d-providers, a2d-cli). 40 compound learnings.
 
 ## Clean-session pickup
 
@@ -14,7 +14,7 @@
 - **End-to-end metabolism:** requirements route through coder/tester/sandbox/evolver/architect with RAF checks, fitness ratchet, lineage, feedback reports, and provider circuit breaking.
 - **Sudoku can reach full fitness:** latest completed `sudoku 5` live run reached best fitness 100% (6/6): no code → 83% → 100% → 100% → 100%.
 - **Deutero-learning is real now, not theoretical:** the evolver accepted 6 mutations in the `sudoku 5` run; lineage-loaded germline has 7 RAF-closed enzymes.
-- **Autopoiesis is gated:** architect patches go through `SystemPatch` + self-sandbox, provider cwd isolation, protected-file rejection, and explicit mechanism-file eligibility.
+- **Autopoiesis is gated and covered through both patch outcomes:** architect patches go through `SystemPatch` + self-sandbox, provider cwd isolation, protected-file rejection, explicit mechanism-file eligibility, metabolism-level protected-patch rejection coverage, and metabolism-level eligible-patch acceptance into `pending_patches()` coverage.
 - **OpenCode parsing is more robust:** current text events, legacy text events, and `write` tool payloads are recovered.
 - **Empty provider output is diagnosable:** `InvocationResponse` now carries optional raw provider stdout; no-materialized-output failures include sanitized parsed/raw previews, and malformed `SystemPatch` rejections include parsed artifact previews.
 - **Architect can abstain explicitly:** architect output contract now accepts `{"action":"noop","reason":"..."}` as a valid no-change decision, separate from malformed/empty provider output. Legacy bare `SystemPatch` JSON remains accepted.
@@ -77,6 +77,8 @@
 - **Provider-policy comparisons are now inspectable:** `a2d compare-provider-policy <challenge> <cycles> [policy-json|@path]` runs current and proposed policies with persistence disabled, prints policy deltas, and reports a gate decision.
 
 ### What happened this session
+
+- **Testable-core architect positive path completed.** Added `metabolism::tests::architect_system_patch_to_eligible_file_is_accepted_through_metabolism` in `crates/a2d-core/src/metabolism.rs`. It uses a minimal temp project fixture so a mock architect `SystemPatch` for eligible `crates/a2d-core/src/metabolism.rs` is parsed by metabolism, routed through `self_sandbox::validate_patch`, accepted by `cargo test`, recorded in lineage/report counters, and queued in `pending_patches()`. Verified that the existing protected-file rejection metabolism test remains present; focused `cargo test -p a2d-core 'architect_system_patch_to_' -- --nocapture` passes both acceptance and rejection tests. Full `cargo test` passes (222 passing, 2 ignored). Updated `todos/testable-core.md` to mark the architect validation gap implemented.
 
 - **Hidden-holdout artifact replay landed.** Added `Challenge::scoring_benchmark()` and `Challenge::score_artifact()` in `crates/a2d-core/src/challenges.rs`; made raw challenge `benchmark` / `acceptance_test` private so callers cannot accidentally score visible checks only; migrated live challenge, topology comparison, provider-policy comparison, escalation validation, and baseline scoring to the central hidden-acceptance helper. Added `a2d score-artifact <challenge> <path|->` in `crates/a2d-cli/src/main.rs`; it prints case-level fitness, redacts sandbox diagnostics by default to preserve the hidden-test barrier, and exits 2 unless fitness is perfect. Documented learning: `docs/solutions/runtime-bugs/challenge-scoring-must-use-hidden-holdouts-2026-06-10.md`.
 - **Score-artifact validation:** full `cargo test` passes (220 passing, 2 ignored). Negative smoke with `/tmp/a2d-bad-sudoku-artifact.rs` scored 83% (5/6): visible API/local tests passed, hidden acceptance failed `all_tests_pass`, diagnostics were captured but not printed, and shell exit status was 2. Output artifact: `/tmp/a2d-score-artifact-negative-20260610.out`; stderr artifact: `/tmp/a2d-score-artifact-negative-20260610.err`. Added CLI integration coverage in `crates/a2d-cli/tests/score_artifact.rs` for both file-path and stdin replay, including nonzero exit and diagnostic redaction assertions; the path test uses a `Drop` cleanup guard for its temp artifact.
@@ -351,7 +353,7 @@ a2d enzymes                   # List enzyme definitions (now includes architect)
 a2d lineage                   # Git log of germline evolution
 
 # Run tests
-cargo test                    # 205 tests passing (2 ignored integration)
+cargo test                    # 222 tests passing (2 ignored integration)
 cargo test -- --ignored       # Run integration tests (slow, compiles in temp dir)
 
 # Check OpenCode model IDs
@@ -374,7 +376,7 @@ Search `docs/solutions/` before implementing. Key findings:
 - `todos/escalation-rungs-4-6.md` — model swap → clean swap → multi-model consensus (rungs 4–6 implemented/unit-tested; bounded mechanism validation now covered by `validate-escalation`; quality/eligibility work remains)
 - `todos/architect-pyramid-summaries.md` — implemented; prompt-size validated; latency still bad due provider/scheduling
 - `todos/test-evolution.md` — test evolution surface; latest addendum records expanded chess/Rubik's hidden acceptance coverage; remaining work is live validation and challenges beyond sudoku/chess/rubiks
-- `todos/testable-core.md` — separate pure orchestration from provider I/O to enable deterministic replays
+- `todos/testable-core.md` — completed current coverage gap: protected `SystemPatch` rejection and eligible `SystemPatch` acceptance are both covered through the metabolism path; broader principle remains to keep orchestration logic mock-testable before live runs
 
 ## Autopilot update 1779711298225
 
