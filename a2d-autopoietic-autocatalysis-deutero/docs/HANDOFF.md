@@ -5,7 +5,7 @@
 
 ## System State
 
-310 commits at monorepo HEAD. Latest committed change is `Sync handoff for new pickup`; current worktree adds metabolism-level eligible `SystemPatch` acceptance coverage and completes `todos/testable-core.md`. Latest A²D implementation/test change is `Cover architect protected patch routing`; latest A²D challenge/acceptance change is `Add challenge artifact scoring replay`; latest challenge replay result is `Record chess artifact replay results`. 222 tests passing (2 ignored integration) after adding holdout-backed artifact replay, CLI integration coverage, chess replay documentation, post-change escalation regression validation, metabolism-level protected-patch routing coverage, and metabolism-level eligible-patch acceptance coverage. 3 crates (a2d-core, a2d-providers, a2d-cli). 40 compound learnings.
+312 commits at monorepo HEAD. Latest committed change is `Sync handoff after eligible patch coverage`; latest A²D implementation/test change is `Cover architect eligible patch routing`; latest A²D challenge/acceptance change is `Add challenge artifact scoring replay`; latest challenge replay result is `Record chess artifact replay results`. 222 tests passing (2 ignored integration) after adding holdout-backed artifact replay, CLI integration coverage, chess replay documentation, post-change escalation regression validation, metabolism-level protected-patch routing coverage, and metabolism-level eligible-patch acceptance coverage. 3 crates (a2d-core, a2d-providers, a2d-cli). 40 compound learnings.
 
 ## Clean-session pickup
 
