@@ -1,6 +1,6 @@
 # Flux Handoff — Read This First
 
-**Last updated:** 2026-06-04
+**Last updated:** 2026-06-11
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -34,6 +34,9 @@ Latest Flux commits on `main`:
 - `c965d4b Add left-field Flux prompt profile`
 - `ef546a1 Make Flux host hooks installable from git`
 - `e815c42 Detect repeated Flux tool-result loops`
+- `a86dae7 Document Flux loop detection blind spot`
+- `cf3fa7c Document Flux sidecar model selection plan`
+- `dce9662 Add Flux host sidecar model selection`
 
 Implemented surfaces:
 
@@ -111,6 +114,8 @@ Expected shape:
 ```json
 {"continue":true,"flux":{"error":"No usable Flux sidecar models. Configure .flux/config.json models with apiKeyEnv/apiKey."}}
 ```
+
+Latest local verification on 2026-06-11: `npm run check` passed and `npm test` passed 32/32 tests.
 
 Install Claude Code from git/local skunkworks root:
 
