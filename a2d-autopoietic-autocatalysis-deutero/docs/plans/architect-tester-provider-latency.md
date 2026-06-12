@@ -3,6 +3,7 @@
 **Created:** 2026-06-05
 **Started:** 2026-06-05 — runtime-only tester/architect provider overrides implemented and smoked through registry-building validation path
 **Enhanced:** 2026-06-05 — forced tester/architect validation now uses a validation-only single-enzyme germline and non-empty diagnostic inputs
+**Enhanced:** 2026-06-11 — added direct `compare-role-providers` harness for tester/architect provider assignment comparisons without waiting for coder to succeed
 **Todo:** `todos/architect-tester-provider-latency.md`
 
 ## Problem
@@ -46,6 +47,16 @@ A2D_PROVIDER_TIMEOUT_SECS=30 A2D_MAX_CYCLE_SECS=120 \
   cargo run -q -p a2d -- compare-topologies sudoku 1
 ```
 
+The direct role-comparison harness added later is preferred when coder timeouts would prevent tester/architect from being reached:
+
+```bash
+A2D_PROVIDER_TIMEOUT_SECS=5 A2D_MAX_CYCLE_SECS=10 \
+  cargo run -q -p a2d -- compare-role-providers sudoku tester \
+  opencode/zai-coding-plan/glm-5.1 \
+  opencode/kimi-for-coding/k2p6 \
+  opencode/opencode/deepseek-v4-flash-free
+```
+
 ## Non-goals for first slice
 
 - Do not promote broad rung-6 eligibility.
@@ -59,4 +70,4 @@ A2D_PROVIDER_TIMEOUT_SECS=30 A2D_MAX_CYCLE_SECS=120 \
 - Bounded smoke with invalid override to verify rejection is visible and defaults remain usable. **Done 2026-06-05:** `validate-escalation` with `A2D_TESTER_PROVIDER=missing` printed a visible rejection three times (one fresh registry per forced rung) and completed JSON output.
 - Bounded smoke with valid override to verify assignment messages. **Done 2026-06-05:** `validate-escalation` with tester+architect set to Kimi printed accepted override messages for both roles.
 - Forced-role validation. **Done 2026-06-05:** `validate-escalation sudoku tester` and `validate-escalation sudoku architect` now isolate the target enzyme and seed non-empty inputs so the intended role is invoked directly. 10s smokes reached the target roles but timed out, so they are mechanism evidence only.
-- Optional bounded comparison smoke for Kimi/DeepSeek tester/architect assignment if provider budget allows. **Still pending:** `compare-topologies sudoku 2` with 20s bounds did not reach tester/architect because coder timed out first; outcome evidence still needs a seeded/direct role comparison or a successful coder cycle.
+- Optional bounded comparison smoke for Kimi/DeepSeek tester/architect assignment if provider budget allows. **Partially addressed 2026-06-11:** added `a2d compare-role-providers <challenge> <enzyme> [providers...]`, which builds validation-only single-enzyme runs and applies one provider assignment per run with persistence disabled. 5s tester and architect smokes reached GLM, Kimi, and DeepSeek directly; all timed out, so no default change is justified yet. Outcome evidence still needs a larger bounded budget or cheaper provider/prompt.

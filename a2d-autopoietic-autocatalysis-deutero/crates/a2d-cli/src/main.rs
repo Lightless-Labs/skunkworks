@@ -64,13 +64,18 @@ fn main() {
             let enzyme_id = args.get(3).map(String::as_str).unwrap_or("coder");
             run_escalation_validation(challenge_name, enzyme_id);
         }
+        "compare-role-providers" => {
+            let challenge_name = if arg2.is_empty() { "sudoku" } else { arg2 };
+            let enzyme_id = args.get(3).map(String::as_str).unwrap_or("tester");
+            run_role_provider_comparison(challenge_name, enzyme_id, &args[4..]);
+        }
         "autopilot" => run_autopilot(AutopilotConfig::parse(&args[2..])),
         "status" => show_status(),
         "enzymes" => list_enzymes(),
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|challenge|score-artifact|compare-topologies|compare-provider-policy|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|challenge|score-artifact|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -2801,6 +2806,121 @@ fn format_score_artifact_report(
     output
 }
 
+fn run_role_provider_comparison(name: &str, enzyme_name: &str, provider_args: &[String]) {
+    let challenge = load_challenge_or_exit(name);
+    let enzyme_id = EnzymeId::from(enzyme_name);
+    let loaded_germline = load_germline_for_topology(TopologyMode::Evolved);
+    let germline = validation_germline_for_enzyme(loaded_germline, &enzyme_id);
+    let registry_for_defaults = build_runtime_registry(&germline);
+    let current_provider = registry_for_defaults
+        .provider_for(&enzyme_id)
+        .name()
+        .to_string();
+    let providers = if provider_args.is_empty() {
+        let mut providers = vec![
+            current_provider.clone(),
+            "opencode/kimi-for-coding/k2p6".to_string(),
+            "opencode/opencode/deepseek-v4-flash-free".to_string(),
+        ];
+        providers.sort();
+        providers.dedup();
+        providers
+    } else {
+        provider_args.to_vec()
+    };
+
+    let mut results = Vec::new();
+    for provider_name in providers {
+        let loaded_germline = load_germline_for_topology(TopologyMode::Evolved);
+        let germline = validation_germline_for_enzyme(loaded_germline, &enzyme_id);
+        let mut registry = build_runtime_registry(&germline);
+        let valid_enzyme_ids = BTreeSet::from([enzyme_id.clone()]);
+        let application = registry.apply_policy(
+            &ProviderPolicy {
+                assignments: BTreeMap::from([(enzyme_name.to_string(), provider_name.clone())]),
+            },
+            &valid_enzyme_ids,
+        );
+        if !application.rejected.is_empty() {
+            results.push(json!({
+                "provider": provider_name,
+                "assignment_accepted": false,
+                "error": application.rejected[0].reason,
+            }));
+            continue;
+        }
+        let assigned_provider = registry.provider_for(&enzyme_id).name().to_string();
+        let mut metabolism = apply_runtime_env(
+            Metabolism::new(germline, registry)
+                .with_benchmark(challenge.scoring_benchmark())
+                .with_max_invocations_per_cycle(1)
+                .with_project_root(project_root()),
+        );
+        let failure_report_marker =
+            format!("a2d role provider comparison marker for {enzyme_name}");
+        seed_escalation_validation_artifacts(
+            &mut metabolism,
+            challenge.requirements,
+            &enzyme_id,
+            &failure_report_marker,
+        );
+
+        let started = Instant::now();
+        let report = metabolism.run_cycle();
+        let elapsed_ms = started.elapsed().as_millis();
+        results.push(role_provider_comparison_result_json(
+            &provider_name,
+            &assigned_provider,
+            elapsed_ms,
+            &report,
+        ));
+    }
+
+    let output = json!({
+        "challenge": challenge.name,
+        "enzyme": enzyme_name,
+        "current_provider": current_provider,
+        "persistence": "disabled: no lineage commits and no accepted patches applied",
+        "results": results,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).expect("role comparison output must serialize")
+    );
+}
+
+fn role_provider_comparison_result_json(
+    provider_name: &str,
+    assigned_provider: &str,
+    elapsed_ms: u128,
+    report: &CycleReport,
+) -> Value {
+    let lineage = report.lineage.first();
+    json!({
+        "provider": provider_name,
+        "assigned_provider": assigned_provider,
+        "assignment_accepted": true,
+        "elapsed_ms": elapsed_ms,
+        "invocations": report.invocations,
+        "failed": report.failed,
+        "killed": report.killed,
+        "wall_clock_capped": report.wall_clock_capped,
+        "outcome": lineage.map(|entry| format_workcell_outcome(&entry.outcome)),
+        "lineage_provider": lineage.map(|entry| entry.provider.clone()),
+        "materialized_outputs": lineage.map(|entry| entry.outputs.keys().map(|artifact| artifact.0.clone()).collect::<Vec<_>>()).unwrap_or_default(),
+    })
+}
+
+fn format_workcell_outcome(outcome: &a2d_core::workcell::WorkcellOutcome) -> String {
+    match outcome {
+        a2d_core::workcell::WorkcellOutcome::Success { outputs } => {
+            format!("success: {} output(s)", outputs.len())
+        }
+        a2d_core::workcell::WorkcellOutcome::Failed { error } => format!("failed: {error}"),
+        a2d_core::workcell::WorkcellOutcome::Killed { reason } => format!("killed: {reason:?}"),
+    }
+}
+
 fn run_escalation_validation(name: &str, enzyme_name: &str) {
     let challenge = load_challenge_or_exit(name);
     let enzyme_id = EnzymeId::from(enzyme_name);
@@ -3733,6 +3853,31 @@ mod tests {
         assert!(encoded.contains("escalation_rung"));
         assert!(!encoded.contains("loop_rung"));
         assert!(!encoded.contains("enzyme_loop_count"));
+    }
+
+    #[test]
+    fn role_provider_comparison_json_separates_assignment_from_outcome_success() {
+        let entry = topology_entry(a2d_core::workcell::WorkcellOutcome::Failed {
+            error: "provider timed out".to_string(),
+        });
+        let report = CycleReport {
+            invocations: 1,
+            failed: 1,
+            lineage: vec![entry],
+            ..Default::default()
+        };
+
+        let value = role_provider_comparison_result_json(
+            "opencode/zai-coding-plan/glm-5.1",
+            "opencode/zai-coding-plan/glm-5.1",
+            5000,
+            &report,
+        );
+
+        assert_eq!(value["assignment_accepted"], true);
+        assert_eq!(value["failed"], 1);
+        assert!(value["outcome"].as_str().unwrap().contains("failed:"));
+        assert!(value.get("accepted").is_none());
     }
 
     #[test]

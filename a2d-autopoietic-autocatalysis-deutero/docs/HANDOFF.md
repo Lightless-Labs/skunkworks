@@ -1,11 +1,11 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-06-11 (session 28 — added atomic multi-SystemPatch test evolution)
+**Last updated:** 2026-06-11 (session 28 — added role-provider comparison harness)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
 
-319 commits at monorepo HEAD after committing this handoff sync. Latest committed change is `Sync A²D handoff after multipatch validation`; latest A²D implementation/test change is `Add atomic SystemPatch batches`; latest A²D challenge/acceptance change is `Add challenge artifact scoring replay`; latest challenge replay result is `Record chess artifact replay results`. 227 tests passing (2 ignored integration) after adding holdout-backed artifact replay, CLI integration coverage, chess replay documentation, post-change escalation regression validation, metabolism-level protected/eligible patch routing coverage, and atomic multi-`SystemPatch` production+test evolution coverage. 3 crates (a2d-core, a2d-providers, a2d-cli). 40 compound learnings.
+322 commits at monorepo HEAD after committing current work. Latest committed change and latest A²D implementation/test change is `Add role provider comparison harness`; latest A²D challenge/acceptance change is `Add challenge artifact scoring replay`; latest challenge replay result is `Record chess artifact replay results`. 228 tests passing (2 ignored integration) after adding holdout-backed artifact replay, CLI integration coverage, chess replay documentation, post-change escalation regression validation, metabolism-level protected/eligible patch routing coverage, atomic multi-`SystemPatch` production+test evolution coverage, and the direct tester/architect provider comparison harness. 3 crates (a2d-core, a2d-providers, a2d-cli). 40 compound learnings.
 
 ## Clean-session pickup
 
@@ -49,7 +49,7 @@
 ### Best next moves
 
 1. **Use the new escalation harness as a regression lane:** run `A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=2 cargo run -q -p a2d -- validate-escalation sudoku coder` after rung/provider-routing changes.
-2. **Run bounded architect/tester override comparisons:** runtime-only overrides now exist and forced-role validation can invoke tester/architect directly. Compare default GLM tester/architect against `A2D_TESTER_PROVIDER=opencode/kimi-for-coding/k2p6` and/or `A2D_ARCHITECT_PROVIDER=opencode/kimi-for-coding/k2p6` (or DeepSeek) using a direct/seeded role comparison or a challenge run that actually reaches those roles before changing defaults or durable provider policy.
+2. **Continue architect/tester provider-latency work only with outcome evidence:** runtime-only overrides and direct `compare-role-providers` now exist. A 5s direct comparison reached GLM, Kimi, and DeepSeek for tester/architect but all timed out, so no default change is justified. Next try a larger bounded budget or cheaper prompt/provider; rank by `outcome`/`failed`/elapsed time, not by `assignment_accepted`.
 3. **Only continue rung-6 quality work with replicated evidence:** a single 30s default-vs-broad forced-rung smoke is noisy. Repeat only if comparing controlled runs; otherwise avoid mechanism-only escalation work.
 4. **Decide what to do with the evolved 7-enzyme topology:** latest bounded runs are noisy (seed 83/67/50 vs evolved 67/50/83). Run repeated comparisons or isolate lineage-added decomposition enzymes to distinguish topology value from provider randomness.
 5. **Find a benchmark-useful provider-policy proposal path:** runtime proposal safety is validated, but the live 7-enzyme topology still has no default policy-management enzyme; add one only if bounded tests show it does not starve coder/feedback metabolism.
@@ -77,6 +77,8 @@
 - **Provider-policy comparisons are now inspectable:** `a2d compare-provider-policy <challenge> <cycles> [policy-json|@path]` runs current and proposed policies with persistence disabled, prints policy deltas, and reports a gate decision.
 
 ### What happened this session
+
+- **Direct tester/architect provider comparison harness landed.** Added `a2d compare-role-providers <challenge> <enzyme> [providers...]` in `crates/a2d-cli/src/main.rs`. It builds a validation-only single-enzyme germline, applies one runtime provider assignment per run with persistence disabled, seeds the target role inputs directly, and emits JSON with `assignment_accepted`, `outcome`, `failed`, elapsed milliseconds, lineage provider, and materialized outputs. Added unit coverage `role_provider_comparison_json_separates_assignment_from_outcome_success` so scripts do not confuse assignment acceptance with provider success. 5s bounded smokes reached tester and architect directly for GLM, Kimi, and DeepSeek; every candidate timed out at ~5.1s, so there is no evidence to change tester/architect defaults. Artifacts: `/tmp/a2d-compare-role-providers-tester-5s-20260611-v2.json`, `/tmp/a2d-compare-role-providers-architect-5s-20260611-v2.json`. Updated `docs/plans/architect-tester-provider-latency.md` and `todos/architect-tester-provider-latency.md`. Full `cargo test` passes (228 passing, 2 ignored).
 
 - **Atomic test evolution via multi-`SystemPatch` landed.** Created `docs/plans/test-evolution-multipatch.md`. Added `self_sandbox::validate_patches()` in `crates/a2d-core/src/self_sandbox.rs`; it rejects empty/duplicate/protected/ineligible/missing batch members before temp-copy work, applies every patch to one isolated project copy, and runs one `cargo test` on the combined state. `validate_patch()` now delegates to the batch validator. Standalone internal test files `crates/a2d-core/tests/bootstrap.rs` and `crates/a2d-cli/tests/score_artifact.rs` are eligible for architect modification and included by the existing crate-tree copy. `Metabolism::apply_system_patch()` now accepts legacy single patch objects, no-op objects, and JSON arrays (including raw/fenced arrays and `{"system_patch":[...]}` materialization), and only appends to `pending_patches()` after the whole batch validates. Architect prompt, `CLAUDE.md`, `AGENTS.md`, and `todos/test-evolution.md` now state that tests are part of self-modification and must evolve with production semantics in an atomic patch batch. Foundry reviewer `.a2d/dispatch/session-20260611/multipatch-reviewer.json` highlighted the atomicity/materialization traps. Focused validations passed: `cargo test -p a2d-core validate_patches -- --nocapture`, `cargo test -p a2d-core architect_system_patch_batch -- --nocapture`, `cargo test -p a2d-core fenced_json_array_is_extracted_for_system_patch_batches -- --nocapture`, and `cargo test -p a2d-core architect_system_patch_to_ -- --nocapture`. Full `cargo test` passes (227 passing, 2 ignored). Post-change escalation regression also passed: `A2D_PROVIDER_TIMEOUT_SECS=1 A2D_MAX_CYCLE_SECS=1 A2D_RUNG6_MAX_PROVIDERS=2 cargo run -q -p a2d -- validate-escalation sudoku coder`; JSON artifact `/tmp/a2d-validate-escalation-post-multipatch-20260611.json`, stderr `/tmp/a2d-validate-escalation-post-multipatch-20260611.err`.
 
@@ -355,7 +357,7 @@ a2d enzymes                   # List enzyme definitions (now includes architect)
 a2d lineage                   # Git log of germline evolution
 
 # Run tests
-cargo test                    # 227 tests passing (2 ignored integration)
+cargo test                    # 228 tests passing (2 ignored integration)
 cargo test -- --ignored       # Run integration tests (slow, compiles in temp dir)
 
 # Check OpenCode model IDs
