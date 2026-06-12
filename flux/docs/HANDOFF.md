@@ -1,6 +1,6 @@
 # Flux Handoff — Read This First
 
-**Last updated:** 2026-06-11
+**Last updated:** 2026-06-12
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -50,7 +50,7 @@ Implemented surfaces:
 - **Claude Code hook/plugin:** `src/adapters/claude-code/hook.ts`, `.claude-plugin/plugin.json`, `hooks/claude-code-hooks.json`, `claude-code-plugin.json`, `examples/claude-code-settings.json`. The skunkworks repo root exposes a Claude marketplace at `../.claude-plugin/marketplace.json` so users can install from git without npm publishing or manual cloning.
 - **Codex hook/plugin:** `src/adapters/codex/hook.ts`, `.codex-plugin/plugin.json`, `hooks/codex-hooks.json`, `codex-plugin.json`, `examples/codex-config.toml`. The skunkworks repo root exposes a Codex marketplace at `../.agents/plugins/marketplace.json` so users can install from git without npm publishing or manual cloning.
 - **Core:** config loading, trigger matching, bounded context snapshots, prompt-profile selection, host-native sidecar preferences, per-trigger direct-provider model pools, Anthropic/OpenAI-compatible model calls, thought logging. `loop-detected` supports both language pattern matching and repeat-based tool-result fingerprints.
-- **Core tests:** `test/core-selection.test.ts` covers config/deep merge, config command mutations/validation, host sidecar config, trigger frequency overrides, loop matching, prompt-profile/model-pool resolution, injected model callers, and context formatting/clamping. `test/hook-cli.test.ts` covers host hook event-kind inference, fixture snapshot extraction, and output shapes. `test/model-client.test.ts` covers non-network OpenAI-compatible and Anthropic request/response/error handling including direct-provider thinking effort. `test/host-cli-model-client.test.ts` covers non-network Claude/Codex host CLI argv/stdin construction and configured host sidecar model/effort flags. `test/plugin-install.test.ts` covers repo-root marketplace manifests, plugin hook wrapper commands, and wrapper safe-fail output.
+- **Core/adapter tests:** `test/core-selection.test.ts` covers config/deep merge, config command mutations/validation, host sidecar config, trigger frequency overrides, loop matching, prompt-profile/model-pool resolution, injected model callers, and context formatting/clamping. `test/hook-cli.test.ts` covers host hook event-kind inference, fixture snapshot extraction, and output shapes. `test/model-client.test.ts` covers non-network OpenAI-compatible and Anthropic request/response/error handling including direct-provider thinking effort. `test/host-cli-model-client.test.ts` covers non-network Claude/Codex host CLI argv/stdin construction and configured host sidecar model/effort flags. `test/pi-adapter.test.ts` covers Pi slash-command runtime-vs-persistent config state (`reload`, `/flux on|off`, `/flux random`, and persistent `/flux config ...`). `test/plugin-install.test.ts` covers repo-root marketplace manifests, plugin hook wrapper commands, and wrapper safe-fail output.
 - **Host-native model path in progress:** Pi adapter now calls Pi's selected/authenticated model by default and can select a configured `hostSidecar.pi.model` from Pi's harness registry plus clamped thinking effort. Claude/Codex hook CLI paths call their host CLIs with `FLUX_SUPPRESS=1` to avoid recursive hook triggering; Claude can receive a configured `--model` preference, while Codex can receive configured `-m` and `-c model_reasoning_effort=...`. Pi JSON-mode smoke for `/flux think` and `flux_stray_thought` passed on 2026-05-30. Local CLI surface check on 2026-05-31 used `claude` 2.1.119 and `codex-cli` 0.130.0; Codex requires `--ask-for-approval never` before the `exec` subcommand. See `todos/host-native-models.md`.
 - **Delivery semantics clarified:** shared `DeliveryMode` is now only Pi/session message delivery (`steer`, `followUp`, `nextTurn`). Hook CLIs still emit host JSON on stdout as transport. Stale Pi configs using unsupported modes warn instead of silently mapping to `steer`. See `todos/delivery-semantics.md`.
 - **Repo-installable host hooks:** Claude/Codex plugin hooks run through `scripts/flux-hook-wrapper.mjs`, which builds only hook code (`npm run build:hooks`) on first use if `dist/` is missing/stale. The wrapper always exits 0 and emits host-safe JSON on setup/runtime failure.
@@ -115,7 +115,9 @@ Expected shape:
 {"continue":true,"flux":{"error":"No usable Flux sidecar models. Configure .flux/config.json models with apiKeyEnv/apiKey."}}
 ```
 
-Latest local verification on 2026-06-11: `npm run check` passed and `npm test` passed 32/32 tests.
+Latest local verification on 2026-06-12: `npm run check` passed and `npm test` passed 35/35 tests.
+
+2026-06-12 Pi adapter note: config loading is now cloned for the adapter so runtime slash-command toggles do not mutate the shared `DEFAULT_CONFIG` object. `/flux on|off` and `/flux random on|off` remain runtime-only and do not rewrite `.flux/config.json`; `/flux reload`, `/flux config init`, `/flux config edit`, and persistent `/flux config set enabled ...` / `/flux config random on|off` resync runtime state from the file-backed config.
 
 Install Claude Code from git/local skunkworks root:
 

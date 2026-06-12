@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { DEFAULT_CONFIG, loadConfig } from "../../core/config.ts";
+import { DEFAULT_CONFIG, loadConfig, type LoadedConfig } from "../../core/config.ts";
 import {
 	formatPromptProfiles,
 	setConfigEnabled,
@@ -27,8 +27,24 @@ function messageText(message: any): string {
 	return textFromUnknown(message?.content ?? message?.text ?? "");
 }
 
+function cloneFluxConfig(config: FluxConfig): FluxConfig {
+	return JSON.parse(JSON.stringify(config)) as FluxConfig;
+}
+
 function cloneDefaultConfig(): FluxConfig {
-	return JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as FluxConfig;
+	return cloneFluxConfig(DEFAULT_CONFIG);
+}
+
+function loadPiConfig(cwd?: string): LoadedConfig {
+	const loaded = loadConfig(cwd);
+	return { ...loaded, config: cloneFluxConfig(loaded.config) };
+}
+
+function activeConfig(loaded: LoadedConfig, runtimeEnabled: boolean, runtimeRandomEnabled: boolean): FluxConfig {
+	const config = cloneFluxConfig(loaded.config);
+	config.enabled = runtimeEnabled;
+	config.randomInjections = runtimeRandomEnabled;
+	return config;
 }
 
 function writeConfigFile(path: string, config: FluxConfig): void {
@@ -238,15 +254,20 @@ let piSendMessage: (
 ) => void = () => undefined;
 
 export default function fluxPiExtension(pi: ExtensionAPI) {
-	let loaded = loadConfig(process.cwd());
+	let loaded = loadPiConfig(process.cwd());
 	let state = createInitialState();
 	let busy = false;
+	let runtimeEnabled = loaded.config.enabled;
 	let randomEnabled = loaded.config.randomInjections;
 	let currentCtx: ExtensionContext | undefined;
 
 	const refreshConfig = (cwd?: string) => {
-		loaded = loadConfig(cwd ?? process.cwd());
-		loaded.config.randomInjections = randomEnabled;
+		loaded = loadPiConfig(cwd ?? process.cwd());
+	};
+	const currentConfig = () => activeConfig(loaded, runtimeEnabled, randomEnabled);
+	const syncRuntimeFromConfig = () => {
+		runtimeEnabled = loaded.config.enabled;
+		randomEnabled = loaded.config.randomInjections;
 	};
 
 	piSendMessage = (content, thought, config, triggerTurn, display) => {
@@ -283,22 +304,22 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		currentCtx = ctx;
 		refreshConfig(ctx.cwd);
+		syncRuntimeFromConfig();
 		state = createInitialState();
-		randomEnabled = loaded.config.randomInjections;
-		if (ctx.hasUI) ctx.ui.setStatus("flux", loaded.config.enabled ? "flux:on" : "flux:off");
+		if (ctx.hasUI) ctx.ui.setStatus("flux", runtimeEnabled ? "flux:on" : "flux:off");
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
 		if (busy) return;
 		busy = true;
 		try {
-			loaded.config.randomInjections = randomEnabled;
+			const config = currentConfig();
 			await runFlux(
-				loaded.config,
+				config,
 				state,
 				ctx,
 				{ host: "pi", kind: "turn-end", timestamp: Date.now(), payload: event },
-				snapshotFromPi(ctx, loaded.config),
+				snapshotFromPi(ctx, config),
 			);
 		} finally {
 			busy = false;
@@ -309,13 +330,13 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 		if (busy) return;
 		busy = true;
 		try {
-			loaded.config.randomInjections = randomEnabled;
+			const config = currentConfig();
 			await runFlux(
-				loaded.config,
+				config,
 				state,
 				ctx,
 				{ host: "pi", kind: "tool-result", timestamp: Date.now(), payload: event },
-				snapshotFromPi(ctx, loaded.config, event),
+				snapshotFromPi(ctx, config, event),
 			);
 		} finally {
 			busy = false;
@@ -327,12 +348,13 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 		if (!ctx || busy) return;
 		busy = true;
 		try {
+			const config = currentConfig();
 			await runFlux(
-				loaded.config,
+				config,
 				state,
 				ctx,
 				{ host: "pi", kind: "external", name: "flux:trigger", timestamp: Date.now(), payload },
-				snapshotFromPi(ctx, loaded.config, payload),
+				snapshotFromPi(ctx, config, payload),
 				{ force: true },
 			);
 		} finally {
@@ -351,6 +373,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 			triggerTurn: Type.Optional(Type.Boolean({ description: "Queue another agent turn with the thought. Default false for tool calls." })),
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const config = currentConfig();
 			const trigger: TriggerEvent = {
 				host: "pi",
 				kind: "manual",
@@ -358,7 +381,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 				timestamp: Date.now(),
 				payload: { reason: params.reason },
 			};
-			const thought = await generateStrayThought(loaded.config, state, snapshotFromPi(ctx, loaded.config, params), trigger, {
+			const thought = await generateStrayThought(config, state, snapshotFromPi(ctx, config, params), trigger, {
 				signal,
 				modelCaller: createPiModelCaller(ctx, signal),
 			});
@@ -379,24 +402,24 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 			const parts = args.trim().split(/\s+/).filter(Boolean);
 			const command = parts[0] ?? "status";
 			const configPath = () => loaded.path ?? join(ctx.cwd, ".flux", "config.json");
-			const persistLoadedConfig = (): boolean => {
+			const persistLoadedConfig = (options: { syncEnabled?: boolean; syncRandom?: boolean } = {}): boolean => {
 				const validation = validateFluxConfig(loaded.config);
 				if (!validation.ok) {
 					ctx.ui.notify(validation.message, "error");
 					return false;
 				}
 				const path = configPath();
-				const nextRandomEnabled = loaded.config.randomInjections;
 				writeConfigFile(path, loaded.config);
 				refreshConfig(ctx.cwd);
-				randomEnabled = nextRandomEnabled;
-				loaded.config.randomInjections = randomEnabled;
+				if (options.syncEnabled) runtimeEnabled = loaded.config.enabled;
+				if (options.syncRandom) randomEnabled = loaded.config.randomInjections;
 				return true;
 			};
 
 			if (command === "reload") {
 				refreshConfig(ctx.cwd);
-				randomEnabled = loaded.config.randomInjections;
+				syncRuntimeFromConfig();
+				ctx.ui.setStatus("flux", runtimeEnabled ? "flux:on" : "flux:off");
 				ctx.ui.notify(`Flux config reloaded${loaded.path ? ` from ${loaded.path}` : " (defaults)"}`, "info");
 				return;
 			}
@@ -414,7 +437,8 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 					}
 					writeConfigFile(path, cloneDefaultConfig());
 					refreshConfig(ctx.cwd);
-					randomEnabled = loaded.config.randomInjections;
+					syncRuntimeFromConfig();
+					ctx.ui.setStatus("flux", runtimeEnabled ? "flux:on" : "flux:off");
 					ctx.ui.notify(`Created Flux config: ${path}`, "info");
 					return;
 				}
@@ -440,7 +464,8 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 					}
 					writeConfigFile(path, parsed);
 					refreshConfig(ctx.cwd);
-					randomEnabled = loaded.config.randomInjections;
+					syncRuntimeFromConfig();
+					ctx.ui.setStatus("flux", runtimeEnabled ? "flux:on" : "flux:off");
 					ctx.ui.notify(`Saved and reloaded Flux config: ${path}`, "info");
 					return;
 				}
@@ -454,8 +479,8 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 						ctx.ui.notify(result.message, "error");
 						return;
 					}
-					if (!persistLoadedConfig()) return;
-					ctx.ui.setStatus("flux", loaded.config.enabled ? "flux:on" : "flux:off");
+					if (!persistLoadedConfig({ syncEnabled: true })) return;
+					ctx.ui.setStatus("flux", runtimeEnabled ? "flux:on" : "flux:off");
 					ctx.ui.notify(`${result.message} in ${loaded.path}`, "info");
 					return;
 				}
@@ -466,7 +491,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 							ctx.ui.notify(result.message, "error");
 							return;
 						}
-						if (!persistLoadedConfig()) return;
+						if (!persistLoadedConfig({ syncRandom: true })) return;
 						ctx.ui.notify(`${result.message} in ${loaded.path}`, "info");
 						return;
 					}
@@ -551,29 +576,29 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 				return;
 			}
 			if (command === "on" || command === "off") {
-				loaded.config.enabled = command === "on";
-				ctx.ui.setStatus("flux", loaded.config.enabled ? "flux:on" : "flux:off");
-				ctx.ui.notify(`Flux ${loaded.config.enabled ? "enabled" : "disabled"}`, "info");
+				runtimeEnabled = command === "on";
+				ctx.ui.setStatus("flux", runtimeEnabled ? "flux:on" : "flux:off");
+				ctx.ui.notify(`Flux ${runtimeEnabled ? "enabled" : "disabled"}`, "info");
 				return;
 			}
 			if (command === "random") {
 				randomEnabled = (parts[1] ?? "status") === "on" ? true : (parts[1] ?? "status") === "off" ? false : randomEnabled;
-				loaded.config.randomInjections = randomEnabled;
 				ctx.ui.notify(`Flux random injections: ${randomEnabled ? "on" : "off"}`, "info");
 				return;
 			}
 			if (command === "think") {
+				const config = currentConfig();
 				await runFlux(
-					loaded.config,
+					config,
 					state,
 					ctx,
 					{ host: "pi", kind: "manual", name: "flux command", timestamp: Date.now(), payload: { reason: parts.slice(1).join(" ") } },
-					snapshotFromPi(ctx, loaded.config, { reason: parts.slice(1).join(" ") }),
+					snapshotFromPi(ctx, config, { reason: parts.slice(1).join(" ") }),
 					{ force: true, triggerTurn: ctx.hasUI },
 				);
 				return;
 			}
-			ctx.ui.notify(formatConfigSummary(loaded.config, loaded.path), "info");
+			ctx.ui.notify(formatConfigSummary(currentConfig(), loaded.path), "info");
 		},
 	});
 }
