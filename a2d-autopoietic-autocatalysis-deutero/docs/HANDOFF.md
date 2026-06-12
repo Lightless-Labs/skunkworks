@@ -5,7 +5,7 @@
 
 ## System State
 
-316 commits at monorepo HEAD after committing this handoff sync. Latest committed change is `Sync handoff after multipatch validation`; latest A²D implementation/test change is `Add atomic SystemPatch batches`; latest A²D challenge/acceptance change is `Add challenge artifact scoring replay`; latest challenge replay result is `Record chess artifact replay results`. 227 tests passing (2 ignored integration) after adding holdout-backed artifact replay, CLI integration coverage, chess replay documentation, post-change escalation regression validation, metabolism-level protected/eligible patch routing coverage, and atomic multi-`SystemPatch` production+test evolution coverage. 3 crates (a2d-core, a2d-providers, a2d-cli). 40 compound learnings.
+319 commits at monorepo HEAD after committing this handoff sync. Latest committed change is `Sync A²D handoff after multipatch validation`; latest A²D implementation/test change is `Add atomic SystemPatch batches`; latest A²D challenge/acceptance change is `Add challenge artifact scoring replay`; latest challenge replay result is `Record chess artifact replay results`. 227 tests passing (2 ignored integration) after adding holdout-backed artifact replay, CLI integration coverage, chess replay documentation, post-change escalation regression validation, metabolism-level protected/eligible patch routing coverage, and atomic multi-`SystemPatch` production+test evolution coverage. 3 crates (a2d-core, a2d-providers, a2d-cli). 40 compound learnings.
 
 ## Clean-session pickup
 
