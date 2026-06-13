@@ -2910,6 +2910,20 @@ fn role_provider_comparison_result_json(
                 .collect()
         })
         .unwrap_or_default();
+    let patch_record = lineage.and_then(|entry| entry.patch.as_ref()).map(|patch| {
+        json!({
+            "accepted": patch.accepted,
+            "rejected": patch.rejected.iter().map(|rejection| json!({
+                "file_path": rejection.file_path,
+                "reason": rejection.reason,
+            })).collect::<Vec<_>>(),
+            "noops": patch.noops,
+        })
+    });
+    let noop_patches = lineage
+        .and_then(|entry| entry.patch.as_ref())
+        .map(|patch| patch.noops.len())
+        .unwrap_or_default();
     json!({
         "provider": provider_name,
         "assigned_provider": assigned_provider,
@@ -2918,6 +2932,10 @@ fn role_provider_comparison_result_json(
         "invocations": report.invocations,
         "failed": report.failed,
         "killed": report.killed,
+        "accepted_patches": report.accepted_patches,
+        "rejected_patches": report.rejected_patches,
+        "noop_patches": noop_patches,
+        "patch_record": patch_record,
         "wall_clock_capped": report.wall_clock_capped,
         "outcome": lineage.map(|entry| format_workcell_outcome(&entry.outcome)),
         "lineage_provider": lineage.map(|entry| entry.provider.clone()),
@@ -3879,9 +3897,15 @@ mod tests {
             art("system_patch"),
             br#"{"action":"noop","reason":"already optimal"}"#.to_vec(),
         );
+        entry.patch = Some(a2d_core::metabolism::PatchRecord {
+            noops: vec!["already optimal".to_string()],
+            ..Default::default()
+        });
         let report = CycleReport {
             invocations: 1,
             failed: 1,
+            accepted_patches: 0,
+            rejected_patches: 0,
             lineage: vec![entry],
             ..Default::default()
         };
@@ -3900,6 +3924,9 @@ mod tests {
             value["materialized_output_previews"]["system_patch"],
             r#"{"action":"noop","reason":"already optimal"}"#
         );
+        assert_eq!(value["patch_record"]["noops"][0], "already optimal");
+        assert_eq!(value["accepted_patches"], 0);
+        assert_eq!(value["rejected_patches"], 0);
         assert!(value.get("accepted").is_none());
     }
 
