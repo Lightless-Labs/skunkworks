@@ -134,6 +134,8 @@ impl CliProvider {
                     "--model".to_string(),
                     model.clone(),
                     "--pure".to_string(),
+                    "--agent".to_string(),
+                    opencode_artifact_agent_name().to_string(),
                     "--format".to_string(),
                     "json".to_string(),
                     format!("SYSTEM: {}\n\nUSER: {}", req.system, req.prompt),
@@ -187,6 +189,25 @@ fn parse_opencode_output(output: &str) -> String {
     }
 
     text
+}
+
+fn opencode_artifact_agent_name() -> &'static str {
+    "a2d-artifact-no-tools"
+}
+
+fn opencode_tool_denial_config() -> String {
+    serde_json::json!({
+        "$schema": "https://opencode.ai/config.json",
+        "agent": {
+            opencode_artifact_agent_name(): {
+                "description": "A²D artifact-only provider role. All tools are denied; emit the requested JSON/text artifact in stdout.",
+                "permission": {
+                    "*": "deny"
+                }
+            }
+        }
+    })
+    .to_string()
 }
 
 fn is_generic_opencode_completion(text: &str) -> bool {
@@ -269,6 +290,18 @@ impl Provider for CliProvider {
         // each provider in an empty temp cwd so a model cannot mutate the repo
         // directly as a side effect of generation.
         let sandbox_dir = isolated_provider_cwd(&self.command)?;
+        if self.command == "opencode" {
+            std::fs::write(
+                sandbox_dir.join("opencode.json"),
+                opencode_tool_denial_config(),
+            )
+            .map_err(|e| {
+                let _ = std::fs::remove_dir_all(&sandbox_dir);
+                ProviderError::InvocationFailed(format!(
+                    "failed to write opencode tool-denial config: {e}"
+                ))
+            })?;
+        }
 
         let mut child = Command::new(&self.command)
             .args(&args)
@@ -404,6 +437,39 @@ mod tests {
 
         let args = (provider.args_builder)(&request);
         assert!(args.contains(&"--pure".to_string()));
+    }
+
+    #[test]
+    fn opencode_provider_selects_tool_denied_artifact_agent() {
+        let provider = CliProvider::opencode("test/provider");
+        let request = InvocationRequest {
+            enzyme_id: a2d_core::types::EnzymeId::from("architect"),
+            system: "system".to_string(),
+            prompt: "prompt".to_string(),
+            max_tokens: 100,
+        };
+
+        let args = (provider.args_builder)(&request);
+        let agent_arg = args
+            .iter()
+            .position(|arg| arg == "--agent")
+            .expect("opencode args should select the artifact agent");
+        assert_eq!(
+            args.get(agent_arg + 1).map(String::as_str),
+            Some(opencode_artifact_agent_name())
+        );
+    }
+
+    #[test]
+    fn opencode_tool_denial_config_denies_all_tools_for_artifact_agent() {
+        let config: serde_json::Value =
+            serde_json::from_str(&opencode_tool_denial_config()).unwrap();
+        assert_eq!(
+            config
+                .pointer("/agent/a2d-artifact-no-tools/permission/*")
+                .and_then(|value| value.as_str()),
+            Some("deny")
+        );
     }
 
     #[test]

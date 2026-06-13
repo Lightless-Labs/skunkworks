@@ -5,7 +5,7 @@
 **Enhanced:** 2026-06-05 — forced tester/architect validation now uses a validation-only single-enzyme germline and non-empty diagnostic inputs
 **Enhanced:** 2026-06-11 — added direct `compare-role-providers` harness for tester/architect provider assignment comparisons without waiting for coder to succeed
 **Reviewed:** 2026-06-13 — ran repeated 30s direct role-provider comparisons; tester results were noisy and architect results were confounded by OpenCode isolated-cwd/tool behavior, so defaults remain unchanged
-**Hardened:** 2026-06-13 — OpenCode provider invocations now include `--pure` to reduce external plugin/session behavior during artifact-role calls
+**Hardened:** 2026-06-13 — OpenCode provider invocations now include `--pure` and select a cwd-local no-tools artifact agent to reduce external plugin/session/tool behavior during artifact-role calls
 **Enhanced:** 2026-06-13 — role-provider comparison JSON now includes `materialized_output_previews` so successful architect outputs can be inspected
 **Todo:** `todos/architect-tester-provider-latency.md`
 
@@ -101,4 +101,4 @@ Post-`--pure` architect checks:
 - `/tmp/a2d-compare-role-providers-architect-30s-post-pure-kimi-r2-20260613.json` — Kimi timed out.
 - `/tmp/a2d-compare-role-providers-architect-30s-post-pure-preview-kimi-20260613.json` — after adding output previews, Kimi materialized a noop `system_patch` in 18.1s; preview says the diagnostic marker looked false-positive and no source changes were warranted.
 
-Result: Kimi is a plausible post-`--pure` architect candidate, but still flaky under 30s. No durable/default provider change without replicated outcome evidence.
+Result: Kimi is a plausible post-`--pure` architect candidate, but still flaky under 30s. `--pure` alone did not fully prevent tool behavior; a later 60s Kimi run emitted `tool_use` events against the empty temp cwd and failed. OpenCode provider calls now also select `--agent a2d-artifact-no-tools` from a cwd-local `opencode.json` with `permission: {"*":"deny"}`. A direct temp-cwd probe verified the agent is discovered, and `/tmp/a2d-compare-role-providers-architect-30s-no-tools-kimi-20260613.json` produced a noop `system_patch` in 15.8s with no captured tool events. No durable/default provider change without replicated outcome evidence.
