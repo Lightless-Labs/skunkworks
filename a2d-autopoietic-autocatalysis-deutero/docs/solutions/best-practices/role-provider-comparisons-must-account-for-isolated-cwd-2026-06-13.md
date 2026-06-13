@@ -55,3 +55,7 @@ When ranking role-provider comparison results:
 - Architect 30s run: `/tmp/a2d-compare-role-providers-architect-30s-20260613.json`
 
 The tester runs were noisy: GLM and DeepSeek each succeeded once and timed out once; Kimi timed out twice. No tester default change is justified from this evidence.
+
+## 2026-06-13 follow-up
+
+OpenCode artifact invocations now pass `--pure` to reduce external plugin/session behavior during A²D provider calls. See `docs/solutions/runtime-bugs/opencode-pure-mode-for-artifact-roles-2026-06-13.md`. Re-run architect comparisons before drawing conclusions from the pre-`--pure` Kimi architect failure.

@@ -133,6 +133,7 @@ impl CliProvider {
                     "run".to_string(),
                     "--model".to_string(),
                     model.clone(),
+                    "--pure".to_string(),
                     "--format".to_string(),
                     "json".to_string(),
                     format!("SYSTEM: {}\n\nUSER: {}", req.system, req.prompt),
@@ -389,6 +390,20 @@ mod tests {
         assert!(args.contains(&"--no-session".to_string()));
         assert!(args.contains(&"--no-tools".to_string()));
         assert!(args.contains(&"--system-prompt".to_string()));
+    }
+
+    #[test]
+    fn opencode_provider_uses_pure_mode_for_artifact_invocations() {
+        let provider = CliProvider::opencode("test/provider");
+        let request = InvocationRequest {
+            enzyme_id: a2d_core::types::EnzymeId::from("architect"),
+            system: "system".to_string(),
+            prompt: "prompt".to_string(),
+            max_tokens: 100,
+        };
+
+        let args = (provider.args_builder)(&request);
+        assert!(args.contains(&"--pure".to_string()));
     }
 
     #[test]

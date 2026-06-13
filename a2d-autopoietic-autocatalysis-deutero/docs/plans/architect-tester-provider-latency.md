@@ -5,6 +5,7 @@
 **Enhanced:** 2026-06-05 — forced tester/architect validation now uses a validation-only single-enzyme germline and non-empty diagnostic inputs
 **Enhanced:** 2026-06-11 — added direct `compare-role-providers` harness for tester/architect provider assignment comparisons without waiting for coder to succeed
 **Reviewed:** 2026-06-13 — ran repeated 30s direct role-provider comparisons; tester results were noisy and architect results were confounded by OpenCode isolated-cwd/tool behavior, so defaults remain unchanged
+**Hardened:** 2026-06-13 — OpenCode provider invocations now include `--pure` to reduce external plugin/session behavior during artifact-role calls
 **Todo:** `todos/architect-tester-provider-latency.md`
 
 ## Problem
@@ -90,3 +91,5 @@ Artifacts:
 - `/tmp/a2d-compare-role-providers-architect-30s-20260613.json`
 
 Result: no provider-default change. Tester success at 30s was not replicated; architect comparison did not produce a valid `system_patch`; and isolated-cwd/tool-use behavior must be accounted for when interpreting OpenCode architect failures. Documented learning: `docs/solutions/best-practices/role-provider-comparisons-must-account-for-isolated-cwd-2026-06-13.md`.
+
+Follow-up hardening: `CliProvider::opencode` now passes `--pure` to `opencode run`, with unit coverage and full `cargo test` validation. Documented learning: `docs/solutions/runtime-bugs/opencode-pure-mode-for-artifact-roles-2026-06-13.md`. Re-run architect provider comparisons after this change before judging Kimi/DeepSeek/GLM architect suitability from pre-`--pure` artifacts.
