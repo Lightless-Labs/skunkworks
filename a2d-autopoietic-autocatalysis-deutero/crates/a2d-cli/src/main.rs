@@ -2896,6 +2896,20 @@ fn role_provider_comparison_result_json(
     report: &CycleReport,
 ) -> Value {
     let lineage = report.lineage.first();
+    let materialized_output_previews: BTreeMap<String, String> = lineage
+        .map(|entry| {
+            entry
+                .outputs
+                .iter()
+                .map(|(artifact, bytes)| {
+                    (
+                        artifact.0.clone(),
+                        preview(&String::from_utf8_lossy(bytes), 1200),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     json!({
         "provider": provider_name,
         "assigned_provider": assigned_provider,
@@ -2908,6 +2922,7 @@ fn role_provider_comparison_result_json(
         "outcome": lineage.map(|entry| format_workcell_outcome(&entry.outcome)),
         "lineage_provider": lineage.map(|entry| entry.provider.clone()),
         "materialized_outputs": lineage.map(|entry| entry.outputs.keys().map(|artifact| artifact.0.clone()).collect::<Vec<_>>()).unwrap_or_default(),
+        "materialized_output_previews": materialized_output_previews,
     })
 }
 
@@ -3857,9 +3872,13 @@ mod tests {
 
     #[test]
     fn role_provider_comparison_json_separates_assignment_from_outcome_success() {
-        let entry = topology_entry(a2d_core::workcell::WorkcellOutcome::Failed {
+        let mut entry = topology_entry(a2d_core::workcell::WorkcellOutcome::Failed {
             error: "provider timed out".to_string(),
         });
+        entry.outputs.insert(
+            art("system_patch"),
+            br#"{"action":"noop","reason":"already optimal"}"#.to_vec(),
+        );
         let report = CycleReport {
             invocations: 1,
             failed: 1,
@@ -3877,6 +3896,10 @@ mod tests {
         assert_eq!(value["assignment_accepted"], true);
         assert_eq!(value["failed"], 1);
         assert!(value["outcome"].as_str().unwrap().contains("failed:"));
+        assert_eq!(
+            value["materialized_output_previews"]["system_patch"],
+            r#"{"action":"noop","reason":"already optimal"}"#
+        );
         assert!(value.get("accepted").is_none());
     }
 

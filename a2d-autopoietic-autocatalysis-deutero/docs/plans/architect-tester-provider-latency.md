@@ -6,6 +6,7 @@
 **Enhanced:** 2026-06-11 — added direct `compare-role-providers` harness for tester/architect provider assignment comparisons without waiting for coder to succeed
 **Reviewed:** 2026-06-13 — ran repeated 30s direct role-provider comparisons; tester results were noisy and architect results were confounded by OpenCode isolated-cwd/tool behavior, so defaults remain unchanged
 **Hardened:** 2026-06-13 — OpenCode provider invocations now include `--pure` to reduce external plugin/session behavior during artifact-role calls
+**Enhanced:** 2026-06-13 — role-provider comparison JSON now includes `materialized_output_previews` so successful architect outputs can be inspected
 **Todo:** `todos/architect-tester-provider-latency.md`
 
 ## Problem
@@ -92,4 +93,12 @@ Artifacts:
 
 Result: no provider-default change. Tester success at 30s was not replicated; architect comparison did not produce a valid `system_patch`; and isolated-cwd/tool-use behavior must be accounted for when interpreting OpenCode architect failures. Documented learning: `docs/solutions/best-practices/role-provider-comparisons-must-account-for-isolated-cwd-2026-06-13.md`.
 
-Follow-up hardening: `CliProvider::opencode` now passes `--pure` to `opencode run`, with unit coverage and full `cargo test` validation. Documented learning: `docs/solutions/runtime-bugs/opencode-pure-mode-for-artifact-roles-2026-06-13.md`. Re-run architect provider comparisons after this change before judging Kimi/DeepSeek/GLM architect suitability from pre-`--pure` artifacts.
+Follow-up hardening: `CliProvider::opencode` now passes `--pure` to `opencode run`, with unit coverage and full `cargo test` validation. Documented learning: `docs/solutions/runtime-bugs/opencode-pure-mode-for-artifact-roles-2026-06-13.md`.
+
+Post-`--pure` architect checks:
+
+- `/tmp/a2d-compare-role-providers-architect-30s-post-pure-20260613.json` — GLM timed out, Kimi materialized `system_patch` in 14.4s, DeepSeek timed out.
+- `/tmp/a2d-compare-role-providers-architect-30s-post-pure-kimi-r2-20260613.json` — Kimi timed out.
+- `/tmp/a2d-compare-role-providers-architect-30s-post-pure-preview-kimi-20260613.json` — after adding output previews, Kimi materialized a noop `system_patch` in 18.1s; preview says the diagnostic marker looked false-positive and no source changes were warranted.
+
+Result: Kimi is a plausible post-`--pure` architect candidate, but still flaky under 30s. No durable/default provider change without replicated outcome evidence.

@@ -58,4 +58,6 @@ The tester runs were noisy: GLM and DeepSeek each succeeded once and timed out o
 
 ## 2026-06-13 follow-up
 
-OpenCode artifact invocations now pass `--pure` to reduce external plugin/session behavior during A²D provider calls. See `docs/solutions/runtime-bugs/opencode-pure-mode-for-artifact-roles-2026-06-13.md`. Re-run architect comparisons before drawing conclusions from the pre-`--pure` Kimi architect failure.
+OpenCode artifact invocations now pass `--pure` to reduce external plugin/session behavior during A²D provider calls. See `docs/solutions/runtime-bugs/opencode-pure-mode-for-artifact-roles-2026-06-13.md`.
+
+Role-provider comparison JSON now includes `materialized_output_previews`, which closes the inspection gap where a run could report `system_patch` without exposing whether it was a patch or a no-op. Post-`--pure` Kimi architect evidence is promising but flaky: one comparable run produced a `system_patch`, one immediate solo rerun timed out, and a later preview-enabled run produced a noop explaining that the diagnostic marker was false-positive. Treat this as a reason to replicate, not as default-change evidence.
