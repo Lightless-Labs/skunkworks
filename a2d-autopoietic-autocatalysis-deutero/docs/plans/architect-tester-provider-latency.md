@@ -4,6 +4,7 @@
 **Started:** 2026-06-05 — runtime-only tester/architect provider overrides implemented and smoked through registry-building validation path
 **Enhanced:** 2026-06-05 — forced tester/architect validation now uses a validation-only single-enzyme germline and non-empty diagnostic inputs
 **Enhanced:** 2026-06-11 — added direct `compare-role-providers` harness for tester/architect provider assignment comparisons without waiting for coder to succeed
+**Reviewed:** 2026-06-13 — ran repeated 30s direct role-provider comparisons; tester results were noisy and architect results were confounded by OpenCode isolated-cwd/tool behavior, so defaults remain unchanged
 **Todo:** `todos/architect-tester-provider-latency.md`
 
 ## Problem
@@ -70,4 +71,22 @@ A2D_PROVIDER_TIMEOUT_SECS=5 A2D_MAX_CYCLE_SECS=10 \
 - Bounded smoke with invalid override to verify rejection is visible and defaults remain usable. **Done 2026-06-05:** `validate-escalation` with `A2D_TESTER_PROVIDER=missing` printed a visible rejection three times (one fresh registry per forced rung) and completed JSON output.
 - Bounded smoke with valid override to verify assignment messages. **Done 2026-06-05:** `validate-escalation` with tester+architect set to Kimi printed accepted override messages for both roles.
 - Forced-role validation. **Done 2026-06-05:** `validate-escalation sudoku tester` and `validate-escalation sudoku architect` now isolate the target enzyme and seed non-empty inputs so the intended role is invoked directly. 10s smokes reached the target roles but timed out, so they are mechanism evidence only.
-- Optional bounded comparison smoke for Kimi/DeepSeek tester/architect assignment if provider budget allows. **Partially addressed 2026-06-11:** added `a2d compare-role-providers <challenge> <enzyme> [providers...]`, which builds validation-only single-enzyme runs and applies one provider assignment per run with persistence disabled. 5s tester and architect smokes reached GLM, Kimi, and DeepSeek directly; all timed out, so no default change is justified yet. Outcome evidence still needs a larger bounded budget or cheaper provider/prompt.
+- Optional bounded comparison smoke for Kimi/DeepSeek tester/architect assignment if provider budget allows. **Partially addressed 2026-06-11:** added `a2d compare-role-providers <challenge> <enzyme> [providers...]`, which builds validation-only single-enzyme runs and applies one provider assignment per run with persistence disabled. 5s tester and architect smokes reached GLM, Kimi, and DeepSeek directly; all timed out, so no default change is justified yet. **Updated 2026-06-13:** two 30s tester runs were noisy (`GLM success/timeout`, `DeepSeek success/timeout`, `Kimi timeout/timeout`), and a 30s architect run produced no successful `system_patch`. Kimi architect returned quickly but attempted an OpenCode tool read outside the isolated provider cwd, so that failure is a provider-mode/harness interaction as much as a model-quality signal. Outcome evidence still needs replicated larger-budget runs or a cheaper prompt/provider.
+
+## 2026-06-13 comparison artifacts
+
+```bash
+A2D_PROVIDER_TIMEOUT_SECS=30 A2D_MAX_CYCLE_SECS=45 \
+  cargo run -q -p a2d -- compare-role-providers sudoku tester \
+  opencode/zai-coding-plan/glm-5.1 \
+  opencode/kimi-for-coding/k2p6 \
+  opencode/opencode/deepseek-v4-flash-free
+```
+
+Artifacts:
+
+- `/tmp/a2d-compare-role-providers-tester-30s-20260613.json`
+- `/tmp/a2d-compare-role-providers-tester-30s-20260613-r2.json`
+- `/tmp/a2d-compare-role-providers-architect-30s-20260613.json`
+
+Result: no provider-default change. Tester success at 30s was not replicated; architect comparison did not produce a valid `system_patch`; and isolated-cwd/tool-use behavior must be accounted for when interpreting OpenCode architect failures. Documented learning: `docs/solutions/best-practices/role-provider-comparisons-must-account-for-isolated-cwd-2026-06-13.md`.
