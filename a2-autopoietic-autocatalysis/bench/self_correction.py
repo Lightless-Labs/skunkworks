@@ -53,6 +53,38 @@ MEMBRANE_BUG_OLD = 'if cap.denied_tools.iter().any(|d| d == tool_name || d == "*
 MEMBRANE_BUG_NEW = 'if cap.denied_tools.iter().any(|d| d == tool_name || d == "*") {\n            return true;\n        }'
 ARCHIVE_BUG_OLD = "FROM lineage_records\n                WHERE task_id = ?1\n                ORDER BY created_at ASC"
 ARCHIVE_BUG_NEW = "FROM lineage_records\n                WHERE task_id = ?1\n                ORDER BY created_at DESC"
+ARCHIVE_SAME_CRATE_TASK_ID = "self-correction-compound-archive-same-crate-hidden-regressions"
+ARCHIVE_SAME_CRATE_DESCRIPTION = """\
+The workspace contains a regression. `cargo test -p a2_archive returns_history_in_reverse_chronological_order` fails.
+Diagnose the root cause and fix the implementation. Do not assume the failing
+test name is the only broken behavior; inspect the code and make the minimal
+change that restores the test. Run `cargo test -p a2_archive returns_history_in_reverse_chronological_order` before
+finishing.
+"""
+ARCHIVE_JOURNAL_HISTORY_BUG_OLD = """\
+                ORDER BY promoted_at DESC
+                LIMIT ?1
+"""
+ARCHIVE_JOURNAL_HISTORY_BUG_NEW = """\
+                ORDER BY promoted_at ASC
+                LIMIT ?1
+"""
+ARCHIVE_SCHEMA_EXTERNAL_VERIFICATIONS_BUG_OLD = """\
+    ensure_optional_column(
+        connection,
+        "lineage_records",
+        "external_verifications_json",
+        "TEXT",
+    )?;
+"""
+ARCHIVE_SCHEMA_EXTERNAL_VERIFICATIONS_BUG_NEW = """\
+    ensure_optional_column(
+        connection,
+        "lineage_records",
+        "external_verification_json",
+        "TEXT",
+    )?;
+"""
 SENSORIUM_TASK_ID = "self-correction-compound-sensorium-same-crate-hidden-regressions"
 SENSORIUM_DESCRIPTION = """\
 The workspace contains a regression. `cargo test -p a2_sensorium high_risk_gets_low_priority` fails.
@@ -320,6 +352,28 @@ FIXTURES: dict[str, Fixture] = {
                 "crates/a2_archive/src/store.rs",
                 ARCHIVE_BUG_OLD,
                 ARCHIVE_BUG_NEW,
+            ),
+        ),
+    ),
+    "compound-archive-same-crate-hidden": Fixture(
+        name="compound-archive-same-crate-hidden",
+        task_id=ARCHIVE_SAME_CRATE_TASK_ID,
+        description=ARCHIVE_SAME_CRATE_DESCRIPTION,
+        verify_command=(
+            "cargo test -p a2_archive returns_history_in_reverse_chronological_order; journal=$?; "
+            "cargo test -p a2_archive reads_existing_legacy_lineage_rows_with_empty_external_verifications; schema=$?; "
+            "test $journal -eq 0 -a $schema -eq 0"
+        ),
+        replacements=(
+            Replacement(
+                "crates/a2_archive/src/journal.rs",
+                ARCHIVE_JOURNAL_HISTORY_BUG_OLD,
+                ARCHIVE_JOURNAL_HISTORY_BUG_NEW,
+            ),
+            Replacement(
+                "crates/a2_archive/src/schema.rs",
+                ARCHIVE_SCHEMA_EXTERNAL_VERIFICATIONS_BUG_OLD,
+                ARCHIVE_SCHEMA_EXTERNAL_VERIFICATIONS_BUG_NEW,
             ),
         ),
     ),
@@ -927,6 +981,16 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(
             [replacement.path for replacement in fixture.replacements],
             ["crates/a2_core/src/lib.rs", "crates/a2_archive/src/store.rs"],
+        )
+
+    def test_compound_archive_same_crate_fixture_is_same_crate_multi_bug(self) -> None:
+        fixture = FIXTURES["compound-archive-same-crate-hidden"]
+        self.assertEqual(fixture.task_id, ARCHIVE_SAME_CRATE_TASK_ID)
+        self.assertIn("returns_history_in_reverse_chronological_order", fixture.verify_command)
+        self.assertIn("reads_existing_legacy_lineage_rows_with_empty_external_verifications", fixture.verify_command)
+        self.assertEqual(
+            [replacement.path for replacement in fixture.replacements],
+            ["crates/a2_archive/src/journal.rs", "crates/a2_archive/src/schema.rs"],
         )
 
     def test_compound_core_fixture_is_same_crate_multi_bug(self) -> None:

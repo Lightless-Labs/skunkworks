@@ -33,6 +33,7 @@ Current loop-shaped fixtures:
 - `compound-hidden` — visible `a2_core`, hidden `a2ctl` TODO scanner regression.
 - `compound-membrane-hidden` — visible `a2_core`, hidden `a2_membrane` deny-overrides-allow regression.
 - `compound-archive-hidden` — visible `a2_core`, hidden `a2_archive` lineage ordering regression.
+- `compound-archive-same-crate-hidden` — visible and hidden regressions in `a2_archive` promotion journal ordering and legacy schema migration.
 - `compound-sensorium-same-crate-hidden` — visible and hidden regressions in `a2_sensorium`.
 - `compound-raf-same-crate-hidden` — visible and hidden regressions in `a2_raf` graph edge-case behavior.
 - `compound-eval-same-crate-hidden` — visible and hidden regressions in `a2_eval` seed scoring behavior.
