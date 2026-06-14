@@ -10,6 +10,7 @@
 **Enhanced:** 2026-05-29 — repair-path fault injection added and live Pi → alternate-provider escalation validated; alternate repair provider is configurable
 **Enhanced:** 2026-05-30 — tightened repair prompts and live-validated a DeepSeek alternate repair through path/temp/real-tree gates
 **Enhanced:** 2026-05-31 — semantic project-reference validation added for autopilot markdown outputs
+**Hardened:** 2026-06-14 — real-tree autopilot stage/commit is pathspec-scoped to touched project files so parent-repo staged noise is not swept into local commits
 
 ## Problem
 
@@ -71,7 +72,7 @@ Implemented first slice on 2026-05-24:
 - Non-dry-run can invoke the maintainer provider and gate the returned patchset, but does not yet apply files.
 - Every autopilot run emits structured JSONL events plus per-run artifacts under `.a2d/autopilot/` so an external monitor/steerer can evaluate both model outputs and mechanical outcomes.
 - Gated patchsets are copied into a temp worktree, replacements are applied there first, allowlisted validation commands can run there, source self-modification requires an existing source target and injects `cargo test` when needed, and the validation report is logged as JSON before any real-tree application.
-- Patchsets that pass temp validation are applied to the real tree, validation commands rerun, handoff updates are appended when needed, touched paths are committed locally, and failures roll back original file contents before stopping.
+- Patchsets that pass temp validation are applied to the real tree, validation commands rerun, handoff updates are appended when needed, touched paths are staged with scoped `git add <touched_paths>` and committed locally with pathspec-scoped `git commit -- <touched_paths>`, and failures roll back original file contents before stopping.
 - Markdown replacements and `handoff_update` are semantically checked in the temp worktree: repo path references must exist after the patch is applied, catching invented source-file claims before commit.
 - Failed parse, path-gate, temp-worktree validation, real-tree validation/apply, or provider invocation now routes to a bounded repair prompt with the original task/context, previous output, and mechanical failure report. Configure with `--repair-attempts N` or `A2D_AUTOPILOT_REPAIR_ATTEMPTS` (default 1).
 
@@ -83,7 +84,9 @@ Enhanced on 2026-05-30: tightened maintainer/repair prompts to explicitly forbid
 
 Implemented on 2026-05-31: autopilot temp-worktree validation now scans markdown replacements and `handoff_update` for repo path references (`crates/...`, `docs/...`, `todos/...`, `examples/...`, `research/...`, and root manifest/docs files) and rejects patchsets when those references do not exist after the patch is applied to the temp worktree. Maintainer and repair prompts now warn providers not to invent repo paths. This closes the specific gap found after run `run-1780125199376-0`, where mechanically valid markdown referenced non-existent mechanism files.
 
-Next slice: implement escalation rung 4 in the actual mechanism files.
+Hardened on 2026-06-14: autopilot real-tree stage/commit is scoped to the patchset's touched project paths. This matches the existing project-scoped dirty check (`git status --short -- .`) and prevents A²D commits from accidentally including unrelated staged files in the parent `skunkworks` git repository. Regression coverage constructs a parent repo with a staged sibling file and proves the sibling remains staged (`A  ../sibling.md`) while the autopilot commit contains only the A²D project path.
+
+Next slice: continue replicated provider-latency or topology value evidence rather than more autopilot commit-scope mechanism work.
 
 ### Loop state artifacts
 
@@ -192,7 +195,7 @@ If validation passes:
 1. Apply patchset to the real working tree.
 2. Run gates again on the real tree.
 3. Update `docs/HANDOFF.md` with what happened and current test status.
-4. Commit atomically.
+4. Stage and commit atomically with explicit pathspecs for the touched project paths so unrelated staged parent-repo files are not included.
 
 Suggested commit message format:
 

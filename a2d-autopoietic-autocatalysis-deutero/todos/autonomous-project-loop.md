@@ -12,6 +12,7 @@
 **Enhanced:** 2026-05-29 — repair-path fault injection added and live Pi → alternate-provider escalation validated; alternate repair provider is configurable
 **Enhanced:** 2026-05-30 — tightened repair prompts and live-validated a DeepSeek alternate repair through path/temp/real-tree gates
 **Enhanced:** 2026-05-31 — semantic project-reference validation added for autopilot markdown outputs
+**Hardened:** 2026-06-14 — real-tree autopilot stage/commit now scopes `git add` and `git commit` to touched project paths so parent-repo staged/untracked noise remains outside the project commit
 **Plan:** `docs/plans/autonomous-project-loop.md`
 
 ## Context
@@ -37,7 +38,7 @@ The inner challenge metabolism is bounded and self-adaptive, but no command owns
 - [x] Markdown replacements and `handoff_update` are semantically checked for repo path references during temp-worktree validation, so invented `crates/...`, `docs/...`, `todos/...`, `examples/...`, and `research/...` paths fail before real-tree apply/commit.
 - [x] Failed validation creates a typed `project_validation_report` and routes to a bounded repair/escalation loop instead of immediately waiting for a human. Parse, path, temp-validation, real-apply, and provider invocation failures now route to bounded repair attempts.
 - [x] Protected-file changes are rejected as hard safety stops; eligible source self-modifications are not.
-- [x] Passing non-dry-run iterations apply changes, rerun gates, update handoff, and make an atomic local git commit.
+- [x] Passing non-dry-run iterations apply changes, rerun gates, update handoff, and make an atomic local git commit scoped to the touched project paths.
 - [x] Failure after repair/escalation budget stops the loop with a clear report and a machine-readable monitor log; no silent partial application. Rollback exists for failed real-tree validation and `repair_budget_exhausted` records terminal failure.
 - [x] Provider-diverse escalation for repair attempts. Repair attempt 1 now routes to the configured alternate maintainer provider when available, while monitor events and repair prompts record primary/attempted provider metadata. Live fault-injection run `run-1780061191713-0` validated Pi primary → Kimi alternate routing and bounded budget exhaustion. `A2D_AUTOPILOT_REPAIR_PROVIDER` / `--repair-provider` now allows an explicit registered repair provider; DeepSeek probes validated routing. After prompt tightening, run `run-1780125199376-0` validated a DeepSeek repair output through path gate, temp `cargo test`, real-tree `cargo test`, and commit.
 - [x] Refresh `project_state` after each committed iteration so `--iterations N` does not select from stale handoff/todo/git status.
@@ -74,6 +75,8 @@ Provider-diverse repair should be a bounded extension of the repair loop, not a 
 2026-05-30: Tightened maintainer/repair prompts to explicitly forbid empty `replacements` and require markdown tasks to update an approved markdown file. Reran the configured DeepSeek fault-injection probe; `run-1780125199376-0` reached the full repair path and committed `ab43b71` after path gate, temp `cargo test`, and real-tree `cargo test`. Follow-up: generated todo text referenced non-existent source files before correction, so semantic project-reference validation is still needed.
 
 2026-05-31: Added semantic project-reference validation to the autopilot temp-worktree gate. Markdown replacements and `handoff_update` now fail validation if they reference repo paths that do not exist after patch application; maintainer/repair prompts warn providers not to invent repo paths. Unit coverage includes the previous failure shape (`metabolism_workcell.rs`, `provider_registry.rs`) and an accepted case for existing paths with anchors/line suffixes.
+
+2026-06-14: Tightened the real-tree stage/commit gate for monorepo/subtree use. `git status --short -- .` already scopes autopilot dirtiness to the A²D project path, but an unscoped `git commit -m ...` could still include unrelated staged paths from the parent git repository. `apply_validated_patchset_to_real_tree` stages with scoped `git add <touched_paths>` and now commits with `git commit -m <message> -- <touched_paths>`. Unit coverage proves a staged parent sibling (`A  ../sibling.md`) remains staged and absent from the autopilot commit.
 
 ## Notes
 

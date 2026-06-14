@@ -2075,7 +2075,7 @@ fn apply_validated_patchset_to_real_tree(
         };
     }
 
-    match git_commit(root, &patchset.commit_message) {
+    match git_commit_paths(root, &patchset.commit_message, &touched_paths) {
         Ok(hash) => ProjectApplyReport {
             accepted: true,
             committed: true,
@@ -2177,9 +2177,14 @@ fn reset_git_paths(root: &Path, paths: &[String]) {
         .output();
 }
 
-fn git_commit(root: &Path, message: &str) -> Result<String, String> {
+fn git_commit_paths(root: &Path, message: &str, paths: &[String]) -> Result<String, String> {
+    if paths.is_empty() {
+        return Err("git commit refused: no scoped paths to commit".to_string());
+    }
+
     let commit = Command::new("git")
-        .args(["commit", "-m", message])
+        .args(["commit", "-m", message, "--"])
+        .args(paths)
         .current_dir(root)
         .output()
         .map_err(|error| format!("failed to run git commit: {error}"))?;
@@ -4873,6 +4878,91 @@ mod tests {
             "# Old\n"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn real_tree_apply_commits_only_project_scoped_paths_when_parent_repo_has_staged_noise() {
+        let repo = std::env::temp_dir().join(format!(
+            "a2d-autopilot-scoped-commit-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let project = repo.join("a2d");
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(project.join("docs/plans")).unwrap();
+        std::fs::write(project.join("docs/plans/example.md"), "# Old\n").unwrap();
+
+        for args in [
+            vec!["init"],
+            vec!["config", "user.email", "a2d@example.invalid"],
+            vec!["config", "user.name", "A2D Test"],
+        ] {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        }
+        let output = Command::new("git")
+            .args(["add", "a2d/docs/plans/example.md"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let output = Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+
+        std::fs::write(repo.join("sibling.md"), "# Sibling\n").unwrap();
+        let output = Command::new("git")
+            .args(["add", "sibling.md"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let scoped_status = command_stdout(&project, "git", &["status", "--short", "--", "."]);
+        assert_eq!(scoped_status.trim(), "");
+
+        let patchset = ProjectPatchset {
+            commit_message: "Autopilot: scoped docs".to_string(),
+            validation_commands: Vec::new(),
+            handoff_update: String::new(),
+            replacements: vec![ProjectFileReplacement {
+                path: "docs/plans/example.md".to_string(),
+                new_content: "# New\n".to_string(),
+            }],
+        };
+        let gate = validate_project_patchset_paths(&patchset);
+
+        let report = apply_validated_patchset_to_real_tree(&project, &patchset, &gate);
+
+        assert!(report.accepted, "{:?}", report.errors);
+        assert!(report.committed);
+        let show = Command::new("git")
+            .args(["show", "--name-only", "--format=", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(show.status.success());
+        let committed_paths = String::from_utf8_lossy(&show.stdout);
+        assert!(
+            committed_paths.contains("a2d/docs/plans/example.md"),
+            "{committed_paths}"
+        );
+        assert!(
+            !committed_paths.contains("sibling.md"),
+            "out-of-scope staged sibling was committed: {committed_paths}"
+        );
+        let full_status = command_stdout(&project, "git", &["status", "--short"]);
+        assert!(
+            full_status.contains("A  ../sibling.md"),
+            "out-of-scope staged sibling should remain staged outside autopilot commit: {full_status}"
+        );
+        let _ = std::fs::remove_dir_all(repo);
     }
 
     #[test]
