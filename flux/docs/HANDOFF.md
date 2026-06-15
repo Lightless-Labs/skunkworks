@@ -1,6 +1,6 @@
 # Flux Handoff — Read This First
 
-**Last updated:** 2026-06-12
+**Last updated:** 2026-06-15
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -51,7 +51,7 @@ Implemented surfaces:
 - **Codex hook/plugin:** `src/adapters/codex/hook.ts`, `.codex-plugin/plugin.json`, `hooks/codex-hooks.json`, `codex-plugin.json`, `examples/codex-config.toml`. The skunkworks repo root exposes a Codex marketplace at `../.agents/plugins/marketplace.json` so users can install from git without npm publishing or manual cloning.
 - **Core:** config loading, trigger matching, bounded context snapshots, prompt-profile selection, host-native sidecar preferences, per-trigger direct-provider model pools, Anthropic/OpenAI-compatible model calls, thought logging. `loop-detected` supports both language pattern matching and repeat-based tool-result fingerprints.
 - **Core/adapter tests:** `test/core-selection.test.ts` covers config/deep merge, config command mutations/validation, host sidecar config, trigger frequency overrides, loop matching, prompt-profile/model-pool resolution, injected model callers, and context formatting/clamping. `test/hook-cli.test.ts` covers host hook event-kind inference, fixture snapshot extraction, and output shapes. `test/model-client.test.ts` covers non-network OpenAI-compatible and Anthropic request/response/error handling including direct-provider thinking effort. `test/host-cli-model-client.test.ts` covers non-network Claude/Codex host CLI argv/stdin construction and configured host sidecar model/effort flags. `test/pi-adapter.test.ts` covers Pi slash-command runtime-vs-persistent config state (`reload`, `/flux on|off`, `/flux random`, and persistent `/flux config ...`). `test/plugin-install.test.ts` covers repo-root marketplace manifests, plugin hook wrapper commands, and wrapper safe-fail output.
-- **Host-native model path in progress:** Pi adapter now calls Pi's selected/authenticated model by default and can select a configured `hostSidecar.pi.model` from Pi's harness registry plus clamped thinking effort. Claude/Codex hook CLI paths call their host CLIs with `FLUX_SUPPRESS=1` to avoid recursive hook triggering; Claude can receive a configured `--model` preference, while Codex can receive configured `-m` and `-c model_reasoning_effort=...`. Pi JSON-mode smoke for `/flux think` and `flux_stray_thought` passed on 2026-05-30. Local CLI surface check on 2026-05-31 used `claude` 2.1.119 and `codex-cli` 0.130.0; Codex requires `--ask-for-approval never` before the `exec` subcommand. See `todos/host-native-models.md`.
+- **Host-native model path in progress:** Pi adapter now calls Pi's selected/authenticated model by default and can select a configured `hostSidecar.pi.model` from Pi's harness registry plus clamped thinking effort. Claude/Codex hook CLI paths call their host CLIs with `FLUX_SUPPRESS=1` to avoid recursive hook triggering; Claude can receive a configured `--model` preference, while Codex can receive configured `-m` and `-c model_reasoning_effort=...`. Pi JSON-mode smoke for `/flux think` and `flux_stray_thought` passed on 2026-05-30. Interactive Pi TUI smoke after refreshing the git-installed skunkworks package was reported passing on 2026-06-15, including runtime-vs-persistent `/flux` config behavior and stray-thought injection. Local CLI surface check on 2026-05-31 used `claude` 2.1.119 and `codex-cli` 0.130.0; Codex requires `--ask-for-approval never` before the `exec` subcommand. See `todos/host-native-models.md`.
 - **Delivery semantics clarified:** shared `DeliveryMode` is now only Pi/session message delivery (`steer`, `followUp`, `nextTurn`). Hook CLIs still emit host JSON on stdout as transport. Stale Pi configs using unsupported modes warn instead of silently mapping to `steer`. See `todos/delivery-semantics.md`.
 - **Repo-installable host hooks:** Claude/Codex plugin hooks run through `scripts/flux-hook-wrapper.mjs`, which builds only hook code (`npm run build:hooks`) on first use if `dist/` is missing/stale. The wrapper always exits 0 and emits host-safe JSON on setup/runtime failure.
 - **Dedicated sidecar model selection underway:** Flux now has `hostSidecar` config for harness-native sidecar model/thinking preferences across **all harnesses**. Pi uses its model registry for dynamic listing/selection; Codex model and reasoning-effort args are wired; Claude Code model args are wired but thinking flags still need live validation. The abstraction intentionally avoids hard-coding future model names such as Mythos/Fable. See `todos/host-sidecar-model-selection.md`.
@@ -118,6 +118,8 @@ Expected shape:
 Latest local verification on 2026-06-12: `npm run check` passed and `npm test` passed 35/35 tests.
 
 2026-06-12 Pi adapter note: config loading is now cloned for the adapter so runtime slash-command toggles do not mutate the shared `DEFAULT_CONFIG` object. `/flux on|off` and `/flux random on|off` remain runtime-only and do not rewrite `.flux/config.json`; `/flux reload`, `/flux config init`, `/flux config edit`, and persistent `/flux config set enabled ...` / `/flux config random on|off` resync runtime state from the file-backed config.
+
+2026-06-15 Pi interactive TUI smoke: after pushing the Flux fix and refreshing the git-installed skunkworks package, live testing reportedly passed for startup/status, `/flux status`, `/flux config prompts`, `/flux config models`, runtime `/flux on|off`, runtime `/flux random on|off`, `/flux reload`, persistent `/flux config set enabled true|false`, persistent `/flux config random on|off`, `/flux config edit`, random turn-end injection, manual `/flux think`, and external `flux:trigger` injection. The `/flux think` path produced a `flux:stray-thought` custom message in-session.
 
 Install Claude Code from git/local skunkworks root:
 
@@ -231,7 +233,7 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 
 ## Current Limitations / Unvalidated Areas
 
-- Pi integration compiles and uses Pi-authenticated model access. Non-interactive JSON-mode smoke passed, including repo-level package loading and project-local install loading; full interactive TUI validation is still pending.
+- Pi integration compiles and uses Pi-authenticated model access. Non-interactive JSON-mode smoke passed, including repo-level package loading and project-local install loading; interactive TUI smoke was reported passing on 2026-06-15 after refreshing the git-installed package. Further Pi work is now focused on deeper host-sidecar model/thinking selection validation rather than basic command wiring.
 - Claude Code and Codex integrations now have host-CLI sidecar callers plus fixture/output-shape tests, but exact host-specific hook output contracts and real hook behavior still need validation against current host versions.
 - Core selection/config/trigger/context logic, language/repeat loop detection, direct-provider HTTP clients, and host CLI argv construction now have automated coverage; host adapters still need focused/live tests.
 - Loop detection remains heuristic: pattern matching and repeat fingerprints can miss wrong-frame-with-local-progress situations. Random/left-field nudges are the current mitigation.
@@ -241,10 +243,9 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 
 ## Best Next Moves
 
-1. Finish live-testing the Pi extension in interactive TUI mode using Pi's host-native model path. See `todos/live-validate-pi-extension.md` and `todos/host-native-models.md`.
-2. Finish validating Claude Code / Codex hook contracts against current docs and live hook contexts. Fixture/output-shape tests are in place. See `todos/host-hook-contracts.md`.
-3. Live-validate host-native sidecar model selection: Pi registry selection/thinking clamp in TUI, Codex configured `-m`/reasoning effort, and Claude Code configured `--model`. See `todos/host-sidecar-model-selection.md`.
-4. Continue validating host integrations against current Claude Code/Codex contracts and interactive Pi TUI behavior. See `todos/host-hook-contracts.md` and `todos/live-validate-pi-extension.md`.
+1. Finish validating Claude Code / Codex hook contracts against current docs and live hook contexts. Fixture/output-shape tests are in place. See `todos/host-hook-contracts.md`.
+2. Live-validate host-native sidecar model selection: Pi registry selection/thinking clamp in TUI, Codex configured `-m`/reasoning effort, and Claude Code configured `--model`. See `todos/host-sidecar-model-selection.md`.
+3. Continue deeper host integration validation beyond the now-smoked Pi command wiring, especially real Claude/Codex hook behavior. See `todos/host-hook-contracts.md` and `todos/host-sidecar-model-selection.md`.
 
 ## Important Files
 
