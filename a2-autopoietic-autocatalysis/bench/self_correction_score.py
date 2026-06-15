@@ -133,6 +133,7 @@ def render_metrics(prefix: str, metrics: dict[str, int]) -> list[str]:
 def render(records: list[SelfCorrectionRecord]) -> str:
     metrics = score(records)
     lines = render_metrics("Self-Correction Benchmark", metrics)
+    lines.insert(1, f"  records             {len(records)} rows / {metrics['total']} runs")
     if metrics["pass_at_1"] and metrics["self_corrected"] == 0:
         lines.append(
             "  note: successful first attempts do not exercise prior-lineage self-correction"
@@ -184,6 +185,16 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertEqual(metrics["pass_at_1"], 0)
         self.assertEqual(metrics["loop_exercised"], 1)
         self.assertEqual(metrics["self_corrected"], 1)
+
+    def test_render_reports_rows_and_grouped_runs(self) -> None:
+        records = [
+            SelfCorrectionRecord("task", "run", 1, False, False),
+            SelfCorrectionRecord("task", "run", 2, True, True),
+        ]
+
+        output = render(records)
+
+        self.assertIn("2 rows / 1 runs", output)
 
     def test_render_reports_anti_repeat_ablation_cohorts(self) -> None:
         records = [
