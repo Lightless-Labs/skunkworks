@@ -41,7 +41,7 @@ A²D adds: catalytic closure, deutero-learning, mechanical verification, the 85%
 
 ## Process
 
-- **Delegate to other providers** for heavy tasks and design decisions. Codex, Gemini, OpenCode (GLM 5.1, Minimax 2.7, Kimi k2.5) are available.
+- **Delegate to other providers** for heavy tasks and design decisions. Codex, Gemini, OpenCode (GLM 5.1/5.2, Minimax 2.7/3, Kimi k2.5/k2.7) are available.
 - **Use `/refinery`** or independent multi-model proposals for architectural choices. Single-model design is the monoculture this project warns against.
 - **Run `/ce:compound`** after significant findings or implementation milestones.
 
@@ -97,14 +97,19 @@ Documented runs with configuration, per-cycle results, baseline comparison, arti
 
 ### Model IDs (OpenCode)
 
-OpenCode model IDs are not intuitive. Always verify with `opencode models`:
+OpenCode model IDs are not intuitive. Always verify with `opencode models` when possible; some newly available lanes may not list immediately:
 - Kimi k2.5: `kimi-for-coding/k2p5`
+- Kimi k2.7 code: `kimi-k2.7-code` (A²D provider name: `opencode/kimi-k2.7-code`)
 - GLM 5.1: `zai-coding-plan/glm-5.1`
+- GLM 5.2: `zai-coding-plan/glm-5.2` (A²D provider name: `opencode/zai-coding-plan/glm-5.2`)
 - Minimax M2.7: `minimax-coding-plan/MiniMax-M2.7`
+- Minimax 3: exact OpenCode alias may vary; A²D currently recognizes opt-in provisional aliases `opencode/minimax-coding-plan/MiniMax-3`, `opencode/minimax-coding-plan/Minimax-3`, and `opencode/minimax-coding-plan/MiniMax-M3`
+
+A²D keeps Kimi k2.7 / GLM 5.2 / Minimax 3 lanes opt-in: they are registered when named by runtime overrides, loaded/provider-comparison policies, or direct role-provider comparisons, not added to the default coder portfolio.
 
 ### Provider resilience
 
-CLI providers have bounded subprocess timeouts. GLM 5.1 gets a 15-minute default window; other CLI providers default to 5 minutes. OpenCode uses `--format json` with NDJSON parsing to avoid ANSI escape code contamination. Failures are reported, not silently swallowed.
+CLI providers have bounded subprocess timeouts. GLM 5.x gets a 15-minute default window; other CLI providers default to 5 minutes. OpenCode uses `--format json` with NDJSON parsing to avoid ANSI escape code contamination. Failures are reported, not silently swallowed.
 
 ## Key Directories
 

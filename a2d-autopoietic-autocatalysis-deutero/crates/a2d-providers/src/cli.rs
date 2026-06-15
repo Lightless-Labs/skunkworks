@@ -231,7 +231,7 @@ fn is_generic_opencode_completion(text: &str) -> bool {
 }
 
 fn default_timeout_secs(provider_name: &str) -> u64 {
-    if provider_name.contains("zai-coding-plan/glm-5.1") {
+    if provider_name.contains("zai-coding-plan/glm-5.") {
         900
     } else {
         300
@@ -396,6 +396,10 @@ mod tests {
     fn glm_gets_longer_default_timeout() {
         assert_eq!(
             default_timeout_secs("opencode/zai-coding-plan/glm-5.1"),
+            900
+        );
+        assert_eq!(
+            default_timeout_secs("opencode/zai-coding-plan/glm-5.2"),
             900
         );
     }

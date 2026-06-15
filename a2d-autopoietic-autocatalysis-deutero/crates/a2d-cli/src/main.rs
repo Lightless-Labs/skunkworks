@@ -420,6 +420,43 @@ fn build_runtime_registry(germline: &Germline) -> ProviderRegistry {
     registry
 }
 
+fn experimental_opencode_model_for_provider(provider_name: &str) -> Option<&'static str> {
+    match provider_name {
+        "opencode/kimi-k2.7-code" => Some("kimi-k2.7-code"),
+        "opencode/zai-coding-plan/glm-5.2" => Some("zai-coding-plan/glm-5.2"),
+        // Minimax 3's exact OpenCode ID has varied across provider listings; keep
+        // these aliases opt-in so a wrong alias can fail visibly at invocation
+        // time without changing the default runtime portfolio.
+        "opencode/minimax-coding-plan/MiniMax-3" => Some("minimax-coding-plan/MiniMax-3"),
+        "opencode/minimax-coding-plan/Minimax-3" => Some("minimax-coding-plan/Minimax-3"),
+        "opencode/minimax-coding-plan/MiniMax-M3" => Some("minimax-coding-plan/MiniMax-M3"),
+        _ => None,
+    }
+}
+
+fn register_experimental_provider_if_known(
+    registry: &mut ProviderRegistry,
+    provider_name: &str,
+) -> bool {
+    if registry.provider_named(provider_name).is_some() {
+        return true;
+    }
+    let Some(model) = experimental_opencode_model_for_provider(provider_name) else {
+        return false;
+    };
+    registry.register(Box::new(CliProvider::opencode(model)));
+    true
+}
+
+fn register_experimental_providers_from_policy(
+    registry: &mut ProviderRegistry,
+    policy: &ProviderPolicy,
+) {
+    for provider_name in policy.assignments.values() {
+        register_experimental_provider_if_known(registry, provider_name);
+    }
+}
+
 fn build_registry() -> ProviderRegistry {
     // Multi-model assignment via CLI providers (they manage their own auth).
     //
@@ -436,6 +473,12 @@ fn build_registry() -> ProviderRegistry {
     // - tester/architect: GLM 5.1, preserving the previous default for
     //   review/planning roles while removing it from the critical coder/evolver
     //   path.
+    //
+    // Newly available lanes (Kimi k2.7, GLM 5.2, and provisional Minimax 3
+    // aliases) are intentionally opt-in: they are auto-registered only when a
+    // runtime override, loaded/provider-comparison policy, or direct role
+    // comparison names them. This keeps default coder portfolios and escalation scopes
+    // stable until replicated outcome evidence justifies a default change.
     //
     // Gemini is intentionally not registered in the default live configuration:
     // repeated Gemini quota failures consumed ~5 minute timeout windows before
@@ -477,6 +520,7 @@ fn apply_runtime_provider_overrides(
         .filter_map(|(enzyme, provider)| provider.map(|provider| (enzyme, provider)))
         .collect::<BTreeMap<_, _>>();
     let policy = ProviderPolicy { assignments };
+    register_experimental_providers_from_policy(registry, &policy);
     let valid_enzyme_ids = BTreeSet::from([EnzymeId::from("tester"), EnzymeId::from("architect")]);
     registry.apply_policy(&policy, &valid_enzyme_ids)
 }
@@ -580,6 +624,7 @@ fn apply_loaded_provider_policy(
     germline: &Germline,
     policy: &ProviderPolicy,
 ) -> a2d_core::provider::ProviderPolicyApplication {
+    register_experimental_providers_from_policy(registry, policy);
     let valid_enzyme_ids = germline
         .enzymes()
         .into_iter()
@@ -2839,6 +2884,7 @@ fn run_role_provider_comparison(name: &str, enzyme_name: &str, provider_args: &[
         let loaded_germline = load_germline_for_topology(TopologyMode::Evolved);
         let germline = validation_germline_for_enzyme(loaded_germline, &enzyme_id);
         let mut registry = build_runtime_registry(&germline);
+        register_experimental_provider_if_known(&mut registry, &provider_name);
         let valid_enzyme_ids = BTreeSet::from([enzyme_id.clone()]);
         let application = registry.apply_policy(
             &ProviderPolicy {
@@ -3308,6 +3354,7 @@ fn run_challenge_for_provider_policy(
         .into_iter()
         .map(|enzyme| enzyme.id.clone())
         .collect::<BTreeSet<_>>();
+    register_experimental_providers_from_policy(&mut registry, policy);
     let application = registry.apply_policy(policy, &valid_enzyme_ids);
     if !application.accepted.is_empty() || !application.rejected.is_empty() {
         println!(
@@ -4097,6 +4144,67 @@ mod tests {
     }
 
     #[test]
+    fn live_registry_keeps_new_model_lanes_opt_in() {
+        let registry = build_registry();
+        let providers = registry.providers();
+
+        assert!(!providers.contains(&"opencode/kimi-k2.7-code"));
+        assert!(!providers.contains(&"opencode/zai-coding-plan/glm-5.2"));
+        assert!(!providers.contains(&"opencode/minimax-coding-plan/MiniMax-3"));
+    }
+
+    #[test]
+    fn runtime_provider_overrides_auto_register_known_experimental_lanes() {
+        let mut registry = build_registry();
+        let application = apply_runtime_provider_overrides(
+            &mut registry,
+            BTreeMap::from([
+                (
+                    "tester".to_string(),
+                    Some("opencode/kimi-k2.7-code".to_string()),
+                ),
+                (
+                    "architect".to_string(),
+                    Some("opencode/zai-coding-plan/glm-5.2".to_string()),
+                ),
+            ]),
+        );
+
+        assert_eq!(application.accepted.len(), 2);
+        assert!(application.rejected.is_empty());
+        assert_eq!(
+            registry.provider_for(&EnzymeId::from("tester")).name(),
+            "opencode/kimi-k2.7-code"
+        );
+        assert_eq!(
+            registry.provider_for(&EnzymeId::from("architect")).name(),
+            "opencode/zai-coding-plan/glm-5.2"
+        );
+        assert!(registry.providers().contains(&"opencode/kimi-k2.7-code"));
+        assert!(
+            registry
+                .providers()
+                .contains(&"opencode/zai-coding-plan/glm-5.2")
+        );
+    }
+
+    #[test]
+    fn experimental_minimax_3_alias_registers_only_when_named() {
+        let mut registry = build_registry();
+
+        assert!(register_experimental_provider_if_known(
+            &mut registry,
+            "opencode/minimax-coding-plan/MiniMax-3"
+        ));
+
+        assert!(
+            registry
+                .providers()
+                .contains(&"opencode/minimax-coding-plan/MiniMax-3")
+        );
+    }
+
+    #[test]
     fn runtime_provider_overrides_reassign_tester_and_architect_without_env_mutation() {
         let mut registry = build_registry();
         let application = apply_runtime_provider_overrides(
@@ -4235,6 +4343,27 @@ mod tests {
         assert_eq!(
             registry.provider_for(&EnzymeId::from("tester")).name(),
             "opencode/kimi-for-coding/k2p6"
+        );
+    }
+
+    #[test]
+    fn loaded_provider_policy_auto_registers_known_experimental_lane() {
+        let germline = seed_germline();
+        let mut registry = build_registry();
+        let policy = ProviderPolicy {
+            assignments: BTreeMap::from([(
+                "tester".to_string(),
+                "opencode/zai-coding-plan/glm-5.2".to_string(),
+            )]),
+        };
+
+        let application = apply_loaded_provider_policy(&mut registry, &germline, &policy);
+
+        assert_eq!(application.accepted.len(), 1);
+        assert!(application.rejected.is_empty());
+        assert_eq!(
+            registry.provider_for(&EnzymeId::from("tester")).name(),
+            "opencode/zai-coding-plan/glm-5.2"
         );
     }
 

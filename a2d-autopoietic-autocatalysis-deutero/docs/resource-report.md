@@ -13,8 +13,11 @@
 | gpt-5.4, o3, o4-mini | OpenAI / Codex | — |
 | Gemini 3 Pro / 3.1 Pro | Google | `gemini-3.1-pro-preview` |
 | Kimi k2.5 | OpenCode | `kimi-for-coding/k2p5` |
+| Kimi k2.7 code | OpenCode | `kimi-k2.7-code` |
 | GLM 5.1 | OpenCode | `zai-coding-plan/glm-5.1` |
+| GLM 5.2 | OpenCode | `zai-coding-plan/glm-5.2` |
 | Minimax M2.7 | OpenCode | `minimax-coding-plan/MiniMax-M2.7` |
+| Minimax 3 | OpenCode | exact alias may vary; A²D recognizes provisional opt-in aliases `minimax-coding-plan/MiniMax-3`, `minimax-coding-plan/Minimax-3`, `minimax-coding-plan/MiniMax-M3` |
 | Claude Opus 4.6 / Sonnet 4.6 | Anthropic | — |
 
 ### External Systems & Architectures Referenced

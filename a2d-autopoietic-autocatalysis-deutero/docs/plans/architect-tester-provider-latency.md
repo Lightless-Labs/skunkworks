@@ -7,6 +7,7 @@
 **Reviewed:** 2026-06-13 — ran repeated 30s direct role-provider comparisons; tester results were noisy and architect results were confounded by OpenCode isolated-cwd/tool behavior, so defaults remain unchanged
 **Hardened:** 2026-06-13 — OpenCode provider invocations now include `--pure` and select a cwd-local no-tools artifact agent to reduce external plugin/session/tool behavior during artifact-role calls
 **Enhanced:** 2026-06-13 — role-provider comparison JSON now includes `materialized_output_previews` plus explicit patch outcome fields so successful architect outputs can be inspected and separated from accepted/rejected/noop patch outcomes
+**Enhanced:** 2026-06-14 — Kimi k2.7 code, GLM 5.2, and provisional Minimax 3 aliases are opt-in registered when named by overrides/comparison commands; defaults remain unchanged
 **Todo:** `todos/architect-tester-provider-latency.md`
 
 ## Problem
@@ -19,6 +20,12 @@ Current default registry:
 - coder race fallback: `opencode/opencode/deepseek-v4-flash-free`;
 - tester/architect: `opencode/zai-coding-plan/glm-5.1`;
 - maintainer: `pi/default`.
+
+Newly available experimental lanes are intentionally not in the default registry portfolio. A²D auto-registers these names only when an override, loaded/provider-comparison policy, or direct role comparison names them:
+
+- `opencode/kimi-k2.7-code`;
+- `opencode/zai-coding-plan/glm-5.2`;
+- provisional Minimax 3 aliases: `opencode/minimax-coding-plan/MiniMax-3`, `opencode/minimax-coding-plan/Minimax-3`, `opencode/minimax-coding-plan/MiniMax-M3`.
 
 ## Goal
 
@@ -58,6 +65,18 @@ A2D_PROVIDER_TIMEOUT_SECS=5 A2D_MAX_CYCLE_SECS=10 \
   opencode/zai-coding-plan/glm-5.1 \
   opencode/kimi-for-coding/k2p6 \
   opencode/opencode/deepseek-v4-flash-free
+```
+
+Opt-in new-lane comparison example:
+
+```bash
+A2D_PROVIDER_TIMEOUT_SECS=30 A2D_MAX_CYCLE_SECS=45 \
+  cargo run -q -p a2d -- compare-role-providers sudoku architect \
+  opencode/zai-coding-plan/glm-5.1 \
+  opencode/zai-coding-plan/glm-5.2 \
+  opencode/kimi-for-coding/k2p6 \
+  opencode/kimi-k2.7-code \
+  opencode/minimax-coding-plan/MiniMax-3
 ```
 
 ## Non-goals for first slice
