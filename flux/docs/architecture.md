@@ -50,6 +50,8 @@ Resolution order:
 - model execution: host-native caller when the adapter provides one, otherwise direct-provider fallback;
 - direct-provider fallback model pool: trigger name → trigger kind → `default` → any usable configured model.
 
+Model-release invariant: **Flux must never own provider “latest” alias resolution.** Flux delegates defaults to the host-selected/default model path, allows explicit user pins or host-supported patterns where a harness supports them, and surfaces the resolved model plus stale/unavailable warnings. This avoids an ever-growing internal alias map and lets Pi, Claude Code, Codex, or direct provider configuration remain the source of truth for new model releases.
+
 Prompt profiles support `weight`, so a trigger can randomly rotate between several cognitive modes. For example, `random` can select between narrow local sparks, ambient/global inspiration, playful reframes, and left-field leaps, while `loop-detected` can select between critical feedback and smallest-next-check suggestions.
 
 ## Context contract

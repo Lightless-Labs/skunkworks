@@ -197,6 +197,8 @@ Resolution order:
 - Host-native sidecar model: `hostSidecar[host].model` / `thinkingEffort` when running inside a harness adapter; `active` means use the host/session default.
 - Direct-provider model pool: trigger name → trigger kind → `default` → any usable configured model.
 
+Model-release invariant: **Flux must never own provider “latest” alias resolution.** Defaults delegate to the host active/default model path so Flux inherits new releases through Pi, Claude Code, Codex, or provider configuration. Explicit pins or host-supported patterns are user-owned. Flux should surface configured vs resolved model information in status/logs/thought metadata where possible, warn on stale or unavailable pins, and fall back safely instead of maintaining an ever-growing alias map.
+
 Current default `random` prompt pool:
 
 - `local-spark` — narrow context-specific edge case / constraint / cheap validation / alternative hypothesis.
@@ -237,14 +239,14 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 - Claude Code and Codex integrations now have host-CLI sidecar callers plus fixture/output-shape tests, but exact host-specific hook output contracts and real hook behavior still need validation against current host versions.
 - Core selection/config/trigger/context logic, language/repeat loop detection, direct-provider HTTP clients, and host CLI argv construction now have automated coverage; host adapters still need focused/live tests.
 - Loop detection remains heuristic: pattern matching and repeat fingerprints can miss wrong-frame-with-local-progress situations. Random/left-field nudges are the current mitigation.
-- Direct-provider sidecar model calls support Anthropic and OpenAI-compatible chat completions only; thinking effort is best-effort/provider-compatible.
+- Direct-provider sidecar model calls support Anthropic and OpenAI-compatible chat completions only; thinking effort is best-effort/provider-compatible. Flux intentionally does not maintain provider `latest` alias mappings; use host defaults or explicit user/provider configuration.
 - Claude Code sidecar model selection emits `--model` when configured, but Claude Code thinking/effort CLI flags remain unvalidated and are not emitted yet.
 - Config command UX now covers persistent enable/random toggles, random frequency, add/update model definitions with thinking effort, host sidecar model/thinking preferences, model-pool assignment, add/update prompt profiles, and full prompt-style listing.
 
 ## Best Next Moves
 
 1. Finish validating Claude Code / Codex hook contracts against current docs and live hook contexts. Fixture/output-shape tests are in place. See `todos/host-hook-contracts.md`.
-2. Live-validate host-native sidecar model selection: Pi registry selection/thinking clamp in TUI, Codex configured `-m`/reasoning effort, and Claude Code configured `--model`. See `todos/host-sidecar-model-selection.md`.
+2. Live-validate host-native sidecar model selection: Pi registry selection/thinking clamp in TUI, Codex configured `-m`/reasoning effort, Claude Code configured `--model`, configured-vs-resolved status visibility, and stale/unavailable pin warnings. See `todos/host-sidecar-model-selection.md`.
 3. Continue deeper host integration validation beyond the now-smoked Pi command wiring, especially real Claude/Codex hook behavior. See `todos/host-hook-contracts.md` and `todos/host-sidecar-model-selection.md`.
 
 ## Important Files
