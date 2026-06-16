@@ -105,7 +105,7 @@ OpenCode model IDs are not intuitive. Always verify with `opencode models` when 
 - Minimax M2.7: `minimax-coding-plan/MiniMax-M2.7`
 - Minimax 3: exact OpenCode alias may vary; A²D currently recognizes opt-in provisional aliases `opencode/minimax-coding-plan/MiniMax-3`, `opencode/minimax-coding-plan/Minimax-3`, and `opencode/minimax-coding-plan/MiniMax-M3`
 
-A²D keeps Kimi k2.7 / GLM 5.2 / Minimax 3 lanes opt-in: they are registered when named by runtime overrides, loaded/provider-comparison policies, or direct role-provider comparisons, not added to the default coder portfolio.
+A²D keeps Kimi k2.7 / GLM 5.2 / Minimax 3 lanes opt-in: they are registered when named by runtime overrides, loaded/provider-comparison policies, or direct role-provider comparisons, not added to the default coder portfolio. Verified Pi-backed opt-in provider names are also available for experiments without changing defaults: `pi/kimi-coding/k2p7`, `pi/minimax/MiniMax-M3`, and `pi/zai/glm-5.2`.
 
 ### Provider resilience
 

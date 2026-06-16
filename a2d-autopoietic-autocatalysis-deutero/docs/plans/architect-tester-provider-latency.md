@@ -8,6 +8,7 @@
 **Hardened:** 2026-06-13 — OpenCode provider invocations now include `--pure` and select a cwd-local no-tools artifact agent to reduce external plugin/session/tool behavior during artifact-role calls
 **Enhanced:** 2026-06-13 — role-provider comparison JSON now includes `materialized_output_previews` plus explicit patch outcome fields so successful architect outputs can be inspected and separated from accepted/rejected/noop patch outcomes
 **Enhanced:** 2026-06-14 — Kimi k2.7 code, GLM 5.2, and provisional Minimax 3 aliases are opt-in registered when named by overrides/comparison commands; defaults remain unchanged
+**Enhanced:** 2026-06-16 — verified Pi model IDs with `pi --list-models` and added opt-in Pi lanes (`pi/kimi-coding/k2p7`, `pi/minimax/MiniMax-M3`, `pi/zai/glm-5.2`) through the same override/comparison auto-registration path; defaults remain unchanged
 **Todo:** `todos/architect-tester-provider-latency.md`
 
 ## Problem
@@ -21,11 +22,19 @@ Current default registry:
 - tester/architect: `opencode/zai-coding-plan/glm-5.1`;
 - maintainer: `pi/default`.
 
-Newly available experimental lanes are intentionally not in the default registry portfolio. A²D auto-registers these names only when an override, loaded/provider-comparison policy, or direct role comparison names them:
+Newly available OpenCode experimental lanes are intentionally not in the default registry portfolio. A²D auto-registers these names only when an override, loaded/provider-comparison policy, or direct role comparison names them:
 
 - `opencode/kimi-k2.7-code`;
 - `opencode/zai-coding-plan/glm-5.2`;
 - provisional Minimax 3 aliases: `opencode/minimax-coding-plan/MiniMax-3`, `opencode/minimax-coding-plan/Minimax-3`, `opencode/minimax-coding-plan/MiniMax-M3`.
+
+Operator preference is to favor Pi over OpenCode where practical. A²D still registers only `pi/default` in the default runtime portfolio for the outer-loop `maintainer`, but verified Pi-backed model lanes can now be auto-registered when explicitly named by overrides, loaded/provider-comparison policy, or direct role comparison:
+
+- `pi/kimi-coding/k2p7`;
+- `pi/minimax/MiniMax-M3`;
+- `pi/zai/glm-5.2`.
+
+These IDs were verified with `pi --list-models <kimi|minimax|glm> --offline` on 2026-06-16. They are not default tester/architect assignments and do not enter coder races or broad rung-6 scope unless named.
 
 ## Goal
 
@@ -76,13 +85,16 @@ A2D_PROVIDER_TIMEOUT_SECS=30 A2D_MAX_CYCLE_SECS=45 \
   opencode/zai-coding-plan/glm-5.2 \
   opencode/kimi-for-coding/k2p6 \
   opencode/kimi-k2.7-code \
-  opencode/minimax-coding-plan/MiniMax-3
+  opencode/minimax-coding-plan/MiniMax-3 \
+  pi/kimi-coding/k2p7 \
+  pi/minimax/MiniMax-M3 \
+  pi/zai/glm-5.2
 ```
 
 ## Non-goals for first slice
 
 - Do not promote broad rung-6 eligibility.
-- Do not register unverified Pi model IDs; `pi --help` exceeded a 30s probe window in this session, so Pi Kimi/Minimax IDs need separate verification.
+- Do not promote unverified Pi model IDs beyond the verified opt-in lanes (`pi/kimi-coding/k2p7`, `pi/minimax/MiniMax-M3`, `pi/zai/glm-5.2`); additional Pi provider names need `pi --list-models` verification and explicit tests before registration.
 - Do not persist provider assignment changes; durable policy remains comparison-gated.
 
 ## Validation
@@ -121,3 +133,13 @@ Post-`--pure` architect checks:
 - `/tmp/a2d-compare-role-providers-architect-30s-post-pure-preview-kimi-20260613.json` — after adding output previews, Kimi materialized a noop `system_patch` in 18.1s; preview says the diagnostic marker looked false-positive and no source changes were warranted.
 
 Result: Kimi is a plausible post-`--pure` architect candidate, but still flaky under 30s. `--pure` alone did not fully prevent tool behavior; a later 60s Kimi run emitted `tool_use` events against the empty temp cwd and failed. OpenCode provider calls now also select `--agent a2d-artifact-no-tools` from a cwd-local `opencode.json` with `permission: {"*":"deny"}`. A direct temp-cwd probe verified the agent is discovered, and `/tmp/a2d-compare-role-providers-architect-30s-no-tools-kimi-20260613.json` produced a noop `system_patch` in 15.8s with no captured tool events. Follow-up `/tmp/a2d-compare-role-providers-architect-30s-no-tools-patchfields-kimi-20260613.json` confirmed the new JSON distinguishes provider materialization from patch outcome: `outcome: success: 1 output(s)`, `accepted_patches: 0`, `rejected_patches: 0`, `noop_patches: 1`, and `patch_record.noops` carries the no-op reason. No durable/default provider change without replicated outcome evidence.
+
+## 2026-06-16 Pi lane verification
+
+Verified model IDs with `pi --list-models <kimi|minimax|glm> --offline`; transcript saved at `/tmp/a2d-pi-list-models-kimi-minimax-glm-20260616.txt`. Registered only the verified opt-in A²D provider names:
+
+- `pi/kimi-coding/k2p7`
+- `pi/minimax/MiniMax-M3`
+- `pi/zai/glm-5.2`
+
+A 1s direct architect comparison smoke confirmed the actual runtime override/comparison registry path accepts all three names and invokes Pi with the expected lineage provider before timing out under the intentionally tiny budget: `/tmp/a2d-compare-role-providers-architect-pi-lanes-1s-20260616.json`. This is mechanism evidence only, not outcome quality evidence.

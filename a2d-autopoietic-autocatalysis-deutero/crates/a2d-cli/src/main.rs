@@ -434,6 +434,18 @@ fn experimental_opencode_model_for_provider(provider_name: &str) -> Option<&'sta
     }
 }
 
+fn experimental_pi_model_for_provider(provider_name: &str) -> Option<&'static str> {
+    match provider_name {
+        // Verified with `pi --list-models` on 2026-06-16. Keep these lanes
+        // opt-in so A²D can probe Pi-backed models without changing the
+        // default OpenCode portfolio or broad rung-6 scope.
+        "pi/kimi-coding/k2p7" => Some("kimi-coding/k2p7"),
+        "pi/minimax/MiniMax-M3" => Some("minimax/MiniMax-M3"),
+        "pi/zai/glm-5.2" => Some("zai/glm-5.2"),
+        _ => None,
+    }
+}
+
 fn register_experimental_provider_if_known(
     registry: &mut ProviderRegistry,
     provider_name: &str,
@@ -441,11 +453,15 @@ fn register_experimental_provider_if_known(
     if registry.provider_named(provider_name).is_some() {
         return true;
     }
-    let Some(model) = experimental_opencode_model_for_provider(provider_name) else {
-        return false;
-    };
-    registry.register(Box::new(CliProvider::opencode(model)));
-    true
+    if let Some(model) = experimental_opencode_model_for_provider(provider_name) {
+        registry.register(Box::new(CliProvider::opencode(model)));
+        return true;
+    }
+    if let Some(model) = experimental_pi_model_for_provider(provider_name) {
+        registry.register(Box::new(CliProvider::pi(Some(model))));
+        return true;
+    }
+    false
 }
 
 fn register_experimental_providers_from_policy(
@@ -474,10 +490,11 @@ fn build_registry() -> ProviderRegistry {
     //   review/planning roles while removing it from the critical coder/evolver
     //   path.
     //
-    // Newly available lanes (Kimi k2.7, GLM 5.2, and provisional Minimax 3
-    // aliases) are intentionally opt-in: they are auto-registered only when a
-    // runtime override, loaded/provider-comparison policy, or direct role
-    // comparison names them. This keeps default coder portfolios and escalation scopes
+    // Newly available lanes (OpenCode Kimi k2.7, GLM 5.2, provisional Minimax
+    // 3 aliases, plus verified Pi Kimi k2.7 / Minimax 3 / GLM 5.2 IDs) are
+    // intentionally opt-in: they are auto-registered only when a runtime
+    // override, loaded/provider-comparison policy, or direct role comparison
+    // names them. This keeps default coder portfolios and escalation scopes
     // stable until replicated outcome evidence justifies a default change.
     //
     // Gemini is intentionally not registered in the default live configuration:
@@ -4151,6 +4168,9 @@ mod tests {
         assert!(!providers.contains(&"opencode/kimi-k2.7-code"));
         assert!(!providers.contains(&"opencode/zai-coding-plan/glm-5.2"));
         assert!(!providers.contains(&"opencode/minimax-coding-plan/MiniMax-3"));
+        assert!(!providers.contains(&"pi/kimi-coding/k2p7"));
+        assert!(!providers.contains(&"pi/minimax/MiniMax-M3"));
+        assert!(!providers.contains(&"pi/zai/glm-5.2"));
     }
 
     #[test]
@@ -4165,7 +4185,7 @@ mod tests {
                 ),
                 (
                     "architect".to_string(),
-                    Some("opencode/zai-coding-plan/glm-5.2".to_string()),
+                    Some("pi/kimi-coding/k2p7".to_string()),
                 ),
             ]),
         );
@@ -4178,14 +4198,40 @@ mod tests {
         );
         assert_eq!(
             registry.provider_for(&EnzymeId::from("architect")).name(),
-            "opencode/zai-coding-plan/glm-5.2"
+            "pi/kimi-coding/k2p7"
         );
         assert!(registry.providers().contains(&"opencode/kimi-k2.7-code"));
-        assert!(
-            registry
-                .providers()
-                .contains(&"opencode/zai-coding-plan/glm-5.2")
-        );
+        assert!(registry.providers().contains(&"pi/kimi-coding/k2p7"));
+    }
+
+    #[test]
+    fn experimental_pi_lanes_register_only_when_named() {
+        let mut registry = build_registry();
+
+        assert!(!registry.providers().contains(&"pi/kimi-coding/k2p7"));
+        assert!(!registry.providers().contains(&"pi/minimax/MiniMax-M3"));
+        assert!(!registry.providers().contains(&"pi/zai/glm-5.2"));
+
+        assert!(register_experimental_provider_if_known(
+            &mut registry,
+            "pi/kimi-coding/k2p7"
+        ));
+        assert!(register_experimental_provider_if_known(
+            &mut registry,
+            "pi/minimax/MiniMax-M3"
+        ));
+        assert!(register_experimental_provider_if_known(
+            &mut registry,
+            "pi/zai/glm-5.2"
+        ));
+
+        assert!(registry.providers().contains(&"pi/kimi-coding/k2p7"));
+        assert!(registry.providers().contains(&"pi/minimax/MiniMax-M3"));
+        assert!(registry.providers().contains(&"pi/zai/glm-5.2"));
+        assert!(!register_experimental_provider_if_known(
+            &mut registry,
+            "pi/kimi-coding/not-verified"
+        ));
     }
 
     #[test]

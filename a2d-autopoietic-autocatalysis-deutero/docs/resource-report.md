@@ -18,6 +18,9 @@
 | GLM 5.2 | OpenCode | `zai-coding-plan/glm-5.2` |
 | Minimax M2.7 | OpenCode | `minimax-coding-plan/MiniMax-M2.7` |
 | Minimax 3 | OpenCode | exact alias may vary; A²D recognizes provisional opt-in aliases `minimax-coding-plan/MiniMax-3`, `minimax-coding-plan/Minimax-3`, `minimax-coding-plan/MiniMax-M3` |
+| Kimi k2.7 | Pi | `pi/kimi-coding/k2p7` |
+| Minimax 3 | Pi | `pi/minimax/MiniMax-M3` |
+| GLM 5.2 | Pi | `pi/zai/glm-5.2` |
 | Claude Opus 4.6 / Sonnet 4.6 | Anthropic | — |
 
 ### External Systems & Architectures Referenced

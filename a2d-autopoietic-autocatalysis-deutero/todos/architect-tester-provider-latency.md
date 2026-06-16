@@ -9,6 +9,7 @@
 **Hardening:** 2026-06-13 — OpenCode artifact invocations now pass `--pure` and select `--agent a2d-artifact-no-tools` from a cwd-local `opencode.json` with `permission: {"*":"deny"}` to reduce external plugin/session/tool behavior during role-provider comparisons and live metabolism calls.
 **Enhanced:** 2026-06-13 — `compare-role-providers` now includes `materialized_output_previews` and patch outcome fields (`accepted_patches`, `rejected_patches`, `noop_patches`, `patch_record`); post-`--pure`/no-tools Kimi architect can produce noop `system_patch` outputs, but treat it as plausible rather than a default-change basis until replicated.
 **Enhanced:** 2026-06-14 — Kimi k2.7 code (`opencode/kimi-k2.7-code`), GLM 5.2 (`opencode/zai-coding-plan/glm-5.2`), and provisional Minimax 3 aliases are opt-in registered when named by overrides/comparison commands; defaults remain unchanged.
+**Enhanced:** 2026-06-16 — verified Pi model IDs with `pi --list-models` and added opt-in Pi lanes (`pi/kimi-coding/k2p7`, `pi/minimax/MiniMax-M3`, `pi/zai/glm-5.2`) through the same override/comparison auto-registration path; defaults remain unchanged.
 **Plan:** `docs/plans/architect-tester-provider-latency.md`
 **Depends on:** provider circuit breaker, provider-policy topology gate, rung-6 scope probe.
 
@@ -27,7 +28,7 @@ Tester and architect still default to GLM 5.1. GLM is off coder/evolver critical
 - [x] Mechanism smoke exercises a command path that actually builds the runtime registry. 2026-06-05: `validate-escalation` invalid/valid override smokes passed; earlier `status` probe was discarded because `status` does not build the registry.
 - [x] Forced-role validation can reach tester/architect directly. 2026-06-05: `validate-escalation sudoku tester` and `validate-escalation sudoku architect` use a validation-only single-enzyme germline plus non-empty seeded inputs.
 - [x] A direct bounded smoke documents whether a faster tester/architect assignment reduces timeout waste under a small budget. `compare-role-providers sudoku tester ...` and `compare-role-providers sudoku architect ...` with 5s provider bounds invoked GLM, Kimi, and DeepSeek directly; all candidates timed out at ~5.1s with `failed: 1`, so there is no evidence to change defaults.
-- [ ] Outcome-quality evidence with replicated larger-budget runs or a cheaper prompt/provider remains pending before changing tester/architect defaults. 2026-06-13: two 30s tester runs were inconsistent; post-`--pure` Kimi architect can produce a noop `system_patch`, but timed out on one immediate rerun, and `--pure` alone still allowed tool attempts. No-tools agent hardening produced Kimi noop successes with no captured tool events. 2026-06-14: new Kimi k2.7 / GLM 5.2 / Minimax 3 lanes are mechanically probeable but not live-validated. Inspect `materialized_output_previews` and patch outcome fields; require replication before changing defaults.
+- [ ] Outcome-quality evidence with replicated larger-budget runs or a cheaper prompt/provider remains pending before changing tester/architect defaults. 2026-06-13: two 30s tester runs were inconsistent; post-`--pure` Kimi architect can produce a noop `system_patch`, but timed out on one immediate rerun, and `--pure` alone still allowed tool attempts. No-tools agent hardening produced Kimi noop successes with no captured tool events. 2026-06-14: new OpenCode Kimi k2.7 / GLM 5.2 / Minimax 3 lanes are mechanically probeable but not live-validated. 2026-06-16: Pi Kimi k2.7 / Minimax 3 / GLM 5.2 lanes are now mechanically probeable via `pi/kimi-coding/k2p7`, `pi/minimax/MiniMax-M3`, and `pi/zai/glm-5.2`; keep defaults unchanged without replicated evidence. Inspect `materialized_output_previews` and patch outcome fields; require replication before changing defaults.
 
 ## Notes
 
@@ -42,6 +43,8 @@ A2D_ARCHITECT_PROVIDER=opencode/zai-coding-plan/glm-5.2
 ```
 
 Direct comparison can also name provisional Minimax 3 aliases, for example `opencode/minimax-coding-plan/MiniMax-3`. If that alias fails invocation, try the other recognized aliases documented in `docs/plans/architect-tester-provider-latency.md`; do not make it a default without replicated outcome evidence.
+
+Pi note: prefer Pi-backed lanes when practical. Explicitly registered opt-in provider names are `pi/kimi-coding/k2p7`, `pi/minimax/MiniMax-M3`, and `pi/zai/glm-5.2`; other `pi/<model>` names still need `pi --list-models` verification and tests before use.
 
 Do not write these to lineage unless the existing provider-policy comparison gate accepts a proposed durable policy.
 
