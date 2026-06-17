@@ -99,7 +99,7 @@ Documented runs with configuration, per-cycle results, baseline comparison, arti
 
 OpenCode model IDs are not intuitive. Always verify with `opencode models` when possible; some newly available lanes may not list immediately:
 - Kimi k2.5: `kimi-for-coding/k2p5`
-- Kimi k2.7 code: `kimi-k2.7-code` (A²D provider name: `opencode/kimi-k2.7-code`)
+- Kimi k2.7 code: `kimi-for-coding/k2p7` (A²D provider name: `opencode/kimi-for-coding/k2p7`)
 - GLM 5.1: `zai-coding-plan/glm-5.1`
 - GLM 5.2: `zai-coding-plan/glm-5.2` (A²D provider name: `opencode/zai-coding-plan/glm-5.2`)
 - Minimax M2.7: `minimax-coding-plan/MiniMax-M2.7`

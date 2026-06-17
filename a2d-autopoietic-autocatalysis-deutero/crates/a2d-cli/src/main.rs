@@ -422,7 +422,7 @@ fn build_runtime_registry(germline: &Germline) -> ProviderRegistry {
 
 fn experimental_opencode_model_for_provider(provider_name: &str) -> Option<&'static str> {
     match provider_name {
-        "opencode/kimi-k2.7-code" => Some("kimi-k2.7-code"),
+        "opencode/kimi-for-coding/k2p7" => Some("kimi-for-coding/k2p7"),
         "opencode/zai-coding-plan/glm-5.2" => Some("zai-coding-plan/glm-5.2"),
         // Minimax 3's exact OpenCode ID has varied across provider listings; keep
         // these aliases opt-in so a wrong alias can fail visibly at invocation
@@ -4165,6 +4165,7 @@ mod tests {
         let registry = build_registry();
         let providers = registry.providers();
 
+        assert!(!providers.contains(&"opencode/kimi-for-coding/k2p7"));
         assert!(!providers.contains(&"opencode/kimi-k2.7-code"));
         assert!(!providers.contains(&"opencode/zai-coding-plan/glm-5.2"));
         assert!(!providers.contains(&"opencode/minimax-coding-plan/MiniMax-3"));
@@ -4181,7 +4182,7 @@ mod tests {
             BTreeMap::from([
                 (
                     "tester".to_string(),
-                    Some("opencode/kimi-k2.7-code".to_string()),
+                    Some("opencode/kimi-for-coding/k2p7".to_string()),
                 ),
                 (
                     "architect".to_string(),
@@ -4194,13 +4195,21 @@ mod tests {
         assert!(application.rejected.is_empty());
         assert_eq!(
             registry.provider_for(&EnzymeId::from("tester")).name(),
-            "opencode/kimi-k2.7-code"
+            "opencode/kimi-for-coding/k2p7"
         );
         assert_eq!(
             registry.provider_for(&EnzymeId::from("architect")).name(),
             "pi/kimi-coding/k2p7"
         );
-        assert!(registry.providers().contains(&"opencode/kimi-k2.7-code"));
+        assert!(
+            registry
+                .providers()
+                .contains(&"opencode/kimi-for-coding/k2p7")
+        );
+        assert!(!register_experimental_provider_if_known(
+            &mut registry,
+            "opencode/kimi-k2.7-code"
+        ));
         assert!(registry.providers().contains(&"pi/kimi-coding/k2p7"));
     }
 

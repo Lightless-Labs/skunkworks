@@ -13,7 +13,7 @@
 | gpt-5.4, o3, o4-mini | OpenAI / Codex | — |
 | Gemini 3 Pro / 3.1 Pro | Google | `gemini-3.1-pro-preview` |
 | Kimi k2.5 | OpenCode | `kimi-for-coding/k2p5` |
-| Kimi k2.7 code | OpenCode | `kimi-k2.7-code` |
+| Kimi k2.7 code | OpenCode | `kimi-for-coding/k2p7` |
 | GLM 5.1 | OpenCode | `zai-coding-plan/glm-5.1` |
 | GLM 5.2 | OpenCode | `zai-coding-plan/glm-5.2` |
 | Minimax M2.7 | OpenCode | `minimax-coding-plan/MiniMax-M2.7` |

@@ -10,6 +10,7 @@
 **Enhanced:** 2026-06-14 — Kimi k2.7 code, GLM 5.2, and provisional Minimax 3 aliases are opt-in registered when named by overrides/comparison commands; defaults remain unchanged
 **Enhanced:** 2026-06-16 — verified Pi model IDs with `pi --list-models` and added opt-in Pi lanes (`pi/kimi-coding/k2p7`, `pi/minimax/MiniMax-M3`, `pi/zai/glm-5.2`) through the same override/comparison auto-registration path; defaults remain unchanged
 **Validation update:** 2026-06-17 — ran two-replica 60s direct tester/architect comparisons across default OpenCode lanes and verified Pi lanes; results show timeout variability and preview-quality differences, not enough evidence for default changes
+**Corrected:** 2026-06-17 — replaced stale OpenCode Kimi k2.7 alias `opencode/kimi-k2.7-code` with listed model `opencode/kimi-for-coding/k2p7`; one corrected-lane smoke proves mechanical invocation but not default-change quality
 **Todo:** `todos/architect-tester-provider-latency.md`
 
 ## Problem
@@ -25,7 +26,7 @@ Current default registry:
 
 Newly available OpenCode experimental lanes are intentionally not in the default registry portfolio. A²D auto-registers these names only when an override, loaded/provider-comparison policy, or direct role comparison names them:
 
-- `opencode/kimi-k2.7-code`;
+- `opencode/kimi-for-coding/k2p7`;
 - `opencode/zai-coding-plan/glm-5.2`;
 - provisional Minimax 3 aliases: `opencode/minimax-coding-plan/MiniMax-3`, `opencode/minimax-coding-plan/Minimax-3`, `opencode/minimax-coding-plan/MiniMax-M3`.
 
@@ -85,7 +86,7 @@ A2D_PROVIDER_TIMEOUT_SECS=30 A2D_MAX_CYCLE_SECS=45 \
   opencode/zai-coding-plan/glm-5.1 \
   opencode/zai-coding-plan/glm-5.2 \
   opencode/kimi-for-coding/k2p6 \
-  opencode/kimi-k2.7-code \
+  opencode/kimi-for-coding/k2p7 \
   opencode/minimax-coding-plan/MiniMax-3 \
   pi/kimi-coding/k2p7 \
   pi/minimax/MiniMax-M3 \
@@ -145,7 +146,23 @@ Verified model IDs with `pi --list-models <kimi|minimax|glm> --offline`; transcr
 
 A 1s direct architect comparison smoke confirmed the actual runtime override/comparison registry path accepts all three names and invokes Pi with the expected lineage provider before timing out under the intentionally tiny budget: `/tmp/a2d-compare-role-providers-architect-pi-lanes-1s-20260616.json`. This is mechanism evidence only, not outcome quality evidence.
 
-## 2026-06-17 two-replica 60s comparison
+## 2026-06-17 corrected OpenCode Kimi k2.7 lane
+
+A follow-up live check showed the previously registered A²D provider name `opencode/kimi-k2.7-code` is stale for the current OpenCode installation. `opencode models` lists `kimi-for-coding/k2p7`, and direct probes of the stale alias failed with OpenCode raw output `Model not found: kimi-k2.7-code/.`:
+
+- `/tmp/a2d-compare-role-providers-architect-newlanes-60s-20260617-r1.json`
+- `/tmp/a2d-compare-role-providers-tester-newlanes-60s-20260617-r1.json`
+
+A²D now registers the corrected opt-in provider name `opencode/kimi-for-coding/k2p7` and rejects the stale `opencode/kimi-k2.7-code` alias in coverage.
+
+Corrected-lane 60s smoke artifacts:
+
+- `/tmp/a2d-compare-role-providers-architect-corrected-newlanes-60s-20260617-r1.json`
+- `/tmp/a2d-compare-role-providers-tester-corrected-newlanes-60s-20260617-r1.json`
+
+Result: OpenCode Kimi k2.7 produced a noop `system_patch` in 21.8s for architect and materialized `test_results` in 53.6s for tester. OpenCode GLM 5.2 failed architect with only `step_start`/no materialized output but materialized tester output in 39.9s. Pi Kimi k2.7 and Pi GLM 5.2 timed out for architect; both materialized tester outputs. This validates the corrected alias and invocation path only; it does not justify default changes.
+
+## 2026-06-17 two-replica 60s default/Pi comparison
 
 Commands used the same direct harness with `A2D_PROVIDER_TIMEOUT_SECS=60 A2D_MAX_CYCLE_SECS=90` for `architect` and `tester`, comparing:
 
