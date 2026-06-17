@@ -137,8 +137,8 @@ Flux uses a neutral base system prompt plus trigger/profile-specific instruction
 Model execution is host-native when possible:
 
 - Pi extension: Pi selected model + Pi auth by default, or a configured `hostSidecar.pi.model` from Pi's available model registry. `/flux status` shows configured vs resolved Pi sidecar model/thinking; stale configured Pi model pins warn and fall back to the active model.
-- Claude Code hook: `claude` CLI print mode, optionally with configured sidecar model. Thinking/effort flags remain unvalidated and are not emitted yet.
-- Codex hook: `codex exec` in read-only ephemeral mode, optionally with configured sidecar model and `model_reasoning_effort`.
+- Claude Code hook: `claude` CLI print mode, optionally with configured sidecar model. Thinking/effort flags remain unvalidated and are not emitted yet. If a configured model invocation fails, Flux retries once with the active/default host model and records a warning in thought metadata.
+- Codex hook: `codex exec` in read-only ephemeral mode, optionally with configured sidecar model and `model_reasoning_effort`. If a configured model invocation fails, Flux retries once with the active/default host model and records a warning in thought metadata.
 - Generic hook/fallback: configured direct provider model pool.
 
 Flux deliberately does not maintain provider `latest` alias mappings. Defaults delegate to the host active/default model path; explicit pins or host-supported patterns are user-owned configuration.

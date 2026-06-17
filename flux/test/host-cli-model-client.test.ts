@@ -146,3 +146,77 @@ process.stdout.write("configured claude note\\n");
 		fake.cleanup();
 	}
 });
+
+test("createHostCliModelCaller falls back to active Codex model when configured model fails", async () => {
+	const fake = withFakeCommand(`
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+readFileSync(0, "utf8");
+const args = process.argv.slice(2);
+const previous = existsSync(process.env.FLUX_CAPTURE_PATH) ? JSON.parse(readFileSync(process.env.FLUX_CAPTURE_PATH, "utf8")) : [];
+writeFileSync(process.env.FLUX_CAPTURE_PATH, JSON.stringify([...previous, args]));
+if (args.includes("bad-model")) {
+	process.stderr.write("unknown model: bad-model\\n");
+	process.exit(2);
+}
+const outputIndex = process.argv.indexOf("--output-last-message");
+if (outputIndex !== -1) writeFileSync(process.argv[outputIndex + 1], "fallback codex note");
+`);
+	const previousCommand = process.env.FLUX_CODEX_COMMAND;
+	const previousCapture = process.env.FLUX_CAPTURE_PATH;
+	process.env.FLUX_CODEX_COMMAND = fake.command;
+	process.env.FLUX_CAPTURE_PATH = fake.capturePath;
+	try {
+		const caller = createHostCliModelCaller("codex", fake.dir);
+		assert.ok(caller);
+		const result = await caller({ systemPrompt: "system", prompt: "prompt", config: configWithHost("codex", { model: "bad-model", thinkingEffort: "high" }) } as any);
+		const calls = JSON.parse(readFileSync(fake.capturePath, "utf8")) as string[][];
+		assert.equal(result.content, "fallback codex note");
+		assert.equal(result.model, "codex/codex-cli/high");
+		assert.match(result.warning ?? "", /bad-model/);
+		assert.ok(calls[0]?.includes("bad-model"));
+		assert.equal(calls[1]?.includes("bad-model"), false);
+		assert.ok(calls[1]?.includes('model_reasoning_effort="high"'));
+	} finally {
+		if (previousCommand === undefined) delete process.env.FLUX_CODEX_COMMAND;
+		else process.env.FLUX_CODEX_COMMAND = previousCommand;
+		if (previousCapture === undefined) delete process.env.FLUX_CAPTURE_PATH;
+		else process.env.FLUX_CAPTURE_PATH = previousCapture;
+		fake.cleanup();
+	}
+});
+
+test("createHostCliModelCaller falls back to active Claude model when configured model fails", async () => {
+	const fake = withFakeCommand(`
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+readFileSync(0, "utf8");
+const args = process.argv.slice(2);
+const previous = existsSync(process.env.FLUX_CAPTURE_PATH) ? JSON.parse(readFileSync(process.env.FLUX_CAPTURE_PATH, "utf8")) : [];
+writeFileSync(process.env.FLUX_CAPTURE_PATH, JSON.stringify([...previous, args]));
+if (args.includes("bad-model")) {
+	process.stderr.write("unknown model: bad-model\\n");
+	process.exit(2);
+}
+process.stdout.write("fallback claude note\\n");
+`);
+	const previousCommand = process.env.FLUX_CLAUDE_COMMAND;
+	const previousCapture = process.env.FLUX_CAPTURE_PATH;
+	process.env.FLUX_CLAUDE_COMMAND = fake.command;
+	process.env.FLUX_CAPTURE_PATH = fake.capturePath;
+	try {
+		const caller = createHostCliModelCaller("claude-code", fake.dir);
+		assert.ok(caller);
+		const result = await caller({ systemPrompt: "system", prompt: "prompt", config: configWithHost("claude-code", { model: "bad-model" }) } as any);
+		const calls = JSON.parse(readFileSync(fake.capturePath, "utf8")) as string[][];
+		assert.equal(result.content, "fallback claude note");
+		assert.equal(result.model, "claude-code/claude-cli");
+		assert.match(result.warning ?? "", /bad-model/);
+		assert.ok(calls[0]?.includes("bad-model"));
+		assert.equal(calls[1]?.includes("bad-model"), false);
+	} finally {
+		if (previousCommand === undefined) delete process.env.FLUX_CLAUDE_COMMAND;
+		else process.env.FLUX_CLAUDE_COMMAND = previousCommand;
+		if (previousCapture === undefined) delete process.env.FLUX_CAPTURE_PATH;
+		else process.env.FLUX_CAPTURE_PATH = previousCapture;
+		fake.cleanup();
+	}
+});

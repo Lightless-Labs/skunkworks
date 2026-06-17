@@ -115,7 +115,7 @@ Expected shape:
 {"continue":true,"flux":{"error":"No usable Flux sidecar models. Configure .flux/config.json models with apiKeyEnv/apiKey."}}
 ```
 
-Latest local verification on 2026-06-15: `npm run check` passed and `npm test` passed 36/36 tests.
+Latest local verification on 2026-06-15: `npm run check` passed and `npm test` passed 38/38 tests.
 
 2026-06-12 Pi adapter note: config loading is now cloned for the adapter so runtime slash-command toggles do not mutate the shared `DEFAULT_CONFIG` object. `/flux on|off` and `/flux random on|off` remain runtime-only and do not rewrite `.flux/config.json`; `/flux reload`, `/flux config init`, `/flux config edit`, and persistent `/flux config set enabled ...` / `/flux config random on|off` resync runtime state from the file-backed config.
 
@@ -197,7 +197,7 @@ Resolution order:
 - Host-native sidecar model: `hostSidecar[host].model` / `thinkingEffort` when running inside a harness adapter; `active` means use the host/session default.
 - Direct-provider model pool: trigger name → trigger kind → `default` → any usable configured model.
 
-Model-release invariant: **Flux must never own provider “latest” alias resolution.** Defaults delegate to the host active/default model path so Flux inherits new releases through Pi, Claude Code, Codex, or provider configuration. Explicit pins or host-supported patterns are user-owned. Flux surfaces configured vs resolved Pi sidecar model information in `/flux status`; stale/unavailable Pi pins warn and fall back to the active model. Continue extending configured-vs-resolved visibility where other hosts expose enough information rather than maintaining an ever-growing alias map.
+Model-release invariant: **Flux must never own provider “latest” alias resolution.** Defaults delegate to the host active/default model path so Flux inherits new releases through Pi, Claude Code, Codex, or provider configuration. Explicit pins or host-supported patterns are user-owned. Flux surfaces configured vs resolved Pi sidecar model information in `/flux status`; stale/unavailable Pi pins warn and fall back to the active model. Claude/Codex host CLI sidecars retry once with the active/default host model when an explicit configured model invocation fails, and propagate a warning in thought metadata. Continue extending configured-vs-resolved visibility where other hosts expose enough information rather than maintaining an ever-growing alias map.
 
 Current default `random` prompt pool:
 
@@ -240,7 +240,7 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 - Core selection/config/trigger/context logic, language/repeat loop detection, direct-provider HTTP clients, and host CLI argv construction now have automated coverage; host adapters still need focused/live tests.
 - Loop detection remains heuristic: pattern matching and repeat fingerprints can miss wrong-frame-with-local-progress situations. Random/left-field nudges are the current mitigation.
 - Direct-provider sidecar model calls support Anthropic and OpenAI-compatible chat completions only; thinking effort is best-effort/provider-compatible. Flux intentionally does not maintain provider `latest` alias mappings; use host defaults or explicit user/provider configuration.
-- Claude Code sidecar model selection emits `--model` when configured, but Claude Code thinking/effort CLI flags remain unvalidated and are not emitted yet.
+- Claude Code sidecar model selection emits `--model` when configured, but Claude Code thinking/effort CLI flags remain unvalidated and are not emitted yet. Claude/Codex hook sidecars fall back to the active/default host model if an explicit configured model invocation fails.
 - Config command UX now covers persistent enable/random toggles, random frequency, add/update model definitions with thinking effort, host sidecar model/thinking preferences, model-pool assignment, add/update prompt profiles, and full prompt-style listing.
 
 ## Best Next Moves

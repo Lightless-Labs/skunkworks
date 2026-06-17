@@ -149,14 +149,38 @@ async function callCodexCli(
 	}
 }
 
+function withActiveHostModel(config: FluxConfig, host: HostKind): FluxConfig {
+	return {
+		...config,
+		hostSidecar: {
+			...config.hostSidecar,
+			[host]: { ...(config.hostSidecar[host] ?? {}), model: "active" },
+		},
+	};
+}
+
 export function createHostCliModelCaller(host: HostKind, cwd?: string): ThoughtModelCaller | undefined {
 	if (host !== "claude-code" && host !== "codex") return undefined;
 	return async ({ config, prompt, systemPrompt, signal }) => {
-		if (host === "claude-code") {
-			const response = await callClaudeCli(prompt, systemPrompt, cwd, signal, config);
+		const preference = hostPreference(config, host);
+		try {
+			if (host === "claude-code") {
+				const response = await callClaudeCli(prompt, systemPrompt, cwd, signal, config);
+				return { content: response.content, model: hostNativeModelLabel(host, response.detail) };
+			}
+			const response = await callCodexCli(prompt, systemPrompt, cwd, signal, config);
 			return { content: response.content, model: hostNativeModelLabel(host, response.detail) };
+		} catch (error) {
+			if (isActivePreference(preference.model)) throw error;
+			const message = error instanceof Error ? error.message : String(error);
+			const warning = `Flux ${host} sidecar model failed or is unavailable: ${preference.model}; falling back to active host model. ${message}`;
+			const fallbackConfig = withActiveHostModel(config, host);
+			if (host === "claude-code") {
+				const response = await callClaudeCli(prompt, systemPrompt, cwd, signal, fallbackConfig);
+				return { content: response.content, model: hostNativeModelLabel(host, response.detail), warning };
+			}
+			const response = await callCodexCli(prompt, systemPrompt, cwd, signal, fallbackConfig);
+			return { content: response.content, model: hostNativeModelLabel(host, response.detail), warning };
 		}
-		const response = await callCodexCli(prompt, systemPrompt, cwd, signal, config);
-		return { content: response.content, model: hostNativeModelLabel(host, response.detail) };
 	};
 }

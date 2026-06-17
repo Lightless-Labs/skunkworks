@@ -5,6 +5,7 @@
 **Enhanced:** 2026-06-11 — initial hostSidecar implementation landed for Pi/Codex/Claude model selection paths plus direct-provider thinking effort.
 **Enhanced:** 2026-06-15 — documented the model-release invariant: Flux delegates latest/default selection to the host and must not own provider alias maps.
 **Enhanced:** 2026-06-15 — Pi `/flux status` now shows configured vs resolved sidecar model/thinking, and stale/unavailable Pi pins warn and fall back to the active model.
+**Enhanced:** 2026-06-15 — Claude/Codex host CLI sidecars now retry once with the active host model when an explicit configured model invocation fails, and propagate a warning in thought metadata.
 
 ## Context
 
@@ -55,7 +56,7 @@ Direct-provider command should also grow the already-typed `thinkingEffort` opti
 - Pi's actual registry API exposes `ctx.modelRegistry.getAll()`, `getAvailable()`, `find(provider, modelId)`, `hasConfiguredAuth(model)`, and `getApiKeyAndHeaders(model)`. Models carry `provider`, `id`, `name`, `api`, `reasoning`, `thinkingLevelMap`, `contextWindow`, and `maxTokens` metadata.
 - Pi exposes active thinking controls through `pi.getThinkingLevel()` / `pi.setThinkingLevel()`. Flux avoids mutating the active session and passes `reasoning` to the sidecar call when a non-`active`/non-`off` Pi sidecar thinking level is configured, clamped against model metadata.
 - Pi sidecar generation should not permanently change the user's active model/thinking level just to generate a Flux thought. Prefer passing the chosen model/effort directly into the sidecar `complete()` call if the API supports it; otherwise document the limitation.
-- Claude Code configured model selection is wired through `--model`, but Claude thinking/effort flags still need live CLI/doc validation before wiring. Codex configured model and effort are wired through `-m` and `-c model_reasoning_effort=...`.
+- Claude Code configured model selection is wired through `--model`, but Claude thinking/effort flags still need live CLI/doc validation before wiring. Codex configured model and effort are wired through `-m` and `-c model_reasoning_effort=...`. If a configured Claude/Codex model CLI invocation fails, Flux retries once with the active/default host model and records a warning in thought metadata.
 - Avoid hard-coded model names. Mythos/Fable-style models should work if present in the harness registry or CLI model list.
 - Do not add provider-release aliases such as `latest-fast` → concrete model id inside Flux. If a host or provider exposes aliases/patterns, Flux may pass through user configuration, but the host/provider remains the source of truth.
 
@@ -73,4 +74,5 @@ Direct-provider command should also grow the already-typed `thinkingEffort` opti
 - [ ] Live-smoke Pi/Codex/Claude configured sidecar selections in real harness contexts.
 - [x] Pi: show configured vs resolved host sidecar model/thinking in `/flux status`.
 - [x] Pi: warn and fall back safely when an explicit host sidecar model pin is stale or unavailable.
-- [ ] Extend configured-vs-resolved status visibility and stale-pin handling to Codex/Claude where their CLIs expose enough information.
+- [x] Codex/Claude hook sidecars: retry with active/default host model and propagate a warning when an explicit configured model invocation fails.
+- [ ] Extend configured-vs-resolved status visibility to Codex/Claude where their CLIs expose enough information.
