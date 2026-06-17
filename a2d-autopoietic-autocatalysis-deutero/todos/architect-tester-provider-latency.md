@@ -46,7 +46,20 @@ Direct comparison can also name provisional Minimax 3 aliases, for example `open
 
 Pi note: prefer Pi-backed lanes when practical. Explicitly registered opt-in provider names are `pi/kimi-coding/k2p7`, `pi/minimax/MiniMax-M3`, and `pi/zai/glm-5.2`; other `pi/<model>` names still need `pi --list-models` verification and tests before use.
 
-Do not write these to lineage unless the existing provider-policy comparison gate accepts a proposed durable policy.
+Next empirical slice: run replicated larger-budget direct comparisons before touching tester/architect defaults. Compare current/default-ish lanes against the verified Pi lanes for both `tester` and `architect`, for example:
+
+```bash
+A2D_PROVIDER_TIMEOUT_SECS=60 A2D_MAX_CYCLE_SECS=90 \
+  cargo run -q -p a2d -- compare-role-providers sudoku architect \
+  opencode/zai-coding-plan/glm-5.1 \
+  opencode/kimi-for-coding/k2p6 \
+  opencode/opencode/deepseek-v4-flash-free \
+  pi/kimi-coding/k2p7 \
+  pi/minimax/MiniMax-M3 \
+  pi/zai/glm-5.2
+```
+
+Repeat for `tester` and run multiple replicas. Rank by `outcome`, `failed`, elapsed time, `materialized_output_previews`, and patch outcome fields, not `assignment_accepted`. Do not change defaults or write these to lineage unless replicated evidence justifies it and the existing provider-policy comparison gate accepts a proposed durable policy.
 
 ## Validation notes
 
