@@ -7,6 +7,7 @@
 **Addendum:** 2026-05-31 — Added `compound-constitution-same-crate-hidden` to extend same-crate fixture diversity into bootstrap-profile behavior; smoke-only injection verified both failures and Minimax N=3 resolved 3/3 with pass@1 2/3 and self-corrected 1/3.
 **Addendum:** 2026-06-01 — Added `compound-workcell-same-crate-hidden` to cover catalyst response parsing and prompt-context truncation behavior; smoke-only injection verified both failures and Minimax N=3 resolved 3/3 with pass@1 1/3 and self-corrected 2/3.
 **Addendum:** 2026-06-04 — Added `compound-core-same-crate-hidden` to cover same-crate hidden behavior in `a2_core`; smoke-only injection verified both `test_fibonacci` and `test_somatic_summary` fail, and Minimax N=3 resolved/self-corrected 3/3 with pass@1 0/3.
+**Addendum:** 2026-06-17 — Added `compound-archive-index-hidden` after Kimi k2.7 and GLM 5.2 passed the Archive schema-migration fixture on attempt 1; this variant keeps the visible journal-ordering failure but hides an exact `idx_lineage_records_created_at` schema-index direction assertion. Kimi k2.7 and GLM 5.2 each resolved/self-corrected 3/3 with pass@1 0/3.
 
 ## Goal
 
