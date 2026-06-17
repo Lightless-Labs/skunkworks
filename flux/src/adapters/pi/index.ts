@@ -101,22 +101,44 @@ function modelLabel(model: { provider: string; id: string }): string {
 	return `${model.provider}/${model.id}`;
 }
 
-async function resolvePiSidecarModel(ctx: ExtensionContext, config: FluxConfig): Promise<NonNullable<ExtensionContext["model"]>> {
+interface PiSidecarModelSelection {
+	model: NonNullable<ExtensionContext["model"]>;
+	configured: string;
+	resolved: string;
+	warning?: string;
+}
+
+async function resolvePiSidecarModel(ctx: ExtensionContext, config: FluxConfig): Promise<PiSidecarModelSelection> {
 	const preference = config.hostSidecar.pi?.model ?? "active";
 	if (preference === "active") {
 		if (!ctx.model) throw new Error("No Pi model selected for Flux host-native sidecar generation.");
-		return ctx.model;
+		return { model: ctx.model, configured: preference, resolved: modelLabel(ctx.model) };
 	}
 	const slash = preference.indexOf("/");
 	if (slash > 0) {
 		const found = ctx.modelRegistry.find(preference.slice(0, slash), preference.slice(slash + 1));
-		if (found) return found as NonNullable<ExtensionContext["model"]>;
+		if (found) {
+			const model = found as NonNullable<ExtensionContext["model"]>;
+			return { model, configured: preference, resolved: modelLabel(model) };
+		}
 	}
 	const available = await Promise.resolve(ctx.modelRegistry.getAvailable());
 	const lower = preference.toLowerCase();
 	const found = available.find((model: any) => model.id?.toLowerCase?.() === lower || model.name?.toLowerCase?.() === lower || modelLabel(model).toLowerCase() === lower);
-	if (found) return found as NonNullable<ExtensionContext["model"]>;
-	throw new Error(`Flux Pi sidecar model not found or unavailable: ${preference}`);
+	if (found) {
+		const model = found as NonNullable<ExtensionContext["model"]>;
+		return { model, configured: preference, resolved: modelLabel(model) };
+	}
+	if (ctx.model) {
+		const resolved = modelLabel(ctx.model);
+		return {
+			model: ctx.model,
+			configured: preference,
+			resolved,
+			warning: `Flux Pi sidecar model not found or unavailable: ${preference}; falling back to active ${resolved}.`,
+		};
+	}
+	throw new Error(`Flux Pi sidecar model not found or unavailable: ${preference}; no active fallback model is selected.`);
 }
 
 const THINKING_LEVEL_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh"];
@@ -147,9 +169,29 @@ function resolvePiThinking(model: NonNullable<ExtensionContext["model"]>, config
 	return clampThinkingLevel(model, preference);
 }
 
+async function formatPiHostSidecarStatus(ctx: ExtensionContext, config: FluxConfig): Promise<string> {
+	const configuredThinking = config.hostSidecar.pi?.thinkingEffort ?? "active";
+	try {
+		const selection = await resolvePiSidecarModel(ctx, config);
+		const resolvedThinking = resolvePiThinking(selection.model, config) ?? "active";
+		const warning = selection.warning ? `; warning=${selection.warning}` : "";
+		return `Pi host sidecar: configured model=${selection.configured}, resolved=${selection.resolved}, configured thinking=${configuredThinking}, resolved thinking=${resolvedThinking}${warning}`;
+	} catch (error) {
+		const configuredModel = config.hostSidecar.pi?.model ?? "active";
+		const message = error instanceof Error ? error.message : String(error);
+		return `Pi host sidecar: configured model=${configuredModel}, unresolved=${message}, configured thinking=${configuredThinking}`;
+	}
+}
+
+async function formatPiStatusSummary(ctx: ExtensionContext, config: FluxConfig, path?: string): Promise<string> {
+	return [formatConfigSummary(config, path), await formatPiHostSidecarStatus(ctx, config)].join("\n");
+}
+
 function createPiModelCaller(ctx: ExtensionContext, signal?: AbortSignal): ThoughtModelCaller {
 	return async ({ config, systemPrompt, prompt }) => {
-		const model = await resolvePiSidecarModel(ctx, config);
+		const selection = await resolvePiSidecarModel(ctx, config);
+		if (selection.warning && ctx.hasUI) ctx.ui.notify(selection.warning, "warning");
+		const model = selection.model;
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 		if (!auth.ok || !auth.apiKey) throw new Error(auth.ok ? `No API key for ${model.provider}` : auth.error);
 		const complete = await loadPiComplete();
@@ -426,7 +468,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 			if (command === "config") {
 				const subcommand = parts[1] ?? "status";
 				if (subcommand === "status" || subcommand === "path") {
-					ctx.ui.notify(formatConfigSummary(loaded.config, loaded.path), "info");
+					ctx.ui.notify(await formatPiStatusSummary(ctx, currentConfig(), loaded.path), "info");
 					return;
 				}
 				if (subcommand === "init") {
@@ -598,7 +640,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 				);
 				return;
 			}
-			ctx.ui.notify(formatConfigSummary(currentConfig(), loaded.path), "info");
+			ctx.ui.notify(await formatPiStatusSummary(ctx, currentConfig(), loaded.path), "info");
 		},
 	});
 }

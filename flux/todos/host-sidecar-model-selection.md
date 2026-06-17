@@ -4,6 +4,7 @@
 **Status:** In Progress
 **Enhanced:** 2026-06-11 — initial hostSidecar implementation landed for Pi/Codex/Claude model selection paths plus direct-provider thinking effort.
 **Enhanced:** 2026-06-15 — documented the model-release invariant: Flux delegates latest/default selection to the host and must not own provider alias maps.
+**Enhanced:** 2026-06-15 — Pi `/flux status` now shows configured vs resolved sidecar model/thinking, and stale/unavailable Pi pins warn and fall back to the active model.
 
 ## Context
 
@@ -70,5 +71,6 @@ Direct-provider command should also grow the already-typed `thinkingEffort` opti
 - [x] Add tests for config parsing/validation and host caller argv/options.
 - [x] Document host-specific support/limitations in `docs/HANDOFF.md` and `README.md`.
 - [ ] Live-smoke Pi/Codex/Claude configured sidecar selections in real harness contexts.
-- [ ] Show configured vs resolved host sidecar model in `/flux status` where the host exposes enough information.
-- [ ] Warn and fall back safely when an explicit host sidecar model pin is stale or unavailable.
+- [x] Pi: show configured vs resolved host sidecar model/thinking in `/flux status`.
+- [x] Pi: warn and fall back safely when an explicit host sidecar model pin is stale or unavailable.
+- [ ] Extend configured-vs-resolved status visibility and stale-pin handling to Codex/Claude where their CLIs expose enough information.

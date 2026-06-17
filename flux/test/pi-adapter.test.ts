@@ -28,15 +28,22 @@ function createPiHarness(): RegisteredPi {
 	return harness;
 }
 
-function createCtx(cwd: string) {
+function createCtx(
+	cwd: string,
+	options: { model?: any; availableModels?: any[] } = {},
+) {
 	const notifications: Array<{ message: string; level: string }> = [];
 	const statuses: Record<string, string> = {};
 	return {
 		cwd,
 		hasUI: true,
 		signal: undefined,
+		model: options.model,
 		sessionManager: { getBranch: () => [] },
-		modelRegistry: { getAvailable: () => [] },
+		modelRegistry: {
+			getAvailable: () => options.availableModels ?? [],
+			find: (provider: string, modelId: string) => (options.availableModels ?? []).find((model) => model.provider === provider && model.id === modelId),
+		},
 		ui: {
 			notify(message: string, level: string) {
 				notifications.push({ message, level });
@@ -136,6 +143,38 @@ test("Pi persistent config set commands update file-backed runtime state", async
 			assert.equal(ctx.statuses.flux, "flux:off");
 			await harness.commands.flux.handler("status", ctx);
 			assert.match(ctx.notifications.at(-1)?.message ?? "", /enabled=false, random=true/);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
+test("Pi status shows configured vs resolved sidecar model and stale pin fallback", async () => {
+	await withNoExplicitFluxConfig(async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "flux-pi-model-status-"));
+		try {
+			writeConfig(cwd, {
+				hostSidecar: { pi: { model: "missing-sidecar", thinkingEffort: "high" } },
+			});
+			const activeModel = {
+				provider: "openai-codex",
+				id: "gpt-current",
+				name: "Current Model",
+				reasoning: true,
+				thinkingLevelMap: { high: "high" },
+			};
+			const harness = createPiHarness();
+			const ctx = createCtx(cwd, { model: activeModel, availableModels: [] });
+
+			await harness.handlers.session_start?.({}, ctx);
+			await harness.commands.flux.handler("status", ctx);
+
+			const message = ctx.notifications.at(-1)?.message ?? "";
+			assert.match(message, /Pi host sidecar:/);
+			assert.match(message, /configured model=missing-sidecar/);
+			assert.match(message, /resolved=openai-codex\/gpt-current/);
+			assert.match(message, /configured thinking=high, resolved thinking=high/);
+			assert.match(message, /warning=Flux Pi sidecar model not found or unavailable: missing-sidecar; falling back to active openai-codex\/gpt-current\./);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

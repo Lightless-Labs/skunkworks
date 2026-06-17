@@ -115,7 +115,7 @@ Expected shape:
 {"continue":true,"flux":{"error":"No usable Flux sidecar models. Configure .flux/config.json models with apiKeyEnv/apiKey."}}
 ```
 
-Latest local verification on 2026-06-12: `npm run check` passed and `npm test` passed 35/35 tests.
+Latest local verification on 2026-06-15: `npm run check` passed and `npm test` passed 36/36 tests.
 
 2026-06-12 Pi adapter note: config loading is now cloned for the adapter so runtime slash-command toggles do not mutate the shared `DEFAULT_CONFIG` object. `/flux on|off` and `/flux random on|off` remain runtime-only and do not rewrite `.flux/config.json`; `/flux reload`, `/flux config init`, `/flux config edit`, and persistent `/flux config set enabled ...` / `/flux config random on|off` resync runtime state from the file-backed config.
 
@@ -197,7 +197,7 @@ Resolution order:
 - Host-native sidecar model: `hostSidecar[host].model` / `thinkingEffort` when running inside a harness adapter; `active` means use the host/session default.
 - Direct-provider model pool: trigger name → trigger kind → `default` → any usable configured model.
 
-Model-release invariant: **Flux must never own provider “latest” alias resolution.** Defaults delegate to the host active/default model path so Flux inherits new releases through Pi, Claude Code, Codex, or provider configuration. Explicit pins or host-supported patterns are user-owned. Flux should surface configured vs resolved model information in status/logs/thought metadata where possible, warn on stale or unavailable pins, and fall back safely instead of maintaining an ever-growing alias map.
+Model-release invariant: **Flux must never own provider “latest” alias resolution.** Defaults delegate to the host active/default model path so Flux inherits new releases through Pi, Claude Code, Codex, or provider configuration. Explicit pins or host-supported patterns are user-owned. Flux surfaces configured vs resolved Pi sidecar model information in `/flux status`; stale/unavailable Pi pins warn and fall back to the active model. Continue extending configured-vs-resolved visibility where other hosts expose enough information rather than maintaining an ever-growing alias map.
 
 Current default `random` prompt pool:
 
@@ -246,7 +246,7 @@ A `random` trigger can override these with its own `probability`, `minIntervalMs
 ## Best Next Moves
 
 1. Finish validating Claude Code / Codex hook contracts against current docs and live hook contexts. Fixture/output-shape tests are in place. See `todos/host-hook-contracts.md`.
-2. Live-validate host-native sidecar model selection: Pi registry selection/thinking clamp in TUI, Codex configured `-m`/reasoning effort, Claude Code configured `--model`, configured-vs-resolved status visibility, and stale/unavailable pin warnings. See `todos/host-sidecar-model-selection.md`.
+2. Live-validate host-native sidecar model selection: Pi registry selection/thinking clamp and stale-pin fallback in TUI, Codex configured `-m`/reasoning effort, and Claude Code configured `--model`. See `todos/host-sidecar-model-selection.md`.
 3. Continue deeper host integration validation beyond the now-smoked Pi command wiring, especially real Claude/Codex hook behavior. See `todos/host-hook-contracts.md` and `todos/host-sidecar-model-selection.md`.
 
 ## Important Files
