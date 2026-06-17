@@ -121,12 +121,17 @@ def cohort_label(record: SelfCorrectionRecord) -> str:
 
 def render_metrics(prefix: str, metrics: dict[str, int]) -> list[str]:
     total = metrics["total"]
+    self_corrected = (
+        "n/a (0 retrying runs)"
+        if metrics["loop_exercised"] == 0
+        else format_rate(metrics["self_corrected"], total)
+    )
     return [
         prefix,
         f"  resolved             {format_rate(metrics['resolved'], total)}",
         f"  pass@1               {format_rate(metrics['pass_at_1'], total)}",
         f"  loop exercised       {format_rate(metrics['loop_exercised'], total)}",
-        f"  self-corrected       {format_rate(metrics['self_corrected'], total)}",
+        f"  self-corrected       {self_corrected}",
     ]
 
 
@@ -174,6 +179,9 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertEqual(metrics["pass_at_1"], 1)
         self.assertEqual(metrics["loop_exercised"], 0)
         self.assertEqual(metrics["self_corrected"], 0)
+
+        output = render(records)
+        self.assertIn("self-corrected       n/a (0 retrying runs)", output)
 
     def test_later_success_with_prior_lineage_counts(self) -> None:
         records = [

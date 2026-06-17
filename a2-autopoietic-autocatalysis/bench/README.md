@@ -68,7 +68,7 @@ Score self-correction specifically:
 bench/self_correction_score.py bench/self-correction-results.jsonl
 ```
 
-This scorer reports `pass@1` separately from `self-corrected`. A first-attempt pass is useful model capability data, but it does not exercise prior-lineage self-correction. A JSONL file can have more rows than independent trials because each retry attempt is one row; score and document runs by unique `(run_id, task_id)`, not raw line count.
+This scorer reports `pass@1` separately from `self-corrected`. A first-attempt pass is useful model capability data, but it does not exercise prior-lineage self-correction; when no run retries, `self-corrected` renders as N/A instead of a failed recovery rate. A JSONL file can have more rows than independent trials because each retry attempt is one row; score and document runs by unique `(run_id, task_id)`, not raw line count.
 
 Run the anti-repeat retry ablation by keeping the same fixture/provider/attempt budget and writing enabled/disabled cohorts to one log or to paired logs:
 
