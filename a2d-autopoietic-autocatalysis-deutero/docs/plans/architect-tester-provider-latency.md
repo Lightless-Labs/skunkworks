@@ -9,6 +9,7 @@
 **Enhanced:** 2026-06-13 — role-provider comparison JSON now includes `materialized_output_previews` plus explicit patch outcome fields so successful architect outputs can be inspected and separated from accepted/rejected/noop patch outcomes
 **Enhanced:** 2026-06-14 — Kimi k2.7 code, GLM 5.2, and provisional Minimax 3 aliases are opt-in registered when named by overrides/comparison commands; defaults remain unchanged
 **Enhanced:** 2026-06-16 — verified Pi model IDs with `pi --list-models` and added opt-in Pi lanes (`pi/kimi-coding/k2p7`, `pi/minimax/MiniMax-M3`, `pi/zai/glm-5.2`) through the same override/comparison auto-registration path; defaults remain unchanged
+**Validation update:** 2026-06-17 — ran two-replica 60s direct tester/architect comparisons across default OpenCode lanes and verified Pi lanes; results show timeout variability and preview-quality differences, not enough evidence for default changes
 **Todo:** `todos/architect-tester-provider-latency.md`
 
 ## Problem
@@ -143,3 +144,28 @@ Verified model IDs with `pi --list-models <kimi|minimax|glm> --offline`; transcr
 - `pi/zai/glm-5.2`
 
 A 1s direct architect comparison smoke confirmed the actual runtime override/comparison registry path accepts all three names and invokes Pi with the expected lineage provider before timing out under the intentionally tiny budget: `/tmp/a2d-compare-role-providers-architect-pi-lanes-1s-20260616.json`. This is mechanism evidence only, not outcome quality evidence.
+
+## 2026-06-17 two-replica 60s comparison
+
+Commands used the same direct harness with `A2D_PROVIDER_TIMEOUT_SECS=60 A2D_MAX_CYCLE_SECS=90` for `architect` and `tester`, comparing:
+
+- `opencode/zai-coding-plan/glm-5.1`
+- `opencode/kimi-for-coding/k2p6`
+- `opencode/opencode/deepseek-v4-flash-free`
+- `pi/kimi-coding/k2p7`
+- `pi/minimax/MiniMax-M3`
+- `pi/zai/glm-5.2`
+
+Artifacts:
+
+- `/tmp/a2d-compare-role-providers-architect-pi-lanes-60s-20260617-r1.json`
+- `/tmp/a2d-compare-role-providers-architect-pi-lanes-60s-20260617-r2.json`
+- `/tmp/a2d-compare-role-providers-tester-pi-lanes-60s-20260617-r1.json`
+- `/tmp/a2d-compare-role-providers-tester-pi-lanes-60s-20260617-r2.json`
+
+Summary:
+
+- Architect: Kimi k2p6 produced valid noop `system_patch` in both replicas (11.2s, 33.4s). GLM 5.1 produced one noop then timed out. DeepSeek materialized output twice but both were malformed/rejected. Pi Minimax produced one noop then timed out. Pi Kimi produced one malformed/rejected output then timed out. Pi GLM 5.2 timed out twice.
+- Tester: Kimi k2p6 and DeepSeek materialized `test_results` in both replicas. GLM 5.1 failed both replicas (empty/no materialized output, then timeout). Pi Kimi timed out then materialized output. Pi Minimax and Pi GLM 5.2 materialized output in both replicas, but previews were often prose/command-intent rather than clearly mechanical test execution.
+
+Interpretation: this is useful reliability/latency evidence but not a deterministic ranking. The same provider can flip between success and timeout at a 60s cutoff, so future runs should separate provider reliability from cutoff selection (for example more replicas, larger timeout buckets, or challenge-integrated evidence). Do not treat `assignment_accepted: true` as provider success; rank by `outcome`, `failed`, elapsed time, `materialized_output_previews`, and patch outcome fields. No default or durable provider-policy change is justified from this slice.
