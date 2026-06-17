@@ -18,6 +18,7 @@ export interface ThoughtModelRequest {
 export interface ThoughtModelResponse {
 	content: string;
 	model: string;
+	warning?: string;
 }
 
 export type ThoughtModelCaller = (request: ThoughtModelRequest) => Promise<ThoughtModelResponse>;
@@ -78,6 +79,7 @@ export async function generateStrayThought(
 		id: randomUUID(),
 		createdAt: new Date().toISOString(),
 		model: response.model,
+		...(response.warning ? { warning: response.warning } : {}),
 		promptProfile: profile.name,
 		trigger,
 		content: normalizeThought(response.content),

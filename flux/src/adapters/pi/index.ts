@@ -211,7 +211,11 @@ function createPiModelCaller(ctx: ExtensionContext, signal?: AbortSignal): Thoug
 			.filter((part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string")
 			.map((part) => part.text)
 			.join("\n");
-		return { content, model: hostNativeModelLabel("pi", `${modelLabel(model)}${reasoning ? `:${reasoning}` : ""}`) };
+		return {
+			content,
+			model: hostNativeModelLabel("pi", `${modelLabel(model)}${reasoning ? `:${reasoning}` : ""}`),
+			...(selection.warning ? { warning: selection.warning } : {}),
+		};
 	};
 }
 
@@ -338,6 +342,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 		let text = `${theme.fg("accent", "💭 Flux")} ${message.content}`;
 		if (expanded && details) {
 			text += `\n${theme.fg("dim", `${details.model ?? "unknown model"} · ${details.contextDigest ?? "no digest"}`)}`;
+			if (details.warning) text += `\n${theme.fg("warning", `warning: ${details.warning}`)}`;
 		}
 		box.addChild(new Text(text, 0, 0));
 		return box;

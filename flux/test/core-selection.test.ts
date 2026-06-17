@@ -352,11 +352,12 @@ test("generateStrayThought can use an injected host-native model caller", async 
 		modelCaller: async ({ systemPrompt, prompt }) => {
 			assert.match(systemPrompt, /Flux/);
 			assert.match(prompt, /Agent context snapshot/);
-			return { content: "Note: use the host model", model: "pi/test-model" };
+			return { content: "Note: use the host model", model: "pi/test-model", warning: "fell back to active model" };
 		},
 	});
 
 	assert.equal(thought.model, "pi/test-model");
+	assert.equal(thought.warning, "fell back to active model");
 	assert.equal(thought.content, "use the host model");
 	assert.equal(state.lastThought, thought);
 });

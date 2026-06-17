@@ -158,6 +158,8 @@ export interface StrayThought {
 	id: string;
 	createdAt: string;
 	model: string;
+	/** Optional non-content warning about model resolution/fallback. */
+	warning?: string;
 	promptProfile?: string;
 	trigger: TriggerEvent;
 	content: string;
