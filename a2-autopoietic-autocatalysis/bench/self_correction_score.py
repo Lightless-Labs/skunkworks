@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class SelfCorrectionRecord:
     task_id: str
     run_id: str
@@ -26,12 +26,67 @@ class SelfCorrectionRecord:
     resolved: bool
     prior_lineage_present: bool
     anti_repeat_retry_enabled: bool | None = None
+    a2_returncode: int | None = None
+    verify_returncode: int | None = None
+    touched_files: tuple[str, ...] = ()
+    diff_added_lines: int | None = None
+    diff_removed_lines: int | None = None
+
+    def __init__(
+        self,
+        *,
+        task_id: str,
+        run_id: str,
+        attempt: int,
+        resolved: bool,
+        prior_lineage_present: bool,
+        anti_repeat_retry_enabled: bool | None = None,
+        a2_returncode: int | None = None,
+        verify_returncode: int | None = None,
+        touched_files: tuple[str, ...] = (),
+        diff_added_lines: int | None = None,
+        diff_removed_lines: int | None = None,
+    ) -> None:
+        object.__setattr__(self, "task_id", task_id)
+        object.__setattr__(self, "run_id", run_id)
+        object.__setattr__(self, "attempt", attempt)
+        object.__setattr__(self, "resolved", resolved)
+        object.__setattr__(self, "prior_lineage_present", prior_lineage_present)
+        object.__setattr__(
+            self, "anti_repeat_retry_enabled", anti_repeat_retry_enabled
+        )
+        object.__setattr__(self, "a2_returncode", a2_returncode)
+        object.__setattr__(self, "verify_returncode", verify_returncode)
+        object.__setattr__(self, "touched_files", touched_files)
+        object.__setattr__(self, "diff_added_lines", diff_added_lines)
+        object.__setattr__(self, "diff_removed_lines", diff_removed_lines)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("logfile", help="Path to self-correction JSONL results.")
+    parser.add_argument(
+        "--trajectories",
+        action="store_true",
+        help="Print per-run attempt trajectories with return codes and touched files.",
+    )
     return parser.parse_args(argv)
+
+
+def optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def touched_files_from_payload(payload: dict[str, Any]) -> tuple[str, ...]:
+    touched_files = payload.get("touched_files")
+    if not isinstance(touched_files, list):
+        return ()
+    return tuple(str(path) for path in touched_files)
 
 
 def load_records(path: Path) -> list[SelfCorrectionRecord]:
@@ -55,6 +110,11 @@ def load_records(path: Path) -> list[SelfCorrectionRecord]:
                         if "anti_repeat_retry_enabled" in payload
                         else None
                     ),
+                    a2_returncode=optional_int(payload.get("a2_returncode")),
+                    verify_returncode=optional_int(payload.get("verify_returncode")),
+                    touched_files=touched_files_from_payload(payload),
+                    diff_added_lines=optional_int(payload.get("diff_added_lines")),
+                    diff_removed_lines=optional_int(payload.get("diff_removed_lines")),
                 )
             )
     return records
@@ -135,10 +195,80 @@ def render_metrics(prefix: str, metrics: dict[str, int]) -> list[str]:
     ]
 
 
-def render(records: list[SelfCorrectionRecord]) -> str:
+def format_optional_returncode(value: int | None) -> str:
+    return "n/a" if value is None else str(value)
+
+
+def format_diff(record: SelfCorrectionRecord) -> str:
+    added = "?" if record.diff_added_lines is None else str(record.diff_added_lines)
+    removed = "?" if record.diff_removed_lines is None else str(record.diff_removed_lines)
+    return f"+{added}/-{removed}"
+
+
+def format_touched_files(record: SelfCorrectionRecord) -> str:
+    if not record.touched_files:
+        return "[]"
+    return "[" + ", ".join(record.touched_files) + "]"
+
+
+def attempt_status(record: SelfCorrectionRecord) -> str:
+    if record.resolved:
+        return "resolved"
+    if record.verify_returncode not in (None, 0):
+        return "verify-failed"
+    return "unresolved"
+
+
+def verifier_failed_clean_exit(record: SelfCorrectionRecord) -> bool:
+    return (
+        not record.resolved
+        and record.a2_returncode == 0
+        and record.verify_returncode not in (None, 0)
+    )
+
+
+def render_attempt_trajectories(records: list[SelfCorrectionRecord]) -> list[str]:
+    grouped = group_records(records)
+    lines = ["", "Attempt trajectories"]
+    for run_id, task_id in sorted(grouped):
+        lines.append(f"  {run_id} / {task_id}")
+        for record in grouped[(run_id, task_id)]:
+            flags: list[str] = []
+            if record.prior_lineage_present:
+                flags.append("prior-lineage")
+            if verifier_failed_clean_exit(record):
+                flags.append("clean-agent-exit")
+            flag_text = f" flags={','.join(flags)}" if flags else ""
+            lines.append(
+                f"    attempt {record.attempt}: {attempt_status(record)} "
+                f"resolved={str(record.resolved).lower()} "
+                f"verify={format_optional_returncode(record.verify_returncode)} "
+                f"a2={format_optional_returncode(record.a2_returncode)} "
+                f"diff={format_diff(record)} "
+                f"files={format_touched_files(record)}"
+                f"{flag_text}"
+            )
+    lines.append(
+        "  note: benchmark success is keyed by resolved/verify status; "
+        "a2_returncode=0 only means the agent command exited cleanly."
+    )
+    return lines
+
+
+def clean_agent_verifier_failures(records: list[SelfCorrectionRecord]) -> int:
+    return sum(1 for record in records if verifier_failed_clean_exit(record))
+
+
+def render(records: list[SelfCorrectionRecord], *, include_trajectories: bool = False) -> str:
     metrics = score(records)
     lines = render_metrics("Self-Correction Benchmark", metrics)
     lines.insert(1, f"  records             {len(records)} rows / {metrics['total']} runs")
+    clean_failures = clean_agent_verifier_failures(records)
+    if clean_failures:
+        lines.append(
+            f"  verifier-failed clean exits {clean_failures} attempts "
+            "(a2_returncode=0, resolved=false)"
+        )
     if metrics["pass_at_1"] and metrics["self_corrected"] == 0:
         lines.append(
             "  note: successful first attempts do not exercise prior-lineage self-correction"
@@ -156,6 +286,9 @@ def render(records: list[SelfCorrectionRecord]) -> str:
             for line in render_metrics(label, cohort_metrics)[1:]:
                 lines.append(f"  {line}")
 
+    if include_trajectories:
+        lines.extend(render_attempt_trajectories(records))
+
     return "\n".join(lines)
 
 
@@ -165,14 +298,20 @@ def main(argv: list[str]) -> int:
     if not records:
         print("No records found.")
         return 1
-    print(render(records))
+    print(render(records, include_trajectories=args.trajectories))
     return 0
 
 
 class SelfCorrectionScoreTests(unittest.TestCase):
     def test_first_pass_success_is_not_self_correction(self) -> None:
         records = [
-            SelfCorrectionRecord("task", "run", 1, True, False),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=1,
+                resolved=True,
+                prior_lineage_present=False,
+            ),
         ]
         metrics = score(records)
         self.assertEqual(metrics["resolved"], 1)
@@ -185,8 +324,20 @@ class SelfCorrectionScoreTests(unittest.TestCase):
 
     def test_later_success_with_prior_lineage_counts(self) -> None:
         records = [
-            SelfCorrectionRecord("task", "run", 1, False, False),
-            SelfCorrectionRecord("task", "run", 2, True, True),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=2,
+                resolved=True,
+                prior_lineage_present=True,
+            ),
         ]
         metrics = score(records)
         self.assertEqual(metrics["resolved"], 1)
@@ -196,8 +347,20 @@ class SelfCorrectionScoreTests(unittest.TestCase):
 
     def test_render_reports_rows_and_grouped_runs(self) -> None:
         records = [
-            SelfCorrectionRecord("task", "run", 1, False, False),
-            SelfCorrectionRecord("task", "run", 2, True, True),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=2,
+                resolved=True,
+                prior_lineage_present=True,
+            ),
         ]
 
         output = render(records)
@@ -206,10 +369,38 @@ class SelfCorrectionScoreTests(unittest.TestCase):
 
     def test_render_reports_anti_repeat_ablation_cohorts(self) -> None:
         records = [
-            SelfCorrectionRecord("task", "enabled", 1, False, False, True),
-            SelfCorrectionRecord("task", "enabled", 2, True, True, True),
-            SelfCorrectionRecord("task", "disabled", 1, False, False, False),
-            SelfCorrectionRecord("task", "disabled", 2, False, True, False),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="enabled",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+                anti_repeat_retry_enabled=True,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="enabled",
+                attempt=2,
+                resolved=True,
+                prior_lineage_present=True,
+                anti_repeat_retry_enabled=True,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="disabled",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+                anti_repeat_retry_enabled=False,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="disabled",
+                attempt=2,
+                resolved=False,
+                prior_lineage_present=True,
+                anti_repeat_retry_enabled=False,
+            ),
         ]
 
         output = render(records)
@@ -217,6 +408,83 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertIn("Ablation cohorts", output)
         self.assertIn("anti-repeat enabled", output)
         self.assertIn("anti-repeat disabled", output)
+
+    def test_render_flags_clean_agent_exit_verifier_failures(self) -> None:
+        records = [
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+                a2_returncode=0,
+                verify_returncode=1,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=2,
+                resolved=True,
+                prior_lineage_present=True,
+                a2_returncode=0,
+                verify_returncode=0,
+            ),
+        ]
+
+        output = render(records)
+
+        self.assertIn("verifier-failed clean exits 1 attempts", output)
+
+    def test_render_attempt_trajectories_show_resolved_and_return_codes(self) -> None:
+        records = [
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+                a2_returncode=0,
+                verify_returncode=1,
+                touched_files=("crates/example/src/lib.rs",),
+                diff_added_lines=1,
+                diff_removed_lines=1,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=2,
+                resolved=True,
+                prior_lineage_present=True,
+                a2_returncode=0,
+                verify_returncode=0,
+            ),
+        ]
+
+        output = render(records, include_trajectories=True)
+
+        self.assertIn("Attempt trajectories", output)
+        self.assertIn("attempt 1: verify-failed resolved=false verify=1 a2=0", output)
+        self.assertIn("clean-agent-exit", output)
+        self.assertIn("prior-lineage", output)
+        self.assertIn("a2_returncode=0 only means the agent command exited cleanly", output)
+
+    def test_clean_agent_exit_flag_requires_verifier_failure(self) -> None:
+        records = [
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+                a2_returncode=0,
+                verify_returncode=0,
+            ),
+        ]
+
+        output = render(records, include_trajectories=True)
+
+        self.assertNotIn("verifier-failed clean exits", output)
+        self.assertNotIn("clean-agent-exit", output)
 
 
 if __name__ == "__main__":

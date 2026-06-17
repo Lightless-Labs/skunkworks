@@ -69,7 +69,13 @@ Score self-correction specifically:
 bench/self_correction_score.py bench/self-correction-results.jsonl
 ```
 
-This scorer reports `pass@1` separately from `self-corrected`. A first-attempt pass is useful model capability data, but it does not exercise prior-lineage self-correction; when no run retries, `self-corrected` renders as N/A instead of a failed recovery rate. A JSONL file can have more rows than independent trials because each retry attempt is one row; score and document runs by unique `(run_id, task_id)`, not raw line count.
+Add per-run attempt trajectories when investigating retry shape or verifier failures:
+
+```bash
+bench/self_correction_score.py --trajectories bench/self-correction-results.jsonl
+```
+
+This scorer reports `pass@1` separately from `self-corrected`. A first-attempt pass is useful model capability data, but it does not exercise prior-lineage self-correction; when no run retries, `self-corrected` renders as N/A instead of a failed recovery rate. A JSONL file can have more rows than independent trials because each retry attempt is one row; score and document runs by unique `(run_id, task_id)`, not raw line count. Benchmark success keys off `resolved` / verification status; `a2_returncode=0` only means the agent command exited cleanly.
 
 Run the anti-repeat retry ablation by keeping the same fixture/provider/attempt budget and writing enabled/disabled cohorts to one log or to paired logs:
 
