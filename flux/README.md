@@ -128,7 +128,7 @@ node /absolute/path/to/flux/scripts/flux-hook-wrapper.mjs --host=claude-code
 node /absolute/path/to/flux/scripts/flux-hook-wrapper.mjs --host=codex
 ```
 
-See `examples/` for scaffold settings. Host plugin APIs move quickly, so these adapters intentionally expose a conservative hook CLI: read JSON on stdin, emit JSON with `additionalContext`/`instructions`, and never fail the host agent.
+See `examples/` for scaffold settings. Host plugin APIs move quickly, so these adapters intentionally expose a conservative hook CLI: read JSON on stdin, emit documented hook JSON with `hookSpecificOutput.additionalContext`, and never fail the host agent.
 
 ## Prompt/model selection
 

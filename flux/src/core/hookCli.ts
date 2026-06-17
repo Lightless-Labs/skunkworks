@@ -37,22 +37,41 @@ export function inferKind(payload: unknown): TriggerKind {
 	return "external";
 }
 
-export function formatHookOutput(host: HostKind, rendered: string, thought: unknown, fired: boolean): Record<string, unknown> {
+export function hookEventNameForOutput(payload: unknown, kind: TriggerKind): string {
+	const record = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
+	const raw = String(record.hook_event_name ?? record.event ?? record.type ?? "");
+	if (/^SessionStart$|^PreToolUse$|^PermissionRequest$|^PostToolUse$|^UserPromptSubmit$|^SubagentStop$|^Stop$/u.test(raw)) return raw;
+	const lower = raw.toLowerCase();
+	if (/post[_-]?tool|tool.*result|tool_response/.test(lower)) return "PostToolUse";
+	if (/stop|post[_-]?turn|turn.*end|assistant.*end|response.*done/.test(lower)) return "Stop";
+	if (/start|prompt|user/.test(lower)) return "UserPromptSubmit";
+	if (kind === "tool-result") return "PostToolUse";
+	if (kind === "turn-end") return "Stop";
+	if (kind === "turn-start") return "UserPromptSubmit";
+	return "UserPromptSubmit";
+}
+
+export function formatHookOutput(host: HostKind, rendered: string, thought: unknown, fired: boolean, hookEventName = "PostToolUse"): Record<string, unknown> {
 	if (!fired) return { continue: true, flux: { fired: false } };
 	if (host === "claude-code") {
 		return {
 			continue: true,
-			hookSpecificOutput: { hookEventName: "Flux", additionalContext: rendered },
-			additionalContext: rendered,
+			hookSpecificOutput: { hookEventName, additionalContext: rendered },
 			flux: thought,
 		};
 	}
-	if (host === "codex") return { continue: true, instructions: rendered, additionalContext: rendered, flux: thought };
+	if (host === "codex") {
+		return {
+			continue: true,
+			hookSpecificOutput: { hookEventName, additionalContext: rendered },
+			flux: thought,
+		};
+	}
 	return { continue: true, additionalContext: rendered, flux: thought };
 }
 
-function output(host: HostKind, rendered: string, thought: unknown, fired: boolean) {
-	process.stdout.write(JSON.stringify(formatHookOutput(host, rendered, thought, fired)) + "\n");
+function output(host: HostKind, rendered: string, thought: unknown, fired: boolean, hookEventName?: string) {
+	process.stdout.write(JSON.stringify(formatHookOutput(host, rendered, thought, fired, hookEventName)) + "\n");
 }
 
 export async function runHookCli(options: HookCliOptions): Promise<void> {
@@ -64,15 +83,16 @@ export async function runHookCli(options: HookCliOptions): Promise<void> {
 		const payload = parsePayload(raw);
 		const snapshot = snapshotFromGenericPayload(options.host, payload, config);
 		const event: TriggerEvent = { host: options.host, kind: inferKind(payload), timestamp: Date.now(), payload };
+		const hookEventName = hookEventNameForOutput(payload, event.kind);
 		const state = createInitialState();
 		const force = process.argv.includes("--force") || event.kind === "external";
 		const trigger = force ? { name: "hook", kind: event.kind, enabled: true } : shouldFireTrigger(config, state, event, snapshot);
-		if (!config.enabled || !trigger) return output(options.host, "", undefined, false);
+		if (!config.enabled || !trigger) return output(options.host, "", undefined, false, hookEventName);
 		event.name = trigger.name;
 		const thought = await generateStrayThought(config, state, snapshot, event, {
 			modelCaller: createHostCliModelCaller(options.host, snapshot.cwd),
 		});
-		output(options.host, renderThoughtForAgent(thought), thought, true);
+		output(options.host, renderThoughtForAgent(thought), thought, true, hookEventName);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		process.stderr.write(`flux-hook: ${message}\n`);

@@ -15,7 +15,7 @@ Flux is split into a small host-neutral core and thin host adapters.
 
 - `src/adapters/pi/index.ts` is a Pi package extension. It listens to `turn_end` and `tool_result`, registers `/flux`, registers the `flux_stray_thought` tool, listens for `pi.events.emit("flux:trigger", payload)` from other extensions, and generates thoughts through Pi's selected/authenticated model. It supports session delivery modes `steer`, `followUp`, and `nextTurn`.
 - `src/adapters/claude-code/hook.ts` is a command hook entrypoint. It expects hook JSON on stdin, asks the authenticated `claude` CLI for the thought, and returns JSON with `additionalContext`/`hookSpecificOutput` on stdout.
-- `src/adapters/codex/hook.ts` uses the same hook CLI, asks `codex exec` for the thought, and returns generic instruction JSON for hook-capable Codex runtimes.
+- `src/adapters/codex/hook.ts` uses the same hook CLI, asks `codex exec` for the thought, and returns documented hook JSON with `hookSpecificOutput.additionalContext` for hook-capable Codex runtimes.
 
 ## Host plugin installation
 
