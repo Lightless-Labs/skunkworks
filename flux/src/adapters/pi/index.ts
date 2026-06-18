@@ -18,6 +18,7 @@ import {
 import { snapshotFromGenericPayload, textFromUnknown } from "../../core/context.ts";
 import { piDeliverAs, supportedDeliveryModes } from "../../core/delivery.ts";
 import { generateStrayThought, hostNativeModelLabel, renderThoughtForAgent, type ThoughtModelCaller } from "../../core/engine.ts";
+import { formatHostSidecarStatus } from "../../core/hostSidecar.ts";
 import { createInitialState, shouldFireTrigger } from "../../core/triggers.ts";
 import type { AgentContextSnapshot, AgentMessage, AgentToolEvent, FluxConfig, FluxState, TriggerEvent } from "../../core/types.ts";
 
@@ -608,7 +609,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 						"Flux models:",
 						...loaded.config.models.map((model) => `- ${model.name}: ${model.provider}/${model.model}${model.thinkingEffort ? `:${model.thinkingEffort}` : ""}`),
 						"Host sidecar:",
-						...Object.entries(loaded.config.hostSidecar).map(([host, settings]) => `- ${host}: model=${settings?.model ?? "active"}, thinking=${settings?.thinkingEffort ?? "active"}`),
+						...formatHostSidecarStatus(loaded.config),
 						"Model pools:",
 						...Object.entries(loaded.config.modelPools).map(([name, models]) => `- ${name}: ${models.join(", ")}`),
 					];

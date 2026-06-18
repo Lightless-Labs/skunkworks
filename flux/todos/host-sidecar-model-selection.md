@@ -7,6 +7,7 @@
 **Enhanced:** 2026-06-15 — Pi `/flux status` now shows configured vs resolved sidecar model/thinking, and stale/unavailable Pi pins warn and fall back to the active model.
 **Enhanced:** 2026-06-15 — Claude/Codex host CLI sidecars now retry once with the active host model when an explicit configured model invocation fails, and propagate a warning in thought metadata.
 **Enhanced:** 2026-06-18 — validated Claude Code 2.1.181 exposes `--effort <low|medium|high|xhigh|max>` and wired configured Flux Claude thinking through `--effort`, mapping cross-host `minimal` to Claude `low`.
+**Enhanced:** 2026-06-18 — `/flux config models` now formats host sidecar preferences with effective Claude/Codex CLI args; true alias/default resolution remains host-owned because the CLIs do not expose enough resolved-model metadata for Flux to maintain safely.
 
 ## Context
 
@@ -30,7 +31,7 @@ Invariant: **Flux must never own provider “latest” alias resolution.** Defau
 - Let users choose sidecar thinking effort/level where supported.
 - Clamp/validate thinking effort against host/model capabilities when the harness exposes capability metadata.
 - Fall back safely with a clear warning when a host does not support model/effort selection or a configured model is stale/unavailable.
-- Expose/log configured vs resolved sidecar model where possible, including `/flux status` and thought metadata/logging.
+- Expose/log configured vs resolved sidecar model where possible, including `/flux status`, `/flux config models`, and thought metadata/logging.
 
 ## Candidate UX
 
@@ -43,6 +44,7 @@ Host commands:
 /flux config host codex model active|<model-id>
 /flux config host codex thinking active|off|minimal|low|medium|high|xhigh
 /flux config host claude-code model active|<model-id>
+/flux config host claude-code thinking active|off|minimal|low|medium|high|xhigh
 ```
 
 Direct-provider command should also grow the already-typed `thinkingEffort` option:
@@ -76,4 +78,4 @@ Direct-provider command should also grow the already-typed `thinkingEffort` opti
 - [x] Pi: show configured vs resolved host sidecar model/thinking in `/flux status`.
 - [x] Pi: warn and fall back safely when an explicit host sidecar model pin is stale or unavailable.
 - [x] Codex/Claude hook sidecars: retry with active/default host model and propagate a warning when an explicit configured model invocation fails.
-- [ ] Extend configured-vs-resolved status visibility to Codex/Claude where their CLIs expose enough information.
+- [x] Extend configured-vs-resolved status visibility to Codex/Claude where their CLIs expose enough information. Flux now shows configured preferences and effective CLI args in `/flux config models`; actual alias/default resolution stays with the host CLIs because they do not expose stable resolved-model metadata here.

@@ -18,6 +18,7 @@ import {
 import { formatSnapshotForPrompt } from "../src/core/context.ts";
 import { isDeliveryMode, piDeliverAs, supportedDeliveryModes } from "../src/core/delivery.ts";
 import { generateStrayThought, selectPromptProfile } from "../src/core/engine.ts";
+import { formatHostSidecarStatus } from "../src/core/hostSidecar.ts";
 import { resolveModelPool } from "../src/core/modelClient.ts";
 import { createInitialState, shouldFireTrigger } from "../src/core/triggers.ts";
 import type { AgentContextSnapshot, FluxConfig, FluxModelSpec, FluxState, TriggerEvent } from "../src/core/types.ts";
@@ -323,6 +324,19 @@ test("config actions validate and mutate common slash-command settings", () => {
 	assert.equal(upsertPromptProfile(config, ["manual", "bad", "-1", "style"]).ok, false);
 	config.triggers.push({ name: "bad-repeat", kind: "loop-detected", repeatThreshold: 1 });
 	assert.equal(validateFluxConfig(config).ok, false);
+});
+
+test("formatHostSidecarStatus shows configured and effective host CLI preferences", () => {
+	const config = cloneConfig();
+	config.hostSidecar["claude-code"] = { model: "opus", thinkingEffort: "minimal" };
+	config.hostSidecar.codex = { model: "gpt-5.5", thinkingEffort: "off" };
+	const formatted = formatHostSidecarStatus(config).join("\n");
+
+	assert.match(formatted, /pi: configured model=active/);
+	assert.match(formatted, /claude-code: configured model=opus, effective model arg=--model opus/);
+	assert.match(formatted, /configured thinking=minimal, effective thinking arg=--effort low/);
+	assert.match(formatted, /codex: configured model=gpt-5\.5, effective model arg=-m gpt-5\.5/);
+	assert.match(formatted, /configured thinking=off, effective thinking arg=no CLI arg \(off requested\)/);
 });
 
 test("formatPromptProfiles includes profile styles, not only names", () => {

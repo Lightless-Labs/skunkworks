@@ -119,6 +119,35 @@ if (outputIndex !== -1) writeFileSync(process.argv[outputIndex + 1], "configured
 	}
 });
 
+test("createHostCliModelCaller omits Codex reasoning effort when configured off", async () => {
+	const fake = withFakeCommand(`
+import { readFileSync, writeFileSync } from "node:fs";
+readFileSync(0, "utf8");
+writeFileSync(process.env.FLUX_CAPTURE_PATH, JSON.stringify({ args: process.argv.slice(2) }));
+const outputIndex = process.argv.indexOf("--output-last-message");
+if (outputIndex !== -1) writeFileSync(process.argv[outputIndex + 1], "codex off note");
+`);
+	const previousCommand = process.env.FLUX_CODEX_COMMAND;
+	const previousCapture = process.env.FLUX_CAPTURE_PATH;
+	process.env.FLUX_CODEX_COMMAND = fake.command;
+	process.env.FLUX_CAPTURE_PATH = fake.capturePath;
+	try {
+		const caller = createHostCliModelCaller("codex", fake.dir);
+		assert.ok(caller);
+		const result = await caller({ systemPrompt: "system", prompt: "prompt", config: configWithHost("codex", { thinkingEffort: "off" }) } as any);
+		const captured = JSON.parse(readFileSync(fake.capturePath, "utf8")) as { args: string[] };
+		assert.equal(result.content, "codex off note");
+		assert.equal(result.model, "codex/codex-cli");
+		assert.equal(captured.args.includes("-c"), false);
+	} finally {
+		if (previousCommand === undefined) delete process.env.FLUX_CODEX_COMMAND;
+		else process.env.FLUX_CODEX_COMMAND = previousCommand;
+		if (previousCapture === undefined) delete process.env.FLUX_CAPTURE_PATH;
+		else process.env.FLUX_CAPTURE_PATH = previousCapture;
+		fake.cleanup();
+	}
+});
+
 test("createHostCliModelCaller passes configured Claude model and effort", async () => {
 	const fake = withFakeCommand(`
 import { readFileSync, writeFileSync } from "node:fs";

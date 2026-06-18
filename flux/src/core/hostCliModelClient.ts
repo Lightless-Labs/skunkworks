@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ThoughtModelCaller } from "./engine.ts";
 import { hostNativeModelLabel } from "./engine.ts";
+import { claudeEffortArgument, codexReasoningEffortArgument, isActiveHostPreference } from "./hostSidecar.ts";
 import type { FluxConfig, HostKind } from "./types.ts";
 
 interface SpawnResult {
@@ -84,19 +85,6 @@ function hostPreference(config: FluxConfig | undefined, host: HostKind): { model
 	return config?.hostSidecar?.[host] ?? {};
 }
 
-function isActivePreference(value: string | undefined): boolean {
-	return value === undefined || value === "" || value === "active";
-}
-
-function claudeEffortArgument(value: string | undefined): string | undefined {
-	if (isActivePreference(value) || value === "off") return undefined;
-	// Claude Code currently accepts low, medium, high, xhigh, and max. Flux's
-	// cross-host config exposes minimal rather than max, so clamp minimal to the
-	// lowest Claude-supported effort instead of emitting an invalid flag.
-	if (value === "minimal") return "low";
-	return value;
-}
-
 async function callClaudeCli(
 	prompt: string,
 	systemPrompt: string,
@@ -107,13 +95,13 @@ async function callClaudeCli(
 	const command = process.env.FLUX_CLAUDE_COMMAND || "claude";
 	const preference = hostPreference(config, "claude-code");
 	const args = ["-p", "--no-session-persistence", "--tools", ""];
-	if (!isActivePreference(preference.model)) args.push("--model", preference.model!);
+	if (!isActiveHostPreference(preference.model)) args.push("--model", preference.model!);
 	const effort = claudeEffortArgument(preference.thinkingEffort);
 	if (effort) args.push("--effort", effort);
 	args.push("--system-prompt", systemPrompt);
 	const result = await spawnWithInput(command, args, prompt, { cwd, signal, timeoutMs: 120_000 });
 	const detailParts = ["claude-cli"];
-	if (!isActivePreference(preference.model)) detailParts.push(preference.model!);
+	if (!isActiveHostPreference(preference.model)) detailParts.push(preference.model!);
 	if (effort) detailParts.push(effort);
 	const detail = detailParts.join("/");
 	assertSuccess(result, "claude CLI sidecar");
@@ -133,9 +121,10 @@ async function callCodexCli(
 	const outputPath = join(tmp, "last-message.txt");
 	try {
 		const args = ["--ask-for-approval", "never", "exec"];
-		if (!isActivePreference(preference.model)) args.push("-m", preference.model!);
-		if (!isActivePreference(preference.thinkingEffort) && preference.thinkingEffort !== "off") {
-			args.push("-c", `model_reasoning_effort=${JSON.stringify(preference.thinkingEffort)}`);
+		if (!isActiveHostPreference(preference.model)) args.push("-m", preference.model!);
+		const effort = codexReasoningEffortArgument(preference.thinkingEffort);
+		if (effort) {
+			args.push("-c", `model_reasoning_effort=${JSON.stringify(effort)}`);
 		}
 		args.push(
 			"--sandbox",
@@ -150,8 +139,8 @@ async function callCodexCli(
 		const result = await spawnWithInput(command, args, input, { cwd, signal, timeoutMs: 120_000 });
 		assertSuccess(result, "codex CLI sidecar");
 		const detailParts = ["codex-cli"];
-		if (!isActivePreference(preference.model)) detailParts.push(preference.model!);
-		if (!isActivePreference(preference.thinkingEffort)) detailParts.push(preference.thinkingEffort!);
+		if (!isActiveHostPreference(preference.model)) detailParts.push(preference.model!);
+		if (effort) detailParts.push(effort);
 		try {
 			return { content: readFileSync(outputPath, "utf8").trim(), detail: detailParts.join("/") };
 		} catch {
@@ -184,7 +173,7 @@ export function createHostCliModelCaller(host: HostKind, cwd?: string): ThoughtM
 			const response = await callCodexCli(prompt, systemPrompt, cwd, signal, config);
 			return { content: response.content, model: hostNativeModelLabel(host, response.detail) };
 		} catch (error) {
-			if (isActivePreference(preference.model)) throw error;
+			if (isActiveHostPreference(preference.model)) throw error;
 			const message = error instanceof Error ? error.message : String(error);
 			const warning = `Flux ${host} sidecar model failed or is unavailable: ${preference.model}; falling back to active host model. ${message}`;
 			const fallbackConfig = withActiveHostModel(config, host);
