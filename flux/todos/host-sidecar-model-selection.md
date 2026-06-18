@@ -8,6 +8,7 @@
 **Enhanced:** 2026-06-15 — Claude/Codex host CLI sidecars now retry once with the active host model when an explicit configured model invocation fails, and propagate a warning in thought metadata.
 **Enhanced:** 2026-06-18 — validated Claude Code 2.1.181 exposes `--effort <low|medium|high|xhigh|max>` and wired configured Flux Claude thinking through `--effort`, mapping cross-host `minimal` to Claude `low`.
 **Enhanced:** 2026-06-18 — `/flux config models` now formats host sidecar preferences with effective Claude/Codex CLI args; true alias/default resolution remains host-owned because the CLIs do not expose enough resolved-model metadata for Flux to maintain safely.
+**Enhanced:** 2026-06-18 — Codex real CLI smoke passed for `thinkingEffort=off`; Claude real generation remains blocked by local account/model policy, so `--safe-mode`/`--effort` are covered by help output, status visibility, and argv tests rather than successful live generation.
 
 ## Context
 
@@ -74,7 +75,7 @@ Direct-provider command should also grow the already-typed `thinkingEffort` opti
 - [x] Codex: validate and wire model/effort CLI flags if current Codex supports them.
 - [x] Add tests for config parsing/validation and host caller argv/options.
 - [x] Document host-specific support/limitations in `docs/HANDOFF.md` and `README.md`.
-- [ ] Live-smoke Pi/Codex/Claude configured sidecar selections in real harness contexts.
+- [ ] Live-smoke Pi/Codex/Claude configured sidecar selections in real harness contexts. Codex `thinkingEffort=off` real CLI smoke passed on 2026-06-18; Claude still needs an environment with working Claude Code auth/API-key policy.
 - [x] Pi: show configured vs resolved host sidecar model/thinking in `/flux status`.
 - [x] Pi: warn and fall back safely when an explicit host sidecar model pin is stale or unavailable.
 - [x] Codex/Claude hook sidecars: retry with active/default host model and propagate a warning when an explicit configured model invocation fails.

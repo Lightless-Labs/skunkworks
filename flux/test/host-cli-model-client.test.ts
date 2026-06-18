@@ -58,7 +58,7 @@ if (outputIndex !== -1) writeFileSync(process.argv[outputIndex + 1], "codex side
 	}
 });
 
-test("createHostCliModelCaller invokes Claude print mode with tools disabled", async () => {
+test("createHostCliModelCaller invokes Claude safe print mode with tools disabled", async () => {
 	const fake = withFakeCommand(`
 import { readFileSync, writeFileSync } from "node:fs";
 const stdin = readFileSync(0, "utf8");
@@ -77,7 +77,7 @@ process.stdout.write("claude sidecar note\\n");
 
 		assert.equal(result.content, "claude sidecar note");
 		assert.equal(result.model, "claude-code/claude-cli");
-		assert.deepEqual(captured.args, ["-p", "--no-session-persistence", "--tools", "", "--system-prompt", "system prompt"]);
+		assert.deepEqual(captured.args, ["--safe-mode", "-p", "--no-session-persistence", "--tools", "", "--system-prompt", "system prompt"]);
 		assert.equal(captured.stdin, "user prompt");
 		assert.equal(captured.suppress, "1");
 	} finally {
@@ -166,7 +166,7 @@ process.stdout.write("configured claude note\\n");
 		const captured = JSON.parse(readFileSync(fake.capturePath, "utf8")) as { args: string[] };
 		assert.equal(result.content, "configured claude note");
 		assert.equal(result.model, "claude-code/claude-cli/opus/high");
-		assert.deepEqual(captured.args, ["-p", "--no-session-persistence", "--tools", "", "--model", "opus", "--effort", "high", "--system-prompt", "system prompt"]);
+		assert.deepEqual(captured.args, ["--safe-mode", "-p", "--no-session-persistence", "--tools", "", "--model", "opus", "--effort", "high", "--system-prompt", "system prompt"]);
 	} finally {
 		if (previousCommand === undefined) delete process.env.FLUX_CLAUDE_COMMAND;
 		else process.env.FLUX_CLAUDE_COMMAND = previousCommand;
@@ -237,6 +237,48 @@ if (outputIndex !== -1) writeFileSync(process.argv[outputIndex + 1], "fallback c
 	} finally {
 		if (previousCommand === undefined) delete process.env.FLUX_CODEX_COMMAND;
 		else process.env.FLUX_CODEX_COMMAND = previousCommand;
+		if (previousCapture === undefined) delete process.env.FLUX_CAPTURE_PATH;
+		else process.env.FLUX_CAPTURE_PATH = previousCapture;
+		fake.cleanup();
+	}
+});
+
+test("createHostCliModelCaller reports both configured and active Claude failures", async () => {
+	const fake = withFakeCommand(`
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+readFileSync(0, "utf8");
+const args = process.argv.slice(2);
+const previous = existsSync(process.env.FLUX_CAPTURE_PATH) ? JSON.parse(readFileSync(process.env.FLUX_CAPTURE_PATH, "utf8")) : [];
+writeFileSync(process.env.FLUX_CAPTURE_PATH, JSON.stringify([...previous, args]));
+if (args.includes("bad-model")) {
+	process.stderr.write("unknown model: bad-model\\n");
+	process.exit(2);
+}
+process.stderr.write("active model unavailable\\n");
+process.exit(3);
+`);
+	const previousCommand = process.env.FLUX_CLAUDE_COMMAND;
+	const previousCapture = process.env.FLUX_CAPTURE_PATH;
+	process.env.FLUX_CLAUDE_COMMAND = fake.command;
+	process.env.FLUX_CAPTURE_PATH = fake.capturePath;
+	try {
+		const caller = createHostCliModelCaller("claude-code", fake.dir);
+		assert.ok(caller);
+		await assert.rejects(
+			() => caller({ systemPrompt: "system", prompt: "prompt", config: configWithHost("claude-code", { model: "bad-model" }) } as any),
+			(error: Error) => {
+				assert.match(error.message, /bad-model/);
+				assert.match(error.message, /active host model fallback also failed/);
+				assert.match(error.message, /active model unavailable/);
+				return true;
+			},
+		);
+		const calls = JSON.parse(readFileSync(fake.capturePath, "utf8")) as string[][];
+		assert.ok(calls[0]?.includes("bad-model"));
+		assert.equal(calls[1]?.includes("bad-model"), false);
+	} finally {
+		if (previousCommand === undefined) delete process.env.FLUX_CLAUDE_COMMAND;
+		else process.env.FLUX_CLAUDE_COMMAND = previousCommand;
 		if (previousCapture === undefined) delete process.env.FLUX_CAPTURE_PATH;
 		else process.env.FLUX_CAPTURE_PATH = previousCapture;
 		fake.cleanup();

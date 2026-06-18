@@ -335,6 +335,7 @@ test("formatHostSidecarStatus shows configured and effective host CLI preference
 	assert.match(formatted, /pi: configured model=active/);
 	assert.match(formatted, /claude-code: configured model=opus, effective model arg=--model opus/);
 	assert.match(formatted, /configured thinking=minimal, effective thinking arg=--effort low/);
+	assert.match(formatted, /sidecar uses --safe-mode/);
 	assert.match(formatted, /codex: configured model=gpt-5\.5, effective model arg=-m gpt-5\.5/);
 	assert.match(formatted, /configured thinking=off, effective thinking arg=no CLI arg \(off requested\)/);
 });

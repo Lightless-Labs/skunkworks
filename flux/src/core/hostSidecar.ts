@@ -50,7 +50,7 @@ export function formatHostSidecarStatus(config: FluxConfig): string[] {
 			lines.push(`- pi: configured model=${model}, configured thinking=${thinking}; resolved via Pi registry in /flux status`);
 			continue;
 		}
-		const resolvedNote = host === "claude-code" ? "resolved by Claude Code CLI" : "resolved by Codex CLI";
+		const resolvedNote = host === "claude-code" ? "resolved by Claude Code CLI; sidecar uses --safe-mode" : "resolved by Codex CLI";
 		lines.push(
 			`- ${host}: configured model=${model}, effective model arg=${modelArg(host, model)}, configured thinking=${thinking}, effective thinking arg=${thinkingArg(host, thinking)}; ${resolvedNote}`,
 		);

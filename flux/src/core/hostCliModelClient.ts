@@ -94,7 +94,7 @@ async function callClaudeCli(
 ): Promise<{ content: string; detail: string }> {
 	const command = process.env.FLUX_CLAUDE_COMMAND || "claude";
 	const preference = hostPreference(config, "claude-code");
-	const args = ["-p", "--no-session-persistence", "--tools", ""];
+	const args = ["--safe-mode", "-p", "--no-session-persistence", "--tools", ""];
 	if (!isActiveHostPreference(preference.model)) args.push("--model", preference.model!);
 	const effort = claudeEffortArgument(preference.thinkingEffort);
 	if (effort) args.push("--effort", effort);
@@ -177,12 +177,17 @@ export function createHostCliModelCaller(host: HostKind, cwd?: string): ThoughtM
 			const message = error instanceof Error ? error.message : String(error);
 			const warning = `Flux ${host} sidecar model failed or is unavailable: ${preference.model}; falling back to active host model. ${message}`;
 			const fallbackConfig = withActiveHostModel(config, host);
-			if (host === "claude-code") {
-				const response = await callClaudeCli(prompt, systemPrompt, cwd, signal, fallbackConfig);
+			try {
+				if (host === "claude-code") {
+					const response = await callClaudeCli(prompt, systemPrompt, cwd, signal, fallbackConfig);
+					return { content: response.content, model: hostNativeModelLabel(host, response.detail), warning };
+				}
+				const response = await callCodexCli(prompt, systemPrompt, cwd, signal, fallbackConfig);
 				return { content: response.content, model: hostNativeModelLabel(host, response.detail), warning };
+			} catch (fallbackError) {
+				const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+				throw new Error(`${warning}; active host model fallback also failed. ${fallbackMessage}`);
 			}
-			const response = await callCodexCli(prompt, systemPrompt, cwd, signal, fallbackConfig);
-			return { content: response.content, model: hostNativeModelLabel(host, response.detail), warning };
 		}
 	};
 }
