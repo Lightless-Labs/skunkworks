@@ -13,6 +13,7 @@
 **Corrected:** 2026-06-17 — replaced stale OpenCode Kimi k2.7 alias `opencode/kimi-k2.7-code` with listed model `opencode/kimi-for-coding/k2p7`; one corrected-lane smoke proves mechanical invocation but not default-change quality
 **Validation update:** 2026-06-17 — Pi-first 90s direct comparisons make Pi Minimax the strongest architect candidate in the diagnostic harness; prefer Pi for future probes, but do not persist defaults without challenge-integrated/provider-policy-gated evidence
 **Fixed:** 2026-06-17 — `compare-topologies` seed mode now honors runtime provider overrides while bypassing persisted lineage policy, so seed/evolved provider experiments are controlled
+**Validation update:** 2026-06-17 — provider-policy gate rejected durable Pi-Minimax tester/architect policy due invocation/wall-clock cost despite Pi preference
 **Todo:** `todos/architect-tester-provider-latency.md`
 
 ## Problem
@@ -169,6 +170,19 @@ A2D_PROVIDER_TIMEOUT_SECS=90 A2D_MAX_CYCLE_SECS=180 \
 Artifact: `/tmp/a2d-compare-topologies-sudoku2-pi-minimax-tester-architect-post-topology-override-fix-20260617.log`.
 
 Both seed and evolved legs printed the override lines and invoked architect/tester through Pi Minimax. Seed and evolved both reached best 100% at cycle 1; evolved used the same invocation count and was 23.7s faster. Caveat: moving tester/architect to Pi makes GLM unassigned, so GLM can enter the coder portfolio; this run is a controlled tester/architect override comparison, not a Pi-only topology run. Treat it as encouraging but insufficient for durable provider-policy changes.
+
+## 2026-06-17 provider-policy gate for Pi-Minimax
+
+Ran provider-policy comparisons for moving tester and architect to `pi/minimax/MiniMax-M3`.
+
+Artifacts:
+
+- `/tmp/a2d-compare-provider-policy-sudoku2-pi-minimax-tester-architect-20260617.log`
+- `/tmp/a2d-compare-provider-policy-sudoku2-pi-minimax-tester-architect-fullpolicy-20260617.log`
+
+The first partial-policy proposal improved best fitness (+17pp) but was rejected for material wall-clock increase (+54.4s beyond slack). It also showed that partial proposal JSON can display omitted current assignments as deltas such as `evolver -> ∅`, so rerun with full explicit policy when assessing durable changes.
+
+The full-policy rerun removed that confound and was still rejected: fitness +0pp, +2 invocations, +243.5s wall-clock. This is exactly the gate doing its job. Prefer Pi for future probes, but do not persist Pi-Minimax tester/architect defaults from current evidence.
 
 ## 2026-06-17 Pi-first 90s comparisons
 
