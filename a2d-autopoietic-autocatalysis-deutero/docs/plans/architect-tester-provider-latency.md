@@ -14,6 +14,7 @@
 **Validation update:** 2026-06-17 — Pi-first 90s direct comparisons make Pi Minimax the strongest architect candidate in the diagnostic harness; prefer Pi for future probes, but do not persist defaults without challenge-integrated/provider-policy-gated evidence
 **Fixed:** 2026-06-17 — `compare-topologies` seed mode now honors runtime provider overrides while bypassing persisted lineage policy, so seed/evolved provider experiments are controlled
 **Validation update:** 2026-06-17 — provider-policy gate rejected durable Pi-Minimax tester/architect policy due invocation/wall-clock cost despite Pi preference
+**Enhanced:** 2026-06-18 — `compare-role-providers` now accepts `--replicas N` and labels every result with `replica`, so replicated evidence can be gathered in one mechanically structured JSON artifact instead of separate ad hoc files
 **Todo:** `todos/architect-tester-provider-latency.md`
 
 ## Problem
@@ -71,11 +72,11 @@ A2D_PROVIDER_TIMEOUT_SECS=30 A2D_MAX_CYCLE_SECS=120 \
   cargo run -q -p a2d -- compare-topologies sudoku 1
 ```
 
-The direct role-comparison harness added later is preferred when coder timeouts would prevent tester/architect from being reached:
+The direct role-comparison harness added later is preferred when coder timeouts would prevent tester/architect from being reached. Use `--replicas N` to gather repeated measurements in one structured JSON artifact; every result includes a `replica` field:
 
 ```bash
 A2D_PROVIDER_TIMEOUT_SECS=5 A2D_MAX_CYCLE_SECS=10 \
-  cargo run -q -p a2d -- compare-role-providers sudoku tester \
+  cargo run -q -p a2d -- compare-role-providers sudoku tester --replicas 2 \
   opencode/zai-coding-plan/glm-5.1 \
   opencode/kimi-for-coding/k2p6 \
   opencode/opencode/deepseek-v4-flash-free
@@ -85,7 +86,7 @@ Opt-in new-lane comparison example:
 
 ```bash
 A2D_PROVIDER_TIMEOUT_SECS=30 A2D_MAX_CYCLE_SECS=45 \
-  cargo run -q -p a2d -- compare-role-providers sudoku architect \
+  cargo run -q -p a2d -- compare-role-providers sudoku architect --replicas 2 \
   opencode/zai-coding-plan/glm-5.1 \
   opencode/zai-coding-plan/glm-5.2 \
   opencode/kimi-for-coding/k2p6 \
@@ -109,13 +110,13 @@ A2D_PROVIDER_TIMEOUT_SECS=30 A2D_MAX_CYCLE_SECS=45 \
 - Bounded smoke with invalid override to verify rejection is visible and defaults remain usable. **Done 2026-06-05:** `validate-escalation` with `A2D_TESTER_PROVIDER=missing` printed a visible rejection three times (one fresh registry per forced rung) and completed JSON output.
 - Bounded smoke with valid override to verify assignment messages. **Done 2026-06-05:** `validate-escalation` with tester+architect set to Kimi printed accepted override messages for both roles.
 - Forced-role validation. **Done 2026-06-05:** `validate-escalation sudoku tester` and `validate-escalation sudoku architect` now isolate the target enzyme and seed non-empty inputs so the intended role is invoked directly. 10s smokes reached the target roles but timed out, so they are mechanism evidence only.
-- Optional bounded comparison smoke for Kimi/DeepSeek tester/architect assignment if provider budget allows. **Partially addressed 2026-06-11:** added `a2d compare-role-providers <challenge> <enzyme> [providers...]`, which builds validation-only single-enzyme runs and applies one provider assignment per run with persistence disabled. 5s tester and architect smokes reached GLM, Kimi, and DeepSeek directly; all timed out, so no default change is justified yet. **Updated 2026-06-13:** two 30s tester runs were noisy (`GLM success/timeout`, `DeepSeek success/timeout`, `Kimi timeout/timeout`), and a 30s architect run produced no successful `system_patch`. Kimi architect returned quickly but attempted an OpenCode tool read outside the isolated provider cwd, so that failure is a provider-mode/harness interaction as much as a model-quality signal. Outcome evidence still needs replicated larger-budget runs or a cheaper prompt/provider.
+- Optional bounded comparison smoke for Kimi/DeepSeek tester/architect assignment if provider budget allows. **Partially addressed 2026-06-11:** added `a2d compare-role-providers <challenge> <enzyme> [providers...]`, which builds validation-only single-enzyme runs and applies one provider assignment per run with persistence disabled. 5s tester and architect smokes reached GLM, Kimi, and DeepSeek directly; all timed out, so no default change is justified yet. **Updated 2026-06-13:** two 30s tester runs were noisy (`GLM success/timeout`, `DeepSeek success/timeout`, `Kimi timeout/timeout`), and a 30s architect run produced no successful `system_patch`. Kimi architect returned quickly but attempted an OpenCode tool read outside the isolated provider cwd, so that failure is a provider-mode/harness interaction as much as a model-quality signal. **Updated 2026-06-18:** current command shape is `a2d compare-role-providers <challenge> <enzyme> [--replicas N] [providers...]`; use `--replicas N` for future replicated comparisons instead of separate manual run files. Outcome evidence still needs replicated larger-budget runs or a cheaper prompt/provider.
 
 ## 2026-06-13 comparison artifacts
 
 ```bash
 A2D_PROVIDER_TIMEOUT_SECS=30 A2D_MAX_CYCLE_SECS=45 \
-  cargo run -q -p a2d -- compare-role-providers sudoku tester \
+  cargo run -q -p a2d -- compare-role-providers sudoku tester --replicas 2 \
   opencode/zai-coding-plan/glm-5.1 \
   opencode/kimi-for-coding/k2p6 \
   opencode/opencode/deepseek-v4-flash-free
@@ -217,6 +218,18 @@ Corrected-lane 60s smoke artifacts:
 - `/tmp/a2d-compare-role-providers-tester-corrected-newlanes-60s-20260617-r1.json`
 
 Result: OpenCode Kimi k2.7 produced a noop `system_patch` in 21.8s for architect and materialized `test_results` in 53.6s for tester. OpenCode GLM 5.2 failed architect with only `step_start`/no materialized output but materialized tester output in 39.9s. Pi Kimi k2.7 and Pi GLM 5.2 timed out for architect; both materialized tester outputs. This validates the corrected alias and invocation path only; it does not justify default changes.
+
+## 2026-06-18 replicated comparison harness
+
+`compare-role-providers` now supports `--replicas N` / `--replicas=N`. The command loops each named provider for each replica and emits top-level `replicas`/`providers` metadata plus a per-result `replica` field, while preserving existing materialized-output previews and patch outcome fields. This avoids scattering replicated evidence across manually named `r1`/`r2` files and makes downstream summarization less error-prone.
+
+Validation:
+
+- Focused CLI tests: `cargo test -p a2d role_provider_comparison -- --nocapture` passed, including parser coverage for provider lists and zero-replica rejection.
+- No-provider-call JSON smoke: `cargo run -q -p a2d -- compare-role-providers sudoku architect --replicas 2 missing-provider` produced valid JSON with `replicas: 2`, `providers: ["missing-provider"]`, and two rejected assignment rows labeled replicas 1 and 2. Artifact: `/tmp/a2d-compare-role-providers-replicas-invalid-smoke-20260618.json`.
+- Full `cargo test` passed (239 passing, 2 ignored).
+
+Next empirical runs should prefer this single-artifact replicated form rather than separate ad hoc `r1`/`r2` files.
 
 ## 2026-06-17 two-replica 60s default/Pi comparison
 

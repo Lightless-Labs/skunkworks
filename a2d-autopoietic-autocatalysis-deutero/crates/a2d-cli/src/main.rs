@@ -2886,7 +2886,57 @@ fn format_score_artifact_report(
     output
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RoleProviderComparisonArgs {
+    replicas: usize,
+    providers: Vec<String>,
+}
+
+fn parse_role_provider_comparison_args(
+    provider_args: &[String],
+) -> Result<RoleProviderComparisonArgs, String> {
+    let mut replicas = 1;
+    let mut providers = Vec::new();
+    let mut index = 0;
+    while index < provider_args.len() {
+        let arg = &provider_args[index];
+        if arg == "--replicas" {
+            let value = provider_args
+                .get(index + 1)
+                .ok_or_else(|| "--replicas requires a positive integer".to_string())?;
+            replicas = value
+                .parse::<usize>()
+                .map_err(|_| "--replicas requires a positive integer".to_string())?;
+            index += 2;
+        } else if let Some(value) = arg.strip_prefix("--replicas=") {
+            replicas = value
+                .parse::<usize>()
+                .map_err(|_| "--replicas requires a positive integer".to_string())?;
+            index += 1;
+        } else if arg.starts_with("--") {
+            return Err(format!("unknown compare-role-providers option: {arg}"));
+        } else {
+            providers.push(arg.clone());
+            index += 1;
+        }
+    }
+    if replicas == 0 {
+        return Err("--replicas requires a positive integer".to_string());
+    }
+    Ok(RoleProviderComparisonArgs {
+        replicas,
+        providers,
+    })
+}
+
 fn run_role_provider_comparison(name: &str, enzyme_name: &str, provider_args: &[String]) {
+    let options = parse_role_provider_comparison_args(provider_args).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        eprintln!(
+            "Usage: a2d compare-role-providers <challenge> <enzyme> [--replicas N] [providers...]"
+        );
+        std::process::exit(1);
+    });
     let challenge = load_challenge_or_exit(name);
     let enzyme_id = EnzymeId::from(enzyme_name);
     let loaded_germline = load_germline_for_topology(TopologyMode::Evolved);
@@ -2896,7 +2946,7 @@ fn run_role_provider_comparison(name: &str, enzyme_name: &str, provider_args: &[
         .provider_for(&enzyme_id)
         .name()
         .to_string();
-    let providers = if provider_args.is_empty() {
+    let providers = if options.providers.is_empty() {
         let mut providers = vec![
             current_provider.clone(),
             "opencode/kimi-for-coding/k2p6".to_string(),
@@ -2906,61 +2956,67 @@ fn run_role_provider_comparison(name: &str, enzyme_name: &str, provider_args: &[
         providers.dedup();
         providers
     } else {
-        provider_args.to_vec()
+        options.providers.clone()
     };
 
     let mut results = Vec::new();
-    for provider_name in providers {
-        let loaded_germline = load_germline_for_topology(TopologyMode::Evolved);
-        let germline = validation_germline_for_enzyme(loaded_germline, &enzyme_id);
-        let mut registry = build_runtime_registry(&germline);
-        register_experimental_provider_if_known(&mut registry, &provider_name);
-        let valid_enzyme_ids = BTreeSet::from([enzyme_id.clone()]);
-        let application = registry.apply_policy(
-            &ProviderPolicy {
-                assignments: BTreeMap::from([(enzyme_name.to_string(), provider_name.clone())]),
-            },
-            &valid_enzyme_ids,
-        );
-        if !application.rejected.is_empty() {
-            results.push(json!({
-                "provider": provider_name,
-                "assignment_accepted": false,
-                "error": application.rejected[0].reason,
-            }));
-            continue;
-        }
-        let assigned_provider = registry.provider_for(&enzyme_id).name().to_string();
-        let mut metabolism = apply_runtime_env(
-            Metabolism::new(germline, registry)
-                .with_benchmark(challenge.scoring_benchmark())
-                .with_max_invocations_per_cycle(1)
-                .with_project_root(project_root()),
-        );
-        let failure_report_marker =
-            format!("a2d role provider comparison marker for {enzyme_name}");
-        seed_escalation_validation_artifacts(
-            &mut metabolism,
-            challenge.requirements,
-            &enzyme_id,
-            &failure_report_marker,
-        );
+    for replica in 1..=options.replicas {
+        for provider_name in &providers {
+            let loaded_germline = load_germline_for_topology(TopologyMode::Evolved);
+            let germline = validation_germline_for_enzyme(loaded_germline, &enzyme_id);
+            let mut registry = build_runtime_registry(&germline);
+            register_experimental_provider_if_known(&mut registry, provider_name);
+            let valid_enzyme_ids = BTreeSet::from([enzyme_id.clone()]);
+            let application = registry.apply_policy(
+                &ProviderPolicy {
+                    assignments: BTreeMap::from([(enzyme_name.to_string(), provider_name.clone())]),
+                },
+                &valid_enzyme_ids,
+            );
+            if !application.rejected.is_empty() {
+                results.push(json!({
+                    "replica": replica,
+                    "provider": provider_name,
+                    "assignment_accepted": false,
+                    "error": application.rejected[0].reason,
+                }));
+                continue;
+            }
+            let assigned_provider = registry.provider_for(&enzyme_id).name().to_string();
+            let mut metabolism = apply_runtime_env(
+                Metabolism::new(germline, registry)
+                    .with_benchmark(challenge.scoring_benchmark())
+                    .with_max_invocations_per_cycle(1)
+                    .with_project_root(project_root()),
+            );
+            let failure_report_marker =
+                format!("a2d role provider comparison marker for {enzyme_name}");
+            seed_escalation_validation_artifacts(
+                &mut metabolism,
+                challenge.requirements,
+                &enzyme_id,
+                &failure_report_marker,
+            );
 
-        let started = Instant::now();
-        let report = metabolism.run_cycle();
-        let elapsed_ms = started.elapsed().as_millis();
-        results.push(role_provider_comparison_result_json(
-            &provider_name,
-            &assigned_provider,
-            elapsed_ms,
-            &report,
-        ));
+            let started = Instant::now();
+            let report = metabolism.run_cycle();
+            let elapsed_ms = started.elapsed().as_millis();
+            results.push(role_provider_comparison_result_json(
+                replica,
+                provider_name,
+                &assigned_provider,
+                elapsed_ms,
+                &report,
+            ));
+        }
     }
 
     let output = json!({
         "challenge": challenge.name,
         "enzyme": enzyme_name,
         "current_provider": current_provider,
+        "replicas": options.replicas,
+        "providers": providers,
         "persistence": "disabled: no lineage commits and no accepted patches applied",
         "results": results,
     });
@@ -2971,6 +3027,7 @@ fn run_role_provider_comparison(name: &str, enzyme_name: &str, provider_args: &[
 }
 
 fn role_provider_comparison_result_json(
+    replica: usize,
     provider_name: &str,
     assigned_provider: &str,
     elapsed_ms: u128,
@@ -3006,6 +3063,7 @@ fn role_provider_comparison_result_json(
         .map(|patch| patch.noops.len())
         .unwrap_or_default();
     json!({
+        "replica": replica,
         "provider": provider_name,
         "assigned_provider": assigned_provider,
         "assignment_accepted": true,
@@ -3990,6 +4048,36 @@ mod tests {
     }
 
     #[test]
+    fn role_provider_comparison_args_parse_replicas_and_providers() {
+        let args = vec![
+            "--replicas".to_string(),
+            "3".to_string(),
+            "pi/minimax/MiniMax-M3".to_string(),
+            "opencode/kimi-for-coding/k2p6".to_string(),
+        ];
+
+        let parsed = parse_role_provider_comparison_args(&args).unwrap();
+
+        assert_eq!(parsed.replicas, 3);
+        assert_eq!(
+            parsed.providers,
+            vec![
+                "pi/minimax/MiniMax-M3".to_string(),
+                "opencode/kimi-for-coding/k2p6".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn role_provider_comparison_args_reject_zero_replicas() {
+        let args = vec!["--replicas=0".to_string()];
+
+        let error = parse_role_provider_comparison_args(&args).unwrap_err();
+
+        assert!(error.contains("positive integer"));
+    }
+
+    #[test]
     fn role_provider_comparison_json_separates_assignment_from_outcome_success() {
         let mut entry = topology_entry(a2d_core::workcell::WorkcellOutcome::Failed {
             error: "provider timed out".to_string(),
@@ -4012,12 +4100,14 @@ mod tests {
         };
 
         let value = role_provider_comparison_result_json(
+            2,
             "opencode/zai-coding-plan/glm-5.1",
             "opencode/zai-coding-plan/glm-5.1",
             5000,
             &report,
         );
 
+        assert_eq!(value["replica"], 2);
         assert_eq!(value["assignment_accepted"], true);
         assert_eq!(value["failed"], 1);
         assert!(value["outcome"].as_str().unwrap().contains("failed:"));
