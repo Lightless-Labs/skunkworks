@@ -227,6 +227,64 @@ WORKCELL_ZERO_BUDGET_BUG_NEW = """\
         return (text.to_string(), 0, false);
     }
 """
+WORKCELL_PROVIDER_TASK_ID = "self-correction-compound-workcell-provider-hidden-regressions"
+WORKCELL_PROVIDER_DESCRIPTION = """\
+The workspace contains a regression. `cargo test -p a2_workcell pi_jsonl_parser_extracts_final_text_and_usage` fails.
+Diagnose the root cause and fix the implementation. Do not assume the failing
+test name is the only broken behavior; inspect the worktree catalyst provider
+execution and usage parsing code. Run `cargo test -p a2_workcell pi_jsonl_parser_extracts_final_text_and_usage` before
+finishing.
+"""
+WORKCELL_PROVIDER_PI_USAGE_BUG_OLD = """\
+                    + usage
+                        .get("cacheWrite")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+"""
+WORKCELL_PROVIDER_PI_USAGE_BUG_NEW = """\
+                    + usage
+                        .get("cache_write")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+"""
+WORKCELL_PROVIDER_PI_PWD_BUG_OLD = """\
+        let output = Command::new("pi")
+            .args([
+                "--model",
+                model_id,
+                "--no-session",
+                "--mode",
+                "json",
+                "--print",
+            ])
+            .arg(prompt)
+            .current_dir(worktree_path)
+            .env("PWD", worktree_path)
+            .stdin(std::process::Stdio::null())
+"""
+WORKCELL_PROVIDER_PI_PWD_BUG_NEW = """\
+        let output = Command::new("pi")
+            .args([
+                "--model",
+                model_id,
+                "--no-session",
+                "--mode",
+                "json",
+                "--print",
+            ])
+            .arg(prompt)
+            .current_dir(worktree_path)
+            .stdin(std::process::Stdio::null())
+"""
+WORKCELL_PROVIDER_PI_PWD_VERIFY_COMMAND = (
+    "python3 -c \"from pathlib import Path; "
+    "text = Path('crates/a2_workcell/src/worktree_catalyst.rs').read_text(); "
+    "start = text.index('    async fn run_pi('); "
+    "end = text.index('    fn parse_pi_jsonl', start); "
+    "segment = text[start:end]; "
+    "needle = '.env(\\\"PWD\\\", worktree_path)'; "
+    "raise SystemExit(0 if needle in segment else 'crates/a2_workcell/src/worktree_catalyst.rs: run_pi must set PWD to the candidate worktree')\""
+)
 A2D_TASK_ID = "self-correction-compound-a2d-same-crate-hidden-regressions"
 A2D_DESCRIPTION = """\
 The workspace contains a regression. `cargo test -p a2d flat_rounds_trigger_stagnation_after_window_size` fails.
@@ -553,6 +611,28 @@ FIXTURES: dict[str, Fixture] = {
             ),
         ),
     ),
+    "compound-workcell-provider-hidden": Fixture(
+        name="compound-workcell-provider-hidden",
+        task_id=WORKCELL_PROVIDER_TASK_ID,
+        description=WORKCELL_PROVIDER_DESCRIPTION,
+        verify_command=(
+            "cargo test -p a2_workcell pi_jsonl_parser_extracts_final_text_and_usage; usage=$?; "
+            f"{WORKCELL_PROVIDER_PI_PWD_VERIFY_COMMAND}; pwd=$?; "
+            "test $usage -eq 0 -a $pwd -eq 0"
+        ),
+        replacements=(
+            Replacement(
+                "crates/a2_workcell/src/worktree_catalyst.rs",
+                WORKCELL_PROVIDER_PI_USAGE_BUG_OLD,
+                WORKCELL_PROVIDER_PI_USAGE_BUG_NEW,
+            ),
+            Replacement(
+                "crates/a2_workcell/src/worktree_catalyst.rs",
+                WORKCELL_PROVIDER_PI_PWD_BUG_OLD,
+                WORKCELL_PROVIDER_PI_PWD_BUG_NEW,
+            ),
+        ),
+    ),
     "compound-a2d-same-crate-hidden": Fixture(
         name="compound-a2d-same-crate-hidden",
         task_id=A2D_TASK_ID,
@@ -783,11 +863,12 @@ def inject_fixture(workspace: Path, fixture: Fixture) -> None:
     for replacement in fixture.replacements:
         path = workspace / replacement.path
         content = path.read_text(encoding="utf-8")
+        if replacement.old in content:
+            path.write_text(content.replace(replacement.old, replacement.new, 1), encoding="utf-8")
+            continue
         if replacement.new in content:
             continue
-        if replacement.old not in content:
-            raise RuntimeError(f"bug fixture target not found in {path}")
-        path.write_text(content.replace(replacement.old, replacement.new, 1), encoding="utf-8")
+        raise RuntimeError(f"bug fixture target not found in {path}")
 
 
 def commit_bug(workspace: Path, fixture: Fixture) -> None:
@@ -1017,6 +1098,29 @@ class SelfCorrectionTests(unittest.TestCase):
             [{"command": fixture.verify_command, "expect_exit": 0}],
         )
 
+    def test_inject_fixture_replaces_when_new_text_is_old_substring(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            target = workspace / "target.txt"
+            target.write_text("prefix\nkeep\nremove\nsuffix\n", encoding="utf-8")
+            fixture = Fixture(
+                name="substring-fixture",
+                task_id="substring-task",
+                description="test",
+                verify_command="true",
+                replacements=(
+                    Replacement(
+                        "target.txt",
+                        "keep\nremove\n",
+                        "keep\n",
+                    ),
+                ),
+            )
+
+            inject_fixture(workspace, fixture)
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "prefix\nkeep\nsuffix\n")
+
     def test_compound_archive_fixture_checks_archive_regression(self) -> None:
         fixture = FIXTURES["compound-archive-hidden"]
         self.assertEqual(fixture.task_id, "self-correction-compound-archive-hidden-regressions")
@@ -1045,6 +1149,19 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(
             [replacement.path for replacement in fixture.replacements],
             ["crates/a2_archive/src/journal.rs", "crates/a2_archive/src/schema.rs"],
+        )
+
+    def test_compound_workcell_provider_fixture_hides_pwd_check(self) -> None:
+        fixture = FIXTURES["compound-workcell-provider-hidden"]
+        self.assertEqual(fixture.task_id, WORKCELL_PROVIDER_TASK_ID)
+        self.assertIn("pi_jsonl_parser_extracts_final_text_and_usage", fixture.verify_command)
+        self.assertIn("run_pi must set PWD to the candidate worktree", fixture.verify_command)
+        self.assertEqual(
+            [replacement.path for replacement in fixture.replacements],
+            [
+                "crates/a2_workcell/src/worktree_catalyst.rs",
+                "crates/a2_workcell/src/worktree_catalyst.rs",
+            ],
         )
 
     def test_compound_core_fixture_is_same_crate_multi_bug(self) -> None:

@@ -9,6 +9,7 @@
 **Addendum:** 2026-06-04 — Added `compound-core-same-crate-hidden` to cover same-crate hidden behavior in `a2_core`; smoke-only injection verified both `test_fibonacci` and `test_somatic_summary` fail, and Minimax N=3 resolved/self-corrected 3/3 with pass@1 0/3.
 **Addendum:** 2026-06-17 — Added `compound-archive-index-hidden` after Kimi k2.7 and GLM 5.2 passed the Archive schema-migration fixture on attempt 1; this variant keeps the visible journal-ordering failure but hides an exact `idx_lineage_records_created_at` schema-index direction assertion. Kimi k2.7 and GLM 5.2 each resolved/self-corrected 3/3 with pass@1 0/3.
 **Addendum:** 2026-06-17 — Added `bench/self_correction_score.py --trajectories` for per-run attempt reporting, including verifier return code, A² agent return code, diff stats, touched files, prior-lineage flags, and explicit `a2_returncode=0` clean-exit verifier failures.
+**Addendum:** 2026-06-18 — Added `compound-workcell-provider-hidden` to diversify hard fixtures into provider execution behavior: visible Pi JSONL usage parsing and hidden candidate-worktree `PWD` propagation in `a2_workcell::worktree_catalyst`; smoke-only injection verified both failures.
 
 ## Goal
 
@@ -84,6 +85,7 @@ Conclusion: the harness now distinguishes three cases: easy pass@1, loop exercis
 - [x] Persist post-apply verification outcome in the main `a2ctl run`/lineage path; remove benchmark-only lineage reconciliation once the core path records truth. Completed 2026-05-01.
 - [x] Add attempt diff/touched-file summaries to self-correction JSONL records. Completed 2026-05-01.
 - [x] Add scorer attempt-trajectory reporting for retry-shape/debug output. Completed 2026-06-17 with `bench/self_correction_score.py --trajectories`.
+- [x] Add Workcell provider-execution hidden fixture. Completed 2026-06-18 with `compound-workcell-provider-hidden`; smoke-only injection verified visible Pi usage parsing and hidden `run_pi` candidate-worktree `PWD` propagation failures.
 - [x] Re-run `compound-hidden` N≥3 after motif/run-path changes. Completed 2026-05-21 after candidate-worktree verifier wiring.
 - [x] Add a second hard fixture once at least one provider self-corrects `compound-hidden`. Completed 2026-05-18 with `compound-membrane-hidden`.
 - [x] Add additional same-crate fixture diversity beyond Sensorium/RAF/Eval/Broker. Completed 2026-05-31 with `compound-constitution-same-crate-hidden`.

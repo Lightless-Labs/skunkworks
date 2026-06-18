@@ -1,17 +1,17 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-06-17
+**Last updated:** 2026-06-18
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
 
 A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies its own source code. It uses AI model CLIs (Claude, Codex, Gemini, OpenCode, Pi) as "food set" models that edit code in git worktrees, then the system verifies, scores, and optionally applies the patches to its own germline.
 
-## Current Numbers (as of 2026-06-17)
+## Current Numbers (as of 2026-06-18)
 
 | Metric | Value |
 |--------|-------|
-| Tests | 115 Rust + 16 self-correction Python + 7 scoring Python tests |
+| Tests | 115 Rust + 18 self-correction Python + 7 scoring Python tests |
 | Sentinels | 6/6 PASS |
 | Crates | 11 |
 | Benchmark (OpenCode/GLM via A²) | 5/5 (with 100k token / 1800s budget) |
@@ -37,6 +37,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 | Self-correction loop (OpenCode MiniMax M3 same-crate Archive) | resolved 3/3 with pass@1 1/3 and self-corrected 2/3 on `compound-archive-same-crate-hidden`; scored as 6 rows / 3 run_ids |
 | Self-correction loop (Pi/Kimi k2.7 Archive index) | resolved/self-corrected 3/3 with pass@1 0/3 on `compound-archive-index-hidden` |
 | Self-correction loop (Pi/ZAI GLM 5.2 Archive index) | resolved/self-corrected 3/3 with pass@1 0/3 on `compound-archive-index-hidden` |
+| Fixture coverage (Workcell provider hidden) | `compound-workcell-provider-hidden` smoke-only verified visible Pi usage parsing and hidden `run_pi` candidate-worktree `PWD` propagation failures |
 | Self-correction loop (Pi/Kimi same-crate Core) | resolved 3/3 with pass@1 2/3 and self-corrected 1/3 on `compound-core-same-crate-hidden` |
 | Self-correction loop (Pi/Kimi same-crate Broker/Workcell) | each resolved 3/3 with pass@1 3/3; loop not exercised |
 | Self-correction loop (Pi/ZAI GLM same-crate Broker) | resolved 3/3 with pass@1 2/3 and self-corrected 1/3 on `compound-broker-same-crate-hidden` |
@@ -228,6 +229,7 @@ ContextPack is wired and self-correction harnesses exist. Minimax, Kimi, and Pi/
 - `compound-archive-index-hidden` was added on 2026-06-17 after Kimi k2.7 and GLM 5.2 solved the previous Archive same-crate fixture on attempt 1. It combines the visible `a2_archive` promotion-journal ordering failure with a hidden exact assertion that `idx_lineage_records_created_at` remains `created_at DESC` in `crates/a2_archive/src/schema.rs`; smoke-only injection verified both failures. On this fixture, first attempts can have `a2_returncode=0` but `resolved=false`; score by `resolved`/`verify_returncode`, not process exit, because the hidden schema assertion is authoritative.
 - `compound-archive-index-hidden` with Pi/Kimi `k2p7` on 2026-06-17 completed 6 rows / 3 run_ids. Score: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. In every run attempt 1 touched only `crates/a2_archive/src/journal.rs` and failed the hidden schema-index assertion; attempt 2 used prior lineage and touched both `crates/a2_archive/src/journal.rs` and `crates/a2_archive/src/schema.rs`. Result: `docs/benchmark-results/self-correction/a2-archive-index-pi-kimi-k2p7-20260617T170903Z.jsonl`.
 - `compound-archive-index-hidden` with Pi/ZAI `glm-5.2` on 2026-06-17 completed 6 rows / 3 run_ids. Score: resolved 3/3, pass@1 0/3, loop exercised 3/3, self-corrected 3/3. In every run attempt 1 touched only `crates/a2_archive/src/journal.rs` and failed the hidden schema-index assertion; attempt 2 used prior lineage and touched both `crates/a2_archive/src/journal.rs` and `crates/a2_archive/src/schema.rs`. Result: `docs/benchmark-results/self-correction/a2-archive-index-pi-zai-glm52-20260617T173512Z.jsonl`.
+- `compound-workcell-provider-hidden` was added on 2026-06-18 to diversify hard fixtures into provider execution behavior in `crates/a2_workcell/src/worktree_catalyst.rs`. It injects visible Pi JSONL cache-write usage parsing and hidden candidate-worktree `PWD` propagation regressions in `run_pi`. Smoke-only injection verified both failures: `pi_jsonl_parser_extracts_final_text_and_usage` failed with tokens-in 40 vs 80, and the hidden verifier reported `run_pi must set PWD to the candidate worktree`. Result: `/tmp/a2-workcell-provider-fixture-smoke-keep2.jsonl`.
 - `compound-hidden` with Pi/ZAI GLM on 2026-05-22 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2ctl/src/main.rs` and verified clean. Results: `/tmp/a2-compound-hidden-pi-zai-glm.jsonl`.
 - `compound-membrane-hidden` with Pi/ZAI GLM on 2026-05-24 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2_membrane/src/policy.rs` and verified clean. Results: `/tmp/a2-compound-membrane-pi-zai-glm.jsonl`.
 - `compound-archive-hidden` with Pi/ZAI GLM on 2026-05-24 resolved 3/3 runs; pass@1 was 0/3; loop exercised 3/3; self-corrected 3/3. In all three runs attempt 1 touched only `a2_core/src/lib.rs`; attempt 2 touched both `a2_core/src/lib.rs` and `a2_archive/src/store.rs` and verified clean. Results: `/tmp/a2-compound-archive-pi-zai-glm.jsonl`.
@@ -507,3 +509,4 @@ The `bench-baseline` git tag pins worktree branching point for the bench command
 | 2026-06-15 | Kimi k2.7 and GLM 5.2 Archive same-crate provider coverage | Verified canonical IDs `pi/kimi-coding/k2p7` and `pi/zai/glm-5.2`. On `compound-archive-same-crate-hidden`, both completed 3 rows / 3 independent runs with resolved 3/3, pass@1 3/3, loop exercised 0/3, self-correction N/A (0 retrying runs). Results: `docs/benchmark-results/self-correction/a2-archive-same-crate-pi-kimi-k2p7-20260615T160917Z.jsonl`, `docs/benchmark-results/self-correction/a2-archive-same-crate-pi-zai-glm52-20260615T162811Z.jsonl`. |
 | 2026-06-15 | OpenCode MiniMax M3 Archive same-crate retry recovery | `opencode/minimax-coding-plan/MiniMax-M3` completed 6 JSONL rows grouped by unique run_id into 3 runs on `compound-archive-same-crate-hidden`. Score: resolved 3/3, pass@1 1/3, loop exercised 2/3, self-corrected 2/3. Result: `docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.jsonl`. |
 | 2026-06-17 | Add Archive index hidden fixture and validate stronger providers | `compound-archive-index-hidden` keeps the visible Archive journal-ordering failure and hides an exact `idx_lineage_records_created_at` schema-index direction assertion. Smoke-only injection verified both failures. Kimi k2.7 and GLM 5.2 each completed 6 rows / 3 run_ids with resolved/self-corrected 3/3, pass@1 0/3, loop exercised 3/3. In every run attempt 1 had `a2_returncode=0` but `resolved=false` because the hidden schema assertion failed; attempt 2 touched both `journal.rs` and `schema.rs` and resolved. Results: `docs/benchmark-results/self-correction/a2-archive-index-pi-kimi-k2p7-20260617T170903Z.jsonl`, `docs/benchmark-results/self-correction/a2-archive-index-pi-zai-glm52-20260617T173512Z.jsonl`. |
+| 2026-06-18 | Add Workcell provider hidden fixture | `compound-workcell-provider-hidden` covers provider execution behavior in `a2_workcell::worktree_catalyst`: visible Pi JSONL cache-write token accounting and hidden `run_pi` candidate-worktree `PWD` propagation. Smoke-only injection verified both failures. Result: `/tmp/a2-workcell-provider-fixture-smoke-keep2.jsonl`. |
