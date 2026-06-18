@@ -14,7 +14,7 @@
 **Validation update:** 2026-06-17 — Pi-first 90s direct comparisons make Pi Minimax the strongest architect candidate in the diagnostic harness; prefer Pi for future probes, but do not persist defaults without challenge-integrated/provider-policy-gated evidence
 **Fixed:** 2026-06-17 — `compare-topologies` seed mode now honors runtime provider overrides while bypassing persisted lineage policy, so seed/evolved provider experiments are controlled
 **Validation update:** 2026-06-17 — provider-policy gate rejected durable Pi-Minimax tester/architect policy due invocation/wall-clock cost despite Pi preference
-**Enhanced:** 2026-06-18 — `compare-role-providers` now accepts `--replicas N` and labels every result with `replica`, so replicated evidence can be gathered in one mechanically structured JSON artifact instead of separate ad hoc files
+**Enhanced:** 2026-06-18 — `compare-role-providers` now accepts `--replicas N`, labels every result with `replica`, and emits a top-level per-provider `summary`, so replicated evidence can be gathered and compared in one mechanically structured JSON artifact instead of separate ad hoc files
 **Todo:** `todos/architect-tester-provider-latency.md`
 
 ## Problem
@@ -221,13 +221,13 @@ Result: OpenCode Kimi k2.7 produced a noop `system_patch` in 21.8s for architect
 
 ## 2026-06-18 replicated comparison harness
 
-`compare-role-providers` now supports `--replicas N` / `--replicas=N`. The command loops each named provider for each replica and emits top-level `replicas`/`providers` metadata plus a per-result `replica` field, while preserving existing materialized-output previews and patch outcome fields. This avoids scattering replicated evidence across manually named `r1`/`r2` files and makes downstream summarization less error-prone.
+`compare-role-providers` now supports `--replicas N` / `--replicas=N`. The command loops each named provider for each replica and emits top-level `replicas`/`providers` metadata, a top-level per-provider `summary`, and a per-result `replica` field, while preserving existing materialized-output previews and patch outcome fields. The summary counts attempts, accepted/rejected assignments, successes, failures, killed runs, timeout failures, materialized-output runs, patch outcomes, and min/max/mean elapsed milliseconds when available. This avoids scattering replicated evidence across manually named `r1`/`r2` files and makes downstream summarization less error-prone.
 
 Validation:
 
-- Focused CLI tests: `cargo test -p a2d role_provider_comparison -- --nocapture` passed, including parser coverage for provider lists and zero-replica rejection.
-- No-provider-call JSON smoke: `cargo run -q -p a2d -- compare-role-providers sudoku architect --replicas 2 missing-provider` produced valid JSON with `replicas: 2`, `providers: ["missing-provider"]`, and two rejected assignment rows labeled replicas 1 and 2. Artifact: `/tmp/a2d-compare-role-providers-replicas-invalid-smoke-20260618.json`.
-- Full `cargo test` passed (239 passing, 2 ignored).
+- Focused CLI tests: `cargo test -p a2d role_provider_comparison -- --nocapture` passed, including parser coverage for provider lists, zero-replica rejection, and per-provider summary aggregation.
+- No-provider-call JSON smokes: `cargo run -q -p a2d -- compare-role-providers sudoku architect --replicas 2 missing-provider` produced valid JSON with `replicas: 2`, `providers: ["missing-provider"]`, two rejected assignment rows labeled replicas 1 and 2, and summary counts for rejected assignments. Artifacts: `/tmp/a2d-compare-role-providers-replicas-invalid-smoke-20260618.json` and `/tmp/a2d-compare-role-providers-summary-invalid-smoke-20260618.json`.
+- Full `cargo test` passed (242 passing, 2 ignored).
 
 Next empirical runs should prefer this single-artifact replicated form rather than separate ad hoc `r1`/`r2` files.
 

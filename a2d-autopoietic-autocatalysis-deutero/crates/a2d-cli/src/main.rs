@@ -3011,12 +3011,14 @@ fn run_role_provider_comparison(name: &str, enzyme_name: &str, provider_args: &[
         }
     }
 
+    let summary = summarize_role_provider_comparison_results(&results);
     let output = json!({
         "challenge": challenge.name,
         "enzyme": enzyme_name,
         "current_provider": current_provider,
         "replicas": options.replicas,
         "providers": providers,
+        "summary": summary,
         "persistence": "disabled: no lineage commits and no accepted patches applied",
         "results": results,
     });
@@ -3024,6 +3026,117 @@ fn run_role_provider_comparison(name: &str, enzyme_name: &str, provider_args: &[
         "{}",
         serde_json::to_string_pretty(&output).expect("role comparison output must serialize")
     );
+}
+
+#[derive(Debug, Default)]
+struct RoleProviderComparisonSummary {
+    attempts: usize,
+    assignment_accepted: usize,
+    assignment_rejected: usize,
+    successes: usize,
+    failures: usize,
+    killed: usize,
+    timed_out: usize,
+    materialized_output_runs: usize,
+    accepted_patches: usize,
+    rejected_patches: usize,
+    noop_patches: usize,
+    elapsed_ms: Vec<u64>,
+}
+
+fn summarize_role_provider_comparison_results(results: &[Value]) -> Value {
+    let mut by_provider: BTreeMap<String, RoleProviderComparisonSummary> = BTreeMap::new();
+    for result in results {
+        let provider = result
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or("<unknown>")
+            .to_string();
+        let summary = by_provider.entry(provider).or_default();
+        summary.attempts += 1;
+        if result
+            .get("assignment_accepted")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            summary.assignment_accepted += 1;
+        } else {
+            summary.assignment_rejected += 1;
+        }
+
+        if let Some(elapsed) = result.get("elapsed_ms").and_then(Value::as_u64) {
+            summary.elapsed_ms.push(elapsed);
+        }
+        let outcome = result.get("outcome").and_then(Value::as_str).unwrap_or("");
+        if outcome.starts_with("success:") {
+            summary.successes += 1;
+        } else if outcome.starts_with("failed:") {
+            summary.failures += 1;
+        } else if outcome.starts_with("killed:") {
+            summary.killed += 1;
+        }
+        if outcome.contains("timed out") {
+            summary.timed_out += 1;
+        }
+        if result
+            .get("materialized_outputs")
+            .and_then(Value::as_array)
+            .map(|outputs| !outputs.is_empty())
+            .unwrap_or(false)
+        {
+            summary.materialized_output_runs += 1;
+        }
+        summary.accepted_patches += result
+            .get("accepted_patches")
+            .and_then(Value::as_u64)
+            .unwrap_or_default() as usize;
+        summary.rejected_patches += result
+            .get("rejected_patches")
+            .and_then(Value::as_u64)
+            .unwrap_or_default() as usize;
+        summary.noop_patches += result
+            .get("noop_patches")
+            .and_then(Value::as_u64)
+            .unwrap_or_default() as usize;
+    }
+
+    Value::Object(
+        by_provider
+            .into_iter()
+            .map(|(provider, summary)| {
+                let elapsed = if summary.elapsed_ms.is_empty() {
+                    json!(null)
+                } else {
+                    let min = summary.elapsed_ms.iter().min().copied().unwrap_or_default();
+                    let max = summary.elapsed_ms.iter().max().copied().unwrap_or_default();
+                    let mean =
+                        summary.elapsed_ms.iter().sum::<u64>() / summary.elapsed_ms.len() as u64;
+                    json!({
+                        "min": min,
+                        "max": max,
+                        "mean": mean,
+                    })
+                };
+                (
+                    provider,
+                    json!({
+                        "attempts": summary.attempts,
+                        "assignment_accepted": summary.assignment_accepted,
+                        "assignment_rejected": summary.assignment_rejected,
+                        "successes": summary.successes,
+                        "failures": summary.failures,
+                        "killed": summary.killed,
+                        "timed_out": summary.timed_out,
+                        "materialized_output_runs": summary.materialized_output_runs,
+                        "accepted_patches": summary.accepted_patches,
+                        "rejected_patches": summary.rejected_patches,
+                        "noop_patches": summary.noop_patches,
+                        "elapsed_ms": elapsed,
+                    }),
+                )
+            })
+            .collect(),
+    )
 }
 
 fn role_provider_comparison_result_json(
@@ -4119,6 +4232,75 @@ mod tests {
         assert_eq!(value["accepted_patches"], 0);
         assert_eq!(value["rejected_patches"], 0);
         assert!(value.get("accepted").is_none());
+    }
+
+    #[test]
+    fn role_provider_comparison_summary_counts_replicated_provider_outcomes() {
+        let mut success_entry = topology_entry(a2d_core::workcell::WorkcellOutcome::Success {
+            outputs: BTreeMap::new(),
+        });
+        success_entry
+            .outputs
+            .insert(art("test_results"), b"ok".to_vec());
+        success_entry.patch = Some(a2d_core::metabolism::PatchRecord {
+            noops: vec!["no source change needed".to_string()],
+            ..Default::default()
+        });
+        let success_report = CycleReport {
+            invocations: 1,
+            accepted_patches: 1,
+            lineage: vec![success_entry],
+            ..Default::default()
+        };
+        let timeout_report = CycleReport {
+            invocations: 1,
+            failed: 1,
+            lineage: vec![topology_entry(
+                a2d_core::workcell::WorkcellOutcome::Failed {
+                    error: "model invocation failed: provider timed out after 60s".to_string(),
+                },
+            )],
+            ..Default::default()
+        };
+        let results = vec![
+            role_provider_comparison_result_json(
+                1,
+                "provider-a",
+                "provider-a",
+                10,
+                &success_report,
+            ),
+            role_provider_comparison_result_json(
+                2,
+                "provider-a",
+                "provider-a",
+                20,
+                &timeout_report,
+            ),
+            json!({
+                "replica": 1,
+                "provider": "missing-provider",
+                "assignment_accepted": false,
+                "error": "provider is not registered",
+            }),
+        ];
+
+        let summary = summarize_role_provider_comparison_results(&results);
+
+        assert_eq!(summary["provider-a"]["attempts"], 2);
+        assert_eq!(summary["provider-a"]["assignment_accepted"], 2);
+        assert_eq!(summary["provider-a"]["successes"], 1);
+        assert_eq!(summary["provider-a"]["failures"], 1);
+        assert_eq!(summary["provider-a"]["timed_out"], 1);
+        assert_eq!(summary["provider-a"]["materialized_output_runs"], 1);
+        assert_eq!(summary["provider-a"]["accepted_patches"], 1);
+        assert_eq!(summary["provider-a"]["noop_patches"], 1);
+        assert_eq!(summary["provider-a"]["elapsed_ms"]["min"], 10);
+        assert_eq!(summary["provider-a"]["elapsed_ms"]["max"], 20);
+        assert_eq!(summary["provider-a"]["elapsed_ms"]["mean"], 15);
+        assert_eq!(summary["missing-provider"]["attempts"], 1);
+        assert_eq!(summary["missing-provider"]["assignment_rejected"], 1);
+        assert!(summary["missing-provider"]["elapsed_ms"].is_null());
     }
 
     #[test]
