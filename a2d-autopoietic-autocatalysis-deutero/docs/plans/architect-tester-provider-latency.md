@@ -12,6 +12,7 @@
 **Validation update:** 2026-06-17 — ran two-replica 60s direct tester/architect comparisons across default OpenCode lanes and verified Pi lanes; results show timeout variability and preview-quality differences, not enough evidence for default changes
 **Corrected:** 2026-06-17 — replaced stale OpenCode Kimi k2.7 alias `opencode/kimi-k2.7-code` with listed model `opencode/kimi-for-coding/k2p7`; one corrected-lane smoke proves mechanical invocation but not default-change quality
 **Validation update:** 2026-06-17 — Pi-first 90s direct comparisons make Pi Minimax the strongest architect candidate in the diagnostic harness; prefer Pi for future probes, but do not persist defaults without challenge-integrated/provider-policy-gated evidence
+**Fixed:** 2026-06-17 — `compare-topologies` seed mode now honors runtime provider overrides while bypassing persisted lineage policy, so seed/evolved provider experiments are controlled
 **Todo:** `todos/architect-tester-provider-latency.md`
 
 ## Problem
@@ -146,6 +147,28 @@ Verified model IDs with `pi --list-models <kimi|minimax|glm> --offline`; transcr
 - `pi/zai/glm-5.2`
 
 A 1s direct architect comparison smoke confirmed the actual runtime override/comparison registry path accepts all three names and invokes Pi with the expected lineage provider before timing out under the intentionally tiny budget: `/tmp/a2d-compare-role-providers-architect-pi-lanes-1s-20260616.json`. This is mechanism evidence only, not outcome quality evidence.
+
+## 2026-06-17 controlled Pi-Minimax topology comparison
+
+A Pi-Minimax tester/architect override topology run exposed a harness bug: `compare-topologies` used the bare default registry for `TopologyMode::Seed`, so `A2D_TESTER_PROVIDER` and `A2D_ARCHITECT_PROVIDER` affected evolved mode but not seed mode. That made provider comparisons uncontrolled.
+
+Fix: topology registry construction now routes through `build_runtime_registry_with_options`. Seed mode still bypasses persisted lineage provider policy, but explicit runtime overrides apply to both seed and evolved legs. Regression coverage:
+
+- `seed_mode_runtime_registry_still_applies_explicit_overrides`
+- `topology_seed_registry_path_still_applies_explicit_overrides`
+
+Controlled run:
+
+```bash
+A2D_TESTER_PROVIDER=pi/minimax/MiniMax-M3 \
+A2D_ARCHITECT_PROVIDER=pi/minimax/MiniMax-M3 \
+A2D_PROVIDER_TIMEOUT_SECS=90 A2D_MAX_CYCLE_SECS=180 \
+  cargo run -p a2d -- compare-topologies sudoku 2
+```
+
+Artifact: `/tmp/a2d-compare-topologies-sudoku2-pi-minimax-tester-architect-post-topology-override-fix-20260617.log`.
+
+Both seed and evolved legs printed the override lines and invoked architect/tester through Pi Minimax. Seed and evolved both reached best 100% at cycle 1; evolved used the same invocation count and was 23.7s faster. Caveat: moving tester/architect to Pi makes GLM unassigned, so GLM can enter the coder portfolio; this run is a controlled tester/architect override comparison, not a Pi-only topology run. Treat it as encouraging but insufficient for durable provider-policy changes.
 
 ## 2026-06-17 Pi-first 90s comparisons
 

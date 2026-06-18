@@ -396,25 +396,38 @@ fn seed_initial_runtime_artifacts(metabolism: &mut Metabolism, input: &str) {
 }
 
 fn build_runtime_registry(germline: &Germline) -> ProviderRegistry {
+    build_runtime_registry_with_options(
+        germline,
+        force_seed_germline(env::var("A2D_GERMLINE").ok().as_deref()),
+        runtime_provider_overrides_from_env(),
+    )
+}
+
+fn build_runtime_registry_with_options(
+    germline: &Germline,
+    seed_mode: bool,
+    runtime_overrides: BTreeMap<String, Option<String>>,
+) -> ProviderRegistry {
     let mut registry = build_registry();
 
-    if force_seed_germline(env::var("A2D_GERMLINE").ok().as_deref()) {
-        return registry;
-    }
-
-    if let Some(policy) = load_lineage_provider_policy() {
-        let application = apply_loaded_provider_policy(&mut registry, germline, &policy);
-        if !application.accepted.is_empty() || !application.rejected.is_empty() {
-            println!(
-                "Loaded provider policy from lineage ({} accepted, {} rejected)",
-                application.accepted.len(),
-                application.rejected.len()
-            );
+    if !seed_mode {
+        if let Some(policy) = load_lineage_provider_policy() {
+            let application = apply_loaded_provider_policy(&mut registry, germline, &policy);
+            if !application.accepted.is_empty() || !application.rejected.is_empty() {
+                println!(
+                    "Loaded provider policy from lineage ({} accepted, {} rejected)",
+                    application.accepted.len(),
+                    application.rejected.len()
+                );
+            }
         }
     }
 
-    let application =
-        apply_runtime_provider_overrides(&mut registry, runtime_provider_overrides_from_env());
+    // Seed mode bypasses persisted lineage policy, but runtime overrides are
+    // explicit operator experiments and must still apply. This keeps
+    // compare-topologies seed/evolved comparisons controlled when testing a
+    // provider assignment.
+    let application = apply_runtime_provider_overrides(&mut registry, runtime_overrides);
     report_runtime_provider_overrides(application);
 
     registry
@@ -3569,6 +3582,29 @@ fn provider_policy_gate_challenge(default: &str) -> String {
     env::var("A2D_PROVIDER_POLICY_GATE_CHALLENGE").unwrap_or_else(|_| default.to_string())
 }
 
+fn build_registry_for_topology(germline: &Germline, topology: TopologyMode) -> ProviderRegistry {
+    build_registry_for_topology_with_overrides(
+        germline,
+        topology,
+        runtime_provider_overrides_from_env(),
+    )
+}
+
+fn build_registry_for_topology_with_overrides(
+    germline: &Germline,
+    topology: TopologyMode,
+    runtime_overrides: BTreeMap<String, Option<String>>,
+) -> ProviderRegistry {
+    match topology {
+        TopologyMode::Seed => {
+            build_runtime_registry_with_options(germline, true, runtime_overrides)
+        }
+        TopologyMode::Evolved | TopologyMode::CurrentPolicy | TopologyMode::ProposedPolicy => {
+            build_runtime_registry_with_options(germline, false, runtime_overrides)
+        }
+    }
+}
+
 fn run_challenge_for_topology(
     name: &str,
     num_cycles: usize,
@@ -3581,11 +3617,7 @@ fn run_challenge_for_topology(
 
     let germline = load_germline_for_topology(topology);
     let enzyme_count = germline.enzymes().len();
-    let registry = if topology == TopologyMode::Evolved {
-        build_runtime_registry(&germline)
-    } else {
-        build_registry()
-    };
+    let registry = build_registry_for_topology(&germline, topology);
     let mut metabolism = apply_runtime_env(
         Metabolism::new(germline, registry)
             .with_benchmark(benchmark)
@@ -4172,6 +4204,52 @@ mod tests {
         assert!(!providers.contains(&"pi/kimi-coding/k2p7"));
         assert!(!providers.contains(&"pi/minimax/MiniMax-M3"));
         assert!(!providers.contains(&"pi/zai/glm-5.2"));
+    }
+
+    #[test]
+    fn seed_mode_runtime_registry_still_applies_explicit_overrides() {
+        let germline = seed_germline();
+        let registry = build_runtime_registry_with_options(
+            &germline,
+            true,
+            BTreeMap::from([
+                (
+                    "tester".to_string(),
+                    Some("pi/minimax/MiniMax-M3".to_string()),
+                ),
+                (
+                    "architect".to_string(),
+                    Some("pi/minimax/MiniMax-M3".to_string()),
+                ),
+            ]),
+        );
+
+        assert_eq!(
+            registry.provider_for(&EnzymeId::from("tester")).name(),
+            "pi/minimax/MiniMax-M3"
+        );
+        assert_eq!(
+            registry.provider_for(&EnzymeId::from("architect")).name(),
+            "pi/minimax/MiniMax-M3"
+        );
+    }
+
+    #[test]
+    fn topology_seed_registry_path_still_applies_explicit_overrides() {
+        let germline = seed_germline();
+        let registry = build_registry_for_topology_with_overrides(
+            &germline,
+            TopologyMode::Seed,
+            BTreeMap::from([(
+                "architect".to_string(),
+                Some("pi/minimax/MiniMax-M3".to_string()),
+            )]),
+        );
+
+        assert_eq!(
+            registry.provider_for(&EnzymeId::from("architect")).name(),
+            "pi/minimax/MiniMax-M3"
+        );
     }
 
     #[test]
