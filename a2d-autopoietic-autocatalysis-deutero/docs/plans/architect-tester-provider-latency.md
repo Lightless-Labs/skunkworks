@@ -11,6 +11,7 @@
 **Enhanced:** 2026-06-16 — verified Pi model IDs with `pi --list-models` and added opt-in Pi lanes (`pi/kimi-coding/k2p7`, `pi/minimax/MiniMax-M3`, `pi/zai/glm-5.2`) through the same override/comparison auto-registration path; defaults remain unchanged
 **Validation update:** 2026-06-17 — ran two-replica 60s direct tester/architect comparisons across default OpenCode lanes and verified Pi lanes; results show timeout variability and preview-quality differences, not enough evidence for default changes
 **Corrected:** 2026-06-17 — replaced stale OpenCode Kimi k2.7 alias `opencode/kimi-k2.7-code` with listed model `opencode/kimi-for-coding/k2p7`; one corrected-lane smoke proves mechanical invocation but not default-change quality
+**Validation update:** 2026-06-17 — Pi-first 90s direct comparisons make Pi Minimax the strongest architect candidate in the diagnostic harness; prefer Pi for future probes, but do not persist defaults without challenge-integrated/provider-policy-gated evidence
 **Todo:** `todos/architect-tester-provider-latency.md`
 
 ## Problem
@@ -145,6 +146,24 @@ Verified model IDs with `pi --list-models <kimi|minimax|glm> --offline`; transcr
 - `pi/zai/glm-5.2`
 
 A 1s direct architect comparison smoke confirmed the actual runtime override/comparison registry path accepts all three names and invokes Pi with the expected lineage provider before timing out under the intentionally tiny budget: `/tmp/a2d-compare-role-providers-architect-pi-lanes-1s-20260616.json`. This is mechanism evidence only, not outcome quality evidence.
+
+## 2026-06-17 Pi-first 90s comparisons
+
+After operator guidance to prefer Pi over OpenCode, ran Pi-only direct comparisons with `A2D_PROVIDER_TIMEOUT_SECS=90 A2D_MAX_CYCLE_SECS=120`.
+
+Artifacts:
+
+- `/tmp/a2d-compare-role-providers-architect-pi-only-90s-20260617-r1.json`
+- `/tmp/a2d-compare-role-providers-tester-pi-only-90s-20260617-r1.json`
+- `/tmp/a2d-compare-role-providers-architect-pi-kimi-minimax-90s-20260617-r2.json`
+- `/tmp/a2d-compare-role-providers-tester-pi-kimi-minimax-90s-20260617-r2.json`
+
+Summary:
+
+- Architect: `pi/minimax/MiniMax-M3` produced valid noop `system_patch` twice and was fast (16.8s, 12.3s). `pi/kimi-coding/k2p7` produced one valid noop in 24.0s, then timed out at 90s. `pi/zai/glm-5.2` timed out at 90s.
+- Tester: `pi/kimi-coding/k2p7` materialized output twice (12.8s, 73.3s), but the second preview looked code-like rather than a clear test-run report. `pi/minimax/MiniMax-M3` timed out once, then produced a clearer test-run report in 12.8s. `pi/zai/glm-5.2` timed out at 90s.
+
+Interpretation: for Pi-preferred experiments, Pi Minimax is the strongest architect candidate in this diagnostic harness and is plausible for tester; Pi Kimi may be higher-quality when it returns but is not reliable enough for architect at the 90s cutoff. This is still direct diagnostic evidence, not challenge-integrated proof. Do not persist a default/provider-policy change without the comparison gate; next evidence should compare a Pi-preferred runtime override in an actual challenge or provider-policy comparison.
 
 ## 2026-06-17 corrected OpenCode Kimi k2.7 lane
 
