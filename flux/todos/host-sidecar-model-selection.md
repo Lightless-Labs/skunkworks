@@ -6,6 +6,7 @@
 **Enhanced:** 2026-06-15 — documented the model-release invariant: Flux delegates latest/default selection to the host and must not own provider alias maps.
 **Enhanced:** 2026-06-15 — Pi `/flux status` now shows configured vs resolved sidecar model/thinking, and stale/unavailable Pi pins warn and fall back to the active model.
 **Enhanced:** 2026-06-15 — Claude/Codex host CLI sidecars now retry once with the active host model when an explicit configured model invocation fails, and propagate a warning in thought metadata.
+**Enhanced:** 2026-06-18 — validated Claude Code 2.1.181 exposes `--effort <low|medium|high|xhigh|max>` and wired configured Flux Claude thinking through `--effort`, mapping cross-host `minimal` to Claude `low`.
 
 ## Context
 
@@ -56,7 +57,7 @@ Direct-provider command should also grow the already-typed `thinkingEffort` opti
 - Pi's actual registry API exposes `ctx.modelRegistry.getAll()`, `getAvailable()`, `find(provider, modelId)`, `hasConfiguredAuth(model)`, and `getApiKeyAndHeaders(model)`. Models carry `provider`, `id`, `name`, `api`, `reasoning`, `thinkingLevelMap`, `contextWindow`, and `maxTokens` metadata.
 - Pi exposes active thinking controls through `pi.getThinkingLevel()` / `pi.setThinkingLevel()`. Flux avoids mutating the active session and passes `reasoning` to the sidecar call when a non-`active`/non-`off` Pi sidecar thinking level is configured, clamped against model metadata.
 - Pi sidecar generation should not permanently change the user's active model/thinking level just to generate a Flux thought. Prefer passing the chosen model/effort directly into the sidecar `complete()` call if the API supports it; otherwise document the limitation.
-- Claude Code configured model selection is wired through `--model`, but Claude thinking/effort flags still need live CLI/doc validation before wiring. Codex configured model and effort are wired through `-m` and `-c model_reasoning_effort=...`. If a configured Claude/Codex model CLI invocation fails, Flux retries once with the active/default host model and records a warning in thought metadata.
+- Claude Code configured model selection is wired through `--model`, and configured thinking/effort is wired through `--effort` after local CLI validation (`claude` 2.1.181). Claude's CLI does not accept Flux's cross-host `minimal` label, so Flux maps `minimal` to `low`; Flux does not expose Claude's `max` value in the shared cross-host config. Codex configured model and effort are wired through `-m` and `-c model_reasoning_effort=...`. If a configured Claude/Codex model CLI invocation fails, Flux retries once with the active/default host model and records a warning in thought metadata.
 - Avoid hard-coded model names. Mythos/Fable-style models should work if present in the harness registry or CLI model list.
 - Do not add provider-release aliases such as `latest-fast` → concrete model id inside Flux. If a host or provider exposes aliases/patterns, Flux may pass through user configuration, but the host/provider remains the source of truth.
 
@@ -67,7 +68,7 @@ Direct-provider command should also grow the already-typed `thinkingEffort` opti
 - [x] Pi: list available harness models and select a sidecar model if supported.
 - [x] Pi: apply/clamp sidecar thinking level if supported without mutating the user's active session settings.
 - [x] Direct providers: parse and send `thinkingEffort` where provider-compatible.
-- [ ] Claude Code: validate and wire thinking/effort CLI flags if current Claude Code supports them. Model selection is wired through `--model`.
+- [x] Claude Code: validate and wire thinking/effort CLI flags if current Claude Code supports them. Model selection is wired through `--model`; thinking is wired through `--effort` with `minimal` mapped to `low`.
 - [x] Codex: validate and wire model/effort CLI flags if current Codex supports them.
 - [x] Add tests for config parsing/validation and host caller argv/options.
 - [x] Document host-specific support/limitations in `docs/HANDOFF.md` and `README.md`.

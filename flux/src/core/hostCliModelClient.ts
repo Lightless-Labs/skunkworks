@@ -88,6 +88,15 @@ function isActivePreference(value: string | undefined): boolean {
 	return value === undefined || value === "" || value === "active";
 }
 
+function claudeEffortArgument(value: string | undefined): string | undefined {
+	if (isActivePreference(value) || value === "off") return undefined;
+	// Claude Code currently accepts low, medium, high, xhigh, and max. Flux's
+	// cross-host config exposes minimal rather than max, so clamp minimal to the
+	// lowest Claude-supported effort instead of emitting an invalid flag.
+	if (value === "minimal") return "low";
+	return value;
+}
+
 async function callClaudeCli(
 	prompt: string,
 	systemPrompt: string,
@@ -99,10 +108,14 @@ async function callClaudeCli(
 	const preference = hostPreference(config, "claude-code");
 	const args = ["-p", "--no-session-persistence", "--tools", ""];
 	if (!isActivePreference(preference.model)) args.push("--model", preference.model!);
-	// Claude Code thinking/effort flags are not yet validated; do not emit untrusted flags here.
+	const effort = claudeEffortArgument(preference.thinkingEffort);
+	if (effort) args.push("--effort", effort);
 	args.push("--system-prompt", systemPrompt);
 	const result = await spawnWithInput(command, args, prompt, { cwd, signal, timeoutMs: 120_000 });
-	const detail = isActivePreference(preference.model) ? "claude-cli" : `claude-cli/${preference.model}`;
+	const detailParts = ["claude-cli"];
+	if (!isActivePreference(preference.model)) detailParts.push(preference.model!);
+	if (effort) detailParts.push(effort);
+	const detail = detailParts.join("/");
 	assertSuccess(result, "claude CLI sidecar");
 	return { content: result.stdout.trim(), detail };
 }

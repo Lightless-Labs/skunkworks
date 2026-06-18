@@ -119,7 +119,7 @@ if (outputIndex !== -1) writeFileSync(process.argv[outputIndex + 1], "configured
 	}
 });
 
-test("createHostCliModelCaller passes configured Claude model without unvalidated thinking flags", async () => {
+test("createHostCliModelCaller passes configured Claude model and effort", async () => {
 	const fake = withFakeCommand(`
 import { readFileSync, writeFileSync } from "node:fs";
 readFileSync(0, "utf8");
@@ -136,8 +136,37 @@ process.stdout.write("configured claude note\\n");
 		const result = await caller({ systemPrompt: "system prompt", prompt: "user prompt", config: configWithHost("claude-code", { model: "opus", thinkingEffort: "high" }) } as any);
 		const captured = JSON.parse(readFileSync(fake.capturePath, "utf8")) as { args: string[] };
 		assert.equal(result.content, "configured claude note");
-		assert.equal(result.model, "claude-code/claude-cli/opus");
-		assert.deepEqual(captured.args, ["-p", "--no-session-persistence", "--tools", "", "--model", "opus", "--system-prompt", "system prompt"]);
+		assert.equal(result.model, "claude-code/claude-cli/opus/high");
+		assert.deepEqual(captured.args, ["-p", "--no-session-persistence", "--tools", "", "--model", "opus", "--effort", "high", "--system-prompt", "system prompt"]);
+	} finally {
+		if (previousCommand === undefined) delete process.env.FLUX_CLAUDE_COMMAND;
+		else process.env.FLUX_CLAUDE_COMMAND = previousCommand;
+		if (previousCapture === undefined) delete process.env.FLUX_CAPTURE_PATH;
+		else process.env.FLUX_CAPTURE_PATH = previousCapture;
+		fake.cleanup();
+	}
+});
+
+test("createHostCliModelCaller maps Claude minimal effort to low", async () => {
+	const fake = withFakeCommand(`
+import { readFileSync, writeFileSync } from "node:fs";
+readFileSync(0, "utf8");
+writeFileSync(process.env.FLUX_CAPTURE_PATH, JSON.stringify({ args: process.argv.slice(2) }));
+process.stdout.write("minimal claude note\\n");
+`);
+	const previousCommand = process.env.FLUX_CLAUDE_COMMAND;
+	const previousCapture = process.env.FLUX_CAPTURE_PATH;
+	process.env.FLUX_CLAUDE_COMMAND = fake.command;
+	process.env.FLUX_CAPTURE_PATH = fake.capturePath;
+	try {
+		const caller = createHostCliModelCaller("claude-code", fake.dir);
+		assert.ok(caller);
+		const result = await caller({ systemPrompt: "system", prompt: "prompt", config: configWithHost("claude-code", { thinkingEffort: "minimal" }) } as any);
+		const captured = JSON.parse(readFileSync(fake.capturePath, "utf8")) as { args: string[] };
+		assert.equal(result.content, "minimal claude note");
+		assert.equal(result.model, "claude-code/claude-cli/low");
+		assert.ok(captured.args.includes("--effort"));
+		assert.equal(captured.args[captured.args.indexOf("--effort") + 1], "low");
 	} finally {
 		if (previousCommand === undefined) delete process.env.FLUX_CLAUDE_COMMAND;
 		else process.env.FLUX_CLAUDE_COMMAND = previousCommand;
