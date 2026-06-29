@@ -190,6 +190,7 @@ async function formatPiStatusSummary(ctx: ExtensionContext, config: FluxConfig, 
 
 function createPiModelCaller(ctx: ExtensionContext, signal?: AbortSignal): ThoughtModelCaller {
 	return async ({ config, systemPrompt, prompt }) => {
+		if (signal?.aborted) throw new Error("Flux Pi sidecar generation was aborted.");
 		const selection = await resolvePiSidecarModel(ctx, config);
 		if (selection.warning && ctx.hasUI) ctx.ui.notify(selection.warning, "warning");
 		const model = selection.model;
@@ -292,6 +293,34 @@ async function runFlux(
 	piSendMessage(content, thought, config, options.triggerTurn ?? config.triggerTurn, display);
 }
 
+function isAbortLikeFluxError(error: unknown, signal?: AbortSignal): boolean {
+	if (signal?.aborted) return true;
+	if (error instanceof DOMException && error.name === "AbortError") return true;
+	if (error instanceof Error && error.name === "AbortError") return true;
+	const message = error instanceof Error ? error.message : String(error);
+	return /\babort(?:ed|error)?\b/i.test(message);
+}
+
+function fluxErrorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+async function runFluxNonFatal(
+	config: FluxConfig,
+	state: FluxState,
+	ctx: ExtensionContext,
+	event: TriggerEvent,
+	snapshot: AgentContextSnapshot,
+	options: { force?: boolean; display?: boolean; triggerTurn?: boolean } = {},
+): Promise<void> {
+	try {
+		await runFlux(config, state, ctx, event, snapshot, options);
+	} catch (error) {
+		if (isAbortLikeFluxError(error, ctx.signal)) return;
+		if (ctx.hasUI) ctx.ui.notify(`Flux sidecar failed: ${fluxErrorMessage(error)}`, "warning");
+	}
+}
+
 let piSendMessage: (
 	content: string,
 	thought: unknown,
@@ -362,7 +391,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 		busy = true;
 		try {
 			const config = currentConfig();
-			await runFlux(
+			await runFluxNonFatal(
 				config,
 				state,
 				ctx,
@@ -379,7 +408,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 		busy = true;
 		try {
 			const config = currentConfig();
-			await runFlux(
+			await runFluxNonFatal(
 				config,
 				state,
 				ctx,
@@ -397,7 +426,7 @@ export default function fluxPiExtension(pi: ExtensionAPI) {
 		busy = true;
 		try {
 			const config = currentConfig();
-			await runFlux(
+			await runFluxNonFatal(
 				config,
 				state,
 				ctx,

@@ -8,21 +8,27 @@ import fluxPiExtension from "../src/adapters/pi/index.ts";
 type RegisteredPi = {
 	handlers: Record<string, (event: unknown, ctx: any) => Promise<void> | void>;
 	commands: Record<string, { handler: (args: string, ctx: any) => Promise<void> | void }>;
+	tools: Record<string, { execute: (...args: any[]) => Promise<any> | any }>;
+	sentMessages: unknown[];
 };
 
 function createPiHarness(): RegisteredPi {
-	const harness: RegisteredPi = { handlers: {}, commands: {} };
+	const harness: RegisteredPi = { handlers: {}, commands: {}, tools: {}, sentMessages: [] };
 	const pi = {
 		on(name: string, handler: (event: unknown, ctx: any) => Promise<void> | void) {
 			harness.handlers[name] = handler;
 		},
 		events: { on() {} },
 		registerMessageRenderer() {},
-		registerTool() {},
+		registerTool(tool: { name: string; execute: (...args: any[]) => Promise<any> | any }) {
+			harness.tools[tool.name] = tool;
+		},
 		registerCommand(name: string, command: { handler: (args: string, ctx: any) => Promise<void> | void }) {
 			harness.commands[name] = command;
 		},
-		sendMessage() {},
+		sendMessage(message: unknown) {
+			harness.sentMessages.push(message);
+		},
 	};
 	fluxPiExtension(pi as any);
 	return harness;
@@ -30,19 +36,20 @@ function createPiHarness(): RegisteredPi {
 
 function createCtx(
 	cwd: string,
-	options: { model?: any; availableModels?: any[] } = {},
+	options: { model?: any; availableModels?: any[]; signal?: AbortSignal; getApiKeyAndHeaders?: () => Promise<any> } = {},
 ) {
 	const notifications: Array<{ message: string; level: string }> = [];
 	const statuses: Record<string, string> = {};
 	return {
 		cwd,
 		hasUI: true,
-		signal: undefined,
+		signal: options.signal,
 		model: options.model,
 		sessionManager: { getBranch: () => [] },
 		modelRegistry: {
 			getAvailable: () => options.availableModels ?? [],
 			find: (provider: string, modelId: string) => (options.availableModels ?? []).find((model) => model.provider === provider && model.id === modelId),
+			getApiKeyAndHeaders: options.getApiKeyAndHeaders ?? (async () => ({ ok: false, error: "test auth unavailable" })),
 		},
 		ui: {
 			notify(message: string, level: string) {
@@ -143,6 +150,79 @@ test("Pi persistent config set commands update file-backed runtime state", async
 			assert.equal(ctx.statuses.flux, "flux:off");
 			await harness.commands.flux.handler("status", ctx);
 			assert.match(ctx.notifications.at(-1)?.message ?? "", /enabled=false, random=true/);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
+test("Pi automatic Flux runs ignore aborted sidecar generation", async () => {
+	await withNoExplicitFluxConfig(async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "flux-pi-abort-auto-"));
+		try {
+			writeConfig(cwd, {
+				random: { probability: 1, minIntervalMs: 0, afterEvents: 0 },
+				randomInjections: true,
+			});
+			const harness = createPiHarness();
+			const controller = new AbortController();
+			controller.abort();
+			const ctx = createCtx(cwd, { signal: controller.signal });
+
+			await harness.handlers.session_start?.({}, ctx);
+			await assert.doesNotReject(() => harness.handlers.tool_result?.({ toolName: "bash", result: "ok" }, ctx) as Promise<void>);
+
+			assert.equal(harness.sentMessages.length, 0);
+			assert.equal(ctx.notifications.length, 0);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
+test("Pi automatic Flux runs ignore abort-like sidecar errors after model resolution", async () => {
+	await withNoExplicitFluxConfig(async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "flux-pi-abort-midflight-"));
+		try {
+			writeConfig(cwd, {
+				random: { probability: 1, minIntervalMs: 0, afterEvents: 0 },
+				randomInjections: true,
+			});
+			const harness = createPiHarness();
+			const activeModel = { provider: "openai-codex", id: "gpt-current", name: "Current Model" };
+			const ctx = createCtx(cwd, {
+				model: activeModel,
+				getApiKeyAndHeaders: async () => {
+					throw new Error("Flux Pi sidecar generation was aborted.");
+				},
+			});
+
+			await harness.handlers.session_start?.({}, ctx);
+			await assert.doesNotReject(() => harness.handlers.tool_result?.({ toolName: "bash", result: "ok" }, ctx) as Promise<void>);
+
+			assert.equal(harness.sentMessages.length, 0);
+			assert.equal(ctx.notifications.length, 0);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
+test("Pi explicit flux_stray_thought still surfaces aborted sidecar generation", async () => {
+	await withNoExplicitFluxConfig(async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "flux-pi-abort-tool-"));
+		try {
+			writeConfig(cwd, {});
+			const harness = createPiHarness();
+			const ctx = createCtx(cwd);
+			const controller = new AbortController();
+			controller.abort();
+
+			await harness.handlers.session_start?.({}, ctx);
+			await assert.rejects(
+				() => harness.tools.flux_stray_thought.execute("tool-call", {}, controller.signal, undefined, ctx),
+				/Flux Pi sidecar generation was aborted/,
+			);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
