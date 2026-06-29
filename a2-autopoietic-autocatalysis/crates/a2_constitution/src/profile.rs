@@ -152,6 +152,18 @@ mod tests {
     }
 
     #[test]
+    fn b1_gates_do_not_include_human_review() {
+        let gates = BootstrapProfile::B1.gates();
+
+        assert!(
+            !gates
+                .iter()
+                .any(|gate| matches!(gate, BootstrapGate::HumanReview)),
+            "B1 should not include HumanReview in its gate set"
+        );
+    }
+
+    #[test]
     fn b2_network_allowlist_is_quarantine_and_lineage_only() {
         let policy = BootstrapProfile::B2.boundary_policy(test_hard_shell());
 

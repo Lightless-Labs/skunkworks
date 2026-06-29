@@ -207,6 +207,25 @@ CONSTITUTION_HUMAN_REVIEW_BUG_OLD = "matches!(self, Self::B0)"
 CONSTITUTION_HUMAN_REVIEW_BUG_NEW = "matches!(self, Self::B0 | Self::B1)"
 CONSTITUTION_NETWORK_BUG_OLD = '"lineage://archive".to_string(),'
 CONSTITUTION_NETWORK_BUG_NEW = '"production://write".to_string(),'
+CONSTITUTION_B1_GATES_BUG_OLD = """\
+            Self::B1 => &[
+                AutomatedVerifierGates,
+                AttestedKernelPatches,
+                ExternalSentinelApproval,
+                RootOfTrustEscrow,
+                RollbackAuthority,
+            ],
+"""
+CONSTITUTION_B1_GATES_BUG_NEW = """\
+            Self::B1 => &[
+                AutomatedVerifierGates,
+                HumanReview,
+                AttestedKernelPatches,
+                ExternalSentinelApproval,
+                RootOfTrustEscrow,
+                RollbackAuthority,
+            ],
+"""
 WORKCELL_TASK_ID = "self-correction-compound-workcell-same-crate-hidden-regressions"
 WORKCELL_DESCRIPTION = """\
 The workspace contains a regression. `cargo test -p a2_workcell uses_last_diff_block_when_model_self_corrects` fails.
@@ -574,7 +593,8 @@ FIXTURES: dict[str, Fixture] = {
         verify_command=(
             "cargo test -p a2_constitution b1_does_not_require_human_review; human=$?; "
             "cargo test -p a2_constitution b2_network_allowlist_is_quarantine_and_lineage_only; network=$?; "
-            "test $human -eq 0 -a $network -eq 0"
+            "cargo test -p a2_constitution b1_gates_do_not_include_human_review; gates=$?; "
+            "test $human -eq 0 -a $network -eq 0 -a $gates -eq 0"
         ),
         replacements=(
             Replacement(
@@ -586,6 +606,11 @@ FIXTURES: dict[str, Fixture] = {
                 "crates/a2_constitution/src/profile.rs",
                 CONSTITUTION_NETWORK_BUG_OLD,
                 CONSTITUTION_NETWORK_BUG_NEW,
+            ),
+            Replacement(
+                "crates/a2_constitution/src/profile.rs",
+                CONSTITUTION_B1_GATES_BUG_OLD,
+                CONSTITUTION_B1_GATES_BUG_NEW,
             ),
         ),
     ),
@@ -1219,9 +1244,14 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(fixture.task_id, CONSTITUTION_TASK_ID)
         self.assertIn("b1_does_not_require_human_review", fixture.verify_command)
         self.assertIn("b2_network_allowlist_is_quarantine_and_lineage_only", fixture.verify_command)
+        self.assertIn("b1_gates_do_not_include_human_review", fixture.verify_command)
         self.assertEqual(
             [replacement.path for replacement in fixture.replacements],
-            ["crates/a2_constitution/src/profile.rs", "crates/a2_constitution/src/profile.rs"],
+            [
+                "crates/a2_constitution/src/profile.rs",
+                "crates/a2_constitution/src/profile.rs",
+                "crates/a2_constitution/src/profile.rs",
+            ],
         )
 
     def test_compound_workcell_fixture_is_same_crate_multi_bug(self) -> None:

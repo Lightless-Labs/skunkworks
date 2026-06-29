@@ -10,6 +10,7 @@
 **Addendum:** 2026-06-17 — Added `compound-archive-index-hidden` after Kimi k2.7 and GLM 5.2 passed the Archive schema-migration fixture on attempt 1; this variant keeps the visible journal-ordering failure but hides an exact `idx_lineage_records_created_at` schema-index direction assertion. Kimi k2.7 and GLM 5.2 each resolved/self-corrected 3/3 with pass@1 0/3.
 **Addendum:** 2026-06-17 — Added `bench/self_correction_score.py --trajectories` for per-run attempt reporting, including verifier return code, A² agent return code, diff stats, touched files, prior-lineage flags, and explicit `a2_returncode=0` clean-exit verifier failures.
 **Addendum:** 2026-06-18 — Added `compound-workcell-provider-hidden` to diversify hard fixtures into provider execution behavior: visible Pi JSONL usage parsing and hidden candidate-worktree `PWD` propagation in `a2_workcell::worktree_catalyst`; smoke-only injection verified both failures.
+**Addendum:** 2026-06-29 — Hardened `compound-constitution-same-crate-hidden` with a third verifier covering B1 gate composition (`b1_gates_do_not_include_human_review`) so prior pass@1-only Constitution provider cohorts do not overstate loop evidence; fresh provider reruns are required before reporting new Constitution scores.
 
 ## Goal
 
@@ -89,6 +90,7 @@ Conclusion: the harness now distinguishes three cases: easy pass@1, loop exercis
 - [x] Re-run `compound-hidden` N≥3 after motif/run-path changes. Completed 2026-05-21 after candidate-worktree verifier wiring.
 - [x] Add a second hard fixture once at least one provider self-corrects `compound-hidden`. Completed 2026-05-18 with `compound-membrane-hidden`.
 - [x] Add additional same-crate fixture diversity beyond Sensorium/RAF/Eval/Broker. Completed 2026-05-31 with `compound-constitution-same-crate-hidden`.
+- [x] Harden the Constitution same-crate fixture after Pi/Kimi and Pi/ZAI solved the two-regression version on pass@1. Completed 2026-06-29 by adding a B1 gate-composition verifier to `compound-constitution-same-crate-hidden`; rerun provider cohorts before updating benchmark scores.
 - [x] Add Workcell same-crate fixture coverage. Completed 2026-06-01 with `compound-workcell-same-crate-hidden`.
 - [x] Add a Core same-crate fixture. Completed 2026-06-04 with `compound-core-same-crate-hidden`; smoke-only injection verified both visible Fibonacci and hidden somatic-summary failures.
 - [x] Run `compound-core-same-crate-hidden` N≥3 with an available non-Claude provider. Completed 2026-06-04 with Minimax: resolved/self-corrected 3/3, pass@1 0/3, loop exercised 3/3. Result: `/tmp/a2-core-same-crate-minimax-20260604T214318Z.jsonl`.
