@@ -76,6 +76,15 @@ Add per-run attempt trajectories when investigating retry shape or verifier fail
 bench/self_correction_score.py --trajectories bench/self-correction-results.jsonl
 ```
 
+Machine-check that a log contains at least one complete reproducible demo trajectory:
+
+```bash
+bench/self_correction_score.py --require-demo --trajectories \
+  docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.jsonl
+```
+
+`--require-demo` exits non-zero unless at least one grouped run contains: a failed first attempt with verifier failure archived into lineage (`lineage_records_after > lineage_records_before`), a retry with prior lineage present, a later verified pass, core lineage reconciliation, and promotion/apply evidence in the archived run output.
+
 This scorer reports `pass@1` separately from `self-corrected`. A first-attempt pass is useful model capability data, but it does not exercise prior-lineage self-correction; when no run retries, `self-corrected` renders as N/A instead of a failed recovery rate. A JSONL file can have more rows than independent trials because each retry attempt is one row; score and document runs by unique `(run_id, task_id)`, not raw line count. Benchmark success keys off `resolved` / verification status; `a2_returncode=0` only means the agent command exited cleanly.
 
 Run the anti-repeat retry ablation by keeping the same fixture/provider/attempt budget and writing enabled/disabled cohorts to one log or to paired logs:

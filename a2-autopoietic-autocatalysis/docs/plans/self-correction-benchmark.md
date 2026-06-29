@@ -11,6 +11,7 @@
 **Addendum:** 2026-06-17 — Added `bench/self_correction_score.py --trajectories` for per-run attempt reporting, including verifier return code, A² agent return code, diff stats, touched files, prior-lineage flags, and explicit `a2_returncode=0` clean-exit verifier failures.
 **Addendum:** 2026-06-18 — Added `compound-workcell-provider-hidden` to diversify hard fixtures into provider execution behavior: visible Pi JSONL usage parsing and hidden candidate-worktree `PWD` propagation in `a2_workcell::worktree_catalyst`; smoke-only injection verified both failures.
 **Addendum:** 2026-06-29 — Hardened `compound-constitution-same-crate-hidden` with a third verifier covering B1 gate composition (`b1_gates_do_not_include_human_review`) so prior pass@1-only Constitution provider cohorts do not overstate loop evidence; fresh provider reruns are required before reporting new Constitution scores.
+**Addendum:** 2026-06-29 — Added `bench/self_correction_score.py --require-demo` as a machine-checkable reproducible-demo gate over existing JSONL evidence. It requires failed first attempt, archived verifier evidence, prior-lineage retry, later verified pass, core lineage reconciliation, and promotion/apply evidence.
 
 ## Goal
 
@@ -86,6 +87,7 @@ Conclusion: the harness now distinguishes three cases: easy pass@1, loop exercis
 - [x] Persist post-apply verification outcome in the main `a2ctl run`/lineage path; remove benchmark-only lineage reconciliation once the core path records truth. Completed 2026-05-01.
 - [x] Add attempt diff/touched-file summaries to self-correction JSONL records. Completed 2026-05-01.
 - [x] Add scorer attempt-trajectory reporting for retry-shape/debug output. Completed 2026-06-17 with `bench/self_correction_score.py --trajectories`.
+- [x] Add a machine-checkable reproducible-demo gate for archived loop evidence. Completed 2026-06-29 with `bench/self_correction_score.py --require-demo`; known passing log: `docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.jsonl`.
 - [x] Add Workcell provider-execution hidden fixture. Completed 2026-06-18 with `compound-workcell-provider-hidden`; smoke-only injection verified visible Pi usage parsing and hidden `run_pi` candidate-worktree `PWD` propagation failures.
 - [x] Re-run `compound-hidden` N≥3 after motif/run-path changes. Completed 2026-05-21 after candidate-worktree verifier wiring.
 - [x] Add a second hard fixture once at least one provider self-corrects `compound-hidden`. Completed 2026-05-18 with `compound-membrane-hidden`.

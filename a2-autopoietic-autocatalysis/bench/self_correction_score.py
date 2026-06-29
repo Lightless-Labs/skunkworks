@@ -31,6 +31,10 @@ class SelfCorrectionRecord:
     touched_files: tuple[str, ...] = ()
     diff_added_lines: int | None = None
     diff_removed_lines: int | None = None
+    lineage_records_before: int | None = None
+    lineage_records_after: int | None = None
+    lineage_reconciled_by_core: bool | None = None
+    promotion_evidence_present: bool = False
 
     def __init__(
         self,
@@ -46,6 +50,10 @@ class SelfCorrectionRecord:
         touched_files: tuple[str, ...] = (),
         diff_added_lines: int | None = None,
         diff_removed_lines: int | None = None,
+        lineage_records_before: int | None = None,
+        lineage_records_after: int | None = None,
+        lineage_reconciled_by_core: bool | None = None,
+        promotion_evidence_present: bool = False,
     ) -> None:
         object.__setattr__(self, "task_id", task_id)
         object.__setattr__(self, "run_id", run_id)
@@ -60,6 +68,14 @@ class SelfCorrectionRecord:
         object.__setattr__(self, "touched_files", touched_files)
         object.__setattr__(self, "diff_added_lines", diff_added_lines)
         object.__setattr__(self, "diff_removed_lines", diff_removed_lines)
+        object.__setattr__(self, "lineage_records_before", lineage_records_before)
+        object.__setattr__(self, "lineage_records_after", lineage_records_after)
+        object.__setattr__(
+            self, "lineage_reconciled_by_core", lineage_reconciled_by_core
+        )
+        object.__setattr__(
+            self, "promotion_evidence_present", promotion_evidence_present
+        )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -69,6 +85,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--trajectories",
         action="store_true",
         help="Print per-run attempt trajectories with return codes and touched files.",
+    )
+    parser.add_argument(
+        "--require-demo",
+        action="store_true",
+        help=(
+            "Exit non-zero unless the log contains a complete self-correction demo: "
+            "failed first attempt, archived verifier evidence, prior-lineage retry, "
+            "later passing attempt, and core lineage reconciliation."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -87,6 +112,13 @@ def touched_files_from_payload(payload: dict[str, Any]) -> tuple[str, ...]:
     if not isinstance(touched_files, list):
         return ()
     return tuple(str(path) for path in touched_files)
+
+
+def payload_has_promotion_evidence(payload: dict[str, Any]) -> bool:
+    output = "\n".join(
+        str(payload.get(key) or "") for key in ("stdout", "stderr")
+    ).lower()
+    return "promote_germline" in output or "[applied and rebuilt:" in output
 
 
 def load_records(path: Path) -> list[SelfCorrectionRecord]:
@@ -115,6 +147,20 @@ def load_records(path: Path) -> list[SelfCorrectionRecord]:
                     touched_files=touched_files_from_payload(payload),
                     diff_added_lines=optional_int(payload.get("diff_added_lines")),
                     diff_removed_lines=optional_int(payload.get("diff_removed_lines")),
+                    lineage_records_before=optional_int(
+                        payload.get("lineage_records_before")
+                    ),
+                    lineage_records_after=optional_int(
+                        payload.get("lineage_records_after")
+                    ),
+                    lineage_reconciled_by_core=(
+                        bool(payload["lineage_reconciled_by_core"])
+                        if "lineage_reconciled_by_core" in payload
+                        else None
+                    ),
+                    promotion_evidence_present=payload_has_promotion_evidence(
+                        payload
+                    ),
                 )
             )
     return records
@@ -227,6 +273,58 @@ def verifier_failed_clean_exit(record: SelfCorrectionRecord) -> bool:
     )
 
 
+def has_archived_verifier_failure(record: SelfCorrectionRecord) -> bool:
+    return (
+        not record.resolved
+        and record.verify_returncode not in (None, 0)
+        and record.lineage_records_after is not None
+        and record.lineage_records_before is not None
+        and record.lineage_records_after > record.lineage_records_before
+    )
+
+
+def has_verifier_gated_promotion(record: SelfCorrectionRecord) -> bool:
+    return (
+        record.resolved
+        and record.verify_returncode == 0
+        and record.lineage_reconciled_by_core is True
+        and record.promotion_evidence_present
+    )
+
+
+def demo_run_ids(records: list[SelfCorrectionRecord]) -> list[tuple[str, str]]:
+    demo_runs: list[tuple[str, str]] = []
+    for key, attempts in group_records(records).items():
+        if len(attempts) < 2:
+            continue
+        first = attempts[0]
+        later_attempts = attempts[1:]
+        if not has_archived_verifier_failure(first):
+            continue
+        if not any(record.prior_lineage_present for record in later_attempts):
+            continue
+        if not any(has_verifier_gated_promotion(record) for record in later_attempts):
+            continue
+        demo_runs.append(key)
+    return demo_runs
+
+
+def render_demo_check(records: list[SelfCorrectionRecord]) -> list[str]:
+    demos = demo_run_ids(records)
+    lines = ["", "Reproducible demo check"]
+    if demos:
+        lines.append("  PASS complete self-correction demo trajectory found")
+        for run_id, task_id in demos:
+            lines.append(f"    {run_id} / {task_id}")
+    else:
+        lines.append(
+            "  FAIL no run contains failed first attempt with archived verifier evidence, "
+            "prior-lineage retry, later verified pass, core lineage reconciliation, "
+            "and promotion/apply evidence"
+        )
+    return lines
+
+
 def render_attempt_trajectories(records: list[SelfCorrectionRecord]) -> list[str]:
     grouped = group_records(records)
     lines = ["", "Attempt trajectories"]
@@ -244,6 +342,10 @@ def render_attempt_trajectories(records: list[SelfCorrectionRecord]) -> list[str
                 f"resolved={str(record.resolved).lower()} "
                 f"verify={format_optional_returncode(record.verify_returncode)} "
                 f"a2={format_optional_returncode(record.a2_returncode)} "
+                f"lineage={format_optional_returncode(record.lineage_records_before)}"
+                f"->{format_optional_returncode(record.lineage_records_after)} "
+                f"reconciled={str(record.lineage_reconciled_by_core).lower()} "
+                f"promotion={str(record.promotion_evidence_present).lower()} "
                 f"diff={format_diff(record)} "
                 f"files={format_touched_files(record)}"
                 f"{flag_text}"
@@ -259,7 +361,12 @@ def clean_agent_verifier_failures(records: list[SelfCorrectionRecord]) -> int:
     return sum(1 for record in records if verifier_failed_clean_exit(record))
 
 
-def render(records: list[SelfCorrectionRecord], *, include_trajectories: bool = False) -> str:
+def render(
+    records: list[SelfCorrectionRecord],
+    *,
+    include_trajectories: bool = False,
+    require_demo: bool = False,
+) -> str:
     metrics = score(records)
     lines = render_metrics("Self-Correction Benchmark", metrics)
     lines.insert(1, f"  records             {len(records)} rows / {metrics['total']} runs")
@@ -286,6 +393,9 @@ def render(records: list[SelfCorrectionRecord], *, include_trajectories: bool = 
             for line in render_metrics(label, cohort_metrics)[1:]:
                 lines.append(f"  {line}")
 
+    if require_demo:
+        lines.extend(render_demo_check(records))
+
     if include_trajectories:
         lines.extend(render_attempt_trajectories(records))
 
@@ -298,7 +408,15 @@ def main(argv: list[str]) -> int:
     if not records:
         print("No records found.")
         return 1
-    print(render(records, include_trajectories=args.trajectories))
+    print(
+        render(
+            records,
+            include_trajectories=args.trajectories,
+            require_demo=args.require_demo,
+        )
+    )
+    if args.require_demo and not demo_run_ids(records):
+        return 2
     return 0
 
 
@@ -467,6 +585,70 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertIn("clean-agent-exit", output)
         self.assertIn("prior-lineage", output)
         self.assertIn("a2_returncode=0 only means the agent command exited cleanly", output)
+
+    def test_require_demo_passes_complete_promotion_trajectory(self) -> None:
+        records = [
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+                a2_returncode=0,
+                verify_returncode=1,
+                lineage_records_before=0,
+                lineage_records_after=1,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=2,
+                resolved=True,
+                prior_lineage_present=True,
+                a2_returncode=0,
+                verify_returncode=0,
+                lineage_records_before=1,
+                lineage_records_after=2,
+                lineage_reconciled_by_core=True,
+                promotion_evidence_present=True,
+            ),
+        ]
+
+        self.assertEqual(demo_run_ids(records), [("run", "task")])
+        output = render(records, require_demo=True)
+        self.assertIn("PASS complete self-correction demo trajectory found", output)
+
+    def test_require_demo_rejects_missing_promotion_evidence(self) -> None:
+        records = [
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+                a2_returncode=0,
+                verify_returncode=1,
+                lineage_records_before=0,
+                lineage_records_after=1,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=2,
+                resolved=True,
+                prior_lineage_present=True,
+                a2_returncode=0,
+                verify_returncode=0,
+                lineage_records_before=1,
+                lineage_records_after=2,
+                lineage_reconciled_by_core=True,
+                promotion_evidence_present=False,
+            ),
+        ]
+
+        self.assertEqual(demo_run_ids(records), [])
+        output = render(records, require_demo=True)
+        self.assertIn("FAIL no run contains", output)
 
     def test_clean_agent_exit_flag_requires_verifier_failure(self) -> None:
         records = [

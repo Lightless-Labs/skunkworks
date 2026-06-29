@@ -77,6 +77,8 @@ bench/self_correction.py --fixture compound-hidden \
   --attempts 3 \
   --results /tmp/a2-self-correction.jsonl
 bench/self_correction_score.py /tmp/a2-self-correction.jsonl
+bench/self_correction_score.py --require-demo --trajectories \
+  docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.jsonl
 
 # Autopilot dry-run discovery
 cargo run -p a2ctl -- autopilot --dry-run
