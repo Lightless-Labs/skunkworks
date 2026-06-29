@@ -2527,10 +2527,15 @@ fn run_cycle(num_cycles: usize, requirements: &str) {
         }
         println!();
 
-        // Fitness-gated persistence: only commit if fitness didn't regress
+        // Fitness-gated persistence: accepted mutations become durable only when
+        // this cycle produced actual benchmark evidence. RAF closure alone is
+        // not self-improvement.
         let regressed = report.fitness_delta.is_some_and(|d| d < 0.0);
+        let has_fitness_evidence = report_has_actual_fitness_evidence(&report);
         if report.accepted_mutations > 0 {
-            if regressed {
+            if !has_fitness_evidence {
+                println!("  ⚠ No actual-test fitness evidence — skipping lineage commit");
+            } else if regressed {
                 println!("  ⚠ Fitness regressed — skipping lineage commit");
                 // Archive stays at previous generation's state.
                 // The in-memory germline has the regression but it won't persist.
@@ -2542,7 +2547,9 @@ fn run_cycle(num_cycles: usize, requirements: &str) {
             }
         }
         if report.accepted_provider_policy_changes > 0 {
-            if regressed {
+            if !has_fitness_evidence {
+                println!("  ⚠ No actual-test fitness evidence — skipping provider policy commit");
+            } else if regressed {
                 println!("  ⚠ Fitness regressed — skipping provider policy commit");
             } else if let Some(ref archive) = archive {
                 let proposed_policy = provider_policy_for_germline(
@@ -2573,9 +2580,16 @@ fn run_cycle(num_cycles: usize, requirements: &str) {
             }
         }
 
-        // Apply accepted system patches to the real source tree.
+        // Apply accepted system patches to the real source tree only when the
+        // patch-producing cycle was grounded in actual benchmark evidence.
         if report.accepted_patches > 0 {
-            apply_accepted_patches(&metabolism);
+            if has_fitness_evidence && !regressed {
+                apply_accepted_patches(&metabolism);
+            } else {
+                println!(
+                    "  ⚠ No non-regressing actual-test fitness evidence — skipping patch apply"
+                );
+            }
         }
     }
 
@@ -2809,9 +2823,18 @@ fn run_challenge(name: &str, num_cycles: usize) {
         }
         println!();
 
-        // Apply accepted system patches to the real source tree.
+        // Apply accepted system patches to the real source tree only when the
+        // patch-producing cycle was grounded in actual benchmark evidence.
         if report.accepted_patches > 0 {
-            apply_accepted_patches(&metabolism);
+            if report_has_actual_fitness_evidence(&report)
+                && !report.fitness_delta.is_some_and(|delta| delta < 0.0)
+            {
+                apply_accepted_patches(&metabolism);
+            } else {
+                println!(
+                    "  ⚠ No non-regressing actual-test fitness evidence — skipping patch apply"
+                );
+            }
         }
     }
 
@@ -3983,6 +4006,55 @@ fn lineage_dir() -> PathBuf {
 }
 
 /// Apply accepted system patches to the real source tree.
+fn report_has_actual_fitness_evidence(report: &CycleReport) -> bool {
+    if report.fitness_delta.is_some_and(|delta| delta < 0.0) {
+        return false;
+    }
+
+    (report.fitness.is_some() && report.fitness_delta.is_some_and(|delta| delta >= 0.0))
+        || report
+            .lineage
+            .iter()
+            .any(|entry| lineage_has_fresh_fitness_evidence(entry, report.cycle))
+}
+
+fn lineage_has_fresh_fitness_evidence(entry: &InvocationLineage, report_cycle: usize) -> bool {
+    entry
+        .inputs
+        .get(&ArtifactType::from("fitness_report"))
+        .is_some_and(|bytes| is_fresh_non_regressing_fitness_evidence_artifact(bytes, report_cycle))
+        || entry
+            .outputs
+            .get(&ArtifactType::from("fitness_report"))
+            .is_some_and(|bytes| {
+                is_fresh_non_regressing_fitness_evidence_artifact(bytes, report_cycle)
+            })
+}
+
+fn is_fresh_non_regressing_fitness_evidence_artifact(bytes: &[u8], report_cycle: usize) -> bool {
+    serde_json::from_slice::<Value>(bytes).is_ok_and(|value| {
+        value
+            .get("schema_version")
+            .is_some_and(|schema| schema == "a2d.fitness-evidence.v1")
+            && value
+                .get("actual_tests_evaluated")
+                .is_some_and(|actual| actual == true)
+            && value
+                .get("non_regressing")
+                .is_some_and(|non_regressing| non_regressing == true)
+            && value
+                .get("delta_from_last_non_regressing_fitness")
+                .and_then(Value::as_f64)
+                .is_some_and(|delta| delta >= 0.0)
+            && value
+                .get("cycle")
+                .and_then(Value::as_u64)
+                .is_some_and(|evidence_cycle| {
+                    evidence_cycle.saturating_add(1) == report_cycle as u64
+                })
+    })
+}
+
 fn apply_accepted_patches(metabolism: &Metabolism) {
     let root = project_root();
     for patch in metabolism.pending_patches() {
@@ -4051,6 +4123,93 @@ mod tests {
         assert!(output.contains("Diagnostic: captured but not printed"));
         assert!(!output.contains("800000000003600000"));
         assert!(!output.contains("assertion text"));
+    }
+
+    #[test]
+    fn lineage_durability_gate_requires_actual_fitness_evidence() {
+        let no_evidence = CycleReport {
+            accepted_mutations: 1,
+            fitness: None,
+            fitness_delta: None,
+            ..Default::default()
+        };
+        assert!(!report_has_actual_fitness_evidence(&no_evidence));
+
+        let mut legacy_lineage = topology_entry(a2d_core::workcell::WorkcellOutcome::Success {
+            outputs: BTreeMap::new(),
+        });
+        legacy_lineage
+            .inputs
+            .insert(art("fitness_report"), b"fitness: 0.50".to_vec());
+        let legacy_evidence = CycleReport {
+            accepted_mutations: 1,
+            lineage: vec![legacy_lineage],
+            ..Default::default()
+        };
+        assert!(!report_has_actual_fitness_evidence(&legacy_evidence));
+
+        let mut regressing_lineage = topology_entry(a2d_core::workcell::WorkcellOutcome::Success {
+            outputs: BTreeMap::new(),
+        });
+        regressing_lineage.inputs.insert(
+            art("fitness_report"),
+            br#"{"schema_version":"a2d.fitness-evidence.v1","actual_tests_evaluated":true,"cycle":1,"non_regressing":false,"delta_from_last_non_regressing_fitness":-0.1}"#.to_vec(),
+        );
+        let regressing_lineage_evidence = CycleReport {
+            cycle: 2,
+            accepted_mutations: 1,
+            lineage: vec![regressing_lineage],
+            ..Default::default()
+        };
+        assert!(!report_has_actual_fitness_evidence(
+            &regressing_lineage_evidence
+        ));
+
+        let mut lineage = topology_entry(a2d_core::workcell::WorkcellOutcome::Success {
+            outputs: BTreeMap::new(),
+        });
+        lineage.inputs.insert(
+            art("fitness_report"),
+            br#"{"schema_version":"a2d.fitness-evidence.v1","actual_tests_evaluated":true,"cycle":1,"non_regressing":true,"delta_from_last_non_regressing_fitness":0.1}"#.to_vec(),
+        );
+        let input_evidence = CycleReport {
+            cycle: 2,
+            accepted_mutations: 1,
+            lineage: vec![lineage],
+            ..Default::default()
+        };
+        assert!(report_has_actual_fitness_evidence(&input_evidence));
+
+        let mut stale_lineage = topology_entry(a2d_core::workcell::WorkcellOutcome::Success {
+            outputs: BTreeMap::new(),
+        });
+        stale_lineage.inputs.insert(
+            art("fitness_report"),
+            br#"{"schema_version":"a2d.fitness-evidence.v1","actual_tests_evaluated":true,"cycle":0,"non_regressing":true,"delta_from_last_non_regressing_fitness":0.1}"#.to_vec(),
+        );
+        let stale_evidence = CycleReport {
+            cycle: 2,
+            accepted_mutations: 1,
+            lineage: vec![stale_lineage],
+            ..Default::default()
+        };
+        assert!(!report_has_actual_fitness_evidence(&stale_evidence));
+
+        let regressing_evidence = CycleReport {
+            accepted_mutations: 1,
+            fitness: Some(fitness(4, 6)),
+            fitness_delta: Some(-0.16),
+            ..Default::default()
+        };
+        assert!(!report_has_actual_fitness_evidence(&regressing_evidence));
+
+        let evidence = CycleReport {
+            accepted_mutations: 1,
+            fitness: Some(fitness(5, 6)),
+            fitness_delta: Some(0.83),
+            ..Default::default()
+        };
+        assert!(report_has_actual_fitness_evidence(&evidence));
     }
 
     fn policy_summary(

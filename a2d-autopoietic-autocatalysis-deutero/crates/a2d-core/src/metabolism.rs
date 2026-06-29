@@ -15,6 +15,7 @@ use crate::provider::{
 use crate::self_sandbox::{self, SystemPatch};
 use crate::types::{ArtifactType, EnzymeDef, EnzymeId};
 use crate::workcell::{Workcell, WorkcellId, WorkcellOutcome};
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::path::{Path, PathBuf};
@@ -167,6 +168,83 @@ pub struct CycleReport {
     /// Enzymes in an escalated state at cycle end: (enzyme, rung).
     /// Rung 0 = normal, 1+ = loop detected, intervention in progress.
     pub loop_escalations: Vec<(EnzymeId, usize)>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct FitnessEvidenceArtifact {
+    schema_version: &'static str,
+    actual_tests_evaluated: bool,
+    cycle: usize,
+    fitness: f64,
+    passed: usize,
+    failed: usize,
+    total: usize,
+    delta_from_last_non_regressing_fitness: f64,
+    non_regressing: bool,
+    failed_cases: Vec<String>,
+    results: Vec<FitnessCaseEvidence>,
+    diagnostic_present: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct FitnessCaseEvidence {
+    name: String,
+    passed: bool,
+}
+
+fn fitness_evidence_artifact(cycle: usize, report: &FitnessReport, delta: f64) -> Vec<u8> {
+    let results = redacted_fitness_results(report);
+    let failed_cases = results
+        .iter()
+        .filter(|result| !result.passed)
+        .map(|result| result.name.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let artifact = FitnessEvidenceArtifact {
+        schema_version: "a2d.fitness-evidence.v1",
+        actual_tests_evaluated: true,
+        cycle,
+        fitness: report.fitness,
+        passed: report.passed,
+        failed: report.failed,
+        total: report.total,
+        delta_from_last_non_regressing_fitness: delta,
+        non_regressing: delta >= 0.0,
+        failed_cases,
+        results,
+        diagnostic_present: report.diagnostic.is_some(),
+    };
+    serde_json::to_vec_pretty(&artifact).expect("fitness evidence must serialize")
+}
+
+fn redacted_fitness_results(report: &FitnessReport) -> Vec<FitnessCaseEvidence> {
+    let mut results = Vec::new();
+    let mut hidden_seen = BTreeMap::<bool, bool>::new();
+
+    for result in &report.results {
+        if is_public_fitness_case_name(&result.name) {
+            results.push(FitnessCaseEvidence {
+                name: result.name.clone(),
+                passed: result.passed,
+            });
+        } else {
+            hidden_seen.insert(result.passed, true);
+        }
+    }
+
+    for (passed, _) in hidden_seen {
+        results.push(FitnessCaseEvidence {
+            name: "hidden_acceptance".to_string(),
+            passed,
+        });
+    }
+
+    results
+}
+
+fn is_public_fitness_case_name(name: &str) -> bool {
+    matches!(name, "compiles" | "has_tests" | "all_tests_pass") || name.starts_with("has_")
 }
 
 /// Deterministic orchestrator for the A²D catalytic loop.
@@ -574,18 +652,13 @@ impl Metabolism {
                                 self.last_fitness = fitness_report.fitness;
                             }
 
-                            // Store fitness as an artifact so the evolver sees it next cycle.
-                            // Only pass/fail counts and fitness score — no test content (information barrier).
-                            let fitness_summary = format!(
-                                "fitness: {:.2}, passed: {}, failed: {}, total: {}",
-                                fitness_report.fitness,
-                                fitness_report.passed,
-                                fitness_report.failed,
-                                fitness_report.total,
-                            );
+                            // Store structured fitness evidence so adaptation enzymes see
+                            // which behavioral checks changed and whether this cycle is
+                            // non-regressing. Hidden acceptance source stays withheld; the
+                            // separate failure_report carries redacted sandbox diagnostics.
                             self.upsert_artifact(
                                 ArtifactType::from("fitness_report"),
-                                fitness_summary.into_bytes(),
+                                fitness_evidence_artifact(cycle, &fitness_report, delta),
                             );
 
                             // Close the feedback loop: route sandbox diagnostics back to
@@ -2848,14 +2921,70 @@ mod tests {
             fitness.fitness
         );
 
-        // failure_report artifact should be populated with diagnostic info
+        // fitness_report artifact should be structured evidence, not just a scalar.
         let artifacts = metabolism.artifacts();
+        let fitness_evidence = artifacts
+            .get(&art("fitness_report"))
+            .expect("fitness_report artifact missing");
+        let value: serde_json::Value = serde_json::from_slice(fitness_evidence)
+            .expect("fitness_report should be structured JSON");
+        assert_eq!(value["schema_version"], "a2d.fitness-evidence.v1");
+        assert_eq!(value["actual_tests_evaluated"], true);
+        assert_eq!(value["cycle"], 0);
+        assert_eq!(value["non_regressing"], true);
+        assert_eq!(value["diagnostic_present"], true);
+        assert!(
+            value["failed_cases"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|case| case == "all_tests_pass")
+        );
+        let all_tests_result = value["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|result| result["name"] == "all_tests_pass")
+            .expect("all_tests_pass result should be present");
+        assert_eq!(all_tests_result["passed"], false);
+
+        // failure_report artifact should be populated with diagnostic info
         let failure = artifacts.get(&art("failure_report"));
         assert!(failure.is_some(), "failure_report artifact missing");
         assert!(
             !failure.unwrap().is_empty(),
             "failure_report should be non-empty on failure"
         );
+    }
+
+    #[test]
+    fn fitness_evidence_redacts_hidden_case_names() {
+        let report = FitnessReport {
+            total: 2,
+            passed: 1,
+            failed: 1,
+            fitness: 0.5,
+            results: vec![
+                crate::benchmark::CaseResult {
+                    name: "compiles".to_string(),
+                    passed: true,
+                },
+                crate::benchmark::CaseResult {
+                    name: "fools_mate_leaves_checked_side_with_no_legal_moves".to_string(),
+                    passed: false,
+                },
+            ],
+            diagnostic: Some("hidden assertion output captured elsewhere".to_string()),
+        };
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&fitness_evidence_artifact(7, &report, 0.5))
+                .expect("fitness evidence should serialize as JSON");
+        let encoded = serde_json::to_string(&value).unwrap();
+
+        assert!(encoded.contains("hidden_acceptance"));
+        assert!(!encoded.contains("fools_mate"));
+        assert!(!encoded.contains("checked_side"));
     }
 
     #[test]
