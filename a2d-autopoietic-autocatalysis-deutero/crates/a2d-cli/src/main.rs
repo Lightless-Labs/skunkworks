@@ -2736,6 +2736,16 @@ fn run_challenge(name: &str, num_cycles: usize) {
             provider_policy_for_germline(&metabolism.provider_policy(), metabolism.germline());
         let report = metabolism.run_cycle();
 
+        if let Some(export_dir) = fitness_evidence_export_dir() {
+            match export_cycle_fitness_evidence(&metabolism, &report, &export_dir, challenge.name) {
+                Ok(path) => println!("  Fitness evidence: {}", path.display()),
+                Err(error) => {
+                    eprintln!("  Fitness evidence export error: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
         for entry in &report.lineage {
             println!(
                 "  [{} via {}] {:?}",
@@ -4005,6 +4015,222 @@ fn lineage_dir() -> PathBuf {
     project_root().join(".a2d").join("lineage")
 }
 
+fn fitness_evidence_export_dir() -> Option<PathBuf> {
+    nonempty_env_path("A2D_FITNESS_EVIDENCE_EXPORT_DIR")
+        .or_else(|| nonempty_env_path("A2D_FITNESS_EVIDENCE_DIR"))
+}
+
+fn nonempty_env_path(name: &str) -> Option<PathBuf> {
+    env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn export_cycle_fitness_evidence(
+    metabolism: &Metabolism,
+    report: &CycleReport,
+    export_dir: &Path,
+    challenge_name: &str,
+) -> Result<PathBuf, String> {
+    if report.fitness.is_none() {
+        return Err(
+            "export requested but cycle produced no actual-test fitness evidence".to_string(),
+        );
+    }
+
+    let artifacts = metabolism.artifacts();
+    let bytes = artifacts
+        .get(&ArtifactType::from("fitness_report"))
+        .ok_or_else(|| {
+            "cycle reported fitness but no fitness_report artifact exists".to_string()
+        })?;
+    let value = validate_exportable_fitness_evidence(bytes, report.cycle)?;
+
+    fs::create_dir_all(export_dir).map_err(|error| {
+        format!(
+            "failed to create fitness evidence export dir {}: {error}",
+            export_dir.display()
+        )
+    })?;
+    let path = export_dir.join(format!(
+        "{challenge_name}-cycle-{}-fitness-evidence.json",
+        report.cycle
+    ));
+    let json = serde_json::to_vec_pretty(&value)
+        .map_err(|error| format!("failed to serialize fitness evidence: {error}"))?;
+    fs::write(&path, json).map_err(|error| {
+        format!(
+            "failed to write fitness evidence export {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(path)
+}
+
+fn validate_exportable_fitness_evidence(
+    bytes: &[u8],
+    report_cycle: usize,
+) -> Result<Value, String> {
+    let value: Value = serde_json::from_slice(bytes)
+        .map_err(|error| format!("fitness evidence is not JSON: {error}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "fitness evidence must be a JSON object".to_string())?;
+    let allowed_fields = BTreeSet::from([
+        "actual_tests_evaluated",
+        "cycle",
+        "delta_from_last_non_regressing_fitness",
+        "diagnostic_present",
+        "failed",
+        "failed_cases",
+        "fitness",
+        "non_regressing",
+        "passed",
+        "results",
+        "schema_version",
+        "total",
+    ]);
+    for field in object.keys() {
+        if !allowed_fields.contains(field.as_str()) {
+            return Err(format!(
+                "fitness evidence contains unreviewed field: {field}"
+            ));
+        }
+    }
+    for field in allowed_fields {
+        if !object.contains_key(field) {
+            return Err(format!("fitness evidence missing required field: {field}"));
+        }
+    }
+
+    require_json_bool(&value, "actual_tests_evaluated", true)?;
+    require_json_bool_field(&value, "diagnostic_present")?;
+    require_json_bool(&value, "non_regressing", true)?;
+    require_json_string(&value, "schema_version", "a2d.fitness-evidence.v1")?;
+    require_json_nonnegative_u64(&value, "passed")?;
+    require_json_nonnegative_u64(&value, "failed")?;
+    require_json_nonnegative_u64(&value, "total")?;
+    let fitness = value
+        .get("fitness")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| "fitness evidence missing numeric fitness".to_string())?;
+    if !(0.0..=1.0).contains(&fitness) {
+        return Err(format!("fitness evidence fitness out of range: {fitness}"));
+    }
+
+    let cycle = value
+        .get("cycle")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "fitness evidence missing numeric cycle".to_string())?;
+    if cycle != report_cycle as u64 {
+        return Err(format!(
+            "fitness evidence cycle {cycle} does not match report cycle {report_cycle}"
+        ));
+    }
+
+    let delta = value
+        .get("delta_from_last_non_regressing_fitness")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| "fitness evidence missing numeric delta".to_string())?;
+    if delta < 0.0 {
+        return Err(format!("fitness evidence regressed by {delta}"));
+    }
+
+    let results = value
+        .get("results")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "fitness evidence missing results array".to_string())?;
+    let mut has_holdout_status = false;
+    for result in results {
+        let result_object = result
+            .as_object()
+            .ok_or_else(|| "fitness evidence result is not an object".to_string())?;
+        let result_fields = BTreeSet::from(["name", "passed"]);
+        for field in result_object.keys() {
+            if !result_fields.contains(field.as_str()) {
+                return Err(format!(
+                    "fitness evidence result contains unreviewed field: {field}"
+                ));
+            }
+        }
+        for field in result_fields {
+            if !result_object.contains_key(field) {
+                return Err(format!("fitness evidence result missing field: {field}"));
+            }
+        }
+        let name = result
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "fitness evidence result missing name".to_string())?;
+        result
+            .get("passed")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| format!("fitness evidence result {name} missing passed bool"))?;
+        if name == "hidden_acceptance" || name == "all_tests_pass" {
+            has_holdout_status = true;
+        } else if !is_public_fitness_case_name_for_cli(name) {
+            return Err(format!(
+                "fitness evidence leaks non-public case name in results: {name}"
+            ));
+        }
+    }
+    if !has_holdout_status {
+        return Err(
+            "fitness evidence missing hidden-holdout status (all_tests_pass or hidden_acceptance)"
+                .to_string(),
+        );
+    }
+
+    let failed_cases = value
+        .get("failed_cases")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "fitness evidence missing failed_cases array".to_string())?;
+    for failed_case in failed_cases {
+        let name = failed_case
+            .as_str()
+            .ok_or_else(|| "fitness evidence failed_cases entry is not a string".to_string())?;
+        if name != "hidden_acceptance" && !is_public_fitness_case_name_for_cli(name) {
+            return Err(format!(
+                "fitness evidence leaks non-public case name in failed_cases: {name}"
+            ));
+        }
+    }
+
+    Ok(value)
+}
+
+fn require_json_bool(value: &Value, field: &str, expected: bool) -> Result<(), String> {
+    match value.get(field).and_then(Value::as_bool) {
+        Some(actual) if actual == expected => Ok(()),
+        _ => Err(format!("fitness evidence field {field} is not {expected}")),
+    }
+}
+
+fn require_json_bool_field(value: &Value, field: &str) -> Result<bool, String> {
+    value
+        .get(field)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("fitness evidence missing boolean field {field}"))
+}
+
+fn require_json_string(value: &Value, field: &str, expected: &str) -> Result<(), String> {
+    match value.get(field).and_then(Value::as_str) {
+        Some(actual) if actual == expected => Ok(()),
+        _ => Err(format!("fitness evidence field {field} is not {expected}")),
+    }
+}
+
+fn require_json_nonnegative_u64(value: &Value, field: &str) -> Result<u64, String> {
+    value
+        .get(field)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("fitness evidence missing nonnegative integer field {field}"))
+}
+
+fn is_public_fitness_case_name_for_cli(name: &str) -> bool {
+    matches!(name, "compiles" | "has_tests" | "all_tests_pass") || name.starts_with("has_")
+}
+
 /// Apply accepted system patches to the real source tree.
 fn report_has_actual_fitness_evidence(report: &CycleReport) -> bool {
     if report.fitness_delta.is_some_and(|delta| delta < 0.0) {
@@ -4123,6 +4349,76 @@ mod tests {
         assert!(output.contains("Diagnostic: captured but not printed"));
         assert!(!output.contains("800000000003600000"));
         assert!(!output.contains("assertion text"));
+    }
+
+    fn complete_fitness_evidence(cycle: usize) -> Value {
+        json!({
+            "actual_tests_evaluated": true,
+            "cycle": cycle,
+            "delta_from_last_non_regressing_fitness": 0.0,
+            "diagnostic_present": false,
+            "failed": 0,
+            "failed_cases": [],
+            "fitness": 1.0,
+            "non_regressing": true,
+            "passed": 4,
+            "results": [
+                {"name": "compiles", "passed": true},
+                {"name": "has_tests", "passed": true},
+                {"name": "all_tests_pass", "passed": true},
+                {"name": "hidden_acceptance", "passed": true}
+            ],
+            "schema_version": "a2d.fitness-evidence.v1",
+            "total": 4
+        })
+    }
+
+    fn validate_value(value: Value, cycle: usize) -> Result<Value, String> {
+        validate_exportable_fitness_evidence(&serde_json::to_vec(&value).unwrap(), cycle)
+    }
+
+    #[test]
+    fn exportable_fitness_evidence_validation_rejects_missing_stale_or_regressing_evidence() {
+        assert!(validate_exportable_fitness_evidence(b"not json", 1).is_err());
+
+        let mut stale = complete_fitness_evidence(0);
+        stale["cycle"] = json!(0);
+        assert!(validate_value(stale, 1).is_err());
+
+        let mut regressing = complete_fitness_evidence(1);
+        regressing["non_regressing"] = json!(false);
+        regressing["delta_from_last_non_regressing_fitness"] = json!(-0.1);
+        assert!(validate_value(regressing, 1).is_err());
+
+        let mut incomplete = complete_fitness_evidence(1);
+        incomplete.as_object_mut().unwrap().remove("fitness");
+        assert!(validate_value(incomplete, 1).is_err());
+
+        let mut unknown_field = complete_fitness_evidence(1);
+        unknown_field["diagnostic"] = json!("must not be exported");
+        assert!(validate_value(unknown_field, 1).is_err());
+    }
+
+    #[test]
+    fn exportable_fitness_evidence_validation_requires_schema_and_redacted_hidden_status() {
+        let mut missing_hidden_status = complete_fitness_evidence(2);
+        missing_hidden_status["results"] = json!([
+            {"name": "compiles", "passed": true},
+            {"name": "has_parse_fn", "passed": true}
+        ]);
+        assert!(validate_value(missing_hidden_status, 2).is_err());
+
+        let mut leaking_hidden_case = complete_fitness_evidence(2);
+        leaking_hidden_case["results"] = json!([
+            {"name": "hidden_sudoku_backtracking_case", "passed": false},
+            {"name": "hidden_acceptance", "passed": false}
+        ]);
+        leaking_hidden_case["failed_cases"] = json!(["hidden_sudoku_backtracking_case"]);
+        assert!(validate_value(leaking_hidden_case, 2).is_err());
+
+        let valid = complete_fitness_evidence(2);
+        let value = validate_value(valid, 2).expect("valid evidence");
+        assert_eq!(value["schema_version"], "a2d.fitness-evidence.v1");
     }
 
     #[test]

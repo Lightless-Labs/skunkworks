@@ -71,8 +71,24 @@ cargo test -p a2d
 cargo test
 ```
 
-Latest full suite: 244 passed, 2 ignored. The CLI package name is `a2d`, so use `cargo test -p a2d` rather than `cargo test -p a2d-cli`.
+Original gate slice full suite: 244 passed, 2 ignored. After the live export/inspection slice, latest full suite: 246 passed, 2 ignored. The CLI package name is `a2d`, so use `cargo test -p a2d` rather than `cargo test -p a2d-cli`.
+
+## Live export validation
+
+A follow-up slice added an opt-in challenge evidence export path: set `A2D_FITNESS_EVIDENCE_EXPORT_DIR=<dir>` (or legacy alias `A2D_FITNESS_EVIDENCE_DIR`) and `a2d challenge` writes the current cycle's validated `fitness_report` JSON to that directory. The exporter fails closed: if export is requested and no actual-test fitness exists, if the schema is incomplete, if an unreviewed field appears, if the cycle is stale, if non-regression is false, or if non-public hidden case names appear, the CLI exits with an error instead of writing evidence.
+
+Live smoke:
+
+```bash
+A2D_GERMLINE=seed \
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260629-fitness-evidence \
+A2D_PROVIDER_TIMEOUT_SECS=120 \
+A2D_MAX_CYCLE_SECS=180 \
+cargo run -p a2d -- challenge sudoku 1
+```
+
+Exported evidence: `runs/20260629-fitness-evidence/sudoku-solver-cycle-0-fitness-evidence.json`. The artifact is `a2d.fitness-evidence.v1`, `cycle: 0`, `actual_tests_evaluated: true`, `non_regressing: true`, and contains public/aggregate holdout status (`all_tests_pass: false`) without hidden-specific case names. The run reached 67% (4/6), so it proves the evidence export/inspection path but not full Sudoku performance. See `examples/runs/2026-06-29-fitness-evidence-export.md`.
 
 ## Next step
 
-Live-validate the new evidence artifact in a bounded challenge run and inspect the emitted `fitness_report` lineage. A future stronger gate can compare pre-mutation and post-mutation topology in the same challenge context before accepting mutations in memory, not only before durable commits/apply.
+Use the export path for future bounded challenge/topology smokes so every self-improvement decision has an auditable actual-test artifact. A future stronger gate can compare pre-mutation and post-mutation topology in the same challenge context before accepting mutations in memory, not only before durable commits/apply.

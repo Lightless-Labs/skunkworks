@@ -1,7 +1,8 @@
 # Plan: Stage 2 — Verified Self-Improvement
 
 **Created:** 2026-04-01
-**Status:** Draft
+**Status:** In progress
+**Enhanced:** 2026-06-29 — structured `a2d.fitness-evidence.v1` artifacts now gate durability; live export/inspection path added for challenge runs
 **Depends on:** Stage 1 (complete)
 
 ## Problem
@@ -63,3 +64,15 @@ applied to the metabolic cycle.
 - Fitness measurably increases across 5+ generations
 - At least one mutation is rejected due to fitness regression (gate works)
 - The system cannot game the holdout suite (information barrier holds)
+
+## 2026-06-29 Update: Auditable Fitness Evidence
+
+Implemented structured `a2d.fitness-evidence.v1` artifacts and durability checks so mutation/provider-policy/patch persistence requires non-regressing actual-test evidence, not just RAF closure or internal `cargo test` success.
+
+Added an opt-in challenge-run export path:
+
+```bash
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=<dir> cargo run -p a2d -- challenge <challenge> <cycles>
+```
+
+When export is requested, the CLI fails closed if a cycle produces no actual-test fitness evidence or if the evidence is stale, regressing, incomplete, contains unreviewed fields, or leaks non-public hidden-holdout case names. Live evidence artifact: `runs/20260629-fitness-evidence/sudoku-solver-cycle-0-fitness-evidence.json` from a seed `sudoku 1` run. It reached 67% (4/6) and exposed `all_tests_pass: false`, so it validates the evidence path and hidden-holdout status reporting, not benchmark mastery.
