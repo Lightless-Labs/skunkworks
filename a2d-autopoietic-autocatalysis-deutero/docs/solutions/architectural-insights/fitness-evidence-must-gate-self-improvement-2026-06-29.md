@@ -71,7 +71,7 @@ cargo test -p a2d
 cargo test
 ```
 
-Original gate slice full suite: 244 passed, 2 ignored. After the live export/inspection slice, latest full suite: 246 passed, 2 ignored. The CLI package name is `a2d`, so use `cargo test -p a2d` rather than `cargo test -p a2d-cli`.
+Original gate slice full suite: 244 passed, 2 ignored. After the live export/inspection slice, latest full suite: 246 passed, 2 ignored. After comparison export/provenance hardening, latest full suite: 252 passed, 2 ignored. The CLI package name is `a2d`, so use `cargo test -p a2d` rather than `cargo test -p a2d-cli`.
 
 ## Live export validation
 
@@ -89,6 +89,26 @@ cargo run -p a2d -- challenge sudoku 1
 
 Exported evidence: `runs/20260629-fitness-evidence/sudoku-solver-cycle-0-fitness-evidence.json`. The artifact is `a2d.fitness-evidence.v1`, `cycle: 0`, `actual_tests_evaluated: true`, `non_regressing: true`, and contains public/aggregate holdout status (`all_tests_pass: false`) without hidden-specific case names. The run reached 67% (4/6), so it proves the evidence export/inspection path but not full Sudoku performance. See `examples/runs/2026-06-29-fitness-evidence-export.md`.
 
+## Comparison export validation
+
+A follow-up slice extended export to comparison modes without synthesizing evidence:
+
+```bash
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260630-topology-fitness-evidence \
+A2D_PROVIDER_TIMEOUT_SECS=90 \
+A2D_MAX_CYCLE_SECS=120 \
+cargo run -p a2d -- compare-topologies sudoku 1
+
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260630-provider-policy-fitness-evidence \
+A2D_PROVIDER_TIMEOUT_SECS=90 \
+A2D_MAX_CYCLE_SECS=120 \
+cargo run -p a2d -- compare-provider-policy sudoku 1
+```
+
+The exporter now prefixes paths with comparison labels (`seed-`, `evolved-`, `current-`, `proposed-`) while still writing the canonical `fitness_report` JSON. Provenance hardening matters: current artifact-store evidence is trusted only when `report.fitness` proves a benchmark ran in the current cycle, and feedback/durability evidence is trusted only from lineage inputs, never provider-produced `outputs[fitness_report]`.
+
+Topology smoke artifacts `runs/20260630-topology-fitness-evidence/seed-sudoku-solver-cycle-0-fitness-evidence.json` and `runs/20260630-topology-fitness-evidence/evolved-sudoku-solver-cycle-0-fitness-evidence.json` both report `schema_version: a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, and `all_tests_pass: true` with SHA-256 `6aa4f715aaa5dd155371519737ff569c3deb0233a01a18cc263e9ec0e2c62abe`. The provider-policy smoke exported labeled artifacts too, but it had no policy delta and one leg failed aggregate acceptance (`all_tests_pass: false`), so it is observational plumbing evidence only.
+
 ## Next step
 
-Use the export path for future bounded challenge/topology smokes so every self-improvement decision has an auditable actual-test artifact. A future stronger gate can compare pre-mutation and post-mutation topology in the same challenge context before accepting mutations in memory, not only before durable commits/apply.
+Use the export path for future bounded challenge/topology/provider-policy smokes so every self-improvement decision has an auditable actual-test artifact. A future stronger gate can compare pre-mutation and post-mutation topology in the same challenge context before accepting mutations in memory, not only before durable commits/apply.

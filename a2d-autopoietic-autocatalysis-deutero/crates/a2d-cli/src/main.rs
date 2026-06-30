@@ -2737,7 +2737,13 @@ fn run_challenge(name: &str, num_cycles: usize) {
         let report = metabolism.run_cycle();
 
         if let Some(export_dir) = fitness_evidence_export_dir() {
-            match export_cycle_fitness_evidence(&metabolism, &report, &export_dir, challenge.name) {
+            match export_cycle_fitness_evidence(
+                &metabolism,
+                &report,
+                &export_dir,
+                challenge.name,
+                None,
+            ) {
                 Ok(path) => println!("  Fitness evidence: {}", path.display()),
                 Err(error) => {
                     eprintln!("  Fitness evidence export error: {error}");
@@ -3644,6 +3650,7 @@ fn run_challenge_for_provider_policy(
         println!();
         print_topology_lineage(&report);
         print_candidate_evaluations(&report);
+        export_comparison_fitness_evidence(&metabolism, &report, &challenge_name, mode.label());
     }
 
     summary.elapsed_secs = started.elapsed().as_secs_f64();
@@ -3868,6 +3875,7 @@ fn run_challenge_for_topology(
         println!();
         print_topology_lineage(&report);
         print_candidate_evaluations(&report);
+        export_comparison_fitness_evidence(&metabolism, &report, &challenge_name, topology.label());
     }
 
     summary.elapsed_secs = started.elapsed().as_secs_f64();
@@ -4026,11 +4034,36 @@ fn nonempty_env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+fn export_comparison_fitness_evidence(
+    metabolism: &Metabolism,
+    report: &CycleReport,
+    challenge_name: &str,
+    run_label: &str,
+) {
+    let Some(export_dir) = fitness_evidence_export_dir() else {
+        return;
+    };
+    match export_cycle_fitness_evidence(
+        metabolism,
+        report,
+        &export_dir,
+        challenge_name,
+        Some(run_label),
+    ) {
+        Ok(path) => println!("    fitness evidence: {}", path.display()),
+        Err(error) => {
+            eprintln!("    fitness evidence export error: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn export_cycle_fitness_evidence(
     metabolism: &Metabolism,
     report: &CycleReport,
     export_dir: &Path,
     challenge_name: &str,
+    run_label: Option<&str>,
 ) -> Result<PathBuf, String> {
     let artifacts = metabolism.artifacts();
     let value = select_exportable_fitness_evidence(
@@ -4050,16 +4083,13 @@ fn export_cycle_fitness_evidence(
         .get("cycle")
         .and_then(Value::as_u64)
         .ok_or_else(|| "fitness evidence missing numeric cycle after validation".to_string())?;
-    let path = if evidence_cycle == report.cycle as u64 {
-        export_dir.join(format!(
-            "{challenge_name}-cycle-{evidence_cycle}-fitness-evidence.json"
-        ))
-    } else {
-        export_dir.join(format!(
-            "{challenge_name}-cycle-{evidence_cycle}-consumed-by-cycle-{}-fitness-evidence.json",
-            report.cycle
-        ))
-    };
+    let path = fitness_evidence_export_path(
+        export_dir,
+        challenge_name,
+        run_label,
+        evidence_cycle,
+        report.cycle,
+    );
     let json = serde_json::to_vec_pretty(&value)
         .map_err(|error| format!("failed to serialize fitness evidence: {error}"))?;
     fs::write(&path, json).map_err(|error| {
@@ -4071,19 +4101,37 @@ fn export_cycle_fitness_evidence(
     Ok(path)
 }
 
+fn fitness_evidence_export_path(
+    export_dir: &Path,
+    challenge_name: &str,
+    run_label: Option<&str>,
+    evidence_cycle: u64,
+    report_cycle: usize,
+) -> PathBuf {
+    let prefix = run_label
+        .filter(|label| !label.is_empty())
+        .map(|label| format!("{label}-"))
+        .unwrap_or_default();
+    if evidence_cycle == report_cycle as u64 {
+        export_dir.join(format!(
+            "{prefix}{challenge_name}-cycle-{evidence_cycle}-fitness-evidence.json"
+        ))
+    } else {
+        export_dir.join(format!(
+            "{prefix}{challenge_name}-cycle-{evidence_cycle}-consumed-by-cycle-{report_cycle}-fitness-evidence.json"
+        ))
+    }
+}
+
 fn select_exportable_fitness_evidence(
     report: &CycleReport,
     current_fitness_artifact: Option<&[u8]>,
 ) -> Result<Value, String> {
-    if let Some(bytes) = current_fitness_artifact {
-        if report.fitness.is_some() {
-            return validate_exportable_fitness_evidence(bytes, report.cycle);
-        }
-        if let Ok(value) = validate_fresh_exportable_fitness_evidence(bytes, report.cycle) {
-            return Ok(value);
-        }
-    } else if report.fitness.is_some() {
-        return Err("cycle reported fitness but no fitness_report artifact exists".to_string());
+    if report.fitness.is_some() {
+        let bytes = current_fitness_artifact.ok_or_else(|| {
+            "cycle reported fitness but no fitness_report artifact exists".to_string()
+        })?;
+        return validate_exportable_fitness_evidence(bytes, report.cycle);
     }
 
     for entry in &report.lineage {
@@ -4311,12 +4359,6 @@ fn lineage_has_fresh_fitness_evidence(entry: &InvocationLineage, report_cycle: u
         .inputs
         .get(&ArtifactType::from("fitness_report"))
         .is_some_and(|bytes| is_fresh_non_regressing_fitness_evidence_artifact(bytes, report_cycle))
-        || entry
-            .outputs
-            .get(&ArtifactType::from("fitness_report"))
-            .is_some_and(|bytes| {
-                is_fresh_non_regressing_fitness_evidence_artifact(bytes, report_cycle)
-            })
 }
 
 fn is_fresh_non_regressing_fitness_evidence_artifact(bytes: &[u8], report_cycle: usize) -> bool {
@@ -4484,7 +4526,33 @@ mod tests {
     }
 
     #[test]
-    fn exportable_fitness_evidence_can_come_from_current_fresh_previous_cycle_artifact() {
+    fn fitness_evidence_export_path_names_labeled_comparison_cycles() {
+        assert_eq!(
+            fitness_evidence_export_path(
+                Path::new("evidence"),
+                "sudoku-solver",
+                Some("seed"),
+                0,
+                0,
+            ),
+            PathBuf::from("evidence/seed-sudoku-solver-cycle-0-fitness-evidence.json")
+        );
+        assert_eq!(
+            fitness_evidence_export_path(
+                Path::new("evidence"),
+                "sudoku-solver",
+                Some("evolved"),
+                0,
+                1,
+            ),
+            PathBuf::from(
+                "evidence/evolved-sudoku-solver-cycle-0-consumed-by-cycle-1-fitness-evidence.json"
+            )
+        );
+    }
+
+    #[test]
+    fn exportable_fitness_evidence_rejects_current_store_evidence_without_current_fitness() {
         let previous = complete_fitness_evidence(1);
         let bytes = serde_json::to_vec(&previous).expect("fixture serializes");
         let report = CycleReport {
@@ -4494,10 +4562,32 @@ mod tests {
             ..Default::default()
         };
 
-        let selected = select_exportable_fitness_evidence(&report, Some(&bytes))
-            .expect("fresh current artifact");
+        assert!(select_exportable_fitness_evidence(&report, Some(&bytes)).is_err());
+    }
+
+    #[test]
+    fn exportable_fitness_evidence_ignores_invalid_current_store_when_lineage_input_is_fresh() {
+        let previous = complete_fitness_evidence(1);
+        let mut lineage = topology_entry(a2d_core::workcell::WorkcellOutcome::Success {
+            outputs: BTreeMap::new(),
+        });
+        lineage.inputs.insert(
+            art("fitness_report"),
+            serde_json::to_vec(&previous).expect("fixture serializes"),
+        );
+        let report = CycleReport {
+            cycle: 2,
+            fitness: None,
+            fitness_delta: None,
+            lineage: vec![lineage],
+            ..Default::default()
+        };
+
+        let selected = select_exportable_fitness_evidence(&report, Some(b"provider forged text"))
+            .expect("fresh lineage input evidence");
 
         assert_eq!(selected["cycle"], 1);
+        assert_eq!(selected["schema_version"], "a2d.fitness-evidence.v1");
     }
 
     #[test]

@@ -3,6 +3,7 @@
 **Created:** 2026-04-01
 **Status:** In progress
 **Enhanced:** 2026-06-29 — structured `a2d.fitness-evidence.v1` artifacts now gate durability; live export/inspection path added for challenge runs
+**Enhanced:** 2026-06-30 — comparison modes export labeled canonical fitness evidence; provenance tightened to reject provider-produced evidence
 **Depends on:** Stage 1 (complete)
 
 ## Problem
@@ -76,3 +77,16 @@ A2D_FITNESS_EVIDENCE_EXPORT_DIR=<dir> cargo run -p a2d -- challenge <challenge> 
 ```
 
 When export is requested, the CLI fails closed if a cycle produces no actual-test fitness evidence or if the evidence is stale, regressing, incomplete, contains unreviewed fields, or leaks non-public hidden-holdout case names. Live evidence artifact: `runs/20260629-fitness-evidence/sudoku-solver-cycle-0-fitness-evidence.json` from a seed `sudoku 1` run. It reached 67% (4/6) and exposed `all_tests_pass: false`, so it validates the evidence path and hidden-holdout status reporting, not benchmark mastery.
+
+## 2026-06-30 Update: Comparison Evidence Export
+
+The same export path now covers non-persistent comparison modes:
+
+```bash
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=<dir> cargo run -p a2d -- compare-topologies <challenge> <cycles>
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=<dir> cargo run -p a2d -- compare-provider-policy <challenge> <cycles>
+```
+
+Exports are label-prefixed (`seed-`, `evolved-`, `current-`, `proposed-`) but otherwise use the canonical `fitness_report` artifact created by the benchmark path. Provenance was tightened so current artifact-store evidence is exportable only when the `CycleReport` has current benchmark fitness, while prior-cycle evidence is accepted only from lineage inputs consumed by a later cycle. Provider-produced `fitness_report` outputs are rejected for both export and durability gating.
+
+Live topology evidence: `runs/20260630-topology-fitness-evidence/{seed,evolved}-sudoku-solver-cycle-0-fitness-evidence.json`, both `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `all_tests_pass: true`, fitness 100% (6/6), SHA-256 `6aa4f715aaa5dd155371519737ff569c3deb0233a01a18cc263e9ec0e2c62abe`. This validates comparison export plumbing with full-passing Sudoku evidence, not repeated benchmark mastery. The provider-policy smoke had no assignment delta, so it is not evidence for a durable policy change.
