@@ -788,6 +788,21 @@ def repo_root(path: Path) -> Path:
     return Path(result.stdout.strip()).resolve()
 
 
+def source_git_metadata(source_repo: Path, project_relative: Path | None = None) -> dict[str, Any]:
+    dirty_args = ["status", "--porcelain"]
+    if project_relative is not None:
+        dirty_args.extend(["--", str(project_relative)])
+    metadata: dict[str, Any] = {
+        "source_head": git(["rev-parse", "HEAD"], source_repo).stdout.strip(),
+        "source_head_short": git(["rev-parse", "--short", "HEAD"], source_repo).stdout.strip(),
+        "source_dirty": bool(git(dirty_args, source_repo).stdout.strip()),
+    }
+    branch = git(["branch", "--show-current"], source_repo).stdout.strip()
+    if branch:
+        metadata["source_branch"] = branch
+    return metadata
+
+
 def deterministic_task_uuid(key: str, prefix: str = "task") -> str:
     hash_value = FNV_OFFSET_128
     for byte in prefix.encode("utf-8") + b"\0" + key.encode("utf-8"):
@@ -991,6 +1006,7 @@ def result_record(
     lineage_reconciled_by_core: bool,
     patch_stats: dict[str, Any],
     anti_repeat_retry_enabled: bool,
+    source_metadata: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "task_id": payload["task_id"],
@@ -1000,6 +1016,7 @@ def result_record(
         "attempt": payload["attempt"],
         "provider": provider,
         "model": provider,
+        **source_metadata,
         "resolved": verify_result.returncode == 0,
         "prior_lineage_present": lineage_before > 0,
         "lineage_records_before": lineage_before,
@@ -1048,6 +1065,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
 
     source_git_root = repo_root(source_project)
     project_relative = source_project.relative_to(source_git_root)
+    source_metadata = source_git_metadata(source_git_root, project_relative)
     base_run_id = args.run_id or datetime.now(timezone.utc).strftime("self-correction-%Y%m%dT%H%M%SZ")
     results = Path(args.results)
     if not results.is_absolute():
@@ -1112,6 +1130,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
                     lineage_reconciled_by_core=lineage_reconciled_by_core,
                     patch_stats=patch_stats,
                     anti_repeat_retry_enabled=not args.disable_anti_repeat,
+                    source_metadata=source_metadata,
                 )
                 append_jsonl(results, record)
                 print(json.dumps(record, sort_keys=True))
@@ -1328,6 +1347,12 @@ class SelfCorrectionTests(unittest.TestCase):
                 "diff_removed_lines": 1,
             },
             anti_repeat_retry_enabled=False,
+            source_metadata={
+                "source_head": "abcdef",
+                "source_head_short": "abcdef",
+                "source_branch": "main",
+                "source_dirty": False,
+            },
         )
         self.assertTrue(record["resolved"])
         self.assertTrue(record["prior_lineage_present"])
@@ -1338,6 +1363,10 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(record["touched_files"], ["crates/a2_core/src/lib.rs"])
         self.assertEqual(record["diff_added_lines"], 1)
         self.assertEqual(record["diff_removed_lines"], 1)
+        self.assertEqual(record["source_head"], "abcdef")
+        self.assertEqual(record["source_head_short"], "abcdef")
+        self.assertEqual(record["source_branch"], "main")
+        self.assertFalse(record["source_dirty"])
 
     def test_diff_stats_reports_touched_files_and_line_counts(self) -> None:
         stats = diff_stats(

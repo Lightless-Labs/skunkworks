@@ -66,6 +66,7 @@ Each JSONL result includes:
 
 - `task_id`, `run_id`, `attempt`, `category` (`--runs N` emits one distinct `run_id` per independent trajectory)
 - `provider` / `model`
+- `source_head`, `source_head_short`, `source_branch`, and `source_dirty` for auditing which source revision produced the benchmark record
 - `resolved`
 - `prior_lineage_present`
 - `lineage_records_before` / `lineage_records_after`
