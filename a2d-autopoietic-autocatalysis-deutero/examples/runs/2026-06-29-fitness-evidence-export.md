@@ -43,6 +43,26 @@ jq -e 'keys_unsorted == ["actual_tests_evaluated","cycle","delta_from_last_non_r
 
 Output: `true`.
 
+## Multicycle Feedback Export Follow-up
+
+A second live smoke covered feedback cycles that consume fresh previous-cycle evidence without producing new code in the current cycle:
+
+```bash
+A2D_GERMLINE=seed \
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260629-fitness-evidence-multicycle \
+A2D_PROVIDER_TIMEOUT_SECS=90 \
+A2D_MAX_CYCLE_SECS=120 \
+cargo run -p a2d -- challenge sudoku 2 \
+  2>&1 | tee /tmp/a2d-sudoku2-fitness-evidence-export-20260629-r3.log
+```
+
+Artifacts:
+
+- `runs/20260629-fitness-evidence-multicycle/sudoku-solver-cycle-0-fitness-evidence.json`
+- `runs/20260629-fitness-evidence-multicycle/sudoku-solver-cycle-0-consumed-by-cycle-1-fitness-evidence.json`
+
+Both artifacts validate as `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `cycle: 0`, `non_regressing: true`, nonnegative delta, and contain only reviewed public/aggregate case labels. The second filename explicitly states that cycle 1 consumed the fresh cycle 0 evidence rather than producing new benchmark evidence. A reviewer found that provider-produced `fitness_report` outputs must not be trusted as prior evidence; the selector now accepts only the current artifact store or lineage inputs and has a regression test rejecting fabricated provider output evidence.
+
 ## Notes
 
-This is live actual-test evidence for the export/inspection path and the structured evidence schema, not evidence that Sudoku is solved perfectly in this run. The hidden holdout aggregate failed (`all_tests_pass: false`), so the next benchmark objective remains reaching full fitness repeatedly under this evidence-export path.
+This is live actual-test evidence for the export/inspection path and the structured evidence schema, not evidence that Sudoku is solved perfectly in these runs. The hidden holdout aggregate failed (`all_tests_pass: false`), so the next benchmark objective remains reaching full fitness repeatedly under this evidence-export path.

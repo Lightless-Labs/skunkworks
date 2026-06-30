@@ -4032,19 +4032,13 @@ fn export_cycle_fitness_evidence(
     export_dir: &Path,
     challenge_name: &str,
 ) -> Result<PathBuf, String> {
-    if report.fitness.is_none() {
-        return Err(
-            "export requested but cycle produced no actual-test fitness evidence".to_string(),
-        );
-    }
-
     let artifacts = metabolism.artifacts();
-    let bytes = artifacts
-        .get(&ArtifactType::from("fitness_report"))
-        .ok_or_else(|| {
-            "cycle reported fitness but no fitness_report artifact exists".to_string()
-        })?;
-    let value = validate_exportable_fitness_evidence(bytes, report.cycle)?;
+    let value = select_exportable_fitness_evidence(
+        report,
+        artifacts
+            .get(&ArtifactType::from("fitness_report"))
+            .map(Vec::as_slice),
+    )?;
 
     fs::create_dir_all(export_dir).map_err(|error| {
         format!(
@@ -4052,10 +4046,20 @@ fn export_cycle_fitness_evidence(
             export_dir.display()
         )
     })?;
-    let path = export_dir.join(format!(
-        "{challenge_name}-cycle-{}-fitness-evidence.json",
-        report.cycle
-    ));
+    let evidence_cycle = value
+        .get("cycle")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "fitness evidence missing numeric cycle after validation".to_string())?;
+    let path = if evidence_cycle == report.cycle as u64 {
+        export_dir.join(format!(
+            "{challenge_name}-cycle-{evidence_cycle}-fitness-evidence.json"
+        ))
+    } else {
+        export_dir.join(format!(
+            "{challenge_name}-cycle-{evidence_cycle}-consumed-by-cycle-{}-fitness-evidence.json",
+            report.cycle
+        ))
+    };
     let json = serde_json::to_vec_pretty(&value)
         .map_err(|error| format!("failed to serialize fitness evidence: {error}"))?;
     fs::write(&path, json).map_err(|error| {
@@ -4067,10 +4071,59 @@ fn export_cycle_fitness_evidence(
     Ok(path)
 }
 
+fn select_exportable_fitness_evidence(
+    report: &CycleReport,
+    current_fitness_artifact: Option<&[u8]>,
+) -> Result<Value, String> {
+    if let Some(bytes) = current_fitness_artifact {
+        if report.fitness.is_some() {
+            return validate_exportable_fitness_evidence(bytes, report.cycle);
+        }
+        if let Ok(value) = validate_fresh_exportable_fitness_evidence(bytes, report.cycle) {
+            return Ok(value);
+        }
+    } else if report.fitness.is_some() {
+        return Err("cycle reported fitness but no fitness_report artifact exists".to_string());
+    }
+
+    for entry in &report.lineage {
+        if let Some(bytes) = entry.inputs.get(&ArtifactType::from("fitness_report")) {
+            if let Ok(value) = validate_fresh_exportable_fitness_evidence(bytes, report.cycle) {
+                return Ok(value);
+            }
+        }
+    }
+
+    Err(
+        "export requested but no current or fresh previous actual-test fitness evidence is available"
+            .to_string(),
+    )
+}
+
 fn validate_exportable_fitness_evidence(
     bytes: &[u8],
     report_cycle: usize,
 ) -> Result<Value, String> {
+    let value = validate_exportable_fitness_evidence_shape(bytes)?;
+    require_evidence_cycle(&value, report_cycle)?;
+    Ok(value)
+}
+
+fn validate_fresh_exportable_fitness_evidence(
+    bytes: &[u8],
+    report_cycle: usize,
+) -> Result<Value, String> {
+    let value = validate_exportable_fitness_evidence_shape(bytes)?;
+    let cycle = evidence_cycle(&value)?;
+    if cycle.saturating_add(1) != report_cycle as u64 {
+        return Err(format!(
+            "fitness evidence cycle {cycle} is not fresh for report cycle {report_cycle}"
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_exportable_fitness_evidence_shape(bytes: &[u8]) -> Result<Value, String> {
     let value: Value = serde_json::from_slice(bytes)
         .map_err(|error| format!("fitness evidence is not JSON: {error}"))?;
     let object = value
@@ -4118,15 +4171,7 @@ fn validate_exportable_fitness_evidence(
         return Err(format!("fitness evidence fitness out of range: {fitness}"));
     }
 
-    let cycle = value
-        .get("cycle")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| "fitness evidence missing numeric cycle".to_string())?;
-    if cycle != report_cycle as u64 {
-        return Err(format!(
-            "fitness evidence cycle {cycle} does not match report cycle {report_cycle}"
-        ));
-    }
+    evidence_cycle(&value)?;
 
     let delta = value
         .get("delta_from_last_non_regressing_fitness")
@@ -4197,6 +4242,23 @@ fn validate_exportable_fitness_evidence(
     }
 
     Ok(value)
+}
+
+fn require_evidence_cycle(value: &Value, report_cycle: usize) -> Result<(), String> {
+    let cycle = evidence_cycle(value)?;
+    if cycle != report_cycle as u64 {
+        return Err(format!(
+            "fitness evidence cycle {cycle} does not match report cycle {report_cycle}"
+        ));
+    }
+    Ok(())
+}
+
+fn evidence_cycle(value: &Value) -> Result<u64, String> {
+    value
+        .get("cycle")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "fitness evidence missing numeric cycle".to_string())
 }
 
 fn require_json_bool(value: &Value, field: &str, expected: bool) -> Result<(), String> {
@@ -4419,6 +4481,85 @@ mod tests {
         let valid = complete_fitness_evidence(2);
         let value = validate_value(valid, 2).expect("valid evidence");
         assert_eq!(value["schema_version"], "a2d.fitness-evidence.v1");
+    }
+
+    #[test]
+    fn exportable_fitness_evidence_can_come_from_current_fresh_previous_cycle_artifact() {
+        let previous = complete_fitness_evidence(1);
+        let bytes = serde_json::to_vec(&previous).expect("fixture serializes");
+        let report = CycleReport {
+            cycle: 2,
+            fitness: None,
+            fitness_delta: None,
+            ..Default::default()
+        };
+
+        let selected = select_exportable_fitness_evidence(&report, Some(&bytes))
+            .expect("fresh current artifact");
+
+        assert_eq!(selected["cycle"], 1);
+    }
+
+    #[test]
+    fn exportable_fitness_evidence_can_come_from_fresh_consumed_previous_cycle() {
+        let previous = complete_fitness_evidence(1);
+        let mut lineage = topology_entry(a2d_core::workcell::WorkcellOutcome::Success {
+            outputs: BTreeMap::new(),
+        });
+        lineage.inputs.insert(
+            art("fitness_report"),
+            serde_json::to_vec(&previous).expect("fixture serializes"),
+        );
+        let report = CycleReport {
+            cycle: 2,
+            fitness: None,
+            fitness_delta: None,
+            lineage: vec![lineage],
+            ..Default::default()
+        };
+
+        let selected = select_exportable_fitness_evidence(&report, None).expect("fresh evidence");
+
+        assert_eq!(selected["cycle"], 1);
+        assert_eq!(selected["schema_version"], "a2d.fitness-evidence.v1");
+    }
+
+    #[test]
+    fn exportable_fitness_evidence_rejects_provider_fabricated_output_evidence() {
+        let fabricated = complete_fitness_evidence(1);
+        let mut lineage = topology_entry(a2d_core::workcell::WorkcellOutcome::Success {
+            outputs: BTreeMap::new(),
+        });
+        lineage.outputs.insert(
+            art("fitness_report"),
+            serde_json::to_vec(&fabricated).expect("fixture serializes"),
+        );
+        let report = CycleReport {
+            cycle: 2,
+            lineage: vec![lineage],
+            ..Default::default()
+        };
+
+        assert!(select_exportable_fitness_evidence(&report, None).is_err());
+    }
+
+    #[test]
+    fn exportable_fitness_evidence_rejects_feedback_cycle_without_consumed_fresh_evidence() {
+        let stale = complete_fitness_evidence(0);
+        let mut lineage = topology_entry(a2d_core::workcell::WorkcellOutcome::Success {
+            outputs: BTreeMap::new(),
+        });
+        lineage.inputs.insert(
+            art("fitness_report"),
+            serde_json::to_vec(&stale).expect("fixture serializes"),
+        );
+        let report = CycleReport {
+            cycle: 2,
+            lineage: vec![lineage],
+            ..Default::default()
+        };
+
+        assert!(select_exportable_fitness_evidence(&report, None).is_err());
     }
 
     #[test]
