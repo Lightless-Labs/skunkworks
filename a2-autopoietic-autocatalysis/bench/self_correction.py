@@ -702,7 +702,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default="fibonacci",
         help="Bug fixture to inject.",
     )
-    parser.add_argument("--attempts", type=int, default=2, help="Number of repeated A² attempts.")
+    parser.add_argument("--attempts", type=int, default=2, help="Maximum retry attempts per independent run.")
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        help="Number of independent benchmark runs; each run gets a distinct run_id and attempts restart at 1.",
+    )
     parser.add_argument("--max-tokens", type=int, default=100_000, help="Per-attempt token budget.")
     parser.add_argument("--timeout", type=int, default=1800, help="Per-attempt timeout in seconds.")
     parser.add_argument("--run-id", default=None, help="Stable run ID for result records.")
@@ -726,7 +732,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "leaving candidate verifiers and other retry context enabled."
         ),
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.runs < 1:
+        parser.error("--runs must be at least 1")
+    if args.runs > 1 and args.workdir:
+        parser.error("--workdir can only be used with --runs 1")
+    return args
+
+
+def indexed_run_id(base_run_id: str, runs: int, run_index: int) -> str:
+    if runs == 1:
+        return base_run_id
+    return f"{base_run_id}-{run_index}"
 
 
 def run_command(
@@ -1031,75 +1048,82 @@ def run_benchmark(args: argparse.Namespace) -> int:
 
     source_git_root = repo_root(source_project)
     project_relative = source_project.relative_to(source_git_root)
-    run_id = args.run_id or datetime.now(timezone.utc).strftime("self-correction-%Y%m%dT%H%M%SZ")
-    branch = f"a2-self-correction-{run_id}"
-    worktree_root = Path(args.workdir).resolve() if args.workdir else Path(tempfile.mkdtemp(prefix="a2-self-correction-"))
-    workspace = worktree_root / project_relative
+    base_run_id = args.run_id or datetime.now(timezone.utc).strftime("self-correction-%Y%m%dT%H%M%SZ")
     results = Path(args.results)
     if not results.is_absolute():
         results = source_project / results
 
-    created = False
-    try:
-        if worktree_root.exists() and any(worktree_root.iterdir()):
-            raise RuntimeError(f"workspace path is not empty: {worktree_root}")
-        if worktree_root.exists():
-            worktree_root.rmdir()
-        create_worktree(source_git_root, worktree_root, branch)
-        created = True
-        inject_fixture(workspace, fixture)
-        commit_bug(workspace, fixture)
+    for run_index in range(1, args.runs + 1):
+        run_id = indexed_run_id(base_run_id, args.runs, run_index)
+        branch = f"a2-self-correction-{run_id}"
+        worktree_root = (
+            Path(args.workdir).resolve()
+            if args.workdir
+            else Path(tempfile.mkdtemp(prefix="a2-self-correction-"))
+        )
+        workspace = worktree_root / project_relative
 
-        initial = verify(workspace, fixture)
-        if initial.returncode == 0:
-            raise RuntimeError("bug fixture did not fail before A² attempts")
+        created = False
+        try:
+            if worktree_root.exists() and any(worktree_root.iterdir()):
+                raise RuntimeError(f"workspace path is not empty: {worktree_root}")
+            if worktree_root.exists():
+                worktree_root.rmdir()
+            create_worktree(source_git_root, worktree_root, branch)
+            created = True
+            inject_fixture(workspace, fixture)
+            commit_bug(workspace, fixture)
 
-        attempts = 1 if args.smoke_only else max(args.attempts, 1)
-        for attempt in range(1, attempts + 1):
-            payload = task_payload(fixture, run_id, attempt)
-            lineage_before = lineage_count(workspace, fixture.task_id)
-            a2_result = (
-                None
-                if args.smoke_only
-                else run_a2_attempt(
-                    workspace,
-                    args.provider,
-                    args.max_tokens,
-                    args.timeout,
-                    payload,
-                    disable_anti_repeat=args.disable_anti_repeat,
+            initial = verify(workspace, fixture)
+            if initial.returncode == 0:
+                raise RuntimeError("bug fixture did not fail before A² attempts")
+
+            attempts = 1 if args.smoke_only else max(args.attempts, 1)
+            for attempt in range(1, attempts + 1):
+                payload = task_payload(fixture, run_id, attempt)
+                lineage_before = lineage_count(workspace, fixture.task_id)
+                a2_result = (
+                    None
+                    if args.smoke_only
+                    else run_a2_attempt(
+                        workspace,
+                        args.provider,
+                        args.max_tokens,
+                        args.timeout,
+                        payload,
+                        disable_anti_repeat=args.disable_anti_repeat,
+                    )
                 )
-            )
-            verified = verify(workspace, fixture)
-            patch_stats = diff_stats(latest_lineage_patch_diff(workspace, fixture.task_id))
-            lineage_after = lineage_count(workspace, fixture.task_id)
-            lineage_reconciled_by_core = a2_result is not None and (
-                "[applied and rebuilt:" in a2_result.stderr
-                or "[apply/rebuild failed for" in a2_result.stderr
-            )
-            record = result_record(
-                payload=payload,
-                provider=args.provider,
-                workspace=workspace,
-                a2_result=a2_result,
-                verify_result=verified,
-                lineage_before=lineage_before,
-                lineage_after=lineage_after,
-                lineage_reconciled_by_core=lineage_reconciled_by_core,
-                patch_stats=patch_stats,
-                anti_repeat_retry_enabled=not args.disable_anti_repeat,
-            )
-            append_jsonl(results, record)
-            print(json.dumps(record, sort_keys=True))
-            if verified.returncode == 0:
-                break
+                verified = verify(workspace, fixture)
+                patch_stats = diff_stats(latest_lineage_patch_diff(workspace, fixture.task_id))
+                lineage_after = lineage_count(workspace, fixture.task_id)
+                lineage_reconciled_by_core = a2_result is not None and (
+                    "[applied and rebuilt:" in a2_result.stderr
+                    or "[apply/rebuild failed for" in a2_result.stderr
+                )
+                record = result_record(
+                    payload=payload,
+                    provider=args.provider,
+                    workspace=workspace,
+                    a2_result=a2_result,
+                    verify_result=verified,
+                    lineage_before=lineage_before,
+                    lineage_after=lineage_after,
+                    lineage_reconciled_by_core=lineage_reconciled_by_core,
+                    patch_stats=patch_stats,
+                    anti_repeat_retry_enabled=not args.disable_anti_repeat,
+                )
+                append_jsonl(results, record)
+                print(json.dumps(record, sort_keys=True))
+                if verified.returncode == 0:
+                    break
+        finally:
+            if created and not args.keep_workspace:
+                cleanup_worktree(source_git_root, worktree_root, branch)
+            elif not created and worktree_root.exists() and not args.keep_workspace and args.workdir is None:
+                shutil.rmtree(worktree_root, ignore_errors=True)
 
-        return 0
-    finally:
-        if created and not args.keep_workspace:
-            cleanup_worktree(source_git_root, worktree_root, branch)
-        elif not created and worktree_root.exists() and not args.keep_workspace and args.workdir is None:
-            shutil.rmtree(worktree_root, ignore_errors=True)
+    return 0
 
 
 class SelfCorrectionTests(unittest.TestCase):
@@ -1114,6 +1138,17 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(first["task_id"], second["task_id"])
         self.assertEqual(first["run_id"], second["run_id"])
         self.assertEqual(second["attempt"], 2)
+
+    def test_indexed_run_id_preserves_single_run_id(self) -> None:
+        self.assertEqual(indexed_run_id("run", 1, 1), "run")
+
+    def test_indexed_run_id_suffixes_independent_runs(self) -> None:
+        self.assertEqual(indexed_run_id("run", 3, 1), "run-1")
+        self.assertEqual(indexed_run_id("run", 3, 3), "run-3")
+
+    def test_parse_args_rejects_workdir_with_multiple_runs(self) -> None:
+        with self.assertRaises(SystemExit):
+            parse_args(["--runs", "2", "--workdir", "/tmp/a2-workdir"])
 
     def test_task_payload_carries_fixture_verifier_command(self) -> None:
         fixture = FIXTURES["compound-hidden"]

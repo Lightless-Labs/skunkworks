@@ -17,6 +17,16 @@ bench/self_correction.py --provider gemini --attempts 3 \
   --results bench/self-correction-results.jsonl
 ```
 
+Run multiple independent trajectories in one command by adding `--runs`. Each run starts from a fresh isolated worktree with the fixture newly injected, gets a distinct `run_id`, and restarts attempt numbering at 1:
+
+```bash
+bench/self_correction.py --fixture compound-hidden \
+  --provider opencode/minimax-coding-plan/MiniMax-M2.7 \
+  --runs 3 \
+  --attempts 3 \
+  --results bench/self-correction-compound-results.jsonl
+```
+
 Run the harder compound fixture that usually exercises the loop instead of pass@1:
 
 ```bash
@@ -54,7 +64,7 @@ bench/self_correction.py --fixture compound-raf-same-crate-hidden \
 
 Each JSONL result includes:
 
-- `task_id`, `run_id`, `attempt`, `category`
+- `task_id`, `run_id`, `attempt`, `category` (`--runs N` emits one distinct `run_id` per independent trajectory)
 - `provider` / `model`
 - `resolved`
 - `prior_lineage_present`
