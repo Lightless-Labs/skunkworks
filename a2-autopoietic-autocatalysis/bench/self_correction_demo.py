@@ -798,6 +798,10 @@ def validate_demo_evidence_contract(
         failed_lineage_after = archived_fields.get("lineage_records_after")
         if not isinstance(failed_lineage_after, int):
             raise RuntimeError("demo evidence contract archived failure lacks lineage_records_after")
+        if retry_step.get("failed_lineage_records_after") != failed_lineage_after:
+            raise RuntimeError(
+                "demo evidence contract retry summary does not carry failed lineage boundary"
+            )
         retry_attempts: set[int] = set()
         for field_index, field_value in enumerate(retry_fields):
             retry_selector = require_mapping(
@@ -1685,6 +1689,18 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 evidence,
                 self.evidence_reference(evidence),
                 evidence_label="missing-failed-lineage-boundary.demo-evidence.json",
+            )
+
+    def test_verify_evidence_contract_rejects_retry_summary_without_failed_lineage_boundary(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        retry_step = evidence["demos"][0]["causal_chain"][2]
+        retry_step["failed_lineage_records_after"] = 0
+
+        with self.assertRaisesRegex(RuntimeError, "retry summary does not carry failed lineage boundary"):
+            validate_demo_evidence_contract(
+                evidence,
+                self.evidence_reference(evidence),
+                evidence_label="missing-failed-lineage-summary.demo-evidence.json",
             )
 
     def test_verify_evidence_contract_rejects_missing_retry_selectors(self) -> None:
