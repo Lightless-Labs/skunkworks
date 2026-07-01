@@ -4,6 +4,7 @@
 **Status:** In progress
 **Enhanced:** 2026-06-29 — structured `a2d.fitness-evidence.v1` artifacts now gate durability; live export/inspection path added for challenge runs
 **Enhanced:** 2026-06-30 — comparison modes export labeled canonical fitness evidence; provenance tightened to reject provider-produced evidence
+**Enhanced:** 2026-07-01 — exported evidence now records and validates source revision/diff provenance for the `crates` source scope
 **Depends on:** Stage 1 (complete)
 
 ## Problem
@@ -90,3 +91,9 @@ A2D_FITNESS_EVIDENCE_EXPORT_DIR=<dir> cargo run -p a2d -- compare-provider-polic
 Exports are label-prefixed (`seed-`, `evolved-`, `current-`, `proposed-`) but otherwise use the canonical `fitness_report` artifact created by the benchmark path. Provenance was tightened so current artifact-store evidence is exportable only when the `CycleReport` has current benchmark fitness, while prior-cycle evidence is accepted only from lineage inputs consumed by a later cycle. Provider-produced `fitness_report` outputs are rejected for both export and durability gating.
 
 Live topology evidence: `runs/20260630-topology-fitness-evidence/{seed,evolved}-sudoku-solver-cycle-0-fitness-evidence.json`, both `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `all_tests_pass: true`, fitness 100% (6/6), SHA-256 `6aa4f715aaa5dd155371519737ff569c3deb0233a01a18cc263e9ec0e2c62abe`. This validates comparison export plumbing with full-passing Sudoku evidence, not repeated benchmark mastery. The provider-policy smoke had no assignment delta, so it is not evidence for a durable policy change.
+
+## 2026-07-01 Update: Source-Bound Evidence Provenance
+
+Exported `a2d.fitness-evidence.v1` now includes source provenance fields for the source scope under test: `source_revision`, `source_tree_dirty`, `source_diff_scope`, `source_diff_hash`, and `evidence_command`. Export-time validation rejects missing provenance, forged diff hashes, revision mismatches, dirty-status mismatches, untracked files under `crates`, and stale current source diffs before writing evidence. The diff hash is computed from a repo-root pathspec for `a2d-autopoietic-autocatalysis-deutero/crates`, so invoking export from a crate subdirectory cannot silently hash an empty scope.
+
+Fresh source-patch gating smoke: `runs/20260701-fitness-evidence-provenance/challenge-smoke/sudoku-solver-cycle-0-fitness-evidence.json`, `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `all_tests_pass: true`, fitness 100% (6/6), `source_revision: ecdc3dc`, `source_diff_hash: db406660a8259a29169a6d72be4af2c62418703c`. Saved-artifact replay support evidence `runs/20260701-fitness-evidence-provenance/baseline-good/baseline-sudoku-solver-cycle-0-fitness-evidence.json` validates the same provenance/export plumbing with full-passing evidence and the same source diff hash, but is support evidence rather than the source-patch gate. This slice validates provenance/export plumbing, not a durable provider-policy or repeated benchmark-reliability improvement.

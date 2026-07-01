@@ -153,6 +153,91 @@ fn score_artifact_exports_fitness_evidence_before_nonzero_exit() {
     );
 }
 
+fn assert_exported_provenance(evidence: &serde_json::Value) {
+    assert_eq!(evidence["schema_version"], "a2d.fitness-evidence.v1");
+    assert_eq!(evidence["source_diff_scope"], "crates");
+    assert!(
+        evidence["source_tree_dirty"].as_bool().is_some(),
+        "{evidence}"
+    );
+    assert!(
+        evidence["source_revision"]
+            .as_str()
+            .is_some_and(|revision| !revision.is_empty()),
+        "{evidence}"
+    );
+    assert!(
+        evidence["source_diff_hash"]
+            .as_str()
+            .is_some_and(|hash| hash.len() == 40),
+        "{evidence}"
+    );
+}
+
+#[test]
+fn score_artifact_export_provenance_works_from_crate_subdirectory() {
+    let artifact = TempArtifact::write(fake_sudoku_artifact_with_bad_solver());
+    let export_dir = TempDir::new("a2d-score-artifact-nested-evidence");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "score-artifact",
+            "sudoku",
+            artifact.path().to_str().unwrap(),
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env("A2D_FITNESS_EVIDENCE_EXPORT_DIR", export_dir.path())
+        .output()
+        .expect("run score-artifact from crate subdirectory");
+
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Fitness evidence:"), "{stdout}");
+
+    let evidence_path = export_dir
+        .path()
+        .join("baseline-sudoku-solver-cycle-0-fitness-evidence.json");
+    let evidence_bytes = fs::read(&evidence_path).expect("evidence exported before exit");
+    let evidence: serde_json::Value =
+        serde_json::from_slice(&evidence_bytes).expect("evidence is JSON");
+
+    assert_exported_provenance(&evidence);
+}
+
+#[test]
+fn score_artifact_export_provenance_works_from_parent_repo_root() {
+    let artifact = TempArtifact::write(fake_sudoku_artifact_with_bad_solver());
+    let export_dir = TempDir::new("a2d-score-artifact-parent-root-evidence");
+    let parent_repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .expect("crate must live under parent repo root");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "score-artifact",
+            "sudoku",
+            artifact.path().to_str().unwrap(),
+        ])
+        .current_dir(parent_repo_root)
+        .env("A2D_FITNESS_EVIDENCE_EXPORT_DIR", export_dir.path())
+        .output()
+        .expect("run score-artifact from parent repo root");
+
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Fitness evidence:"), "{stdout}");
+
+    let evidence_path = export_dir
+        .path()
+        .join("baseline-sudoku-solver-cycle-0-fitness-evidence.json");
+    let evidence_bytes = fs::read(&evidence_path).expect("evidence exported before exit");
+    let evidence: serde_json::Value =
+        serde_json::from_slice(&evidence_bytes).expect("evidence is JSON");
+
+    assert_exported_provenance(&evidence);
+}
+
 #[test]
 fn score_artifact_stdin_uses_hidden_acceptance_and_exits_nonzero() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_a2d"))

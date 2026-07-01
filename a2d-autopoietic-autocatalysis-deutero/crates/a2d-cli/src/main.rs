@@ -22,7 +22,7 @@ use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -2889,6 +2889,8 @@ fn export_score_artifact_fitness_evidence(
 ) -> Result<PathBuf, String> {
     let bytes = fitness_evidence_artifact(0, report, 0.0);
     let value = validate_exportable_fitness_evidence(&bytes, 0)?;
+    let value = add_export_source_provenance(value)?;
+    validate_exported_fitness_evidence_value(&value)?;
     fs::create_dir_all(export_dir).map_err(|error| {
         format!(
             "failed to create fitness evidence export dir {}: {error}",
@@ -4124,6 +4126,8 @@ fn export_cycle_fitness_evidence(
         evidence_cycle,
         report.cycle,
     );
+    let value = add_export_source_provenance(value)?;
+    validate_exported_fitness_evidence_value(&value)?;
     let json = serde_json::to_vec_pretty(&value)
         .map_err(|error| format!("failed to serialize fitness evidence: {error}"))?;
     fs::write(&path, json).map_err(|error| {
@@ -4155,6 +4159,130 @@ fn fitness_evidence_export_path(
             "{prefix}{challenge_name}-cycle-{evidence_cycle}-consumed-by-cycle-{report_cycle}-fitness-evidence.json"
         ))
     }
+}
+
+fn add_export_source_provenance(mut value: Value) -> Result<Value, String> {
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "fitness evidence must be a JSON object before provenance".to_string())?;
+    object.insert(
+        "source_revision".to_string(),
+        Value::String(git_scope_revision("crates")?),
+    );
+    let source_status = git_status_for_scope("crates")?;
+    reject_untracked_source_files("crates", &source_status)?;
+    object.insert(
+        "source_tree_dirty".to_string(),
+        Value::Bool(!source_status.is_empty()),
+    );
+    object.insert(
+        "source_diff_scope".to_string(),
+        Value::String("crates".to_string()),
+    );
+    object.insert(
+        "source_diff_hash".to_string(),
+        Value::String(git_diff_hash_for_scope("crates")?),
+    );
+    let command = env::args().skip(1).collect::<Vec<_>>().join(" ");
+    object.insert(
+        "evidence_command".to_string(),
+        Value::String(if command.is_empty() {
+            "<unknown>".to_string()
+        } else {
+            command
+        }),
+    );
+    Ok(value)
+}
+
+fn git_output(args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(args)
+        .output()
+        .map_err(|error| format!("failed to run git {}: {error}", args.join(" ")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git {} failed: {stderr}", args.join(" ")));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn git_repo_relative_scope(scope: &str) -> Result<String, String> {
+    let output = Command::new("git")
+        .args([
+            "-C",
+            env!("CARGO_MANIFEST_DIR"),
+            "rev-parse",
+            "--show-prefix",
+        ])
+        .output()
+        .map_err(|error| format!("failed to resolve A²D git prefix: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("failed to resolve A²D git prefix: {stderr}"));
+    }
+    let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let project_prefix = prefix
+        .find("/crates/")
+        .map(|index| &prefix[..index + 1])
+        .unwrap_or(prefix.as_str());
+    Ok(format!("{project_prefix}{scope}"))
+}
+
+fn git_scope_revision(scope: &str) -> Result<String, String> {
+    let repo_relative_scope = git_repo_relative_scope(scope)?;
+    let revision_spec = format!("HEAD:{repo_relative_scope}");
+    git_output(&["rev-parse", "--short", &revision_spec])
+}
+
+fn git_status_for_scope(scope: &str) -> Result<String, String> {
+    let repo_relative_scope = git_repo_relative_scope(scope)?;
+    let top_pathspec = format!(":(top){repo_relative_scope}");
+    git_output(&["status", "--short", "--", &top_pathspec])
+}
+
+fn reject_untracked_source_files(scope: &str, status: &str) -> Result<(), String> {
+    if let Some(line) = status.lines().find(|line| line.starts_with("?? ")) {
+        return Err(format!(
+            "exported fitness evidence cannot bind untracked source file in {scope}: {line}"
+        ));
+    }
+    Ok(())
+}
+
+fn git_diff_hash_for_scope(scope: &str) -> Result<String, String> {
+    let repo_relative_scope = git_repo_relative_scope(scope)?;
+    let top_pathspec = format!(":(top){repo_relative_scope}");
+    let diff = Command::new("git")
+        .args(["diff", "--binary", "HEAD", "--", &top_pathspec])
+        .output()
+        .map_err(|error| format!("failed to run git diff for {scope}: {error}"))?;
+    if !diff.status.success() {
+        let stderr = String::from_utf8_lossy(&diff.stderr);
+        return Err(format!("git diff for {scope} failed: {stderr}"));
+    }
+
+    let mut child = Command::new("git")
+        .args(["hash-object", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to run git hash-object: {error}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "failed to open git hash-object stdin".to_string())?
+        .write_all(&diff.stdout)
+        .map_err(|error| format!("failed to write diff to git hash-object: {error}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("failed to wait for git hash-object: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git hash-object failed: {stderr}"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn select_exportable_fitness_evidence(
@@ -4211,7 +4339,7 @@ fn validate_exportable_fitness_evidence_shape(bytes: &[u8]) -> Result<Value, Str
     let object = value
         .as_object()
         .ok_or_else(|| "fitness evidence must be a JSON object".to_string())?;
-    let allowed_fields = BTreeSet::from([
+    let required_fields = BTreeSet::from([
         "actual_tests_evaluated",
         "cycle",
         "delta_from_last_non_regressing_fitness",
@@ -4225,14 +4353,23 @@ fn validate_exportable_fitness_evidence_shape(bytes: &[u8]) -> Result<Value, Str
         "schema_version",
         "total",
     ]);
+    let optional_provenance_fields = BTreeSet::from([
+        "evidence_command",
+        "source_diff_hash",
+        "source_diff_scope",
+        "source_revision",
+        "source_tree_dirty",
+    ]);
     for field in object.keys() {
-        if !allowed_fields.contains(field.as_str()) {
+        if !required_fields.contains(field.as_str())
+            && !optional_provenance_fields.contains(field.as_str())
+        {
             return Err(format!(
                 "fitness evidence contains unreviewed field: {field}"
             ));
         }
     }
-    for field in allowed_fields {
+    for field in required_fields {
         if !object.contains_key(field) {
             return Err(format!("fitness evidence missing required field: {field}"));
         }
@@ -4324,6 +4461,72 @@ fn validate_exportable_fitness_evidence_shape(bytes: &[u8]) -> Result<Value, Str
     }
 
     Ok(value)
+}
+
+fn validate_exported_fitness_evidence_value(value: &Value) -> Result<(), String> {
+    validate_exportable_fitness_evidence_shape(&serde_json::to_vec(value).map_err(|error| {
+        format!("fitness evidence value could not be serialized for validation: {error}")
+    })?)?;
+
+    let source_revision = value
+        .get("source_revision")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "exported fitness evidence missing source_revision".to_string())?;
+    let current_revision = git_scope_revision("crates")?;
+    if source_revision != current_revision {
+        return Err(format!(
+            "exported fitness evidence source_revision {source_revision} does not match current revision {current_revision}"
+        ));
+    }
+
+    let source_tree_dirty = value
+        .get("source_tree_dirty")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "exported fitness evidence missing source_tree_dirty".to_string())?;
+    let source_diff_scope = value
+        .get("source_diff_scope")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "exported fitness evidence missing source_diff_scope".to_string())?;
+    if source_diff_scope != "crates" {
+        return Err(format!(
+            "exported fitness evidence source_diff_scope must be crates, got {source_diff_scope}"
+        ));
+    }
+
+    let source_diff_hash = value
+        .get("source_diff_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "exported fitness evidence missing source_diff_hash".to_string())?;
+    if source_diff_hash.len() != 40 || !source_diff_hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(
+            "exported fitness evidence source_diff_hash is not a git object id".to_string(),
+        );
+    }
+    let current_diff_hash = git_diff_hash_for_scope(source_diff_scope)?;
+    if source_diff_hash != current_diff_hash {
+        return Err(format!(
+            "exported fitness evidence source_diff_hash {source_diff_hash} does not match current {source_diff_scope} diff hash {current_diff_hash}"
+        ));
+    }
+
+    let current_status = git_status_for_scope(source_diff_scope)?;
+    reject_untracked_source_files(source_diff_scope, &current_status)?;
+    let current_dirty = !current_status.is_empty();
+    if source_tree_dirty != current_dirty {
+        return Err(format!(
+            "exported fitness evidence source_tree_dirty {source_tree_dirty} does not match current dirty status {current_dirty}"
+        ));
+    }
+
+    let evidence_command = value
+        .get("evidence_command")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "exported fitness evidence missing evidence_command".to_string())?;
+    if evidence_command.trim().is_empty() || evidence_command == "<unknown>" {
+        return Err("exported fitness evidence evidence_command is empty".to_string());
+    }
+
+    Ok(())
 }
 
 fn require_evidence_cycle(value: &Value, report_cycle: usize) -> Result<(), String> {
@@ -4557,6 +4760,45 @@ mod tests {
         let valid = complete_fitness_evidence(2);
         let value = validate_value(valid, 2).expect("valid evidence");
         assert_eq!(value["schema_version"], "a2d.fitness-evidence.v1");
+    }
+
+    #[test]
+    fn exported_fitness_evidence_validation_requires_source_provenance() {
+        let mut evidence = complete_fitness_evidence(0);
+        assert!(validate_exported_fitness_evidence_value(&evidence).is_err());
+
+        evidence["source_revision"] =
+            json!(git_scope_revision("crates").expect("git revision works"));
+        evidence["source_tree_dirty"] = json!(
+            !git_status_for_scope("crates")
+                .expect("git status works")
+                .is_empty()
+        );
+        evidence["source_diff_scope"] = json!("crates");
+        evidence["source_diff_hash"] =
+            json!(git_diff_hash_for_scope("crates").expect("git diff hash works"));
+        evidence["evidence_command"] = json!("challenge sudoku 1");
+        validate_exported_fitness_evidence_value(&evidence).expect("provenance is valid");
+
+        evidence["source_diff_hash"] = json!("0123456789abcdef0123456789abcdef01234567");
+        assert!(validate_exported_fitness_evidence_value(&evidence).is_err());
+
+        evidence["source_diff_hash"] =
+            json!(git_diff_hash_for_scope("crates").expect("git diff hash works"));
+        evidence["source_revision"] = json!("bogus");
+        assert!(validate_exported_fitness_evidence_value(&evidence).is_err());
+    }
+
+    #[test]
+    fn fitness_evidence_source_status_rejects_untracked_files() {
+        reject_untracked_source_files("crates", " M crates/a2d-cli/src/main.rs\n")
+            .expect("tracked source changes can be hashed");
+        let error = reject_untracked_source_files(
+            "crates",
+            " M crates/a2d-cli/src/main.rs\n?? crates/a2d-cli/src/new_file.rs\n",
+        )
+        .expect_err("untracked source files must fail closed");
+        assert!(error.contains("untracked source file"), "{error}");
     }
 
     #[test]
