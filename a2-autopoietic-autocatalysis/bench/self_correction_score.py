@@ -37,6 +37,7 @@ class SelfCorrectionRecord:
     lineage_records_after: int | None = None
     lineage_reconciled_by_core: bool | None = None
     verifier_failure_evidence_present: bool | None = None
+    verifier_failure_evidence_structured_present: bool = False
     promotion_evidence_present: bool = False
     promotion_structured_present: bool = False
     promotion_verifier_gated: bool | None = None
@@ -63,6 +64,7 @@ class SelfCorrectionRecord:
         lineage_records_after: int | None = None,
         lineage_reconciled_by_core: bool | None = None,
         verifier_failure_evidence_present: bool | None = None,
+        verifier_failure_evidence_structured_present: bool = False,
         promotion_evidence_present: bool = False,
         promotion_structured_present: bool = False,
         promotion_verifier_gated: bool | None = None,
@@ -93,6 +95,11 @@ class SelfCorrectionRecord:
             self,
             "verifier_failure_evidence_present",
             verifier_failure_evidence_present,
+        )
+        object.__setattr__(
+            self,
+            "verifier_failure_evidence_structured_present",
+            verifier_failure_evidence_structured_present,
         )
         object.__setattr__(
             self, "promotion_evidence_present", promotion_evidence_present
@@ -165,6 +172,10 @@ def payload_has_verifier_failure_evidence(payload: dict[str, Any]) -> bool | Non
     return payload["verifier_failure_evidence_present"] is True
 
 
+def payload_has_verifier_failure_evidence_field(payload: dict[str, Any]) -> bool:
+    return "verifier_failure_evidence_present" in payload
+
+
 def payload_promotion(payload: dict[str, Any]) -> dict[str, Any]:
     promotion = payload.get("promotion")
     return promotion if isinstance(promotion, dict) else {}
@@ -232,6 +243,9 @@ def load_records(path: Path) -> list[SelfCorrectionRecord]:
                         else None
                     ),
                     verifier_failure_evidence_present=payload_has_verifier_failure_evidence(
+                        payload
+                    ),
+                    verifier_failure_evidence_structured_present=payload_has_verifier_failure_evidence_field(
                         payload
                     ),
                     promotion_evidence_present=payload_has_promotion_evidence(
@@ -366,7 +380,13 @@ def verifier_failed_clean_exit(record: SelfCorrectionRecord) -> bool:
     )
 
 
-def has_archived_verifier_failure(record: SelfCorrectionRecord) -> bool:
+def has_archived_verifier_failure(
+    record: SelfCorrectionRecord,
+    *,
+    require_structured_evidence: bool = False,
+) -> bool:
+    if require_structured_evidence and not record.verifier_failure_evidence_structured_present:
+        return False
     return (
         not record.resolved
         and record.verify_returncode not in (None, 0)
@@ -394,6 +414,17 @@ def has_verifier_gated_promotion(record: SelfCorrectionRecord) -> bool:
     return record.promotion_evidence_present
 
 
+def has_retry_context_from_failure(
+    first: SelfCorrectionRecord, retry: SelfCorrectionRecord
+) -> bool:
+    return (
+        retry.prior_lineage_present
+        and first.lineage_records_after is not None
+        and retry.lineage_records_before is not None
+        and retry.lineage_records_before >= first.lineage_records_after
+    )
+
+
 def demo_run_ids(records: list[SelfCorrectionRecord]) -> list[tuple[str, str]]:
     demo_runs: list[tuple[str, str]] = []
     for key, attempts in group_records(records).items():
@@ -401,11 +432,22 @@ def demo_run_ids(records: list[SelfCorrectionRecord]) -> list[tuple[str, str]]:
             continue
         first = attempts[0]
         later_attempts = attempts[1:]
-        if not has_archived_verifier_failure(first):
+        promotion_attempts = [
+            record for record in later_attempts if has_verifier_gated_promotion(record)
+        ]
+        requires_structured_failure_evidence = any(
+            record.promotion_structured_present for record in promotion_attempts
+        )
+        if not has_archived_verifier_failure(
+            first,
+            require_structured_evidence=requires_structured_failure_evidence,
+        ):
             continue
-        if not any(record.prior_lineage_present for record in later_attempts):
+        if not any(
+            has_retry_context_from_failure(first, record) for record in later_attempts
+        ):
             continue
-        if not any(has_verifier_gated_promotion(record) for record in later_attempts):
+        if not promotion_attempts:
             continue
         demo_runs.append(key)
     return demo_runs
@@ -430,7 +472,9 @@ def render_demo_check(
                 record for record in attempts[1:] if has_verifier_gated_promotion(record)
             )
             retry_attempts = [
-                record.attempt for record in attempts[1:] if record.prior_lineage_present
+                record.attempt
+                for record in attempts[1:]
+                if has_retry_context_from_failure(first, record)
             ]
             retry_text = ",".join(str(attempt) for attempt in retry_attempts)
             artifact = artifact_label or "input JSONL"
@@ -449,8 +493,9 @@ def render_demo_check(
             )
             lines.append(
                 "      [proved] retry context from failure evidence: "
-                f"prior_lineage_present=true on attempt(s) [{retry_text}] for the "
-                "same run_id/task_id"
+                f"prior_lineage_present=true and lineage_records_before >= failed "
+                f"lineage_records_after on attempt(s) [{retry_text}] for the same "
+                "run_id/task_id"
             )
             lines.append(
                 "      [proved] later passing attempt: "
@@ -846,6 +891,49 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertIn("PASS complete self-correction demo trajectory found", output)
         self.assertIn("[proved] verifier-gated promotion", output)
 
+    def test_require_demo_rejects_structured_promotion_without_structured_failure_evidence(self) -> None:
+        rows = [
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 1,
+                "resolved": False,
+                "prior_lineage_present": False,
+                "a2_returncode": 0,
+                "verify_returncode": 1,
+                "lineage_records_before": 0,
+                "lineage_records_after": 1,
+            },
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 2,
+                "resolved": True,
+                "prior_lineage_present": True,
+                "a2_returncode": 0,
+                "verify_returncode": 0,
+                "lineage_records_before": 1,
+                "lineage_records_after": 2,
+                "lineage_reconciled_by_core": True,
+                "promotion": {
+                    "verifier_gated": True,
+                    "evidence_present": True,
+                    "lineage_reconciled_by_core": True,
+                    "verify_returncode": 0,
+                },
+            },
+        ]
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row) + "\n")
+            handle.flush()
+            records = load_records(Path(handle.name))
+
+        self.assertFalse(records[0].verifier_failure_evidence_structured_present)
+        self.assertEqual(demo_run_ids(records), [])
+        output = render(records, require_demo=True)
+        self.assertIn("FAIL no run contains", output)
+
     def test_require_demo_accepts_legacy_apply_marker_without_structured_promotion(self) -> None:
         rows = [
             {
@@ -882,6 +970,45 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertFalse(records[1].promotion_structured_present)
         self.assertTrue(records[1].promotion_evidence_present)
         self.assertEqual(demo_run_ids(records), [("run", "task")])
+
+    def test_require_demo_rejects_retry_without_failed_lineage_context(self) -> None:
+        rows = [
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 1,
+                "resolved": False,
+                "prior_lineage_present": False,
+                "a2_returncode": 0,
+                "verify_returncode": 1,
+                "lineage_records_before": 0,
+                "lineage_records_after": 2,
+            },
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 2,
+                "resolved": True,
+                "prior_lineage_present": True,
+                "a2_returncode": 0,
+                "verify_returncode": 0,
+                "lineage_records_before": 1,
+                "lineage_records_after": 3,
+                "lineage_reconciled_by_core": True,
+                "stdout": "[applied and rebuilt: ok]",
+            },
+        ]
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row) + "\n")
+            handle.flush()
+            records = load_records(Path(handle.name))
+
+        self.assertTrue(records[1].prior_lineage_present)
+        self.assertFalse(has_retry_context_from_failure(records[0], records[1]))
+        self.assertEqual(demo_run_ids(records), [])
+        output = render(records, require_demo=True)
+        self.assertIn("FAIL no run contains", output)
 
     def test_require_demo_rejects_pass_at_one_legacy_apply_marker(self) -> None:
         rows = [
