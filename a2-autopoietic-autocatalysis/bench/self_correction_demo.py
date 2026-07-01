@@ -260,6 +260,9 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
             "local_provider_config_present_when_supported": True if config_checked else None,
             "source_clean_required": not args.allow_dirty_source,
             "source_clean": None if args.allow_dirty_source else True,
+            "source_clean_checked_before_output_creation": None
+            if args.allow_dirty_source
+            else True,
             "dirty_source_allowed": args.allow_dirty_source,
         },
         "commands": {
@@ -273,6 +276,7 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
         "notes": [
             "No provider-backed benchmark was executed by this preflight.",
             "Live provider auth, quota, and model availability are not verified until the fresh run executes.",
+            "Clean-source readiness is checked before fresh results/evidence files are created; newly generated rows record that pre-run source state, and the new artifacts must then be archived deliberately.",
             "This report is readiness evidence only; it is not loop evidence and contains no failed-attempt/retry/promotion proof.",
         ],
     }
@@ -402,7 +406,11 @@ def fresh_validation_summary(args: argparse.Namespace) -> str:
 
 
 def fresh_preflight_summary(args: argparse.Namespace) -> str:
-    source_check = "source is clean" if not args.allow_dirty_source else "dirty source allowed"
+    source_check = (
+        "source is clean before output creation"
+        if not args.allow_dirty_source
+        else "dirty source allowed"
+    )
     return (
         "# preflight checked local prerequisites: empty results/evidence paths; "
         f"provider binary {provider_binary_name(args.provider)!r} present; "
@@ -1799,6 +1807,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         output = stdout.getvalue()
         self.assertEqual(result, 0)
         self.assertIn("# preflight checked local prerequisites", output)
+        self.assertIn("dirty source allowed", output)
         self.assertIn("Live provider auth, quota, and model availability are not verified", output)
         self.assertIn("bench/self_correction.py", output)
         self.assertIn("# would validate fresh results before scoring", output)
@@ -1858,6 +1867,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertFalse(data["checks"]["local_provider_config_checked"])
         self.assertIsNone(data["checks"]["local_provider_config_present_when_supported"])
         self.assertTrue(data["checks"]["dirty_source_allowed"])
+        self.assertIsNone(data["checks"]["source_clean_checked_before_output_creation"])
+        self.assertIn("before fresh results/evidence files are created", " ".join(data["notes"]))
         self.assertIn("bench/self_correction.py", data["commands"]["harness"])
         self.assertIn("--demo-evidence-json", data["commands"]["scorer"])
         self.assertIn("verify-evidence-contract", data["commands"]["fresh_provenance_contract"])
@@ -1870,6 +1881,28 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("--timeout", data["commands"]["fresh_provenance_contract"])
         self.assertIn("1800", data["commands"]["fresh_provenance_contract"])
         self.assertIn("not loop evidence", " ".join(data["notes"]))
+
+    def test_fresh_preflight_report_records_clean_check_before_output_creation(self) -> None:
+        args = argparse.Namespace(
+            results=Path("docs/benchmark-results/self-correction/fresh.jsonl"),
+            preflight_report_json=Path("docs/benchmark-results/self-correction/fresh.preflight.json"),
+            fixture=DEFAULT_FIXTURE,
+            provider=DEFAULT_PROVIDER,
+            run_id="fresh-demo",
+            runs=3,
+            attempts=3,
+            max_tokens=100_000,
+            timeout=1800,
+            allow_dirty_source=False,
+            keep_workspace=False,
+        )
+
+        data = fresh_preflight_report(args, Path("docs/benchmark-results/self-correction/fresh.demo-evidence.json"))
+
+        self.assertTrue(data["checks"]["source_clean_required"])
+        self.assertTrue(data["checks"]["source_clean"])
+        self.assertTrue(data["checks"]["source_clean_checked_before_output_creation"])
+        self.assertIn("before fresh results/evidence files are created", " ".join(data["notes"]))
 
     def test_fresh_preflight_report_refuses_non_empty_file(self) -> None:
         original_which = shutil.which
