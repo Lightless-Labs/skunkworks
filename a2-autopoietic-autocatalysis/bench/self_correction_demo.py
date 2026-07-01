@@ -9,8 +9,8 @@ This wrapper has two intentionally separate modes:
   then immediately applies the same ``--require-demo`` scorer gate to that output.
 
 The default mode is archive verification because a fresh provider run can be slow
-and may consume paid quota. Use ``fresh --print-only`` to inspect the exact command
-sequence before running it.
+and may consume paid quota. Use ``fresh --preflight-only`` for local no-network
+checks before running it, or ``fresh --print-only`` to inspect command wiring only.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import argparse
 import contextlib
 import io
 import json
+import shutil
 import shlex
 import subprocess
 import sys
@@ -81,13 +82,99 @@ def repo_path(path: Path) -> Path:
     return path if path.is_absolute() else repo_root() / path
 
 
-def ensure_fresh_results_path(results: Path) -> None:
-    resolved = repo_path(results)
+def ensure_output_path_empty(path: Path, *, label: str) -> None:
+    resolved = repo_path(path)
     if resolved.exists() and resolved.stat().st_size > 0:
         raise RuntimeError(
-            f"fresh demo results path already contains data: {results}. "
-            "Use a unique --results path or remove/truncate the file first."
+            f"fresh demo {label} path already contains data: {path}. "
+            "Use a unique path or remove/truncate the file first."
         )
+
+
+def ensure_fresh_results_path(results: Path) -> None:
+    ensure_output_path_empty(results, label="results")
+
+
+def ensure_fresh_evidence_path(evidence_json: Path) -> None:
+    ensure_output_path_empty(evidence_json, label="evidence")
+
+
+def provider_binary_name(provider: str) -> str:
+    family = provider.split("/", 1)[0]
+    return {
+        "opencode": "opencode",
+        "pi": "pi",
+        "claude": "claude",
+        "codex": "codex",
+        "gemini": "gemini",
+    }.get(family, family)
+
+
+def ensure_provider_binary(provider: str) -> None:
+    binary = provider_binary_name(provider)
+    if shutil.which(binary) is None:
+        raise RuntimeError(
+            f"fresh demo provider binary {binary!r} for provider {provider!r} was not found in PATH"
+        )
+
+
+def opencode_auth_path() -> Path:
+    return Path.home() / ".local/share/opencode/auth.json"
+
+
+def ensure_opencode_provider_config(provider: str, *, auth_path: Path | None = None) -> None:
+    parts = provider.split("/")
+    if len(parts) < 2:
+        return
+    configured_provider = parts[1]
+    auth_path = auth_path or opencode_auth_path()
+    if not auth_path.exists():
+        raise RuntimeError(
+            f"fresh demo opencode credentials file was not found: {auth_path}"
+        )
+    try:
+        auth = json.loads(auth_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"fresh demo opencode credentials file is invalid JSON: {auth_path}: {exc}"
+        ) from exc
+    if not isinstance(auth, dict) or configured_provider not in auth:
+        raise RuntimeError(
+            "fresh demo opencode credentials do not include provider "
+            f"{configured_provider!r} in {auth_path}"
+        )
+
+
+def ensure_provider_config(provider: str) -> None:
+    family = provider.split("/", 1)[0]
+    if family == "opencode":
+        ensure_opencode_provider_config(provider)
+
+
+def ensure_clean_source() -> None:
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--", "."],
+        cwd=repo_root(),
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if status.returncode != 0:
+        raise RuntimeError(f"could not inspect source cleanliness: {status.stderr.strip()}")
+    if status.stdout.strip():
+        raise RuntimeError(
+            "fresh demo source tree is dirty; commit/stash changes or pass --allow-dirty-source"
+        )
+
+
+def fresh_preflight(args: argparse.Namespace, evidence_json: Path) -> None:
+    ensure_fresh_results_path(args.results)
+    ensure_fresh_evidence_path(evidence_json)
+    ensure_provider_binary(args.provider)
+    ensure_provider_config(args.provider)
+    if not args.allow_dirty_source:
+        ensure_clean_source()
 
 
 def load_jsonl(path: Path) -> list[dict[str, object]]:
@@ -183,6 +270,16 @@ def fresh_validation_summary(args: argparse.Namespace) -> str:
     )
 
 
+def fresh_preflight_summary(args: argparse.Namespace) -> str:
+    source_check = "source is clean" if not args.allow_dirty_source else "dirty source allowed"
+    return (
+        "# preflight checked local prerequisites: empty results/evidence paths; "
+        f"provider binary {provider_binary_name(args.provider)!r} present; "
+        f"local provider config present when supported; {source_check}. "
+        "Live provider auth, quota, and model availability are not verified until the fresh run executes."
+    )
+
+
 def fresh_command(args: argparse.Namespace) -> list[str]:
     root = repo_root()
     command = [
@@ -269,6 +366,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=Path,
         help="Optional path for a machine-readable demo causal-chain evidence map.",
     )
+    fresh.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help=(
+            "Check local fresh-run prerequisites (empty output paths, provider binary, "
+            "local provider config where supported, and clean source unless "
+            "--allow-dirty-source) and print the commands without running the "
+            "provider-backed benchmark. This does not validate live auth or quota."
+        ),
+    )
     fresh.add_argument("--print-only", action="store_true")
 
     defaultable_argv = list(argv)
@@ -296,9 +403,21 @@ def main(argv: list[str]) -> int:
         )
 
     if args.mode == "fresh":
+        evidence_json = args.evidence_json or default_fresh_evidence_path(args.results)
+        if args.preflight_only:
+            try:
+                fresh_preflight(args, evidence_json)
+            except RuntimeError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            print(fresh_preflight_summary(args))
+            run_command(fresh_command(args), print_only=True)
+            print(fresh_validation_summary(args))
+            run_command(score_command(args.results, evidence_json), print_only=True)
+            return 0
         if not args.print_only:
             try:
-                ensure_fresh_results_path(args.results)
+                fresh_preflight(args, evidence_json)
             except RuntimeError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
@@ -313,7 +432,6 @@ def main(argv: list[str]) -> int:
             except RuntimeError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
-        evidence_json = args.evidence_json or default_fresh_evidence_path(args.results)
         return run_command(
             score_command(args.results, evidence_json), print_only=args.print_only
         )
@@ -345,6 +463,37 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             default_fresh_evidence_path(Path("docs/results/fresh")),
             Path("docs/results/fresh.demo-evidence.json"),
         )
+
+    def test_provider_binary_name_maps_provider_families(self) -> None:
+        self.assertEqual(provider_binary_name("opencode/minimax/MiniMax-M3"), "opencode")
+        self.assertEqual(provider_binary_name("pi/zai/glm-5.2"), "pi")
+        self.assertEqual(provider_binary_name("gemini"), "gemini")
+
+    def test_opencode_provider_config_requires_configured_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            auth = Path(tmpdir) / "auth.json"
+            auth.write_text(
+                json.dumps({"minimax-coding-plan": {"type": "api", "key": "redacted"}}),
+                encoding="utf-8",
+            )
+
+            ensure_opencode_provider_config(
+                "opencode/minimax-coding-plan/MiniMax-M3",
+                auth_path=auth,
+            )
+            with self.assertRaises(RuntimeError):
+                ensure_opencode_provider_config(
+                    "opencode/missing-plan/model",
+                    auth_path=auth,
+                )
+
+    def test_fresh_evidence_path_refuses_non_empty_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            evidence = Path(tmpdir) / "fresh.demo-evidence.json"
+            evidence.write_text('{"old": true}\n', encoding="utf-8")
+
+            with self.assertRaises(RuntimeError):
+                ensure_fresh_evidence_path(evidence)
 
     def test_no_args_defaults_to_verify_archive_mode(self) -> None:
         args = parse_args([])
@@ -489,6 +638,70 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn(str(evidence), output)
         self.assertNotIn(str(results.with_suffix(".demo-evidence.json")), output)
+
+    def test_fresh_preflight_checks_local_prerequisites_and_prints_commands(self) -> None:
+        original_which = shutil.which
+        shutil.which = lambda binary: f"/usr/bin/{binary}"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                stdout = io.StringIO()
+                results = Path(tmpdir) / "fresh-preflight.jsonl"
+                with contextlib.redirect_stdout(stdout):
+                    result = main(
+                        [
+                            "fresh",
+                            "--results",
+                            str(results),
+                            "--run-id",
+                            "fresh-demo",
+                            "--allow-dirty-source",
+                            "--provider",
+                            "local-test-provider/model",
+                            "--preflight-only",
+                        ]
+                    )
+        finally:
+            shutil.which = original_which
+
+        output = stdout.getvalue()
+        self.assertEqual(result, 0)
+        self.assertIn("# preflight checked local prerequisites", output)
+        self.assertIn("Live provider auth, quota, and model availability are not verified", output)
+        self.assertIn("bench/self_correction.py", output)
+        self.assertIn("# would validate fresh results before scoring", output)
+        self.assertIn(str(results.with_suffix(".demo-evidence.json")), output)
+
+    def test_fresh_mode_refuses_non_empty_evidence_before_harness(self) -> None:
+        original_which = shutil.which
+        shutil.which = lambda binary: f"/usr/bin/{binary}"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                results = Path(tmpdir) / "fresh.jsonl"
+                evidence = Path(tmpdir) / "fresh.demo-evidence.json"
+                evidence.write_text('{"old": true}\n', encoding="utf-8")
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = main(
+                        [
+                            "fresh",
+                            "--results",
+                            str(results),
+                            "--run-id",
+                            "fresh-demo",
+                            "--allow-dirty-source",
+                            "--provider",
+                            "local-test-provider/model",
+                            "--evidence-json",
+                            str(evidence),
+                        ]
+                    )
+        finally:
+            shutil.which = original_which
+
+        self.assertEqual(result, 2)
+        self.assertIn("fresh demo evidence path already contains data", stderr.getvalue())
+        self.assertNotIn("bench/self_correction.py", stdout.getvalue())
 
     def test_fresh_results_refuses_non_empty_file_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
