@@ -83,6 +83,27 @@ def score_command(logfile: Path, evidence_json: Path | None = None) -> list[str]
     return command
 
 
+def fresh_contract_command(args: argparse.Namespace, evidence_json: Path) -> list[str]:
+    root = repo_root()
+    command = [
+        str(root / "bench/self_correction_demo.py"),
+        "verify-evidence-contract",
+        "--evidence-json",
+        str(evidence_json),
+        "--reference-evidence-json",
+        str(DEFAULT_ARCHIVE_EVIDENCE),
+        "--fresh-run-id",
+        args.run_id,
+        "--max-tokens",
+        str(args.max_tokens),
+        "--timeout",
+        str(args.timeout),
+    ]
+    if args.allow_dirty_source:
+        command.append("--allow-dirty-source")
+    return command
+
+
 def default_fresh_evidence_path(results: Path) -> Path:
     if results.suffix == ".jsonl":
         return results.with_suffix(".demo-evidence.json")
@@ -245,6 +266,9 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
             "harness": display_command(fresh_command(args)),
             "validation": fresh_validation_summary(args),
             "scorer": display_command(score_command(args.results, evidence_json)),
+            "fresh_provenance_contract": display_command(
+                fresh_contract_command(args, evidence_json)
+            ),
         },
         "notes": [
             "No provider-backed benchmark was executed by this preflight.",
@@ -1167,6 +1191,7 @@ def main(argv: list[str]) -> int:
             run_command(fresh_command(args), print_only=True)
             print(fresh_validation_summary(args))
             run_command(score_command(args.results, evidence_json), print_only=True)
+            run_command(fresh_contract_command(args, evidence_json), print_only=True)
             return 0
         if not args.print_only:
             try:
@@ -1188,8 +1213,11 @@ def main(argv: list[str]) -> int:
         result = run_command(
             score_command(args.results, evidence_json), print_only=args.print_only
         )
-        if result != 0 or args.print_only:
+        if result != 0:
             return result
+        if args.print_only:
+            run_command(fresh_contract_command(args, evidence_json), print_only=True)
+            return 0
         try:
             verify_evidence_contract(
                 evidence_json,
@@ -1385,6 +1413,25 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 DEFAULT_ARCHIVE_EVIDENCE,
                 fresh_run_id="fresh-demo",
             )
+
+    def test_verify_evidence_contract_cli_rejects_stale_archive_for_fresh_run_id(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = main(
+                [
+                    "verify-evidence-contract",
+                    "--evidence-json",
+                    str(DEFAULT_ARCHIVE_EVIDENCE),
+                    "--fresh-run-id",
+                    "fresh-demo",
+                ]
+            )
+
+        self.assertEqual(result, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("outside the requested run_id", stderr.getvalue())
 
     def test_verify_evidence_contract_accepts_complete_six_step_demo(self) -> None:
         evidence = self.archived_demo_contract_evidence()
@@ -1685,9 +1732,20 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("all rows match run_id 'fresh-demo'", output)
         self.assertIn("source_dirty=false", output)
         self.assertIn(str(results.with_suffix(".demo-evidence.json")), output)
+        self.assertIn("verify-evidence-contract", output)
+        self.assertIn("--fresh-run-id", output)
+        self.assertIn("fresh-demo", output)
+        self.assertIn("--max-tokens", output)
+        self.assertIn("100000", output)
+        self.assertIn("--timeout", output)
+        self.assertIn("1800", output)
         self.assertLess(
             output.index("# would validate fresh results before scoring"),
             output.index("bench/self_correction_score.py"),
+        )
+        self.assertLess(
+            output.index("bench/self_correction_score.py"),
+            output.index("verify-evidence-contract"),
         )
 
     def test_fresh_print_only_honors_explicit_evidence_json(self) -> None:
@@ -1745,6 +1803,16 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("bench/self_correction.py", output)
         self.assertIn("# would validate fresh results before scoring", output)
         self.assertIn(str(results.with_suffix(".demo-evidence.json")), output)
+        self.assertIn("verify-evidence-contract", output)
+        self.assertIn("--reference-evidence-json", output)
+        self.assertIn(str(DEFAULT_ARCHIVE_EVIDENCE), output)
+        self.assertIn("--fresh-run-id", output)
+        self.assertIn("fresh-demo", output)
+        self.assertIn("--max-tokens", output)
+        self.assertIn("100000", output)
+        self.assertIn("--timeout", output)
+        self.assertIn("1800", output)
+        self.assertLess(output.index("bench/self_correction_score.py"), output.index("verify-evidence-contract"))
 
     def test_fresh_preflight_writes_machine_readable_readiness_report(self) -> None:
         original_which = shutil.which
@@ -1792,6 +1860,15 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertTrue(data["checks"]["dirty_source_allowed"])
         self.assertIn("bench/self_correction.py", data["commands"]["harness"])
         self.assertIn("--demo-evidence-json", data["commands"]["scorer"])
+        self.assertIn("verify-evidence-contract", data["commands"]["fresh_provenance_contract"])
+        self.assertIn("--reference-evidence-json", data["commands"]["fresh_provenance_contract"])
+        self.assertIn(str(DEFAULT_ARCHIVE_EVIDENCE), data["commands"]["fresh_provenance_contract"])
+        self.assertIn("--fresh-run-id", data["commands"]["fresh_provenance_contract"])
+        self.assertIn("fresh-demo", data["commands"]["fresh_provenance_contract"])
+        self.assertIn("--max-tokens", data["commands"]["fresh_provenance_contract"])
+        self.assertIn("100000", data["commands"]["fresh_provenance_contract"])
+        self.assertIn("--timeout", data["commands"]["fresh_provenance_contract"])
+        self.assertIn("1800", data["commands"]["fresh_provenance_contract"])
         self.assertIn("not loop evidence", " ".join(data["notes"]))
 
     def test_fresh_preflight_report_refuses_non_empty_file(self) -> None:
