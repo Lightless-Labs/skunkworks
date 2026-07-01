@@ -300,20 +300,26 @@ def run_id_matches(row_run_id: object, expected: str) -> bool:
     return row_run_id.startswith(prefix) and suffix.isdecimal()
 
 
-def validate_fresh_results(args: argparse.Namespace) -> None:
-    rows = load_jsonl(args.results)
+def validate_fresh_rows(
+    rows: list[dict[str, object]],
+    *,
+    run_id: str,
+    max_tokens: int,
+    timeout_secs: int,
+    allow_dirty_source: bool,
+    source_label: str,
+) -> None:
     if not rows:
-        raise RuntimeError(f"fresh demo results file has no rows: {args.results}")
+        raise RuntimeError(f"fresh demo results file has no rows: {source_label}")
 
-    if args.run_id is not None:
-        mismatched = [
-            row.get("run_id") for row in rows if not run_id_matches(row.get("run_id"), args.run_id)
-        ]
-        if mismatched:
-            raise RuntimeError(
-                "fresh demo results contain rows outside the requested run_id "
-                f"{args.run_id!r}: {mismatched[:3]}"
-            )
+    mismatched = [
+        row.get("run_id") for row in rows if not run_id_matches(row.get("run_id"), run_id)
+    ]
+    if mismatched:
+        raise RuntimeError(
+            "fresh demo results contain rows outside the requested run_id "
+            f"{run_id!r}: {mismatched[:3]}"
+        )
 
     for index, row in enumerate(rows, start=1):
         missing = [
@@ -332,21 +338,32 @@ def validate_fresh_results(args: argparse.Namespace) -> None:
             raise RuntimeError(
                 f"fresh demo row {index} is missing audit field(s): {', '.join(missing)}"
             )
-        if not args.allow_dirty_source and row.get("source_dirty") is not False:
+        if not allow_dirty_source and row.get("source_dirty") is not False:
             raise RuntimeError(
                 f"fresh demo row {index} was produced from dirty source: "
                 f"source_dirty={row.get('source_dirty')!r}"
             )
-        if row.get("max_tokens") != args.max_tokens:
+        if row.get("max_tokens") != max_tokens:
             raise RuntimeError(
                 f"fresh demo row {index} records max_tokens={row.get('max_tokens')!r}; "
-                f"expected {args.max_tokens}"
+                f"expected {max_tokens}"
             )
-        if row.get("timeout_secs") != args.timeout:
+        if row.get("timeout_secs") != timeout_secs:
             raise RuntimeError(
                 f"fresh demo row {index} records timeout_secs={row.get('timeout_secs')!r}; "
-                f"expected {args.timeout}"
+                f"expected {timeout_secs}"
             )
+
+
+def validate_fresh_results(args: argparse.Namespace) -> None:
+    validate_fresh_rows(
+        load_jsonl(args.results),
+        run_id=args.run_id,
+        max_tokens=args.max_tokens,
+        timeout_secs=args.timeout,
+        allow_dirty_source=args.allow_dirty_source,
+        source_label=str(args.results),
+    )
 
 
 def fresh_validation_summary(args: argparse.Namespace) -> str:
@@ -921,7 +938,15 @@ def validate_demo_evidence_contract(
             raise RuntimeError("demo evidence contract promotion lacks gated apply evidence")
 
 
-def verify_evidence_contract(evidence_json: Path, reference_evidence_json: Path) -> None:
+def verify_evidence_contract(
+    evidence_json: Path,
+    reference_evidence_json: Path,
+    *,
+    fresh_run_id: str | None = None,
+    max_tokens: int = 100_000,
+    timeout_secs: int = 1800,
+    allow_dirty_source: bool = False,
+) -> None:
     evidence = load_evidence_json(evidence_json)
     reference = load_evidence_json(reference_evidence_json)
     validate_demo_evidence_contract(
@@ -929,6 +954,18 @@ def verify_evidence_contract(evidence_json: Path, reference_evidence_json: Path)
         reference,
         evidence_label=str(evidence_json),
     )
+    if fresh_run_id is not None:
+        artifact = evidence.get("artifact")
+        if not isinstance(artifact, str) or not artifact:
+            raise RuntimeError("demo evidence contract requires an artifact path for fresh provenance")
+        validate_fresh_rows(
+            load_jsonl(Path(artifact)),
+            run_id=fresh_run_id,
+            max_tokens=max_tokens,
+            timeout_secs=timeout_secs,
+            allow_dirty_source=allow_dirty_source,
+            source_label=artifact,
+        )
     print("Demo evidence contract check")
     print(f"  evidence: {evidence_json}")
     print(f"  reference: {reference_evidence_json}")
@@ -936,6 +973,11 @@ def verify_evidence_contract(evidence_json: Path, reference_evidence_json: Path)
         "  PASS evidence JSON matches archived demo contract "
         f"(requirements={len(evidence['requirements'])}, demos={len(evidence['demos'])})"
     )
+    if fresh_run_id is not None:
+        print(
+            "  PASS fresh artifact provenance "
+            f"(run_id={fresh_run_id!r}, max_tokens={max_tokens}, timeout_secs={timeout_secs})"
+        )
     print(
         "  proved: failed_first_attempt -> archived_verifier_failure_evidence -> "
         "retry_context_from_failure_evidence -> later_passing_attempt -> "
@@ -989,6 +1031,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=Path,
         default=DEFAULT_ARCHIVE_EVIDENCE,
         help="Archived evidence JSON whose requirements define the demo proof contract.",
+    )
+    contract.add_argument(
+        "--fresh-run-id",
+        help=(
+            "Optional run_id/prefix for a freshly generated artifact. When set, "
+            "the referenced JSONL artifact must also pass fresh provenance, "
+            "budget, and clean-source checks."
+        ),
+    )
+    contract.add_argument("--max-tokens", type=int, default=100_000)
+    contract.add_argument("--timeout", type=int, default=1800)
+    contract.add_argument(
+        "--allow-dirty-source",
+        action="store_true",
+        help="Allow source_dirty=true rows when --fresh-run-id is supplied.",
     )
 
     fresh = subparsers.add_parser(
@@ -1073,7 +1130,14 @@ def main(argv: list[str]) -> int:
 
     if args.mode == "verify-evidence-contract":
         try:
-            verify_evidence_contract(args.evidence_json, args.reference_evidence_json)
+            verify_evidence_contract(
+                args.evidence_json,
+                args.reference_evidence_json,
+                fresh_run_id=args.fresh_run_id,
+                max_tokens=args.max_tokens,
+                timeout_secs=args.timeout,
+                allow_dirty_source=args.allow_dirty_source,
+            )
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -1127,7 +1191,14 @@ def main(argv: list[str]) -> int:
         if result != 0 or args.print_only:
             return result
         try:
-            verify_evidence_contract(evidence_json, DEFAULT_ARCHIVE_EVIDENCE)
+            verify_evidence_contract(
+                evidence_json,
+                DEFAULT_ARCHIVE_EVIDENCE,
+                fresh_run_id=args.run_id,
+                max_tokens=args.max_tokens,
+                timeout_secs=args.timeout,
+                allow_dirty_source=args.allow_dirty_source,
+            )
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -1301,7 +1372,19 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         contract.assert_called_once_with(
             Path("docs/benchmark-results/self-correction/a2-fresh-demo.demo-evidence.json"),
             DEFAULT_ARCHIVE_EVIDENCE,
+            fresh_run_id="fresh-demo",
+            max_tokens=100_000,
+            timeout_secs=1800,
+            allow_dirty_source=False,
         )
+
+    def test_verify_evidence_contract_fresh_run_id_rejects_stale_archive_rows(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "outside the requested run_id"):
+            verify_evidence_contract(
+                DEFAULT_ARCHIVE_EVIDENCE,
+                DEFAULT_ARCHIVE_EVIDENCE,
+                fresh_run_id="fresh-demo",
+            )
 
     def test_verify_evidence_contract_accepts_complete_six_step_demo(self) -> None:
         evidence = self.archived_demo_contract_evidence()

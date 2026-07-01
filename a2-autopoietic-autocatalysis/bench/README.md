@@ -123,10 +123,15 @@ After any archived or fresh run writes a `.demo-evidence.json`, validate that JS
 ```bash
 bench/self_correction_demo.py verify-evidence-contract \
   --evidence-json "docs/benchmark-results/self-correction/a2-${RUN_ID}.demo-evidence.json" \
-  --reference-evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json
+  --reference-evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json \
+  --fresh-run-id "${RUN_ID}" \
+  --max-tokens 100000 \
+  --timeout 1800
 ```
 
-This contract check is local artifact validation, not a provider run. It rejects `complete=false`/pass@1-only evidence and requires all six proof steps in order, retry context linked to archived verifier/failure evidence, advancing lineage, verifier-gated promotion evidence, and embedded row snapshots that match the referenced source JSONL artifact.
+Omit `--fresh-run-id` for deterministic archived contract verification. Include it for fresh artifacts: the referenced JSONL must then also pass run-id/prefix membership, provenance-field, budget, and clean-source checks, so stale/cached rows with another run ID fail before the artifact is archived as fresh loop evidence.
+
+This contract check is local artifact validation, not a provider run. It rejects `complete=false`/pass@1-only evidence and requires all six proof steps in order, retry context linked to archived verifier/failure evidence, advancing lineage, verifier-gated promotion evidence, and embedded row snapshots that match the referenced source JSONL artifact. Older raw JSONL artifacts preserve provider stdout/stderr and historical temporary workspace strings; the durable `.demo-evidence.json` map deliberately embeds only schema-bounded row snapshots and rejects host-specific path markers.
 
 `--require-demo` exits non-zero unless at least one grouped run contains: a failed first attempt with verifier failure archived into lineage (`lineage_records_after > lineage_records_before`), a later verified passing attempt whose `lineage_records_before` reaches the failed row's `lineage_records_after`, core lineage reconciliation, and verifier-gated promotion/apply evidence. Passing output includes a deterministic `[proved]` checklist mapping each demo requirement to the JSONL artifact, run/task ID, verifier command/status, lineage counters, retry attempts, later pass, and verifier-gated promotion/apply evidence. `--demo-evidence-json` writes the same proof as JSON with one `causal_chain` entry per proved trajectory step, schema-bounded normalized `evidence_row` / `evidence_rows` snapshots for the rows used by each proof step, and the source JSONL `artifact_sha256`; it remains `complete=false` for pass@1-only or incomplete lineage logs. This is loop evidence only when the chain is failed attempt → archived verifier/failure evidence → retry context from that failed lineage row → later pass → lineage trajectory → verifier-gated promotion; pass@1-only logs should fail `--require-demo`. Archived-proof verification is deterministic evidence that the checked artifact contains the chain; fresh regeneration is provider-backed and may consume quota. The known 2026-06-15 archived demo predates explicit `max_tokens`/`timeout_secs` fields, though its captured `a2ctl run` command records `--max-tokens 100000 --timeout 1800`; newly generated rows record those budget values as structured fields.
 
