@@ -316,6 +316,10 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
     return {
         "mode": "fresh_preflight",
         "creates_loop_evidence": False,
+        "provider_backed_benchmark_executed": False,
+        "results_created": False,
+        "evidence_json_created": False,
+        "fresh_provenance_contract_executed": False,
         "live_provider_auth_quota_model_checked": False,
         "results": str(args.results),
         "evidence_json": str(evidence_json),
@@ -355,6 +359,7 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
         },
         "notes": [
             "No provider-backed benchmark was executed by this preflight.",
+            "No results JSONL, demo-evidence JSON, or fresh provenance contract result was created by this preflight; the named results/evidence paths are future outputs only.",
             "Live provider auth, quota, and model availability are not verified until the fresh run executes.",
             "Clean-source readiness and source revision metadata are checked before fresh results/evidence files are created; newly generated rows record that pre-run source state, and the new artifacts must then be archived deliberately.",
             "This report is readiness evidence only; it is not loop evidence and contains no failed-attempt/retry/promotion proof.",
@@ -2439,10 +2444,16 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("# wrote preflight report", stdout.getvalue())
         self.assertEqual(data["mode"], "fresh_preflight")
         self.assertFalse(data["creates_loop_evidence"])
+        self.assertFalse(data["provider_backed_benchmark_executed"])
+        self.assertFalse(data["results_created"])
+        self.assertFalse(data["evidence_json_created"])
+        self.assertFalse(data["fresh_provenance_contract_executed"])
         self.assertFalse(data["live_provider_auth_quota_model_checked"])
         self.assertEqual(data["results"], str(results))
         self.assertEqual(data["evidence_json"], str(results.with_suffix(".demo-evidence.json")))
         self.assertEqual(data["preflight_report_json"], str(report))
+        self.assertFalse(results.exists())
+        self.assertFalse(results.with_suffix(".demo-evidence.json").exists())
         self.assertTrue(data["checks"]["preflight_report_path_empty"])
         self.assertTrue(data["checks"]["preflight_report_path_distinct_from_results"])
         self.assertTrue(data["checks"]["preflight_report_path_distinct_from_evidence"])
@@ -2464,6 +2475,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("100000", data["commands"]["fresh_provenance_contract"])
         self.assertIn("--timeout", data["commands"]["fresh_provenance_contract"])
         self.assertIn("1800", data["commands"]["fresh_provenance_contract"])
+        self.assertIn("future outputs only", " ".join(data["notes"]))
         self.assertIn("not loop evidence", " ".join(data["notes"]))
 
     def test_fresh_preflight_report_records_clean_check_before_output_creation(self) -> None:
