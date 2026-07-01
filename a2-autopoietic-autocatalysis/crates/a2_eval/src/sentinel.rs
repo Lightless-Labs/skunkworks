@@ -405,4 +405,45 @@ mod tests {
         let detail = command_failure("grep", std::path::Path::new("."), &output);
         assert!(detail.contains("invalid option"));
     }
+
+    #[test]
+    fn demo_wrapper_self_test_passes_under_cargo_test_without_mutating_archive() {
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("a2_eval should live under crates/ in the workspace root");
+        let archive = workspace_root.join(
+            "docs/benchmark-results/self-correction/\
+             a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.jsonl",
+        );
+        let evidence = workspace_root.join(
+            "docs/benchmark-results/self-correction/\
+             a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json",
+        );
+        let archive_before =
+            std::fs::read(&archive).expect("archived demo JSONL should be readable");
+        let evidence_before =
+            std::fs::read(&evidence).expect("archived demo evidence JSON should be readable");
+        let output = std::process::Command::new("python3")
+            .args(["bench/self_correction_demo.py", "--self-test"])
+            .current_dir(workspace_root)
+            .output()
+            .expect("python3 should run bench/self_correction_demo.py --self-test");
+        assert!(
+            output.status.success(),
+            "demo wrapper self-test failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            archive_before,
+            std::fs::read(&archive).expect("archived demo JSONL should remain readable"),
+            "demo wrapper self-test must not mutate the archived JSONL artifact"
+        );
+        assert_eq!(
+            evidence_before,
+            std::fs::read(&evidence).expect("archived demo evidence JSON should remain readable"),
+            "demo wrapper self-test must not mutate the archived evidence JSON"
+        );
+    }
 }

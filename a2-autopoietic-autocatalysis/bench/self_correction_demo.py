@@ -484,6 +484,25 @@ def load_evidence_json(path: Path) -> dict[str, object]:
     return data
 
 
+def verify_fresh_evidence_targets_results(evidence_json: Path, results: Path) -> None:
+    evidence = load_evidence_json(evidence_json)
+    artifact = evidence.get("artifact")
+    if not isinstance(artifact, str) or not artifact:
+        raise RuntimeError("fresh demo evidence JSON does not record its source artifact")
+    if repo_path(Path(artifact)).resolve(strict=False) != repo_path(results).resolve(strict=False):
+        raise RuntimeError(
+            "fresh demo evidence JSON points at a different artifact than the requested results path"
+        )
+    artifact_sha256 = evidence.get("artifact_sha256")
+    if not isinstance(artifact_sha256, str) or len(artifact_sha256) != 64:
+        raise RuntimeError("fresh demo evidence JSON requires a 64-character artifact_sha256")
+    actual_sha256 = sha256_file(repo_path(results))
+    if artifact_sha256 != actual_sha256:
+        raise RuntimeError(
+            "fresh demo evidence artifact_sha256 does not match the requested results bytes"
+        )
+
+
 def require_mapping(value: object, *, label: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise RuntimeError(f"demo evidence contract expected object at {label}")
@@ -1378,6 +1397,7 @@ def main(argv: list[str]) -> int:
             run_command(fresh_contract_command(args, evidence_json), print_only=True)
             return 0
         try:
+            verify_fresh_evidence_targets_results(evidence_json, args.results)
             verify_evidence_contract(
                 evidence_json,
                 DEFAULT_ARCHIVE_EVIDENCE,
@@ -1565,8 +1585,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         with mock.patch(__name__ + ".fresh_preflight"), mock.patch(
             __name__ + ".run_command", side_effect=[0, 0]
         ) as run, mock.patch(__name__ + ".validate_fresh_results"), mock.patch(
-            __name__ + ".verify_evidence_contract"
-        ) as contract:
+            __name__ + ".verify_fresh_evidence_targets_results"
+        ) as target_guard, mock.patch(__name__ + ".verify_evidence_contract") as contract:
             result = main(
                 [
                     "fresh",
@@ -1580,6 +1600,10 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(run.call_count, 2)
+        target_guard.assert_called_once_with(
+            Path("docs/benchmark-results/self-correction/a2-fresh-demo.demo-evidence.json"),
+            Path("docs/benchmark-results/self-correction/a2-fresh-demo.jsonl"),
+        )
         contract.assert_called_once_with(
             Path("docs/benchmark-results/self-correction/a2-fresh-demo.demo-evidence.json"),
             DEFAULT_ARCHIVE_EVIDENCE,
@@ -1588,6 +1612,119 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             timeout_secs=1800,
             allow_dirty_source=False,
         )
+
+    def test_fresh_rejects_post_score_results_mutation_before_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            evidence = Path(tmpdir) / "fresh.demo-evidence.json"
+            fresh_row = {
+                "run_id": "fresh-demo",
+                "source_head": "abc123",
+                "source_head_short": "abc123",
+                "source_branch": "main",
+                "source_dirty": False,
+                "max_tokens": 100_000,
+                "timeout_secs": 1800,
+            }
+            calls = 0
+
+            def fake_run_command(command: list[str], *, print_only: bool = False) -> int:
+                nonlocal calls
+                calls += 1
+                self.assertFalse(print_only)
+                if calls == 1:
+                    results.write_text(json.dumps(fresh_row) + "\n", encoding="utf-8")
+                elif calls == 2:
+                    evidence.write_text(
+                        json.dumps(
+                            {
+                                "artifact": str(results),
+                                "artifact_sha256": sha256_file(results),
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    with results.open("a", encoding="utf-8") as handle:
+                        handle.write(json.dumps({**fresh_row, "attempt": 2}) + "\n")
+                else:
+                    self.fail(f"unexpected run_command call: {command}")
+                return 0
+
+            stderr = io.StringIO()
+            with mock.patch(__name__ + ".fresh_preflight"), mock.patch(
+                __name__ + ".run_command", side_effect=fake_run_command
+            ), mock.patch(__name__ + ".verify_evidence_contract") as contract, contextlib.redirect_stderr(stderr):
+                result = main(
+                    [
+                        "fresh",
+                        "--results",
+                        str(results),
+                        "--evidence-json",
+                        str(evidence),
+                        "--run-id",
+                        "fresh-demo",
+                        "--confirm-provider-run",
+                    ]
+                )
+
+            self.assertEqual(result, 2)
+            self.assertIn("artifact_sha256 does not match", stderr.getvalue())
+            contract.assert_not_called()
+
+    def test_verify_fresh_evidence_targets_results_accepts_matching_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            results.write_text('{"run_id":"fresh-demo-1"}\n', encoding="utf-8")
+            evidence = Path(tmpdir) / "fresh.demo-evidence.json"
+            evidence.write_text(
+                json.dumps(
+                    {
+                        "artifact": str(results),
+                        "artifact_sha256": sha256_file(results),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            verify_fresh_evidence_targets_results(evidence, results)
+
+    def test_verify_fresh_evidence_targets_results_rejects_mismatched_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            other_results = Path(tmpdir) / "other.jsonl"
+            results.write_text('{"run_id":"fresh-demo-1"}\n', encoding="utf-8")
+            other_results.write_text('{"run_id":"fresh-demo-1"}\n', encoding="utf-8")
+            evidence = Path(tmpdir) / "fresh.demo-evidence.json"
+            evidence.write_text(
+                json.dumps(
+                    {
+                        "artifact": str(other_results),
+                        "artifact_sha256": sha256_file(other_results),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "different artifact"):
+                verify_fresh_evidence_targets_results(evidence, results)
+
+    def test_verify_fresh_evidence_targets_results_rejects_hash_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            results.write_text('{"run_id":"fresh-demo-1"}\n', encoding="utf-8")
+            evidence = Path(tmpdir) / "fresh.demo-evidence.json"
+            evidence.write_text(
+                json.dumps(
+                    {
+                        "artifact": str(results),
+                        "artifact_sha256": "0" * 64,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "artifact_sha256 does not match"):
+                verify_fresh_evidence_targets_results(evidence, results)
 
     def test_verify_evidence_contract_fresh_run_id_rejects_stale_archive_rows(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "outside the requested run_id"):
