@@ -71,6 +71,12 @@ def score_command(logfile: Path, evidence_json: Path | None = None) -> list[str]
     return command
 
 
+def default_fresh_evidence_path(results: Path) -> Path:
+    if results.suffix == ".jsonl":
+        return results.with_suffix(".demo-evidence.json")
+    return Path(f"{results}.demo-evidence.json")
+
+
 def repo_path(path: Path) -> Path:
     return path if path.is_absolute() else repo_root() / path
 
@@ -307,8 +313,9 @@ def main(argv: list[str]) -> int:
             except RuntimeError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
+        evidence_json = args.evidence_json or default_fresh_evidence_path(args.results)
         return run_command(
-            score_command(args.results, args.evidence_json), print_only=args.print_only
+            score_command(args.results, evidence_json), print_only=args.print_only
         )
 
     raise AssertionError(f"unhandled mode: {args.mode}")
@@ -328,6 +335,16 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("--demo-evidence-json", command)
         self.assertLess(command.index("--demo-evidence-json"), command.index(str(DEFAULT_ARCHIVE)))
         self.assertEqual(command[command.index("--demo-evidence-json") + 1], "evidence.json")
+
+    def test_default_fresh_evidence_path_replaces_jsonl_suffix(self) -> None:
+        self.assertEqual(
+            default_fresh_evidence_path(Path("docs/results/fresh.jsonl")),
+            Path("docs/results/fresh.demo-evidence.json"),
+        )
+        self.assertEqual(
+            default_fresh_evidence_path(Path("docs/results/fresh")),
+            Path("docs/results/fresh.demo-evidence.json"),
+        )
 
     def test_no_args_defaults_to_verify_archive_mode(self) -> None:
         args = parse_args([])
@@ -443,10 +460,35 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("# would validate fresh results before scoring", output)
         self.assertIn("all rows match run_id 'fresh-demo'", output)
         self.assertIn("source_dirty=false", output)
+        self.assertIn(str(results.with_suffix(".demo-evidence.json")), output)
         self.assertLess(
             output.index("# would validate fresh results before scoring"),
             output.index("bench/self_correction_score.py"),
         )
+
+    def test_fresh_print_only_honors_explicit_evidence_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stdout = io.StringIO()
+            results = Path(tmpdir) / "fresh-print-only.jsonl"
+            evidence = Path(tmpdir) / "custom-evidence.json"
+            with contextlib.redirect_stdout(stdout):
+                result = main(
+                    [
+                        "fresh",
+                        "--results",
+                        str(results),
+                        "--run-id",
+                        "fresh-demo",
+                        "--evidence-json",
+                        str(evidence),
+                        "--print-only",
+                    ]
+                )
+
+        output = stdout.getvalue()
+        self.assertEqual(result, 0)
+        self.assertIn(str(evidence), output)
+        self.assertNotIn(str(results.with_suffix(".demo-evidence.json")), output)
 
     def test_fresh_results_refuses_non_empty_file_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
