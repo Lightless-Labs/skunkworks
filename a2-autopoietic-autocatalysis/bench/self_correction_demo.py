@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import shutil
@@ -26,6 +27,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 DEFAULT_ARCHIVE = Path(
@@ -38,6 +40,15 @@ DEFAULT_ARCHIVE_EVIDENCE = Path(
 )
 DEFAULT_FIXTURE = "compound-archive-same-crate-hidden"
 DEFAULT_PROVIDER = "opencode/minimax-coding-plan/MiniMax-M3"
+HOST_PATH_MARKERS = ("/Users", "/tmp", "/var/folders")
+EXPECTED_DEMO_REQUIREMENTS = [
+    "failed_first_attempt",
+    "archived_verifier_failure_evidence",
+    "retry_context_from_failure_evidence",
+    "later_passing_attempt",
+    "lineage_trajectory_recorded",
+    "verifier_gated_germline_promotion",
+]
 
 
 def repo_root() -> Path:
@@ -387,6 +398,551 @@ def fresh_command(args: argparse.Namespace) -> list[str]:
     return command
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_evidence_json(path: Path) -> dict[str, object]:
+    resolved = repo_path(path)
+    try:
+        data = json.loads(resolved.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"demo evidence JSON was not found: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"demo evidence JSON is invalid JSON: {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"demo evidence JSON root must be an object: {path}")
+    return data
+
+
+def require_mapping(value: object, *, label: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise RuntimeError(f"demo evidence contract expected object at {label}")
+    return value
+
+
+def require_sequence(value: object, *, label: str) -> list[object]:
+    if not isinstance(value, list):
+        raise RuntimeError(f"demo evidence contract expected array at {label}")
+    return value
+
+
+NORMALIZED_EVIDENCE_FIELDS = [
+    "run_id",
+    "task_id",
+    "attempt",
+    "resolved",
+    "prior_lineage_present",
+    "a2_returncode",
+    "verify_returncode",
+    "verify_command",
+    "touched_files",
+    "diff_added_lines",
+    "diff_removed_lines",
+    "lineage_records_before",
+    "lineage_records_after",
+    "lineage_reconciled_by_core",
+    "verifier_failure_evidence_present",
+    "verifier_failure_evidence_structured_present",
+    "promotion_evidence_present",
+    "promotion_structured_present",
+    "promotion_verifier_gated",
+    "promotion_structured_evidence_present",
+    "promotion_lineage_reconciled_by_core",
+    "promotion_verify_returncode",
+]
+
+
+def load_jsonl_rows(path: Path) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(
+                        f"demo evidence contract artifact is invalid JSONL at line {line_number}: {path}: {exc}"
+                    ) from exc
+                if not isinstance(row, dict):
+                    raise RuntimeError(
+                        f"demo evidence contract artifact row {line_number} is not an object"
+                    )
+                rows.append(row)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"demo evidence contract artifact was not found: {path}") from exc
+    if not rows:
+        raise RuntimeError("demo evidence contract artifact contains no JSONL rows")
+    return rows
+
+
+def optional_int_value(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def optional_bool_value(value: object) -> bool | None:
+    if value is True or value is False:
+        return value
+    return None
+
+
+def artifact_promotion(row: dict[str, object]) -> dict[str, object]:
+    promotion = row.get("promotion")
+    return promotion if isinstance(promotion, dict) else {}
+
+
+def artifact_has_promotion_evidence(row: dict[str, object]) -> bool:
+    promotion = artifact_promotion(row)
+    if isinstance(row.get("promotion"), dict):
+        return promotion.get("verifier_gated") is True and promotion.get("evidence_present") is True
+    if "promotion_evidence_present" in row:
+        return row["promotion_evidence_present"] is True
+    output = "\n".join(str(row.get(key) or "") for key in ("stdout", "stderr")).lower()
+    return "promote_germline" in output or "[applied and rebuilt:" in output
+
+
+def normalized_artifact_row(row: dict[str, object]) -> dict[str, object]:
+    promotion = artifact_promotion(row)
+    return {
+        "run_id": str(row.get("run_id") or ""),
+        "task_id": str(row.get("task_id") or ""),
+        "attempt": max(int(row.get("attempt") or 1), 1),
+        "resolved": bool(row.get("resolved")),
+        "prior_lineage_present": bool(row.get("prior_lineage_present")),
+        "a2_returncode": optional_int_value(row.get("a2_returncode")),
+        "verify_returncode": optional_int_value(row.get("verify_returncode")),
+        "verify_command": str(row["verify_command"]) if row.get("verify_command") else None,
+        "touched_files": [str(path) for path in row.get("touched_files", [])]
+        if isinstance(row.get("touched_files"), list)
+        else [],
+        "diff_added_lines": optional_int_value(row.get("diff_added_lines")),
+        "diff_removed_lines": optional_int_value(row.get("diff_removed_lines")),
+        "lineage_records_before": optional_int_value(row.get("lineage_records_before")),
+        "lineage_records_after": optional_int_value(row.get("lineage_records_after")),
+        "lineage_reconciled_by_core": bool(row["lineage_reconciled_by_core"])
+        if "lineage_reconciled_by_core" in row
+        else None,
+        "verifier_failure_evidence_present": row.get("verifier_failure_evidence_present") is True
+        if "verifier_failure_evidence_present" in row
+        else None,
+        "verifier_failure_evidence_structured_present": "verifier_failure_evidence_present" in row,
+        "promotion_evidence_present": artifact_has_promotion_evidence(row),
+        "promotion_structured_present": isinstance(row.get("promotion"), dict),
+        "promotion_verifier_gated": optional_bool_value(promotion.get("verifier_gated")),
+        "promotion_structured_evidence_present": optional_bool_value(promotion.get("evidence_present")),
+        "promotion_lineage_reconciled_by_core": optional_bool_value(
+            promotion.get("lineage_reconciled_by_core")
+        ),
+        "promotion_verify_returncode": optional_int_value(promotion.get("verify_returncode")),
+    }
+
+
+def selector_tuple(selector: dict[str, object], *, label: str) -> tuple[str, str, int]:
+    run_id = selector.get("run_id")
+    task_id = selector.get("task_id")
+    attempt = selector.get("attempt")
+    if not isinstance(run_id, str) or not isinstance(task_id, str) or not isinstance(attempt, int):
+        raise RuntimeError(f"demo evidence contract selector lacks run_id/task_id/attempt at {label}")
+    return (run_id, task_id, attempt)
+
+
+def artifact_rows_by_selector(
+    rows: list[dict[str, object]],
+) -> dict[tuple[str, str, int], dict[str, object]]:
+    indexed: dict[tuple[str, str, int], dict[str, object]] = {}
+    for row_index, row in enumerate(rows):
+        key = selector_tuple(row, label=f"artifact row {row_index}")
+        if key in indexed:
+            raise RuntimeError(f"demo evidence contract artifact has duplicate row selector: {key}")
+        indexed[key] = row
+    return indexed
+
+
+def require_artifact_row(
+    index: dict[tuple[str, str, int], dict[str, object]],
+    selector: dict[str, object],
+    *,
+    label: str,
+) -> dict[str, object]:
+    key = selector_tuple(selector, label=label)
+    try:
+        return index[key]
+    except KeyError as exc:
+        raise RuntimeError(f"demo evidence contract selector missing from artifact: {key}") from exc
+
+
+def require_embedded_row_matches_artifact(
+    step: dict[str, object],
+    artifact_row: dict[str, object],
+    *,
+    label: str,
+) -> dict[str, object]:
+    embedded = require_mapping(step.get("evidence_row"), label=f"{label}.evidence_row")
+    expected = normalized_artifact_row(artifact_row)
+    if embedded != expected:
+        raise RuntimeError(f"demo evidence contract embedded row differs from artifact at {label}")
+    return embedded
+
+
+def validate_demo_evidence_contract(
+    evidence: dict[str, object],
+    reference: dict[str, object],
+    *,
+    evidence_label: str,
+) -> None:
+    """Validate a demo evidence JSON against the archived proof contract.
+
+    This is a local artifact-shape check for archived or freshly generated scorer
+    evidence. It does not run a provider and does not prove live provider access;
+    it ensures a produced evidence JSON preserves the six-step loop proof shape.
+    """
+
+    reference_requirements = require_sequence(
+        reference.get("requirements"), label="reference.requirements"
+    )
+    if reference_requirements != EXPECTED_DEMO_REQUIREMENTS:
+        raise RuntimeError(
+            "demo evidence contract reference does not define the expected six-step proof"
+        )
+    if evidence.get("requirements") != EXPECTED_DEMO_REQUIREMENTS:
+        raise RuntimeError(
+            "demo evidence contract requirements differ from the expected six-step proof"
+        )
+    if evidence.get("complete") is not True:
+        raise RuntimeError(f"demo evidence contract is incomplete: {evidence_label}")
+    artifact = evidence.get("artifact")
+    if not isinstance(artifact, str) or not artifact:
+        raise RuntimeError("demo evidence contract requires an artifact path")
+    artifact_path = repo_path(Path(artifact))
+    if not artifact_path.exists():
+        raise RuntimeError(f"demo evidence contract artifact was not found: {artifact}")
+    artifact_sha256 = evidence.get("artifact_sha256")
+    if not isinstance(artifact_sha256, str) or len(artifact_sha256) != 64:
+        raise RuntimeError("demo evidence contract requires a 64-character artifact_sha256")
+    if artifact_sha256 != sha256_file(artifact_path):
+        raise RuntimeError("demo evidence contract artifact_sha256 does not match artifact bytes")
+    artifact_rows = load_jsonl_rows(artifact_path)
+    artifact_index = artifact_rows_by_selector(artifact_rows)
+    serialized = json.dumps(evidence, sort_keys=True)
+    leaked = [marker for marker in HOST_PATH_MARKERS if marker in serialized]
+    if leaked:
+        raise RuntimeError(
+            "demo evidence contract contains host-specific path marker(s): "
+            + ", ".join(leaked)
+        )
+    demos = require_sequence(evidence.get("demos"), label="demos")
+    if not demos:
+        raise RuntimeError("demo evidence contract requires at least one demo")
+    for demo_index, demo_value in enumerate(demos):
+        demo = require_mapping(demo_value, label=f"demos[{demo_index}]")
+        chain = require_sequence(
+            demo.get("causal_chain"), label=f"demos[{demo_index}].causal_chain"
+        )
+        requirements = [
+            require_mapping(step, label=f"demos[{demo_index}].causal_chain[{step_index}]").get(
+                "requirement"
+            )
+            for step_index, step in enumerate(chain)
+        ]
+        if requirements != reference_requirements:
+            raise RuntimeError(
+                f"demo evidence contract causal chain differs in demo {demo_index}"
+            )
+        for step_index, step_value in enumerate(chain):
+            step = require_mapping(
+                step_value, label=f"demos[{demo_index}].causal_chain[{step_index}]"
+            )
+            if step.get("status") != "proved":
+                raise RuntimeError(
+                    f"demo evidence contract step {step.get('requirement')!r} is not proved"
+                )
+        failed_step = require_mapping(
+            chain[reference_requirements.index("failed_first_attempt")],
+            label=f"demos[{demo_index}].failed_first_attempt",
+        )
+        failed_selector = require_mapping(
+            failed_step.get("selector"),
+            label=f"demos[{demo_index}].failed_first_attempt.selector",
+        )
+        run_id, task_id, failed_attempt = selector_tuple(
+            failed_selector, label=f"demos[{demo_index}].failed_first_attempt.selector"
+        )
+        if failed_attempt != 1:
+            raise RuntimeError("demo evidence contract first failure must be attempt 1")
+        failed_row = require_artifact_row(
+            artifact_index,
+            failed_selector,
+            label=f"demos[{demo_index}].failed_first_attempt.selector",
+        )
+        failed_embedded_row = require_embedded_row_matches_artifact(
+            failed_step,
+            failed_row,
+            label=f"demos[{demo_index}].failed_first_attempt",
+        )
+        failed_fields = require_mapping(
+            failed_step.get("fields"),
+            label=f"demos[{demo_index}].failed_first_attempt.fields",
+        )
+        if failed_fields.get("resolved") is not False:
+            raise RuntimeError("demo evidence contract first attempt is not failed")
+        if failed_embedded_row.get("resolved") is not False:
+            raise RuntimeError("demo evidence contract first attempt artifact row is not failed")
+        failed_verify = failed_fields.get("verify_returncode")
+        if not isinstance(failed_verify, int) or failed_verify == 0:
+            raise RuntimeError("demo evidence contract first attempt lacks verifier failure")
+        if failed_embedded_row.get("verify_returncode") != failed_verify:
+            raise RuntimeError("demo evidence contract failed verifier status differs from artifact")
+        archived_step = require_mapping(
+            chain[reference_requirements.index("archived_verifier_failure_evidence")],
+            label=f"demos[{demo_index}].archived_verifier_failure_evidence",
+        )
+        archived_selector = require_mapping(
+            archived_step.get("selector"),
+            label=f"demos[{demo_index}].archived_verifier_failure_evidence.selector",
+        )
+        if archived_selector != failed_selector:
+            raise RuntimeError("demo evidence contract archived failure selector differs from failed attempt")
+        archived_embedded_row = require_embedded_row_matches_artifact(
+            archived_step,
+            failed_row,
+            label=f"demos[{demo_index}].archived_verifier_failure_evidence",
+        )
+        archived_fields = require_mapping(
+            archived_step.get("fields"),
+            label=f"demos[{demo_index}].archived_verifier_failure_evidence.fields",
+        )
+        if archived_fields.get("lineage_advanced") is not True:
+            raise RuntimeError("demo evidence contract failure evidence did not advance lineage")
+        if archived_embedded_row.get("lineage_records_before") != archived_fields.get("lineage_records_before"):
+            raise RuntimeError("demo evidence contract archived lineage start differs from artifact")
+        if archived_embedded_row.get("lineage_records_after") != archived_fields.get("lineage_records_after"):
+            raise RuntimeError("demo evidence contract archived lineage end differs from artifact")
+        archived_before = archived_embedded_row.get("lineage_records_before")
+        archived_after = archived_embedded_row.get("lineage_records_after")
+        if not isinstance(archived_before, int) or not isinstance(archived_after, int) or archived_after <= archived_before:
+            raise RuntimeError("demo evidence contract failure evidence did not advance lineage")
+        retry_step = require_mapping(
+            chain[reference_requirements.index("retry_context_from_failure_evidence")],
+            label=f"demos[{demo_index}].retry_context_from_failure_evidence",
+        )
+        retry_selectors = require_sequence(
+            retry_step.get("selectors"),
+            label=f"demos[{demo_index}].retry_context_from_failure_evidence.selectors",
+        )
+        retry_fields = require_sequence(
+            retry_step.get("fields"),
+            label=f"demos[{demo_index}].retry_context_from_failure_evidence.fields",
+        )
+        if not retry_fields or len(retry_fields) != len(retry_selectors):
+            raise RuntimeError("demo evidence contract requires paired retry selectors and fields")
+        failed_lineage_after = archived_fields.get("lineage_records_after")
+        if not isinstance(failed_lineage_after, int):
+            raise RuntimeError("demo evidence contract archived failure lacks lineage_records_after")
+        retry_attempts: set[int] = set()
+        for field_index, field_value in enumerate(retry_fields):
+            retry_selector = require_mapping(
+                retry_selectors[field_index],
+                label=f"demos[{demo_index}].retry_context_from_failure_evidence.selectors[{field_index}]",
+            )
+            if retry_selector.get("run_id") != run_id or retry_selector.get("task_id") != task_id:
+                raise RuntimeError("demo evidence contract retry selector differs from failed run/task")
+            retry_attempt = retry_selector.get("attempt")
+            if not isinstance(retry_attempt, int) or retry_attempt <= failed_attempt:
+                raise RuntimeError("demo evidence contract retry attempt does not follow failure")
+            retry_attempts.add(retry_attempt)
+            retry_row = require_artifact_row(
+                artifact_index,
+                retry_selector,
+                label=f"demos[{demo_index}].retry_context_from_failure_evidence.selectors[{field_index}]",
+            )
+            retry_embedded_rows = require_sequence(
+                retry_step.get("evidence_rows"),
+                label=f"demos[{demo_index}].retry_context_from_failure_evidence.evidence_rows",
+            )
+            if field_index >= len(retry_embedded_rows):
+                raise RuntimeError("demo evidence contract missing embedded retry row")
+            retry_embedded_row = require_mapping(
+                retry_embedded_rows[field_index],
+                label=f"demos[{demo_index}].retry_context_from_failure_evidence.evidence_rows[{field_index}]",
+            )
+            if retry_embedded_row != normalized_artifact_row(retry_row):
+                raise RuntimeError("demo evidence contract embedded retry row differs from artifact")
+            field = require_mapping(
+                field_value,
+                label=f"demos[{demo_index}].retry_context_from_failure_evidence.fields[{field_index}]",
+            )
+            if field.get("failed_attempt_selector") != failed_selector:
+                raise RuntimeError("demo evidence contract retry is not tied to failed selector")
+            lineage_before = field.get("lineage_records_before")
+            if not isinstance(lineage_before, int) or lineage_before < failed_lineage_after:
+                raise RuntimeError("demo evidence contract retry lineage predates archived failure")
+            if retry_embedded_row.get("prior_lineage_present") is not True:
+                raise RuntimeError("demo evidence contract retry artifact row lacks prior lineage")
+            if retry_embedded_row.get("lineage_records_before") != lineage_before:
+                raise RuntimeError("demo evidence contract retry lineage differs from artifact")
+            if field.get("derived_from_failed_lineage") is not True:
+                raise RuntimeError("demo evidence contract retry is not derived from failed lineage")
+            if field.get("archived_verifier_failure_evidence") is not True:
+                raise RuntimeError("demo evidence contract retry lacks archived failure evidence")
+            if field.get("retry_context_links_archived_failure") is not True:
+                raise RuntimeError("demo evidence contract retry does not link archived failure")
+        later_step = require_mapping(
+            chain[reference_requirements.index("later_passing_attempt")],
+            label=f"demos[{demo_index}].later_passing_attempt",
+        )
+        later_selector = require_mapping(
+            later_step.get("selector"),
+            label=f"demos[{demo_index}].later_passing_attempt.selector",
+        )
+        if later_selector.get("run_id") != run_id or later_selector.get("task_id") != task_id:
+            raise RuntimeError("demo evidence contract later pass selector differs from failed run/task")
+        later_attempt = later_selector.get("attempt")
+        if not isinstance(later_attempt, int) or later_attempt not in retry_attempts:
+            raise RuntimeError("demo evidence contract later pass is not one of the linked retries")
+        later_row = require_artifact_row(
+            artifact_index,
+            later_selector,
+            label=f"demos[{demo_index}].later_passing_attempt.selector",
+        )
+        later_embedded_row = require_embedded_row_matches_artifact(
+            later_step,
+            later_row,
+            label=f"demos[{demo_index}].later_passing_attempt",
+        )
+        later_fields = require_mapping(
+            later_step.get("fields"),
+            label=f"demos[{demo_index}].later_passing_attempt.fields",
+        )
+        if later_fields.get("resolved") is not True or later_fields.get("verify_returncode") != 0:
+            raise RuntimeError("demo evidence contract later attempt is not verifier-passing")
+        if later_embedded_row.get("resolved") is not True or later_embedded_row.get("verify_returncode") != 0:
+            raise RuntimeError("demo evidence contract later artifact row is not verifier-passing")
+        lineage_step = require_mapping(
+            chain[reference_requirements.index("lineage_trajectory_recorded")],
+            label=f"demos[{demo_index}].lineage_trajectory_recorded",
+        )
+        lineage_fields = require_mapping(
+            lineage_step.get("fields"),
+            label=f"demos[{demo_index}].lineage_trajectory_recorded.fields",
+        )
+        before = lineage_fields.get("lineage_records_before")
+        after = lineage_fields.get("lineage_records_after")
+        if not isinstance(before, int) or not isinstance(after, int) or after <= before:
+            raise RuntimeError("demo evidence contract lineage trajectory does not advance")
+        lineage_rows = require_sequence(
+            lineage_step.get("evidence_rows"),
+            label=f"demos[{demo_index}].lineage_trajectory_recorded.evidence_rows",
+        )
+        if not lineage_rows:
+            raise RuntimeError("demo evidence contract requires lineage evidence rows")
+        lineage_attempts: list[int] = []
+        for lineage_index, lineage_value in enumerate(lineage_rows):
+            lineage_embedded_row = require_mapping(
+                lineage_value,
+                label=f"demos[{demo_index}].lineage_trajectory_recorded.evidence_rows[{lineage_index}]",
+            )
+            lineage_selector = {
+                "run_id": lineage_embedded_row.get("run_id"),
+                "task_id": lineage_embedded_row.get("task_id"),
+                "attempt": lineage_embedded_row.get("attempt"),
+            }
+            lineage_artifact_row = require_artifact_row(
+                artifact_index,
+                lineage_selector,
+                label=f"demos[{demo_index}].lineage_trajectory_recorded.evidence_rows[{lineage_index}]",
+            )
+            if lineage_embedded_row != normalized_artifact_row(lineage_artifact_row):
+                raise RuntimeError("demo evidence contract lineage row differs from artifact")
+            if lineage_embedded_row.get("run_id") != run_id or lineage_embedded_row.get("task_id") != task_id:
+                raise RuntimeError("demo evidence contract lineage row differs from failed run/task")
+            lineage_attempt = lineage_embedded_row.get("attempt")
+            if not isinstance(lineage_attempt, int):
+                raise RuntimeError("demo evidence contract lineage row lacks attempt")
+            lineage_attempts.append(lineage_attempt)
+        if lineage_attempts != lineage_fields.get("attempts"):
+            raise RuntimeError("demo evidence contract lineage attempts differ from artifact")
+        if failed_attempt not in lineage_attempts or later_attempt not in lineage_attempts:
+            raise RuntimeError("demo evidence contract lineage does not span failed attempt and later pass")
+        promotion_step = require_mapping(
+            chain[reference_requirements.index("verifier_gated_germline_promotion")],
+            label=f"demos[{demo_index}].verifier_gated_germline_promotion",
+        )
+        promotion_selector = require_mapping(
+            promotion_step.get("selector"),
+            label=f"demos[{demo_index}].verifier_gated_germline_promotion.selector",
+        )
+        if promotion_selector != later_selector:
+            raise RuntimeError("demo evidence contract promotion selector differs from later passing attempt")
+        promotion_embedded_row = require_embedded_row_matches_artifact(
+            promotion_step,
+            later_row,
+            label=f"demos[{demo_index}].verifier_gated_germline_promotion",
+        )
+        promotion_fields = require_mapping(
+            promotion_step.get("fields"),
+            label=f"demos[{demo_index}].verifier_gated_germline_promotion.fields",
+        )
+        if promotion_embedded_row.get("lineage_reconciled_by_core") is not True:
+            raise RuntimeError("demo evidence contract promotion artifact lacks core lineage reconciliation")
+        if promotion_fields.get("verify_returncode") != promotion_embedded_row.get("verify_returncode"):
+            raise RuntimeError("demo evidence contract promotion verifier status differs from artifact")
+        if promotion_fields.get("verify_returncode") != 0:
+            raise RuntimeError("demo evidence contract promotion is not verifier-passing")
+        if promotion_fields.get("lineage_reconciled_by_core") != promotion_embedded_row.get("lineage_reconciled_by_core"):
+            raise RuntimeError("demo evidence contract promotion core reconciliation differs from artifact")
+        if promotion_fields.get("lineage_reconciled_by_core") is not True:
+            raise RuntimeError("demo evidence contract promotion lacks core lineage reconciliation")
+        legacy_promotion_evidence = (
+            promotion_fields.get("promotion_evidence_present") is True
+            and promotion_embedded_row.get("promotion_evidence_present") is True
+        )
+        structured_promotion_evidence = (
+            promotion_fields.get("promotion_verifier_gated") is True
+            and promotion_embedded_row.get("promotion_verifier_gated") is True
+            and promotion_fields.get("promotion_structured_evidence_present") is True
+            and promotion_embedded_row.get("promotion_structured_evidence_present") is True
+            and promotion_fields.get("promotion_lineage_reconciled_by_core") is True
+            and promotion_embedded_row.get("promotion_lineage_reconciled_by_core") is True
+            and promotion_fields.get("promotion_verify_returncode") == 0
+            and promotion_embedded_row.get("promotion_verify_returncode") == 0
+        )
+        if not (legacy_promotion_evidence or structured_promotion_evidence):
+            raise RuntimeError("demo evidence contract promotion lacks gated apply evidence")
+
+
+def verify_evidence_contract(evidence_json: Path, reference_evidence_json: Path) -> None:
+    evidence = load_evidence_json(evidence_json)
+    reference = load_evidence_json(reference_evidence_json)
+    validate_demo_evidence_contract(
+        evidence,
+        reference,
+        evidence_label=str(evidence_json),
+    )
+    print("Demo evidence contract check")
+    print(f"  evidence: {evidence_json}")
+    print(f"  reference: {reference_evidence_json}")
+    print(
+        "  PASS evidence JSON matches archived demo contract "
+        f"(requirements={len(evidence['requirements'])}, demos={len(evidence['demos'])})"
+    )
+    print(
+        "  proved: failed_first_attempt -> archived_verifier_failure_evidence -> "
+        "retry_context_from_failure_evidence -> later_passing_attempt -> "
+        "lineage_trajectory_recorded -> verifier_gated_germline_promotion"
+    )
+
+
 def run_command(command: list[str], *, print_only: bool) -> int:
     print(f"$ {display_command(command)}")
     if print_only:
@@ -417,6 +973,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     verify.add_argument("--print-only", action="store_true")
+
+    contract = subparsers.add_parser(
+        "verify-evidence-contract",
+        help="Validate a demo evidence JSON against the archived six-step proof contract.",
+    )
+    contract.add_argument(
+        "--evidence-json",
+        type=Path,
+        default=DEFAULT_ARCHIVE_EVIDENCE,
+        help="Demo evidence JSON to validate, such as a freshly generated .demo-evidence.json.",
+    )
+    contract.add_argument(
+        "--reference-evidence-json",
+        type=Path,
+        default=DEFAULT_ARCHIVE_EVIDENCE,
+        help="Archived evidence JSON whose requirements define the demo proof contract.",
+    )
 
     fresh = subparsers.add_parser(
         "fresh",
@@ -486,9 +1059,25 @@ def main(argv: list[str]) -> int:
         evidence_json = args.evidence_json
         if evidence_json is None and args.archive == DEFAULT_ARCHIVE:
             evidence_json = DEFAULT_ARCHIVE_EVIDENCE
-        return run_command(
+        result = run_command(
             score_command(args.archive, evidence_json), print_only=args.print_only
         )
+        if result != 0 or args.print_only or evidence_json is None:
+            return result
+        try:
+            verify_evidence_contract(evidence_json, DEFAULT_ARCHIVE_EVIDENCE)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        return 0
+
+    if args.mode == "verify-evidence-contract":
+        try:
+            verify_evidence_contract(args.evidence_json, args.reference_evidence_json)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        return 0
 
     if args.mode == "fresh":
         evidence_json = args.evidence_json or default_fresh_evidence_path(args.results)
@@ -532,14 +1121,48 @@ def main(argv: list[str]) -> int:
             except RuntimeError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
-        return run_command(
+        result = run_command(
             score_command(args.results, evidence_json), print_only=args.print_only
         )
+        if result != 0 or args.print_only:
+            return result
+        try:
+            verify_evidence_contract(evidence_json, DEFAULT_ARCHIVE_EVIDENCE)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        return 0
 
     raise AssertionError(f"unhandled mode: {args.mode}")
 
 
 class SelfCorrectionDemoTests(unittest.TestCase):
+    def archived_demo_contract_evidence(self) -> dict[str, object]:
+        return load_evidence_json(DEFAULT_ARCHIVE_EVIDENCE)
+
+    def evidence_reference(self, evidence: dict[str, object]) -> dict[str, object]:
+        return {"requirements": evidence["requirements"]}
+
+    def sync_embedded_rows_for_selector(
+        self,
+        evidence: dict[str, object],
+        selector: dict[str, object],
+        normalized_row: dict[str, object],
+    ) -> None:
+        key = selector_tuple(selector, label="test selector")
+        for demo in evidence["demos"]:
+            for step in demo["causal_chain"]:
+                if "selector" in step and selector_tuple(step["selector"], label="test step") == key:
+                    step["evidence_row"] = normalized_row
+                for row in step.get("evidence_rows", []):
+                    row_selector = {
+                        "run_id": row.get("run_id"),
+                        "task_id": row.get("task_id"),
+                        "attempt": row.get("attempt"),
+                    }
+                    if selector_tuple(row_selector, label="test evidence row") == key:
+                        row.update(normalized_row)
+
     def test_default_verify_archive_command_scores_known_artifact(self) -> None:
         command = score_command(DEFAULT_ARCHIVE)
 
@@ -620,6 +1243,275 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("--demo-evidence-json", output)
         self.assertIn(str(DEFAULT_ARCHIVE_EVIDENCE), output)
         self.assertIn(str(DEFAULT_ARCHIVE), output)
+
+    def test_verify_archive_runs_evidence_contract_after_successful_score(self) -> None:
+        with mock.patch(__name__ + ".run_command", return_value=0) as run, mock.patch(
+            __name__ + ".verify_evidence_contract"
+        ) as contract:
+            result = main(
+                [
+                    "verify-archive",
+                    "--archive",
+                    "custom.jsonl",
+                    "--evidence-json",
+                    "custom.demo-evidence.json",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        run.assert_called_once()
+        contract.assert_called_once_with(
+            Path("custom.demo-evidence.json"), DEFAULT_ARCHIVE_EVIDENCE
+        )
+
+    def test_verify_archive_skips_evidence_contract_when_scoring_fails(self) -> None:
+        with mock.patch(__name__ + ".run_command", return_value=1), mock.patch(
+            __name__ + ".verify_evidence_contract"
+        ) as contract:
+            result = main(
+                [
+                    "verify-archive",
+                    "--archive",
+                    "custom.jsonl",
+                    "--evidence-json",
+                    "custom.demo-evidence.json",
+                ]
+            )
+
+        self.assertEqual(result, 1)
+        contract.assert_not_called()
+
+    def test_fresh_runs_evidence_contract_after_successful_score(self) -> None:
+        with mock.patch(__name__ + ".fresh_preflight"), mock.patch(
+            __name__ + ".run_command", side_effect=[0, 0]
+        ), mock.patch(__name__ + ".validate_fresh_results"), mock.patch(
+            __name__ + ".verify_evidence_contract"
+        ) as contract:
+            result = main(
+                [
+                    "fresh",
+                    "--results",
+                    "docs/benchmark-results/self-correction/a2-fresh-demo.jsonl",
+                    "--run-id",
+                    "fresh-demo",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        contract.assert_called_once_with(
+            Path("docs/benchmark-results/self-correction/a2-fresh-demo.demo-evidence.json"),
+            DEFAULT_ARCHIVE_EVIDENCE,
+        )
+
+    def test_verify_evidence_contract_accepts_complete_six_step_demo(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+
+        validate_demo_evidence_contract(
+            evidence,
+            self.evidence_reference(evidence),
+            evidence_label=str(DEFAULT_ARCHIVE_EVIDENCE),
+        )
+
+    def test_verify_evidence_contract_rejects_artifact_hash_mismatch(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        evidence["artifact_sha256"] = "d" * 64
+
+        with self.assertRaisesRegex(RuntimeError, "artifact_sha256 does not match"):
+            validate_demo_evidence_contract(
+                evidence,
+                self.evidence_reference(evidence),
+                evidence_label="mismatched.demo-evidence.json",
+            )
+
+    def test_verify_evidence_contract_rejects_reference_missing_required_step(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        broken_reference = {
+            "requirements": [
+                "failed_first_attempt",
+                "archived_verifier_failure_evidence",
+                "retry_context_from_failure_evidence",
+                "later_passing_attempt",
+                "lineage_trajectory_recorded",
+            ]
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "expected six-step proof"):
+            validate_demo_evidence_contract(
+                evidence,
+                broken_reference,
+                evidence_label="fresh.demo-evidence.json",
+            )
+
+    def test_verify_evidence_contract_rejects_pass_at_one_without_retry_chain(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        evidence["complete"] = False
+        evidence["demos"] = []
+
+        with self.assertRaisesRegex(RuntimeError, "incomplete"):
+            validate_demo_evidence_contract(
+                evidence,
+                self.evidence_reference(evidence),
+                evidence_label="pass-at-one.demo-evidence.json",
+            )
+
+    def test_verify_evidence_contract_rejects_retry_without_archived_failure_link(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        retry_step = evidence["demos"][0]["causal_chain"][2]
+        retry_step["fields"][0]["retry_context_links_archived_failure"] = False
+
+        with self.assertRaisesRegex(RuntimeError, "does not link archived failure"):
+            validate_demo_evidence_contract(
+                evidence,
+                self.evidence_reference(evidence),
+                evidence_label="broken.demo-evidence.json",
+            )
+
+    def test_verify_evidence_contract_rejects_missing_retry_selectors(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        retry_step = evidence["demos"][0]["causal_chain"][2]
+        retry_step.pop("selectors")
+
+        with self.assertRaisesRegex(RuntimeError, "retry_context_from_failure_evidence.selectors"):
+            validate_demo_evidence_contract(
+                evidence,
+                self.evidence_reference(evidence),
+                evidence_label="missing-selectors.demo-evidence.json",
+            )
+
+    def test_verify_evidence_contract_rejects_non_advancing_archived_failure_lineage(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        failed_step = evidence["demos"][0]["causal_chain"][0]
+        archived_step = evidence["demos"][0]["causal_chain"][1]
+        failed_selector = failed_step["selector"]
+        rows = load_jsonl_rows(repo_path(DEFAULT_ARCHIVE))
+        failed_row = require_artifact_row(
+            artifact_rows_by_selector(rows), failed_selector, label="test failed selector"
+        )
+        failed_row["lineage_records_before"] = 0
+        failed_row["lineage_records_after"] = 0
+        archived_step["fields"]["lineage_advanced"] = True
+        archived_step["fields"]["lineage_records_before"] = 0
+        archived_step["fields"]["lineage_records_after"] = 0
+        self.sync_embedded_rows_for_selector(
+            evidence, failed_selector, normalized_artifact_row(failed_row)
+        )
+
+        with mock.patch(__name__ + ".load_jsonl_rows", return_value=rows):
+            with self.assertRaisesRegex(RuntimeError, "failure evidence did not advance lineage"):
+                validate_demo_evidence_contract(
+                    evidence,
+                    self.evidence_reference(evidence),
+                    evidence_label="non-advancing-failure.demo-evidence.json",
+                )
+
+    def test_verify_evidence_contract_rejects_absent_promotion_evidence(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        promotion_step = evidence["demos"][0]["causal_chain"][5]
+        promotion_selector = promotion_step["selector"]
+        rows = load_jsonl_rows(repo_path(DEFAULT_ARCHIVE))
+        promotion_row = require_artifact_row(
+            artifact_rows_by_selector(rows), promotion_selector, label="test promotion selector"
+        )
+        promotion_row["stdout"] = ""
+        promotion_row["stderr"] = ""
+        promotion_step["fields"]["promotion_evidence_present"] = False
+        self.sync_embedded_rows_for_selector(
+            evidence, promotion_selector, normalized_artifact_row(promotion_row)
+        )
+
+        with mock.patch(__name__ + ".load_jsonl_rows", return_value=rows):
+            with self.assertRaisesRegex(RuntimeError, "promotion lacks gated apply evidence"):
+                validate_demo_evidence_contract(
+                    evidence,
+                    self.evidence_reference(evidence),
+                    evidence_label="missing-promotion.demo-evidence.json",
+                )
+
+    def test_verify_evidence_contract_rejects_stringly_legacy_promotion_booleans(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        promotion_step = evidence["demos"][0]["causal_chain"][5]
+        promotion_selector = promotion_step["selector"]
+        rows = load_jsonl_rows(repo_path(DEFAULT_ARCHIVE))
+        promotion_row = require_artifact_row(
+            artifact_rows_by_selector(rows), promotion_selector, label="test promotion selector"
+        )
+        promotion_row["stdout"] = ""
+        promotion_row["stderr"] = ""
+        promotion_row["promotion_evidence_present"] = "true"
+        promotion_step["fields"] = {
+            "verify_returncode": 0,
+            "lineage_reconciled_by_core": True,
+            "promotion_evidence_present": "true",
+        }
+        self.sync_embedded_rows_for_selector(
+            evidence, promotion_selector, normalized_artifact_row(promotion_row)
+        )
+
+        with mock.patch(__name__ + ".load_jsonl_rows", return_value=rows):
+            with self.assertRaisesRegex(RuntimeError, "promotion lacks gated apply evidence"):
+                validate_demo_evidence_contract(
+                    evidence,
+                    self.evidence_reference(evidence),
+                    evidence_label="stringly-legacy-promotion.demo-evidence.json",
+                )
+
+    def test_verify_evidence_contract_rejects_promotion_when_artifact_verifier_failed(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        promotion_step = evidence["demos"][0]["causal_chain"][5]
+        promotion_selector = promotion_step["selector"]
+        rows = load_jsonl_rows(repo_path(DEFAULT_ARCHIVE))
+        promotion_row = require_artifact_row(
+            artifact_rows_by_selector(rows), promotion_selector, label="test promotion selector"
+        )
+        promotion_row["verify_returncode"] = 1
+        promotion_step["fields"]["verify_returncode"] = 1
+        self.sync_embedded_rows_for_selector(
+            evidence, promotion_selector, normalized_artifact_row(promotion_row)
+        )
+
+        with mock.patch(__name__ + ".load_jsonl_rows", return_value=rows):
+            with self.assertRaisesRegex(RuntimeError, "later artifact row is not verifier-passing"):
+                validate_demo_evidence_contract(
+                    evidence,
+                    self.evidence_reference(evidence),
+                    evidence_label="failed-promotion.demo-evidence.json",
+                )
+
+    def test_verify_evidence_contract_rejects_stringly_promotion_booleans(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        promotion_step = evidence["demos"][0]["causal_chain"][5]
+        promotion_selector = promotion_step["selector"]
+        rows = load_jsonl_rows(repo_path(DEFAULT_ARCHIVE))
+        promotion_row = require_artifact_row(
+            artifact_rows_by_selector(rows), promotion_selector, label="test promotion selector"
+        )
+        promotion_row["stdout"] = ""
+        promotion_row["stderr"] = ""
+        promotion_row["promotion"] = {
+            "verifier_gated": "true",
+            "evidence_present": "true",
+            "lineage_reconciled_by_core": "true",
+            "verify_returncode": 0,
+        }
+        promotion_step["fields"] = {
+            "verify_returncode": 0,
+            "lineage_reconciled_by_core": True,
+            "promotion_verifier_gated": "true",
+            "promotion_structured_evidence_present": "true",
+            "promotion_lineage_reconciled_by_core": "true",
+            "promotion_verify_returncode": 0,
+        }
+        self.sync_embedded_rows_for_selector(
+            evidence, promotion_selector, normalized_artifact_row(promotion_row)
+        )
+
+        with mock.patch(__name__ + ".load_jsonl_rows", return_value=rows):
+            with self.assertRaisesRegex(RuntimeError, "promotion lacks gated apply evidence"):
+                validate_demo_evidence_contract(
+                    evidence,
+                    self.evidence_reference(evidence),
+                    evidence_label="stringly-promotion.demo-evidence.json",
+                )
 
     def test_verify_archive_print_only_includes_demo_evidence_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
