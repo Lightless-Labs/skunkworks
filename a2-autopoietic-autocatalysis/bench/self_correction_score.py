@@ -13,6 +13,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -492,6 +493,30 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            tmp.write(serialized)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        tmp_path.replace(path)
+    except Exception:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+
 def normalized_evidence_row(record: SelfCorrectionRecord) -> dict[str, Any]:
     """Return schema-bounded row evidence used by the demo proof.
 
@@ -535,6 +560,15 @@ def demo_evidence_map(
 ) -> dict[str, Any]:
     grouped = group_records(records)
     demos = demo_run_ids(records)
+    if demos:
+        if not artifact_label:
+            raise ValueError("complete demo evidence requires an artifact label")
+        if (
+            not isinstance(artifact_sha256, str)
+            or len(artifact_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in artifact_sha256.lower())
+        ):
+            raise ValueError("complete demo evidence requires a 64-character hex artifact_sha256")
     evidence: dict[str, Any] = {
         "artifact": artifact_label,
         "artifact_sha256": artifact_sha256,
@@ -906,19 +940,13 @@ def main(argv: list[str]) -> int:
         )
     )
     if args.demo_evidence_json:
-        args.demo_evidence_json.parent.mkdir(parents=True, exist_ok=True)
-        args.demo_evidence_json.write_text(
-            json.dumps(
-                demo_evidence_map(
-                    records,
-                    artifact_label=str(logfile),
-                    artifact_sha256=sha256_file(logfile),
-                ),
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
+        write_json_atomically(
+            args.demo_evidence_json,
+            demo_evidence_map(
+                records,
+                artifact_label=str(logfile),
+                artifact_sha256=sha256_file(logfile),
+            ),
         )
     if args.require_demo and not demo_run_ids(records):
         return 2
@@ -1171,15 +1199,16 @@ class SelfCorrectionScoreTests(unittest.TestCase):
             ),
         ]
 
+        artifact_digest = "a" * 64
         evidence = demo_evidence_map(
             records,
             artifact_label="demo.jsonl",
-            artifact_sha256="abc123",
+            artifact_sha256=artifact_digest,
         )
 
         self.assertTrue(evidence["complete"])
         self.assertEqual(evidence["artifact"], "demo.jsonl")
-        self.assertEqual(evidence["artifact_sha256"], "abc123")
+        self.assertEqual(evidence["artifact_sha256"], artifact_digest)
         chain = evidence["demos"][0]["causal_chain"]
         self.assertEqual(
             [step["requirement"] for step in chain],
@@ -1196,7 +1225,7 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertEqual(chain[1]["evidence_row"]["lineage_records_after"], 1)
         retry_step = chain[2]
         self.assertEqual(retry_step["archived_failure_selector"]["attempt"], 1)
-        self.assertEqual(retry_step["archived_failure_artifact_sha256"], "abc123")
+        self.assertEqual(retry_step["archived_failure_artifact_sha256"], artifact_digest)
         retry_field = retry_step["fields"][0]
         self.assertTrue(retry_field["derived_from_failed_lineage"])
         self.assertTrue(retry_field["archived_verifier_failure_evidence"])
@@ -1208,6 +1237,50 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertEqual(chain[2]["evidence_rows"][0]["lineage_records_before"], 1)
         self.assertTrue(chain[5]["fields"]["promotion_evidence_present"])
         self.assertTrue(chain[5]["evidence_row"]["promotion_evidence_present"])
+
+    def test_demo_evidence_json_complete_requires_artifact_sha256(self) -> None:
+        records = [
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+                verify_returncode=1,
+                verify_command="cargo test -p demo hidden_regression",
+                lineage_records_before=0,
+                lineage_records_after=1,
+                verifier_failure_evidence_present=True,
+                verifier_failure_evidence_structured_present=True,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=2,
+                resolved=True,
+                prior_lineage_present=True,
+                verify_returncode=0,
+                lineage_records_before=1,
+                lineage_records_after=2,
+                lineage_reconciled_by_core=True,
+                promotion_evidence_present=True,
+            ),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "requires a 64-character hex artifact_sha256"):
+            demo_evidence_map(records, artifact_label="demo.jsonl")
+        with self.assertRaisesRegex(ValueError, "requires a 64-character hex artifact_sha256"):
+            demo_evidence_map(
+                records,
+                artifact_label="demo.jsonl",
+                artifact_sha256="a" * 63,
+            )
+        with self.assertRaisesRegex(ValueError, "requires a 64-character hex artifact_sha256"):
+            demo_evidence_map(
+                records,
+                artifact_label="demo.jsonl",
+                artifact_sha256="z" * 64,
+            )
 
     def test_demo_evidence_json_embeds_schema_bounded_normalized_rows(self) -> None:
         rows = [
@@ -1249,7 +1322,11 @@ class SelfCorrectionScoreTests(unittest.TestCase):
             )
             records = load_records(logfile)
 
-        evidence = demo_evidence_map(records, artifact_label="demo.jsonl")
+        evidence = demo_evidence_map(
+            records,
+            artifact_label="demo.jsonl",
+            artifact_sha256="b" * 64,
+        )
         promotion_row = evidence["demos"][0]["causal_chain"][5]["evidence_row"]
 
         expected_schema = {
@@ -1326,6 +1403,42 @@ class SelfCorrectionScoreTests(unittest.TestCase):
             digest,
             hashlib.sha256(b'{"row":1}\n').hexdigest(),
         )
+
+    def test_write_json_atomically_replaces_complete_json_without_temp_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "evidence.json"
+            target.write_text('{"old": true}\n', encoding="utf-8")
+
+            write_json_atomically(target, {"complete": True, "value": 1})
+
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {"complete": True, "value": 1})
+            self.assertEqual(list(Path(tmpdir).glob(".*.tmp")), [])
+
+    def test_write_json_atomically_uses_temp_file_replace_and_cleans_up_on_replace_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "evidence.json"
+            target.write_text('{"old": true}\n', encoding="utf-8")
+            replace_calls: list[tuple[str, str]] = []
+            original_replace = Path.replace
+
+            def failing_replace(self: Path, target_path: str | Path) -> Path:
+                replace_calls.append((self.name, Path(target_path).name))
+                raise OSError("simulated replace failure")
+
+            try:
+                Path.replace = failing_replace  # type: ignore[method-assign]
+                with self.assertRaisesRegex(OSError, "simulated replace failure"):
+                    write_json_atomically(target, {"complete": True, "value": 1})
+            finally:
+                Path.replace = original_replace  # type: ignore[method-assign]
+
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {"old": True})
+            self.assertEqual(len(replace_calls), 1)
+            tmp_name, target_name = replace_calls[0]
+            self.assertTrue(tmp_name.startswith(".evidence.json."))
+            self.assertTrue(tmp_name.endswith(".tmp"))
+            self.assertEqual(target_name, "evidence.json")
+            self.assertEqual(list(Path(tmpdir).glob(".*.tmp")), [])
 
     def test_main_writes_incomplete_demo_evidence_json_when_require_demo_fails(self) -> None:
         row = {
