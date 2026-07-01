@@ -18,8 +18,10 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
+import importlib.util
 import io
 import json
+import re
 import shutil
 import shlex
 import subprocess
@@ -49,10 +51,72 @@ EXPECTED_DEMO_REQUIREMENTS = [
     "lineage_trajectory_recorded",
     "verifier_gated_germline_promotion",
 ]
+HANDOFF_TEST_COUNTS_PATTERN = re.compile(
+    r"\| Tests \| \d+ Rust \+ "
+    r"(?P<self_correction>\d+) self-correction Python \+ "
+    r"(?P<scoring>\d+) scoring Python \+ "
+    r"(?P<demo_wrapper>\d+) demo-wrapper Python tests \|"
+)
+LATEST_VERIFICATION_COUNTS_PATTERN = re.compile(
+    r"`python3 bench/self_correction_demo\.py --self-test` ran "
+    r"(?P<demo_wrapper>\d+) tests OK.*"
+    r"`python3 bench/self_correction_score\.py --self-test` ran "
+    r"(?P<scoring>\d+) tests OK.*"
+    r"`python3 bench/self_correction\.py --self-test` ran "
+    r"(?P<self_correction>\d+) tests OK"
+)
 
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def unittest_count_for_script(script: str) -> int:
+    script_path = repo_root() / script
+    module_name = f"_a2_count_{script_path.stem}"
+    spec = importlib.util.spec_from_file_location(module_name, script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not import {script} to count unittest cases")
+    previous = sys.modules.get(module_name)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        return unittest.defaultTestLoader.loadTestsFromModule(module).countTestCases()
+    finally:
+        if previous is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous
+
+
+def current_module_self_test_count() -> int:
+    return unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__]).countTestCases()
+
+
+def python_test_counts_from_match(match: re.Match[str]) -> dict[str, int]:
+    return {
+        "self_correction": int(match.group("self_correction")),
+        "scoring": int(match.group("scoring")),
+        "demo_wrapper": int(match.group("demo_wrapper")),
+    }
+
+
+def handoff_current_python_test_counts() -> dict[str, int]:
+    handoff = repo_root() / "docs/HANDOFF.md"
+    for line in handoff.read_text(encoding="utf-8").splitlines():
+        match = HANDOFF_TEST_COUNTS_PATTERN.fullmatch(line.strip())
+        if match:
+            return python_test_counts_from_match(match)
+    raise RuntimeError("docs/HANDOFF.md Current Numbers test-count row was not found")
+
+
+def latest_verification_python_test_counts(path: Path) -> dict[str, int]:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = LATEST_VERIFICATION_COUNTS_PATTERN.search(line)
+        if match:
+            return python_test_counts_from_match(match)
+    raise RuntimeError(f"{path} latest verification self-test counts were not found")
 
 
 def display_command(command: list[str]) -> str:
@@ -1469,6 +1533,23 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(provider_binary_name("opencode/minimax/MiniMax-M3"), "opencode")
         self.assertEqual(provider_binary_name("pi/zai/glm-5.2"), "pi")
         self.assertEqual(provider_binary_name("gemini"), "gemini")
+
+    def test_documented_python_test_counts_match_self_tests(self) -> None:
+        expected_counts = {
+            "self_correction": unittest_count_for_script("bench/self_correction.py"),
+            "scoring": unittest_count_for_script("bench/self_correction_score.py"),
+            "demo_wrapper": current_module_self_test_count(),
+        }
+
+        self.assertEqual(handoff_current_python_test_counts(), expected_counts)
+        self.assertEqual(
+            latest_verification_python_test_counts(repo_root() / "docs/HANDOFF.md"),
+            expected_counts,
+        )
+        self.assertEqual(
+            latest_verification_python_test_counts(repo_root() / "todos/self-correction-loop.md"),
+            expected_counts,
+        )
 
     def test_opencode_provider_config_requires_configured_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
