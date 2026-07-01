@@ -722,16 +722,32 @@ def render_demo_check(
         for run_id, task_id in demos:
             attempts = grouped[(run_id, task_id)]
             first = attempts[0]
-            promotion_attempt = next(
+            promotion_candidates = [
                 record
                 for record in attempts[1:]
                 if has_verifier_gated_promotion(record)
                 and has_retry_context_from_failure(first, record)
+            ]
+            requires_structured_failure_evidence = any(
+                record.promotion_structured_present for record in promotion_candidates
+            )
+            promotion_attempt = next(
+                record
+                for record in promotion_candidates
+                if has_retry_context_from_archived_failure(
+                    first,
+                    record,
+                    require_structured_evidence=requires_structured_failure_evidence,
+                )
             )
             retry_attempts = [
                 record.attempt
                 for record in attempts[1:]
-                if has_retry_context_from_failure(first, record)
+                if has_retry_context_from_archived_failure(
+                    first,
+                    record,
+                    require_structured_evidence=requires_structured_failure_evidence,
+                )
             ]
             retry_text = ",".join(str(attempt) for attempt in retry_attempts)
             artifact = artifact_label or "input JSONL"
@@ -752,7 +768,7 @@ def render_demo_check(
                 "      [proved] retry context from failure evidence: "
                 f"prior_lineage_present=true and lineage_records_before >= failed "
                 f"lineage_records_after on attempt(s) [{retry_text}] for the same "
-                "run_id/task_id"
+                "run_id/task_id, with retry_context_links_archived_failure=true"
             )
             lines.append(
                 "      [proved] later passing attempt: "
@@ -778,7 +794,7 @@ def render_demo_check(
                 f"command={format_verify_command(first)}, lineage "
                 f"{format_optional_returncode(first.lineage_records_before)}"
                 f"->{format_optional_returncode(first.lineage_records_after)}) -> "
-                f"prior-lineage retry attempts [{retry_text}] -> "
+                f"prior-lineage retry attempts [{retry_text}] linked to archived failure evidence -> "
                 f"attempt {promotion_attempt.attempt} later verified pass "
                 f"(verify={format_optional_returncode(promotion_attempt.verify_returncode)}) -> "
                 "core lineage reconciliation -> verifier-gated promotion/apply evidence"
@@ -1113,8 +1129,9 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertIn(
             "closed-loop evidence: attempt 1 failed recorded verifier "
             "(verify=1, command=cargo test -p demo hidden_regression, lineage "
-            "0->1) -> prior-lineage retry attempts [2] -> attempt 2 later "
-            "verified pass (verify=0) -> core lineage reconciliation -> "
+            "0->1) -> prior-lineage retry attempts [2] linked to archived "
+            "failure evidence -> attempt 2 later verified pass (verify=0) -> "
+            "core lineage reconciliation -> "
             "verifier-gated promotion/apply evidence",
             output,
         )
