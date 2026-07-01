@@ -60,6 +60,8 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 | Anti-repeat ablation (Pi/ZAI same-crate a2d) | imported 2026-06-10 enabled cohort resolved 3/3 with pass@1 1/3 and self-corrected 2/3; new disabled cohort resolved 3/3 with pass@1 3/3 and loop 0/3; disabled cohort did not exercise anti-repeat retry |
 | 4-provider smoke (2026-04-16) | 4/4 PASS (gemini, glm-5.1, minimax-2.7, kimi k2.5) post ContextPack wiring |
 
+Latest local verification for the fresh-demo guard slice (2026-07-01, before docs-only evidence note): `cargo test` passed, and `cargo run -p a2ctl -- sentinel --workspace .` reported `Score: 100% (6/6)` / `Sentinel gate: PASS`.
+
 ## Verify State (run these first)
 
 ```bash
