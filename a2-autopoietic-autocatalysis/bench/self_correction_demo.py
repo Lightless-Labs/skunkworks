@@ -1196,6 +1196,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Optional path for a machine-readable demo causal-chain evidence map.",
     )
     fresh.add_argument(
+        "--confirm-provider-run",
+        action="store_true",
+        help=(
+            "Required for a non-preflight, non-print fresh run because it invokes "
+            "provider-backed model CLIs and may consume paid quota/time."
+        ),
+    )
+    fresh.add_argument(
         "--preflight-only",
         action="store_true",
         help=(
@@ -1289,6 +1297,14 @@ def main(argv: list[str]) -> int:
             run_command(score_command(args.results, evidence_json), print_only=True)
             run_command(fresh_contract_command(args, evidence_json), print_only=True)
             return 0
+        if not args.print_only and not args.confirm_provider_run:
+            print(
+                "error: fresh provider-backed runs require --confirm-provider-run "
+                "because they may consume paid quota/time; use --preflight-only or "
+                "--print-only for no-provider dry runs",
+                file=sys.stderr,
+            )
+            return 2
         if not args.print_only:
             try:
                 fresh_preflight(args, evidence_json)
@@ -1476,12 +1492,12 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(result, 1)
         contract.assert_not_called()
 
-    def test_fresh_runs_evidence_contract_after_successful_score(self) -> None:
-        with mock.patch(__name__ + ".fresh_preflight"), mock.patch(
-            __name__ + ".run_command", side_effect=[0, 0]
-        ), mock.patch(__name__ + ".validate_fresh_results"), mock.patch(
-            __name__ + ".verify_evidence_contract"
-        ) as contract:
+    def test_fresh_refuses_provider_run_without_explicit_confirmation(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch(__name__ + ".fresh_preflight") as preflight, mock.patch(
+            __name__ + ".run_command"
+        ) as run, contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             result = main(
                 [
                     "fresh",
@@ -1492,7 +1508,31 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 ]
             )
 
+        self.assertEqual(result, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("--confirm-provider-run", stderr.getvalue())
+        preflight.assert_not_called()
+        run.assert_not_called()
+
+    def test_fresh_runs_evidence_contract_after_confirmed_successful_score(self) -> None:
+        with mock.patch(__name__ + ".fresh_preflight"), mock.patch(
+            __name__ + ".run_command", side_effect=[0, 0]
+        ) as run, mock.patch(__name__ + ".validate_fresh_results"), mock.patch(
+            __name__ + ".verify_evidence_contract"
+        ) as contract:
+            result = main(
+                [
+                    "fresh",
+                    "--results",
+                    "docs/benchmark-results/self-correction/a2-fresh-demo.jsonl",
+                    "--run-id",
+                    "fresh-demo",
+                    "--confirm-provider-run",
+                ]
+            )
+
         self.assertEqual(result, 0)
+        self.assertEqual(run.call_count, 2)
         contract.assert_called_once_with(
             Path("docs/benchmark-results/self-correction/a2-fresh-demo.demo-evidence.json"),
             DEFAULT_ARCHIVE_EVIDENCE,
@@ -2221,6 +2261,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                             "local-test-provider/model",
                             "--evidence-json",
                             str(evidence),
+                            "--confirm-provider-run",
                         ]
                     )
         finally:
