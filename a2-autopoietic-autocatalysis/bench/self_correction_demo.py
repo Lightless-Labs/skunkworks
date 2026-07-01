@@ -1029,13 +1029,18 @@ def contract_demo_artifact_lines(evidence: dict[str, object]) -> list[str]:
                 label=f"demos[{demo_index - 1}].retry_context_from_failure_evidence.selectors",
             )
         ]
+        retry_step = steps["retry_context_from_failure_evidence"]
         retry_fields = [
             require_mapping(field, label=f"demos[{demo_index - 1}].retry.fields")
             for field in require_sequence(
-                steps["retry_context_from_failure_evidence"].get("fields"),
+                retry_step.get("fields"),
                 label=f"demos[{demo_index - 1}].retry_context_from_failure_evidence.fields",
             )
         ]
+        archived_failure_selector = require_mapping(
+            retry_step.get("archived_failure_selector"),
+            label=f"demos[{demo_index - 1}].retry_context_from_failure_evidence.archived_failure_selector",
+        )
         retry_causal_flags = [
             "attempt "
             f"{selector.get('attempt')}: "
@@ -1066,9 +1071,10 @@ def contract_demo_artifact_lines(evidence: dict[str, object]) -> list[str]:
             [
                 f"  demo {demo_index}: {failed.get('run_id')} / {failed.get('task_id')}",
                 f"    failed_first_attempt: source={artifact}; {selector_summary(failed)}",
-                f"    archived_verifier_failure_evidence: source={artifact}; {selector_summary(failed)}; lineage={steps['archived_verifier_failure_evidence']['fields']['lineage_records_before']}->{steps['archived_verifier_failure_evidence']['fields']['lineage_records_after']}",
+                f"    archived_verifier_failure_evidence: source={artifact}; {selector_summary(failed)}; verify_returncode={steps['failed_first_attempt']['fields']['verify_returncode']}; verify_command={steps['failed_first_attempt']['fields']['verify_command']}; lineage={steps['archived_verifier_failure_evidence']['fields']['lineage_records_before']}->{steps['archived_verifier_failure_evidence']['fields']['lineage_records_after']}",
                 "    retry_context_from_failure_evidence: source="
-                f"{artifact}; selectors=["
+                f"{artifact}; archived_failure_selector={selector_summary(archived_failure_selector)}; "
+                f"archived_failure_artifact_sha256={retry_step.get('archived_failure_artifact_sha256')}; selectors=["
                 + "; ".join(selector_summary(selector) for selector in retry_selectors)
                 + "]; causal_flags=["
                 + "; ".join(retry_causal_flags)
@@ -1613,7 +1619,10 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn(str(DEFAULT_ARCHIVE), output)
         self.assertIn("failed_first_attempt: source=", output)
         self.assertIn("archived_verifier_failure_evidence: source=", output)
+        self.assertIn("verify_command=cargo test -p a2_archive", output)
         self.assertIn("retry_context_from_failure_evidence: source=", output)
+        self.assertIn("archived_failure_selector=run_id='self-correction-20260615T165316Z'", output)
+        self.assertIn("archived_failure_artifact_sha256=33a83345adac350b9a79bdd7842ac0c0cad1b698f7fc636a8a12f0c32fe7cee3", output)
         self.assertIn("derived_from_failed_lineage=True", output)
         self.assertIn("archived_verifier_failure_evidence=True", output)
         self.assertIn("retry_context_links_archived_failure=True", output)
