@@ -752,6 +752,11 @@ def validate_demo_evidence_contract(
             raise RuntimeError("demo evidence contract first attempt lacks verifier failure")
         if failed_embedded_row.get("verify_returncode") != failed_verify:
             raise RuntimeError("demo evidence contract failed verifier status differs from artifact")
+        failed_command = failed_fields.get("verify_command")
+        if not isinstance(failed_command, str) or not failed_command.strip():
+            raise RuntimeError("demo evidence contract first attempt lacks verifier command")
+        if failed_embedded_row.get("verify_command") != failed_command:
+            raise RuntimeError("demo evidence contract failed verifier command differs from artifact")
         archived_step = require_mapping(
             chain[reference_requirements.index("archived_verifier_failure_evidence")],
             label=f"demos[{demo_index}].archived_verifier_failure_evidence",
@@ -798,6 +803,14 @@ def validate_demo_evidence_contract(
         failed_lineage_after = archived_fields.get("lineage_records_after")
         if not isinstance(failed_lineage_after, int):
             raise RuntimeError("demo evidence contract archived failure lacks lineage_records_after")
+        if retry_step.get("archived_failure_selector") != failed_selector:
+            raise RuntimeError(
+                "demo evidence contract retry summary is not tied to archived failure selector"
+            )
+        if retry_step.get("archived_failure_artifact_sha256") != artifact_sha256:
+            raise RuntimeError(
+                "demo evidence contract retry summary is not tied to archived failure artifact hash"
+            )
         if retry_step.get("failed_lineage_records_after") != failed_lineage_after:
             raise RuntimeError(
                 "demo evidence contract retry summary does not carry failed lineage boundary"
@@ -1624,6 +1637,18 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 evidence_label="mismatched.demo-evidence.json",
             )
 
+    def test_verify_evidence_contract_rejects_failed_attempt_without_verifier_command(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        failed_step = evidence["demos"][0]["causal_chain"][0]
+        failed_step["fields"]["verify_command"] = ""
+
+        with self.assertRaisesRegex(RuntimeError, "first attempt lacks verifier command"):
+            validate_demo_evidence_contract(
+                evidence,
+                self.evidence_reference(evidence),
+                evidence_label="missing-failed-command.demo-evidence.json",
+            )
+
     def test_verify_evidence_contract_rejects_reference_missing_required_step(self) -> None:
         evidence = self.archived_demo_contract_evidence()
         broken_reference = {
@@ -1701,6 +1726,30 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 evidence,
                 self.evidence_reference(evidence),
                 evidence_label="missing-failed-lineage-summary.demo-evidence.json",
+            )
+
+    def test_verify_evidence_contract_rejects_retry_summary_archived_selector_mismatch(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        retry_step = evidence["demos"][0]["causal_chain"][2]
+        retry_step["archived_failure_selector"]["attempt"] = 2
+
+        with self.assertRaisesRegex(RuntimeError, "retry summary is not tied to archived failure selector"):
+            validate_demo_evidence_contract(
+                evidence,
+                self.evidence_reference(evidence),
+                evidence_label="wrong-retry-archive-selector.demo-evidence.json",
+            )
+
+    def test_verify_evidence_contract_rejects_retry_summary_artifact_hash_mismatch(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        retry_step = evidence["demos"][0]["causal_chain"][2]
+        retry_step["archived_failure_artifact_sha256"] = "e" * 64
+
+        with self.assertRaisesRegex(RuntimeError, "retry summary is not tied to archived failure artifact hash"):
+            validate_demo_evidence_contract(
+                evidence,
+                self.evidence_reference(evidence),
+                evidence_label="wrong-retry-archive-hash.demo-evidence.json",
             )
 
     def test_verify_evidence_contract_rejects_missing_retry_selectors(self) -> None:

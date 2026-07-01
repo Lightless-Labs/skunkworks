@@ -618,6 +618,8 @@ def demo_evidence_map(
                         "requirement": "retry_context_from_failure_evidence",
                         "status": "proved",
                         "check": "retry lineage_records_before reaches the failed row lineage_records_after",
+                        "archived_failure_selector": {"run_id": run_id, "task_id": task_id, "attempt": first.attempt},
+                        "archived_failure_artifact_sha256": artifact_sha256,
                         "failed_lineage_records_after": first.lineage_records_after,
                         "selectors": [
                             {"run_id": run_id, "task_id": task_id, "attempt": record.attempt}
@@ -1192,7 +1194,10 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         )
         self.assertTrue(chain[1]["fields"]["lineage_advanced"])
         self.assertEqual(chain[1]["evidence_row"]["lineage_records_after"], 1)
-        retry_field = chain[2]["fields"][0]
+        retry_step = chain[2]
+        self.assertEqual(retry_step["archived_failure_selector"]["attempt"], 1)
+        self.assertEqual(retry_step["archived_failure_artifact_sha256"], "abc123")
+        retry_field = retry_step["fields"][0]
         self.assertTrue(retry_field["derived_from_failed_lineage"])
         self.assertTrue(retry_field["archived_verifier_failure_evidence"])
         self.assertTrue(retry_field["retry_context_links_archived_failure"])
