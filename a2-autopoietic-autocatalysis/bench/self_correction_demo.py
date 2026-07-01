@@ -247,18 +247,32 @@ def ensure_provider_config(provider: str) -> None:
         ensure_opencode_provider_config(provider)
 
 
-def ensure_clean_source() -> None:
-    status = subprocess.run(
-        ["git", "status", "--porcelain", "--", "."],
+def git_output(args: list[str]) -> str:
+    result = subprocess.run(
+        ["git", *args],
         cwd=repo_root(),
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
-    if status.returncode != 0:
-        raise RuntimeError(f"could not inspect source cleanliness: {status.stderr.strip()}")
-    if status.stdout.strip():
+    if result.returncode != 0:
+        raise RuntimeError(f"could not run git {' '.join(args)}: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def current_source_metadata() -> dict[str, object]:
+    branch = git_output(["branch", "--show-current"])
+    return {
+        "source_head": git_output(["rev-parse", "HEAD"]),
+        "source_head_short": git_output(["rev-parse", "--short", "HEAD"]),
+        "source_branch": branch or "(detached)",
+        "source_dirty": bool(git_output(["status", "--porcelain", "--", "."])),
+    }
+
+
+def ensure_clean_source() -> None:
+    if current_source_metadata()["source_dirty"]:
         raise RuntimeError(
             "fresh demo source tree is dirty; commit/stash changes or pass --allow-dirty-source"
         )
@@ -298,6 +312,7 @@ def ensure_preflight_report_path(report: Path, *, results: Path, evidence_json: 
 
 def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dict[str, object]:
     config_checked = provider_config_checked(args.provider)
+    source_metadata = current_source_metadata()
     return {
         "mode": "fresh_preflight",
         "creates_loop_evidence": False,
@@ -312,6 +327,7 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
         "attempts": args.attempts,
         "max_tokens": args.max_tokens,
         "timeout_secs": args.timeout,
+        "source_metadata": source_metadata,
         "checks": {
             "results_path_empty": True,
             "evidence_path_empty": True,
@@ -323,7 +339,7 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
             "local_provider_config_checked": config_checked,
             "local_provider_config_present_when_supported": True if config_checked else None,
             "source_clean_required": not args.allow_dirty_source,
-            "source_clean": None if args.allow_dirty_source else True,
+            "source_clean": None if args.allow_dirty_source else source_metadata["source_dirty"] is False,
             "source_clean_checked_before_output_creation": None
             if args.allow_dirty_source
             else True,
@@ -340,7 +356,7 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
         "notes": [
             "No provider-backed benchmark was executed by this preflight.",
             "Live provider auth, quota, and model availability are not verified until the fresh run executes.",
-            "Clean-source readiness is checked before fresh results/evidence files are created; newly generated rows record that pre-run source state, and the new artifacts must then be archived deliberately.",
+            "Clean-source readiness and source revision metadata are checked before fresh results/evidence files are created; newly generated rows record that pre-run source state, and the new artifacts must then be archived deliberately.",
             "This report is readiness evidence only; it is not loop evidence and contains no failed-attempt/retry/promotion proof.",
         ],
     }
@@ -2465,12 +2481,51 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             keep_workspace=False,
         )
 
-        data = fresh_preflight_report(args, Path("docs/benchmark-results/self-correction/fresh.demo-evidence.json"))
+        source_metadata = {
+            "source_head": "1234567890abcdef1234567890abcdef12345678",
+            "source_head_short": "1234567",
+            "source_branch": "(detached)",
+            "source_dirty": False,
+        }
+        with mock.patch(__name__ + ".current_source_metadata", return_value=source_metadata):
+            data = fresh_preflight_report(args, Path("docs/benchmark-results/self-correction/fresh.demo-evidence.json"))
 
+        self.assertEqual(data["source_metadata"], source_metadata)
         self.assertTrue(data["checks"]["source_clean_required"])
         self.assertTrue(data["checks"]["source_clean"])
         self.assertTrue(data["checks"]["source_clean_checked_before_output_creation"])
+        self.assertIn("source revision metadata", " ".join(data["notes"]))
         self.assertIn("before fresh results/evidence files are created", " ".join(data["notes"]))
+
+    def test_fresh_preflight_report_records_dirty_source_when_allowed(self) -> None:
+        args = argparse.Namespace(
+            results=Path("docs/benchmark-results/self-correction/fresh.jsonl"),
+            preflight_report_json=Path("docs/benchmark-results/self-correction/fresh.preflight.json"),
+            fixture=DEFAULT_FIXTURE,
+            provider=DEFAULT_PROVIDER,
+            run_id="fresh-demo",
+            runs=3,
+            attempts=3,
+            max_tokens=100_000,
+            timeout=1800,
+            allow_dirty_source=True,
+            keep_workspace=False,
+        )
+        dirty_metadata = {
+            "source_head": "1234567890abcdef1234567890abcdef12345678",
+            "source_head_short": "1234567",
+            "source_branch": "main",
+            "source_dirty": True,
+        }
+
+        with mock.patch(__name__ + ".current_source_metadata", return_value=dirty_metadata):
+            data = fresh_preflight_report(args, Path("docs/benchmark-results/self-correction/fresh.demo-evidence.json"))
+
+        self.assertEqual(data["source_metadata"], dirty_metadata)
+        self.assertFalse(data["checks"]["source_clean_required"])
+        self.assertIsNone(data["checks"]["source_clean"])
+        self.assertIsNone(data["checks"]["source_clean_checked_before_output_creation"])
+        self.assertTrue(data["checks"]["dirty_source_allowed"])
 
     def test_fresh_preflight_report_refuses_non_empty_file(self) -> None:
         original_which = shutil.which
