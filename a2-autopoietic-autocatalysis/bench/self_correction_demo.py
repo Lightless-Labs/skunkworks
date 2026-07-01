@@ -1542,6 +1542,33 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     evidence_label="non-advancing-failure.demo-evidence.json",
                 )
 
+    def test_verify_evidence_contract_rejects_lineage_that_does_not_span_later_pass(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        failed_step = evidence["demos"][0]["causal_chain"][0]
+        lineage_step = evidence["demos"][0]["causal_chain"][4]
+        lineage_step["evidence_rows"] = [failed_step["evidence_row"]]
+        lineage_step["fields"]["attempts"] = [1]
+
+        with self.assertRaisesRegex(RuntimeError, "lineage does not span failed attempt and later pass"):
+            validate_demo_evidence_contract(
+                evidence,
+                self.evidence_reference(evidence),
+                evidence_label="lineage-missing-later-pass.demo-evidence.json",
+            )
+
+    def test_verify_evidence_contract_rejects_promotion_selector_not_later_pass(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        failed_step = evidence["demos"][0]["causal_chain"][0]
+        promotion_step = evidence["demos"][0]["causal_chain"][5]
+        promotion_step["selector"] = failed_step["selector"]
+
+        with self.assertRaisesRegex(RuntimeError, "promotion selector differs from later passing attempt"):
+            validate_demo_evidence_contract(
+                evidence,
+                self.evidence_reference(evidence),
+                evidence_label="promotion-selector-mismatch.demo-evidence.json",
+            )
+
     def test_verify_evidence_contract_rejects_absent_promotion_evidence(self) -> None:
         evidence = self.archived_demo_contract_evidence()
         promotion_step = evidence["demos"][0]["causal_chain"][5]
