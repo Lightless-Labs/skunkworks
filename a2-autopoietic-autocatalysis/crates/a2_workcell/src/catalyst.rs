@@ -324,8 +324,9 @@ mod tests {
     fn unique_temp_path(name: &str) -> PathBuf {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
+        let process_id = std::process::id();
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("a2_workcell_{name}_{id}.txt"))
+        std::env::temp_dir().join(format!("a2_workcell_{process_id}_{name}_{id}.txt"))
     }
 
     #[tokio::test]
