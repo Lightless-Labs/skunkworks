@@ -996,6 +996,43 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertEqual(metrics["loop_exercised"], 1)
         self.assertEqual(metrics["self_corrected"], 1)
 
+    def test_multi_run_jsonl_grouping_keeps_pass_at_one_separate_from_retry_recovery(self) -> None:
+        records = [
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run-1",
+                attempt=1,
+                resolved=True,
+                prior_lineage_present=False,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run-2",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run-2",
+                attempt=2,
+                resolved=True,
+                prior_lineage_present=True,
+            ),
+        ]
+
+        metrics = score(records)
+        self.assertEqual(metrics["total"], 2)
+        self.assertEqual(metrics["resolved"], 2)
+        self.assertEqual(metrics["pass_at_1"], 1)
+        self.assertEqual(metrics["loop_exercised"], 1)
+        self.assertEqual(metrics["self_corrected"], 1)
+
+        output = render(records)
+        self.assertIn("3 rows / 2 runs", output)
+        self.assertIn("pass@1               50.0% (1/2)", output)
+        self.assertIn("self-corrected       50.0% (1/2)", output)
+
     def test_render_reports_rows_and_grouped_runs(self) -> None:
         records = [
             SelfCorrectionRecord(
