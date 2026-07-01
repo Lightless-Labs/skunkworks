@@ -192,7 +192,7 @@ struct FitnessCaseEvidence {
     passed: bool,
 }
 
-fn fitness_evidence_artifact(cycle: usize, report: &FitnessReport, delta: f64) -> Vec<u8> {
+pub fn fitness_evidence_artifact(cycle: usize, report: &FitnessReport, delta: f64) -> Vec<u8> {
     let results = redacted_fitness_results(report);
     let failed_cases = results
         .iter()

@@ -71,7 +71,7 @@ cargo test -p a2d
 cargo test
 ```
 
-Original gate slice full suite: 244 passed, 2 ignored. After the live export/inspection slice, latest full suite: 246 passed, 2 ignored. After comparison export/provenance hardening, latest full suite: 252 passed, 2 ignored. The CLI package name is `a2d`, so use `cargo test -p a2d` rather than `cargo test -p a2d-cli`.
+Original gate slice full suite: 244 passed, 2 ignored. After the live export/inspection slice, latest full suite: 246 passed, 2 ignored. After comparison export/provenance hardening, latest full suite: 252 passed, 2 ignored. After score-artifact export, latest full suite: 253 passed, 2 ignored. The CLI package name is `a2d`, so use `cargo test -p a2d` rather than `cargo test -p a2d-cli`.
 
 ## Live export validation
 
@@ -109,6 +109,20 @@ The exporter now prefixes paths with comparison labels (`seed-`, `evolved-`, `cu
 
 Topology smoke artifacts `runs/20260630-topology-fitness-evidence/seed-sudoku-solver-cycle-0-fitness-evidence.json` and `runs/20260630-topology-fitness-evidence/evolved-sudoku-solver-cycle-0-fitness-evidence.json` both report `schema_version: a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, and `all_tests_pass: true` with SHA-256 `6aa4f715aaa5dd155371519737ff569c3deb0233a01a18cc263e9ec0e2c62abe`. The provider-policy smoke exported labeled artifacts too, but it had no policy delta and one leg failed aggregate acceptance (`all_tests_pass: false`), so it is observational plumbing evidence only.
 
+## Score-artifact export validation
+
+A follow-up slice extended evidence export to saved-artifact replay:
+
+```bash
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260701-score-artifact-fitness-evidence/baseline-good \
+cargo run -p a2d -- score-artifact sudoku \
+  runs/20260701-score-artifact-fitness-evidence/good-sudoku-artifact.rs
+```
+
+`a2d score-artifact` now emits validated `baseline-<challenge>-cycle-0-fitness-evidence.json` before returning the existing nonzero exit for partial artifacts. This matters for one-shot/baseline comparison: saved artifacts are scored through `Challenge::score_artifact()` / `Challenge::scoring_benchmark()` and can now be compared against live challenge runs with the same `a2d.fitness-evidence.v1` schema instead of log-only claims.
+
+The source patch was backed by a fresh live challenge smoke, not only by a hand-written baseline fixture: `runs/20260701-score-artifact-fitness-evidence/challenge-smoke/sudoku-solver-cycle-0-fitness-evidence.json` reports `schema_version: a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `all_tests_pass: true`, and SHA-256 `6aa4f715aaa5dd155371519737ff569c3deb0233a01a18cc263e9ec0e2c62abe`. The saved-artifact baseline export `runs/20260701-score-artifact-fitness-evidence/baseline-good/baseline-sudoku-solver-cycle-0-fitness-evidence.json` reports the same passing status with SHA-256 `d3aa7557a7e62146d005bf883f42fafa3dafb609c20f754387949795803b07ad`; treat that as scorer/baseline support material, not as a substitute for source-patch challenge evidence.
+
 ## Next step
 
-Use the export path for future bounded challenge/topology/provider-policy smokes so every self-improvement decision has an auditable actual-test artifact. A future stronger gate can compare pre-mutation and post-mutation topology in the same challenge context before accepting mutations in memory, not only before durable commits/apply.
+Use the export path for future bounded challenge/score-artifact/topology/provider-policy smokes so every self-improvement decision has an auditable actual-test artifact. A future stronger gate can compare pre-mutation and post-mutation topology in the same challenge context before accepting mutations in memory, not only before durable commits/apply.

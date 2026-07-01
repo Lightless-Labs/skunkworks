@@ -34,6 +34,35 @@ mod tests {
 "#
 }
 
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new(prefix: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock must be after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).expect("create temp dir");
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 struct TempArtifact {
     path: PathBuf,
 }
@@ -85,6 +114,43 @@ fn score_artifact_path_uses_hidden_acceptance_and_exits_nonzero() {
         "{stdout}"
     );
     assert!(!stdout.contains("800000000003600000"));
+}
+
+#[test]
+fn score_artifact_exports_fitness_evidence_before_nonzero_exit() {
+    let artifact = TempArtifact::write(fake_sudoku_artifact_with_bad_solver());
+    let export_dir = TempDir::new("a2d-score-artifact-evidence");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "score-artifact",
+            "sudoku",
+            artifact.path().to_str().unwrap(),
+        ])
+        .env("A2D_FITNESS_EVIDENCE_EXPORT_DIR", export_dir.path())
+        .output()
+        .expect("run score-artifact");
+
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Fitness evidence:"), "{stdout}");
+
+    let evidence_path = export_dir
+        .path()
+        .join("baseline-sudoku-solver-cycle-0-fitness-evidence.json");
+    let evidence_bytes = fs::read(&evidence_path).expect("evidence exported before exit");
+    let evidence: serde_json::Value =
+        serde_json::from_slice(&evidence_bytes).expect("evidence is JSON");
+
+    assert_eq!(evidence["schema_version"], "a2d.fitness-evidence.v1");
+    assert_eq!(evidence["actual_tests_evaluated"], true);
+    assert_eq!(evidence["cycle"], 0);
+    assert_eq!(evidence["non_regressing"], true);
+    assert_eq!(evidence["fitness"], serde_json::json!(5.0 / 6.0));
+    assert_eq!(
+        evidence["failed_cases"],
+        serde_json::json!(["all_tests_pass"])
+    );
 }
 
 #[test]

@@ -9,7 +9,7 @@ use a2d_core::benchmark::seed_benchmark;
 use a2d_core::challenges;
 use a2d_core::germline::Germline;
 use a2d_core::lineage::LineageArchive;
-use a2d_core::metabolism::{CycleReport, InvocationLineage, Metabolism};
+use a2d_core::metabolism::{CycleReport, InvocationLineage, Metabolism, fitness_evidence_artifact};
 use a2d_core::provider::{InvocationRequest, Provider, ProviderPolicy, ProviderRegistry};
 use a2d_core::self_sandbox;
 use a2d_core::types::{ArtifactType, EnzymeDef, EnzymeId};
@@ -2867,10 +2867,44 @@ fn run_score_artifact(challenge_name: &str, artifact_path: &str) {
     let artifact = read_artifact_or_exit(artifact_path);
     let report = challenge.score_artifact(&artifact);
     print!("{}", format_score_artifact_report(challenge.name, &report));
+    if let Some(export_dir) = fitness_evidence_export_dir() {
+        match export_score_artifact_fitness_evidence(&report, &export_dir, challenge.name) {
+            Ok(path) => println!("Fitness evidence: {}", path.display()),
+            Err(error) => {
+                eprintln!("Fitness evidence export error: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
     let exit_code = score_artifact_exit_code(&report);
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
+}
+
+fn export_score_artifact_fitness_evidence(
+    report: &a2d_core::benchmark::FitnessReport,
+    export_dir: &Path,
+    challenge_name: &str,
+) -> Result<PathBuf, String> {
+    let bytes = fitness_evidence_artifact(0, report, 0.0);
+    let value = validate_exportable_fitness_evidence(&bytes, 0)?;
+    fs::create_dir_all(export_dir).map_err(|error| {
+        format!(
+            "failed to create fitness evidence export dir {}: {error}",
+            export_dir.display()
+        )
+    })?;
+    let path = fitness_evidence_export_path(export_dir, challenge_name, Some("baseline"), 0, 0);
+    let json = serde_json::to_vec_pretty(&value)
+        .map_err(|error| format!("failed to serialize fitness evidence: {error}"))?;
+    fs::write(&path, json).map_err(|error| {
+        format!(
+            "failed to write fitness evidence export {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(path)
 }
 
 fn read_artifact_or_exit(path_or_dash: &str) -> String {
