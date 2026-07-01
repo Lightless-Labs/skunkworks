@@ -177,6 +177,85 @@ def fresh_preflight(args: argparse.Namespace, evidence_json: Path) -> None:
         ensure_clean_source()
 
 
+def provider_config_checked(provider: str) -> bool:
+    parts = provider.split("/")
+    return len(parts) >= 2 and parts[0] == "opencode"
+
+
+def paths_alias(left: Path, right: Path) -> bool:
+    return repo_path(left).resolve(strict=False) == repo_path(right).resolve(strict=False)
+
+
+def ensure_preflight_report_path(report: Path, *, results: Path, evidence_json: Path) -> None:
+    if paths_alias(report, results):
+        raise RuntimeError(
+            "fresh demo preflight report path must be distinct from results path: "
+            f"{report}"
+        )
+    if paths_alias(report, evidence_json):
+        raise RuntimeError(
+            "fresh demo preflight report path must be distinct from evidence path: "
+            f"{report}"
+        )
+    ensure_output_path_empty(report, label="preflight report")
+
+
+def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dict[str, object]:
+    config_checked = provider_config_checked(args.provider)
+    return {
+        "mode": "fresh_preflight",
+        "creates_loop_evidence": False,
+        "live_provider_auth_quota_model_checked": False,
+        "results": str(args.results),
+        "evidence_json": str(evidence_json),
+        "preflight_report_json": str(args.preflight_report_json),
+        "fixture": args.fixture,
+        "provider": args.provider,
+        "run_id": args.run_id,
+        "runs": args.runs,
+        "attempts": args.attempts,
+        "max_tokens": args.max_tokens,
+        "timeout_secs": args.timeout,
+        "checks": {
+            "results_path_empty": True,
+            "evidence_path_empty": True,
+            "preflight_report_path_empty": True,
+            "preflight_report_path_distinct_from_results": True,
+            "preflight_report_path_distinct_from_evidence": True,
+            "provider_binary": provider_binary_name(args.provider),
+            "provider_binary_present": True,
+            "local_provider_config_checked": config_checked,
+            "local_provider_config_present_when_supported": True if config_checked else None,
+            "source_clean_required": not args.allow_dirty_source,
+            "source_clean": None if args.allow_dirty_source else True,
+            "dirty_source_allowed": args.allow_dirty_source,
+        },
+        "commands": {
+            "harness": display_command(fresh_command(args)),
+            "validation": fresh_validation_summary(args),
+            "scorer": display_command(score_command(args.results, evidence_json)),
+        },
+        "notes": [
+            "No provider-backed benchmark was executed by this preflight.",
+            "Live provider auth, quota, and model availability are not verified until the fresh run executes.",
+            "This report is readiness evidence only; it is not loop evidence and contains no failed-attempt/retry/promotion proof.",
+        ],
+    }
+
+
+def write_fresh_preflight_report(
+    path: Path,
+    report: dict[str, object],
+    *,
+    results: Path,
+    evidence_json: Path,
+) -> None:
+    ensure_preflight_report_path(path, results=results, evidence_json=evidence_json)
+    resolved = repo_path(path)
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def load_jsonl(path: Path) -> list[dict[str, object]]:
     resolved = repo_path(path)
     if not resolved.exists():
@@ -376,6 +455,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "provider-backed benchmark. This does not validate live auth or quota."
         ),
     )
+    fresh.add_argument(
+        "--preflight-report-json",
+        type=Path,
+        help=(
+            "With --preflight-only, write a machine-readable no-network readiness "
+            "report. The report is not loop evidence and does not validate live "
+            "provider auth, quota, or model availability."
+        ),
+    )
     fresh.add_argument("--print-only", action="store_true")
 
     defaultable_argv = list(argv)
@@ -404,13 +492,25 @@ def main(argv: list[str]) -> int:
 
     if args.mode == "fresh":
         evidence_json = args.evidence_json or default_fresh_evidence_path(args.results)
+        if args.preflight_report_json and not args.preflight_only:
+            print("error: --preflight-report-json requires --preflight-only", file=sys.stderr)
+            return 2
         if args.preflight_only:
             try:
                 fresh_preflight(args, evidence_json)
+                if args.preflight_report_json:
+                    write_fresh_preflight_report(
+                        args.preflight_report_json,
+                        fresh_preflight_report(args, evidence_json),
+                        results=args.results,
+                        evidence_json=evidence_json,
+                    )
             except RuntimeError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
             print(fresh_preflight_summary(args))
+            if args.preflight_report_json:
+                print(f"# wrote preflight report: {args.preflight_report_json}")
             run_command(fresh_command(args), print_only=True)
             print(fresh_validation_summary(args))
             run_command(score_command(args.results, evidence_json), print_only=True)
@@ -670,6 +770,212 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("bench/self_correction.py", output)
         self.assertIn("# would validate fresh results before scoring", output)
         self.assertIn(str(results.with_suffix(".demo-evidence.json")), output)
+
+    def test_fresh_preflight_writes_machine_readable_readiness_report(self) -> None:
+        original_which = shutil.which
+        shutil.which = lambda binary: f"/usr/bin/{binary}"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                stdout = io.StringIO()
+                results = Path(tmpdir) / "fresh-preflight.jsonl"
+                report = Path(tmpdir) / "fresh-preflight.report.json"
+                with contextlib.redirect_stdout(stdout):
+                    result = main(
+                        [
+                            "fresh",
+                            "--results",
+                            str(results),
+                            "--run-id",
+                            "fresh-demo",
+                            "--allow-dirty-source",
+                            "--provider",
+                            "local-test-provider/model",
+                            "--preflight-only",
+                            "--preflight-report-json",
+                            str(report),
+                        ]
+                    )
+                data = json.loads(report.read_text(encoding="utf-8"))
+        finally:
+            shutil.which = original_which
+
+        self.assertEqual(result, 0)
+        self.assertIn("# wrote preflight report", stdout.getvalue())
+        self.assertEqual(data["mode"], "fresh_preflight")
+        self.assertFalse(data["creates_loop_evidence"])
+        self.assertFalse(data["live_provider_auth_quota_model_checked"])
+        self.assertEqual(data["results"], str(results))
+        self.assertEqual(data["evidence_json"], str(results.with_suffix(".demo-evidence.json")))
+        self.assertEqual(data["preflight_report_json"], str(report))
+        self.assertTrue(data["checks"]["preflight_report_path_empty"])
+        self.assertTrue(data["checks"]["preflight_report_path_distinct_from_results"])
+        self.assertTrue(data["checks"]["preflight_report_path_distinct_from_evidence"])
+        self.assertEqual(data["checks"]["provider_binary"], "local-test-provider")
+        self.assertTrue(data["checks"]["provider_binary_present"])
+        self.assertFalse(data["checks"]["local_provider_config_checked"])
+        self.assertIsNone(data["checks"]["local_provider_config_present_when_supported"])
+        self.assertTrue(data["checks"]["dirty_source_allowed"])
+        self.assertIn("bench/self_correction.py", data["commands"]["harness"])
+        self.assertIn("--demo-evidence-json", data["commands"]["scorer"])
+        self.assertIn("not loop evidence", " ".join(data["notes"]))
+
+    def test_fresh_preflight_report_refuses_non_empty_file(self) -> None:
+        original_which = shutil.which
+        shutil.which = lambda binary: f"/usr/bin/{binary}"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                results = Path(tmpdir) / "fresh-preflight.jsonl"
+                report = Path(tmpdir) / "fresh-preflight.report.json"
+                report.write_text('{"old": true}\n', encoding="utf-8")
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = main(
+                        [
+                            "fresh",
+                            "--results",
+                            str(results),
+                            "--run-id",
+                            "fresh-demo",
+                            "--allow-dirty-source",
+                            "--provider",
+                            "local-test-provider/model",
+                            "--preflight-only",
+                            "--preflight-report-json",
+                            str(report),
+                        ]
+                    )
+        finally:
+            shutil.which = original_which
+
+        self.assertEqual(result, 2)
+        self.assertIn("fresh demo preflight report path already contains data", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+
+    def test_fresh_preflight_report_refuses_results_alias(self) -> None:
+        original_which = shutil.which
+        shutil.which = lambda binary: f"/usr/bin/{binary}"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                results = Path(tmpdir) / "fresh-preflight.jsonl"
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = main(
+                        [
+                            "fresh",
+                            "--results",
+                            str(results),
+                            "--run-id",
+                            "fresh-demo",
+                            "--allow-dirty-source",
+                            "--provider",
+                            "local-test-provider/model",
+                            "--preflight-only",
+                            "--preflight-report-json",
+                            str(results),
+                        ]
+                    )
+        finally:
+            shutil.which = original_which
+
+        self.assertEqual(result, 2)
+        self.assertIn("preflight report path must be distinct from results path", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+
+    def test_fresh_preflight_report_refuses_default_evidence_alias(self) -> None:
+        original_which = shutil.which
+        shutil.which = lambda binary: f"/usr/bin/{binary}"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                results = Path(tmpdir) / "fresh-preflight.jsonl"
+                evidence = results.with_suffix(".demo-evidence.json")
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = main(
+                        [
+                            "fresh",
+                            "--results",
+                            str(results),
+                            "--run-id",
+                            "fresh-demo",
+                            "--allow-dirty-source",
+                            "--provider",
+                            "local-test-provider/model",
+                            "--preflight-only",
+                            "--preflight-report-json",
+                            str(evidence),
+                        ]
+                    )
+        finally:
+            shutil.which = original_which
+
+        self.assertEqual(result, 2)
+        self.assertIn("preflight report path must be distinct from evidence path", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+
+    def test_fresh_preflight_report_refuses_explicit_evidence_alias(self) -> None:
+        original_which = shutil.which
+        shutil.which = lambda binary: f"/usr/bin/{binary}"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                results = Path(tmpdir) / "fresh-preflight.jsonl"
+                evidence = Path(tmpdir) / "custom-evidence.json"
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = main(
+                        [
+                            "fresh",
+                            "--results",
+                            str(results),
+                            "--run-id",
+                            "fresh-demo",
+                            "--allow-dirty-source",
+                            "--provider",
+                            "local-test-provider/model",
+                            "--evidence-json",
+                            str(evidence),
+                            "--preflight-only",
+                            "--preflight-report-json",
+                            str(evidence),
+                        ]
+                    )
+        finally:
+            shutil.which = original_which
+
+        self.assertEqual(result, 2)
+        self.assertIn("preflight report path must be distinct from evidence path", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+
+    def test_bare_opencode_provider_does_not_claim_config_check(self) -> None:
+        self.assertFalse(provider_config_checked("opencode"))
+        self.assertTrue(provider_config_checked("opencode/minimax-coding-plan/MiniMax-M3"))
+
+    def test_preflight_report_requires_preflight_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            results = Path(tmpdir) / "fresh.jsonl"
+            report = Path(tmpdir) / "fresh.report.json"
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                result = main(
+                    [
+                        "fresh",
+                        "--results",
+                        str(results),
+                        "--run-id",
+                        "fresh-demo",
+                        "--preflight-report-json",
+                        str(report),
+                        "--print-only",
+                    ]
+                )
+
+        self.assertEqual(result, 2)
+        self.assertIn("--preflight-report-json requires --preflight-only", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
 
     def test_fresh_mode_refuses_non_empty_evidence_before_harness(self) -> None:
         original_which = shutil.which
