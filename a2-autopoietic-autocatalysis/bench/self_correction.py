@@ -1015,6 +1015,8 @@ def result_record(
     patch_stats: dict[str, Any],
     anti_repeat_retry_enabled: bool,
     source_metadata: dict[str, Any],
+    max_tokens: int,
+    timeout: int,
 ) -> dict[str, Any]:
     return {
         "task_id": payload["task_id"],
@@ -1025,6 +1027,8 @@ def result_record(
         "provider": provider,
         "model": provider,
         **source_metadata,
+        "max_tokens": max_tokens,
+        "timeout_secs": timeout,
         "resolved": verify_result.returncode == 0,
         "prior_lineage_present": lineage_before > 0,
         "lineage_records_before": lineage_before,
@@ -1173,6 +1177,8 @@ def run_benchmark(args: argparse.Namespace) -> int:
                     patch_stats=patch_stats,
                     anti_repeat_retry_enabled=not args.disable_anti_repeat,
                     source_metadata=source_metadata,
+                    max_tokens=args.max_tokens,
+                    timeout=args.timeout,
                 )
                 append_jsonl(results, record)
                 print(json.dumps(record, sort_keys=True))
@@ -1475,6 +1481,8 @@ class SelfCorrectionTests(unittest.TestCase):
                 "source_branch": "main",
                 "source_dirty": False,
             },
+            max_tokens=12345,
+            timeout=678,
         )
         self.assertTrue(record["resolved"])
         self.assertTrue(record["prior_lineage_present"])
@@ -1495,6 +1503,8 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(record["source_head_short"], "abcdef")
         self.assertEqual(record["source_branch"], "main")
         self.assertFalse(record["source_dirty"])
+        self.assertEqual(record["max_tokens"], 12345)
+        self.assertEqual(record["timeout_secs"], 678)
 
     def test_diff_stats_reports_touched_files_and_line_counts(self) -> None:
         stats = diff_stats(

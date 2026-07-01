@@ -69,6 +69,7 @@ Each JSONL result includes:
 - `task_id`, `run_id`, `attempt`, `category` (`--runs N` emits one distinct `run_id` per independent trajectory)
 - `provider` / `model`
 - `source_head`, `source_head_short`, `source_branch`, and `source_dirty` for auditing which source revision produced the benchmark record; use `--require-clean-source` when the run should fail rather than produce `source_dirty=true` evidence
+- `max_tokens` and `timeout_secs`, recording the per-attempt budget used to produce newly generated rows
 - `resolved`
 - `prior_lineage_present`
 - `lineage_records_before` / `lineage_records_after`
@@ -97,7 +98,24 @@ bench/self_correction_score.py --require-demo --trajectories \
   docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.jsonl
 ```
 
-`--require-demo` exits non-zero unless at least one grouped run contains: a failed first attempt with verifier failure archived into lineage (`lineage_records_after > lineage_records_before`), a later verified passing attempt whose `lineage_records_before` reaches the failed row's `lineage_records_after`, core lineage reconciliation, and verifier-gated promotion/apply evidence. Passing output includes a deterministic `[proved]` checklist mapping each demo requirement to the JSONL artifact, run/task ID, verifier command/status, lineage counters, retry attempts, later pass, and verifier-gated promotion/apply evidence. This is loop evidence only when the chain is failed attempt → archived verifier/failure evidence → retry context from that failed lineage row → later pass → lineage trajectory → verifier-gated promotion; pass@1-only logs should fail `--require-demo`.
+Or use the demo wrapper, which separates archived-proof verification from fresh provider regeneration:
+
+```bash
+# Fast, deterministic: re-score the durable archived demo artifact.
+bench/self_correction_demo.py verify-archive
+
+# Slow/provider-backed: regenerate a fresh artifact, then run the same --require-demo gate.
+RUN_ID=fresh-demo-$(date -u +%Y%m%dT%H%M%SZ)
+bench/self_correction_demo.py fresh \
+  --fixture compound-archive-same-crate-hidden \
+  --provider opencode/minimax-coding-plan/MiniMax-M3 \
+  --runs 3 \
+  --attempts 3 \
+  --run-id "$RUN_ID" \
+  --results "docs/benchmark-results/self-correction/a2-${RUN_ID}.jsonl"
+```
+
+`--require-demo` exits non-zero unless at least one grouped run contains: a failed first attempt with verifier failure archived into lineage (`lineage_records_after > lineage_records_before`), a later verified passing attempt whose `lineage_records_before` reaches the failed row's `lineage_records_after`, core lineage reconciliation, and verifier-gated promotion/apply evidence. Passing output includes a deterministic `[proved]` checklist mapping each demo requirement to the JSONL artifact, run/task ID, verifier command/status, lineage counters, retry attempts, later pass, and verifier-gated promotion/apply evidence. This is loop evidence only when the chain is failed attempt → archived verifier/failure evidence → retry context from that failed lineage row → later pass → lineage trajectory → verifier-gated promotion; pass@1-only logs should fail `--require-demo`. Archived-proof verification is deterministic evidence that the checked artifact contains the chain; fresh regeneration is provider-backed and may consume quota. The known 2026-06-15 archived demo predates explicit `max_tokens`/`timeout_secs` fields, though its captured `a2ctl run` command records `--max-tokens 100000 --timeout 1800`; newly generated rows record those budget values as structured fields.
 
 This scorer reports `pass@1` separately from `self-corrected`. A first-attempt pass is useful model capability data, but it does not exercise prior-lineage self-correction; when no run retries, `self-corrected` renders as N/A instead of a failed recovery rate. A JSONL file can have more rows than independent trials because each retry attempt is one row; score and document runs by unique `(run_id, task_id)`, not raw line count. Benchmark success keys off `resolved` / verification status; `a2_returncode=0` only means the agent command exited cleanly.
 
