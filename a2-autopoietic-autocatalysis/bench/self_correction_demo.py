@@ -428,6 +428,10 @@ def validate_fresh_rows(
 
     validate_fresh_rows_for_host_path_markers(rows, source_label=source_label)
 
+    expected_source_head: str | None = None
+    expected_source_head_short: str | None = None
+    expected_source_branch: str | None = None
+    expected_source_dirty: bool | None = None
     for index, row in enumerate(rows, start=1):
         missing = [
             key
@@ -444,6 +448,50 @@ def validate_fresh_rows(
         if missing:
             raise RuntimeError(
                 f"fresh demo row {index} is missing audit field(s): {', '.join(missing)}"
+            )
+        source_head = row.get("source_head")
+        source_head_short = row.get("source_head_short")
+        source_branch = row.get("source_branch")
+        source_dirty = row.get("source_dirty")
+        if not isinstance(source_head, str) or len(source_head) not in (40, 64):
+            raise RuntimeError(
+                f"fresh demo row {index} records invalid source_head={source_head!r}"
+            )
+        if not all(character in "0123456789abcdef" for character in source_head.lower()):
+            raise RuntimeError(
+                f"fresh demo row {index} records non-hex source_head={source_head!r}"
+            )
+        if (
+            not isinstance(source_head_short, str)
+            or not source_head_short
+            or not source_head.startswith(source_head_short)
+        ):
+            raise RuntimeError(
+                f"fresh demo row {index} records source_head_short={source_head_short!r} "
+                f"that does not prefix source_head"
+            )
+        if not isinstance(source_branch, str) or not source_branch:
+            raise RuntimeError(
+                f"fresh demo row {index} records invalid source_branch={source_branch!r}"
+            )
+        if source_dirty is not True and source_dirty is not False:
+            raise RuntimeError(
+                f"fresh demo row {index} records non-boolean source_dirty={source_dirty!r}"
+            )
+        if expected_source_head is None:
+            expected_source_head = source_head
+            expected_source_head_short = source_head_short
+            expected_source_branch = source_branch
+            expected_source_dirty = source_dirty
+        elif (
+            source_head != expected_source_head
+            or source_head_short != expected_source_head_short
+            or source_branch != expected_source_branch
+            or source_dirty is not expected_source_dirty
+        ):
+            raise RuntimeError(
+                f"fresh demo row {index} source metadata differs from earlier rows; "
+                "fresh artifacts must come from one source revision and branch"
             )
         if not allow_dirty_source and row.get("source_dirty") is not False:
             raise RuntimeError(
@@ -479,6 +527,7 @@ def fresh_validation_summary(args: argparse.Namespace) -> str:
         "# would validate fresh results before scoring: "
         "JSONL exists and is non-empty; "
         f"all rows match run_id {args.run_id!r} or numeric suffixed variants; "
+        "all rows share one source revision/branch/dirty-state and source_head_short prefixes source_head; "
         "no host-specific path markers are present; "
         f"required provenance fields are present; {dirty_requirement}; "
         f"max_tokens={args.max_tokens}; timeout_secs={args.timeout}"
@@ -1700,8 +1749,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             evidence = Path(tmpdir) / "fresh.demo-evidence.json"
             fresh_row = {
                 "run_id": "fresh-demo",
-                "source_head": "abc123",
-                "source_head_short": "abc123",
+                "source_head": "1234567890abcdef1234567890abcdef12345678",
+                "source_head_short": "1234567",
                 "source_branch": "main",
                 "source_dirty": False,
                 "max_tokens": 100_000,
@@ -2639,7 +2688,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             rows = [
                 {
                     "run_id": "fresh-demo-1",
-                    "source_head": "abcdef123456",
+                    "source_head": "abcdef1234567890abcdef1234567890abcdef12",
                     "source_head_short": "abcdef1",
                     "source_branch": "main",
                     "source_dirty": False,
@@ -2648,7 +2697,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 },
                 {
                     "run_id": "fresh-demo-2",
-                    "source_head": "abcdef123456",
+                    "source_head": "abcdef1234567890abcdef1234567890abcdef12",
                     "source_head_short": "abcdef1",
                     "source_branch": "main",
                     "source_dirty": False,
@@ -2670,12 +2719,59 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
             validate_fresh_results(args)
 
+    def test_validate_fresh_results_rejects_unreproducible_source_metadata(self) -> None:
+        full_head = "abcdef1234567890abcdef1234567890abcdef12"
+        base_row = {
+            "run_id": "fresh-demo-1",
+            "source_head": full_head,
+            "source_head_short": "abcdef1",
+            "source_branch": "main",
+            "source_dirty": False,
+            "max_tokens": 100_000,
+            "timeout_secs": 1800,
+        }
+        scenarios = [
+            (
+                [{**base_row, "source_head": "123456", "source_head_short": "123456"}],
+                "invalid source_head",
+            ),
+            (
+                [
+                    base_row,
+                    {
+                        **base_row,
+                        "run_id": "fresh-demo-2",
+                        "source_head": "1234567890abcdef1234567890abcdef12345678",
+                        "source_head_short": "1234567",
+                    },
+                ],
+                "source metadata differs",
+            ),
+        ]
+        for rows, message in scenarios:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as tmpdir:
+                results = Path(tmpdir) / "fresh.jsonl"
+                results.write_text(
+                    "".join(json.dumps(row) + "\n" for row in rows),
+                    encoding="utf-8",
+                )
+                args = argparse.Namespace(
+                    results=results,
+                    run_id="fresh-demo",
+                    allow_dirty_source=False,
+                    max_tokens=100_000,
+                    timeout=1800,
+                )
+
+                with self.assertRaisesRegex(RuntimeError, message):
+                    validate_fresh_results(args)
+
     def test_validate_fresh_results_rejects_host_path_markers_in_jsonl(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             results = Path(tmpdir) / "fresh.jsonl"
             row = {
                 "run_id": "fresh-demo-1",
-                "source_head": "abcdef123456",
+                "source_head": "abcdef1234567890abcdef1234567890abcdef12",
                 "source_head_short": "abcdef1",
                 "source_branch": "main",
                 "source_dirty": False,
@@ -2702,7 +2798,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 json.dumps(
                     {
                         "run_id": "old-demo-1",
-                        "source_head": "abcdef123456",
+                        "source_head": "abcdef1234567890abcdef1234567890abcdef12",
                         "source_head_short": "abcdef1",
                         "source_branch": "main",
                         "source_dirty": False,
@@ -2731,7 +2827,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 json.dumps(
                     {
                         "run_id": "fresh-demo-old",
-                        "source_head": "abcdef123456",
+                        "source_head": "abcdef1234567890abcdef1234567890abcdef12",
                         "source_head_short": "abcdef1",
                         "source_branch": "main",
                         "source_dirty": False,
@@ -2808,7 +2904,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 json.dumps(
                     {
                         "run_id": "fresh-demo-1",
-                        "source_head": "abcdef123456",
+                        "source_head": "abcdef1234567890abcdef1234567890abcdef12",
                         "source_head_short": "abcdef1",
                         "source_branch": "main",
                         "source_dirty": True,
@@ -2837,7 +2933,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 json.dumps(
                     {
                         "run_id": "fresh-demo-1",
-                        "source_head": "abcdef123456",
+                        "source_head": "abcdef1234567890abcdef1234567890abcdef12",
                         "source_head_short": "abcdef1",
                         "source_branch": "main",
                         "source_dirty": False,

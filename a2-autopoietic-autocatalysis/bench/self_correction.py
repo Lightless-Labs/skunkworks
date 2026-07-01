@@ -806,8 +806,7 @@ def source_git_metadata(source_repo: Path, project_relative: Path | None = None)
         "source_dirty": bool(git(dirty_args, source_repo).stdout.strip()),
     }
     branch = git(["branch", "--show-current"], source_repo).stdout.strip()
-    if branch:
-        metadata["source_branch"] = branch
+    metadata["source_branch"] = branch or "(detached)"
     return metadata
 
 
@@ -1254,6 +1253,39 @@ class SelfCorrectionTests(unittest.TestCase):
             (project / "notes.txt").write_text("dirty\n", encoding="utf-8")
             dirty_project = source_git_metadata(root, Path("project"))
             self.assertTrue(dirty_project["source_dirty"])
+
+    def test_source_metadata_records_detached_head_as_explicit_branch_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            (project / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+            subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            subprocess.run(["git", "add", "project/Cargo.toml"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=A2 Test",
+                    "-c",
+                    "user.email=a2@example.invalid",
+                    "commit",
+                    "-m",
+                    "initial",
+                ],
+                cwd=root,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            subprocess.run(["git", "checkout", "--detach", "HEAD"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            metadata = source_git_metadata(root, Path("project"))
+
+            self.assertEqual(metadata["source_branch"], "(detached)")
+            self.assertEqual(len(metadata["source_head"]), 40)
+            self.assertTrue(metadata["source_head"].startswith(metadata["source_head_short"]))
 
     def test_require_clean_source_fails_before_result_creation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
