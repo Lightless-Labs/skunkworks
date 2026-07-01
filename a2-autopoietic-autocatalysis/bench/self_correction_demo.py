@@ -16,6 +16,8 @@ sequence before running it.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import shlex
 import subprocess
@@ -157,6 +159,17 @@ def validate_fresh_results(args: argparse.Namespace) -> None:
             )
 
 
+def fresh_validation_summary(args: argparse.Namespace) -> str:
+    dirty_requirement = "source_dirty=false" if not args.allow_dirty_source else "source_dirty may be true"
+    return (
+        "# would validate fresh results before scoring: "
+        "JSONL exists and is non-empty; "
+        f"all rows match run_id {args.run_id!r} or numeric suffixed variants; "
+        f"required provenance fields are present; {dirty_requirement}; "
+        f"max_tokens={args.max_tokens}; timeout_secs={args.timeout}"
+    )
+
+
 def fresh_command(args: argparse.Namespace) -> list[str]:
     root = repo_root()
     command = [
@@ -261,7 +274,9 @@ def main(argv: list[str]) -> int:
         first = run_command(fresh_command(args), print_only=args.print_only)
         if first != 0:
             return first
-        if not args.print_only:
+        if args.print_only:
+            print(fresh_validation_summary(args))
+        else:
             try:
                 validate_fresh_results(args)
             except RuntimeError as exc:
@@ -337,6 +352,32 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
         self.assertNotIn("--require-clean-source", command)
         self.assertIn("--keep-workspace", command)
+
+    def test_fresh_print_only_shows_internal_validation_before_scoring(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stdout = io.StringIO()
+            results = Path(tmpdir) / "fresh-print-only.jsonl"
+            with contextlib.redirect_stdout(stdout):
+                result = main(
+                    [
+                        "fresh",
+                        "--results",
+                        str(results),
+                        "--run-id",
+                        "fresh-demo",
+                        "--print-only",
+                    ]
+                )
+
+        output = stdout.getvalue()
+        self.assertEqual(result, 0)
+        self.assertIn("# would validate fresh results before scoring", output)
+        self.assertIn("all rows match run_id 'fresh-demo'", output)
+        self.assertIn("source_dirty=false", output)
+        self.assertLess(
+            output.index("# would validate fresh results before scoring"),
+            output.index("bench/self_correction_score.py"),
+        )
 
     def test_fresh_results_refuses_non_empty_file_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
