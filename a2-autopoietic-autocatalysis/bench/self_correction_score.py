@@ -9,6 +9,8 @@ fails and a later attempt with prior lineage visible resolves the task.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -139,6 +141,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "failed first attempt, archived verifier evidence, prior-lineage retry, "
             "later passing attempt, core lineage reconciliation, and verifier-gated "
             "promotion/apply evidence."
+        ),
+    )
+    parser.add_argument(
+        "--demo-evidence-json",
+        type=Path,
+        help=(
+            "Write a machine-readable evidence map for complete demo trajectories, "
+            "including JSONL row selectors and fields proving the causal chain."
         ),
     )
     return parser.parse_args(argv)
@@ -452,6 +462,142 @@ def demo_run_ids(records: list[SelfCorrectionRecord]) -> list[tuple[str, str]]:
     return demo_runs
 
 
+def demo_evidence_map(
+    records: list[SelfCorrectionRecord],
+    *,
+    artifact_label: str | None = None,
+) -> dict[str, Any]:
+    grouped = group_records(records)
+    demos = demo_run_ids(records)
+    evidence: dict[str, Any] = {
+        "artifact": artifact_label,
+        "complete": bool(demos),
+        "requirements": [
+            "failed_first_attempt",
+            "archived_verifier_failure_evidence",
+            "retry_context_from_failure_evidence",
+            "later_passing_attempt",
+            "lineage_trajectory_recorded",
+            "verifier_gated_germline_promotion",
+        ],
+        "demos": [],
+    }
+    for run_id, task_id in demos:
+        attempts = grouped[(run_id, task_id)]
+        first = attempts[0]
+        promotion_attempt = next(
+            record
+            for record in attempts[1:]
+            if has_verifier_gated_promotion(record)
+            and has_retry_context_from_failure(first, record)
+        )
+        retry_attempts = [
+            record
+            for record in attempts[1:]
+            if has_retry_context_from_failure(first, record)
+        ]
+        evidence["demos"].append(
+            {
+                "run_id": run_id,
+                "task_id": task_id,
+                "causal_chain": [
+                    {
+                        "requirement": "failed_first_attempt",
+                        "status": "proved",
+                        "selector": {"run_id": run_id, "task_id": task_id, "attempt": first.attempt},
+                        "check": "resolved is false and verify_returncode is non-zero",
+                        "fields": {
+                            "resolved": first.resolved,
+                            "verify_returncode": first.verify_returncode,
+                            "verify_command": first.verify_command,
+                        },
+                    },
+                    {
+                        "requirement": "archived_verifier_failure_evidence",
+                        "status": "proved",
+                        "selector": {"run_id": run_id, "task_id": task_id, "attempt": first.attempt},
+                        "check": "failed row records verifier failure and advances lineage",
+                        "fields": {
+                            "lineage_records_before": first.lineage_records_before,
+                            "lineage_records_after": first.lineage_records_after,
+                            "lineage_advanced": (
+                                first.lineage_records_after is not None
+                                and first.lineage_records_before is not None
+                                and first.lineage_records_after > first.lineage_records_before
+                            ),
+                            "verifier_failure_evidence_present": first.verifier_failure_evidence_present,
+                            "verifier_failure_evidence_structured_present": first.verifier_failure_evidence_structured_present,
+                        },
+                    },
+                    {
+                        "requirement": "retry_context_from_failure_evidence",
+                        "status": "proved",
+                        "check": "retry lineage_records_before reaches the failed row lineage_records_after",
+                        "failed_lineage_records_after": first.lineage_records_after,
+                        "selectors": [
+                            {"run_id": run_id, "task_id": task_id, "attempt": record.attempt}
+                            for record in retry_attempts
+                        ],
+                        "fields": [
+                            {
+                                "attempt": record.attempt,
+                                "prior_lineage_present": record.prior_lineage_present,
+                                "lineage_records_before": record.lineage_records_before,
+                                "derived_from_failed_lineage": has_retry_context_from_failure(first, record),
+                            }
+                            for record in retry_attempts
+                        ],
+                    },
+                    {
+                        "requirement": "later_passing_attempt",
+                        "status": "proved",
+                        "selector": {
+                            "run_id": run_id,
+                            "task_id": task_id,
+                            "attempt": promotion_attempt.attempt,
+                        },
+                        "check": "later attempt resolves and verify_returncode is zero",
+                        "fields": {
+                            "resolved": promotion_attempt.resolved,
+                            "verify_returncode": promotion_attempt.verify_returncode,
+                        },
+                    },
+                    {
+                        "requirement": "lineage_trajectory_recorded",
+                        "status": "proved",
+                        "check": "same run/task advances lineage from failed first attempt through promotion",
+                        "fields": {
+                            "lineage_records_before": first.lineage_records_before,
+                            "lineage_records_after": promotion_attempt.lineage_records_after,
+                            "attempts": [record.attempt for record in attempts],
+                        },
+                    },
+                    {
+                        "requirement": "verifier_gated_germline_promotion",
+                        "status": "proved",
+                        "selector": {
+                            "run_id": run_id,
+                            "task_id": task_id,
+                            "attempt": promotion_attempt.attempt,
+                        },
+                        "check": "promotion attempt passed verification, reconciled through core lineage, and has promotion/apply evidence",
+                        "fields": {
+                            "verify_returncode": promotion_attempt.verify_returncode,
+                            "lineage_reconciled_by_core": promotion_attempt.lineage_reconciled_by_core,
+                            "promotion_evidence_present": promotion_attempt.promotion_evidence_present,
+                            "promotion_structured_present": promotion_attempt.promotion_structured_present,
+                            "promotion_verifier_gated": promotion_attempt.promotion_verifier_gated,
+                            "promotion_structured_evidence_present": promotion_attempt.promotion_structured_evidence_present,
+                            "promotion_lineage_reconciled_by_core": promotion_attempt.promotion_lineage_reconciled_by_core,
+                            "promotion_verify_returncode": promotion_attempt.promotion_verify_returncode,
+                        },
+                    },
+                ],
+            }
+        )
+    return evidence
+
+
 def render_demo_check(
     records: list[SelfCorrectionRecord],
     *,
@@ -630,6 +776,17 @@ def main(argv: list[str]) -> int:
             artifact_label=str(logfile),
         )
     )
+    if args.demo_evidence_json:
+        args.demo_evidence_json.parent.mkdir(parents=True, exist_ok=True)
+        args.demo_evidence_json.write_text(
+            json.dumps(
+                demo_evidence_map(records, artifact_label=str(logfile)),
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     if args.require_demo and not demo_run_ids(records):
         return 2
     return 0
@@ -848,6 +1005,124 @@ class SelfCorrectionScoreTests(unittest.TestCase):
             "verifier-gated promotion/apply evidence",
             output,
         )
+
+    def test_demo_evidence_json_maps_causal_chain(self) -> None:
+        records = [
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+                a2_returncode=0,
+                verify_returncode=1,
+                verify_command="cargo test -p demo hidden_regression",
+                lineage_records_before=0,
+                lineage_records_after=1,
+                verifier_failure_evidence_present=True,
+                verifier_failure_evidence_structured_present=True,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=2,
+                resolved=True,
+                prior_lineage_present=True,
+                a2_returncode=0,
+                verify_returncode=0,
+                lineage_records_before=1,
+                lineage_records_after=2,
+                lineage_reconciled_by_core=True,
+                promotion_evidence_present=True,
+            ),
+        ]
+
+        evidence = demo_evidence_map(records, artifact_label="demo.jsonl")
+
+        self.assertTrue(evidence["complete"])
+        self.assertEqual(evidence["artifact"], "demo.jsonl")
+        chain = evidence["demos"][0]["causal_chain"]
+        self.assertEqual(
+            [step["requirement"] for step in chain],
+            [
+                "failed_first_attempt",
+                "archived_verifier_failure_evidence",
+                "retry_context_from_failure_evidence",
+                "later_passing_attempt",
+                "lineage_trajectory_recorded",
+                "verifier_gated_germline_promotion",
+            ],
+        )
+        self.assertTrue(chain[1]["fields"]["lineage_advanced"])
+        self.assertTrue(chain[2]["fields"][0]["derived_from_failed_lineage"])
+        self.assertTrue(chain[5]["fields"]["promotion_evidence_present"])
+
+    def test_demo_evidence_json_marks_incomplete_lineage_gap(self) -> None:
+        records = [
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+                a2_returncode=0,
+                verify_returncode=1,
+                lineage_records_before=0,
+                lineage_records_after=2,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=2,
+                resolved=True,
+                prior_lineage_present=True,
+                a2_returncode=0,
+                verify_returncode=0,
+                lineage_records_before=1,
+                lineage_records_after=3,
+                lineage_reconciled_by_core=True,
+                promotion_evidence_present=True,
+            ),
+        ]
+
+        evidence = demo_evidence_map(records, artifact_label="incomplete.jsonl")
+
+        self.assertFalse(evidence["complete"])
+        self.assertEqual(evidence["demos"], [])
+
+    def test_main_writes_incomplete_demo_evidence_json_when_require_demo_fails(self) -> None:
+        row = {
+            "task_id": "task",
+            "run_id": "run",
+            "attempt": 1,
+            "resolved": True,
+            "prior_lineage_present": False,
+            "verify_returncode": 0,
+            "lineage_records_before": 0,
+            "lineage_records_after": 1,
+            "lineage_reconciled_by_core": True,
+            "stdout": "[applied and rebuilt: ok]",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logfile = Path(tmpdir) / "pass-at-one.jsonl"
+            evidence_file = Path(tmpdir) / "evidence.json"
+            logfile.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = main(
+                    [
+                        "--require-demo",
+                        "--demo-evidence-json",
+                        str(evidence_file),
+                        str(logfile),
+                    ]
+                )
+            evidence = json.loads(evidence_file.read_text(encoding="utf-8"))
+
+        self.assertEqual(code, 2)
+        self.assertFalse(evidence["complete"])
+        self.assertEqual(evidence["demos"], [])
 
     def test_require_demo_accepts_structured_verifier_gated_promotion(self) -> None:
         rows = [

@@ -31,6 +31,10 @@ DEFAULT_ARCHIVE = Path(
     "docs/benchmark-results/self-correction/"
     "a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.jsonl"
 )
+DEFAULT_ARCHIVE_EVIDENCE = Path(
+    "docs/benchmark-results/self-correction/"
+    "a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json"
+)
 DEFAULT_FIXTURE = "compound-archive-same-crate-hidden"
 DEFAULT_PROVIDER = "opencode/minimax-coding-plan/MiniMax-M3"
 
@@ -54,14 +58,17 @@ def display_command(command: list[str]) -> str:
     return shlex.join(display)
 
 
-def score_command(logfile: Path) -> list[str]:
+def score_command(logfile: Path, evidence_json: Path | None = None) -> list[str]:
     root = repo_root()
-    return [
+    command = [
         str(root / "bench/self_correction_score.py"),
         "--require-demo",
         "--trajectories",
-        str(logfile),
     ]
+    if evidence_json is not None:
+        command.extend(["--demo-evidence-json", str(evidence_json)])
+    command.append(str(logfile))
+    return command
 
 
 def repo_path(path: Path) -> Path:
@@ -219,6 +226,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Score a durable archived JSONL demo artifact with --require-demo.",
     )
     verify.add_argument("--archive", type=Path, default=DEFAULT_ARCHIVE)
+    verify.add_argument(
+        "--evidence-json",
+        type=Path,
+        help=(
+            "Path for a machine-readable demo causal-chain evidence map. "
+            "The default archive writes the checked-in evidence map when omitted."
+        ),
+    )
     verify.add_argument("--print-only", action="store_true")
 
     fresh = subparsers.add_parser(
@@ -243,6 +258,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Omit --require-clean-source when regenerating the benchmark artifact.",
     )
     fresh.add_argument("--keep-workspace", action="store_true")
+    fresh.add_argument(
+        "--evidence-json",
+        type=Path,
+        help="Optional path for a machine-readable demo causal-chain evidence map.",
+    )
     fresh.add_argument("--print-only", action="store_true")
 
     defaultable_argv = list(argv)
@@ -262,7 +282,12 @@ def main(argv: list[str]) -> int:
         return unittest.main(exit=False).result.wasSuccessful() is False
 
     if args.mode == "verify-archive":
-        return run_command(score_command(args.archive), print_only=args.print_only)
+        evidence_json = args.evidence_json
+        if evidence_json is None and args.archive == DEFAULT_ARCHIVE:
+            evidence_json = DEFAULT_ARCHIVE_EVIDENCE
+        return run_command(
+            score_command(args.archive, evidence_json), print_only=args.print_only
+        )
 
     if args.mode == "fresh":
         if not args.print_only:
@@ -282,7 +307,9 @@ def main(argv: list[str]) -> int:
             except RuntimeError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
-        return run_command(score_command(args.results), print_only=args.print_only)
+        return run_command(
+            score_command(args.results, args.evidence_json), print_only=args.print_only
+        )
 
     raise AssertionError(f"unhandled mode: {args.mode}")
 
@@ -295,18 +322,58 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("--trajectories", command)
         self.assertEqual(Path(command[-1]), DEFAULT_ARCHIVE)
 
+    def test_score_command_can_write_demo_evidence_json(self) -> None:
+        command = score_command(DEFAULT_ARCHIVE, Path("evidence.json"))
+
+        self.assertIn("--demo-evidence-json", command)
+        self.assertLess(command.index("--demo-evidence-json"), command.index(str(DEFAULT_ARCHIVE)))
+        self.assertEqual(command[command.index("--demo-evidence-json") + 1], "evidence.json")
+
     def test_no_args_defaults_to_verify_archive_mode(self) -> None:
         args = parse_args([])
 
         self.assertEqual(args.mode, "verify-archive")
         self.assertEqual(args.archive, DEFAULT_ARCHIVE)
+        self.assertIsNone(args.evidence_json)
 
     def test_archive_flags_work_without_explicit_subcommand(self) -> None:
         args = parse_args(["--archive", "custom.jsonl", "--print-only"])
 
         self.assertEqual(args.mode, "verify-archive")
         self.assertEqual(args.archive, Path("custom.jsonl"))
+        self.assertIsNone(args.evidence_json)
         self.assertTrue(args.print_only)
+
+    def test_default_verify_archive_print_only_includes_checked_in_evidence_json(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            result = main(["verify-archive", "--print-only"])
+
+        output = stdout.getvalue()
+        self.assertEqual(result, 0)
+        self.assertIn("--demo-evidence-json", output)
+        self.assertIn(str(DEFAULT_ARCHIVE_EVIDENCE), output)
+        self.assertIn(str(DEFAULT_ARCHIVE), output)
+
+    def test_verify_archive_print_only_includes_demo_evidence_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stdout = io.StringIO()
+            evidence = Path(tmpdir) / "evidence.json"
+            with contextlib.redirect_stdout(stdout):
+                result = main(
+                    [
+                        "verify-archive",
+                        "--evidence-json",
+                        str(evidence),
+                        "--print-only",
+                    ]
+                )
+
+        output = stdout.getvalue()
+        self.assertEqual(result, 0)
+        self.assertIn("--demo-evidence-json", output)
+        self.assertIn(str(evidence), output)
+        self.assertIn("bench/self_correction_score.py", output)
 
     def test_fresh_command_requires_clean_source_by_default(self) -> None:
         args = argparse.Namespace(
@@ -320,6 +387,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             run_id="fresh-demo",
             allow_dirty_source=False,
             keep_workspace=False,
+            evidence_json=None,
         )
 
         command = fresh_command(args)
@@ -346,6 +414,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             run_id=None,
             allow_dirty_source=True,
             keep_workspace=True,
+            evidence_json=None,
         )
 
         command = fresh_command(args)
