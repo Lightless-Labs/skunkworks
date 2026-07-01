@@ -433,7 +433,10 @@ def demo_run_ids(records: list[SelfCorrectionRecord]) -> list[tuple[str, str]]:
         first = attempts[0]
         later_attempts = attempts[1:]
         promotion_attempts = [
-            record for record in later_attempts if has_verifier_gated_promotion(record)
+            record
+            for record in later_attempts
+            if has_verifier_gated_promotion(record)
+            and has_retry_context_from_failure(first, record)
         ]
         requires_structured_failure_evidence = any(
             record.promotion_structured_present for record in promotion_attempts
@@ -441,10 +444,6 @@ def demo_run_ids(records: list[SelfCorrectionRecord]) -> list[tuple[str, str]]:
         if not has_archived_verifier_failure(
             first,
             require_structured_evidence=requires_structured_failure_evidence,
-        ):
-            continue
-        if not any(
-            has_retry_context_from_failure(first, record) for record in later_attempts
         ):
             continue
         if not promotion_attempts:
@@ -469,7 +468,10 @@ def render_demo_check(
             attempts = grouped[(run_id, task_id)]
             first = attempts[0]
             promotion_attempt = next(
-                record for record in attempts[1:] if has_verifier_gated_promotion(record)
+                record
+                for record in attempts[1:]
+                if has_verifier_gated_promotion(record)
+                and has_retry_context_from_failure(first, record)
             )
             retry_attempts = [
                 record.attempt
@@ -1006,6 +1008,57 @@ class SelfCorrectionScoreTests(unittest.TestCase):
 
         self.assertTrue(records[1].prior_lineage_present)
         self.assertFalse(has_retry_context_from_failure(records[0], records[1]))
+        self.assertEqual(demo_run_ids(records), [])
+        output = render(records, require_demo=True)
+        self.assertIn("FAIL no run contains", output)
+
+    def test_require_demo_rejects_promotion_without_failed_lineage_context(self) -> None:
+        rows = [
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 1,
+                "resolved": False,
+                "prior_lineage_present": False,
+                "a2_returncode": 0,
+                "verify_returncode": 1,
+                "lineage_records_before": 0,
+                "lineage_records_after": 1,
+            },
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 2,
+                "resolved": False,
+                "prior_lineage_present": True,
+                "a2_returncode": 0,
+                "verify_returncode": 1,
+                "lineage_records_before": 1,
+                "lineage_records_after": 2,
+            },
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 3,
+                "resolved": True,
+                "prior_lineage_present": False,
+                "a2_returncode": 0,
+                "verify_returncode": 0,
+                "lineage_records_before": 2,
+                "lineage_records_after": 3,
+                "lineage_reconciled_by_core": True,
+                "stdout": "[applied and rebuilt: ok]",
+            },
+        ]
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row) + "\n")
+            handle.flush()
+            records = load_records(Path(handle.name))
+
+        self.assertTrue(has_retry_context_from_failure(records[0], records[1]))
+        self.assertFalse(has_retry_context_from_failure(records[0], records[2]))
+        self.assertTrue(has_verifier_gated_promotion(records[2]))
         self.assertEqual(demo_run_ids(records), [])
         output = render(records, require_demo=True)
         self.assertIn("FAIL no run contains", output)
