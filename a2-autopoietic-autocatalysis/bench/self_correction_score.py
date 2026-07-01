@@ -647,6 +647,8 @@ def demo_evidence_map(
                                     "attempt": first.attempt,
                                 },
                                 "failed_verify_returncode": first.verify_returncode,
+                                "failed_verify_command": first.verify_command,
+                                "failed_lineage_records_after": first.lineage_records_after,
                                 "failed_verifier_failure_evidence_present": first.verifier_failure_evidence_present,
                             }
                             for record in retry_attempts
@@ -1196,6 +1198,8 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertTrue(retry_field["retry_context_links_archived_failure"])
         self.assertEqual(retry_field["failed_attempt_selector"]["attempt"], 1)
         self.assertEqual(retry_field["failed_verify_returncode"], 1)
+        self.assertEqual(retry_field["failed_verify_command"], "cargo test -p demo hidden_regression")
+        self.assertEqual(retry_field["failed_lineage_records_after"], 1)
         self.assertEqual(chain[2]["evidence_rows"][0]["lineage_records_before"], 1)
         self.assertTrue(chain[5]["fields"]["promotion_evidence_present"])
         self.assertTrue(chain[5]["evidence_row"]["promotion_evidence_present"])

@@ -833,6 +833,12 @@ def validate_demo_evidence_contract(
             )
             if field.get("failed_attempt_selector") != failed_selector:
                 raise RuntimeError("demo evidence contract retry is not tied to failed selector")
+            if field.get("failed_verify_returncode") != failed_verify:
+                raise RuntimeError("demo evidence contract retry does not carry failed verifier status")
+            if field.get("failed_verify_command") != failed_fields.get("verify_command"):
+                raise RuntimeError("demo evidence contract retry does not carry failed verifier command")
+            if field.get("failed_lineage_records_after") != failed_lineage_after:
+                raise RuntimeError("demo evidence contract retry does not carry failed lineage boundary")
             lineage_before = field.get("lineage_records_before")
             if not isinstance(lineage_before, int) or lineage_before < failed_lineage_after:
                 raise RuntimeError("demo evidence contract retry lineage predates archived failure")
@@ -1018,7 +1024,9 @@ def contract_demo_artifact_lines(evidence: dict[str, object]) -> list[str]:
             f"{selector.get('attempt')}: "
             f"derived_from_failed_lineage={field.get('derived_from_failed_lineage')}, "
             f"archived_verifier_failure_evidence={field.get('archived_verifier_failure_evidence')}, "
-            f"retry_context_links_archived_failure={field.get('retry_context_links_archived_failure')}"
+            f"retry_context_links_archived_failure={field.get('retry_context_links_archived_failure')}, "
+            f"failed_verify_returncode={field.get('failed_verify_returncode')}, "
+            f"failed_lineage_records_after={field.get('failed_lineage_records_after')}"
             for selector, field in zip(retry_selectors, retry_fields)
         ]
         later = require_mapping(
@@ -1592,6 +1600,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("derived_from_failed_lineage=True", output)
         self.assertIn("archived_verifier_failure_evidence=True", output)
         self.assertIn("retry_context_links_archived_failure=True", output)
+        self.assertIn("failed_verify_returncode=1", output)
+        self.assertIn("failed_lineage_records_after=1", output)
         self.assertIn("later_passing_attempt: source=", output)
         self.assertIn("lineage_trajectory_recorded: source=", output)
         self.assertIn("attempts=[1, 2]", output)
@@ -1651,6 +1661,30 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 evidence,
                 self.evidence_reference(evidence),
                 evidence_label="broken.demo-evidence.json",
+            )
+
+    def test_verify_evidence_contract_rejects_retry_without_failed_verifier_details(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        retry_step = evidence["demos"][0]["causal_chain"][2]
+        retry_step["fields"][0].pop("failed_verify_command", None)
+
+        with self.assertRaisesRegex(RuntimeError, "does not carry failed verifier command"):
+            validate_demo_evidence_contract(
+                evidence,
+                self.evidence_reference(evidence),
+                evidence_label="missing-failed-verifier-details.demo-evidence.json",
+            )
+
+    def test_verify_evidence_contract_rejects_retry_without_failed_lineage_boundary(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        retry_step = evidence["demos"][0]["causal_chain"][2]
+        retry_step["fields"][0]["failed_lineage_records_after"] = 0
+
+        with self.assertRaisesRegex(RuntimeError, "does not carry failed lineage boundary"):
+            validate_demo_evidence_contract(
+                evidence,
+                self.evidence_reference(evidence),
+                evidence_label="missing-failed-lineage-boundary.demo-evidence.json",
             )
 
     def test_verify_evidence_contract_rejects_missing_retry_selectors(self) -> None:
