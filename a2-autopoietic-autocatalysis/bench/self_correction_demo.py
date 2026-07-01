@@ -19,6 +19,7 @@ import argparse
 import shlex
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -58,6 +59,22 @@ def score_command(logfile: Path) -> list[str]:
         "--trajectories",
         str(logfile),
     ]
+
+
+def repo_path(path: Path) -> Path:
+    return path if path.is_absolute() else repo_root() / path
+
+
+def ensure_fresh_results_path(results: Path, *, append_existing_results: bool) -> None:
+    if append_existing_results:
+        return
+    resolved = repo_path(results)
+    if resolved.exists() and resolved.stat().st_size > 0:
+        raise RuntimeError(
+            f"fresh demo results path already contains data: {results}. "
+            "Use a unique --results path, remove/truncate the file, or pass "
+            "--append-existing-results intentionally."
+        )
 
 
 def fresh_command(args: argparse.Namespace) -> list[str]:
@@ -128,6 +145,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Omit --require-clean-source when regenerating the benchmark artifact.",
     )
+    fresh.add_argument(
+        "--append-existing-results",
+        action="store_true",
+        help=(
+            "Allow appending to a non-empty results file. By default fresh mode "
+            "refuses this so the post-run demo gate cannot pass because of older rows."
+        ),
+    )
     fresh.add_argument("--keep-workspace", action="store_true")
     fresh.add_argument("--print-only", action="store_true")
 
@@ -151,6 +176,15 @@ def main(argv: list[str]) -> int:
         return run_command(score_command(args.archive), print_only=args.print_only)
 
     if args.mode == "fresh":
+        if not args.print_only:
+            try:
+                ensure_fresh_results_path(
+                    args.results,
+                    append_existing_results=args.append_existing_results,
+                )
+            except RuntimeError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
         first = run_command(fresh_command(args), print_only=args.print_only)
         if first != 0:
             return first
@@ -191,6 +225,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             results=Path("docs/benchmark-results/self-correction/fresh.jsonl"),
             run_id="fresh-demo",
             allow_dirty_source=False,
+            append_existing_results=False,
             keep_workspace=False,
         )
 
@@ -217,6 +252,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             results=Path("/tmp/local-smoke.jsonl"),
             run_id=None,
             allow_dirty_source=True,
+            append_existing_results=False,
             keep_workspace=True,
         )
 
@@ -224,6 +260,24 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
         self.assertNotIn("--require-clean-source", command)
         self.assertIn("--keep-workspace", command)
+
+    def test_fresh_results_refuses_non_empty_file_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "existing.jsonl"
+            results.write_text('{"old": true}\n', encoding="utf-8")
+
+            with self.assertRaises(RuntimeError):
+                ensure_fresh_results_path(results, append_existing_results=False)
+
+    def test_fresh_results_allows_empty_or_intentional_append(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            empty = Path(tmpdir) / "empty.jsonl"
+            empty.touch()
+            non_empty = Path(tmpdir) / "existing.jsonl"
+            non_empty.write_text('{"old": true}\n', encoding="utf-8")
+
+            ensure_fresh_results_path(empty, append_existing_results=False)
+            ensure_fresh_results_path(non_empty, append_existing_results=True)
 
 
 if __name__ == "__main__":
