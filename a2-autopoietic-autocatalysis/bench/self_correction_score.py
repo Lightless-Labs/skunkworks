@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import sys
@@ -462,15 +463,25 @@ def demo_run_ids(records: list[SelfCorrectionRecord]) -> list[tuple[str, str]]:
     return demo_runs
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def demo_evidence_map(
     records: list[SelfCorrectionRecord],
     *,
     artifact_label: str | None = None,
+    artifact_sha256: str | None = None,
 ) -> dict[str, Any]:
     grouped = group_records(records)
     demos = demo_run_ids(records)
     evidence: dict[str, Any] = {
         "artifact": artifact_label,
+        "artifact_sha256": artifact_sha256,
         "complete": bool(demos),
         "requirements": [
             "failed_first_attempt",
@@ -780,7 +791,11 @@ def main(argv: list[str]) -> int:
         args.demo_evidence_json.parent.mkdir(parents=True, exist_ok=True)
         args.demo_evidence_json.write_text(
             json.dumps(
-                demo_evidence_map(records, artifact_label=str(logfile)),
+                demo_evidence_map(
+                    records,
+                    artifact_label=str(logfile),
+                    artifact_sha256=sha256_file(logfile),
+                ),
                 indent=2,
                 sort_keys=True,
             )
@@ -1037,10 +1052,15 @@ class SelfCorrectionScoreTests(unittest.TestCase):
             ),
         ]
 
-        evidence = demo_evidence_map(records, artifact_label="demo.jsonl")
+        evidence = demo_evidence_map(
+            records,
+            artifact_label="demo.jsonl",
+            artifact_sha256="abc123",
+        )
 
         self.assertTrue(evidence["complete"])
         self.assertEqual(evidence["artifact"], "demo.jsonl")
+        self.assertEqual(evidence["artifact_sha256"], "abc123")
         chain = evidence["demos"][0]["causal_chain"]
         self.assertEqual(
             [step["requirement"] for step in chain],
@@ -1090,6 +1110,18 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertFalse(evidence["complete"])
         self.assertEqual(evidence["demos"], [])
 
+    def test_sha256_file_hashes_artifact_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = Path(tmpdir) / "artifact.jsonl"
+            artifact.write_text('{"row":1}\n', encoding="utf-8")
+
+            digest = sha256_file(artifact)
+
+        self.assertEqual(
+            digest,
+            hashlib.sha256(b'{"row":1}\n').hexdigest(),
+        )
+
     def test_main_writes_incomplete_demo_evidence_json_when_require_demo_fails(self) -> None:
         row = {
             "task_id": "task",
@@ -1123,6 +1155,10 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertFalse(evidence["complete"])
         self.assertEqual(evidence["demos"], [])
+        self.assertEqual(
+            evidence["artifact_sha256"],
+            hashlib.sha256(json.dumps(row).encode() + b"\n").hexdigest(),
+        )
 
     def test_require_demo_accepts_structured_verifier_gated_promotion(self) -> None:
         rows = [
