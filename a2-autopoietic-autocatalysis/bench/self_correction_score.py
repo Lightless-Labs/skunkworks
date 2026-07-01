@@ -436,6 +436,18 @@ def has_retry_context_from_failure(
     )
 
 
+def has_retry_context_from_archived_failure(
+    first: SelfCorrectionRecord,
+    retry: SelfCorrectionRecord,
+    *,
+    require_structured_evidence: bool = False,
+) -> bool:
+    return has_archived_verifier_failure(
+        first,
+        require_structured_evidence=require_structured_evidence,
+    ) and has_retry_context_from_failure(first, retry)
+
+
 def demo_run_ids(records: list[SelfCorrectionRecord]) -> list[tuple[str, str]]:
     demo_runs: list[tuple[str, str]] = []
     for key, attempts in group_records(records).items():
@@ -457,6 +469,15 @@ def demo_run_ids(records: list[SelfCorrectionRecord]) -> list[tuple[str, str]]:
             require_structured_evidence=requires_structured_failure_evidence,
         ):
             continue
+        promotion_attempts = [
+            record
+            for record in promotion_attempts
+            if has_retry_context_from_archived_failure(
+                first,
+                record,
+                require_structured_evidence=requires_structured_failure_evidence,
+            )
+        ]
         if not promotion_attempts:
             continue
         demo_runs.append(key)
@@ -531,16 +552,32 @@ def demo_evidence_map(
     for run_id, task_id in demos:
         attempts = grouped[(run_id, task_id)]
         first = attempts[0]
-        promotion_attempt = next(
+        promotion_candidates = [
             record
             for record in attempts[1:]
             if has_verifier_gated_promotion(record)
             and has_retry_context_from_failure(first, record)
+        ]
+        requires_structured_failure_evidence = any(
+            record.promotion_structured_present for record in promotion_candidates
+        )
+        promotion_attempt = next(
+            record
+            for record in promotion_candidates
+            if has_retry_context_from_archived_failure(
+                first,
+                record,
+                require_structured_evidence=requires_structured_failure_evidence,
+            )
         )
         retry_attempts = [
             record
             for record in attempts[1:]
-            if has_retry_context_from_failure(first, record)
+            if has_retry_context_from_archived_failure(
+                first,
+                record,
+                require_structured_evidence=requires_structured_failure_evidence,
+            )
         ]
         evidence["demos"].append(
             {
@@ -595,6 +632,22 @@ def demo_evidence_map(
                                 "prior_lineage_present": record.prior_lineage_present,
                                 "lineage_records_before": record.lineage_records_before,
                                 "derived_from_failed_lineage": has_retry_context_from_failure(first, record),
+                                "archived_verifier_failure_evidence": has_archived_verifier_failure(
+                                    first,
+                                    require_structured_evidence=requires_structured_failure_evidence,
+                                ),
+                                "retry_context_links_archived_failure": has_retry_context_from_archived_failure(
+                                    first,
+                                    record,
+                                    require_structured_evidence=requires_structured_failure_evidence,
+                                ),
+                                "failed_attempt_selector": {
+                                    "run_id": run_id,
+                                    "task_id": task_id,
+                                    "attempt": first.attempt,
+                                },
+                                "failed_verify_returncode": first.verify_returncode,
+                                "failed_verifier_failure_evidence_present": first.verifier_failure_evidence_present,
                             }
                             for record in retry_attempts
                         ],
@@ -1120,7 +1173,12 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         )
         self.assertTrue(chain[1]["fields"]["lineage_advanced"])
         self.assertEqual(chain[1]["evidence_row"]["lineage_records_after"], 1)
-        self.assertTrue(chain[2]["fields"][0]["derived_from_failed_lineage"])
+        retry_field = chain[2]["fields"][0]
+        self.assertTrue(retry_field["derived_from_failed_lineage"])
+        self.assertTrue(retry_field["archived_verifier_failure_evidence"])
+        self.assertTrue(retry_field["retry_context_links_archived_failure"])
+        self.assertEqual(retry_field["failed_attempt_selector"]["attempt"], 1)
+        self.assertEqual(retry_field["failed_verify_returncode"], 1)
         self.assertEqual(chain[2]["evidence_rows"][0]["lineage_records_before"], 1)
         self.assertTrue(chain[5]["fields"]["promotion_evidence_present"])
         self.assertTrue(chain[5]["evidence_row"]["promotion_evidence_present"])
@@ -1871,9 +1929,51 @@ class SelfCorrectionScoreTests(unittest.TestCase):
             ),
         ]
 
+        self.assertTrue(has_retry_context_from_failure(records[0], records[1]))
+        self.assertFalse(has_retry_context_from_archived_failure(records[0], records[1]))
         self.assertEqual(demo_run_ids(records), [])
         output = render(records, require_demo=True)
         self.assertIn("FAIL no run contains", output)
+
+    def test_demo_evidence_json_rejects_retry_context_without_archived_failure_link(self) -> None:
+        records = [
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+                a2_returncode=0,
+                verify_returncode=1,
+                lineage_records_before=0,
+                lineage_records_after=1,
+                verifier_failure_evidence_present=False,
+                verifier_failure_evidence_structured_present=True,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=2,
+                resolved=True,
+                prior_lineage_present=True,
+                a2_returncode=0,
+                verify_returncode=0,
+                lineage_records_before=1,
+                lineage_records_after=2,
+                lineage_reconciled_by_core=True,
+                promotion_structured_present=True,
+                promotion_verifier_gated=True,
+                promotion_structured_evidence_present=True,
+                promotion_lineage_reconciled_by_core=True,
+                promotion_verify_returncode=0,
+            ),
+        ]
+
+        self.assertTrue(has_retry_context_from_failure(records[0], records[1]))
+        self.assertFalse(has_retry_context_from_archived_failure(records[0], records[1]))
+        evidence = demo_evidence_map(records, artifact_label="missing-failure-evidence.jsonl")
+        self.assertFalse(evidence["complete"])
+        self.assertEqual(evidence["demos"], [])
 
     def test_clean_agent_exit_flag_requires_verifier_failure(self) -> None:
         records = [
