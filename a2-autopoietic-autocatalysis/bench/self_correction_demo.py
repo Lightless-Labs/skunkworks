@@ -99,9 +99,13 @@ def load_jsonl(path: Path) -> list[dict[str, object]]:
 
 
 def run_id_matches(row_run_id: object, expected: str) -> bool:
-    return isinstance(row_run_id, str) and (
-        row_run_id == expected or row_run_id.startswith(f"{expected}-")
-    )
+    if not isinstance(row_run_id, str):
+        return False
+    if row_run_id == expected:
+        return True
+    prefix = f"{expected}-"
+    suffix = row_run_id.removeprefix(prefix)
+    return row_run_id.startswith(prefix) and suffix.isdecimal()
 
 
 def validate_fresh_results(args: argparse.Namespace) -> None:
@@ -402,6 +406,141 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "source_branch": "main",
                         "source_dirty": False,
                         "max_tokens": 100_000,
+                        "timeout_secs": 1800,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            with self.assertRaises(RuntimeError):
+                validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_same_prefix_non_numeric_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            results.write_text(
+                json.dumps(
+                    {
+                        "run_id": "fresh-demo-old",
+                        "source_head": "abcdef123456",
+                        "source_head_short": "abcdef1",
+                        "source_branch": "main",
+                        "source_dirty": False,
+                        "max_tokens": 100_000,
+                        "timeout_secs": 1800,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            with self.assertRaises(RuntimeError):
+                validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_empty_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            results.touch()
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            with self.assertRaises(RuntimeError):
+                validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_invalid_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            results.write_text("not json\n", encoding="utf-8")
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            with self.assertRaises(RuntimeError):
+                validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_missing_audit_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            results.write_text(
+                json.dumps({"run_id": "fresh-demo-1", "source_head": "abcdef"}) + "\n",
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            with self.assertRaises(RuntimeError):
+                validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_dirty_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            results.write_text(
+                json.dumps(
+                    {
+                        "run_id": "fresh-demo-1",
+                        "source_head": "abcdef123456",
+                        "source_head_short": "abcdef1",
+                        "source_branch": "main",
+                        "source_dirty": True,
+                        "max_tokens": 100_000,
+                        "timeout_secs": 1800,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            with self.assertRaises(RuntimeError):
+                validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_budget_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            results.write_text(
+                json.dumps(
+                    {
+                        "run_id": "fresh-demo-1",
+                        "source_head": "abcdef123456",
+                        "source_head_short": "abcdef1",
+                        "source_branch": "main",
+                        "source_dirty": False,
+                        "max_tokens": 99_999,
                         "timeout_secs": 1800,
                     }
                 )

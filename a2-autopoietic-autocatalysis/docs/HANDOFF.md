@@ -11,7 +11,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 
 | Metric | Value |
 |--------|-------|
-| Tests | 116 Rust + 24 self-correction Python + 23 scoring Python + 10 demo-wrapper Python tests |
+| Tests | 116 Rust + 24 self-correction Python + 23 scoring Python + 16 demo-wrapper Python tests |
 | Sentinels | 6/6 PASS |
 | Crates | 11 |
 | Benchmark (OpenCode/GLM via A²) | 5/5 (with 100k token / 1800s budget) |
@@ -60,7 +60,7 @@ A² (Autopoietic Autocatalysis) is an autonomous software factory that modifies 
 | Anti-repeat ablation (Pi/ZAI same-crate a2d) | imported 2026-06-10 enabled cohort resolved 3/3 with pass@1 1/3 and self-corrected 2/3; new disabled cohort resolved 3/3 with pass@1 3/3 and loop 0/3; disabled cohort did not exercise anti-repeat retry |
 | 4-provider smoke (2026-04-16) | 4/4 PASS (gemini, glm-5.1, minimax-2.7, kimi k2.5) post ContextPack wiring |
 
-Latest local verification for the demo evidence-map/fresh validation slice (2026-07-01): `cargo test` passed, and `cargo run -p a2ctl -- sentinel --workspace .` reported `Score: 100% (6/6)` / `Sentinel gate: PASS`.
+Latest local verification for the fresh run-id/provenance validation slice (2026-07-01): `cargo test` passed, and `cargo run -p a2ctl -- sentinel --workspace .` reported `Score: 100% (6/6)` / `Sentinel gate: PASS`.
 
 ## Reproducible Demo Evidence Map
 
