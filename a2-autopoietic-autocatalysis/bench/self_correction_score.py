@@ -471,6 +471,41 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def normalized_evidence_row(record: SelfCorrectionRecord) -> dict[str, Any]:
+    """Return schema-bounded row evidence used by the demo proof.
+
+    The full JSONL row can contain verbose stdout/stderr. The demo evidence map
+    embeds a fixed normalized field set that the scorer uses to prove the
+    causal chain; the source JSONL remains the authoritative artifact and is
+    bound by artifact_sha256.
+    """
+
+    return {
+        "run_id": record.run_id,
+        "task_id": record.task_id,
+        "attempt": record.attempt,
+        "resolved": record.resolved,
+        "prior_lineage_present": record.prior_lineage_present,
+        "a2_returncode": record.a2_returncode,
+        "verify_returncode": record.verify_returncode,
+        "verify_command": record.verify_command,
+        "touched_files": list(record.touched_files),
+        "diff_added_lines": record.diff_added_lines,
+        "diff_removed_lines": record.diff_removed_lines,
+        "lineage_records_before": record.lineage_records_before,
+        "lineage_records_after": record.lineage_records_after,
+        "lineage_reconciled_by_core": record.lineage_reconciled_by_core,
+        "verifier_failure_evidence_present": record.verifier_failure_evidence_present,
+        "verifier_failure_evidence_structured_present": record.verifier_failure_evidence_structured_present,
+        "promotion_evidence_present": record.promotion_evidence_present,
+        "promotion_structured_present": record.promotion_structured_present,
+        "promotion_verifier_gated": record.promotion_verifier_gated,
+        "promotion_structured_evidence_present": record.promotion_structured_evidence_present,
+        "promotion_lineage_reconciled_by_core": record.promotion_lineage_reconciled_by_core,
+        "promotion_verify_returncode": record.promotion_verify_returncode,
+    }
+
+
 def demo_evidence_map(
     records: list[SelfCorrectionRecord],
     *,
@@ -516,6 +551,7 @@ def demo_evidence_map(
                         "requirement": "failed_first_attempt",
                         "status": "proved",
                         "selector": {"run_id": run_id, "task_id": task_id, "attempt": first.attempt},
+                        "evidence_row": normalized_evidence_row(first),
                         "check": "resolved is false and verify_returncode is non-zero",
                         "fields": {
                             "resolved": first.resolved,
@@ -527,6 +563,7 @@ def demo_evidence_map(
                         "requirement": "archived_verifier_failure_evidence",
                         "status": "proved",
                         "selector": {"run_id": run_id, "task_id": task_id, "attempt": first.attempt},
+                        "evidence_row": normalized_evidence_row(first),
                         "check": "failed row records verifier failure and advances lineage",
                         "fields": {
                             "lineage_records_before": first.lineage_records_before,
@@ -549,6 +586,9 @@ def demo_evidence_map(
                             {"run_id": run_id, "task_id": task_id, "attempt": record.attempt}
                             for record in retry_attempts
                         ],
+                        "evidence_rows": [
+                            normalized_evidence_row(record) for record in retry_attempts
+                        ],
                         "fields": [
                             {
                                 "attempt": record.attempt,
@@ -567,6 +607,7 @@ def demo_evidence_map(
                             "task_id": task_id,
                             "attempt": promotion_attempt.attempt,
                         },
+                        "evidence_row": normalized_evidence_row(promotion_attempt),
                         "check": "later attempt resolves and verify_returncode is zero",
                         "fields": {
                             "resolved": promotion_attempt.resolved,
@@ -576,6 +617,9 @@ def demo_evidence_map(
                     {
                         "requirement": "lineage_trajectory_recorded",
                         "status": "proved",
+                        "evidence_rows": [
+                            normalized_evidence_row(record) for record in attempts
+                        ],
                         "check": "same run/task advances lineage from failed first attempt through promotion",
                         "fields": {
                             "lineage_records_before": first.lineage_records_before,
@@ -591,6 +635,7 @@ def demo_evidence_map(
                             "task_id": task_id,
                             "attempt": promotion_attempt.attempt,
                         },
+                        "evidence_row": normalized_evidence_row(promotion_attempt),
                         "check": "promotion attempt passed verification, reconciled through core lineage, and has promotion/apply evidence",
                         "fields": {
                             "verify_returncode": promotion_attempt.verify_returncode,
@@ -1074,8 +1119,84 @@ class SelfCorrectionScoreTests(unittest.TestCase):
             ],
         )
         self.assertTrue(chain[1]["fields"]["lineage_advanced"])
+        self.assertEqual(chain[1]["evidence_row"]["lineage_records_after"], 1)
         self.assertTrue(chain[2]["fields"][0]["derived_from_failed_lineage"])
+        self.assertEqual(chain[2]["evidence_rows"][0]["lineage_records_before"], 1)
         self.assertTrue(chain[5]["fields"]["promotion_evidence_present"])
+        self.assertTrue(chain[5]["evidence_row"]["promotion_evidence_present"])
+
+    def test_demo_evidence_json_embeds_schema_bounded_normalized_rows(self) -> None:
+        rows = [
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 1,
+                "resolved": False,
+                "prior_lineage_present": False,
+                "a2_returncode": 0,
+                "verify_returncode": 1,
+                "verify_command": "cargo test -p demo hidden_regression",
+                "lineage_records_before": 0,
+                "lineage_records_after": 1,
+                "verifier_failure_evidence_present": True,
+                "stdout": "verbose failed attempt output",
+                "stderr": "verbose failed attempt error",
+            },
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 2,
+                "resolved": True,
+                "prior_lineage_present": True,
+                "a2_returncode": 0,
+                "verify_returncode": 0,
+                "lineage_records_before": 1,
+                "lineage_records_after": 2,
+                "lineage_reconciled_by_core": True,
+                "stdout": "[applied and rebuilt: ok] verbose promotion output",
+                "stderr": "verbose promotion error",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logfile = Path(tmpdir) / "demo.jsonl"
+            logfile.write_text(
+                "\n".join(json.dumps(row) for row in rows) + "\n",
+                encoding="utf-8",
+            )
+            records = load_records(logfile)
+
+        evidence = demo_evidence_map(records, artifact_label="demo.jsonl")
+        promotion_row = evidence["demos"][0]["causal_chain"][5]["evidence_row"]
+
+        expected_schema = {
+            "run_id",
+            "task_id",
+            "attempt",
+            "resolved",
+            "prior_lineage_present",
+            "a2_returncode",
+            "verify_returncode",
+            "verify_command",
+            "touched_files",
+            "diff_added_lines",
+            "diff_removed_lines",
+            "lineage_records_before",
+            "lineage_records_after",
+            "lineage_reconciled_by_core",
+            "verifier_failure_evidence_present",
+            "verifier_failure_evidence_structured_present",
+            "promotion_evidence_present",
+            "promotion_structured_present",
+            "promotion_verifier_gated",
+            "promotion_structured_evidence_present",
+            "promotion_lineage_reconciled_by_core",
+            "promotion_verify_returncode",
+        }
+        self.assertEqual(set(promotion_row), expected_schema)
+        self.assertTrue(promotion_row["promotion_evidence_present"])
+        self.assertEqual(promotion_row["lineage_reconciled_by_core"], True)
+        self.assertNotIn("stdout", promotion_row)
+        self.assertNotIn("stderr", promotion_row)
 
     def test_demo_evidence_json_marks_incomplete_lineage_gap(self) -> None:
         records = [
