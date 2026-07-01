@@ -328,6 +328,19 @@ def run_id_matches(row_run_id: object, expected: str) -> bool:
     return row_run_id.startswith(prefix) and suffix.isdecimal()
 
 
+def validate_fresh_rows_for_host_path_markers(
+    rows: list[dict[str, object]], *, source_label: str
+) -> None:
+    for index, row in enumerate(rows, start=1):
+        serialized = json.dumps(row, sort_keys=True)
+        leaked = [marker for marker in HOST_PATH_MARKERS if marker in serialized]
+        if leaked:
+            raise RuntimeError(
+                f"fresh demo row {index} contains host-specific path marker(s) "
+                f"in {source_label}: " + ", ".join(leaked)
+            )
+
+
 def validate_fresh_rows(
     rows: list[dict[str, object]],
     *,
@@ -348,6 +361,8 @@ def validate_fresh_rows(
             "fresh demo results contain rows outside the requested run_id "
             f"{run_id!r}: {mismatched[:3]}"
         )
+
+    validate_fresh_rows_for_host_path_markers(rows, source_label=source_label)
 
     for index, row in enumerate(rows, start=1):
         missing = [
@@ -400,6 +415,7 @@ def fresh_validation_summary(args: argparse.Namespace) -> str:
         "# would validate fresh results before scoring: "
         "JSONL exists and is non-empty; "
         f"all rows match run_id {args.run_id!r} or numeric suffixed variants; "
+        "no host-specific path markers are present; "
         f"required provenance fields are present; {dirty_requirement}; "
         f"max_tokens={args.max_tokens}; timeout_secs={args.timeout}"
     )
@@ -2022,6 +2038,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("# would validate fresh results before scoring", output)
         self.assertIn("all rows match run_id 'fresh-demo'", output)
+        self.assertIn("no host-specific path markers are present", output)
         self.assertIn("source_dirty=false", output)
         self.assertIn(str(results.with_suffix(".demo-evidence.json")), output)
         self.assertIn("verify-evidence-contract", output)
@@ -2434,6 +2451,31 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             )
 
             validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_host_path_markers_in_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            row = {
+                "run_id": "fresh-demo-1",
+                "source_head": "abcdef123456",
+                "source_head_short": "abcdef1",
+                "source_branch": "main",
+                "source_dirty": False,
+                "max_tokens": 100_000,
+                "timeout_secs": 1800,
+                "stdout": "tool output leaked /Users/example/project/file.rs",
+            }
+            results.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "host-specific path marker"):
+                validate_fresh_results(args)
 
     def test_validate_fresh_results_rejects_stale_or_mismatched_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
