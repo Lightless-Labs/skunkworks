@@ -970,6 +970,92 @@ def validate_demo_evidence_contract(
             raise RuntimeError("demo evidence contract promotion lacks gated apply evidence")
 
 
+def selector_summary(selector: dict[str, object]) -> str:
+    return (
+        f"run_id={selector.get('run_id')!r}, "
+        f"task_id={selector.get('task_id')!r}, "
+        f"attempt={selector.get('attempt')!r}"
+    )
+
+
+def contract_demo_artifact_lines(evidence: dict[str, object]) -> list[str]:
+    artifact = evidence.get("artifact")
+    if not isinstance(artifact, str) or not artifact:
+        artifact = "<missing>"
+    lines = [f"  artifact: {artifact}"]
+    demos = require_sequence(evidence.get("demos"), label="demos")
+    for demo_index, demo_value in enumerate(demos, start=1):
+        demo = require_mapping(demo_value, label=f"demos[{demo_index - 1}]")
+        chain = require_sequence(
+            demo.get("causal_chain"), label=f"demos[{demo_index - 1}].causal_chain"
+        )
+        steps = {
+            require_mapping(step, label=f"demos[{demo_index - 1}].step").get("requirement"): require_mapping(
+                step, label=f"demos[{demo_index - 1}].step"
+            )
+            for step in chain
+        }
+        failed = require_mapping(
+            steps["failed_first_attempt"].get("selector"),
+            label=f"demos[{demo_index - 1}].failed_first_attempt.selector",
+        )
+        retry_selectors = [
+            require_mapping(selector, label=f"demos[{demo_index - 1}].retry.selector")
+            for selector in require_sequence(
+                steps["retry_context_from_failure_evidence"].get("selectors"),
+                label=f"demos[{demo_index - 1}].retry_context_from_failure_evidence.selectors",
+            )
+        ]
+        retry_fields = [
+            require_mapping(field, label=f"demos[{demo_index - 1}].retry.fields")
+            for field in require_sequence(
+                steps["retry_context_from_failure_evidence"].get("fields"),
+                label=f"demos[{demo_index - 1}].retry_context_from_failure_evidence.fields",
+            )
+        ]
+        retry_causal_flags = [
+            "attempt "
+            f"{selector.get('attempt')}: "
+            f"derived_from_failed_lineage={field.get('derived_from_failed_lineage')}, "
+            f"archived_verifier_failure_evidence={field.get('archived_verifier_failure_evidence')}, "
+            f"retry_context_links_archived_failure={field.get('retry_context_links_archived_failure')}"
+            for selector, field in zip(retry_selectors, retry_fields)
+        ]
+        later = require_mapping(
+            steps["later_passing_attempt"].get("selector"),
+            label=f"demos[{demo_index - 1}].later_passing_attempt.selector",
+        )
+        lineage_fields = require_mapping(
+            steps["lineage_trajectory_recorded"].get("fields"),
+            label=f"demos[{demo_index - 1}].lineage_trajectory_recorded.fields",
+        )
+        promotion = require_mapping(
+            steps["verifier_gated_germline_promotion"].get("selector"),
+            label=f"demos[{demo_index - 1}].verifier_gated_germline_promotion.selector",
+        )
+        promotion_fields = require_mapping(
+            steps["verifier_gated_germline_promotion"].get("fields"),
+            label=f"demos[{demo_index - 1}].verifier_gated_germline_promotion.fields",
+        )
+        lines.extend(
+            [
+                f"  demo {demo_index}: {failed.get('run_id')} / {failed.get('task_id')}",
+                f"    failed_first_attempt: source={artifact}; {selector_summary(failed)}",
+                f"    archived_verifier_failure_evidence: source={artifact}; {selector_summary(failed)}; lineage={steps['archived_verifier_failure_evidence']['fields']['lineage_records_before']}->{steps['archived_verifier_failure_evidence']['fields']['lineage_records_after']}",
+                "    retry_context_from_failure_evidence: source="
+                f"{artifact}; selectors=["
+                + "; ".join(selector_summary(selector) for selector in retry_selectors)
+                + "]; causal_flags=["
+                + "; ".join(retry_causal_flags)
+                + "]",
+                f"    later_passing_attempt: source={artifact}; {selector_summary(later)}",
+                f"    lineage_trajectory_recorded: source={artifact}; attempts={lineage_fields.get('attempts')}; lineage={lineage_fields.get('lineage_records_before')}->{lineage_fields.get('lineage_records_after')}",
+                f"    verifier_gated_germline_promotion: source={artifact}; {selector_summary(promotion)}; verify_returncode={promotion_fields.get('verify_returncode')}; lineage_reconciled_by_core={promotion_fields.get('lineage_reconciled_by_core')}",
+            ]
+        )
+    return lines
+
+
 def verify_evidence_contract(
     evidence_json: Path,
     reference_evidence_json: Path,
@@ -1015,6 +1101,8 @@ def verify_evidence_contract(
         "retry_context_from_failure_evidence -> later_passing_attempt -> "
         "lineage_trajectory_recorded -> verifier_gated_germline_promotion"
     )
+    for line in contract_demo_artifact_lines(evidence):
+        print(line)
 
 
 def run_command(command: list[str], *, print_only: bool) -> int:
@@ -1449,6 +1537,27 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             self.evidence_reference(evidence),
             evidence_label=str(DEFAULT_ARCHIVE_EVIDENCE),
         )
+
+    def test_verify_evidence_contract_prints_concrete_artifact_selectors(self) -> None:
+        stdout = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout):
+            verify_evidence_contract(DEFAULT_ARCHIVE_EVIDENCE, DEFAULT_ARCHIVE_EVIDENCE)
+
+        output = stdout.getvalue()
+        self.assertIn(str(DEFAULT_ARCHIVE), output)
+        self.assertIn("failed_first_attempt: source=", output)
+        self.assertIn("archived_verifier_failure_evidence: source=", output)
+        self.assertIn("retry_context_from_failure_evidence: source=", output)
+        self.assertIn("derived_from_failed_lineage=True", output)
+        self.assertIn("archived_verifier_failure_evidence=True", output)
+        self.assertIn("retry_context_links_archived_failure=True", output)
+        self.assertIn("later_passing_attempt: source=", output)
+        self.assertIn("lineage_trajectory_recorded: source=", output)
+        self.assertIn("attempts=[1, 2]", output)
+        self.assertIn("verifier_gated_germline_promotion: source=", output)
+        self.assertIn("verify_returncode=0", output)
+        self.assertIn("lineage_reconciled_by_core=True", output)
 
     def test_verify_evidence_contract_rejects_artifact_hash_mismatch(self) -> None:
         evidence = self.archived_demo_contract_evidence()
