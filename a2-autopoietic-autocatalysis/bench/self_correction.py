@@ -1030,6 +1030,35 @@ def result_record(
         "lineage_records_before": lineage_before,
         "lineage_records_after": lineage_after,
         "lineage_reconciled_by_core": lineage_reconciled_by_core,
+        "verifier_failure_evidence_present": verify_result.returncode != 0
+        and bool((verify_result.stdout or verify_result.stderr).strip()),
+        "promotion_evidence_present": a2_result is not None
+        and (
+            "promote_germline" in (a2_result.stdout or "").lower()
+            or "promote_germline" in (a2_result.stderr or "").lower()
+            or "[applied and rebuilt:" in (a2_result.stdout or "").lower()
+            or "[applied and rebuilt:" in (a2_result.stderr or "").lower()
+        ),
+        "promotion": {
+            "verifier_gated": verify_result.returncode == 0
+            and lineage_reconciled_by_core
+            and a2_result is not None
+            and (
+                "promote_germline" in (a2_result.stdout or "").lower()
+                or "promote_germline" in (a2_result.stderr or "").lower()
+                or "[applied and rebuilt:" in (a2_result.stdout or "").lower()
+                or "[applied and rebuilt:" in (a2_result.stderr or "").lower()
+            ),
+            "evidence_present": a2_result is not None
+            and (
+                "promote_germline" in (a2_result.stdout or "").lower()
+                or "promote_germline" in (a2_result.stderr or "").lower()
+                or "[applied and rebuilt:" in (a2_result.stdout or "").lower()
+                or "[applied and rebuilt:" in (a2_result.stderr or "").lower()
+            ),
+            "lineage_reconciled_by_core": lineage_reconciled_by_core,
+            "verify_returncode": verify_result.returncode,
+        },
         "anti_repeat_retry_enabled": anti_repeat_retry_enabled,
         "ablation": None if anti_repeat_retry_enabled else "anti_repeat_retry_disabled",
         **patch_stats,
@@ -1451,6 +1480,12 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertTrue(record["prior_lineage_present"])
         self.assertEqual(record["lineage_records_after"], 2)
         self.assertTrue(record["lineage_reconciled_by_core"])
+        self.assertFalse(record["verifier_failure_evidence_present"])
+        self.assertFalse(record["promotion_evidence_present"])
+        self.assertFalse(record["promotion"]["verifier_gated"])
+        self.assertFalse(record["promotion"]["evidence_present"])
+        self.assertTrue(record["promotion"]["lineage_reconciled_by_core"])
+        self.assertEqual(record["promotion"]["verify_returncode"], 0)
         self.assertFalse(record["anti_repeat_retry_enabled"])
         self.assertEqual(record["ablation"], "anti_repeat_retry_disabled")
         self.assertEqual(record["touched_files"], ["crates/a2_core/src/lib.rs"])

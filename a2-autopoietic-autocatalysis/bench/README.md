@@ -73,6 +73,7 @@ Each JSONL result includes:
 - `prior_lineage_present`
 - `lineage_records_before` / `lineage_records_after`
 - `lineage_reconciled_by_core`
+- `verifier_failure_evidence_present`, `promotion_evidence_present`, and nested `promotion` fields (`verifier_gated`, `evidence_present`, `lineage_reconciled_by_core`, `verify_returncode`) on newly generated rows; older archived rows remain scoreable through the legacy stdout/stderr promotion markers
 - `anti_repeat_retry_enabled` / `ablation`
 - `touched_files`, `touched_file_count`, `diff_added_lines`, `diff_removed_lines`
 - verification command, return code, duration, stdout, stderr
@@ -96,7 +97,7 @@ bench/self_correction_score.py --require-demo --trajectories \
   docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.jsonl
 ```
 
-`--require-demo` exits non-zero unless at least one grouped run contains: a failed first attempt with verifier failure archived into lineage (`lineage_records_after > lineage_records_before`), a retry with prior lineage present, a later verified pass, core lineage reconciliation, and promotion/apply evidence in the archived run output.
+`--require-demo` exits non-zero unless at least one grouped run contains: a failed first attempt with verifier failure archived into lineage (`lineage_records_after > lineage_records_before`), a retry with prior lineage present, a later verified pass, core lineage reconciliation, and promotion/apply evidence in the archived run output. Passing output includes a deterministic `[proved]` checklist mapping each demo requirement to the JSONL artifact, run/task ID, verifier command/status, lineage counters, retry attempts, later pass, and verifier-gated promotion/apply evidence.
 
 This scorer reports `pass@1` separately from `self-corrected`. A first-attempt pass is useful model capability data, but it does not exercise prior-lineage self-correction; when no run retries, `self-corrected` renders as N/A instead of a failed recovery rate. A JSONL file can have more rows than independent trials because each retry attempt is one row; score and document runs by unique `(run_id, task_id)`, not raw line count. Benchmark success keys off `resolved` / verification status; `a2_returncode=0` only means the agent command exited cleanly.
 
