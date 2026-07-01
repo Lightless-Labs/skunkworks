@@ -732,6 +732,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "leaving candidate verifiers and other retry context enabled."
         ),
     )
+    parser.add_argument(
+        "--require-clean-source",
+        action="store_true",
+        help=(
+            "Fail before creating worktrees or result files unless the project-scoped "
+            "source tree is clean."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.runs < 1:
         parser.error("--runs must be at least 1")
@@ -1066,6 +1074,11 @@ def run_benchmark(args: argparse.Namespace) -> int:
     source_git_root = repo_root(source_project)
     project_relative = source_project.relative_to(source_git_root)
     source_metadata = source_git_metadata(source_git_root, project_relative)
+    if args.require_clean_source and source_metadata["source_dirty"]:
+        raise RuntimeError(
+            "--require-clean-source requires a clean project-scoped source tree "
+            "before benchmark worktrees or result files are created"
+        )
     base_run_id = args.run_id or datetime.now(timezone.utc).strftime("self-correction-%Y%m%dT%H%M%SZ")
     results = Path(args.results)
     if not results.is_absolute():
@@ -1168,6 +1181,86 @@ class SelfCorrectionTests(unittest.TestCase):
     def test_parse_args_rejects_workdir_with_multiple_runs(self) -> None:
         with self.assertRaises(SystemExit):
             parse_args(["--runs", "2", "--workdir", "/tmp/a2-workdir"])
+
+    def test_parse_args_accepts_require_clean_source(self) -> None:
+        args = parse_args(["--require-clean-source"])
+        self.assertTrue(args.require_clean_source)
+
+    def test_source_metadata_dirty_check_is_project_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            (project / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+            subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            subprocess.run(["git", "add", "project/Cargo.toml"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=A2 Test",
+                    "-c",
+                    "user.email=a2@example.invalid",
+                    "commit",
+                    "-m",
+                    "initial",
+                ],
+                cwd=root,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            (root / "outside.txt").write_text("outside\n", encoding="utf-8")
+            clean_project = source_git_metadata(root, Path("project"))
+            self.assertFalse(clean_project["source_dirty"])
+
+            (project / "notes.txt").write_text("dirty\n", encoding="utf-8")
+            dirty_project = source_git_metadata(root, Path("project"))
+            self.assertTrue(dirty_project["source_dirty"])
+
+    def test_require_clean_source_fails_before_result_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            (project / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+            subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            subprocess.run(["git", "add", "project/Cargo.toml"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=A2 Test",
+                    "-c",
+                    "user.email=a2@example.invalid",
+                    "commit",
+                    "-m",
+                    "initial",
+                ],
+                cwd=root,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            (project / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+            results = project / "results" / "benchmark.jsonl"
+            args = parse_args(
+                [
+                    "--repo",
+                    str(project),
+                    "--smoke-only",
+                    "--require-clean-source",
+                    "--results",
+                    str(results),
+                ]
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "--require-clean-source"):
+                run_benchmark(args)
+            self.assertFalse(results.exists())
 
     def test_task_payload_carries_fixture_verifier_command(self) -> None:
         fixture = FIXTURES["compound-hidden"]

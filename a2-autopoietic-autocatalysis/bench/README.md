@@ -62,11 +62,13 @@ bench/self_correction.py --fixture compound-raf-same-crate-hidden \
   --results /tmp/a2-raf-fixture-smoke.jsonl
 ```
 
+For reproducible archived evidence, add `--require-clean-source` from a clean checkout. The guard checks the project-scoped git status before creating benchmark worktrees or result files, so write generated demo artifacts outside the checked source tree (for example under `/tmp`) unless the destination is already ignored or pre-created outside the audited project path.
+
 Each JSONL result includes:
 
 - `task_id`, `run_id`, `attempt`, `category` (`--runs N` emits one distinct `run_id` per independent trajectory)
 - `provider` / `model`
-- `source_head`, `source_head_short`, `source_branch`, and `source_dirty` for auditing which source revision produced the benchmark record
+- `source_head`, `source_head_short`, `source_branch`, and `source_dirty` for auditing which source revision produced the benchmark record; use `--require-clean-source` when the run should fail rather than produce `source_dirty=true` evidence
 - `resolved`
 - `prior_lineage_present`
 - `lineage_records_before` / `lineage_records_after`
