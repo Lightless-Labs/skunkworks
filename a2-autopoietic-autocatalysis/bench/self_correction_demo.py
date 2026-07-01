@@ -16,6 +16,7 @@ sequence before running it.
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import subprocess
 import sys
@@ -65,16 +66,91 @@ def repo_path(path: Path) -> Path:
     return path if path.is_absolute() else repo_root() / path
 
 
-def ensure_fresh_results_path(results: Path, *, append_existing_results: bool) -> None:
-    if append_existing_results:
-        return
+def ensure_fresh_results_path(results: Path) -> None:
     resolved = repo_path(results)
     if resolved.exists() and resolved.stat().st_size > 0:
         raise RuntimeError(
             f"fresh demo results path already contains data: {results}. "
-            "Use a unique --results path, remove/truncate the file, or pass "
-            "--append-existing-results intentionally."
+            "Use a unique --results path or remove/truncate the file first."
         )
+
+
+def load_jsonl(path: Path) -> list[dict[str, object]]:
+    resolved = repo_path(path)
+    if not resolved.exists():
+        raise RuntimeError(f"fresh demo results file was not created: {path}")
+    rows: list[dict[str, object]] = []
+    with resolved.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"invalid JSONL in fresh demo results at line {line_number}: {exc}"
+                ) from exc
+            if not isinstance(row, dict):
+                raise RuntimeError(
+                    f"fresh demo results line {line_number} is not a JSON object"
+                )
+            rows.append(row)
+    return rows
+
+
+def run_id_matches(row_run_id: object, expected: str) -> bool:
+    return isinstance(row_run_id, str) and (
+        row_run_id == expected or row_run_id.startswith(f"{expected}-")
+    )
+
+
+def validate_fresh_results(args: argparse.Namespace) -> None:
+    rows = load_jsonl(args.results)
+    if not rows:
+        raise RuntimeError(f"fresh demo results file has no rows: {args.results}")
+
+    if args.run_id is not None:
+        mismatched = [
+            row.get("run_id") for row in rows if not run_id_matches(row.get("run_id"), args.run_id)
+        ]
+        if mismatched:
+            raise RuntimeError(
+                "fresh demo results contain rows outside the requested run_id "
+                f"{args.run_id!r}: {mismatched[:3]}"
+            )
+
+    for index, row in enumerate(rows, start=1):
+        missing = [
+            key
+            for key in (
+                "source_head",
+                "source_head_short",
+                "source_branch",
+                "source_dirty",
+                "max_tokens",
+                "timeout_secs",
+            )
+            if key not in row
+        ]
+        if missing:
+            raise RuntimeError(
+                f"fresh demo row {index} is missing audit field(s): {', '.join(missing)}"
+            )
+        if not args.allow_dirty_source and row.get("source_dirty") is not False:
+            raise RuntimeError(
+                f"fresh demo row {index} was produced from dirty source: "
+                f"source_dirty={row.get('source_dirty')!r}"
+            )
+        if row.get("max_tokens") != args.max_tokens:
+            raise RuntimeError(
+                f"fresh demo row {index} records max_tokens={row.get('max_tokens')!r}; "
+                f"expected {args.max_tokens}"
+            )
+        if row.get("timeout_secs") != args.timeout:
+            raise RuntimeError(
+                f"fresh demo row {index} records timeout_secs={row.get('timeout_secs')!r}; "
+                f"expected {args.timeout}"
+            )
 
 
 def fresh_command(args: argparse.Namespace) -> list[str]:
@@ -139,19 +215,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     fresh.add_argument("--attempts", type=int, default=3)
     fresh.add_argument("--max-tokens", type=int, default=100_000)
     fresh.add_argument("--timeout", type=int, default=1800)
-    fresh.add_argument("--run-id", default=None)
+    fresh.add_argument(
+        "--run-id",
+        required=True,
+        help="Required stable prefix for rows produced by this fresh demo invocation.",
+    )
     fresh.add_argument(
         "--allow-dirty-source",
         action="store_true",
         help="Omit --require-clean-source when regenerating the benchmark artifact.",
-    )
-    fresh.add_argument(
-        "--append-existing-results",
-        action="store_true",
-        help=(
-            "Allow appending to a non-empty results file. By default fresh mode "
-            "refuses this so the post-run demo gate cannot pass because of older rows."
-        ),
     )
     fresh.add_argument("--keep-workspace", action="store_true")
     fresh.add_argument("--print-only", action="store_true")
@@ -178,16 +250,19 @@ def main(argv: list[str]) -> int:
     if args.mode == "fresh":
         if not args.print_only:
             try:
-                ensure_fresh_results_path(
-                    args.results,
-                    append_existing_results=args.append_existing_results,
-                )
+                ensure_fresh_results_path(args.results)
             except RuntimeError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
         first = run_command(fresh_command(args), print_only=args.print_only)
         if first != 0:
             return first
+        if not args.print_only:
+            try:
+                validate_fresh_results(args)
+            except RuntimeError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
         return run_command(score_command(args.results), print_only=args.print_only)
 
     raise AssertionError(f"unhandled mode: {args.mode}")
@@ -225,7 +300,6 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             results=Path("docs/benchmark-results/self-correction/fresh.jsonl"),
             run_id="fresh-demo",
             allow_dirty_source=False,
-            append_existing_results=False,
             keep_workspace=False,
         )
 
@@ -252,7 +326,6 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             results=Path("/tmp/local-smoke.jsonl"),
             run_id=None,
             allow_dirty_source=True,
-            append_existing_results=False,
             keep_workspace=True,
         )
 
@@ -267,17 +340,84 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             results.write_text('{"old": true}\n', encoding="utf-8")
 
             with self.assertRaises(RuntimeError):
-                ensure_fresh_results_path(results, append_existing_results=False)
+                ensure_fresh_results_path(results)
 
-    def test_fresh_results_allows_empty_or_intentional_append(self) -> None:
+    def test_fresh_results_allows_empty_precreated_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             empty = Path(tmpdir) / "empty.jsonl"
             empty.touch()
-            non_empty = Path(tmpdir) / "existing.jsonl"
-            non_empty.write_text('{"old": true}\n', encoding="utf-8")
 
-            ensure_fresh_results_path(empty, append_existing_results=False)
-            ensure_fresh_results_path(non_empty, append_existing_results=True)
+            ensure_fresh_results_path(empty)
+
+    def test_fresh_mode_requires_run_id(self) -> None:
+        with self.assertRaises(SystemExit):
+            parse_args(["fresh", "--results", "fresh.jsonl"])
+
+    def test_validate_fresh_results_requires_current_run_and_budget_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            rows = [
+                {
+                    "run_id": "fresh-demo-1",
+                    "source_head": "abcdef123456",
+                    "source_head_short": "abcdef1",
+                    "source_branch": "main",
+                    "source_dirty": False,
+                    "max_tokens": 100_000,
+                    "timeout_secs": 1800,
+                },
+                {
+                    "run_id": "fresh-demo-2",
+                    "source_head": "abcdef123456",
+                    "source_head_short": "abcdef1",
+                    "source_branch": "main",
+                    "source_dirty": False,
+                    "max_tokens": 100_000,
+                    "timeout_secs": 1800,
+                },
+            ]
+            results.write_text(
+                "".join(json.dumps(row) + "\n" for row in rows),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_stale_or_mismatched_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            results.write_text(
+                json.dumps(
+                    {
+                        "run_id": "old-demo-1",
+                        "source_head": "abcdef123456",
+                        "source_head_short": "abcdef1",
+                        "source_branch": "main",
+                        "source_dirty": False,
+                        "max_tokens": 100_000,
+                        "timeout_secs": 1800,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            with self.assertRaises(RuntimeError):
+                validate_fresh_results(args)
 
 
 if __name__ == "__main__":
