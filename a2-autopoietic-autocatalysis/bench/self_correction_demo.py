@@ -1530,6 +1530,8 @@ def verify_evidence_contract(
             allow_dirty_source=allow_dirty_source,
             source_label=artifact,
         )
+        if not isinstance(evidence.get("source_metadata"), dict):
+            raise RuntimeError("fresh demo evidence contract requires source_metadata")
     print("Demo evidence contract check")
     print(f"  evidence: {evidence_json}")
     print(f"  reference: {reference_evidence_json}")
@@ -2407,8 +2409,11 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
     def test_verify_evidence_contract_prints_fresh_provenance_mode_when_checked(self) -> None:
         stdout = io.StringIO()
+        evidence, rows = self.evidence_with_source_metadata()
 
-        with mock.patch(__name__ + ".load_jsonl", return_value=[]) as load_rows, mock.patch(
+        with mock.patch(__name__ + ".load_evidence_json", side_effect=[evidence, self.evidence_reference(evidence)]), mock.patch(
+            __name__ + ".load_jsonl_rows", return_value=rows
+        ), mock.patch(__name__ + ".load_jsonl", return_value=rows) as load_rows, mock.patch(
             __name__ + ".validate_fresh_rows"
         ) as validate_rows, contextlib.redirect_stdout(stdout):
             verify_evidence_contract(
@@ -2428,6 +2433,31 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("mode: fresh artifact provenance check", output)
         self.assertIn("PASS fresh artifact provenance", output)
         self.assertIn("run_id='fresh-demo'", output)
+        self.assertIn("source_metadata:", output)
+
+    def test_verify_evidence_contract_fresh_provenance_requires_source_metadata(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        fresh_rows = [
+            {
+                "run_id": "fresh-demo",
+                "source_head": "1234567890abcdef1234567890abcdef12345678",
+                "source_head_short": "1234567",
+                "source_branch": "main",
+                "source_dirty": False,
+                "max_tokens": 100_000,
+                "timeout_secs": 1800,
+            }
+        ]
+
+        with mock.patch(__name__ + ".load_evidence_json", side_effect=[evidence, self.evidence_reference(evidence)]), mock.patch(
+            __name__ + ".load_jsonl", return_value=fresh_rows
+        ):
+            with self.assertRaisesRegex(RuntimeError, "requires source_metadata"):
+                verify_evidence_contract(
+                    DEFAULT_ARCHIVE_EVIDENCE,
+                    DEFAULT_ARCHIVE_EVIDENCE,
+                    fresh_run_id="fresh-demo",
+                )
 
     def test_verify_evidence_contract_accepts_complete_six_step_demo(self) -> None:
         evidence = self.archived_demo_contract_evidence()
