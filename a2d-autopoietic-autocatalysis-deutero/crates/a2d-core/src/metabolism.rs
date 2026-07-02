@@ -1367,7 +1367,11 @@ impl Metabolism {
             };
 
             if *product == enzyme_defs_artifact() {
-                let record = self.apply_mutation_artifact(&bytes);
+                let routine_evolver_mutation = enzyme.id == EnzymeId::from("evolver")
+                    && self
+                        .artifacts
+                        .contains_key(&ArtifactType::from("fitness_report"));
+                let record = self.apply_mutation_artifact(&bytes, routine_evolver_mutation);
                 let snapshot = self.serialize_germline();
                 self.upsert_artifact(product.clone(), snapshot.clone());
                 routed.insert(product.clone(), snapshot);
@@ -1490,14 +1494,18 @@ impl Metabolism {
         record
     }
 
-    fn apply_mutation_artifact(&mut self, bytes: &[u8]) -> MutationRecord {
+    fn apply_mutation_artifact(
+        &mut self,
+        bytes: &[u8],
+        routine_evolver_mutation: bool,
+    ) -> MutationRecord {
         let text = String::from_utf8_lossy(bytes);
         let json_str = extract_json_from_output(&text).unwrap_or_else(|| text.to_string());
 
         match serde_json::from_str::<Vec<EnzymeDef>>(&json_str) {
-            Ok(defs) => self.apply_mutations(defs),
+            Ok(defs) => self.apply_mutations(defs, routine_evolver_mutation),
             Err(array_error) => match serde_json::from_str::<EnzymeDef>(&json_str) {
-                Ok(def) => self.apply_mutations(vec![def]),
+                Ok(def) => self.apply_mutations(vec![def], routine_evolver_mutation),
                 Err(object_error) => MutationRecord {
                     accepted: Vec::new(),
                     rejected: vec![MutationRejection {
@@ -1511,12 +1519,39 @@ impl Metabolism {
         }
     }
 
-    fn apply_mutations(&mut self, defs: Vec<EnzymeDef>) -> MutationRecord {
+    fn apply_mutations(
+        &mut self,
+        defs: Vec<EnzymeDef>,
+        routine_evolver_mutation: bool,
+    ) -> MutationRecord {
         let mut record = MutationRecord::default();
 
         for enzyme in defs {
             let enzyme_id = enzyme.id.clone();
-            let result = if self.germline.get_enzyme(&enzyme_id).is_some() {
+            let current = self.germline.get_enzyme(&enzyme_id).cloned();
+
+            if routine_evolver_mutation {
+                let Some(ref current) = current else {
+                    record.rejected.push(MutationRejection {
+                        enzyme_id: Some(enzyme_id),
+                        reason: "routine evolver mutations may only update prompt_template on existing enzymes; adding enzymes is structural architecture work".to_string(),
+                    });
+                    continue;
+                };
+
+                if current.reactants != enzyme.reactants
+                    || current.products != enzyme.products
+                    || current.catalysts != enzyme.catalysts
+                {
+                    record.rejected.push(MutationRejection {
+                        enzyme_id: Some(enzyme_id),
+                        reason: "routine evolver mutations may only update prompt_template; reactants/products/catalysts changes are structural architecture work".to_string(),
+                    });
+                    continue;
+                }
+            }
+
+            let result = if current.is_some() {
                 self.germline.propose_replace(enzyme)
             } else {
                 self.germline.propose_add(enzyme)
@@ -1716,6 +1751,54 @@ fn rung6_providers_for_avoiding<'a>(
     }
 }
 
+fn structured_fitness_failure_section(fitness: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(fitness).ok()?;
+    if value.get("schema_version").and_then(Value::as_str) != Some("a2d.fitness-evidence.v1") {
+        return None;
+    }
+
+    let failed_cases: Vec<String> = value
+        .get("failed_cases")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+    if failed_cases.is_empty() {
+        return None;
+    }
+
+    let result_lines: Vec<String> = value
+        .get("results")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|result| {
+            let name = result.get("name")?.as_str()?;
+            let passed = result.get("passed")?.as_bool()?;
+            Some(format!(
+                "- {name}: {}",
+                if passed { "passed" } else { "FAILED" }
+            ))
+        })
+        .collect();
+
+    let mut section = format!(
+        "\nFAILED FITNESS CASES (from structured a2d.fitness-evidence.v1): {}\n",
+        failed_cases.join(", ")
+    );
+    if !result_lines.is_empty() {
+        section.push_str("Per-case status:\n");
+        section.push_str(&result_lines.join("\n"));
+        section.push('\n');
+    }
+    section.push_str(
+        "Use these public/aggregate case labels to target prompt_template changes; do not infer hidden holdout specifics.\n",
+    );
+    Some(section)
+}
+
 fn evolver_system_prompt(
     germline_json: &[u8],
     fitness: Option<&str>,
@@ -1725,13 +1808,16 @@ fn evolver_system_prompt(
 ) -> String {
     let germline_str = String::from_utf8_lossy(germline_json);
     let fitness_section = fitness
-        .map(|f| format!("\nLAST FITNESS REPORT:\n{f}\n\nUse this to guide your improvements. If fitness is low, focus on changes that help the coder produce better code.\n"))
+        .map(|f| {
+            let failure_cases = structured_fitness_failure_section(f).unwrap_or_default();
+            format!("\nLAST FITNESS REPORT:\n{f}\n{failure_cases}\nUse this to guide your improvements. If fitness is low, focus on prompt_template changes that help the coder produce better code.\n")
+        })
         .unwrap_or_default();
     let failure_section = failure
-        .map(|f| format!("\nFAILURE DIAGNOSTIC (from sandbox):\n{f}\n\nThis is what went wrong. Use this to make targeted improvements to enzyme definitions — especially the coder's prompt_template.\n"))
+        .map(|f| format!("\nFAILURE DIAGNOSTIC (from sandbox):\n{f}\n\nThis is what went wrong. Use this to make targeted prompt_template improvements — especially to the coder's prompt_template.\n"))
         .unwrap_or_default();
     let provider_section = provider_health
-        .map(|p| format!("\nPROVIDER HEALTH REPORT (mechanical):\n{p}\n\nThis is provider-role evidence. If an enzyme repeatedly times out or falls back to a poor provider, adjust enzyme prompts/topology to reduce wasted invocations or route work away from slow paths where the current germline can express that.\n"))
+        .map(|p| format!("\nPROVIDER HEALTH REPORT (mechanical):\n{p}\n\nThis is provider-role evidence. If an enzyme repeatedly times out or falls back to a poor provider, adjust prompt_templates to reduce wasted invocations where the current germline can express that.\n"))
         .unwrap_or_default();
     let provider_policy_section = provider_policy
         .map(|p| format!("\nCURRENT PROVIDER POLICY (mechanical):\n{p}\n\nProvider-policy changes must be proposed as a typed provider_policy artifact by an enzyme that produces provider_policy; do not smuggle provider routing changes into enzyme_defs.\n"))
@@ -1747,13 +1833,13 @@ fn evolver_system_prompt(
          RULES:\n\
          1. Output ONLY valid JSON: an array of EnzymeDef objects\n\
          2. Each enzyme has: id (string), reactants (array of strings), products (array of strings), catalysts (array of strings), prompt_template (optional string)\n\
-         3. You MUST maintain catalytic closure: every enzyme's catalysts must be producible by other enzymes or be in the food set\n\
-         4. The food set contains: [\"requirements\", \"design\", \"plan\", \"failure_report\", \"fitness_report\", \"provider_health_report\", \"system_code\"]\n\
-         5. You may add new enzymes, modify existing ones, or keep them unchanged\n\
-         6. Prefer small, incremental improvements over large changes\n\
+         3. You may ONLY change prompt_template fields on existing enzymes\n\
+         4. Do NOT add enzymes, remove enzymes, rename enzymes, or change reactants/products/catalysts; those topology changes are structural architecture work, not routine evolution\n\
+         5. The food set contains: [\"requirements\", \"design\", \"plan\", \"failure_report\", \"fitness_report\", \"provider_health_report\", \"system_code\"]\n\
+         6. Prefer small, targeted prompt changes tied to failed fitness cases over broad rewrites\n\
          7. The coder must always produce \"code\", the tester must always produce \"test_results\", the evolver must always produce \"enzyme_defs\"\n\
          8. The evolver should react to \"fitness_report\" directly; \"test_results\" is optional supporting evidence, not a gate\n\
-         9. If failure diagnostic shows specific errors, modify the coder's prompt_template to address those errors\n\n\
+         9. If failure diagnostic or failed_cases show specific errors, modify the relevant prompt_template — especially the coder's — to address those errors\n\n\
          Output the improved enzyme definitions as a JSON array. Nothing else."
     )
 }
@@ -2611,8 +2697,9 @@ mod tests {
                             {
                                 "id": "coder",
                                 "reactants": ["requirements"],
-                                "products": ["code", "docs"],
-                                "catalysts": ["enzyme_defs"]
+                                "products": ["code"],
+                                "catalysts": ["enzyme_defs"],
+                                "prompt_template": "Write code with targeted benchmark feedback."
                             }
                         ]
                     }),
@@ -2629,8 +2716,9 @@ mod tests {
                             {
                                 "id": "coder",
                                 "reactants": ["requirements"],
-                                "products": ["code", "docs"],
-                                "catalysts": ["enzyme_defs"]
+                                "products": ["code"],
+                                "catalysts": ["enzyme_defs"],
+                                "prompt_template": "Write code with targeted benchmark feedback."
                             }
                         ]
                     }),
@@ -2726,7 +2814,103 @@ mod tests {
             .germline()
             .get_enzyme(&EnzymeId::from("coder"))
             .unwrap();
-        assert!(coder.products.contains(&art("docs")));
+        assert_eq!(coder.products, [art("code")].into());
+        assert_eq!(
+            coder.prompt_template.as_deref(),
+            Some("Write code with targeted benchmark feedback.")
+        );
+    }
+
+    #[test]
+    fn rejects_routine_evolver_structural_mutations() {
+        let germline = Germline::new(seed_enzymes(), food(&["requirements"]));
+        let mut metabolism = Metabolism::new(germline, registry_for_cycle());
+        metabolism.seed_artifact(art("fitness_report"), b"{}".to_vec());
+
+        let record = metabolism.apply_mutation_artifact(
+            json!([
+                {
+                    "id": "coder",
+                    "reactants": ["requirements"],
+                    "products": ["code", "docs"],
+                    "catalysts": ["enzyme_defs"],
+                    "prompt_template": "try harder"
+                },
+                {
+                    "id": "critic",
+                    "reactants": ["code"],
+                    "products": ["critique"],
+                    "catalysts": ["code"],
+                    "prompt_template": "review"
+                }
+            ])
+            .to_string()
+            .as_bytes(),
+            true,
+        );
+
+        assert!(record.accepted.is_empty());
+        assert_eq!(record.rejected.len(), 2);
+        assert!(
+            record
+                .rejected
+                .iter()
+                .any(|rejection| rejection.reason.contains("only update prompt_template")),
+            "{record:?}"
+        );
+        assert!(
+            record
+                .rejected
+                .iter()
+                .any(|rejection| rejection.reason.contains("adding enzymes")),
+            "{record:?}"
+        );
+
+        let coder = metabolism
+            .germline()
+            .get_enzyme(&EnzymeId::from("coder"))
+            .expect("coder remains present");
+        assert_eq!(coder.products, [art("code")].into());
+        assert!(
+            metabolism
+                .germline()
+                .get_enzyme(&EnzymeId::from("critic"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn evolver_prompt_surfaces_structured_failed_cases() {
+        let evolver = EnzymeDef {
+            id: EnzymeId::from("evolver"),
+            reactants: [art("fitness_report")].into(),
+            products: [art("enzyme_defs")].into(),
+            catalysts: [art("enzyme_defs"), art("fitness_report")].into(),
+            prompt_template: None,
+        };
+        let mut inputs = ArtifactStore::new();
+        inputs.insert(art("enzyme_defs"), b"[]".to_vec());
+        inputs.insert(
+            art("fitness_report"),
+            serde_json::to_vec(&json!({
+                "schema_version": "a2d.fitness-evidence.v1",
+                "failed_cases": ["has_tests", "all_tests_pass"],
+                "results": [
+                    {"name": "compiles", "passed": true},
+                    {"name": "has_tests", "passed": false},
+                    {"name": "all_tests_pass", "passed": false}
+                ]
+            }))
+            .unwrap(),
+        );
+
+        let request = build_request(&evolver, &inputs, 0, None);
+
+        assert!(request.system.contains("FAILED FITNESS CASES"));
+        assert!(request.system.contains("has_tests, all_tests_pass"));
+        assert!(request.system.contains("- has_tests: FAILED"));
+        assert!(request.system.contains("ONLY change prompt_template"));
+        assert!(request.system.contains("Do NOT add enzymes"));
     }
 
     #[test]
