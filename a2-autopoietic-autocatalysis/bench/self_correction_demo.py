@@ -52,7 +52,7 @@ EXPECTED_DEMO_REQUIREMENTS = [
     "verifier_gated_germline_promotion",
 ]
 HANDOFF_TEST_COUNTS_PATTERN = re.compile(
-    r"\| Tests \| \d+ Rust \+ "
+    r"\| Tests \| (?P<rust>\d+) Rust \+ "
     r"(?P<self_correction>\d+) self-correction Python \+ "
     r"(?P<scoring>\d+) scoring Python \+ "
     r"(?P<demo_wrapper>\d+) demo-wrapper Python tests \|"
@@ -102,13 +102,37 @@ def python_test_counts_from_match(match: re.Match[str]) -> dict[str, int]:
     }
 
 
-def handoff_current_python_test_counts() -> dict[str, int]:
+def handoff_current_test_counts_match() -> re.Match[str]:
     handoff = repo_root() / "docs/HANDOFF.md"
     for line in handoff.read_text(encoding="utf-8").splitlines():
         match = HANDOFF_TEST_COUNTS_PATTERN.fullmatch(line.strip())
         if match:
-            return python_test_counts_from_match(match)
+            return match
     raise RuntimeError("docs/HANDOFF.md Current Numbers test-count row was not found")
+
+
+def handoff_current_python_test_counts() -> dict[str, int]:
+    return python_test_counts_from_match(handoff_current_test_counts_match())
+
+
+def handoff_current_rust_test_count() -> int:
+    return int(handoff_current_test_counts_match().group("rust"))
+
+
+def rust_test_count_from_cargo_test_list_output(output: str) -> int:
+    return sum(1 for line in output.splitlines() if line.rstrip().endswith(": test"))
+
+
+def cargo_rust_test_count() -> int:
+    result = subprocess.run(
+        ["cargo", "test", "--", "--list"],
+        cwd=repo_root(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    return rust_test_count_from_cargo_test_list_output(result.stdout)
 
 
 def latest_verification_python_test_counts(path: Path) -> dict[str, int]:
@@ -1353,6 +1377,38 @@ def run_command(command: list[str], *, print_only: bool) -> int:
     return subprocess.run(command, cwd=repo_root(), check=False).returncode
 
 
+def verify_documented_counts() -> None:
+    expected_python_counts = {
+        "self_correction": unittest_count_for_script("bench/self_correction.py"),
+        "scoring": unittest_count_for_script("bench/self_correction_score.py"),
+        "demo_wrapper": current_module_self_test_count(),
+    }
+    rust_count = cargo_rust_test_count()
+    if handoff_current_rust_test_count() != rust_count:
+        raise RuntimeError(
+            "docs/HANDOFF.md Current Numbers Rust test count does not match "
+            f"cargo test -- --list: documented={handoff_current_rust_test_count()} actual={rust_count}"
+        )
+    for path in (repo_root() / "docs/HANDOFF.md", repo_root() / "todos/self-correction-loop.md"):
+        observed = latest_verification_python_test_counts(path)
+        if observed != expected_python_counts:
+            raise RuntimeError(
+                f"{path.relative_to(repo_root())} latest verification Python counts do not match "
+                f"self-tests: documented={observed} actual={expected_python_counts}"
+            )
+    if handoff_current_python_test_counts() != expected_python_counts:
+        raise RuntimeError(
+            "docs/HANDOFF.md Current Numbers Python counts do not match self-tests: "
+            f"documented={handoff_current_python_test_counts()} actual={expected_python_counts}"
+        )
+    print(
+        "PASS documented counts: "
+        f"{rust_count} Rust + {expected_python_counts['self_correction']} self-correction Python + "
+        f"{expected_python_counts['scoring']} scoring Python + "
+        f"{expected_python_counts['demo_wrapper']} demo-wrapper Python tests"
+    )
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1407,6 +1463,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--allow-dirty-source",
         action="store_true",
         help="Allow source_dirty=true rows when --fresh-run-id is supplied.",
+    )
+
+    subparsers.add_parser(
+        "verify-documented-counts",
+        help=(
+            "Check documented Rust/Python test counts. This intentionally runs "
+            "cargo test -- --list only when invoked directly, not during --self-test."
+        ),
     )
 
     fresh = subparsers.add_parser(
@@ -1507,6 +1571,14 @@ def main(argv: list[str]) -> int:
                 timeout_secs=args.timeout,
                 allow_dirty_source=args.allow_dirty_source,
             )
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        return 0
+
+    if args.mode == "verify-documented-counts":
+        try:
+            verify_documented_counts()
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -1661,6 +1733,19 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             latest_verification_python_test_counts(repo_root() / "todos/self-correction-loop.md"),
             expected_counts,
         )
+
+    def test_rust_test_count_parser_counts_only_cargo_test_lines(self) -> None:
+        cargo_list_output = "\n".join(
+            [
+                "a2_eval::sentinel::tests::suite_reports_score_fraction: test",
+                "a2_eval::sentinel::tests::demo_wrapper_self_test_passes_under_cargo_test_without_mutating_archive: test",
+                "a2_eval::sentinel::benches::ignored_bench: benchmark",
+                "Doc-tests a2_eval",
+                "",
+            ]
+        )
+
+        self.assertEqual(rust_test_count_from_cargo_test_list_output(cargo_list_output), 2)
 
     def test_opencode_provider_config_requires_configured_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
