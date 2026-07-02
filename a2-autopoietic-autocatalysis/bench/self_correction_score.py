@@ -49,6 +49,10 @@ class SelfCorrectionRecord:
     promotion_lineage_reconciled_by_core: bool | None = None
     promotion_verify_returncode: int | None = None
     promotion_artifact: dict[str, Any] | None = None
+    source_head: str | None = None
+    source_head_short: str | None = None
+    source_branch: str | None = None
+    source_dirty: bool | None = None
 
     def __init__(
         self,
@@ -77,6 +81,10 @@ class SelfCorrectionRecord:
         promotion_lineage_reconciled_by_core: bool | None = None,
         promotion_verify_returncode: int | None = None,
         promotion_artifact: dict[str, Any] | None = None,
+        source_head: str | None = None,
+        source_head_short: str | None = None,
+        source_branch: str | None = None,
+        source_dirty: bool | None = None,
     ) -> None:
         object.__setattr__(self, "task_id", task_id)
         object.__setattr__(self, "run_id", run_id)
@@ -128,6 +136,10 @@ class SelfCorrectionRecord:
             self, "promotion_verify_returncode", promotion_verify_returncode
         )
         object.__setattr__(self, "promotion_artifact", promotion_artifact)
+        object.__setattr__(self, "source_head", source_head)
+        object.__setattr__(self, "source_head_short", source_head_short)
+        object.__setattr__(self, "source_branch", source_branch)
+        object.__setattr__(self, "source_dirty", source_dirty)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -285,6 +297,22 @@ def load_records(path: Path) -> list[SelfCorrectionRecord]:
                         payload_promotion(payload).get("verify_returncode")
                     ),
                     promotion_artifact=payload_promotion_artifact(payload),
+                    source_head=(
+                        str(payload["source_head"])
+                        if isinstance(payload.get("source_head"), str) and payload.get("source_head")
+                        else None
+                    ),
+                    source_head_short=(
+                        str(payload["source_head_short"])
+                        if isinstance(payload.get("source_head_short"), str) and payload.get("source_head_short")
+                        else None
+                    ),
+                    source_branch=(
+                        str(payload["source_branch"])
+                        if isinstance(payload.get("source_branch"), str) and payload.get("source_branch")
+                        else None
+                    ),
+                    source_dirty=optional_bool(payload.get("source_dirty")),
                 )
             )
     return records
@@ -553,10 +581,11 @@ def normalized_evidence_row(record: SelfCorrectionRecord) -> dict[str, Any]:
     The full JSONL row can contain verbose stdout/stderr. The demo evidence map
     embeds a fixed normalized field set that the scorer uses to prove the
     causal chain; the source JSONL remains the authoritative artifact and is
-    bound by artifact_sha256.
+    bound by artifact_sha256. Fresh rows also carry source revision metadata so
+    row-level retry/promotion proof remains tied to the source state.
     """
 
-    return {
+    row = {
         "run_id": record.run_id,
         "task_id": record.task_id,
         "attempt": record.attempt,
@@ -580,6 +609,55 @@ def normalized_evidence_row(record: SelfCorrectionRecord) -> dict[str, Any]:
         "promotion_lineage_reconciled_by_core": record.promotion_lineage_reconciled_by_core,
         "promotion_verify_returncode": record.promotion_verify_returncode,
     }
+    if record.source_head is not None:
+        row["source_head"] = record.source_head
+        row["source_head_short"] = record.source_head_short
+        row["source_branch"] = record.source_branch
+        row["source_dirty"] = record.source_dirty
+    return row
+
+
+def common_source_metadata(records: list[SelfCorrectionRecord]) -> dict[str, Any] | None:
+    """Return source revision metadata when every row reports the same source state."""
+
+    if not records:
+        return None
+    source_fields = ("source_head", "source_head_short", "source_branch", "source_dirty")
+    if all(getattr(record, field) is None for record in records for field in source_fields):
+        return None
+    first = records[0]
+    metadata = {
+        "source_head": first.source_head,
+        "source_head_short": first.source_head_short,
+        "source_branch": first.source_branch,
+        "source_dirty": first.source_dirty,
+    }
+    if (
+        not isinstance(metadata["source_head"], str)
+        or len(metadata["source_head"]) not in (40, 64)
+    ):
+        raise ValueError("source metadata is incomplete or inconsistent across demo rows")
+    if not all(character in "0123456789abcdef" for character in metadata["source_head"].lower()):
+        raise ValueError("source metadata is incomplete or inconsistent across demo rows")
+    if (
+        not isinstance(metadata["source_head_short"], str)
+        or not metadata["source_head_short"]
+        or not metadata["source_head"].startswith(metadata["source_head_short"])
+    ):
+        raise ValueError("source metadata is incomplete or inconsistent across demo rows")
+    if not isinstance(metadata["source_branch"], str) or not metadata["source_branch"]:
+        raise ValueError("source metadata is incomplete or inconsistent across demo rows")
+    if not isinstance(metadata["source_dirty"], bool):
+        raise ValueError("source metadata is incomplete or inconsistent across demo rows")
+    for record in records[1:]:
+        if (
+            record.source_head != metadata["source_head"]
+            or record.source_head_short != metadata["source_head_short"]
+            or record.source_branch != metadata["source_branch"]
+            or record.source_dirty != metadata["source_dirty"]
+        ):
+            raise ValueError("source metadata is incomplete or inconsistent across demo rows")
+    return metadata
 
 
 def demo_evidence_map(
@@ -613,6 +691,9 @@ def demo_evidence_map(
         ],
         "demos": [],
     }
+    source_metadata = common_source_metadata(records)
+    if source_metadata is not None:
+        evidence["source_metadata"] = source_metadata
     for run_id, task_id in demos:
         attempts = grouped[(run_id, task_id)]
         first = attempts[0]
@@ -1250,6 +1331,10 @@ class SelfCorrectionScoreTests(unittest.TestCase):
                 lineage_records_after=1,
                 verifier_failure_evidence_present=True,
                 verifier_failure_evidence_structured_present=True,
+                source_head="1234567890abcdef1234567890abcdef12345678",
+                source_head_short="1234567",
+                source_branch="main",
+                source_dirty=False,
             ),
             SelfCorrectionRecord(
                 task_id="task",
@@ -1263,6 +1348,10 @@ class SelfCorrectionScoreTests(unittest.TestCase):
                 lineage_records_after=2,
                 lineage_reconciled_by_core=True,
                 promotion_evidence_present=True,
+                source_head="1234567890abcdef1234567890abcdef12345678",
+                source_head_short="1234567",
+                source_branch="main",
+                source_dirty=False,
             ),
         ]
 
@@ -1276,6 +1365,15 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertTrue(evidence["complete"])
         self.assertEqual(evidence["artifact"], "demo.jsonl")
         self.assertEqual(evidence["artifact_sha256"], artifact_digest)
+        self.assertEqual(
+            evidence["source_metadata"],
+            {
+                "source_head": "1234567890abcdef1234567890abcdef12345678",
+                "source_head_short": "1234567",
+                "source_branch": "main",
+                "source_dirty": False,
+            },
+        )
         chain = evidence["demos"][0]["causal_chain"]
         self.assertEqual(
             [step["requirement"] for step in chain],
@@ -1302,8 +1400,110 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertEqual(retry_field["failed_verify_command"], "cargo test -p demo hidden_regression")
         self.assertEqual(retry_field["failed_lineage_records_after"], 1)
         self.assertEqual(chain[2]["evidence_rows"][0]["lineage_records_before"], 1)
+        self.assertEqual(chain[2]["evidence_rows"][0]["source_head"], "1234567890abcdef1234567890abcdef12345678")
+        self.assertEqual(chain[2]["evidence_rows"][0]["source_dirty"], False)
         self.assertTrue(chain[5]["fields"]["promotion_evidence_present"])
         self.assertTrue(chain[5]["evidence_row"]["promotion_evidence_present"])
+        self.assertEqual(chain[5]["evidence_row"]["source_branch"], "main")
+
+    def test_demo_evidence_json_omits_source_metadata_for_legacy_rows(self) -> None:
+        records = [
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+                verify_returncode=1,
+                verify_command="cargo test -p demo hidden_regression",
+                lineage_records_before=0,
+                lineage_records_after=1,
+                verifier_failure_evidence_present=True,
+                verifier_failure_evidence_structured_present=True,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=2,
+                resolved=True,
+                prior_lineage_present=True,
+                verify_returncode=0,
+                lineage_records_before=1,
+                lineage_records_after=2,
+                lineage_reconciled_by_core=True,
+                promotion_evidence_present=True,
+            ),
+        ]
+
+        evidence = demo_evidence_map(
+            records,
+            artifact_label="legacy-demo.jsonl",
+            artifact_sha256="c" * 64,
+        )
+
+        self.assertNotIn("source_metadata", evidence)
+
+    def test_demo_evidence_json_rejects_mixed_source_metadata_rows(self) -> None:
+        records = [
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+                verify_returncode=1,
+                verify_command="cargo test -p demo hidden_regression",
+                lineage_records_before=0,
+                lineage_records_after=1,
+                verifier_failure_evidence_present=True,
+                verifier_failure_evidence_structured_present=True,
+                source_head="1234567890abcdef1234567890abcdef12345678",
+                source_head_short="1234567",
+                source_branch="main",
+                source_dirty=False,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=2,
+                resolved=True,
+                prior_lineage_present=True,
+                verify_returncode=0,
+                lineage_records_before=1,
+                lineage_records_after=2,
+                lineage_reconciled_by_core=True,
+                promotion_evidence_present=True,
+            ),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "source metadata is incomplete or inconsistent"):
+            demo_evidence_map(
+                records,
+                artifact_label="mixed-demo.jsonl",
+                artifact_sha256="d" * 64,
+            )
+
+    def test_load_records_preserves_source_metadata(self) -> None:
+        row = {
+            "task_id": "task",
+            "run_id": "run",
+            "attempt": 1,
+            "resolved": True,
+            "prior_lineage_present": False,
+            "source_head": "1234567890abcdef1234567890abcdef12345678",
+            "source_head_short": "1234567",
+            "source_branch": "main",
+            "source_dirty": False,
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logfile = Path(tmpdir) / "records.jsonl"
+            logfile.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            records = load_records(logfile)
+
+        self.assertEqual(records[0].source_head, row["source_head"])
+        self.assertEqual(records[0].source_head_short, row["source_head_short"])
+        self.assertEqual(records[0].source_branch, row["source_branch"])
+        self.assertEqual(records[0].source_dirty, row["source_dirty"])
 
     def test_demo_evidence_json_complete_requires_artifact_sha256(self) -> None:
         records = [

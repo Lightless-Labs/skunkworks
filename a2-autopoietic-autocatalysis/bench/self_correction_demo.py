@@ -928,7 +928,7 @@ def row_has_verifier_gated_promotion(row: dict[str, object]) -> bool:
 
 def normalized_artifact_row(row: dict[str, object]) -> dict[str, object]:
     promotion = artifact_promotion(row)
-    return {
+    normalized = {
         "run_id": str(row.get("run_id") or ""),
         "task_id": str(row.get("task_id") or ""),
         "attempt": max(int(row.get("attempt") or 1), 1),
@@ -960,6 +960,12 @@ def normalized_artifact_row(row: dict[str, object]) -> dict[str, object]:
         ),
         "promotion_verify_returncode": optional_int_value(promotion.get("verify_returncode")),
     }
+    if "source_head" in row:
+        normalized["source_head"] = row.get("source_head")
+        normalized["source_head_short"] = row.get("source_head_short")
+        normalized["source_branch"] = row.get("source_branch")
+        normalized["source_dirty"] = row.get("source_dirty")
+    return normalized
 
 
 def selector_tuple(selector: dict[str, object], *, label: str) -> tuple[str, str, int]:
@@ -1009,6 +1015,40 @@ def require_embedded_row_matches_artifact(
     return embedded
 
 
+def validate_evidence_source_metadata(
+    evidence: dict[str, object],
+    rows: list[dict[str, object]],
+) -> None:
+    source_metadata = evidence.get("source_metadata")
+    if source_metadata is None:
+        return
+    metadata = require_mapping(source_metadata, label="source_metadata")
+    source_head = metadata.get("source_head")
+    source_head_short = metadata.get("source_head_short")
+    source_branch = metadata.get("source_branch")
+    source_dirty = metadata.get("source_dirty")
+    if not isinstance(source_head, str) or len(source_head) not in (40, 64):
+        raise RuntimeError("demo evidence contract source_metadata.source_head is invalid")
+    if not all(character in "0123456789abcdef" for character in source_head.lower()):
+        raise RuntimeError("demo evidence contract source_metadata.source_head is non-hex")
+    if (
+        not isinstance(source_head_short, str)
+        or not source_head_short
+        or not source_head.startswith(source_head_short)
+    ):
+        raise RuntimeError("demo evidence contract source_metadata.source_head_short does not prefix source_head")
+    if not isinstance(source_branch, str) or not source_branch:
+        raise RuntimeError("demo evidence contract source_metadata.source_branch is invalid")
+    if source_dirty is not True and source_dirty is not False:
+        raise RuntimeError("demo evidence contract source_metadata.source_dirty must be boolean")
+    for row_index, row in enumerate(rows, start=1):
+        for key, expected in metadata.items():
+            if row.get(key) != expected:
+                raise RuntimeError(
+                    f"demo evidence contract source_metadata differs from artifact row {row_index}: {key}"
+                )
+
+
 def validate_demo_evidence_contract(
     evidence: dict[str, object],
     reference: dict[str, object],
@@ -1047,6 +1087,7 @@ def validate_demo_evidence_contract(
     if artifact_sha256 != sha256_file(artifact_path):
         raise RuntimeError("demo evidence contract artifact_sha256 does not match artifact bytes")
     artifact_rows = load_jsonl_rows(artifact_path)
+    validate_evidence_source_metadata(evidence, artifact_rows)
     artifact_index = artifact_rows_by_selector(artifact_rows)
     serialized = json.dumps(evidence, sort_keys=True)
     leaked = [marker for marker in HOST_PATH_MARKERS if marker in serialized]
@@ -1371,6 +1412,15 @@ def contract_demo_artifact_lines(evidence: dict[str, object]) -> list[str]:
     if not isinstance(artifact, str) or not artifact:
         artifact = "<missing>"
     lines = [f"  artifact: {artifact}"]
+    source_metadata = evidence.get("source_metadata")
+    if isinstance(source_metadata, dict):
+        lines.append(
+            "  source_metadata: "
+            f"source_head={source_metadata.get('source_head')!r}, "
+            f"source_head_short={source_metadata.get('source_head_short')!r}, "
+            f"source_branch={source_metadata.get('source_branch')!r}, "
+            f"source_dirty={source_metadata.get('source_dirty')!r}"
+        )
     demos = require_sequence(evidence.get("demos"), label="demos")
     for demo_index, demo_value in enumerate(demos, start=1):
         demo = require_mapping(demo_value, label=f"demos[{demo_index - 1}]")
@@ -1873,6 +1923,30 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     if selector_tuple(row_selector, label="test evidence row") == key:
                         row.update(normalized_row)
 
+    def evidence_with_source_metadata(self) -> tuple[dict[str, object], list[dict[str, object]]]:
+        evidence = self.archived_demo_contract_evidence()
+        rows = load_jsonl_rows(repo_path(DEFAULT_ARCHIVE))
+        metadata = {
+            "source_head": "1234567890abcdef1234567890abcdef12345678",
+            "source_head_short": "1234567",
+            "source_branch": "main",
+            "source_dirty": False,
+        }
+        evidence["source_metadata"] = metadata
+        for row in rows:
+            row.update(metadata)
+            selector = {
+                "run_id": row.get("run_id"),
+                "task_id": row.get("task_id"),
+                "attempt": row.get("attempt"),
+            }
+            self.sync_embedded_rows_for_selector(
+                evidence,
+                selector,
+                normalized_artifact_row(row),
+            )
+        return evidence, rows
+
     def test_default_verify_archive_command_scores_known_artifact(self) -> None:
         command = score_command(DEFAULT_ARCHIVE)
 
@@ -2363,6 +2437,39 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             self.evidence_reference(evidence),
             evidence_label=str(DEFAULT_ARCHIVE_EVIDENCE),
         )
+
+    def test_verify_evidence_contract_accepts_source_metadata_matching_rows(self) -> None:
+        evidence, rows = self.evidence_with_source_metadata()
+
+        with mock.patch(__name__ + ".load_jsonl_rows", return_value=rows):
+            validate_demo_evidence_contract(
+                evidence,
+                self.evidence_reference(evidence),
+                evidence_label="source-metadata.demo-evidence.json",
+            )
+
+    def test_verify_evidence_contract_rejects_source_metadata_mismatched_rows(self) -> None:
+        evidence, rows = self.evidence_with_source_metadata()
+        rows[0]["source_head"] = "abcdef1234567890abcdef1234567890abcdef12"
+
+        with mock.patch(__name__ + ".load_jsonl_rows", return_value=rows):
+            with self.assertRaisesRegex(RuntimeError, "source_metadata differs from artifact row"):
+                validate_demo_evidence_contract(
+                    evidence,
+                    self.evidence_reference(evidence),
+                    evidence_label="source-metadata-mismatch.demo-evidence.json",
+                )
+
+    def test_verify_evidence_contract_accepts_row_level_source_metadata_without_top_level_summary(self) -> None:
+        evidence, rows = self.evidence_with_source_metadata()
+        evidence.pop("source_metadata")
+
+        with mock.patch(__name__ + ".load_jsonl_rows", return_value=rows):
+            validate_demo_evidence_contract(
+                evidence,
+                self.evidence_reference(evidence),
+                evidence_label="row-level-source-metadata.demo-evidence.json",
+            )
 
     def test_verify_evidence_contract_prints_concrete_artifact_selectors(self) -> None:
         stdout = io.StringIO()
