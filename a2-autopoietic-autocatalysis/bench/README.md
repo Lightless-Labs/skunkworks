@@ -64,6 +64,13 @@ bench/self_correction.py --fixture compound-raf-same-crate-hidden \
 
 For reproducible archived evidence, add `--require-clean-source` from a clean checkout. The guard checks the project-scoped git status before creating benchmark worktrees or result files, so write generated demo artifacts outside the checked source tree (for example under `/tmp`) unless the destination is already ignored or pre-created outside the audited project path.
 
+```bash
+bench/self_correction.py --fixture fibonacci \
+  --smoke-only \
+  --require-clean-source \
+  --results /tmp/a2-smoke-clean-source.jsonl
+```
+
 Each JSONL result includes:
 
 - `task_id`, `run_id`, `attempt`, `category` (`--runs N` emits one distinct `run_id` per independent trajectory)
@@ -131,6 +138,20 @@ bench/self_correction_demo.py verify-evidence-contract \
 ```
 
 Omit `--fresh-run-id` for deterministic archived contract verification. Include it for fresh artifacts: the referenced JSONL must then also pass run-id/prefix membership, provenance-field, budget, and clean-source checks, so stale/cached rows with another run ID fail before the artifact is archived as fresh loop evidence.
+
+Audit that documented test-count claims still match the local Rust and Python test inventory:
+
+```bash
+bench/self_correction_demo.py verify-documented-counts
+```
+
+Run the updater only after intentionally adding or removing tests, then review the documentation diff it produces:
+
+```bash
+bench/self_correction_demo.py verify-documented-counts --update
+```
+
+This count audit shells out to `cargo test -- --list`; run it as an explicit operator check, not from `cargo test`, sentinel, or Python self-test paths.
 
 This contract check is local artifact validation, not a provider run. It rejects `complete=false`/pass@1-only evidence and requires all six proof steps in order, retry context linked to archived verifier/failure evidence, advancing lineage, verifier-gated promotion evidence, and embedded row snapshots that match the referenced source JSONL artifact. Older raw JSONL artifacts preserve provider stdout/stderr and historical temporary workspace strings; the durable `.demo-evidence.json` map deliberately embeds only schema-bounded row snapshots and rejects host-specific path markers.
 

@@ -125,6 +125,8 @@ python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchm
 
 The `verify-archive` command is the deterministic archived loop-evidence check. It is separate from sentinel and replays the durable JSONL artifact through the six-step failed-attempt → archived verifier/failure evidence → retry context → later pass → lineage → verifier-gated promotion contract; sentinel's cargo-test gate exercises the demo wrapper self-test (including the no-mutation guard for canonical archived artifacts) but does not refresh or substitute for this archived-proof rerun.
 
+Operator-facing benchmark docs in `bench/README.md` now include explicit examples for a clean-source smoke (`--smoke-only --require-clean-source --results /tmp/...`) and the non-recursive documented-count audit/updater. These are local reproducibility/audit commands only; they do not create provider-backed loop evidence.
+
 If any fail, read `docs/solutions/` for known issues before touching anything.
 
 ## Read Before Working
