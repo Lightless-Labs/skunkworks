@@ -48,6 +48,7 @@ class SelfCorrectionRecord:
     promotion_structured_evidence_present: bool | None = None
     promotion_lineage_reconciled_by_core: bool | None = None
     promotion_verify_returncode: int | None = None
+    promotion_artifact: dict[str, Any] | None = None
 
     def __init__(
         self,
@@ -75,6 +76,7 @@ class SelfCorrectionRecord:
         promotion_structured_evidence_present: bool | None = None,
         promotion_lineage_reconciled_by_core: bool | None = None,
         promotion_verify_returncode: int | None = None,
+        promotion_artifact: dict[str, Any] | None = None,
     ) -> None:
         object.__setattr__(self, "task_id", task_id)
         object.__setattr__(self, "run_id", run_id)
@@ -125,6 +127,7 @@ class SelfCorrectionRecord:
         object.__setattr__(
             self, "promotion_verify_returncode", promotion_verify_returncode
         )
+        object.__setattr__(self, "promotion_artifact", promotion_artifact)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -195,6 +198,11 @@ def payload_promotion(payload: dict[str, Any]) -> dict[str, Any]:
 
 def payload_has_promotion_object(payload: dict[str, Any]) -> bool:
     return isinstance(payload.get("promotion"), dict)
+
+
+def payload_promotion_artifact(payload: dict[str, Any]) -> dict[str, Any] | None:
+    artifact = payload_promotion(payload).get("artifact")
+    return artifact if isinstance(artifact, dict) else None
 
 
 def payload_has_promotion_evidence(payload: dict[str, Any]) -> bool:
@@ -276,6 +284,7 @@ def load_records(path: Path) -> list[SelfCorrectionRecord]:
                     promotion_verify_returncode=optional_int(
                         payload_promotion(payload).get("verify_returncode")
                     ),
+                    promotion_artifact=payload_promotion_artifact(payload),
                 )
             )
     return records
@@ -409,12 +418,33 @@ def has_archived_verifier_failure(
     )
 
 
+def promotion_artifact_matches_record(record: SelfCorrectionRecord) -> bool:
+    artifact = record.promotion_artifact
+    if not isinstance(artifact, dict):
+        return False
+    selector = artifact.get("selector")
+    return (
+        artifact.get("kind") == "self_correction_jsonl_row"
+        and isinstance(artifact.get("path"), str)
+        and bool(str(artifact.get("path")).strip())
+        and isinstance(selector, dict)
+        and selector.get("run_id") == record.run_id
+        and selector.get("task_id") == record.task_id
+        and selector.get("attempt") == record.attempt
+        and artifact.get("lineage_records_after") == record.lineage_records_after
+        and artifact.get("verify_returncode") == record.verify_returncode
+        and artifact.get("verify_command") == record.verify_command
+    )
+
+
 def has_verifier_gated_promotion(record: SelfCorrectionRecord) -> bool:
     if not (
         record.resolved
         and record.verify_returncode == 0
         and record.lineage_reconciled_by_core is True
     ):
+        return False
+    if record.promotion_artifact is not None and not promotion_artifact_matches_record(record):
         return False
     if record.promotion_structured_present:
         return (
@@ -1558,6 +1588,120 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         output = render(records, require_demo=True)
         self.assertIn("PASS complete self-correction demo trajectory found", output)
         self.assertIn("[proved] verifier-gated promotion", output)
+
+    def test_require_demo_rejects_mismatched_promotion_artifact_when_present(self) -> None:
+        rows = [
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 1,
+                "resolved": False,
+                "prior_lineage_present": False,
+                "a2_returncode": 0,
+                "verify_returncode": 1,
+                "lineage_records_before": 0,
+                "lineage_records_after": 1,
+                "verifier_failure_evidence_present": True,
+            },
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 2,
+                "resolved": True,
+                "prior_lineage_present": True,
+                "a2_returncode": 0,
+                "verify_returncode": 0,
+                "verify_command": "cargo test -p demo hidden",
+                "lineage_records_before": 1,
+                "lineage_records_after": 2,
+                "lineage_reconciled_by_core": True,
+                "promotion": {
+                    "verifier_gated": True,
+                    "evidence_present": True,
+                    "lineage_reconciled_by_core": True,
+                    "verify_returncode": 0,
+                    "artifact": {
+                        "kind": "self_correction_jsonl_row",
+                        "path": "docs/benchmark-results/self-correction/a2-fresh-demo.jsonl",
+                        "selector": {
+                            "run_id": "run",
+                            "task_id": "task",
+                            "attempt": 99,
+                        },
+                        "lineage_records_after": 2,
+                        "verify_command": "cargo test -p demo hidden",
+                        "verify_returncode": 0,
+                    },
+                },
+            },
+        ]
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row) + "\n")
+            handle.flush()
+            records = load_records(Path(handle.name))
+
+        self.assertFalse(promotion_artifact_matches_record(records[1]))
+        self.assertEqual(demo_run_ids(records), [])
+        output = render(records, require_demo=True)
+        self.assertIn("FAIL no run contains", output)
+
+    def test_require_demo_accepts_matching_promotion_artifact_when_present(self) -> None:
+        rows = [
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 1,
+                "resolved": False,
+                "prior_lineage_present": False,
+                "a2_returncode": 0,
+                "verify_returncode": 1,
+                "lineage_records_before": 0,
+                "lineage_records_after": 1,
+                "verifier_failure_evidence_present": True,
+            },
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 2,
+                "resolved": True,
+                "prior_lineage_present": True,
+                "a2_returncode": 0,
+                "verify_returncode": 0,
+                "verify_command": "cargo test -p demo hidden",
+                "lineage_records_before": 1,
+                "lineage_records_after": 2,
+                "lineage_reconciled_by_core": True,
+                "promotion": {
+                    "verifier_gated": True,
+                    "evidence_present": True,
+                    "lineage_reconciled_by_core": True,
+                    "verify_returncode": 0,
+                    "artifact": {
+                        "kind": "self_correction_jsonl_row",
+                        "path": "docs/benchmark-results/self-correction/a2-fresh-demo.jsonl",
+                        "selector": {
+                            "run_id": "run",
+                            "task_id": "task",
+                            "attempt": 2,
+                        },
+                        "lineage_records_after": 2,
+                        "verify_command": "cargo test -p demo hidden",
+                        "verify_returncode": 0,
+                    },
+                },
+            },
+        ]
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row) + "\n")
+            handle.flush()
+            records = load_records(Path(handle.name))
+
+        self.assertTrue(promotion_artifact_matches_record(records[1]))
+        self.assertEqual(demo_run_ids(records), [("run", "task")])
+        output = render(records, require_demo=True)
+        self.assertIn("PASS complete self-correction demo trajectory found", output)
 
     def test_require_demo_rejects_structured_promotion_without_structured_failure_evidence(self) -> None:
         rows = [

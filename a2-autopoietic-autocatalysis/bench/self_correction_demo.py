@@ -529,6 +529,10 @@ def validate_fresh_rows(
                 f"fresh demo row {index} records timeout_secs={row.get('timeout_secs')!r}; "
                 f"expected {timeout_secs}"
             )
+        if row_has_verifier_gated_promotion(row) and not promotion_artifact_matches_row(row):
+            raise RuntimeError(
+                f"fresh demo row {index} has verifier-gated promotion without a matching promotion artifact"
+            )
 
 
 def validate_fresh_results(args: argparse.Namespace) -> None:
@@ -728,6 +732,39 @@ def artifact_has_promotion_evidence(row: dict[str, object]) -> bool:
         return row["promotion_evidence_present"] is True
     output = "\n".join(str(row.get(key) or "") for key in ("stdout", "stderr")).lower()
     return "promote_germline" in output or "[applied and rebuilt:" in output
+
+
+def artifact_promotion_artifact(row: dict[str, object]) -> dict[str, object] | None:
+    artifact = artifact_promotion(row).get("artifact")
+    return artifact if isinstance(artifact, dict) else None
+
+
+def promotion_artifact_matches_row(row: dict[str, object]) -> bool:
+    artifact = artifact_promotion_artifact(row)
+    if artifact is None:
+        return False
+    selector = artifact.get("selector")
+    return (
+        artifact.get("kind") == "self_correction_jsonl_row"
+        and isinstance(artifact.get("path"), str)
+        and bool(str(artifact.get("path")).strip())
+        and isinstance(selector, dict)
+        and selector.get("run_id") == row.get("run_id")
+        and selector.get("task_id") == row.get("task_id")
+        and selector.get("attempt") == row.get("attempt")
+        and artifact.get("lineage_records_after") == row.get("lineage_records_after")
+        and artifact.get("verify_returncode") == row.get("verify_returncode")
+        and artifact.get("verify_command") == row.get("verify_command")
+    )
+
+
+def row_has_verifier_gated_promotion(row: dict[str, object]) -> bool:
+    return (
+        row.get("resolved") is True
+        and row.get("verify_returncode") == 0
+        and row.get("lineage_reconciled_by_core") is True
+        and artifact_has_promotion_evidence(row)
+    )
 
 
 def normalized_artifact_row(row: dict[str, object]) -> dict[str, object]:
@@ -2886,6 +2923,43 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(RuntimeError, "host-specific path marker"):
+                validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_gated_promotion_without_matching_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            row = {
+                "run_id": "fresh-demo-1",
+                "task_id": "task",
+                "attempt": 2,
+                "resolved": True,
+                "verify_returncode": 0,
+                "verify_command": "cargo test -p demo hidden",
+                "lineage_records_after": 2,
+                "lineage_reconciled_by_core": True,
+                "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+                "source_head_short": "abcdef1",
+                "source_branch": "main",
+                "source_dirty": False,
+                "max_tokens": 100_000,
+                "timeout_secs": 1800,
+                "promotion": {
+                    "verifier_gated": True,
+                    "evidence_present": True,
+                    "lineage_reconciled_by_core": True,
+                    "verify_returncode": 0,
+                },
+            }
+            results.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "without a matching promotion artifact"):
                 validate_fresh_results(args)
 
     def test_validate_fresh_results_rejects_stale_or_mismatched_rows(self) -> None:

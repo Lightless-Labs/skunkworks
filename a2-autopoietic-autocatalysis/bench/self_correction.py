@@ -10,6 +10,7 @@ emitted as one JSON object.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -1001,6 +1002,44 @@ def verify(workspace: Path, fixture: Fixture) -> CommandResult:
     return run_command(fixture.verify_command, workspace, shell=True, timeout=300)
 
 
+def promotion_evidence_present(a2_result: CommandResult | None) -> bool:
+    if a2_result is None:
+        return False
+    output = "\n".join((a2_result.stdout or "", a2_result.stderr or "")).lower()
+    return "promote_germline" in output or "[applied and rebuilt:" in output
+
+
+def promotion_artifact_for_record(
+    *,
+    results_artifact: str | None,
+    payload: dict[str, Any],
+    verify_result: CommandResult,
+    lineage_after: int,
+    verifier_gated: bool,
+) -> dict[str, Any] | None:
+    if not verifier_gated or not results_artifact:
+        return None
+    return {
+        "kind": "self_correction_jsonl_row",
+        "path": results_artifact,
+        "selector": {
+            "run_id": payload["run_id"],
+            "task_id": payload["task_id"],
+            "attempt": payload["attempt"],
+        },
+        "lineage_records_after": lineage_after,
+        "verify_command": str(verify_result.command),
+        "verify_returncode": verify_result.returncode,
+    }
+
+
+def workspace_label(workspace: Path) -> str:
+    parent = workspace.parent.name
+    if parent:
+        return str(Path(parent) / workspace.name)
+    return workspace.name
+
+
 def result_record(
     *,
     payload: dict[str, Any],
@@ -1016,7 +1055,19 @@ def result_record(
     source_metadata: dict[str, Any],
     max_tokens: int,
     timeout: int,
+    results_artifact: str | None = None,
 ) -> dict[str, Any]:
+    promotion_present = promotion_evidence_present(a2_result)
+    verifier_gated_promotion = (
+        verify_result.returncode == 0 and lineage_reconciled_by_core and promotion_present
+    )
+    promotion_artifact = promotion_artifact_for_record(
+        results_artifact=results_artifact,
+        payload=payload,
+        verify_result=verify_result,
+        lineage_after=lineage_after,
+        verifier_gated=verifier_gated_promotion,
+    )
     return {
         "task_id": payload["task_id"],
         "category": payload["category"],
@@ -1035,37 +1086,18 @@ def result_record(
         "lineage_reconciled_by_core": lineage_reconciled_by_core,
         "verifier_failure_evidence_present": verify_result.returncode != 0
         and bool((verify_result.stdout or verify_result.stderr).strip()),
-        "promotion_evidence_present": a2_result is not None
-        and (
-            "promote_germline" in (a2_result.stdout or "").lower()
-            or "promote_germline" in (a2_result.stderr or "").lower()
-            or "[applied and rebuilt:" in (a2_result.stdout or "").lower()
-            or "[applied and rebuilt:" in (a2_result.stderr or "").lower()
-        ),
+        "promotion_evidence_present": promotion_present,
         "promotion": {
-            "verifier_gated": verify_result.returncode == 0
-            and lineage_reconciled_by_core
-            and a2_result is not None
-            and (
-                "promote_germline" in (a2_result.stdout or "").lower()
-                or "promote_germline" in (a2_result.stderr or "").lower()
-                or "[applied and rebuilt:" in (a2_result.stdout or "").lower()
-                or "[applied and rebuilt:" in (a2_result.stderr or "").lower()
-            ),
-            "evidence_present": a2_result is not None
-            and (
-                "promote_germline" in (a2_result.stdout or "").lower()
-                or "promote_germline" in (a2_result.stderr or "").lower()
-                or "[applied and rebuilt:" in (a2_result.stdout or "").lower()
-                or "[applied and rebuilt:" in (a2_result.stderr or "").lower()
-            ),
+            "verifier_gated": verifier_gated_promotion,
+            "evidence_present": promotion_present,
             "lineage_reconciled_by_core": lineage_reconciled_by_core,
             "verify_returncode": verify_result.returncode,
+            "artifact": promotion_artifact,
         },
         "anti_repeat_retry_enabled": anti_repeat_retry_enabled,
         "ablation": None if anti_repeat_retry_enabled else "anti_repeat_retry_disabled",
         **patch_stats,
-        "workspace": str(workspace),
+        "workspace": workspace_label(workspace),
         "a2_returncode": a2_result.returncode if a2_result else None,
         "a2_duration_secs": round(a2_result.duration_secs, 3) if a2_result else 0.0,
         "verify_command": str(verify_result.command),
@@ -1112,9 +1144,14 @@ def run_benchmark(args: argparse.Namespace) -> int:
             "before benchmark worktrees or result files are created"
         )
     base_run_id = args.run_id or datetime.now(timezone.utc).strftime("self-correction-%Y%m%dT%H%M%SZ")
-    results = Path(args.results)
+    requested_results = Path(args.results)
+    results_artifact = str(requested_results)
+    results = requested_results
     if not results.is_absolute():
         results = source_project / results
+    else:
+        with contextlib.suppress(ValueError):
+            results_artifact = str(results.relative_to(source_project))
 
     for run_index in range(1, args.runs + 1):
         run_id = indexed_run_id(base_run_id, args.runs, run_index)
@@ -1178,6 +1215,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
                     source_metadata=source_metadata,
                     max_tokens=args.max_tokens,
                     timeout=args.timeout,
+                    results_artifact=results_artifact,
                 )
                 append_jsonl(results, record)
                 print(json.dumps(record, sort_keys=True))
@@ -1515,6 +1553,7 @@ class SelfCorrectionTests(unittest.TestCase):
             },
             max_tokens=12345,
             timeout=678,
+            results_artifact="docs/results.jsonl",
         )
         self.assertTrue(record["resolved"])
         self.assertTrue(record["prior_lineage_present"])
@@ -1526,6 +1565,7 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertFalse(record["promotion"]["evidence_present"])
         self.assertTrue(record["promotion"]["lineage_reconciled_by_core"])
         self.assertEqual(record["promotion"]["verify_returncode"], 0)
+        self.assertIsNone(record["promotion"]["artifact"])
         self.assertFalse(record["anti_repeat_retry_enabled"])
         self.assertEqual(record["ablation"], "anti_repeat_retry_disabled")
         self.assertEqual(record["touched_files"], ["crates/a2_core/src/lib.rs"])
@@ -1537,6 +1577,62 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertFalse(record["source_dirty"])
         self.assertEqual(record["max_tokens"], 12345)
         self.assertEqual(record["timeout_secs"], 678)
+        self.assertEqual(record["workspace"], "tmp/workspace")
+        self.assertNotIn("/tmp", record["workspace"])
+
+    def test_result_record_emits_promotion_artifact_for_verified_apply(self) -> None:
+        payload = task_payload(FIXTURES["fibonacci"], "fresh-demo-1", 2)
+        verify_result = CommandResult("cargo test -p demo hidden", 0, "ok", "", 1.0)
+        a2_result = CommandResult(
+            ["cargo", "run", "-p", "a2ctl"],
+            0,
+            "",
+            "[applied and rebuilt: demo]",
+            2.0,
+        )
+        record = result_record(
+            payload=payload,
+            provider="opencode/minimax-coding-plan/MiniMax-M3",
+            workspace=Path("/tmp/workspace"),
+            a2_result=a2_result,
+            verify_result=verify_result,
+            lineage_before=1,
+            lineage_after=2,
+            lineage_reconciled_by_core=True,
+            patch_stats={
+                "touched_files": ["crates/a2_core/src/lib.rs"],
+                "touched_file_count": 1,
+                "diff_added_lines": 1,
+                "diff_removed_lines": 1,
+            },
+            anti_repeat_retry_enabled=True,
+            source_metadata={
+                "source_head": "abcdef",
+                "source_head_short": "abcdef",
+                "source_branch": "main",
+                "source_dirty": False,
+            },
+            max_tokens=100_000,
+            timeout=1800,
+            results_artifact="docs/benchmark-results/self-correction/a2-fresh-demo.jsonl",
+        )
+
+        self.assertTrue(record["promotion"]["verifier_gated"])
+        self.assertEqual(
+            record["promotion"]["artifact"],
+            {
+                "kind": "self_correction_jsonl_row",
+                "path": "docs/benchmark-results/self-correction/a2-fresh-demo.jsonl",
+                "selector": {
+                    "run_id": "fresh-demo-1",
+                    "task_id": FIBONACCI_TASK_ID,
+                    "attempt": 2,
+                },
+                "lineage_records_after": 2,
+                "verify_command": "cargo test -p demo hidden",
+                "verify_returncode": 0,
+            },
+        )
 
     def test_diff_stats_reports_touched_files_and_line_counts(self) -> None:
         stats = diff_stats(
