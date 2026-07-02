@@ -1717,6 +1717,30 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(provider_binary_name("pi/zai/glm-5.2"), "pi")
         self.assertEqual(provider_binary_name("gemini"), "gemini")
 
+    def test_run_id_matches_exact_and_numeric_suffix_only(self) -> None:
+        self.assertTrue(run_id_matches("fresh-demo", "fresh-demo"))
+        self.assertTrue(run_id_matches("fresh-demo-1", "fresh-demo"))
+        self.assertTrue(run_id_matches("fresh-demo-12", "fresh-demo"))
+        self.assertFalse(run_id_matches("fresh-demo-old", "fresh-demo"))
+        self.assertFalse(run_id_matches("fresh-demo-abc", "fresh-demo"))
+        self.assertFalse(run_id_matches("fresh-demo-", "fresh-demo"))
+        self.assertFalse(run_id_matches("fresh-demo-1-extra", "fresh-demo"))
+        self.assertFalse(run_id_matches("", "fresh-demo"))
+        self.assertFalse(run_id_matches(None, "fresh-demo"))
+        self.assertFalse(run_id_matches(123, "fresh-demo"))
+
+    def test_fresh_contract_command_forwards_allow_dirty_source(self) -> None:
+        args = argparse.Namespace(
+            run_id="fresh-demo",
+            max_tokens=100_000,
+            timeout=1800,
+            allow_dirty_source=True,
+        )
+
+        command = fresh_contract_command(args, Path("docs/results/fresh.demo-evidence.json"))
+
+        self.assertIn("--allow-dirty-source", command)
+
     def test_documented_python_test_counts_match_self_tests(self) -> None:
         expected_counts = {
             "self_correction": unittest_count_for_script("bench/self_correction.py"),
@@ -2429,6 +2453,10 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         command = fresh_command(args)
 
         self.assertIn("--require-clean-source", command)
+        self.assertIn("--fixture", command)
+        self.assertIn(DEFAULT_FIXTURE, command)
+        self.assertIn("--provider", command)
+        self.assertIn(DEFAULT_PROVIDER, command)
         self.assertIn("--runs", command)
         self.assertIn("3", command)
         self.assertIn("--max-tokens", command)
