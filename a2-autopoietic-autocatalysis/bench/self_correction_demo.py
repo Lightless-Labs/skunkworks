@@ -479,6 +479,66 @@ def write_fresh_preflight_report(
     resolved.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def load_preflight_report(path: Path) -> dict[str, object]:
+    resolved = repo_path(path)
+    try:
+        data = json.loads(resolved.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"invalid fresh preflight report JSON: {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"fresh preflight report is not a JSON object: {path}")
+    return data
+
+
+def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = False) -> None:
+    report = load_preflight_report(path)
+    if report.get("mode") != "fresh_preflight":
+        raise RuntimeError("fresh preflight report mode is not fresh_preflight")
+    for key in [
+        "creates_loop_evidence",
+        "provider_backed_benchmark_executed",
+        "results_created",
+        "evidence_json_created",
+        "fresh_provenance_contract_executed",
+        "live_provider_auth_quota_model_checked",
+    ]:
+        if report.get(key) is not False:
+            raise RuntimeError(f"fresh preflight report {key} must be false")
+    source_metadata = report.get("source_metadata")
+    if not isinstance(source_metadata, dict):
+        raise RuntimeError("fresh preflight report lacks source_metadata")
+    source_head = source_metadata.get("source_head")
+    if not isinstance(source_head, str) or not re.fullmatch(r"[0-9a-f]{40}", source_head):
+        raise RuntimeError("fresh preflight report source_head must be a 40-character hex git commit")
+    source_dirty = source_metadata.get("source_dirty")
+    if not isinstance(source_dirty, bool):
+        raise RuntimeError("fresh preflight report source_dirty must be boolean")
+    current = current_source_metadata()
+    current_head = current["source_head"]
+    current_dirty = current["source_dirty"]
+    print("Fresh preflight report check")
+    print(f"  report: {path}")
+    print(f"  report_source_head: {source_head}")
+    print(f"  current_head: {current_head}")
+    print(f"  report_source_dirty: {source_dirty}")
+    print(f"  current_source_dirty: {current_dirty}")
+    print("  readiness only: no provider-backed benchmark/results/evidence/contract/live-auth check ran")
+    print("  not loop evidence: no failed-attempt/retry/promotion proof")
+    if require_current_head and current_head != source_head:
+        raise RuntimeError(
+            "fresh preflight report source_head differs from current HEAD; rerun preflight "
+            "or the confirmed fresh provider-backed command from the intended HEAD"
+        )
+    if require_current_head and current_dirty != source_dirty:
+        raise RuntimeError(
+            "fresh preflight report source_dirty differs from current source state; rerun preflight"
+        )
+    if current_head == source_head and current_dirty == source_dirty:
+        print("  PASS source snapshot matches current HEAD/state")
+    else:
+        print("  STALE source snapshot differs from current HEAD/state")
+
+
 def load_jsonl(path: Path) -> list[dict[str, object]]:
     resolved = repo_path(path)
     if not resolved.exists():
@@ -1573,6 +1633,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
 
+    preflight_report = subparsers.add_parser(
+        "verify-preflight-report",
+        help=(
+            "Check a no-network fresh preflight report and print whether its source "
+            "snapshot matches the current HEAD. This is readiness-only, not loop proof."
+        ),
+    )
+    preflight_report.add_argument("--report-json", type=Path, required=True)
+    preflight_report.add_argument(
+        "--require-current-head",
+        action="store_true",
+        help="Fail when the report source_head/source_dirty does not match the current source state.",
+    )
+
     fresh = subparsers.add_parser(
         "fresh",
         help="Regenerate a fresh demo JSONL artifact, then score it with --require-demo.",
@@ -1679,6 +1753,17 @@ def main(argv: list[str]) -> int:
     if args.mode == "verify-documented-counts":
         try:
             verify_documented_counts(update=args.update)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        return 0
+
+    if args.mode == "verify-preflight-report":
+        try:
+            verify_fresh_preflight_report(
+                args.report_json,
+                require_current_head=args.require_current_head,
+            )
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -1967,6 +2052,34 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
         self.assertEqual(args.mode, "verify-documented-counts")
         self.assertTrue(args.update)
+
+    def test_verify_preflight_report_cli_parses(self) -> None:
+        args = parse_args(
+            [
+                "verify-preflight-report",
+                "--report-json",
+                "fresh.report.json",
+                "--require-current-head",
+            ]
+        )
+
+        self.assertEqual(args.mode, "verify-preflight-report")
+        self.assertEqual(args.report_json, Path("fresh.report.json"))
+        self.assertTrue(args.require_current_head)
+
+    def test_verify_preflight_report_cli_dispatches_require_current_head(self) -> None:
+        with mock.patch(__name__ + ".verify_fresh_preflight_report") as verify:
+            result = main(
+                [
+                    "verify-preflight-report",
+                    "--report-json",
+                    "fresh.report.json",
+                    "--require-current-head",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        verify.assert_called_once_with(Path("fresh.report.json"), require_current_head=True)
 
     def test_archive_flags_work_without_explicit_subcommand(self) -> None:
         args = parse_args(["--archive", "custom.jsonl", "--print-only"])
@@ -2894,6 +3007,101 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIsNone(data["checks"]["source_clean"])
         self.assertIsNone(data["checks"]["source_clean_checked_before_output_creation"])
         self.assertTrue(data["checks"]["dirty_source_allowed"])
+
+    def test_verify_preflight_report_prints_stale_snapshot_without_loop_claim(self) -> None:
+        report = {
+            "mode": "fresh_preflight",
+            "creates_loop_evidence": False,
+            "provider_backed_benchmark_executed": False,
+            "results_created": False,
+            "evidence_json_created": False,
+            "fresh_provenance_contract_executed": False,
+            "live_provider_auth_quota_model_checked": False,
+            "source_metadata": {
+                "source_head": "1234567890abcdef1234567890abcdef12345678",
+                "source_dirty": False,
+            },
+        }
+        current = {
+            "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+            "source_dirty": False,
+            "source_head_short": "abcdef1",
+            "source_branch": "main",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            stdout = io.StringIO()
+            with mock.patch(__name__ + ".current_source_metadata", return_value=current), contextlib.redirect_stdout(stdout):
+                verify_fresh_preflight_report(report_path)
+
+        output = stdout.getvalue()
+        self.assertIn("STALE source snapshot differs from current HEAD/state", output)
+        self.assertIn("readiness only", output)
+        self.assertIn("not loop evidence", output)
+
+    def test_verify_preflight_report_require_current_head_accepts_matching_snapshot(self) -> None:
+        report = {
+            "mode": "fresh_preflight",
+            "creates_loop_evidence": False,
+            "provider_backed_benchmark_executed": False,
+            "results_created": False,
+            "evidence_json_created": False,
+            "fresh_provenance_contract_executed": False,
+            "live_provider_auth_quota_model_checked": False,
+            "source_metadata": {
+                "source_head": "1234567890abcdef1234567890abcdef12345678",
+                "source_dirty": True,
+            },
+        }
+        current = {
+            "source_head": "1234567890abcdef1234567890abcdef12345678",
+            "source_dirty": True,
+            "source_head_short": "1234567",
+            "source_branch": "main",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            stdout = io.StringIO()
+            with mock.patch(__name__ + ".current_source_metadata", return_value=current), contextlib.redirect_stdout(stdout):
+                verify_fresh_preflight_report(report_path, require_current_head=True)
+
+        output = stdout.getvalue()
+        self.assertIn("PASS source snapshot matches current HEAD/state", output)
+        self.assertIn("readiness only", output)
+        self.assertIn("not loop evidence", output)
+
+    def test_verify_preflight_report_require_current_head_rejects_stale_snapshot(self) -> None:
+        report = {
+            "mode": "fresh_preflight",
+            "creates_loop_evidence": False,
+            "provider_backed_benchmark_executed": False,
+            "results_created": False,
+            "evidence_json_created": False,
+            "fresh_provenance_contract_executed": False,
+            "live_provider_auth_quota_model_checked": False,
+            "source_metadata": {
+                "source_head": "1234567890abcdef1234567890abcdef12345678",
+                "source_dirty": False,
+            },
+        }
+        current = {
+            "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+            "source_dirty": False,
+            "source_head_short": "abcdef1",
+            "source_branch": "main",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with mock.patch(__name__ + ".current_source_metadata", return_value=current), contextlib.redirect_stdout(
+                io.StringIO()
+            ), self.assertRaisesRegex(
+                RuntimeError,
+                "source_head differs from current HEAD",
+            ):
+                verify_fresh_preflight_report(report_path, require_current_head=True)
 
     def test_fresh_preflight_report_refuses_non_empty_file(self) -> None:
         original_which = shutil.which
