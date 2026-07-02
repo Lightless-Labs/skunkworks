@@ -1103,8 +1103,14 @@ def validate_demo_evidence_contract(
             retry_step.get("fields"),
             label=f"demos[{demo_index}].retry_context_from_failure_evidence.fields",
         )
+        retry_embedded_rows = require_sequence(
+            retry_step.get("evidence_rows"),
+            label=f"demos[{demo_index}].retry_context_from_failure_evidence.evidence_rows",
+        )
         if not retry_fields or len(retry_fields) != len(retry_selectors):
             raise RuntimeError("demo evidence contract requires paired retry selectors and fields")
+        if len(retry_embedded_rows) != len(retry_selectors):
+            raise RuntimeError("demo evidence contract requires paired retry selectors and evidence rows")
         failed_lineage_after = archived_fields.get("lineage_records_after")
         if not isinstance(failed_lineage_after, int):
             raise RuntimeError("demo evidence contract archived failure lacks lineage_records_after")
@@ -1137,12 +1143,6 @@ def validate_demo_evidence_contract(
                 retry_selector,
                 label=f"demos[{demo_index}].retry_context_from_failure_evidence.selectors[{field_index}]",
             )
-            retry_embedded_rows = require_sequence(
-                retry_step.get("evidence_rows"),
-                label=f"demos[{demo_index}].retry_context_from_failure_evidence.evidence_rows",
-            )
-            if field_index >= len(retry_embedded_rows):
-                raise RuntimeError("demo evidence contract missing embedded retry row")
             retry_embedded_row = require_mapping(
                 retry_embedded_rows[field_index],
                 label=f"demos[{demo_index}].retry_context_from_failure_evidence.evidence_rows[{field_index}]",
@@ -1873,15 +1873,15 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         updated, replacements = replace_documented_counts(
             original,
             rust_count=117,
-            python_counts={"self_correction": 26, "scoring": 35, "demo_wrapper": 77},
+            python_counts={"self_correction": 26, "scoring": 35, "demo_wrapper": 78},
         )
 
         self.assertEqual(replacements, 5)
         self.assertIn(
-            "117 Rust + 26 self-correction Python + 35 scoring Python + 77 demo-wrapper Python tests",
+            "117 Rust + 26 self-correction Python + 35 scoring Python + 78 demo-wrapper Python tests",
             updated,
         )
-        self.assertIn("`python3 bench/self_correction_demo.py --self-test` ran 77 tests OK", updated)
+        self.assertIn("`python3 bench/self_correction_demo.py --self-test` ran 78 tests OK", updated)
         self.assertIn("`python3 bench/self_correction_score.py --self-test` ran 35 tests OK", updated)
         self.assertIn("`python3 bench/self_correction.py --self-test` ran 26 tests OK", updated)
 
@@ -1906,15 +1906,15 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             ), mock.patch(
                 __name__ + ".unittest_count_for_script", side_effect=[26, 35]
             ), mock.patch(
-                __name__ + ".current_module_self_test_count", return_value=77
+                __name__ + ".current_module_self_test_count", return_value=78
             ), contextlib.redirect_stdout(io.StringIO()):
                 verify_documented_counts(update=True)
 
             self.assertIn(
-                "117 Rust + 26 self-correction Python + 35 scoring Python + 77 demo-wrapper Python tests",
+                "117 Rust + 26 self-correction Python + 35 scoring Python + 78 demo-wrapper Python tests",
                 handoff.read_text(encoding="utf-8"),
             )
-            self.assertEqual(latest_verification_python_test_counts(todo)["demo_wrapper"], 77)
+            self.assertEqual(latest_verification_python_test_counts(todo)["demo_wrapper"], 78)
 
     def test_rust_test_count_parser_counts_only_cargo_test_lines(self) -> None:
         cargo_list_output = "\n".join(
@@ -2415,6 +2415,18 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 evidence,
                 self.evidence_reference(evidence),
                 evidence_label="missing-selectors.demo-evidence.json",
+            )
+
+    def test_verify_evidence_contract_rejects_unpaired_retry_evidence_rows(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        retry_step = evidence["demos"][0]["causal_chain"][2]
+        retry_step["evidence_rows"].append(dict(retry_step["evidence_rows"][0]))
+
+        with self.assertRaisesRegex(RuntimeError, "paired retry selectors and evidence rows"):
+            validate_demo_evidence_contract(
+                evidence,
+                self.evidence_reference(evidence),
+                evidence_label="extra-retry-row.demo-evidence.json",
             )
 
     def test_verify_evidence_contract_rejects_non_advancing_archived_failure_lineage(self) -> None:
