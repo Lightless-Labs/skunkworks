@@ -65,6 +65,21 @@ LATEST_VERIFICATION_COUNTS_PATTERN = re.compile(
     r"`python3 bench/self_correction\.py --self-test` ran "
     r"(?P<self_correction>\d+) tests OK"
 )
+TEST_COUNT_SUMMARY_PATTERN = re.compile(
+    r"\d+ Rust \+ \d+ self-correction Python \+ \d+ scoring Python \+ "
+    r"\d+ demo-wrapper Python tests"
+)
+SELF_TEST_COUNT_PATTERNS = {
+    "self_correction": re.compile(
+        r"(`python3 bench/self_correction\.py --self-test` ran )\d+( tests OK)"
+    ),
+    "scoring": re.compile(
+        r"(`python3 bench/self_correction_score\.py --self-test` ran )\d+( tests OK)"
+    ),
+    "demo_wrapper": re.compile(
+        r"(`python3 bench/self_correction_demo\.py --self-test` ran )\d+( tests OK)"
+    ),
+}
 
 
 def repo_root() -> Path:
@@ -141,6 +156,66 @@ def latest_verification_python_test_counts(path: Path) -> dict[str, int]:
         if match:
             return python_test_counts_from_match(match)
     raise RuntimeError(f"{path} latest verification self-test counts were not found")
+
+
+def documented_counts_summary(rust_count: int, python_counts: dict[str, int]) -> str:
+    return (
+        f"{rust_count} Rust + {python_counts['self_correction']} self-correction Python + "
+        f"{python_counts['scoring']} scoring Python + "
+        f"{python_counts['demo_wrapper']} demo-wrapper Python tests"
+    )
+
+
+def replace_count_markers_in_line(
+    line: str,
+    *,
+    rust_count: int,
+    python_counts: dict[str, int],
+) -> tuple[str, int]:
+    replacements = 0
+    line, count = TEST_COUNT_SUMMARY_PATTERN.subn(
+        documented_counts_summary(rust_count, python_counts), line
+    )
+    replacements += count
+    for key, pattern in SELF_TEST_COUNT_PATTERNS.items():
+        line, count = pattern.subn(rf"\g<1>{python_counts[key]}\g<2>", line)
+        replacements += count
+    return line, replacements
+
+
+def replace_documented_counts(
+    text: str,
+    *,
+    rust_count: int,
+    python_counts: dict[str, int],
+) -> tuple[str, int]:
+    lines = text.splitlines(keepends=True)
+    replacements = 0
+    current_row_seen = False
+    latest_line_seen = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if HANDOFF_TEST_COUNTS_PATTERN.fullmatch(stripped):
+            if current_row_seen:
+                raise RuntimeError("multiple Current Numbers test-count rows found")
+            line_ending = "\n" if line.endswith("\n") else ""
+            lines[index] = f"| Tests | {documented_counts_summary(rust_count, python_counts)} |{line_ending}"
+            current_row_seen = True
+            replacements += 1
+            continue
+        if LATEST_VERIFICATION_COUNTS_PATTERN.search(line):
+            if latest_line_seen:
+                raise RuntimeError("multiple latest verification count lines found")
+            lines[index], count = replace_count_markers_in_line(
+                line,
+                rust_count=rust_count,
+                python_counts=python_counts,
+            )
+            latest_line_seen = True
+            replacements += count
+    if not current_row_seen and not latest_line_seen:
+        raise RuntimeError("no documented count markers found")
+    return "".join(lines), replacements
 
 
 def display_command(command: list[str]) -> str:
@@ -1377,13 +1452,34 @@ def run_command(command: list[str], *, print_only: bool) -> int:
     return subprocess.run(command, cwd=repo_root(), check=False).returncode
 
 
-def verify_documented_counts() -> None:
+def verify_documented_counts(*, update: bool = False) -> None:
     expected_python_counts = {
         "self_correction": unittest_count_for_script("bench/self_correction.py"),
         "scoring": unittest_count_for_script("bench/self_correction_score.py"),
         "demo_wrapper": current_module_self_test_count(),
     }
     rust_count = cargo_rust_test_count()
+    if update:
+        pending_updates: list[tuple[Path, str, str]] = []
+        for path in (
+            repo_root() / "docs/HANDOFF.md",
+            repo_root() / "todos/self-correction-loop.md",
+        ):
+            original = path.read_text(encoding="utf-8")
+            updated, replacements = replace_documented_counts(
+                original,
+                rust_count=rust_count,
+                python_counts=expected_python_counts,
+            )
+            if replacements == 0:
+                raise RuntimeError(
+                    f"{path.relative_to(repo_root())} has no documented count markers to update"
+                )
+            pending_updates.append((path, original, updated))
+        for path, original, updated in pending_updates:
+            if updated != original:
+                path.write_text(updated, encoding="utf-8")
+                print(f"updated documented counts in {path.relative_to(repo_root())}")
     if handoff_current_rust_test_count() != rust_count:
         raise RuntimeError(
             "docs/HANDOFF.md Current Numbers Rust test count does not match "
@@ -1401,12 +1497,7 @@ def verify_documented_counts() -> None:
             "docs/HANDOFF.md Current Numbers Python counts do not match self-tests: "
             f"documented={handoff_current_python_test_counts()} actual={expected_python_counts}"
         )
-    print(
-        "PASS documented counts: "
-        f"{rust_count} Rust + {expected_python_counts['self_correction']} self-correction Python + "
-        f"{expected_python_counts['scoring']} scoring Python + "
-        f"{expected_python_counts['demo_wrapper']} demo-wrapper Python tests"
-    )
+    print(f"PASS documented counts: {documented_counts_summary(rust_count, expected_python_counts)}")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -1465,11 +1556,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Allow source_dirty=true rows when --fresh-run-id is supplied.",
     )
 
-    subparsers.add_parser(
+    documented_counts = subparsers.add_parser(
         "verify-documented-counts",
         help=(
             "Check documented Rust/Python test counts. This intentionally runs "
             "cargo test -- --list only when invoked directly, not during --self-test."
+        ),
+    )
+    documented_counts.add_argument(
+        "--update",
+        action="store_true",
+        help=(
+            "Rewrite the documented Rust/Python test-count markers before checking them. "
+            "This still invokes cargo test -- --list and should be run explicitly, never "
+            "from cargo/self-test paths."
         ),
     )
 
@@ -1578,7 +1678,7 @@ def main(argv: list[str]) -> int:
 
     if args.mode == "verify-documented-counts":
         try:
-            verify_documented_counts()
+            verify_documented_counts(update=args.update)
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -1758,6 +1858,64 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             expected_counts,
         )
 
+    def test_replace_documented_counts_updates_all_count_markers(self) -> None:
+        original = "\n".join(
+            [
+                "| Tests | 1 Rust + 2 self-correction Python + 3 scoring Python + 4 demo-wrapper Python tests |",
+                "Latest: `python3 bench/self_correction_demo.py --self-test` ran 4 tests OK; "
+                "`python3 bench/self_correction_score.py --self-test` ran 3 tests OK; "
+                "`python3 bench/self_correction.py --self-test` ran 2 tests OK; "
+                "`python3 bench/self_correction_demo.py verify-documented-counts` passed with "
+                "`1 Rust + 2 self-correction Python + 3 scoring Python + 4 demo-wrapper Python tests`.",
+            ]
+        )
+
+        updated, replacements = replace_documented_counts(
+            original,
+            rust_count=117,
+            python_counts={"self_correction": 26, "scoring": 35, "demo_wrapper": 77},
+        )
+
+        self.assertEqual(replacements, 5)
+        self.assertIn(
+            "117 Rust + 26 self-correction Python + 35 scoring Python + 77 demo-wrapper Python tests",
+            updated,
+        )
+        self.assertIn("`python3 bench/self_correction_demo.py --self-test` ran 77 tests OK", updated)
+        self.assertIn("`python3 bench/self_correction_score.py --self-test` ran 35 tests OK", updated)
+        self.assertIn("`python3 bench/self_correction.py --self-test` ran 26 tests OK", updated)
+
+    def test_verify_documented_counts_update_mode_rewrites_docs_before_checking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            handoff = root / "docs/HANDOFF.md"
+            todo = root / "todos/self-correction-loop.md"
+            handoff.parent.mkdir(parents=True)
+            todo.parent.mkdir(parents=True)
+            stale = (
+                "| Tests | 1 Rust + 2 self-correction Python + 3 scoring Python + 4 demo-wrapper Python tests |\n"
+                "Latest: `python3 bench/self_correction_demo.py --self-test` ran 4 tests OK; "
+                "`python3 bench/self_correction_score.py --self-test` ran 3 tests OK; "
+                "`python3 bench/self_correction.py --self-test` ran 2 tests OK.\n"
+            )
+            handoff.write_text(stale, encoding="utf-8")
+            todo.write_text(stale, encoding="utf-8")
+
+            with mock.patch(__name__ + ".repo_root", return_value=root), mock.patch(
+                __name__ + ".cargo_rust_test_count", return_value=117
+            ), mock.patch(
+                __name__ + ".unittest_count_for_script", side_effect=[26, 35]
+            ), mock.patch(
+                __name__ + ".current_module_self_test_count", return_value=77
+            ), contextlib.redirect_stdout(io.StringIO()):
+                verify_documented_counts(update=True)
+
+            self.assertIn(
+                "117 Rust + 26 self-correction Python + 35 scoring Python + 77 demo-wrapper Python tests",
+                handoff.read_text(encoding="utf-8"),
+            )
+            self.assertEqual(latest_verification_python_test_counts(todo)["demo_wrapper"], 77)
+
     def test_rust_test_count_parser_counts_only_cargo_test_lines(self) -> None:
         cargo_list_output = "\n".join(
             [
@@ -1803,6 +1961,12 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(args.mode, "verify-archive")
         self.assertEqual(args.archive, DEFAULT_ARCHIVE)
         self.assertIsNone(args.evidence_json)
+
+    def test_verify_documented_counts_update_flag_parses(self) -> None:
+        args = parse_args(["verify-documented-counts", "--update"])
+
+        self.assertEqual(args.mode, "verify-documented-counts")
+        self.assertTrue(args.update)
 
     def test_archive_flags_work_without_explicit_subcommand(self) -> None:
         args = parse_args(["--archive", "custom.jsonl", "--print-only"])
