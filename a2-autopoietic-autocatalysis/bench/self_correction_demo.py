@@ -1287,6 +1287,10 @@ def verify_evidence_contract(
     print("Demo evidence contract check")
     print(f"  evidence: {evidence_json}")
     print(f"  reference: {reference_evidence_json}")
+    if fresh_run_id is None:
+        print("  mode: archived historical provider evidence; no fresh run-id provenance check requested")
+    else:
+        print("  mode: fresh artifact provenance check")
     print(
         "  PASS evidence JSON matches archived demo contract "
         f"(requirements={len(evidence['requirements'])}, demos={len(evidence['demos'])})"
@@ -1904,6 +1908,30 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn("outside the requested run_id", stderr.getvalue())
 
+    def test_verify_evidence_contract_prints_fresh_provenance_mode_when_checked(self) -> None:
+        stdout = io.StringIO()
+
+        with mock.patch(__name__ + ".load_jsonl", return_value=[]) as load_rows, mock.patch(
+            __name__ + ".validate_fresh_rows"
+        ) as validate_rows, contextlib.redirect_stdout(stdout):
+            verify_evidence_contract(
+                DEFAULT_ARCHIVE_EVIDENCE,
+                DEFAULT_ARCHIVE_EVIDENCE,
+                fresh_run_id="fresh-demo",
+                max_tokens=123,
+                timeout_secs=456,
+            )
+
+        load_rows.assert_called_once_with(DEFAULT_ARCHIVE)
+        validate_rows.assert_called_once()
+        self.assertEqual(validate_rows.call_args.kwargs["run_id"], "fresh-demo")
+        self.assertEqual(validate_rows.call_args.kwargs["max_tokens"], 123)
+        self.assertEqual(validate_rows.call_args.kwargs["timeout_secs"], 456)
+        output = stdout.getvalue()
+        self.assertIn("mode: fresh artifact provenance check", output)
+        self.assertIn("PASS fresh artifact provenance", output)
+        self.assertIn("run_id='fresh-demo'", output)
+
     def test_verify_evidence_contract_accepts_complete_six_step_demo(self) -> None:
         evidence = self.archived_demo_contract_evidence()
 
@@ -1921,6 +1949,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
         output = stdout.getvalue()
         self.assertIn(str(DEFAULT_ARCHIVE), output)
+        self.assertIn("mode: archived historical provider evidence", output)
+        self.assertIn("no fresh run-id provenance check requested", output)
         self.assertIn("failed_first_attempt: source=", output)
         self.assertIn("archived_verifier_failure_evidence: source=", output)
         self.assertIn("verify_command=cargo test -p a2_archive", output)
