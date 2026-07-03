@@ -18,8 +18,8 @@ use senior_swe_bench::{
     SeniorSweBenchTask, SeniorSweBenchTaskPackageSummary, SeniorSweBenchVariant,
     build_senior_swe_bench_audit, build_senior_swe_bench_cycle_input,
     build_senior_swe_bench_local_evaluation, build_senior_swe_bench_task_package,
-    extract_senior_swe_bench_tasks, parse_senior_swe_bench_task_package,
-    render_senior_swe_bench_task_context,
+    extract_senior_swe_bench_tasks, parse_senior_swe_bench_cycle_input,
+    parse_senior_swe_bench_task_package, render_senior_swe_bench_task_context,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -3000,12 +3000,11 @@ fn find_senior_swe_bench_task_variant<'a>(
 fn run_senior_swe_bench_evaluate(args: &[String]) {
     let config = parse_senior_swe_bench_evaluate_args(args).unwrap_or_else(|error| {
         eprintln!("{error}");
-        eprintln!("Usage: a2d senior-swe-bench-evaluate --task-package <json> --candidate-patch <diff> --checkout <dir> [--output <json>] -- <local-evaluator> [args...]");
+        eprintln!("Usage: a2d senior-swe-bench-evaluate (--task-package <json>|--task-cycle-input <json>) --candidate-patch <diff> --checkout <dir> [--output <json>] -- <local-evaluator> [args...]");
         std::process::exit(1);
     });
-    let package_json = read_artifact_or_exit(config.task_package.to_string_lossy().as_ref());
-    let package = parse_senior_swe_bench_task_package(&package_json).unwrap_or_else(|error| {
-        eprintln!("Senior SWE-Bench task package error: {error}");
+    let package = load_senior_swe_bench_evaluation_task(&config).unwrap_or_else(|error| {
+        eprintln!("Senior SWE-Bench evaluator task input error: {error}");
         std::process::exit(1);
     });
     if !config.candidate_patch.is_file() {
@@ -3105,7 +3104,8 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SeniorSweBenchEvaluateConfig {
-    task_package: PathBuf,
+    task_package: Option<PathBuf>,
+    task_cycle_input: Option<PathBuf>,
     candidate_patch: PathBuf,
     checkout: PathBuf,
     output: Option<PathBuf>,
@@ -3124,6 +3124,7 @@ fn parse_senior_swe_bench_evaluate_args(
     args: &[String],
 ) -> Result<SeniorSweBenchEvaluateConfig, String> {
     let mut task_package = None;
+    let mut task_cycle_input = None;
     let mut candidate_patch = None;
     let mut checkout = None;
     let mut output = None;
@@ -3135,9 +3136,13 @@ fn parse_senior_swe_bench_evaluate_args(
                 if command.is_empty() {
                     return Err("Senior SWE-Bench evaluator command is empty".to_string());
                 }
+                validate_senior_swe_bench_task_input_args(
+                    task_package.as_ref(),
+                    task_cycle_input.as_ref(),
+                )?;
                 return Ok(SeniorSweBenchEvaluateConfig {
-                    task_package: task_package
-                        .ok_or_else(|| "missing --task-package".to_string())?,
+                    task_package,
+                    task_cycle_input,
                     candidate_patch: candidate_patch
                         .ok_or_else(|| "missing --candidate-patch".to_string())?,
                     checkout: checkout.ok_or_else(|| "missing --checkout".to_string())?,
@@ -3150,6 +3155,13 @@ fn parse_senior_swe_bench_evaluate_args(
                 task_package =
                     Some(PathBuf::from(args.get(index).ok_or_else(|| {
                         "--task-package requires a path".to_string()
+                    })?));
+            }
+            "--task-cycle-input" => {
+                index += 1;
+                task_cycle_input =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        "--task-cycle-input requires a path".to_string()
                     })?));
             }
             "--candidate-patch" => {
@@ -3182,6 +3194,35 @@ fn parse_senior_swe_bench_evaluate_args(
         index += 1;
     }
     Err("missing -- <local-evaluator> command".to_string())
+}
+
+fn validate_senior_swe_bench_task_input_args(
+    task_package: Option<&PathBuf>,
+    task_cycle_input: Option<&PathBuf>,
+) -> Result<(), String> {
+    match (task_package, task_cycle_input) {
+        (Some(_), Some(_)) => {
+            Err("use either --task-package or --task-cycle-input, not both".to_string())
+        }
+        (None, None) => Err("missing --task-package or --task-cycle-input".to_string()),
+        _ => Ok(()),
+    }
+}
+
+fn load_senior_swe_bench_evaluation_task(
+    config: &SeniorSweBenchEvaluateConfig,
+) -> Result<SeniorSweBenchTaskPackageSummary, String> {
+    if let Some(task_package) = &config.task_package {
+        let package_json = read_artifact_or_exit(task_package.to_string_lossy().as_ref());
+        parse_senior_swe_bench_task_package(&package_json)
+            .map_err(|error| format!("task package error: {error}"))
+    } else if let Some(task_cycle_input) = &config.task_cycle_input {
+        let cycle_input_json = read_artifact_or_exit(task_cycle_input.to_string_lossy().as_ref());
+        parse_senior_swe_bench_cycle_input(&cycle_input_json)
+            .map_err(|error| format!("task cycle input error: {error}"))
+    } else {
+        Err("missing --task-package or --task-cycle-input".to_string())
+    }
 }
 
 fn file_content_hash(path: &Path) -> Result<String, String> {
@@ -5330,12 +5371,48 @@ mod tests {
             "--task".to_string(),
         ];
         let config = parse_senior_swe_bench_evaluate_args(&args).unwrap();
-        assert_eq!(config.task_package, PathBuf::from("task.json"));
+        assert_eq!(config.task_package, Some(PathBuf::from("task.json")));
+        assert_eq!(config.task_cycle_input, None);
         assert_eq!(config.candidate_patch, PathBuf::from("candidate.diff"));
         assert_eq!(config.checkout, PathBuf::from("checkout"));
         assert_eq!(
             config.command,
             vec!["./official-evaluator".to_string(), "--task".to_string()]
+        );
+
+        let cycle_input_args = vec![
+            "--task-cycle-input".to_string(),
+            "cycle-input.json".to_string(),
+            "--candidate-patch".to_string(),
+            "candidate.diff".to_string(),
+            "--checkout".to_string(),
+            "checkout".to_string(),
+            "--".to_string(),
+            "./official-evaluator".to_string(),
+        ];
+        let cycle_config = parse_senior_swe_bench_evaluate_args(&cycle_input_args).unwrap();
+        assert_eq!(cycle_config.task_package, None);
+        assert_eq!(
+            cycle_config.task_cycle_input,
+            Some(PathBuf::from("cycle-input.json"))
+        );
+
+        let both_task_inputs = vec![
+            "--task-package".to_string(),
+            "task.json".to_string(),
+            "--task-cycle-input".to_string(),
+            "cycle-input.json".to_string(),
+            "--candidate-patch".to_string(),
+            "candidate.diff".to_string(),
+            "--checkout".to_string(),
+            "checkout".to_string(),
+            "--".to_string(),
+            "./official-evaluator".to_string(),
+        ];
+        assert!(
+            parse_senior_swe_bench_evaluate_args(&both_task_inputs)
+                .unwrap_err()
+                .contains("not both")
         );
 
         let missing_command = vec![

@@ -74,4 +74,58 @@ Evidence inspection:
 
 ## Status
 
-This is cycle-input plumbing only. It does not run a provider, does not produce a Senior SWE-Bench candidate patch, and does not prove official Senior SWE-Bench task mastery. The next gap remains wiring provider-produced candidate diffs to benchmark-provided checkouts and a real evaluator/holdout command without exposing public solution search.
+The initial bridge was cycle-input plumbing only. The follow-up replay slice now proves that a cycle-input artifact can drive the gated local evaluator/evidence path, but it still does not run a provider and does not prove official Senior SWE-Bench task mastery. The next gap remains wiring provider-produced candidate diffs to benchmark-provided checkouts and a real evaluator/holdout command without exposing public solution search.
+
+## Cycle-input local evaluator replay
+
+The follow-up slice wires the `not_evaluated` cycle-input artifact into the existing gated local evaluator wrapper without adding Senior SWE-Bench logic to `a2d-core`:
+
+```bash
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260703-senior-swe-bench-cycle-input-replay-evidence/local-evaluator/fitness \
+  cargo run -q -p a2d -- senior-swe-bench-evaluate \
+  --task-cycle-input runs/20260703-senior-swe-bench-cycle-input-replay-evidence/task-cycle-input/firezone-fix-connlib-align-device-hard-cycle-input.json \
+  --candidate-patch runs/20260703-senior-swe-bench-cycle-input-replay-evidence/local-evaluator/candidate.diff \
+  --checkout runs/20260703-senior-swe-bench-cycle-input-replay-evidence/checkout \
+  --output runs/20260703-senior-swe-bench-cycle-input-replay-evidence/local-evaluator/firezone-fix-connlib-align-device-hard-cycle-input-local-evaluation.json \
+  -- "$PWD/runs/20260703-senior-swe-bench-cycle-input-replay-evidence/local-evaluator/mock-official-evaluator.sh"
+```
+
+Artifacts:
+
+- `runs/20260703-senior-swe-bench-cycle-input-replay-evidence/local-evaluator/firezone-fix-connlib-align-device-hard-cycle-input-local-evaluation.json`
+- `runs/20260703-senior-swe-bench-cycle-input-replay-evidence/local-evaluator/fitness/senior-swe-bench-firezone-fix-connlib-align-device-hard-cycle-0-fitness-evidence.json`
+
+Evidence inspection:
+
+- `schema_version: a2d.fitness-evidence.v1`
+- `actual_tests_evaluated: true`
+- `non_regressing: true`
+- `fitness: 1.0`
+- `failed_cases: []`
+- result labels: `all_tests_pass`, `has_no_solution_search` (policy-declared from accepted no-search metadata, not network-forensics proof), `hidden_acceptance`
+- `source_diff_hash: 65506a4c371a1751089be88cd0eb98501bb31649`
+- `candidate_patch_hash: 8ecc93527321bf316172ef06469260421bc701db`
+- `evaluator_kind: provided_local_command`
+
+This validates cycle-input replay through the gated evaluator/evidence path. It is still provided-local-command evidence; only a benchmark-provided official evaluator/holdout command should be described as official Senior SWE-Bench fitness.
+
+## Negative cycle-input replay smoke
+
+A mutated cycle-input artifact with `benchmark_context.github_solution_search_allowed: true` was rejected before evaluator execution:
+
+```bash
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260703-senior-swe-bench-cycle-input-replay-evidence/negative-smoke/fitness \
+  cargo run -q -p a2d -- senior-swe-bench-evaluate \
+  --task-cycle-input runs/20260703-senior-swe-bench-cycle-input-replay-evidence/task-cycle-input/firezone-fix-connlib-align-device-hard-cycle-input-allows-search.json \
+  --candidate-patch runs/20260703-senior-swe-bench-cycle-input-replay-evidence/local-evaluator/candidate.diff \
+  --checkout runs/20260703-senior-swe-bench-cycle-input-replay-evidence/checkout \
+  --output runs/20260703-senior-swe-bench-cycle-input-replay-evidence/negative-smoke/should-not-exist.json \
+  -- "$PWD/runs/20260703-senior-swe-bench-cycle-input-replay-evidence/local-evaluator/mock-official-evaluator.sh"
+```
+
+Artifacts:
+
+- `runs/20260703-senior-swe-bench-cycle-input-replay-evidence/negative-smoke/solution-search-rejection.err`
+- `runs/20260703-senior-swe-bench-cycle-input-replay-evidence/negative-smoke/solution-search-rejection.status` (`negative_status=1`)
+
+No evaluation JSON and no fitness evidence were produced for the rejected unsafe cycle input.

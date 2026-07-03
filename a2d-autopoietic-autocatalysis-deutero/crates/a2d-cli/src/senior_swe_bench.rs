@@ -214,12 +214,66 @@ pub fn parse_senior_swe_bench_task_package(
             "Senior SWE-Bench task package missing agent_restrictions.github_solution_search_allowed"
                 .to_string()
         })?;
-    if github_solution_search_allowed {
+    ensure_solution_search_forbidden(github_solution_search_allowed, "task package")?;
+    Ok(SeniorSweBenchTaskPackageSummary {
+        task_id,
+        repo,
+        github_solution_search_allowed,
+    })
+}
+
+pub fn parse_senior_swe_bench_cycle_input(
+    input: &str,
+) -> Result<SeniorSweBenchTaskPackageSummary, String> {
+    let value: serde_json::Value = serde_json::from_str(input)
+        .map_err(|error| format!("invalid Senior SWE-Bench cycle input JSON: {error}"))?;
+    let context = value
+        .get("benchmark_context")
+        .ok_or_else(|| "Senior SWE-Bench cycle input missing benchmark_context".to_string())?;
+    let schema = context
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            "Senior SWE-Bench cycle input missing benchmark_context.schema_version".to_string()
+        })?;
+    if schema != SENIOR_SWE_BENCH_TASK_PACKAGE_SCHEMA {
+        return Err(format!(
+            "expected benchmark_context.schema_version {SENIOR_SWE_BENCH_TASK_PACKAGE_SCHEMA}, got {schema}"
+        ));
+    }
+    let task_id = required_string(context, "benchmark_context.task_id")?;
+    let repo = required_string(context, "benchmark_context.repo")?;
+    let github_solution_search_allowed = context
+        .get("github_solution_search_allowed")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| {
+            "Senior SWE-Bench cycle input missing benchmark_context.github_solution_search_allowed"
+                .to_string()
+        })?;
+    ensure_solution_search_forbidden(github_solution_search_allowed, "cycle input")?;
+
+    let evaluation = value
+        .get("evaluation")
+        .ok_or_else(|| "Senior SWE-Bench cycle input missing evaluation".to_string())?;
+    let status = evaluation
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Senior SWE-Bench cycle input missing evaluation.status".to_string())?;
+    if status != "not_evaluated" {
+        return Err(format!(
+            "Senior SWE-Bench cycle input evaluation.status must be not_evaluated, got {status}"
+        ));
+    }
+    if !evaluation
+        .get("fitness")
+        .is_some_and(serde_json::Value::is_null)
+    {
         return Err(
-            "Senior SWE-Bench task package allows GitHub solution search; refusing evaluation"
+            "Senior SWE-Bench cycle input evaluation.fitness must be null before evaluation"
                 .to_string(),
         );
     }
+
     Ok(SeniorSweBenchTaskPackageSummary {
         task_id,
         repo,
@@ -488,12 +542,23 @@ fn find_json_array_end(input: &str, start: usize) -> Option<usize> {
 }
 
 fn required_string(value: &serde_json::Value, field: &str) -> Result<String, String> {
+    let lookup = field.rsplit('.').next().unwrap_or(field);
     value
-        .get(field)
+        .get(lookup)
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map(ToString::to_string)
-        .ok_or_else(|| format!("Senior SWE-Bench task package missing {field}"))
+        .ok_or_else(|| format!("Senior SWE-Bench artifact missing {field}"))
+}
+
+fn ensure_solution_search_forbidden(allowed: bool, source: &str) -> Result<(), String> {
+    if allowed {
+        Err(format!(
+            "Senior SWE-Bench {source} allows GitHub solution search; refusing evaluation"
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn preview_text(value: &str) -> String {
@@ -642,6 +707,44 @@ mod tests {
             Some("not_evaluated")
         );
         assert!(input["evaluation"]["fitness"].is_null());
+    }
+
+    #[test]
+    fn cycle_input_parser_accepts_only_unevaluated_no_search_inputs() {
+        let task = extract_senior_swe_bench_tasks(sample_next_payload())
+            .unwrap()
+            .remove(0);
+        let input = build_senior_swe_bench_cycle_input(&task, "hard", task.hard.as_ref().unwrap());
+
+        let summary = parse_senior_swe_bench_cycle_input(&input.to_string()).unwrap();
+        assert_eq!(summary.task_id, "firezone-fix-connlib-align-device-hard");
+        assert_eq!(summary.repo, "firezone/firezone");
+        assert!(!summary.github_solution_search_allowed);
+
+        let mut allows_search = input.clone();
+        allows_search["benchmark_context"]["github_solution_search_allowed"] =
+            serde_json::json!(true);
+        assert!(
+            parse_senior_swe_bench_cycle_input(&allows_search.to_string())
+                .unwrap_err()
+                .contains("allows GitHub solution search")
+        );
+
+        let mut already_evaluated = input.clone();
+        already_evaluated["evaluation"]["status"] = serde_json::json!("passed");
+        assert!(
+            parse_senior_swe_bench_cycle_input(&already_evaluated.to_string())
+                .unwrap_err()
+                .contains("not_evaluated")
+        );
+
+        let mut fitness_bearing = input;
+        fitness_bearing["evaluation"]["fitness"] = serde_json::json!(1.0);
+        assert!(
+            parse_senior_swe_bench_cycle_input(&fitness_bearing.to_string())
+                .unwrap_err()
+                .contains("fitness must be null")
+        );
     }
 
     #[test]
