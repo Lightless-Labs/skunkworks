@@ -527,6 +527,20 @@ fn network_policy_arg_value(policy: &a2_core::protocol::NetworkPolicy) -> String
     }
 }
 
+fn restricted_policy_without_candidate(
+    policy: Option<&a2_core::protocol::NetworkPolicy>,
+    patch_produced: bool,
+) -> bool {
+    !patch_produced
+        && matches!(
+            policy,
+            Some(
+                a2_core::protocol::NetworkPolicy::Isolated
+                    | a2_core::protocol::NetworkPolicy::AllowList(_)
+            )
+        )
+}
+
 fn parse_network_policy_arg(value: &str) -> Result<a2_core::protocol::NetworkPolicy, String> {
     let trimmed = value.trim();
     if trimmed.eq_ignore_ascii_case("open") {
@@ -727,6 +741,7 @@ async fn main() {
             .with_anti_repeat_retry(!disable_anti_repeat_retry);
 
             let mut rows = Vec::new();
+            let mut restricted_policy_launch_blocked = false;
             let mut task_index: usize = 0;
 
             for line in io::stdin().lock().lines() {
@@ -750,6 +765,7 @@ async fn main() {
                 );
 
                 let title = task.title.clone();
+                let task_network_policy = task.network_policy.clone();
 
                 // Check stagnation and advance provider if needed.
                 let strategy = governor.suggest_strategy_change();
@@ -801,15 +817,30 @@ async fn main() {
                             }
                         }
                         governor.record_apply_outcome(apply_ok, verify_ok);
+                        if restricted_policy_without_candidate(
+                            task_network_policy.as_ref(),
+                            outcome.result.patch.is_some(),
+                        ) {
+                            restricted_policy_launch_blocked = true;
+                            eprintln!(
+                                "[restricted network policy blocked provider launch for {title}; no candidate patch produced]"
+                            );
+                        }
                         rows.push(run_summary_row(&title, p, &outcome));
                     }
-                    Err(e) => rows.push(RunSummaryRow {
-                        title,
-                        model: requested_model(p),
-                        tokens: 0,
-                        duration_secs: 0.0,
-                        decision: format!("error: {e}"),
-                    }),
+                    Err(e) => {
+                        if restricted_policy_without_candidate(task_network_policy.as_ref(), false)
+                        {
+                            restricted_policy_launch_blocked = true;
+                        }
+                        rows.push(RunSummaryRow {
+                            title,
+                            model: requested_model(p),
+                            tokens: 0,
+                            duration_secs: 0.0,
+                            decision: format!("error: {e}"),
+                        });
+                    }
                 }
             }
 
@@ -819,6 +850,9 @@ async fn main() {
             }
 
             print!("{}", render_summary_table(&rows));
+            if restricted_policy_launch_blocked {
+                std::process::exit(1);
+            }
         }
         Commands::Autopilot {
             workspace,
@@ -3052,6 +3086,32 @@ mod tests {
         );
         assert!(parse_network_policy_arg("allowlist:").is_err());
         assert!(parse_network_policy_arg("prompt-only").is_err());
+    }
+
+    #[test]
+    fn restricted_network_policy_without_candidate_is_cli_failure() {
+        assert!(restricted_policy_without_candidate(
+            Some(&a2_core::protocol::NetworkPolicy::Isolated),
+            false,
+        ));
+        assert!(restricted_policy_without_candidate(
+            Some(&a2_core::protocol::NetworkPolicy::AllowList(vec![
+                "https://api.openai.com".into(),
+            ])),
+            false,
+        ));
+        assert!(
+            !restricted_policy_without_candidate(
+                Some(&a2_core::protocol::NetworkPolicy::Isolated),
+                true,
+            ),
+            "a future sandboxed provider run that produces a candidate must not be treated as a launch block"
+        );
+        assert!(!restricted_policy_without_candidate(
+            Some(&a2_core::protocol::NetworkPolicy::Open),
+            false,
+        ));
+        assert!(!restricted_policy_without_candidate(None, false));
     }
 
     #[test]
