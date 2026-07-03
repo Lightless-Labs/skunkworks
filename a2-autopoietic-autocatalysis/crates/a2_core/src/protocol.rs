@@ -34,6 +34,12 @@ pub struct TaskContract {
     /// solution repositories for task-specific solutions.
     #[serde(default)]
     pub no_external_solution_search: bool,
+    /// Optional execution-level network policy for the coding agent process.
+    /// Catalysts that cannot enforce the requested policy at the child-process
+    /// boundary must fail closed before spawning a provider CLI; prompt text
+    /// alone is not considered evidence of network isolation.
+    #[serde(default)]
+    pub network_policy: Option<NetworkPolicy>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -98,6 +104,11 @@ pub struct PatchBundle {
     /// Task-specific verifier outcomes captured inside the candidate worktree.
     #[serde(default)]
     pub worktree_verifications: Vec<ExternalVerification>,
+    /// Execution-level network policy enforced for the agent process, if any.
+    /// Successful unrestricted runs leave this unset rather than treating an
+    /// open network as an enforced sandbox.
+    #[serde(default)]
+    pub network_policy_enforced: Option<NetworkPolicy>,
     pub model_attribution: ModelAttribution,
     pub created_at: DateTime<Utc>,
 }
@@ -270,7 +281,7 @@ pub struct CapabilityMap {
     pub network_policy: NetworkPolicy,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum NetworkPolicy {
     /// No network access.
     Isolated,
@@ -359,5 +370,6 @@ mod tests {
         });
         let task: TaskContract = serde_json::from_value(json).unwrap();
         assert!(!task.no_external_solution_search);
+        assert!(task.network_policy.is_none());
     }
 }

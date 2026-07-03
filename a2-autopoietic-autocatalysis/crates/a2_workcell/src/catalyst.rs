@@ -4,7 +4,7 @@
 //! the response into a PatchBundle. This is the seed catalyst that
 //! bootstraps A² — it will be differentiated into specialists later.
 
-use a2_core::error::A2Result;
+use a2_core::error::{A2Error, A2Result};
 use a2_core::id::*;
 use a2_core::protocol::*;
 use a2_core::traits::*;
@@ -192,6 +192,20 @@ impl Catalyst for GeneralistCatalyst {
         context: &ContextPack,
         model: &dyn ModelProvider,
     ) -> A2Result<PatchBundle> {
+        if matches!(
+            &task.network_policy,
+            Some(NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))
+        ) {
+            return Err(A2Error::CatalystFailure(
+                self.id.clone(),
+                format!(
+                    "network_policy={:?} prevents launching provider `{}` from the generalist catalyst until an audited network sandbox/provider allowlist is implemented",
+                    task.network_policy.as_ref().unwrap(),
+                    model.provider_id()
+                ),
+            ));
+        }
+
         let prompt = self.build_prompt(task, context).await;
         let system = self.build_system_prompt();
 
@@ -214,6 +228,7 @@ impl Catalyst for GeneralistCatalyst {
                 details: vec![],
             },
             worktree_verifications: vec![],
+            network_policy_enforced: None,
             model_attribution: ModelAttribution {
                 provider: model.provider_id().into(),
                 model: model.model_id().into(),
@@ -325,6 +340,7 @@ mod tests {
                 origin: "test".into(),
             },
             no_external_solution_search: false,
+            network_policy: None,
             created_at: Utc::now(),
         }
     }
@@ -335,6 +351,48 @@ mod tests {
         let process_id = std::process::id();
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!("a2_workcell_{process_id}_{name}_{id}.txt"))
+    }
+
+    struct PanicProvider;
+
+    #[async_trait::async_trait]
+    impl ModelProvider for PanicProvider {
+        async fn generate(
+            &self,
+            _prompt: &str,
+            _system: Option<&str>,
+        ) -> A2Result<GenerateResponse> {
+            panic!("provider should not be called when network policy is fail-closed")
+        }
+
+        fn provider_id(&self) -> &str {
+            "panic"
+        }
+
+        fn model_id(&self) -> &str {
+            "panic"
+        }
+    }
+
+    #[tokio::test]
+    async fn generalist_refuses_restricted_network_policy_before_provider_call() {
+        let catalyst = GeneralistCatalyst::new();
+        let context = ContextPack {
+            germline_version: GermlineVersion::new(),
+            relevant_files: vec![],
+            prior_attempts: vec![],
+            retrieved_motifs: vec![],
+        };
+        let mut task = make_task();
+        task.network_policy = Some(NetworkPolicy::Isolated);
+
+        let error = catalyst
+            .execute(&task, &context, &PanicProvider)
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("network_policy=Isolated prevents launching provider `panic`"));
+        assert!(message.contains("audited network sandbox/provider allowlist"));
     }
 
     #[tokio::test]

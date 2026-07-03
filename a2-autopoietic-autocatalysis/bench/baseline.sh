@@ -21,6 +21,15 @@ echo "Model: $MODEL"
 echo "Baseline ref: $BASELINE_REF"
 echo ""
 
+NETWORK_POLICY="${A2_PROVIDER_NETWORK_POLICY:-${A2_BENCH_NETWORK_POLICY:-}}"
+NETWORK_POLICY_LOWER="$(printf '%s' "$NETWORK_POLICY" | tr '[:upper:]' '[:lower:]')"
+case "$NETWORK_POLICY_LOWER" in
+    isolated|allowlist*)
+        echo "Refusing raw baseline run: network policy '$NETWORK_POLICY' requires an audited sandbox/provider allowlist, which bench/baseline.sh does not implement yet." >&2
+        exit 2
+        ;;
+esac
+
 > "$RESULTS_FILE"
 PASS=0
 FAIL=0

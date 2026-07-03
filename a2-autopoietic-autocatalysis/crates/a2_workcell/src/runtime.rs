@@ -634,6 +634,7 @@ mod tests {
                     details: vec![],
                 },
                 worktree_verifications: vec![],
+                network_policy_enforced: None,
                 model_attribution: ModelAttribution {
                     provider: "test".into(),
                     model: "echo".into(),
@@ -778,6 +779,7 @@ mod tests {
                     }],
                 },
                 worktree_verifications: vec![self.verification.clone()],
+                network_policy_enforced: None,
                 model_attribution: ModelAttribution {
                     provider: "t".into(),
                     model: "m".into(),
@@ -824,6 +826,7 @@ mod tests {
                     details: vec![],
                 },
                 worktree_verifications: vec![],
+                network_policy_enforced: None,
                 model_attribution: ModelAttribution {
                     provider: "t".into(),
                     model: "m".into(),
@@ -895,6 +898,7 @@ mod tests {
                     origin: "test".into(),
                 },
                 no_external_solution_search: false,
+                network_policy: None,
                 created_at: Utc::now(),
             },
             budget: Budget {
@@ -997,6 +1001,7 @@ mod tests {
                     origin: "test".into(),
                 },
                 no_external_solution_search: false,
+                network_policy: None,
                 created_at: Utc::now(),
             },
             budget: Budget {
@@ -1104,6 +1109,7 @@ mod tests {
                     origin: "test".into(),
                 },
                 no_external_solution_search: false,
+                network_policy: None,
                 created_at: Utc::now(),
             },
             budget: Budget {
@@ -1308,6 +1314,7 @@ mod tests {
                     origin: "test".into(),
                 },
                 no_external_solution_search: false,
+                network_policy: None,
                 created_at: Utc::now(),
             },
             budget: Budget {
@@ -1351,6 +1358,7 @@ mod tests {
                     origin: "test".into(),
                 },
                 no_external_solution_search: false,
+                network_policy: None,
                 created_at: Utc::now(),
             },
             budget: Budget {

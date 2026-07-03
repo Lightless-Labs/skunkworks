@@ -490,6 +490,8 @@ struct RunInputTask {
     verification_commands: Vec<RunVerificationSpec>,
     #[serde(default)]
     no_external_solution_search: bool,
+    #[serde(default)]
+    network_policy: Option<a2_core::protocol::NetworkPolicy>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1522,6 +1524,7 @@ async fn run_benchmark_suite(model: &str) -> Result<(), String> {
 
         let mut task = ingester.from_human(&bench_task.task.title, &bench_task.task.description);
         task.no_external_solution_search = true;
+        task.network_policy = Some(a2_core::protocol::NetworkPolicy::Isolated);
         task.verification_commands = vec![a2_core::protocol::TaskVerificationCommand {
             command: bench_task.verify.command.clone(),
             expect_exit: bench_task.verify.expect_exit,
@@ -1836,6 +1839,7 @@ fn task_from_run_input(
                 })
                 .collect();
             task.no_external_solution_search = input.no_external_solution_search;
+            task.network_policy = input.network_policy;
 
             task
         }
@@ -2945,11 +2949,15 @@ mod tests {
         let task = task_from_run_input(
             &ingester,
             parse_run_input(
-                r#"{"task_id":"senior-swe-bench-1","problem_statement":"Fix benchmark task","no_external_solution_search":true}"#,
+                r#"{"task_id":"senior-swe-bench-1","problem_statement":"Fix benchmark task","no_external_solution_search":true,"network_policy":"Isolated"}"#,
             ),
         );
 
         assert!(task.no_external_solution_search);
+        assert_eq!(
+            task.network_policy,
+            Some(a2_core::protocol::NetworkPolicy::Isolated)
+        );
     }
 
     #[test]

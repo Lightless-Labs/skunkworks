@@ -48,6 +48,29 @@ async fn resolve_binary(binary: &str) -> A2Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+const A2_PROVIDER_NETWORK_POLICY_ENV: &str = "A2_PROVIDER_NETWORK_POLICY";
+
+fn fail_if_provider_network_restricted_for_policy(
+    provider: &str,
+    policy: Option<&str>,
+) -> A2Result<()> {
+    let Some(policy) = policy else {
+        return Ok(());
+    };
+    let normalized = policy.trim().to_ascii_lowercase();
+    if normalized == "isolated" || normalized.starts_with("allowlist") {
+        return Err(A2Error::ProviderError(format!(
+            "{provider} provider launch refused because {A2_PROVIDER_NETWORK_POLICY_ENV}={policy}; a2_broker has no audited provider network sandbox/allowlist yet"
+        )));
+    }
+    Ok(())
+}
+
+fn fail_if_provider_network_restricted(provider: &str) -> A2Result<()> {
+    let policy = env::var(A2_PROVIDER_NETWORK_POLICY_ENV).ok();
+    fail_if_provider_network_restricted_for_policy(provider, policy.as_deref())
+}
+
 fn provider_launch_error(provider: &str, binary_path: &str, error: &std::io::Error) -> A2Error {
     A2Error::ProviderError(format!(
         "{provider} provider failed to launch binary `{binary_path}`: {error}"
@@ -316,6 +339,7 @@ impl ClaudeProvider {
 #[async_trait]
 impl ModelProvider for ClaudeProvider {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
+        fail_if_provider_network_restricted("claude")?;
         let mut cmd = Command::new(&self.binary_path);
         clear_env(&mut cmd);
 
@@ -399,6 +423,7 @@ impl GeminiProvider {
 #[async_trait]
 impl ModelProvider for GeminiProvider {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
+        fail_if_provider_network_restricted("gemini")?;
         let mut cmd = Command::new(&self.binary_path);
         clear_env(&mut cmd);
 
@@ -483,6 +508,7 @@ impl CodexProvider {
 #[async_trait]
 impl ModelProvider for CodexProvider {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
+        fail_if_provider_network_restricted("codex")?;
         let mut cmd = Command::new(&self.binary_path);
         clear_env(&mut cmd);
 
@@ -570,6 +596,7 @@ impl PiProvider {
 #[async_trait]
 impl ModelProvider for PiProvider {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
+        fail_if_provider_network_restricted("pi")?;
         let mut cmd = Command::new(&self.binary_path);
         clear_env(&mut cmd);
 
@@ -636,6 +663,7 @@ impl OpenCodeProvider {
 #[async_trait]
 impl ModelProvider for OpenCodeProvider {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
+        fail_if_provider_network_restricted("opencode")?;
         let mut cmd = Command::new(&self.binary_path);
         clear_env(&mut cmd);
 
@@ -770,6 +798,29 @@ mod tests {
         fn model_id(&self) -> &str {
             &self.model_id
         }
+    }
+
+    #[test]
+    fn restricted_provider_network_policy_fails_closed_before_launch() {
+        let error = fail_if_provider_network_restricted_for_policy("opencode", Some("Isolated"))
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("opencode provider launch refused"));
+        assert!(message.contains("no audited provider network sandbox/allowlist yet"));
+
+        let allowlist_error = fail_if_provider_network_restricted_for_policy(
+            "pi",
+            Some("AllowList:https://api.openai.com"),
+        )
+        .unwrap_err();
+        assert!(
+            allowlist_error
+                .to_string()
+                .contains("pi provider launch refused")
+        );
+
+        assert!(fail_if_provider_network_restricted_for_policy("codex", None).is_ok());
+        assert!(fail_if_provider_network_restricted_for_policy("codex", Some("Open")).is_ok());
     }
 
     #[tokio::test]

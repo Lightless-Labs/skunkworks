@@ -302,10 +302,27 @@ impl WorktreeCatalyst {
         model_id: &str,
         prompt: &str,
         worktree_path: &Path,
+        network_policy: Option<&NetworkPolicy>,
     ) -> A2Result<(String, String, String, u64, u64)> {
         #[cfg(test)]
         if provider_id == "mock" {
             return self.run_mock_agent(worktree_path).await;
+        }
+        if matches!(
+            network_policy,
+            Some(NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))
+        ) {
+            let policy_name = match network_policy {
+                Some(NetworkPolicy::Isolated) => "Isolated",
+                Some(NetworkPolicy::AllowList(_)) => "AllowList",
+                _ => unreachable!(),
+            };
+            return Err(A2Error::CatalystFailure(
+                self.id.clone(),
+                format!(
+                    "network_policy={policy_name} prevents launching provider `{provider_id}` from the worktree catalyst until an audited network sandbox/provider allowlist is implemented; use a local/mock provider or run with network_policy=Open when unrestricted network access is intentional"
+                ),
+            ));
         }
         match provider_id {
             "claude" => self.run_claude(model_id, prompt, worktree_path).await,
@@ -732,6 +749,7 @@ impl Catalyst for WorktreeCatalyst {
                 model.model_id(),
                 &prompt,
                 &worktree_path,
+                task.network_policy.as_ref(),
             )
             .await;
 
@@ -791,6 +809,10 @@ impl Catalyst for WorktreeCatalyst {
             rationale,
             test_results,
             worktree_verifications,
+            network_policy_enforced: match &task.network_policy {
+                Some(NetworkPolicy::Open) | None => None,
+                enforced => enforced.clone(),
+            },
             model_attribution: ModelAttribution {
                 provider: model.provider_id().into(),
                 model: model.model_id().into(),
@@ -1032,6 +1054,7 @@ mod tests {
                 origin: "test".into(),
             },
             no_external_solution_search: false,
+            network_policy: None,
             created_at: Utc::now(),
         };
         let context = ContextPack {
@@ -1073,6 +1096,7 @@ mod tests {
                 origin: "senior-swe-bench".into(),
             },
             no_external_solution_search: true,
+            network_policy: None,
             created_at: Utc::now(),
         };
         let context = ContextPack {
@@ -1092,6 +1116,48 @@ mod tests {
         let prompt_without_guard = catalyst.build_prompt(&task, &context);
         assert!(!prompt_without_guard.contains("## Benchmark Integrity"));
         assert!(!prompt_without_guard.contains("Do not search GitHub"));
+    }
+
+    #[tokio::test]
+    async fn isolated_network_policy_refuses_external_agent_launch_before_spawn() {
+        let repo_dir = std::env::temp_dir().join(format!("a2-prompt-{}", uuid::Uuid::now_v7()));
+        let catalyst = WorktreeCatalyst::new(repo_dir.clone());
+
+        let error = catalyst
+            .run_agent(
+                "opencode",
+                "model",
+                "prompt",
+                &repo_dir,
+                Some(&NetworkPolicy::Isolated),
+            )
+            .await
+            .unwrap_err();
+        let message = format!("{error}");
+        assert!(message.contains("network_policy=Isolated prevents launching provider `opencode`"));
+        assert!(message.contains("audited network sandbox/provider allowlist"));
+    }
+
+    #[tokio::test]
+    async fn allowlist_network_policy_refuses_external_agent_launch_before_spawn() {
+        let repo_dir = std::env::temp_dir().join(format!("a2-prompt-{}", uuid::Uuid::now_v7()));
+        let catalyst = WorktreeCatalyst::new(repo_dir.clone());
+
+        let error = catalyst
+            .run_agent(
+                "pi",
+                "provider/model",
+                "prompt",
+                &repo_dir,
+                Some(&NetworkPolicy::AllowList(vec![
+                    "https://api.openai.com".to_string(),
+                ])),
+            )
+            .await
+            .unwrap_err();
+        let message = format!("{error}");
+        assert!(message.contains("network_policy=AllowList prevents launching provider `pi`"));
+        assert!(message.contains("network_policy=Open"));
     }
 
     #[test]
@@ -1126,6 +1192,7 @@ mod tests {
                 origin: "test".into(),
             },
             no_external_solution_search: false,
+            network_policy: None,
             created_at: Utc::now(),
         };
         let context = ContextPack {
@@ -1173,6 +1240,7 @@ mod tests {
                 origin: "test".into(),
             },
             no_external_solution_search: false,
+            network_policy: None,
             created_at: Utc::now(),
         };
         let context = ContextPack {
@@ -1228,6 +1296,7 @@ mod tests {
                 origin: "integration-test".into(),
             },
             no_external_solution_search: false,
+            network_policy: None,
             created_at: Utc::now(),
         };
 

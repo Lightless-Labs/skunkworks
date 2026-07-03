@@ -230,6 +230,7 @@ def task_to_payload(task: dict[str, Any], repo_root: Path, workspace_dir: Path) 
         "difficulty": "hard",
         "repo_path": str(workspace_path),
         "no_external_solution_search": True,
+        "network_policy": "Isolated",
         "problem_statement": build_problem_statement(
             task_id=task_id,
             workspace_relpath=workspace_relpath,
@@ -294,6 +295,7 @@ def self_test() -> int:
     )
     assert payload["benchmark"] == "bigcodebench-hard"
     assert payload["no_external_solution_search"] is True
+    assert payload["network_policy"] == "Isolated"
     assert "https://github.com" not in payload["problem_statement"]
     return 0
 

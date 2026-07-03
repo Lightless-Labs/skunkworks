@@ -69,6 +69,7 @@ impl Ingester {
                 ),
             },
             no_external_solution_search: false,
+            network_policy: None,
             created_at: Utc::now(),
         }
     }

@@ -633,6 +633,7 @@ def validate_fresh_rows(
                 "max_tokens",
                 "timeout_secs",
                 "no_external_solution_search",
+                "network_policy",
             )
             if key not in row
         ]
@@ -645,6 +646,7 @@ def validate_fresh_rows(
         source_branch = row.get("source_branch")
         source_dirty = row.get("source_dirty")
         no_external_solution_search = row.get("no_external_solution_search")
+        network_policy = row.get("network_policy")
         if not isinstance(source_head, str) or len(source_head) not in (40, 64):
             raise RuntimeError(
                 f"fresh demo row {index} records invalid source_head={source_head!r}"
@@ -704,6 +706,11 @@ def validate_fresh_rows(
             raise RuntimeError(
                 f"fresh demo row {index} does not record no_external_solution_search=true; "
                 "fresh provider-backed benchmark evidence must audit the no-GitHub solution-search guard"
+            )
+        if network_policy != "Isolated":
+            raise RuntimeError(
+                f"fresh demo row {index} records network_policy={network_policy!r}; "
+                "fresh provider-backed benchmark evidence must record the fail-closed benchmark agent network policy"
             )
         if row_has_verifier_gated_promotion(row) and not promotion_artifact_matches_row(row):
             raise RuntimeError(
@@ -2298,6 +2305,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "max_tokens": 100_000,
                 "timeout_secs": 1800,
                 "no_external_solution_search": True,
+                "network_policy": "Isolated",
             }
             calls = 0
 
@@ -2466,6 +2474,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "max_tokens": 100_000,
                 "timeout_secs": 1800,
                 "no_external_solution_search": True,
+                "network_policy": "Isolated",
             }
         ]
 
@@ -3550,6 +3559,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "max_tokens": 100_000,
                     "timeout_secs": 1800,
                     "no_external_solution_search": True,
+                    "network_policy": "Isolated",
                 },
                 {
                     "run_id": "fresh-demo-2",
@@ -3560,6 +3570,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "max_tokens": 100_000,
                     "timeout_secs": 1800,
                     "no_external_solution_search": True,
+                    "network_policy": "Isolated",
                 },
             ]
             results.write_text(
@@ -3587,6 +3598,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             "max_tokens": 100_000,
             "timeout_secs": 1800,
             "no_external_solution_search": True,
+            "network_policy": "Isolated",
         }
         scenarios = [
             (
@@ -3636,6 +3648,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "max_tokens": 100_000,
                 "timeout_secs": 1800,
                 "no_external_solution_search": True,
+                "network_policy": "Isolated",
                 "stdout": "tool output leaked /Users/example/project/file.rs",
             }
             results.write_text(json.dumps(row) + "\n", encoding="utf-8")
@@ -3669,6 +3682,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "max_tokens": 100_000,
                 "timeout_secs": 1800,
                 "no_external_solution_search": True,
+                "network_policy": "Isolated",
                 "promotion": {
                     "verifier_gated": True,
                     "evidence_present": True,
@@ -3702,6 +3716,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "max_tokens": 100_000,
                         "timeout_secs": 1800,
                         "no_external_solution_search": True,
+                        "network_policy": "Isolated",
                     }
                 )
                 + "\n",
@@ -3732,6 +3747,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "max_tokens": 100_000,
                         "timeout_secs": 1800,
                         "no_external_solution_search": True,
+                        "network_policy": "Isolated",
                     }
                 )
                 + "\n",
@@ -3810,6 +3826,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "max_tokens": 100_000,
                         "timeout_secs": 1800,
                         "no_external_solution_search": True,
+                        "network_policy": "Isolated",
                     }
                 )
                 + "\n",
@@ -3840,6 +3857,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "max_tokens": 99_999,
                         "timeout_secs": 1800,
                         "no_external_solution_search": True,
+                        "network_policy": "Isolated",
                     }
                 )
                 + "\n",

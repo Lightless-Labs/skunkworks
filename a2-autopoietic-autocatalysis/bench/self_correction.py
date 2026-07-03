@@ -963,6 +963,7 @@ def task_payload(fixture: Fixture, run_id: str, attempt: int) -> dict[str, Any]:
             }
         ],
         "no_external_solution_search": True,
+        "network_policy": "Isolated",
         "category": CATEGORY,
         "fixture": fixture.name,
         "run_id": run_id,
@@ -1078,6 +1079,7 @@ def result_record(
         "provider": provider,
         "model": provider,
         "no_external_solution_search": bool(payload.get("no_external_solution_search")),
+        "network_policy": payload.get("network_policy"),
         **source_metadata,
         "max_tokens": max_tokens,
         "timeout_secs": timeout,
@@ -1245,6 +1247,7 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(first["run_id"], second["run_id"])
         self.assertEqual(second["attempt"], 2)
         self.assertTrue(first["no_external_solution_search"])
+        self.assertEqual(first["network_policy"], "Isolated")
 
     def test_indexed_run_id_preserves_single_run_id(self) -> None:
         self.assertEqual(indexed_run_id("run", 1, 1), "run")
@@ -1577,6 +1580,7 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(record["source_head"], "abcdef")
         self.assertEqual(record["source_head_short"], "abcdef")
         self.assertTrue(record["no_external_solution_search"])
+        self.assertEqual(record["network_policy"], "Isolated")
         self.assertEqual(record["source_branch"], "main")
         self.assertFalse(record["source_dirty"])
         self.assertEqual(record["max_tokens"], 12345)

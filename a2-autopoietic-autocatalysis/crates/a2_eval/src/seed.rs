@@ -92,6 +92,7 @@ mod tests {
                 origin: "test".into(),
             },
             no_external_solution_search: false,
+            network_policy: None,
             created_at: Utc::now(),
         }
     }
@@ -110,6 +111,7 @@ mod tests {
                 details: vec![],
             },
             worktree_verifications: vec![],
+            network_policy_enforced: None,
             model_attribution: ModelAttribution {
                 provider: "test".into(),
                 model: "test".into(),

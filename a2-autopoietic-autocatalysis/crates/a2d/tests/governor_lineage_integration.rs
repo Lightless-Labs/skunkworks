@@ -53,6 +53,7 @@ impl Catalyst for MockCatalyst {
                 details: vec![],
             },
             worktree_verifications: vec![],
+            network_policy_enforced: None,
             model_attribution: ModelAttribution {
                 provider: model.provider_id().into(),
                 model: model.model_id().into(),
@@ -161,6 +162,7 @@ fn sample_task() -> TaskContract {
             origin: "integration-test".into(),
         },
         no_external_solution_search: false,
+        network_policy: None,
         created_at: Utc::now(),
     }
 }
