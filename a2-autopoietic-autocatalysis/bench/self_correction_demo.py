@@ -2201,6 +2201,33 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn(str(DEFAULT_ARCHIVE_EVIDENCE), output)
         self.assertIn(str(DEFAULT_ARCHIVE), output)
 
+    def test_default_verify_archive_runs_checked_in_six_step_contract_after_score(self) -> None:
+        stdout = io.StringIO()
+        with mock.patch(__name__ + ".run_command", return_value=0) as run, contextlib.redirect_stdout(stdout):
+            result = main(["verify-archive"])
+
+        self.assertEqual(result, 0)
+        run.assert_called_once_with(
+            score_command(DEFAULT_ARCHIVE, DEFAULT_ARCHIVE_EVIDENCE),
+            print_only=False,
+        )
+        output = stdout.getvalue()
+        self.assertIn(f"evidence: {DEFAULT_ARCHIVE_EVIDENCE}", output)
+        self.assertIn(f"reference: {DEFAULT_ARCHIVE_EVIDENCE}", output)
+        self.assertIn(f"artifact: {DEFAULT_ARCHIVE}", output)
+        self.assertIn(
+            "proved: failed_first_attempt -> archived_verifier_failure_evidence -> "
+            "retry_context_from_failure_evidence -> later_passing_attempt -> "
+            "lineage_trajectory_recorded -> verifier_gated_germline_promotion",
+            output,
+        )
+        self.assertIn("failed_first_attempt: source=", output)
+        self.assertIn("archived_verifier_failure_evidence: source=", output)
+        self.assertIn("retry_context_from_failure_evidence: source=", output)
+        self.assertIn("later_passing_attempt: source=", output)
+        self.assertIn("lineage_trajectory_recorded: source=", output)
+        self.assertIn("verifier_gated_germline_promotion: source=", output)
+
     def test_verify_archive_runs_evidence_contract_after_successful_score(self) -> None:
         with mock.patch(__name__ + ".run_command", return_value=0) as run, mock.patch(
             __name__ + ".verify_evidence_contract"
