@@ -3034,6 +3034,7 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
                     &export_dir,
                     &format!("senior-swe-bench-{}", safe_file_stem(&package.task_id)),
                     Some(&candidate_patch_hash),
+                    Some("provided_local_command"),
                 )
                 .unwrap_or_else(|error| {
                     eprintln!("Senior SWE-Bench fitness evidence export error: {error}");
@@ -3310,6 +3311,7 @@ fn export_standalone_fitness_evidence(
     export_dir: &Path,
     challenge_name: &str,
     candidate_patch_hash: Option<&str>,
+    evaluator_kind: Option<&str>,
 ) -> Result<PathBuf, String> {
     fs::create_dir_all(export_dir).map_err(|error| {
         format!(
@@ -3334,6 +3336,17 @@ fn export_standalone_fitness_evidence(
             .insert(
                 "candidate_patch_hash".to_string(),
                 Value::String(candidate_patch_hash.to_string()),
+            );
+    }
+    if let Some(evaluator_kind) = evaluator_kind {
+        value
+            .as_object_mut()
+            .ok_or_else(|| {
+                "fitness evidence must be a JSON object before evaluator provenance".to_string()
+            })?
+            .insert(
+                "evaluator_kind".to_string(),
+                Value::String(evaluator_kind.to_string()),
             );
     }
     validate_exported_fitness_evidence_value(&value)?;
@@ -3370,6 +3383,10 @@ fn validate_fitness_evidence_candidate_patch_binding(
         .get("candidate_patch_hash")
         .and_then(Value::as_str)
         .ok_or_else(|| "fitness evidence missing candidate_patch_hash".to_string())?;
+    value
+        .get("evaluator_kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "fitness evidence missing evaluator_kind".to_string())?;
     let current_hash = file_content_hash(candidate_patch_path)?;
     if evidence_hash != current_hash {
         return Err(format!(
@@ -4891,6 +4908,7 @@ fn validate_exportable_fitness_evidence_shape(bytes: &[u8]) -> Result<Value, Str
         "source_revision",
         "source_tree_dirty",
         "candidate_patch_hash",
+        "evaluator_kind",
     ]);
     for field in object.keys() {
         if !required_fields.contains(field.as_str())
@@ -4992,6 +5010,8 @@ fn validate_exportable_fitness_evidence_shape(bytes: &[u8]) -> Result<Value, Str
         }
     }
 
+    validate_optional_evaluator_kind(&value)?;
+
     Ok(value)
 }
 
@@ -5071,7 +5091,25 @@ fn validate_exported_fitness_evidence_value(value: &Value) -> Result<(), String>
             );
         }
     }
+    validate_optional_evaluator_kind(value)?;
 
+    Ok(())
+}
+
+fn validate_optional_evaluator_kind(value: &Value) -> Result<(), String> {
+    if let Some(evaluator_kind_value) = value.get("evaluator_kind") {
+        let evaluator_kind = evaluator_kind_value
+            .as_str()
+            .ok_or_else(|| "fitness evidence evaluator_kind is not a string".to_string())?;
+        if !matches!(
+            evaluator_kind,
+            "provided_local_command" | "official_senior_swe_bench"
+        ) {
+            return Err(format!(
+                "fitness evidence evaluator_kind is not recognized: {evaluator_kind}"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -5345,6 +5383,10 @@ mod tests {
             Value::String(candidate_patch_hash.clone()),
         );
         object.insert(
+            "evaluator_kind".to_string(),
+            Value::String("provided_local_command".to_string()),
+        );
+        object.insert(
             "evidence_command".to_string(),
             Value::String("senior-swe-bench-evaluate --task-package task.json".to_string()),
         );
@@ -5353,6 +5395,10 @@ mod tests {
         assert_eq!(
             evidence["candidate_patch_hash"].as_str(),
             Some(candidate_patch_hash.as_str())
+        );
+        assert_eq!(
+            evidence["evaluator_kind"].as_str(),
+            Some("provided_local_command")
         );
 
         let evidence_path = env::temp_dir().join(format!(
@@ -5384,6 +5430,25 @@ mod tests {
             )
             .expect_err("missing candidate patch hash is rejected")
             .contains("missing candidate_patch_hash")
+        );
+
+        let mut missing_evaluator_kind = evidence.clone();
+        missing_evaluator_kind
+            .as_object_mut()
+            .unwrap()
+            .remove("evaluator_kind");
+        fs::write(
+            &evidence_path,
+            serde_json::to_vec_pretty(&missing_evaluator_kind).expect("evidence serializes"),
+        )
+        .unwrap();
+        assert!(
+            validate_fitness_evidence_candidate_patch_binding(
+                &evidence_path,
+                &candidate_patch_path
+            )
+            .expect_err("missing evaluator kind is rejected")
+            .contains("missing evaluator_kind")
         );
 
         evidence["candidate_patch_hash"] = json!("0123456789abcdef0123456789abcdef01234567");
@@ -5564,10 +5629,18 @@ mod tests {
         evidence["candidate_patch_hash"] = json!("0123456789abcdef0123456789abcdef01234567");
         validate_exported_fitness_evidence_value(&evidence)
             .expect("valid candidate patch hash is accepted");
+        evidence["evaluator_kind"] = json!(123);
+        assert!(validate_exported_fitness_evidence_value(&evidence).is_err());
+        evidence["evaluator_kind"] = json!("unreviewed_evaluator");
+        assert!(validate_exported_fitness_evidence_value(&evidence).is_err());
+        evidence["evaluator_kind"] = json!("official_senior_swe_bench");
+        validate_exported_fitness_evidence_value(&evidence)
+            .expect("recognized evaluator kind is accepted");
         evidence
             .as_object_mut()
             .unwrap()
             .remove("candidate_patch_hash");
+        evidence.as_object_mut().unwrap().remove("evaluator_kind");
 
         evidence["source_diff_hash"] = json!("0123456789abcdef0123456789abcdef01234567");
         assert!(validate_exported_fitness_evidence_value(&evidence).is_err());
