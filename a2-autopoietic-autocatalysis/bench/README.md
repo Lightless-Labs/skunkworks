@@ -239,8 +239,9 @@ python3 bench/bigcodebench_runner.py \
 Local network-policy smokes (not benchmark evidence):
 
 ```bash
-# Host primitive only: proves sandbox-exec can deny TCP egress for a spawned child.
+# Host primitive only: emits command/returncode/stdout/stderr for the denied TCP probe.
 python3 bench/network_policy_smoke.py --self-test
+python3 bench/network_policy_smoke.py --json
 
 # Real a2ctl launch-gate path: proves restricted policy currently blocks provider launch
 # with a nonzero exit instead of counting a no-candidate discard as success.

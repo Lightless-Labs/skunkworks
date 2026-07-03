@@ -68,15 +68,16 @@ def run_smoke() -> dict[str, Any]:
         profile.write_text(DENY_NETWORK_PROFILE, encoding="utf-8")
 
         local_file = tmp_path / "local-write.txt"
+        local_command = [
+            sandbox,
+            "-f",
+            str(profile),
+            sys.executable,
+            "-c",
+            "from pathlib import Path; Path('local-write.txt').write_text('ok', encoding='utf-8')",
+        ]
         local_probe = subprocess.run(
-            [
-                sandbox,
-                "-f",
-                str(profile),
-                sys.executable,
-                "-c",
-                "from pathlib import Path; Path('local-write.txt').write_text('ok', encoding='utf-8')",
-            ],
+            local_command,
             cwd=tmp_path,
             text=True,
             capture_output=True,
@@ -84,20 +85,22 @@ def run_smoke() -> dict[str, Any]:
         )
 
         listener, port, thread, observed = start_local_tcp_probe()
+        network_target = {"host": "127.0.0.1", "port": port}
+        network_command = [
+            sandbox,
+            "-f",
+            str(profile),
+            sys.executable,
+            "-c",
+            (
+                "import socket; "
+                f"socket.create_connection(('127.0.0.1', {port}), timeout=1); "
+                "print('unexpectedly connected')"
+            ),
+        ]
         try:
             network_probe = subprocess.run(
-                [
-                    sandbox,
-                    "-f",
-                    str(profile),
-                    sys.executable,
-                    "-c",
-                    (
-                        "import socket; "
-                        f"socket.create_connection(('127.0.0.1', {port}), timeout=1); "
-                        "print('unexpectedly connected')"
-                    ),
-                ],
+                network_command,
                 cwd=tmp_path,
                 text=True,
                 capture_output=True,
@@ -116,6 +119,8 @@ def run_smoke() -> dict[str, Any]:
             "sandbox_profile": DENY_NETWORK_PROFILE.strip().splitlines(),
             "local_probe": {
                 "description": "sandboxed child can still run local filesystem work",
+                "command": local_command,
+                "cwd": str(tmp_path),
                 "returncode": local_probe.returncode,
                 "stdout": local_probe.stdout,
                 "stderr": local_probe.stderr,
@@ -123,6 +128,9 @@ def run_smoke() -> dict[str, Any]:
             },
             "network_probe": {
                 "description": "sandboxed child cannot open a TCP connection to a local listener",
+                "command": network_command,
+                "cwd": str(tmp_path),
+                "target": network_target,
                 "returncode": network_probe.returncode,
                 "stdout": network_probe.stdout,
                 "stderr": network_probe.stderr,
