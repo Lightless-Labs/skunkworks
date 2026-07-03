@@ -3029,7 +3029,7 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
     let evidence_path = if outcome.status_success {
         fitness_evidence_export_dir()
             .map(|export_dir| {
-                export_standalone_fitness_evidence(
+                let path = export_standalone_fitness_evidence(
                     &fitness,
                     &export_dir,
                     &format!("senior-swe-bench-{}", safe_file_stem(&package.task_id)),
@@ -3038,7 +3038,13 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
                 .unwrap_or_else(|error| {
                     eprintln!("Senior SWE-Bench fitness evidence export error: {error}");
                     std::process::exit(1);
-                })
+                });
+                validate_fitness_evidence_candidate_patch_binding(&path, &config.candidate_patch)
+                    .unwrap_or_else(|error| {
+                        eprintln!("Senior SWE-Bench fitness evidence binding error: {error}");
+                        std::process::exit(1);
+                    });
+                path
             })
             .map(|path| path.to_string_lossy().to_string())
     } else {
@@ -3341,6 +3347,36 @@ fn export_standalone_fitness_evidence(
         )
     })?;
     Ok(path)
+}
+
+fn validate_fitness_evidence_candidate_patch_binding(
+    evidence_path: &Path,
+    candidate_patch_path: &Path,
+) -> Result<(), String> {
+    let bytes = fs::read(evidence_path).map_err(|error| {
+        format!(
+            "failed to read fitness evidence {}: {error}",
+            evidence_path.display()
+        )
+    })?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        format!(
+            "fitness evidence {} is not JSON: {error}",
+            evidence_path.display()
+        )
+    })?;
+    validate_exported_fitness_evidence_value(&value)?;
+    let evidence_hash = value
+        .get("candidate_patch_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "fitness evidence missing candidate_patch_hash".to_string())?;
+    let current_hash = file_content_hash(candidate_patch_path)?;
+    if evidence_hash != current_hash {
+        return Err(format!(
+            "fitness evidence candidate_patch_hash {evidence_hash} does not match current candidate patch hash {current_hash}"
+        ));
+    }
+    Ok(())
 }
 
 fn standalone_fitness_evidence_delta(report: &FitnessReport) -> f64 {
@@ -5318,7 +5354,55 @@ mod tests {
             evidence["candidate_patch_hash"].as_str(),
             Some(candidate_patch_hash.as_str())
         );
+
+        let evidence_path = env::temp_dir().join(format!(
+            "a2d-senior-swe-bench-evidence-{}.json",
+            unique_suffix()
+        ));
+        fs::write(
+            &evidence_path,
+            serde_json::to_vec_pretty(&evidence).expect("evidence serializes"),
+        )
+        .unwrap();
+        validate_fitness_evidence_candidate_patch_binding(&evidence_path, &candidate_patch_path)
+            .expect("matching candidate patch hash is accepted");
+
+        let mut missing_candidate_hash = evidence.clone();
+        missing_candidate_hash
+            .as_object_mut()
+            .unwrap()
+            .remove("candidate_patch_hash");
+        fs::write(
+            &evidence_path,
+            serde_json::to_vec_pretty(&missing_candidate_hash).expect("evidence serializes"),
+        )
+        .unwrap();
+        assert!(
+            validate_fitness_evidence_candidate_patch_binding(
+                &evidence_path,
+                &candidate_patch_path
+            )
+            .expect_err("missing candidate patch hash is rejected")
+            .contains("missing candidate_patch_hash")
+        );
+
+        evidence["candidate_patch_hash"] = json!("0123456789abcdef0123456789abcdef01234567");
+        fs::write(
+            &evidence_path,
+            serde_json::to_vec_pretty(&evidence).expect("evidence serializes"),
+        )
+        .unwrap();
+        assert!(
+            validate_fitness_evidence_candidate_patch_binding(
+                &evidence_path,
+                &candidate_patch_path
+            )
+            .expect_err("mismatched candidate patch hash is rejected")
+            .contains("does not match current candidate patch hash")
+        );
+
         fs::remove_file(candidate_patch_path).unwrap();
+        fs::remove_file(evidence_path).unwrap();
     }
 
     #[test]

@@ -5,7 +5,7 @@
 **Enhanced:** 2026-06-29 — structured `a2d.fitness-evidence.v1` artifacts now gate durability; live export/inspection path added for challenge runs
 **Enhanced:** 2026-06-30 — comparison modes export labeled canonical fitness evidence; provenance tightened to reject provider-produced evidence
 **Enhanced:** 2026-07-01 — exported evidence now records and validates source revision/diff provenance for the `crates` source scope
-**Enhanced:** 2026-07-03 — Senior SWE-Bench catalog/evaluator integration is CLI-only external benchmark audit plumbing, not `a2d-core` challenge physics; coder prompt now carries generic benchmark no-solution-search integrity rule; local evaluator evidence binds the exact candidate patch hash
+**Enhanced:** 2026-07-03 — Senior SWE-Bench catalog/evaluator integration is CLI-only external benchmark audit plumbing, not `a2d-core` challenge physics; coder prompt now carries generic benchmark no-solution-search integrity rule; local evaluator evidence binds and verifies the exact candidate patch hash
 **Depends on:** Stage 1 (complete)
 
 ## Problem
@@ -132,6 +132,12 @@ Fresh source-patch evidence: `runs/20260703-senior-swe-bench-local-evaluator-evi
 The local evaluator path now binds evaluator/evidence claims to the exact candidate patch bytes. `a2d senior-swe-bench-evaluate` computes `git hash-object -- <candidate-patch>`, records the resulting `candidate_patch_hash` in `a2d.senior-swe-bench-local-evaluation.v1`, and includes the same optional field in exported `a2d.fitness-evidence.v1`. Export validation rejects malformed or non-string candidate patch hashes, while retaining the existing source-diff provenance checks and keeping all Senior SWE-Bench-specific code in `crates/a2d-cli`.
 
 Fresh source-patch evidence: `runs/20260703-senior-swe-bench-candidate-patch-hash-evidence/local-evaluator/fitness/senior-swe-bench-firezone-fix-connlib-align-device-hard-cycle-0-fitness-evidence.json`, `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`, result labels `all_tests_pass`, `hidden_acceptance`, and `has_no_solution_search`, `source_diff_hash: cbd48c21654b9afd5ad97cab3711cd082e3dfc1b`, `candidate_patch_hash: 134b5415022cbd286abfd60e064dcf9a817d89a0`. The local evaluation artifact `runs/20260703-senior-swe-bench-candidate-patch-hash-evidence/local-evaluator/firezone-fix-connlib-align-device-hard-local-evaluation.json` carries the same candidate patch hash. Full `cargo test` passed after implementation (274 passed, 2 ignored). This remains local-wrapper evidence, not official Senior SWE-Bench mastery.
+
+## 2026-07-03 Update: Senior SWE-Bench Candidate Patch Binding Consumption
+
+The local evaluator now verifies the binding after export, not only while constructing evidence. After writing `a2d.fitness-evidence.v1`, `a2d senior-swe-bench-evaluate` re-reads the evidence file, runs the exported-evidence schema/provenance validator, requires `candidate_patch_hash`, recomputes `git hash-object` for the current candidate patch file, and rejects missing or mismatched hashes before printing the evidence path. Focused coverage exercises matching, missing, and mismatched candidate-patch hashes.
+
+Fresh source-patch evidence: `runs/20260703-senior-swe-bench-binding-validation-evidence/local-evaluator/fitness/senior-swe-bench-firezone-fix-connlib-align-device-hard-cycle-0-fitness-evidence.json`, `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`, result labels `all_tests_pass`, `hidden_acceptance`, and `has_no_solution_search`, `source_diff_hash: 4b5efdd058f6e934736699ee9bb1a3947277086a`, `candidate_patch_hash: 134b5415022cbd286abfd60e064dcf9a817d89a0`. The local evaluation artifact `runs/20260703-senior-swe-bench-binding-validation-evidence/local-evaluator/firezone-fix-connlib-align-device-hard-local-evaluation.json` carries the same candidate patch hash. Full `cargo test` passed after implementation (274 passed, 2 ignored). This still validates wrapper/evidence plumbing only, not official Senior SWE-Bench mastery.
 
 ## 2026-07-03 Update: Coder Benchmark Integrity Prompt
 
