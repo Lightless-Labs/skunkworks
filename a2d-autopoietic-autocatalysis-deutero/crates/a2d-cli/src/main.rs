@@ -729,6 +729,7 @@ struct AutopilotConfig {
     allow_dirty: bool,
     repair_attempts: usize,
     repair_provider: Option<String>,
+    source_fitness_evidence: Option<PathBuf>,
 }
 
 impl AutopilotConfig {
@@ -744,6 +745,10 @@ impl AutopilotConfig {
             repair_provider: env::var("A2D_AUTOPILOT_REPAIR_PROVIDER")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
+            source_fitness_evidence: env::var("A2D_AUTOPILOT_SOURCE_FITNESS_EVIDENCE")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from),
         };
 
         let mut idx = 0;
@@ -773,6 +778,13 @@ impl AutopilotConfig {
                     if let Some(value) = args.get(idx + 1).filter(|value| !value.trim().is_empty())
                     {
                         config.repair_provider = Some(value.clone());
+                    }
+                    idx += 2;
+                }
+                "--source-fitness-evidence" => {
+                    if let Some(value) = args.get(idx + 1).filter(|value| !value.trim().is_empty())
+                    {
+                        config.source_fitness_evidence = Some(PathBuf::from(value));
                     }
                     idx += 2;
                 }
@@ -899,6 +911,8 @@ struct ProjectApplyReport {
     command_results: Vec<ProjectCommandResult>,
     commit_hash: Option<String>,
     touched_paths: Vec<String>,
+    fitness_evidence_required: bool,
+    fitness_evidence_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -996,6 +1010,7 @@ fn run_autopilot(config: AutopilotConfig) {
             "allow_dirty": config.allow_dirty,
             "repair_attempts": config.repair_attempts,
             "repair_provider": config.repair_provider,
+            "source_fitness_evidence": config.source_fitness_evidence.as_ref().map(|path| path.to_string_lossy().to_string()),
         }),
     );
     println!("Autopilot run id: {}", logger.run_id);
@@ -1366,7 +1381,12 @@ fn run_autopilot(config: AutopilotConfig) {
                 "real_tree_apply_started",
                 json!({"iteration": iteration, "attempt": attempt}),
             );
-            let apply_report = apply_validated_patchset_to_real_tree(&root, &patchset, &gate);
+            let apply_report = apply_validated_patchset_to_real_tree(
+                &root,
+                &patchset,
+                &gate,
+                config.source_fitness_evidence.as_deref(),
+            );
             let apply_json = project_apply_report_json(&apply_report);
             logger.artifact(
                 &format!("iteration-{iteration}/attempt-{attempt}/apply-report.json"),
@@ -1382,6 +1402,8 @@ fn run_autopilot(config: AutopilotConfig) {
                     "commit_hash": apply_report.commit_hash,
                     "errors": apply_report.errors,
                     "touched_paths": apply_report.touched_paths,
+                    "fitness_evidence_required": apply_report.fitness_evidence_required,
+                    "fitness_evidence_path": apply_report.fitness_evidence_path,
                     "commands": apply_report.command_results.iter().map(|result| json!({
                         "command": result.command,
                         "success": result.success,
@@ -1546,6 +1568,7 @@ fn select_project_task(state: &ProjectState) -> Option<ProjectTask> {
             "path gate rejects protected files and traversal".to_string(),
             "eligible source self-modification goes through self-sandbox/cargo test".to_string(),
             "cargo test passes before commit".to_string(),
+            "eligible source self-modification has fresh source-bound a2d.fitness-evidence.v1 actual-test evidence".to_string(),
             "docs/HANDOFF.md updated before commit".to_string(),
         ],
         allows_self_modification,
@@ -1577,6 +1600,7 @@ fn maintainer_system_prompt() -> String {
      Filesystem tools are unavailable and unnecessary: use only the project_state and file contents provided in the prompt.\n\
      Produce a project_patchset with: commit_message, validation_commands, handoff_update, replacements.\n\
      replacements must be complete file contents. Source self-modification is allowed for eligible mechanism files; protected files are not.\n\
+     Source self-modification is committed only with fresh source-bound a2d.fitness-evidence.v1 actual-test evidence; cargo test alone is not enough.\n\
      The path gate rejects empty patchsets: replacements MUST contain at least one file replacement.\n\
      For docs/todo/plan tasks, update the selected markdown file or a directly relevant markdown file with a small concrete improvement.\n\
      Markdown replacements are semantically gated: any referenced repo path such as crates/... or docs/... must exist after the patch.\n\
@@ -1626,7 +1650,8 @@ fn build_maintainer_prompt(state: &ProjectState, task: &ProjectTask) -> String {
          {{\"commit_message\":\"Autopilot: ...\",\"validation_commands\":[\"cargo test\"],\"handoff_update\":\"...\",\"replacements\":[{{\"path\":\"relative/path\",\"new_content\":\"complete file content\"}}]}}\n\
          The replacements array MUST NOT be empty. The path gate rejects replacements: [].\n\
          If the task is documentation/todo/plan work, replace source_path or another approved markdown file with complete updated content.\n\
-         Do not claim repo paths that are absent: markdown replacements and handoff_update fail validation when referenced crates/..., docs/..., todos/..., examples/..., or research/... paths do not exist after the patch.",
+         Do not claim repo paths that are absent: markdown replacements and handoff_update fail validation when referenced crates/..., docs/..., todos/..., examples/..., or research/... paths do not exist after the patch.\n\
+         For source changes under crates/..., cargo test is necessary but not sufficient: autopilot also requires fresh source-bound a2d.fitness-evidence.v1 actual-test evidence before commit.",
         state.git_status,
         state.a2d_status,
         state.handoff_preview,
@@ -1662,6 +1687,7 @@ fn build_repair_prompt(
          - Include at least one complete file replacement that directly advances the original task.\n\
          - For markdown/todo/plan tasks, update source_path or another approved markdown file using complete file content from ORIGINAL_TASK_AND_CONTEXT.\n\
          - Do not invent repo paths. Markdown replacements and handoff_update fail validation when referenced crates/..., docs/..., todos/..., examples/..., or research/... paths do not exist after the patch.\n\
+         - Source changes under crates/... require fresh source-bound a2d.fitness-evidence.v1 actual-test evidence before commit; cargo test alone is not enough.\n\
          - Preserve the same typed ProjectPatchset contract; do not return shell commands or prose outside JSON.\n\n\
          OUTPUT CONTRACT\n\
          Return exactly one JSON object matching:\n\
@@ -2095,9 +2121,11 @@ fn apply_validated_patchset_to_real_tree(
     root: &Path,
     patchset: &ProjectPatchset,
     gate: &ProjectPatchGateReport,
+    source_fitness_evidence_path: Option<&Path>,
 ) -> ProjectApplyReport {
     let mut errors = Vec::new();
     let mut command_results = Vec::new();
+    let mut fitness_evidence_path = None;
     let mut touched_paths = patchset
         .replacements
         .iter()
@@ -2170,6 +2198,21 @@ fn apply_validated_patchset_to_real_tree(
         }
     }
 
+    if gate.requires_cargo_test {
+        match source_fitness_evidence_path {
+            Some(path) => match validate_autopilot_source_fitness_evidence(root, path) {
+                Ok(_) => fitness_evidence_path = Some(path.to_string_lossy().to_string()),
+                Err(error) => errors.push(format!(
+                    "source fitness evidence rejected: {error}"
+                )),
+            },
+            None => errors.push(
+                "source self-modification requires fresh source-bound a2d.fitness-evidence.v1 actual-test evidence"
+                    .to_string(),
+            ),
+        }
+    }
+
     if !errors.is_empty() {
         restore_paths(root, &originals);
         reset_git_paths(root, &touched_paths);
@@ -2180,6 +2223,8 @@ fn apply_validated_patchset_to_real_tree(
             command_results,
             commit_hash: None,
             touched_paths,
+            fitness_evidence_required: gate.requires_cargo_test,
+            fitness_evidence_path,
         };
     }
 
@@ -2194,6 +2239,8 @@ fn apply_validated_patchset_to_real_tree(
             command_results,
             commit_hash: None,
             touched_paths,
+            fitness_evidence_required: gate.requires_cargo_test,
+            fitness_evidence_path,
         };
     }
 
@@ -2205,6 +2252,8 @@ fn apply_validated_patchset_to_real_tree(
             command_results,
             commit_hash: Some(hash),
             touched_paths,
+            fitness_evidence_required: gate.requires_cargo_test,
+            fitness_evidence_path,
         },
         Err(error) => {
             errors.push(error);
@@ -2217,6 +2266,8 @@ fn apply_validated_patchset_to_real_tree(
                 command_results,
                 commit_hash: None,
                 touched_paths,
+                fitness_evidence_required: gate.requires_cargo_test,
+                fitness_evidence_path,
             }
         }
     }
@@ -2229,6 +2280,8 @@ fn project_apply_report_json(report: &ProjectApplyReport) -> Value {
         "errors": report.errors,
         "commit_hash": report.commit_hash,
         "touched_paths": report.touched_paths,
+        "fitness_evidence_required": report.fitness_evidence_required,
+        "fitness_evidence_path": report.fitness_evidence_path,
         "command_results": report.command_results.iter().map(|result| json!({
             "command": result.command,
             "success": result.success,
@@ -2237,6 +2290,75 @@ fn project_apply_report_json(report: &ProjectApplyReport) -> Value {
             "stderr_preview": result.stderr_preview,
         })).collect::<Vec<_>>(),
     })
+}
+
+fn validate_autopilot_source_fitness_evidence(
+    root: &Path,
+    evidence_path: &Path,
+) -> Result<Value, String> {
+    let path = if evidence_path.is_absolute() {
+        evidence_path.to_path_buf()
+    } else {
+        root.join(evidence_path)
+    };
+    let bytes = fs::read(&path).map_err(|error| {
+        format!(
+            "failed to read source fitness evidence {}: {error}",
+            path.display()
+        )
+    })?;
+    let value = validate_exportable_fitness_evidence_shape(&bytes)?;
+    let source_revision = value
+        .get("source_revision")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "source fitness evidence missing source_revision".to_string())?;
+    let source_tree_dirty = value
+        .get("source_tree_dirty")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "source fitness evidence missing source_tree_dirty".to_string())?;
+    let source_diff_scope = value
+        .get("source_diff_scope")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "source fitness evidence missing source_diff_scope".to_string())?;
+    if source_diff_scope != "crates" {
+        return Err(format!(
+            "source fitness evidence source_diff_scope must be crates, got {source_diff_scope}"
+        ));
+    }
+    let source_diff_hash = value
+        .get("source_diff_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "source fitness evidence missing source_diff_hash".to_string())?;
+    let evidence_command = value
+        .get("evidence_command")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "source fitness evidence missing evidence_command".to_string())?;
+    if evidence_command.trim().is_empty() || evidence_command == "<unknown>" {
+        return Err("source fitness evidence evidence_command is empty".to_string());
+    }
+
+    let current_revision = git_scope_revision_at(root, source_diff_scope)?;
+    if source_revision != current_revision {
+        return Err(format!(
+            "source fitness evidence source_revision {source_revision} does not match current revision {current_revision}"
+        ));
+    }
+    let current_status = git_status_for_scope_at(root, source_diff_scope)?;
+    reject_untracked_source_files(source_diff_scope, &current_status)?;
+    let current_dirty = !current_status.is_empty();
+    if source_tree_dirty != current_dirty {
+        return Err(format!(
+            "source fitness evidence source_tree_dirty {source_tree_dirty} does not match current dirty status {current_dirty}"
+        ));
+    }
+    let current_diff_hash = git_diff_hash_for_scope_at(root, source_diff_scope)?;
+    if source_diff_hash != current_diff_hash {
+        return Err(format!(
+            "source fitness evidence source_diff_hash {source_diff_hash} does not match current {source_diff_scope} diff hash {current_diff_hash}"
+        ));
+    }
+
+    Ok(value)
 }
 
 fn snapshot_paths(root: &Path, paths: &[String]) -> BTreeMap<String, Option<String>> {
@@ -5318,9 +5440,10 @@ fn add_export_source_provenance(mut value: Value) -> Result<Value, String> {
     Ok(value)
 }
 
-fn git_output(args: &[&str]) -> Result<String, String> {
+fn git_output_at(root: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .args(args)
+        .current_dir(root)
         .output()
         .map_err(|error| format!("failed to run git {}: {error}", args.join(" ")))?;
     if !output.status.success() {
@@ -5330,14 +5453,10 @@ fn git_output(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn git_repo_relative_scope(scope: &str) -> Result<String, String> {
+fn git_repo_relative_scope_at(root: &Path, scope: &str) -> Result<String, String> {
     let output = Command::new("git")
-        .args([
-            "-C",
-            env!("CARGO_MANIFEST_DIR"),
-            "rev-parse",
-            "--show-prefix",
-        ])
+        .args(["rev-parse", "--show-prefix"])
+        .current_dir(root)
         .output()
         .map_err(|error| format!("failed to resolve A²D git prefix: {error}"))?;
     if !output.status.success() {
@@ -5353,15 +5472,23 @@ fn git_repo_relative_scope(scope: &str) -> Result<String, String> {
 }
 
 fn git_scope_revision(scope: &str) -> Result<String, String> {
-    let repo_relative_scope = git_repo_relative_scope(scope)?;
+    git_scope_revision_at(Path::new(env!("CARGO_MANIFEST_DIR")), scope)
+}
+
+fn git_scope_revision_at(root: &Path, scope: &str) -> Result<String, String> {
+    let repo_relative_scope = git_repo_relative_scope_at(root, scope)?;
     let revision_spec = format!("HEAD:{repo_relative_scope}");
-    git_output(&["rev-parse", "--short", &revision_spec])
+    git_output_at(root, &["rev-parse", "--short", &revision_spec])
 }
 
 fn git_status_for_scope(scope: &str) -> Result<String, String> {
-    let repo_relative_scope = git_repo_relative_scope(scope)?;
+    git_status_for_scope_at(Path::new(env!("CARGO_MANIFEST_DIR")), scope)
+}
+
+fn git_status_for_scope_at(root: &Path, scope: &str) -> Result<String, String> {
+    let repo_relative_scope = git_repo_relative_scope_at(root, scope)?;
     let top_pathspec = format!(":(top){repo_relative_scope}");
-    git_output(&["status", "--short", "--", &top_pathspec])
+    git_output_at(root, &["status", "--short", "--", &top_pathspec])
 }
 
 fn reject_untracked_source_files(scope: &str, status: &str) -> Result<(), String> {
@@ -5374,10 +5501,15 @@ fn reject_untracked_source_files(scope: &str, status: &str) -> Result<(), String
 }
 
 fn git_diff_hash_for_scope(scope: &str) -> Result<String, String> {
-    let repo_relative_scope = git_repo_relative_scope(scope)?;
+    git_diff_hash_for_scope_at(Path::new(env!("CARGO_MANIFEST_DIR")), scope)
+}
+
+fn git_diff_hash_for_scope_at(root: &Path, scope: &str) -> Result<String, String> {
+    let repo_relative_scope = git_repo_relative_scope_at(root, scope)?;
     let top_pathspec = format!(":(top){repo_relative_scope}");
     let diff = Command::new("git")
         .args(["diff", "--binary", "HEAD", "--", &top_pathspec])
+        .current_dir(root)
         .output()
         .map_err(|error| format!("failed to run git diff for {scope}: {error}"))?;
     if !diff.status.success() {
@@ -7953,6 +8085,8 @@ mod tests {
             "2".to_string(),
             "--repair-provider".to_string(),
             "opencode/opencode/deepseek-v4-flash-free".to_string(),
+            "--source-fitness-evidence".to_string(),
+            "runs/evidence.json".to_string(),
         ];
 
         let config = AutopilotConfig::parse(&args);
@@ -7964,6 +8098,10 @@ mod tests {
         assert_eq!(
             config.repair_provider.as_deref(),
             Some("opencode/opencode/deepseek-v4-flash-free")
+        );
+        assert_eq!(
+            config.source_fitness_evidence.as_deref(),
+            Some(Path::new("runs/evidence.json"))
         );
     }
 
@@ -8399,6 +8537,196 @@ mod tests {
         let _ = std::fs::remove_dir_all(report.worktree_path);
     }
 
+    fn init_minimal_autopilot_source_repo(name: &str) -> PathBuf {
+        let repo = std::env::temp_dir().join(format!(
+            "a2d-autopilot-source-fitness-{name}-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(repo.join("crates/a2d-cli/src")).unwrap();
+        std::fs::write(
+            repo.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/a2d-cli\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            repo.join("crates/a2d-cli/Cargo.toml"),
+            "[package]\nname = \"a2d\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join("crates/a2d-cli/src/main.rs"), "fn main() {}\n").unwrap();
+        for args in [
+            vec!["init"],
+            vec!["config", "user.email", "a2d@example.invalid"],
+            vec!["config", "user.name", "A2D Test"],
+            vec!["add", "."],
+            vec!["commit", "-m", "initial"],
+        ] {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        repo
+    }
+
+    fn write_autopilot_source_fitness_evidence_for_current_diff(root: &Path) -> PathBuf {
+        let mut evidence = complete_fitness_evidence(0);
+        evidence["source_revision"] = json!(git_scope_revision_at(root, "crates").unwrap());
+        evidence["source_tree_dirty"] =
+            json!(!git_status_for_scope_at(root, "crates").unwrap().is_empty());
+        evidence["source_diff_scope"] = json!("crates");
+        evidence["source_diff_hash"] = json!(git_diff_hash_for_scope_at(root, "crates").unwrap());
+        evidence["evidence_command"] = json!("score-artifact sudoku good-sudoku-artifact.rs");
+        let path = root.join("source-fitness-evidence.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+        path
+    }
+
+    #[test]
+    fn autopilot_source_patch_requires_fitness_evidence_before_commit() {
+        let repo = init_minimal_autopilot_source_repo("missing-evidence");
+        let patchset = ProjectPatchset {
+            commit_message: "Autopilot: source".to_string(),
+            validation_commands: Vec::new(),
+            handoff_update: String::new(),
+            replacements: vec![ProjectFileReplacement {
+                path: "crates/a2d-cli/src/main.rs".to_string(),
+                new_content: "fn main() { println!(\"patched\"); }\n".to_string(),
+            }],
+        };
+        let gate = validate_project_patchset_paths(&patchset);
+        assert!(gate.requires_cargo_test);
+
+        let report = apply_validated_patchset_to_real_tree(&repo, &patchset, &gate, None);
+
+        assert!(!report.accepted);
+        assert!(!report.committed);
+        assert!(report.fitness_evidence_required);
+        assert!(report.fitness_evidence_path.is_none());
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("source-bound a2d.fitness-evidence.v1"))
+        );
+        let report_json = project_apply_report_json(&report);
+        assert_eq!(report_json["fitness_evidence_required"], json!(true));
+        assert_eq!(report_json["fitness_evidence_path"], Value::Null);
+        assert_eq!(
+            std::fs::read_to_string(repo.join("crates/a2d-cli/src/main.rs")).unwrap(),
+            "fn main() {}\n"
+        );
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn autopilot_source_fitness_evidence_accepts_current_source_bound_hidden_status() {
+        let repo = init_minimal_autopilot_source_repo("valid-evidence");
+        let patched = "fn main() { println!(\"patched\"); }\n";
+        let source_path = repo.join("crates/a2d-cli/src/main.rs");
+        std::fs::write(&source_path, patched).unwrap();
+        let evidence_path = write_autopilot_source_fitness_evidence_for_current_diff(&repo);
+        std::fs::write(&source_path, "fn main() {}\n").unwrap();
+        let output = Command::new("git")
+            .args(["checkout", "--", "crates/a2d-cli/src/main.rs"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let patchset = ProjectPatchset {
+            commit_message: "Autopilot: source".to_string(),
+            validation_commands: Vec::new(),
+            handoff_update: String::new(),
+            replacements: vec![ProjectFileReplacement {
+                path: "crates/a2d-cli/src/main.rs".to_string(),
+                new_content: patched.to_string(),
+            }],
+        };
+        let gate = validate_project_patchset_paths(&patchset);
+
+        let report =
+            apply_validated_patchset_to_real_tree(&repo, &patchset, &gate, Some(&evidence_path));
+
+        assert!(report.accepted, "{:?}", report.errors);
+        assert!(report.committed);
+        assert!(report.fitness_evidence_required);
+        assert_eq!(
+            report.fitness_evidence_path.as_deref(),
+            Some(evidence_path.to_string_lossy().as_ref())
+        );
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn autopilot_source_fitness_evidence_rejects_stale_diff_hash() {
+        let repo = init_minimal_autopilot_source_repo("stale-evidence");
+        let patched = "fn main() { println!(\"patched\"); }\n";
+        let source_path = repo.join("crates/a2d-cli/src/main.rs");
+        std::fs::write(&source_path, patched).unwrap();
+        let evidence_path = write_autopilot_source_fitness_evidence_for_current_diff(&repo);
+        let mut evidence: Value =
+            serde_json::from_slice(&std::fs::read(&evidence_path).unwrap()).unwrap();
+        evidence["source_diff_hash"] = json!("0123456789abcdef0123456789abcdef01234567");
+        std::fs::write(
+            &evidence_path,
+            serde_json::to_vec_pretty(&evidence).unwrap(),
+        )
+        .unwrap();
+
+        let error = validate_autopilot_source_fitness_evidence(&repo, &evidence_path).unwrap_err();
+
+        assert!(error.contains("source_diff_hash"));
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn autopilot_source_fitness_evidence_rejects_stale_or_non_actual_provenance() {
+        let repo = init_minimal_autopilot_source_repo("invalid-provenance");
+        let patched = "fn main() { println!(\"patched\"); }\n";
+        let source_path = repo.join("crates/a2d-cli/src/main.rs");
+        std::fs::write(&source_path, patched).unwrap();
+        let evidence_path = write_autopilot_source_fitness_evidence_for_current_diff(&repo);
+        let valid: Value = serde_json::from_slice(&std::fs::read(&evidence_path).unwrap()).unwrap();
+
+        for (field, replacement, expected) in [
+            ("source_revision", json!("deadbee"), "source_revision"),
+            ("source_tree_dirty", json!(false), "source_tree_dirty"),
+            ("source_diff_scope", json!("docs"), "source_diff_scope"),
+            ("evidence_command", json!(""), "evidence_command"),
+            (
+                "actual_tests_evaluated",
+                json!(false),
+                "actual_tests_evaluated",
+            ),
+            ("non_regressing", json!(false), "non_regressing"),
+        ] {
+            let mut evidence = valid.clone();
+            evidence[field] = replacement;
+            std::fs::write(
+                &evidence_path,
+                serde_json::to_vec_pretty(&evidence).unwrap(),
+            )
+            .unwrap();
+
+            let error =
+                validate_autopilot_source_fitness_evidence(&repo, &evidence_path).unwrap_err();
+
+            assert!(
+                error.contains(expected),
+                "expected {expected} in error for {field}, got {error}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
     #[test]
     fn real_tree_apply_rolls_back_when_validation_fails() {
         let root = std::env::temp_dir().join(format!(
@@ -8420,7 +8748,7 @@ mod tests {
         };
         let gate = validate_project_patchset_paths(&patchset);
 
-        let report = apply_validated_patchset_to_real_tree(&root, &patchset, &gate);
+        let report = apply_validated_patchset_to_real_tree(&root, &patchset, &gate, None);
 
         assert!(!report.accepted);
         assert!(!report.committed);
@@ -8489,7 +8817,7 @@ mod tests {
         };
         let gate = validate_project_patchset_paths(&patchset);
 
-        let report = apply_validated_patchset_to_real_tree(&project, &patchset, &gate);
+        let report = apply_validated_patchset_to_real_tree(&project, &patchset, &gate, None);
 
         assert!(report.accepted, "{:?}", report.errors);
         assert!(report.committed);

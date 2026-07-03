@@ -11,6 +11,7 @@
 **Enhanced:** 2026-05-30 — tightened repair prompts and live-validated a DeepSeek alternate repair through path/temp/real-tree gates
 **Enhanced:** 2026-05-31 — semantic project-reference validation added for autopilot markdown outputs
 **Hardened:** 2026-06-14 — real-tree autopilot stage/commit is pathspec-scoped to touched project files so parent-repo staged noise is not swept into local commits
+**Hardened:** 2026-07-03 — source self-modification real-tree apply now requires fresh source-bound `a2d.fitness-evidence.v1` actual-test evidence; `cargo test` alone is not enough
 
 ## Problem
 
@@ -73,6 +74,7 @@ Implemented first slice on 2026-05-24:
 - Every autopilot run emits structured JSONL events plus per-run artifacts under `.a2d/autopilot/` so an external monitor/steerer can evaluate both model outputs and mechanical outcomes.
 - Gated patchsets are copied into a temp worktree, replacements are applied there first, allowlisted validation commands can run there, source self-modification requires an existing source target and injects `cargo test` when needed, and the validation report is logged as JSON before any real-tree application.
 - Patchsets that pass temp validation are applied to the real tree, validation commands rerun, handoff updates are appended when needed, touched paths are staged with scoped `git add <touched_paths>` and committed locally with pathspec-scoped `git commit -- <touched_paths>`, and failures roll back original file contents before stopping.
+- Source self-modification real-tree apply/commit now also requires `--source-fitness-evidence <path>` or `A2D_AUTOPILOT_SOURCE_FITNESS_EVIDENCE=<path>` pointing at fresh source-bound `a2d.fitness-evidence.v1` actual-test evidence whose `source_diff_scope`, `source_diff_hash`, revision, dirty status, non-regression, and hidden/aggregate result status match the current `crates` diff.
 - Markdown replacements and `handoff_update` are semantically checked in the temp worktree: repo path references must exist after the patch is applied, catching invented source-file claims before commit.
 - Failed parse, path-gate, temp-worktree validation, real-tree validation/apply, or provider invocation now routes to a bounded repair prompt with the original task/context, previous output, and mechanical failure report. Configure with `--repair-attempts N` or `A2D_AUTOPILOT_REPAIR_ATTEMPTS` (default 1).
 
@@ -86,7 +88,9 @@ Implemented on 2026-05-31: autopilot temp-worktree validation now scans markdown
 
 Hardened on 2026-06-14: autopilot real-tree stage/commit is scoped to the patchset's touched project paths. This matches the existing project-scoped dirty check (`git status --short -- .`) and prevents A²D commits from accidentally including unrelated staged files in the parent `skunkworks` git repository. Regression coverage constructs a parent repo with a staged sibling file and proves the sibling remains staged (`A  ../sibling.md`) while the autopilot commit contains only the A²D project path.
 
-Next slice: continue replicated provider-latency or topology value evidence rather than more autopilot commit-scope mechanism work.
+Hardened on 2026-07-03: autopilot source self-modification now fails closed unless real-tree apply receives fresh source-bound `a2d.fitness-evidence.v1` actual-test evidence. The gate validates `schema_version`, `actual_tests_evaluated`, `non_regressing`, hidden/aggregate result status, `source_revision`, `source_tree_dirty`, `source_diff_scope: crates`, `source_diff_hash`, and `evidence_command` against the current real tree after applying the patch and before staging/commit. Evidence path is recorded in apply-report JSON. Validation and evidence are documented in `examples/runs/2026-07-03-autopilot-source-fitness-evidence.md`.
+
+Next slice: use the now source-evidence-gated autopilot path for a bounded live self-modification smoke, or continue official Senior SWE-Bench evaluator integration without moving benchmark-specific logic into `a2d-core`.
 
 ### Loop state artifacts
 
@@ -185,8 +189,9 @@ Project patches need stricter gating than normal assistant edits, while still al
 4. For docs/todos/plans, allow only repository-local markdown paths under approved directories.
 5. Apply to a temp worktree first.
 6. Run required commands, with `cargo test` mandatory for Rust/source changes.
-7. If gates fail, route the failure report to `repairer` for a bounded number of repair attempts.
-8. Refuse commit on failing gates, exhausted repair budget, or dirty unexpected files.
+7. For Rust/source changes, require fresh source-bound `a2d.fitness-evidence.v1` actual-test evidence before real-tree commit; `cargo test` is necessary but not sufficient.
+8. If gates fail, route the failure report to `repairer` for a bounded number of repair attempts.
+9. Refuse commit on failing gates, exhausted repair budget, missing/stale/regressing source evidence, or dirty unexpected files.
 
 ### Commit gate
 
@@ -245,7 +250,7 @@ Unit tests:
 - project patch parser rejects malformed JSON;
 - path gate rejects absolute and traversal paths;
 - docs-only patch can be validated without `cargo test`;
-- source self-modification requires self-sandbox/cargo test;
+- source self-modification requires self-sandbox/cargo test and fresh source-bound `a2d.fitness-evidence.v1` actual-test evidence before real-tree commit;
 - failed source self-modification routes to `repairer` before stopping;
 - protected-file self-modification is rejected without repair;
 - autopilot dry-run never modifies files;
