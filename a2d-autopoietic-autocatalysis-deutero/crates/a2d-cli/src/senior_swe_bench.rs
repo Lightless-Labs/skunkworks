@@ -12,6 +12,8 @@ pub const SENIOR_SWE_BENCH_AUDIT_SCHEMA: &str = "a2d.senior-swe-bench-audit.v1";
 pub const SENIOR_SWE_BENCH_TASK_PACKAGE_SCHEMA: &str = "a2d.senior-swe-bench-task-package.v1";
 pub const SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA: &str =
     "a2d.senior-swe-bench-local-evaluation.v1";
+pub const SENIOR_SWE_BENCH_OFFICIAL_EVALUATOR_MANIFEST_SCHEMA: &str =
+    "a2d.senior-swe-bench-official-evaluator-manifest.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SeniorSweBenchTask {
@@ -145,12 +147,22 @@ pub struct SeniorSweBenchTaskPackageSummary {
     pub github_solution_search_allowed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeniorSweBenchOfficialEvaluatorManifestSummary {
+    pub benchmark_url: String,
+    pub task_id: String,
+    pub repo: String,
+    pub hidden_holdouts: bool,
+    pub github_solution_search_allowed: bool,
+    pub benchmark_provided_command: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SeniorSweBenchLocalEvaluation {
     pub schema_version: &'static str,
     pub task_id: String,
     pub repo: String,
-    pub evaluator: &'static str,
+    pub evaluator: String,
     pub status: String,
     pub exit_code: Option<i32>,
     pub candidate_patch: String,
@@ -170,6 +182,22 @@ pub struct SeniorSweBenchLocalEvaluation {
     pub evidence_command: String,
     pub evaluator_command: Vec<String>,
     pub github_solution_search_allowed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub official_evaluator_manifest_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub official_evaluator_manifest_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub official_benchmark_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub official_task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub official_repo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub official_hidden_holdouts: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub official_github_solution_search_allowed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub official_benchmark_provided_command: Option<Vec<String>>,
     pub stdout_preview: String,
     pub stderr_preview: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -293,8 +321,110 @@ pub fn parse_senior_swe_bench_cycle_input(
     })
 }
 
+pub fn parse_senior_swe_bench_official_evaluator_manifest(
+    input: &str,
+    package: &SeniorSweBenchTaskPackageSummary,
+    invoked_command: &[String],
+) -> Result<SeniorSweBenchOfficialEvaluatorManifestSummary, String> {
+    let value: serde_json::Value = serde_json::from_str(input).map_err(|error| {
+        format!("invalid Senior SWE-Bench official evaluator manifest JSON: {error}")
+    })?;
+    let schema = value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            "Senior SWE-Bench official evaluator manifest missing schema_version".to_string()
+        })?;
+    if schema != SENIOR_SWE_BENCH_OFFICIAL_EVALUATOR_MANIFEST_SCHEMA {
+        return Err(format!(
+            "expected {SENIOR_SWE_BENCH_OFFICIAL_EVALUATOR_MANIFEST_SCHEMA}, got {schema}"
+        ));
+    }
+    let benchmark_url = required_string(&value, "benchmark_url")?;
+    if !benchmark_url.contains("senior-swe-bench.snorkel.ai") {
+        return Err(format!(
+            "Senior SWE-Bench official evaluator manifest benchmark_url is not Senior SWE-Bench: {benchmark_url}"
+        ));
+    }
+    let task_id = required_string(&value, "task_id")?;
+    if task_id != package.task_id {
+        return Err(format!(
+            "Senior SWE-Bench official evaluator manifest task_id {task_id} does not match task input {}",
+            package.task_id
+        ));
+    }
+    let repo = required_string(&value, "repo")?;
+    if repo != package.repo {
+        return Err(format!(
+            "Senior SWE-Bench official evaluator manifest repo {repo} does not match task input {}",
+            package.repo
+        ));
+    }
+    let hidden_holdouts = value
+        .get("hidden_holdouts")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| {
+            "Senior SWE-Bench official evaluator manifest missing hidden_holdouts".to_string()
+        })?;
+    if !hidden_holdouts {
+        return Err(
+            "Senior SWE-Bench official evaluator manifest must declare hidden_holdouts: true"
+                .to_string(),
+        );
+    }
+    let github_solution_search_allowed = value
+        .get("github_solution_search_allowed")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| {
+            "Senior SWE-Bench official evaluator manifest missing github_solution_search_allowed"
+                .to_string()
+        })?;
+    ensure_solution_search_forbidden(
+        github_solution_search_allowed,
+        "official evaluator manifest",
+    )?;
+    let benchmark_provided_command = value
+        .get("benchmark_provided_command")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            "Senior SWE-Bench official evaluator manifest missing benchmark_provided_command"
+                .to_string()
+        })?
+        .iter()
+        .map(|part| {
+            part.as_str()
+                .map(ToString::to_string)
+                .ok_or_else(|| {
+                    "Senior SWE-Bench official evaluator manifest benchmark_provided_command contains non-string entry"
+                        .to_string()
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if benchmark_provided_command.is_empty() {
+        return Err(
+            "Senior SWE-Bench official evaluator manifest benchmark_provided_command is empty"
+                .to_string(),
+        );
+    }
+    if benchmark_provided_command != invoked_command {
+        return Err(
+            "Senior SWE-Bench official evaluator manifest benchmark_provided_command does not match invoked evaluator command"
+                .to_string(),
+        );
+    }
+    Ok(SeniorSweBenchOfficialEvaluatorManifestSummary {
+        benchmark_url,
+        task_id,
+        repo,
+        hidden_holdouts,
+        github_solution_search_allowed,
+        benchmark_provided_command,
+    })
+}
+
 pub fn build_senior_swe_bench_local_evaluation(
     package: &SeniorSweBenchTaskPackageSummary,
+    evaluator: impl Into<String>,
     status: impl Into<String>,
     exit_code: Option<i32>,
     candidate_patch: impl Into<String>,
@@ -313,6 +443,9 @@ pub fn build_senior_swe_bench_local_evaluation(
     source_diff_hash: impl Into<String>,
     evidence_command: impl Into<String>,
     evaluator_command: Vec<String>,
+    official_evaluator_manifest_path: Option<String>,
+    official_evaluator_manifest_hash: Option<String>,
+    official_manifest: Option<&SeniorSweBenchOfficialEvaluatorManifestSummary>,
     stdout: &str,
     stderr: &str,
     fitness_evidence_path: Option<String>,
@@ -321,7 +454,7 @@ pub fn build_senior_swe_bench_local_evaluation(
         schema_version: SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA,
         task_id: package.task_id.clone(),
         repo: package.repo.clone(),
-        evaluator: "provided_local_command",
+        evaluator: evaluator.into(),
         status: status.into(),
         exit_code,
         candidate_patch: candidate_patch.into(),
@@ -341,6 +474,16 @@ pub fn build_senior_swe_bench_local_evaluation(
         evidence_command: evidence_command.into(),
         evaluator_command,
         github_solution_search_allowed: package.github_solution_search_allowed,
+        official_evaluator_manifest_path,
+        official_evaluator_manifest_hash,
+        official_benchmark_url: official_manifest.map(|manifest| manifest.benchmark_url.clone()),
+        official_task_id: official_manifest.map(|manifest| manifest.task_id.clone()),
+        official_repo: official_manifest.map(|manifest| manifest.repo.clone()),
+        official_hidden_holdouts: official_manifest.map(|manifest| manifest.hidden_holdouts),
+        official_github_solution_search_allowed: official_manifest
+            .map(|manifest| manifest.github_solution_search_allowed),
+        official_benchmark_provided_command: official_manifest
+            .map(|manifest| manifest.benchmark_provided_command.clone()),
         stdout_preview: preview_text(stdout),
         stderr_preview: preview_text(stderr),
         fitness_evidence_path,
@@ -802,6 +945,81 @@ mod tests {
     }
 
     #[test]
+    fn official_evaluator_manifest_requires_holdouts_no_search_and_matching_command() {
+        let package = SeniorSweBenchTaskPackageSummary {
+            task_id: "task-hard".to_string(),
+            repo: "owner/repo".to_string(),
+            github_solution_search_allowed: false,
+        };
+        let command = vec!["./official-evaluator".to_string(), "--task".to_string()];
+        let manifest = serde_json::json!({
+            "schema_version": SENIOR_SWE_BENCH_OFFICIAL_EVALUATOR_MANIFEST_SCHEMA,
+            "benchmark_url": "https://senior-swe-bench.snorkel.ai/tasks",
+            "task_id": "task-hard",
+            "repo": "owner/repo",
+            "hidden_holdouts": true,
+            "github_solution_search_allowed": false,
+            "benchmark_provided_command": command,
+        });
+        let parsed = parse_senior_swe_bench_official_evaluator_manifest(
+            &manifest.to_string(),
+            &package,
+            &["./official-evaluator".to_string(), "--task".to_string()],
+        )
+        .unwrap();
+        assert_eq!(parsed.task_id, "task-hard");
+        assert_eq!(parsed.repo, "owner/repo");
+        assert!(parsed.hidden_holdouts);
+        assert!(!parsed.github_solution_search_allowed);
+
+        let mut no_holdouts = manifest.clone();
+        no_holdouts["hidden_holdouts"] = serde_json::json!(false);
+        assert!(
+            parse_senior_swe_bench_official_evaluator_manifest(
+                &no_holdouts.to_string(),
+                &package,
+                &parsed.benchmark_provided_command,
+            )
+            .unwrap_err()
+            .contains("hidden_holdouts")
+        );
+
+        let mut allows_search = manifest.clone();
+        allows_search["github_solution_search_allowed"] = serde_json::json!(true);
+        assert!(
+            parse_senior_swe_bench_official_evaluator_manifest(
+                &allows_search.to_string(),
+                &package,
+                &parsed.benchmark_provided_command,
+            )
+            .unwrap_err()
+            .contains("allows GitHub solution search")
+        );
+
+        let mut wrong_task = manifest.clone();
+        wrong_task["task_id"] = serde_json::json!("other-task");
+        assert!(
+            parse_senior_swe_bench_official_evaluator_manifest(
+                &wrong_task.to_string(),
+                &package,
+                &parsed.benchmark_provided_command,
+            )
+            .unwrap_err()
+            .contains("does not match task input")
+        );
+
+        assert!(
+            parse_senior_swe_bench_official_evaluator_manifest(
+                &manifest.to_string(),
+                &package,
+                &["./different".to_string()],
+            )
+            .unwrap_err()
+            .contains("does not match invoked evaluator command")
+        );
+    }
+
+    #[test]
     fn local_evaluation_result_redacts_long_output_and_stays_not_official_claim() {
         let package = SeniorSweBenchTaskPackageSummary {
             task_id: "task-hard".to_string(),
@@ -810,6 +1028,7 @@ mod tests {
         };
         let evaluation = build_senior_swe_bench_local_evaluation(
             &package,
+            "provided_local_command",
             "passed",
             Some(0),
             "candidate.diff",
@@ -828,6 +1047,9 @@ mod tests {
             "0123456789abcdef0123456789abcdef01234567",
             "senior-swe-bench-evaluate --task-package task.json",
             vec!["./test.sh".to_string()],
+            None,
+            None,
+            None,
             &"x".repeat(2500),
             "",
             Some("evidence.json".to_string()),

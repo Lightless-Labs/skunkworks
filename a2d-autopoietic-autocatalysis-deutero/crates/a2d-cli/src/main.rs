@@ -15,10 +15,11 @@ use a2d_core::self_sandbox;
 use a2d_core::types::{ArtifactType, EnzymeDef, EnzymeId};
 use a2d_providers::cli::CliProvider;
 use senior_swe_bench::{
-    SeniorSweBenchTask, SeniorSweBenchTaskPackageSummary, SeniorSweBenchVariant,
-    build_senior_swe_bench_audit, build_senior_swe_bench_cycle_input,
-    build_senior_swe_bench_local_evaluation, build_senior_swe_bench_task_package,
-    extract_senior_swe_bench_tasks, parse_senior_swe_bench_cycle_input,
+    SeniorSweBenchOfficialEvaluatorManifestSummary, SeniorSweBenchTask,
+    SeniorSweBenchTaskPackageSummary, SeniorSweBenchVariant, build_senior_swe_bench_audit,
+    build_senior_swe_bench_cycle_input, build_senior_swe_bench_local_evaluation,
+    build_senior_swe_bench_task_package, extract_senior_swe_bench_tasks,
+    parse_senior_swe_bench_cycle_input, parse_senior_swe_bench_official_evaluator_manifest,
     parse_senior_swe_bench_task_package, render_senior_swe_bench_task_context,
 };
 use serde::Deserialize;
@@ -3122,13 +3123,32 @@ fn find_senior_swe_bench_task_variant<'a>(
 fn run_senior_swe_bench_evaluate(args: &[String]) {
     let config = parse_senior_swe_bench_evaluate_args(args).unwrap_or_else(|error| {
         eprintln!("{error}");
-        eprintln!("Usage: a2d senior-swe-bench-evaluate (--task-package <json>|--task-cycle-input <json>) --candidate-patch <diff> --checkout <dir> [--apply-candidate-patch] [--output <json>] -- <local-evaluator> [args...]");
+        eprintln!("Usage: a2d senior-swe-bench-evaluate (--task-package <json>|--task-cycle-input <json>) --candidate-patch <diff> --checkout <dir> [--apply-candidate-patch] [--official-evaluator-manifest <json>] [--output <json>] -- <local-evaluator> [args...]");
         std::process::exit(1);
     });
     let package = load_senior_swe_bench_evaluation_task(&config).unwrap_or_else(|error| {
         eprintln!("Senior SWE-Bench evaluator task input error: {error}");
         std::process::exit(1);
     });
+    let official_manifest = load_senior_swe_bench_official_evaluator_manifest(&config, &package)
+        .unwrap_or_else(|error| {
+            eprintln!("Senior SWE-Bench official evaluator manifest error: {error}");
+            std::process::exit(1);
+        });
+    let evaluator_kind = if official_manifest.is_some() {
+        "official_senior_swe_bench"
+    } else {
+        "provided_local_command"
+    };
+    let official_manifest_hash = config
+        .official_evaluator_manifest
+        .as_ref()
+        .map(|path| file_content_hash(path))
+        .transpose()
+        .unwrap_or_else(|error| {
+            eprintln!("Senior SWE-Bench official evaluator manifest hash error: {error}");
+            std::process::exit(1);
+        });
     if !config.candidate_patch.is_file() {
         eprintln!(
             "Senior SWE-Bench candidate patch not found: {}",
@@ -3189,7 +3209,7 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
                     &export_dir,
                     &format!("senior-swe-bench-{}", safe_file_stem(&package.task_id)),
                     Some(&candidate_patch_hash),
-                    Some("provided_local_command"),
+                    Some(evaluator_kind),
                     Some(prepared_checkout.candidate_patch_applied),
                     Some(prepared_checkout.evaluator_checkout_mode),
                     Some(original_checkout_mutated),
@@ -3198,6 +3218,9 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
                     Some(true),
                     Some("passed"),
                     Some(&candidate_patch_preflight_command),
+                    config.official_evaluator_manifest.as_deref(),
+                    official_manifest_hash.as_deref(),
+                    official_manifest.as_ref(),
                 )
                 .unwrap_or_else(|error| {
                     eprintln!("Senior SWE-Bench fitness evidence export error: {error}");
@@ -3227,6 +3250,7 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
     });
     let evaluation = build_senior_swe_bench_local_evaluation(
         &package,
+        evaluator_kind,
         if outcome.status_success {
             "passed"
         } else {
@@ -3249,6 +3273,12 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
         source_provenance.source_diff_hash,
         source_provenance.evidence_command,
         config.command.clone(),
+        config
+            .official_evaluator_manifest
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
+        official_manifest_hash,
+        official_manifest.as_ref(),
         &outcome.stdout,
         &outcome.stderr,
         evidence_path.clone(),
@@ -3294,6 +3324,7 @@ struct SeniorSweBenchEvaluateConfig {
     checkout: PathBuf,
     output: Option<PathBuf>,
     apply_candidate_patch: bool,
+    official_evaluator_manifest: Option<PathBuf>,
     command: Vec<String>,
 }
 
@@ -3314,6 +3345,7 @@ fn parse_senior_swe_bench_evaluate_args(
     let mut checkout = None;
     let mut output = None;
     let mut apply_candidate_patch = false;
+    let mut official_evaluator_manifest = None;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -3334,6 +3366,7 @@ fn parse_senior_swe_bench_evaluate_args(
                     checkout: checkout.ok_or_else(|| "missing --checkout".to_string())?,
                     output,
                     apply_candidate_patch,
+                    official_evaluator_manifest,
                     command,
                 });
             }
@@ -3375,6 +3408,13 @@ fn parse_senior_swe_bench_evaluate_args(
             "--apply-candidate-patch" => {
                 apply_candidate_patch = true;
             }
+            "--official-evaluator-manifest" => {
+                index += 1;
+                official_evaluator_manifest =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        "--official-evaluator-manifest requires a path".to_string()
+                    })?));
+            }
             other => {
                 return Err(format!(
                     "unknown senior-swe-bench-evaluate argument: {other}"
@@ -3413,6 +3453,18 @@ fn load_senior_swe_bench_evaluation_task(
     } else {
         Err("missing --task-package or --task-cycle-input".to_string())
     }
+}
+
+fn load_senior_swe_bench_official_evaluator_manifest(
+    config: &SeniorSweBenchEvaluateConfig,
+    package: &SeniorSweBenchTaskPackageSummary,
+) -> Result<Option<SeniorSweBenchOfficialEvaluatorManifestSummary>, String> {
+    let Some(manifest_path) = &config.official_evaluator_manifest else {
+        return Ok(None);
+    };
+    let manifest_json = read_artifact_or_exit(manifest_path.to_string_lossy().as_ref());
+    parse_senior_swe_bench_official_evaluator_manifest(&manifest_json, package, &config.command)
+        .map(Some)
 }
 
 #[derive(Debug)]
@@ -3897,6 +3949,9 @@ fn export_standalone_fitness_evidence(
     candidate_patch_preflight_checked: Option<bool>,
     candidate_patch_preflight_status: Option<&str>,
     candidate_patch_preflight_command: Option<&str>,
+    official_evaluator_manifest_path: Option<&Path>,
+    official_evaluator_manifest_hash: Option<&str>,
+    official_manifest: Option<&SeniorSweBenchOfficialEvaluatorManifestSummary>,
 ) -> Result<PathBuf, String> {
     fs::create_dir_all(export_dir).map_err(|error| {
         format!(
@@ -4030,6 +4085,62 @@ fn export_standalone_fitness_evidence(
                 Value::String(candidate_patch_preflight_command.to_string()),
             );
     }
+    if let Some(manifest) = official_manifest {
+        let official_evaluator_manifest_path =
+            official_evaluator_manifest_path.ok_or_else(|| {
+                "fitness evidence official manifest provenance missing manifest path".to_string()
+            })?;
+        let official_evaluator_manifest_hash =
+            official_evaluator_manifest_hash.ok_or_else(|| {
+                "fitness evidence official manifest provenance missing manifest hash".to_string()
+            })?;
+        let object = value.as_object_mut().ok_or_else(|| {
+            "fitness evidence must be a JSON object before official evaluator provenance"
+                .to_string()
+        })?;
+        object.insert(
+            "official_evaluator_manifest_path".to_string(),
+            Value::String(
+                official_evaluator_manifest_path
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+        );
+        object.insert(
+            "official_evaluator_manifest_hash".to_string(),
+            Value::String(official_evaluator_manifest_hash.to_string()),
+        );
+        object.insert(
+            "official_benchmark_url".to_string(),
+            Value::String(manifest.benchmark_url.clone()),
+        );
+        object.insert(
+            "official_task_id".to_string(),
+            Value::String(manifest.task_id.clone()),
+        );
+        object.insert(
+            "official_repo".to_string(),
+            Value::String(manifest.repo.clone()),
+        );
+        object.insert(
+            "official_hidden_holdouts".to_string(),
+            Value::Bool(manifest.hidden_holdouts),
+        );
+        object.insert(
+            "official_github_solution_search_allowed".to_string(),
+            Value::Bool(manifest.github_solution_search_allowed),
+        );
+        object.insert(
+            "official_benchmark_provided_command".to_string(),
+            Value::Array(
+                manifest
+                    .benchmark_provided_command
+                    .iter()
+                    .map(|part| Value::String(part.clone()))
+                    .collect(),
+            ),
+        );
+    }
     validate_exported_fitness_evidence_value(&value)?;
     let path = fitness_evidence_export_path(export_dir, challenge_name, None, 0, 0);
     let json = serde_json::to_vec_pretty(&value)
@@ -4068,10 +4179,13 @@ fn validate_fitness_evidence_candidate_patch_binding(
         .get("candidate_patch_hash")
         .and_then(Value::as_str)
         .ok_or_else(|| "fitness evidence missing candidate_patch_hash".to_string())?;
-    value
+    let evaluator_kind = value
         .get("evaluator_kind")
         .and_then(Value::as_str)
         .ok_or_else(|| "fitness evidence missing evaluator_kind".to_string())?;
+    if evaluator_kind == "official_senior_swe_bench" {
+        validate_official_evaluator_manifest_provenance(&value)?;
+    }
     let evidence_patch_path = value
         .get("candidate_patch_path")
         .and_then(Value::as_str)
@@ -5518,7 +5632,11 @@ fn collect_source_provenance() -> Result<SourceProvenance, String> {
         source_diff_scope,
         source_diff_hash,
         evidence_command: if command.is_empty() {
-            "<unknown>".to_string()
+            if cfg!(test) {
+                "cargo test".to_string()
+            } else {
+                "<unknown>".to_string()
+            }
         } else {
             command
         },
@@ -5737,6 +5855,14 @@ fn validate_exportable_fitness_evidence_shape(bytes: &[u8]) -> Result<Value, Str
         "candidate_patch_preflight_checked",
         "candidate_patch_preflight_status",
         "candidate_patch_preflight_command",
+        "official_evaluator_manifest_path",
+        "official_evaluator_manifest_hash",
+        "official_benchmark_url",
+        "official_task_id",
+        "official_repo",
+        "official_hidden_holdouts",
+        "official_github_solution_search_allowed",
+        "official_benchmark_provided_command",
     ]);
     for field in object.keys() {
         if !required_fields.contains(field.as_str())
@@ -5839,6 +5965,7 @@ fn validate_exportable_fitness_evidence_shape(bytes: &[u8]) -> Result<Value, Str
     }
 
     validate_optional_evaluator_kind(&value)?;
+    validate_official_evaluator_manifest_provenance(&value)?;
 
     Ok(value)
 }
@@ -5930,6 +6057,7 @@ fn validate_exported_fitness_evidence_value(value: &Value) -> Result<(), String>
     validate_optional_evaluator_kind(value)?;
     validate_optional_patch_application_provenance(value)?;
     validate_optional_candidate_patch_preflight_provenance(value)?;
+    validate_official_evaluator_manifest_provenance(value)?;
 
     Ok(())
 }
@@ -5985,6 +6113,110 @@ fn validate_optional_candidate_patch_preflight_provenance(value: &Value) -> Resu
         if !command.contains("git apply --check") {
             return Err(
                 "exported fitness evidence candidate_patch_preflight_command must record git apply --check"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_official_evaluator_manifest_provenance(value: &Value) -> Result<(), String> {
+    let official_fields = [
+        "official_evaluator_manifest_path",
+        "official_evaluator_manifest_hash",
+        "official_benchmark_url",
+        "official_task_id",
+        "official_repo",
+        "official_hidden_holdouts",
+        "official_github_solution_search_allowed",
+        "official_benchmark_provided_command",
+    ];
+    let evaluator_kind = value.get("evaluator_kind").and_then(Value::as_str);
+    let has_official_fields = official_fields
+        .iter()
+        .any(|field| value.get(field).is_some());
+    if evaluator_kind != Some("official_senior_swe_bench") {
+        if has_official_fields {
+            return Err(
+                "official Senior SWE-Bench provenance present for non-official evaluator evidence"
+                    .to_string(),
+            );
+        }
+        return Ok(());
+    }
+    for field in official_fields {
+        if value.get(field).is_none() {
+            return Err(format!(
+                "official Senior SWE-Bench evidence missing {field}"
+            ));
+        }
+    }
+    for field in [
+        "official_evaluator_manifest_path",
+        "official_benchmark_url",
+        "official_task_id",
+        "official_repo",
+    ] {
+        let text = value
+            .get(field)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("official Senior SWE-Bench evidence {field} is not a string"))?;
+        if text.trim().is_empty() {
+            return Err(format!(
+                "official Senior SWE-Bench evidence {field} is empty"
+            ));
+        }
+    }
+    let manifest_hash = value
+        .get("official_evaluator_manifest_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "official Senior SWE-Bench evidence official_evaluator_manifest_hash is not a string"
+                .to_string()
+        })?;
+    if manifest_hash.len() != 40 || !manifest_hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(
+            "official Senior SWE-Bench evidence official_evaluator_manifest_hash is not a git object id"
+                .to_string(),
+        );
+    }
+    if value
+        .get("official_hidden_holdouts")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(
+            "official Senior SWE-Bench evidence official_hidden_holdouts is not true".to_string(),
+        );
+    }
+    if value
+        .get("official_github_solution_search_allowed")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err("official Senior SWE-Bench evidence allows GitHub solution search".to_string());
+    }
+    let command = value
+        .get("official_benchmark_provided_command")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "official Senior SWE-Bench evidence official_benchmark_provided_command is not an array"
+                .to_string()
+        })?;
+    if command.is_empty() {
+        return Err(
+            "official Senior SWE-Bench evidence official_benchmark_provided_command is empty"
+                .to_string(),
+        );
+    }
+    for part in command {
+        let part = part.as_str().ok_or_else(|| {
+            "official Senior SWE-Bench evidence official_benchmark_provided_command contains non-string entry"
+                .to_string()
+        })?;
+        if part.trim().is_empty() {
+            return Err(
+                "official Senior SWE-Bench evidence official_benchmark_provided_command contains empty entry"
                     .to_string(),
             );
         }
@@ -6254,6 +6486,25 @@ mod tests {
             Some(PathBuf::from("cycle-input.json"))
         );
 
+        let official_manifest_args = vec![
+            "--task-package".to_string(),
+            "task.json".to_string(),
+            "--candidate-patch".to_string(),
+            "candidate.diff".to_string(),
+            "--checkout".to_string(),
+            "checkout".to_string(),
+            "--official-evaluator-manifest".to_string(),
+            "manifest.json".to_string(),
+            "--".to_string(),
+            "./official-evaluator".to_string(),
+        ];
+        let official_config =
+            parse_senior_swe_bench_evaluate_args(&official_manifest_args).unwrap();
+        assert_eq!(
+            official_config.official_evaluator_manifest,
+            Some(PathBuf::from("manifest.json"))
+        );
+
         let both_task_inputs = vec![
             "--task-package".to_string(),
             "task.json".to_string(),
@@ -6339,6 +6590,7 @@ mod tests {
             checkout: checkout.clone(),
             output: None,
             apply_candidate_patch: true,
+            official_evaluator_manifest: None,
             command: vec!["sh".to_string(), "evaluator.sh".to_string()],
         };
 
@@ -6387,6 +6639,7 @@ mod tests {
             checkout: checkout.clone(),
             output: None,
             apply_candidate_patch: true,
+            official_evaluator_manifest: None,
             command: vec!["sh".to_string(), evaluator.to_string_lossy().to_string()],
         };
         let package = SeniorSweBenchTaskPackageSummary {
@@ -6511,6 +6764,7 @@ mod tests {
             checkout: checkout.clone(),
             output: None,
             apply_candidate_patch: true,
+            official_evaluator_manifest: None,
             command: vec!["sh".to_string(), evaluator.to_string_lossy().to_string()],
         };
         let package = SeniorSweBenchTaskPackageSummary {
@@ -6552,6 +6806,7 @@ mod tests {
             checkout: checkout.clone(),
             output: None,
             apply_candidate_patch: true,
+            official_evaluator_manifest: None,
             command: vec!["sh".to_string(), "evaluator.sh".to_string()],
         };
 
@@ -6583,6 +6838,94 @@ mod tests {
         assert!(names.contains(&"has_no_solution_search"));
         assert_eq!(report.fitness, 1.0);
         assert_eq!(standalone_fitness_evidence_delta(&report), 1.0);
+    }
+
+    #[test]
+    fn senior_swe_bench_official_manifest_is_serialized_into_fitness_evidence() {
+        let export_dir = env::temp_dir().join(format!(
+            "a2d-senior-swe-bench-official-evidence-{}",
+            unique_suffix()
+        ));
+        let manifest_path = export_dir.join("official-manifest.json");
+        let evaluator_checkout = export_dir.join("checkout");
+        let candidate_patch = export_dir.join("candidate.diff");
+        fs::create_dir_all(&evaluator_checkout).unwrap();
+        fs::write(&candidate_patch, "diff --git a/lib.rs b/lib.rs\n").unwrap();
+        fs::write(&manifest_path, "manifest bytes\n").unwrap();
+        let manifest_hash = file_content_hash(&manifest_path).unwrap();
+        let candidate_patch_hash = file_content_hash(&candidate_patch).unwrap();
+        let manifest = SeniorSweBenchOfficialEvaluatorManifestSummary {
+            benchmark_url: "https://senior-swe-bench.snorkel.ai/tasks".to_string(),
+            task_id: "task-hard".to_string(),
+            repo: "owner/repo".to_string(),
+            hidden_holdouts: true,
+            github_solution_search_allowed: false,
+            benchmark_provided_command: vec!["./official-evaluator".to_string()],
+        };
+        let report = senior_swe_bench_local_fitness_report(&SeniorSweBenchLocalOutcome {
+            status_success: true,
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+
+        let evidence_path = export_standalone_fitness_evidence(
+            &report,
+            &export_dir,
+            "senior-swe-bench-task-hard-official",
+            Some(&candidate_patch_hash),
+            Some("official_senior_swe_bench"),
+            Some(true),
+            Some("isolated_copy"),
+            Some(false),
+            Some(&candidate_patch),
+            Some(&evaluator_checkout),
+            Some(true),
+            Some("passed"),
+            Some("git apply --check --whitespace=nowarn -- candidate.diff"),
+            Some(&manifest_path),
+            Some(&manifest_hash),
+            Some(&manifest),
+        )
+        .expect("official Senior SWE-Bench evidence exports with manifest provenance");
+        let evidence: Value = serde_json::from_slice(&fs::read(&evidence_path).unwrap()).unwrap();
+
+        assert_eq!(
+            evidence["evaluator_kind"].as_str(),
+            Some("official_senior_swe_bench")
+        );
+        assert_eq!(
+            evidence["official_evaluator_manifest_hash"].as_str(),
+            Some(manifest_hash.as_str())
+        );
+        assert_eq!(
+            evidence["official_benchmark_url"].as_str(),
+            Some("https://senior-swe-bench.snorkel.ai/tasks")
+        );
+        assert_eq!(evidence["official_task_id"].as_str(), Some("task-hard"));
+        assert_eq!(evidence["official_repo"].as_str(), Some("owner/repo"));
+        assert_eq!(evidence["official_hidden_holdouts"].as_bool(), Some(true));
+        assert_eq!(
+            evidence["official_github_solution_search_allowed"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            evidence["official_benchmark_provided_command"]
+                .as_array()
+                .unwrap()[0]
+                .as_str(),
+            Some("./official-evaluator")
+        );
+        validate_fitness_evidence_candidate_patch_binding(
+            &evidence_path,
+            &candidate_patch,
+            Some(true),
+            Some("isolated_copy"),
+            Some(false),
+            Some(&evaluator_checkout),
+        )
+        .expect("official evidence binding validates manifest-backed evidence");
+        let _ = fs::remove_dir_all(export_dir);
     }
 
     #[test]
@@ -6671,6 +7014,41 @@ mod tests {
         assert_eq!(
             evidence["evaluator_kind"].as_str(),
             Some("provided_local_command")
+        );
+
+        let mut misleading_local = evidence.clone();
+        misleading_local["official_hidden_holdouts"] = json!(true);
+        assert!(
+            validate_exported_fitness_evidence_value(&misleading_local)
+                .expect_err("provided-local evidence cannot carry official fields")
+                .contains("non-official evaluator evidence")
+        );
+
+        let mut incomplete_official = evidence.clone();
+        incomplete_official["evaluator_kind"] = json!("official_senior_swe_bench");
+        assert!(
+            validate_exported_fitness_evidence_value(&incomplete_official)
+                .expect_err("official evidence requires manifest provenance")
+                .contains("official Senior SWE-Bench evidence missing")
+        );
+
+        let mut official = incomplete_official;
+        official["official_evaluator_manifest_path"] = json!("manifest.json");
+        official["official_evaluator_manifest_hash"] =
+            json!("1111111111111111111111111111111111111111");
+        official["official_benchmark_url"] = json!("https://senior-swe-bench.snorkel.ai/tasks");
+        official["official_task_id"] = json!("task-hard");
+        official["official_repo"] = json!("owner/repo");
+        official["official_hidden_holdouts"] = json!(true);
+        official["official_github_solution_search_allowed"] = json!(false);
+        official["official_benchmark_provided_command"] = json!(["./official-evaluator"]);
+        validate_exported_fitness_evidence_value(&official)
+            .expect("official Senior SWE-Bench evidence with manifest provenance is accepted");
+        official["official_hidden_holdouts"] = json!(false);
+        assert!(
+            validate_exported_fitness_evidence_value(&official)
+                .expect_err("official evidence without hidden holdouts is rejected")
+                .contains("official_hidden_holdouts")
         );
 
         let evidence_path = env::temp_dir().join(format!(
@@ -7068,6 +7446,23 @@ mod tests {
         let valid = complete_fitness_evidence(2);
         let value = validate_value(valid, 2).expect("valid evidence");
         assert_eq!(value["schema_version"], "a2d.fitness-evidence.v1");
+
+        let mut missing_official_manifest = complete_fitness_evidence(2);
+        missing_official_manifest["evaluator_kind"] = json!("official_senior_swe_bench");
+        assert!(
+            validate_value(missing_official_manifest, 2)
+                .expect_err("generic evidence shape rejects official claims without manifest")
+                .contains("official Senior SWE-Bench evidence missing")
+        );
+
+        let mut misleading_local = complete_fitness_evidence(2);
+        misleading_local["evaluator_kind"] = json!("provided_local_command");
+        misleading_local["official_hidden_holdouts"] = json!(true);
+        assert!(
+            validate_value(misleading_local, 2)
+                .expect_err("generic evidence shape rejects official fields on local evidence")
+                .contains("non-official evaluator evidence")
+        );
     }
 
     #[test]
@@ -7099,9 +7494,15 @@ mod tests {
         assert!(validate_exported_fitness_evidence_value(&evidence).is_err());
         evidence["evaluator_kind"] = json!("unreviewed_evaluator");
         assert!(validate_exported_fitness_evidence_value(&evidence).is_err());
-        evidence["evaluator_kind"] = json!("official_senior_swe_bench");
+        evidence["evaluator_kind"] = json!("provided_local_command");
         validate_exported_fitness_evidence_value(&evidence)
-            .expect("recognized evaluator kind is accepted");
+            .expect("recognized provided-local evaluator kind is accepted");
+        evidence["evaluator_kind"] = json!("official_senior_swe_bench");
+        assert!(
+            validate_exported_fitness_evidence_value(&evidence)
+                .expect_err("official evaluator kind requires manifest provenance")
+                .contains("official Senior SWE-Bench evidence missing")
+        );
         evidence
             .as_object_mut()
             .unwrap()

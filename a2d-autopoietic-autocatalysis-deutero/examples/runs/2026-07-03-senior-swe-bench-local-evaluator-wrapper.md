@@ -291,3 +291,41 @@ Evidence inspection:
 - full validation: `cargo test` (289 passed, 2 ignored)
 
 This strengthens local-wrapper evidence binding and prevents evaluator/evidence claims for malformed or non-applicable candidate patch bytes. It still does not prove official Senior SWE-Bench mastery unless the provided evaluator command is the benchmark-provided official evaluator/holdouts.
+
+## Official evaluator manifest gate follow-up
+
+The evaluator wrapper now requires an explicit `--official-evaluator-manifest <json>` before it can emit `evaluator_kind: official_senior_swe_bench`. The manifest schema is `a2d.senior-swe-bench-official-evaluator-manifest.v1` and must declare a Senior SWE-Bench URL, matching task/repo, `hidden_holdouts: true`, `github_solution_search_allowed: false`, and a `benchmark_provided_command` exactly equal to the invoked evaluator command. Without the manifest, evidence remains `provided_local_command`.
+
+The exported `a2d.fitness-evidence.v1` official path is unit-covered to serialize and validate:
+
+- `official_evaluator_manifest_path`
+- `official_evaluator_manifest_hash`
+- `official_benchmark_url`
+- `official_task_id`
+- `official_repo`
+- `official_hidden_holdouts: true`
+- `official_github_solution_search_allowed: false`
+- `official_benchmark_provided_command`
+
+Validation rejects missing official manifest provenance on `official_senior_swe_bench` evidence and rejects `official_*` fields on `provided_local_command` evidence. No mock local evaluator evidence is relabeled as official in this run.
+
+Fresh source-patch gate support:
+
+```bash
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260703-senior-swe-bench-official-manifest-evidence/actual-test-score-artifact \
+  cargo run -q -p a2d -- score-artifact sudoku runs/20260701-score-artifact-fitness-evidence/good-sudoku-artifact.rs
+```
+
+Evidence:
+
+- `runs/20260703-senior-swe-bench-official-manifest-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`
+- `schema_version: a2d.fitness-evidence.v1`
+- `actual_tests_evaluated: true`
+- `non_regressing: true`
+- `fitness: 1.0`
+- `failed_cases: []`
+- result labels include `all_tests_pass`
+- `source_diff_hash: 46f40e5f02427ac48092f17a9bb9d5e1e573c344`, matching `git diff HEAD -- crates | git hash-object --stdin`
+- full validation: `cargo test` (291 passed, 2 ignored)
+
+This is an official-claim gating slice, not official Senior SWE-Bench mastery. A future run must use a real benchmark-provided manifest and evaluator/holdouts before claiming `official_senior_swe_bench` fitness.
