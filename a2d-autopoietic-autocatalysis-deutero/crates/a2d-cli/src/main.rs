@@ -3019,6 +3019,10 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
         );
         std::process::exit(1);
     }
+    let candidate_patch_hash = file_content_hash(&config.candidate_patch).unwrap_or_else(|error| {
+        eprintln!("Senior SWE-Bench candidate patch hash error: {error}");
+        std::process::exit(1);
+    });
 
     let outcome = run_local_senior_swe_bench_evaluator(&package, &config);
     let fitness = senior_swe_bench_local_fitness_report(&outcome);
@@ -3029,6 +3033,7 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
                     &fitness,
                     &export_dir,
                     &format!("senior-swe-bench-{}", safe_file_stem(&package.task_id)),
+                    Some(&candidate_patch_hash),
                 )
                 .unwrap_or_else(|error| {
                     eprintln!("Senior SWE-Bench fitness evidence export error: {error}");
@@ -3048,6 +3053,7 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
         },
         outcome.exit_code,
         config.candidate_patch.to_string_lossy(),
+        candidate_patch_hash,
         config.checkout.to_string_lossy(),
         config.command.clone(),
         &outcome.stdout,
@@ -3168,6 +3174,30 @@ fn parse_senior_swe_bench_evaluate_args(
     Err("missing -- <local-evaluator> command".to_string())
 }
 
+fn file_content_hash(path: &Path) -> Result<String, String> {
+    let output = Command::new("git")
+        .arg("hash-object")
+        .arg("--")
+        .arg(path)
+        .output()
+        .map_err(|error| format!("failed to run git hash-object {}: {error}", path.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git hash-object {} failed: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if hash.len() != 40 || !hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(format!(
+            "git hash-object {} returned invalid object id: {hash}",
+            path.display()
+        ));
+    }
+    Ok(hash)
+}
+
 fn run_local_senior_swe_bench_evaluator(
     package: &SeniorSweBenchTaskPackageSummary,
     config: &SeniorSweBenchEvaluateConfig,
@@ -3273,6 +3303,7 @@ fn export_standalone_fitness_evidence(
     report: &FitnessReport,
     export_dir: &Path,
     challenge_name: &str,
+    candidate_patch_hash: Option<&str>,
 ) -> Result<PathBuf, String> {
     fs::create_dir_all(export_dir).map_err(|error| {
         format!(
@@ -3286,7 +3317,19 @@ fn export_standalone_fitness_evidence(
         standalone_fitness_evidence_delta(report),
     ))
     .map_err(|error| format!("fitness evidence artifact was not JSON: {error}"))?;
-    let value = add_export_source_provenance(value)?;
+    let mut value = add_export_source_provenance(value)?;
+    if let Some(candidate_patch_hash) = candidate_patch_hash {
+        value
+            .as_object_mut()
+            .ok_or_else(|| {
+                "fitness evidence must be a JSON object before candidate patch provenance"
+                    .to_string()
+            })?
+            .insert(
+                "candidate_patch_hash".to_string(),
+                Value::String(candidate_patch_hash.to_string()),
+            );
+    }
     validate_exported_fitness_evidence_value(&value)?;
     let path = fitness_evidence_export_path(export_dir, challenge_name, None, 0, 0);
     let json = serde_json::to_vec_pretty(&value)
@@ -4811,6 +4854,7 @@ fn validate_exportable_fitness_evidence_shape(bytes: &[u8]) -> Result<Value, Str
         "source_diff_scope",
         "source_revision",
         "source_tree_dirty",
+        "candidate_patch_hash",
     ]);
     for field in object.keys() {
         if !required_fields.contains(field.as_str())
@@ -4976,6 +5020,20 @@ fn validate_exported_fitness_evidence_value(value: &Value) -> Result<(), String>
         .ok_or_else(|| "exported fitness evidence missing evidence_command".to_string())?;
     if evidence_command.trim().is_empty() || evidence_command == "<unknown>" {
         return Err("exported fitness evidence evidence_command is empty".to_string());
+    }
+    if let Some(candidate_patch_hash_value) = value.get("candidate_patch_hash") {
+        let candidate_patch_hash = candidate_patch_hash_value.as_str().ok_or_else(|| {
+            "exported fitness evidence candidate_patch_hash is not a string".to_string()
+        })?;
+        if candidate_patch_hash.len() != 40
+            || !candidate_patch_hash
+                .chars()
+                .all(|ch| ch.is_ascii_hexdigit())
+        {
+            return Err(
+                "exported fitness evidence candidate_patch_hash is not a git object id".to_string(),
+            );
+        }
     }
 
     Ok(())
@@ -5225,6 +5283,45 @@ mod tests {
     }
 
     #[test]
+    fn senior_swe_bench_exported_fitness_evidence_binds_candidate_patch_hash() {
+        let candidate_patch_path = env::temp_dir().join(format!(
+            "a2d-senior-swe-bench-candidate-{}.diff",
+            unique_suffix()
+        ));
+        fs::write(&candidate_patch_path, "diff --git a/lib.rs b/lib.rs\n").unwrap();
+        let candidate_patch_hash = file_content_hash(&candidate_patch_path).unwrap();
+        let report = senior_swe_bench_local_fitness_report(&SeniorSweBenchLocalOutcome {
+            status_success: true,
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+        let mut evidence: Value = serde_json::from_slice(&fitness_evidence_artifact(
+            0,
+            &report,
+            standalone_fitness_evidence_delta(&report),
+        ))
+        .expect("evidence serializes as JSON");
+        evidence = add_export_source_provenance(evidence).unwrap();
+        let object = evidence.as_object_mut().unwrap();
+        object.insert(
+            "candidate_patch_hash".to_string(),
+            Value::String(candidate_patch_hash.clone()),
+        );
+        object.insert(
+            "evidence_command".to_string(),
+            Value::String("senior-swe-bench-evaluate --task-package task.json".to_string()),
+        );
+
+        validate_exported_fitness_evidence_value(&evidence).unwrap();
+        assert_eq!(
+            evidence["candidate_patch_hash"].as_str(),
+            Some(candidate_patch_hash.as_str())
+        );
+        fs::remove_file(candidate_patch_path).unwrap();
+    }
+
+    #[test]
     fn failed_senior_swe_bench_local_evaluator_is_not_non_regressing_evidence() {
         let report = senior_swe_bench_local_fitness_report(&SeniorSweBenchLocalOutcome {
             status_success: false,
@@ -5375,6 +5472,18 @@ mod tests {
             json!(git_diff_hash_for_scope("crates").expect("git diff hash works"));
         evidence["evidence_command"] = json!("challenge sudoku 1");
         validate_exported_fitness_evidence_value(&evidence).expect("provenance is valid");
+
+        evidence["candidate_patch_hash"] = json!("not-a-git-object-id");
+        assert!(validate_exported_fitness_evidence_value(&evidence).is_err());
+        evidence["candidate_patch_hash"] = json!(123);
+        assert!(validate_exported_fitness_evidence_value(&evidence).is_err());
+        evidence["candidate_patch_hash"] = json!("0123456789abcdef0123456789abcdef01234567");
+        validate_exported_fitness_evidence_value(&evidence)
+            .expect("valid candidate patch hash is accepted");
+        evidence
+            .as_object_mut()
+            .unwrap()
+            .remove("candidate_patch_hash");
 
         evidence["source_diff_hash"] = json!("0123456789abcdef0123456789abcdef01234567");
         assert!(validate_exported_fitness_evidence_value(&evidence).is_err());

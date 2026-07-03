@@ -154,6 +154,7 @@ pub struct SeniorSweBenchLocalEvaluation {
     pub status: String,
     pub exit_code: Option<i32>,
     pub candidate_patch: String,
+    pub candidate_patch_hash: String,
     pub checkout: String,
     pub evaluator_command: Vec<String>,
     pub github_solution_search_allowed: bool,
@@ -231,6 +232,7 @@ pub fn build_senior_swe_bench_local_evaluation(
     status: impl Into<String>,
     exit_code: Option<i32>,
     candidate_patch: impl Into<String>,
+    candidate_patch_hash: impl Into<String>,
     checkout: impl Into<String>,
     evaluator_command: Vec<String>,
     stdout: &str,
@@ -245,6 +247,7 @@ pub fn build_senior_swe_bench_local_evaluation(
         status: status.into(),
         exit_code,
         candidate_patch: candidate_patch.into(),
+        candidate_patch_hash: candidate_patch_hash.into(),
         checkout: checkout.into(),
         evaluator_command,
         github_solution_search_allowed: package.github_solution_search_allowed,
@@ -594,6 +597,7 @@ mod tests {
             "passed",
             Some(0),
             "candidate.diff",
+            "patchhash",
             "checkout",
             vec!["./test.sh".to_string()],
             &"x".repeat(2500),
@@ -605,6 +609,7 @@ mod tests {
             SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA
         );
         assert_eq!(evaluation.status, "passed");
+        assert_eq!(evaluation.candidate_patch_hash, "patchhash");
         assert!(evaluation.stdout_preview.ends_with("...[truncated]"));
         assert!(evaluation.note.contains("local evaluator wrapper only"));
         assert!(!evaluation.github_solution_search_allowed);

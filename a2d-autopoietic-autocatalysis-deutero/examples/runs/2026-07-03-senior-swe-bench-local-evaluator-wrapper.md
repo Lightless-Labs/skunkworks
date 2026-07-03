@@ -31,18 +31,20 @@ Behavior:
 - Passes task metadata via `A2D_SENIOR_SWE_BENCH_TASK_ID`, `A2D_SENIOR_SWE_BENCH_REPO`, and `A2D_SENIOR_SWE_BENCH_CANDIDATE_PATCH`.
 - Captures stdout/stderr to files while waiting, avoiding pipe-buffer deadlocks.
 - Emits `a2d.senior-swe-bench-local-evaluation.v1`.
+- Records `candidate_patch_hash` using `git hash-object -- <candidate-patch>` so the local evaluation is bound to the exact candidate diff bytes.
 - Exports `a2d.fitness-evidence.v1` only for full-passing evaluator outcomes. Failed evaluator outcomes still emit evaluation JSON and exit nonzero, but do not produce non-regressing evidence.
+- Includes `candidate_patch_hash` in exported fitness evidence and rejects malformed/non-string candidate patch hash fields during export validation.
 
 ## Validation
 
 ```bash
 cargo fmt --check
+cargo test -p a2d fitness_evidence -- --nocapture
 cargo test -p a2d senior_swe_bench -- --nocapture
-cargo test -p a2d failed_senior_swe_bench_local_evaluator_is_not_non_regressing_evidence -- --nocapture
 cargo test
 ```
 
-Full suite result: 273 passed, 2 ignored.
+Full suite result after candidate-patch hash binding: 274 passed, 2 ignored.
 
 Architecture boundary:
 
@@ -81,6 +83,34 @@ Evidence inspection:
 - result labels include `all_tests_pass`, `hidden_acceptance`, and `has_no_solution_search`
 - `source_revision: 6a840b6`
 - `source_diff_hash: 7e82eecf604c76426d6a998138980ccdd8791f85`
+
+Candidate-patch hash binding follow-up evidence:
+
+```bash
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260703-senior-swe-bench-candidate-patch-hash-evidence/local-evaluator/fitness \
+  cargo run -q -p a2d -- senior-swe-bench-evaluate \
+  --task-package runs/20260703-senior-swe-bench-candidate-patch-hash-evidence/task-package/firezone-fix-connlib-align-device-hard-package.json \
+  --candidate-patch runs/20260703-senior-swe-bench-candidate-patch-hash-evidence/local-evaluator/candidate.diff \
+  --checkout runs/20260703-senior-swe-bench-candidate-patch-hash-evidence/checkout \
+  --output runs/20260703-senior-swe-bench-candidate-patch-hash-evidence/local-evaluator/firezone-fix-connlib-align-device-hard-local-evaluation.json \
+  -- $PWD/runs/20260703-senior-swe-bench-candidate-patch-hash-evidence/local-evaluator/mock-official-evaluator.sh
+```
+
+Artifacts:
+
+- `runs/20260703-senior-swe-bench-candidate-patch-hash-evidence/local-evaluator/firezone-fix-connlib-align-device-hard-local-evaluation.json`
+- `runs/20260703-senior-swe-bench-candidate-patch-hash-evidence/local-evaluator/fitness/senior-swe-bench-firezone-fix-connlib-align-device-hard-cycle-0-fitness-evidence.json`
+
+Evidence inspection:
+
+- `schema_version: a2d.fitness-evidence.v1`
+- `actual_tests_evaluated: true`
+- `non_regressing: true`
+- `fitness: 1.0`
+- `failed_cases: []`
+- result labels include `all_tests_pass`, `hidden_acceptance`, and `has_no_solution_search`
+- `source_diff_hash: cbd48c21654b9afd5ad97cab3711cd082e3dfc1b` (matches `git diff -- crates | git hash-object --stdin`)
+- `candidate_patch_hash: 134b5415022cbd286abfd60e064dcf9a817d89a0` (matches `git hash-object -- candidate.diff`)
 
 The evidence source scope is `crates`; documentation updates in this run record the evidence and are not part of the source diff hash.
 
