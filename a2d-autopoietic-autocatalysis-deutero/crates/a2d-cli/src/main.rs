@@ -16,9 +16,10 @@ use a2d_core::types::{ArtifactType, EnzymeDef, EnzymeId};
 use a2d_providers::cli::CliProvider;
 use senior_swe_bench::{
     SeniorSweBenchTask, SeniorSweBenchTaskPackageSummary, SeniorSweBenchVariant,
-    build_senior_swe_bench_audit, build_senior_swe_bench_local_evaluation,
-    build_senior_swe_bench_task_package, extract_senior_swe_bench_tasks,
-    parse_senior_swe_bench_task_package, render_senior_swe_bench_task_context,
+    build_senior_swe_bench_audit, build_senior_swe_bench_cycle_input,
+    build_senior_swe_bench_local_evaluation, build_senior_swe_bench_task_package,
+    extract_senior_swe_bench_tasks, parse_senior_swe_bench_task_package,
+    render_senior_swe_bench_task_context,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -64,7 +65,7 @@ fn main() {
         "senior-swe-bench-audit" => {
             if args.len() > 5 {
                 eprintln!(
-                    "Usage: a2d senior-swe-bench-audit <html|-> [task-context|task-package <task-id>]"
+                    "Usage: a2d senior-swe-bench-audit <html|-> [task-context|task-package|task-cycle-input <task-id>]"
                 );
                 std::process::exit(1);
             }
@@ -258,14 +259,15 @@ fn baseline_food() -> BTreeSet<ArtifactType> {
 
 fn coder_prompt_template() -> String {
     format!(
-        "You are a Rust programmer. You receive three complementary artifacts:\n\
+        "You are a programmer. You receive three complementary artifacts:\n\
          - design: concrete structure or reference implementation details\n\
          - plan: the intended architecture or implementation steps\n\
          - requirements: the user-visible contract to satisfy\n\n\
-         Synthesize all three into a SINGLE complete Rust source file.\n\
          Prefer the most specific, most constrained instructions when the artifacts differ.\n\
+         Default deliverable: synthesize all three into a SINGLE complete Rust source file.\n\
+         If the requirements, design, or plan explicitly require another artifact format (for example, a unified diff candidate patch), follow that explicit deliverable instead.\n\
          {}\n\
-         The file MUST:\n\
+         For Rust-source deliverables, the file MUST:\n\
          1. Contain a main() function\n\
          2. Include #[cfg(test)] mod tests with at least 3 test cases\n\
          3. Use Result<T, E> for error handling where appropriate\n\
@@ -273,7 +275,8 @@ fn coder_prompt_template() -> String {
          5. Compile with `rustc --edition 2024`\n\
          6. Do NOT define a module named `a2d_acceptance` — that module will be appended by the system. If you define it, compilation will fail with a duplicate definition error.\n\
          7. Place all your tests in a module named `tests` (i.e. `#[cfg(test)] mod tests {{ ... }}`), NOT `a2d_acceptance`.\n\n\
-         Output ONLY the Rust source code inside ```rust fences. No explanation.",
+         For unified diff deliverables, output raw unified diff text without markdown fences so evaluators can apply and hash the patch bytes directly.\n\
+         Output ONLY the requested artifact. No explanation.",
         coder_benchmark_integrity_rule()
     )
 }
@@ -3424,10 +3427,10 @@ fn safe_file_stem(value: &str) -> String {
 
 fn run_senior_swe_bench_audit(input_path: &str, mode: Option<&str>, task_id: Option<&str>) {
     if let Some(mode) = mode {
-        if !matches!(mode, "task-context" | "task-package") {
+        if !matches!(mode, "task-context" | "task-package" | "task-cycle-input") {
             eprintln!("unknown senior-swe-bench-audit mode: {mode}");
             eprintln!(
-                "Usage: a2d senior-swe-bench-audit <html|-> [task-context|task-package <task-id>]"
+                "Usage: a2d senior-swe-bench-audit <html|-> [task-context|task-package|task-cycle-input <task-id>]"
             );
             std::process::exit(1);
         }
@@ -3437,7 +3440,7 @@ fn run_senior_swe_bench_audit(input_path: &str, mode: Option<&str>, task_id: Opt
         }
     } else if task_id.is_some() {
         eprintln!(
-            "Usage: a2d senior-swe-bench-audit <html|-> [task-context|task-package <task-id>]"
+            "Usage: a2d senior-swe-bench-audit <html|-> [task-context|task-package|task-cycle-input <task-id>]"
         );
         std::process::exit(1);
     }
@@ -3448,7 +3451,10 @@ fn run_senior_swe_bench_audit(input_path: &str, mode: Option<&str>, task_id: Opt
         std::process::exit(1);
     });
 
-    if matches!(mode, Some("task-context" | "task-package")) {
+    if matches!(
+        mode,
+        Some("task-context" | "task-package" | "task-cycle-input")
+    ) {
         let requested = task_id.expect("task id presence checked before reading input");
         let (task, variant_name, variant) = find_senior_swe_bench_task_variant(&tasks, requested)
             .unwrap_or_else(|| {
@@ -3461,6 +3467,13 @@ fn run_senior_swe_bench_audit(input_path: &str, mode: Option<&str>, task_id: Opt
                 "{}",
                 serde_json::to_string_pretty(&package)
                     .expect("senior swe-bench task package must serialize")
+            );
+        } else if mode == Some("task-cycle-input") {
+            let cycle_input = build_senior_swe_bench_cycle_input(task, variant_name, variant);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&cycle_input)
+                    .expect("senior swe-bench cycle input must serialize")
             );
         } else {
             println!("{}", render_senior_swe_bench_task_context(task, variant));
@@ -6626,6 +6639,27 @@ mod tests {
                 .unwrap()
                 .contains("not to search GitHub")
         );
+        assert!(
+            coder
+                .prompt_template
+                .as_deref()
+                .unwrap()
+                .contains("unified diff candidate patch")
+        );
+        assert!(
+            coder
+                .prompt_template
+                .as_deref()
+                .unwrap()
+                .contains("Default deliverable")
+        );
+        assert!(
+            coder
+                .prompt_template
+                .as_deref()
+                .unwrap()
+                .contains("without markdown fences")
+        );
     }
 
     #[test]
@@ -6773,6 +6807,41 @@ mod tests {
         assert_eq!(
             artifacts.get(&art("enzyme_defs")).unwrap(),
             br#"[{"id":"coder"}]"#
+        );
+    }
+
+    #[test]
+    fn senior_swe_bench_cycle_input_can_seed_cycle_artifacts() {
+        let input = json!({
+            "requirements": "Senior SWE-Bench policy: Do not search GitHub. Deliverable: produce a unified diff candidate patch.",
+            "design": "Use the local checkout and local tests only.",
+            "plan": "Return only a unified diff candidate patch.",
+            "benchmark_context": {"task_id": "task-hard", "repo": "owner/repo"},
+            "evaluation": {"status": "not_evaluated", "fitness": null}
+        })
+        .to_string();
+
+        let artifacts = input_artifacts_from_request(&input);
+
+        assert!(
+            String::from_utf8_lossy(artifacts.get(&art("requirements")).unwrap())
+                .contains("unified diff candidate patch")
+        );
+        assert_eq!(
+            artifacts.get(&art("design")).unwrap(),
+            b"Use the local checkout and local tests only."
+        );
+        assert!(
+            String::from_utf8_lossy(artifacts.get(&art("plan")).unwrap())
+                .contains("Return only a unified diff")
+        );
+        assert!(
+            String::from_utf8_lossy(artifacts.get(&art("benchmark_context")).unwrap())
+                .contains("task-hard")
+        );
+        assert!(
+            String::from_utf8_lossy(artifacts.get(&art("evaluation")).unwrap())
+                .contains("not_evaluated")
         );
     }
 

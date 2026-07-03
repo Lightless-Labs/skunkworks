@@ -376,6 +376,42 @@ pub fn build_senior_swe_bench_task_package(
     }
 }
 
+pub fn build_senior_swe_bench_cycle_input(
+    task: &SeniorSweBenchTask,
+    variant_name: &str,
+    variant: &SeniorSweBenchVariant,
+) -> serde_json::Value {
+    let context = render_senior_swe_bench_task_context(task, variant);
+    let restrictions = senior_swe_bench_agent_restrictions();
+    serde_json::json!({
+        "requirements": format!(
+            "{context}\n\nDeliverable: produce a unified diff candidate patch for the benchmark-provided checkout. Do not output a full replacement repository. Do not claim task fitness until an evaluator runs."
+        ),
+        "design": format!(
+            "Work only inside the supplied local checkout for {repo}. Use local source inspection and local tests/harnesses. Public GitHub/web solution search is forbidden. The expected artifact is a candidate patch diff, not an A²D source patch.",
+            repo = repository_id(task)
+        ),
+        "plan": "1. Inspect the provided checkout and task context.\n2. Identify the failing behavior using local tests or a local harness only.\n3. Implement the smallest candidate patch.\n4. Run relevant local tests.\n5. Return only a unified diff suitable for the evaluator wrapper.".to_string(),
+        "benchmark_context": {
+            "schema_version": SENIOR_SWE_BENCH_TASK_PACKAGE_SCHEMA,
+            "task_id": variant.task_id,
+            "repo": repository_id(task),
+            "family": task.family,
+            "variant": variant_name,
+            "difficulty": variant.difficulty,
+            "in_benchmark": task.in_benchmark,
+            "in_sample": task.in_sample,
+            "github_solution_search_allowed": restrictions.github_solution_search_allowed,
+        },
+        "evaluation": {
+            "status": "not_evaluated",
+            "evaluator": "official_senior_swe_bench",
+            "fitness": serde_json::Value::Null,
+            "note": "run a local or official Senior SWE-Bench evaluator against the candidate patch before claiming task fitness"
+        }
+    })
+}
+
 pub fn render_senior_swe_bench_task_context(
     task: &SeniorSweBenchTask,
     variant: &SeniorSweBenchVariant,
@@ -565,6 +601,47 @@ mod tests {
         assert_eq!(package.evaluation.status, "not_evaluated");
         assert_eq!(package.evaluation.evaluator, "official_senior_swe_bench");
         assert_eq!(package.evaluation.fitness, None);
+    }
+
+    #[test]
+    fn cycle_input_carries_patch_deliverable_no_solution_search_and_not_evaluated_status() {
+        let task = extract_senior_swe_bench_tasks(sample_next_payload())
+            .unwrap()
+            .remove(0);
+        let input = build_senior_swe_bench_cycle_input(&task, "hard", task.hard.as_ref().unwrap());
+
+        assert!(
+            input["requirements"]
+                .as_str()
+                .unwrap()
+                .contains("unified diff candidate patch")
+        );
+        assert!(
+            input["requirements"]
+                .as_str()
+                .unwrap()
+                .contains("Do not search GitHub")
+        );
+        assert!(input["design"].as_str().unwrap().contains("local checkout"));
+        assert!(
+            input["plan"]
+                .as_str()
+                .unwrap()
+                .contains("Return only a unified diff")
+        );
+        assert_eq!(
+            input["benchmark_context"]["task_id"].as_str(),
+            Some("firezone-fix-connlib-align-device-hard")
+        );
+        assert_eq!(
+            input["benchmark_context"]["github_solution_search_allowed"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            input["evaluation"]["status"].as_str(),
+            Some("not_evaluated")
+        );
+        assert!(input["evaluation"]["fitness"].is_null());
     }
 
     #[test]
