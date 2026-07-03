@@ -3152,6 +3152,14 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
             eprintln!("Senior SWE-Bench original checkout fingerprint error: {error}");
             std::process::exit(1);
         });
+    let candidate_patch_preflight_command = validate_senior_swe_bench_candidate_patch_applicable(
+        &config.checkout,
+        &config.candidate_patch,
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Senior SWE-Bench candidate patch preflight error: {error}");
+        std::process::exit(1);
+    });
 
     let prepared_checkout =
         prepare_senior_swe_bench_evaluator_checkout(&config).unwrap_or_else(|error| {
@@ -3187,6 +3195,9 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
                     Some(original_checkout_mutated),
                     Some(&config.candidate_patch),
                     Some(&prepared_checkout.evaluator_checkout),
+                    Some(true),
+                    Some("passed"),
+                    Some(&candidate_patch_preflight_command),
                 )
                 .unwrap_or_else(|error| {
                     eprintln!("Senior SWE-Bench fitness evidence export error: {error}");
@@ -3229,6 +3240,9 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
         prepared_checkout.candidate_patch_applied,
         prepared_checkout.evaluator_checkout_mode,
         original_checkout_mutated,
+        true,
+        "passed",
+        candidate_patch_preflight_command,
         source_provenance.source_revision,
         source_provenance.source_tree_dirty,
         source_provenance.source_diff_scope,
@@ -3667,6 +3681,40 @@ fn original_checkout_mutated_after_evaluator(
     }
 }
 
+fn validate_senior_swe_bench_candidate_patch_applicable(
+    checkout: &Path,
+    candidate_patch: &Path,
+) -> Result<String, String> {
+    let patch_path = fs::canonicalize(candidate_patch)
+        .map_err(|error| format!("failed to canonicalize candidate patch: {error}"))?;
+    let command_text = format!(
+        "git apply --check --whitespace=nowarn -- {}",
+        patch_path.display()
+    );
+    let output = Command::new("git")
+        .arg("apply")
+        .arg("--check")
+        .arg("--whitespace=nowarn")
+        .arg("--")
+        .arg(&patch_path)
+        .current_dir(checkout)
+        .output()
+        .map_err(|error| {
+            format!(
+                "failed to run {command_text} in {}: {error}",
+                checkout.display()
+            )
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "{command_text} failed in {}: {}",
+            checkout.display(),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(command_text)
+}
+
 fn apply_candidate_patch_to_checkout(
     checkout: &Path,
     candidate_patch: &Path,
@@ -3846,6 +3894,9 @@ fn export_standalone_fitness_evidence(
     original_checkout_mutated: Option<bool>,
     candidate_patch_path: Option<&Path>,
     evaluator_checkout_path: Option<&Path>,
+    candidate_patch_preflight_checked: Option<bool>,
+    candidate_patch_preflight_status: Option<&str>,
+    candidate_patch_preflight_command: Option<&str>,
 ) -> Result<PathBuf, String> {
     fs::create_dir_all(export_dir).map_err(|error| {
         format!(
@@ -3941,6 +3992,42 @@ fn export_standalone_fitness_evidence(
             .insert(
                 "original_checkout_mutated".to_string(),
                 Value::Bool(original_checkout_mutated),
+            );
+    }
+    if let Some(candidate_patch_preflight_checked) = candidate_patch_preflight_checked {
+        value
+            .as_object_mut()
+            .ok_or_else(|| {
+                "fitness evidence must be a JSON object before candidate patch preflight provenance"
+                    .to_string()
+            })?
+            .insert(
+                "candidate_patch_preflight_checked".to_string(),
+                Value::Bool(candidate_patch_preflight_checked),
+            );
+    }
+    if let Some(candidate_patch_preflight_status) = candidate_patch_preflight_status {
+        value
+            .as_object_mut()
+            .ok_or_else(|| {
+                "fitness evidence must be a JSON object before candidate patch preflight status provenance"
+                    .to_string()
+            })?
+            .insert(
+                "candidate_patch_preflight_status".to_string(),
+                Value::String(candidate_patch_preflight_status.to_string()),
+            );
+    }
+    if let Some(candidate_patch_preflight_command) = candidate_patch_preflight_command {
+        value
+            .as_object_mut()
+            .ok_or_else(|| {
+                "fitness evidence must be a JSON object before candidate patch preflight command provenance"
+                    .to_string()
+            })?
+            .insert(
+                "candidate_patch_preflight_command".to_string(),
+                Value::String(candidate_patch_preflight_command.to_string()),
             );
     }
     validate_exported_fitness_evidence_value(&value)?;
@@ -4039,6 +4126,32 @@ fn validate_fitness_evidence_candidate_patch_binding(
                 expected.display()
             ));
         }
+    }
+    let preflight_checked = value
+        .get("candidate_patch_preflight_checked")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "fitness evidence missing candidate_patch_preflight_checked".to_string())?;
+    if !preflight_checked {
+        return Err("fitness evidence candidate_patch_preflight_checked is not true".to_string());
+    }
+    let preflight_status = value
+        .get("candidate_patch_preflight_status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "fitness evidence missing candidate_patch_preflight_status".to_string())?;
+    if preflight_status != "passed" {
+        return Err(format!(
+            "fitness evidence candidate_patch_preflight_status {preflight_status} is not passed"
+        ));
+    }
+    let preflight_command = value
+        .get("candidate_patch_preflight_command")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "fitness evidence missing candidate_patch_preflight_command".to_string())?;
+    if !preflight_command.contains("git apply --check") {
+        return Err(
+            "fitness evidence candidate_patch_preflight_command does not record git apply --check"
+                .to_string(),
+        );
     }
     let current_hash = file_content_hash(candidate_patch_path)?;
     if evidence_hash != current_hash {
@@ -5621,6 +5734,9 @@ fn validate_exportable_fitness_evidence_shape(bytes: &[u8]) -> Result<Value, Str
         "candidate_patch_applied",
         "evaluator_checkout_mode",
         "original_checkout_mutated",
+        "candidate_patch_preflight_checked",
+        "candidate_patch_preflight_status",
+        "candidate_patch_preflight_command",
     ]);
     for field in object.keys() {
         if !required_fields.contains(field.as_str())
@@ -5813,6 +5929,7 @@ fn validate_exported_fitness_evidence_value(value: &Value) -> Result<(), String>
     }
     validate_optional_evaluator_kind(value)?;
     validate_optional_patch_application_provenance(value)?;
+    validate_optional_candidate_patch_preflight_provenance(value)?;
 
     Ok(())
 }
@@ -5839,6 +5956,37 @@ fn validate_optional_patch_application_provenance(value: &Value) -> Result<(), S
                     "exported fitness evidence evaluator_checkout_mode is unreviewed: {mode}"
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_optional_candidate_patch_preflight_provenance(value: &Value) -> Result<(), String> {
+    if let Some(checked_value) = value.get("candidate_patch_preflight_checked") {
+        checked_value.as_bool().ok_or_else(|| {
+            "exported fitness evidence candidate_patch_preflight_checked is not a bool".to_string()
+        })?;
+    }
+    if let Some(status_value) = value.get("candidate_patch_preflight_status") {
+        let status = status_value.as_str().ok_or_else(|| {
+            "exported fitness evidence candidate_patch_preflight_status is not a string".to_string()
+        })?;
+        if status != "passed" {
+            return Err(format!(
+                "exported fitness evidence candidate_patch_preflight_status is unreviewed: {status}"
+            ));
+        }
+    }
+    if let Some(command_value) = value.get("candidate_patch_preflight_command") {
+        let command = command_value.as_str().ok_or_else(|| {
+            "exported fitness evidence candidate_patch_preflight_command is not a string"
+                .to_string()
+        })?;
+        if !command.contains("git apply --check") {
+            return Err(
+                "exported fitness evidence candidate_patch_preflight_command must record git apply --check"
+                    .to_string(),
+            );
         }
     }
     Ok(())
@@ -6133,6 +6281,42 @@ mod tests {
             "checkout".to_string(),
         ];
         assert!(parse_senior_swe_bench_evaluate_args(&missing_command).is_err());
+    }
+
+    #[test]
+    fn senior_swe_bench_candidate_patch_preflight_checks_applicability_without_applying() {
+        let root = env::temp_dir().join(format!(
+            "a2d-senior-swe-bench-preflight-{}",
+            unique_suffix()
+        ));
+        let checkout = root.join("checkout");
+        fs::create_dir_all(&checkout).unwrap();
+        fs::write(checkout.join("lib.rs"), "original\n").unwrap();
+        let patch = root.join("candidate.diff");
+        fs::write(
+            &patch,
+            "--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-original\n+patched\n",
+        )
+        .unwrap();
+
+        let command = validate_senior_swe_bench_candidate_patch_applicable(&checkout, &patch)
+            .expect("applicable candidate patch passes preflight");
+
+        assert!(command.contains("git apply --check"));
+        assert_eq!(
+            fs::read_to_string(checkout.join("lib.rs")).unwrap(),
+            "original\n"
+        );
+
+        fs::write(&patch, "not a unified diff\n").unwrap();
+        let error = validate_senior_swe_bench_candidate_patch_applicable(&checkout, &patch)
+            .expect_err("malformed candidate patch fails preflight");
+        assert!(error.contains("git apply --check"));
+        assert_eq!(
+            fs::read_to_string(checkout.join("lib.rs")).unwrap(),
+            "original\n"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -6456,6 +6640,21 @@ mod tests {
         );
         object.insert("original_checkout_mutated".to_string(), Value::Bool(false));
         object.insert(
+            "candidate_patch_preflight_checked".to_string(),
+            Value::Bool(true),
+        );
+        object.insert(
+            "candidate_patch_preflight_status".to_string(),
+            Value::String("passed".to_string()),
+        );
+        object.insert(
+            "candidate_patch_preflight_command".to_string(),
+            Value::String(format!(
+                "git apply --check --whitespace=nowarn -- {}",
+                candidate_patch_path.display()
+            )),
+        );
+        object.insert(
             "evidence_command".to_string(),
             Value::String("senior-swe-bench-evaluate --task-package task.json".to_string()),
         );
@@ -6492,6 +6691,49 @@ mod tests {
             Some(&evaluator_checkout_path),
         )
         .expect("matching candidate patch binding is accepted");
+
+        let mut missing_preflight = evidence.clone();
+        missing_preflight
+            .as_object_mut()
+            .unwrap()
+            .remove("candidate_patch_preflight_checked");
+        fs::write(
+            &evidence_path,
+            serde_json::to_vec_pretty(&missing_preflight).expect("evidence serializes"),
+        )
+        .unwrap();
+        assert!(
+            validate_fitness_evidence_candidate_patch_binding(
+                &evidence_path,
+                &candidate_patch_path,
+                Some(true),
+                Some("isolated_copy"),
+                Some(false),
+                Some(&evaluator_checkout_path),
+            )
+            .expect_err("missing candidate patch preflight is rejected")
+            .contains("missing candidate_patch_preflight_checked")
+        );
+
+        let mut failed_preflight = evidence.clone();
+        failed_preflight["candidate_patch_preflight_status"] = json!("failed");
+        fs::write(
+            &evidence_path,
+            serde_json::to_vec_pretty(&failed_preflight).expect("evidence serializes"),
+        )
+        .unwrap();
+        assert!(
+            validate_fitness_evidence_candidate_patch_binding(
+                &evidence_path,
+                &candidate_patch_path,
+                Some(true),
+                Some("isolated_copy"),
+                Some(false),
+                Some(&evaluator_checkout_path),
+            )
+            .expect_err("failed candidate patch preflight is rejected")
+            .contains("candidate_patch_preflight_status")
+        );
 
         let mut missing_candidate_hash = evidence.clone();
         missing_candidate_hash

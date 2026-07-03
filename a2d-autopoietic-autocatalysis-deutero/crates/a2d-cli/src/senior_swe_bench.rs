@@ -160,6 +160,9 @@ pub struct SeniorSweBenchLocalEvaluation {
     pub candidate_patch_applied: bool,
     pub evaluator_checkout_mode: String,
     pub original_checkout_mutated: bool,
+    pub candidate_patch_preflight_checked: bool,
+    pub candidate_patch_preflight_status: String,
+    pub candidate_patch_preflight_command: String,
     pub source_revision: String,
     pub source_tree_dirty: bool,
     pub source_diff_scope: String,
@@ -301,6 +304,9 @@ pub fn build_senior_swe_bench_local_evaluation(
     candidate_patch_applied: bool,
     evaluator_checkout_mode: impl Into<String>,
     original_checkout_mutated: bool,
+    candidate_patch_preflight_checked: bool,
+    candidate_patch_preflight_status: impl Into<String>,
+    candidate_patch_preflight_command: impl Into<String>,
     source_revision: impl Into<String>,
     source_tree_dirty: bool,
     source_diff_scope: impl Into<String>,
@@ -325,6 +331,9 @@ pub fn build_senior_swe_bench_local_evaluation(
         candidate_patch_applied,
         evaluator_checkout_mode: evaluator_checkout_mode.into(),
         original_checkout_mutated,
+        candidate_patch_preflight_checked,
+        candidate_patch_preflight_status: candidate_patch_preflight_status.into(),
+        candidate_patch_preflight_command: candidate_patch_preflight_command.into(),
         source_revision: source_revision.into(),
         source_tree_dirty,
         source_diff_scope: source_diff_scope.into(),
@@ -810,6 +819,9 @@ mod tests {
             true,
             "isolated_copy",
             false,
+            true,
+            "passed",
+            "git apply --check --whitespace=nowarn -- candidate.diff",
             "revision",
             true,
             "crates",
@@ -830,6 +842,13 @@ mod tests {
         assert!(evaluation.candidate_patch_applied);
         assert_eq!(evaluation.evaluator_checkout_mode, "isolated_copy");
         assert!(!evaluation.original_checkout_mutated);
+        assert!(evaluation.candidate_patch_preflight_checked);
+        assert_eq!(evaluation.candidate_patch_preflight_status, "passed");
+        assert!(
+            evaluation
+                .candidate_patch_preflight_command
+                .contains("git apply --check")
+        );
         assert_eq!(evaluation.source_revision, "revision");
         assert!(evaluation.source_tree_dirty);
         assert_eq!(evaluation.source_diff_scope, "crates");

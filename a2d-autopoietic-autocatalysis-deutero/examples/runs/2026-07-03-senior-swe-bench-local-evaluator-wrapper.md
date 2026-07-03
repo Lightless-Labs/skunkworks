@@ -246,3 +246,48 @@ Evidence inspection:
 - full validation: `cargo test` (284 passed, 2 ignored)
 
 Smoke inspection also confirmed the evaluator saw the patched file contents, the original checkout remained unmodified, the recorded candidate patch hash matched `git hash-object`, both the fitness evidence and local evaluation `source_diff_hash` matched `git diff -- crates | git hash-object --stdin`, the recorded evaluator checkout was distinct from the original checkout, and the patched temp checkout child was removed after evaluation. Focused regression tests cover rejected temp roots inside the original checkout, symlink/new-file mutation detection, and symlink escape mutation detection. The flag is opt-in so benchmark harnesses that expect an unmodified checkout plus patch path can continue using the default behavior.
+
+## Candidate-patch applicability preflight follow-up
+
+The evaluator wrapper now runs `git apply --check --whitespace=nowarn -- <candidate-patch>` against the supplied checkout before evaluator preparation. This preflight is intentionally separate from `--apply-candidate-patch`: the check proves the candidate diff is applicable to the benchmark checkout without mutating it, while the opt-in apply path still applies the diff in an isolated copy before running the evaluator. Passing local evaluation JSON and exported `a2d.fitness-evidence.v1` now record:
+
+- `candidate_patch_preflight_checked: true`
+- `candidate_patch_preflight_status: passed`
+- `candidate_patch_preflight_command: git apply --check --whitespace=nowarn -- ...`
+
+Smoke command:
+
+```bash
+A2D_SENIOR_SWE_BENCH_PATCHED_CHECKOUT_DIR=runs/20260703-senior-swe-bench-patch-preflight-evidence/patched-temp \
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260703-senior-swe-bench-patch-preflight-evidence/local-evaluator/fitness \
+  cargo run -q -p a2d -- senior-swe-bench-evaluate \
+  --task-cycle-input runs/20260703-senior-swe-bench-patch-preflight-evidence/task-cycle-input/firezone-fix-connlib-align-device-hard-cycle-input.json \
+  --candidate-patch runs/20260703-senior-swe-bench-patch-preflight-evidence/local-evaluator/candidate.diff \
+  --checkout runs/20260703-senior-swe-bench-patch-preflight-evidence/checkout \
+  --apply-candidate-patch \
+  --output runs/20260703-senior-swe-bench-patch-preflight-evidence/local-evaluator/firezone-fix-connlib-align-device-hard-patch-preflight-local-evaluation.json \
+  -- "$PWD/runs/20260703-senior-swe-bench-patch-preflight-evidence/local-evaluator/mock-official-evaluator.sh"
+```
+
+Artifacts:
+
+- `runs/20260703-senior-swe-bench-patch-preflight-evidence/local-evaluator/firezone-fix-connlib-align-device-hard-patch-preflight-local-evaluation.json`
+- `runs/20260703-senior-swe-bench-patch-preflight-evidence/local-evaluator/fitness/senior-swe-bench-firezone-fix-connlib-align-device-hard-cycle-0-fitness-evidence.json`
+- source-patch gate support: `runs/20260703-senior-swe-bench-patch-preflight-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`
+
+Evidence inspection:
+
+- `schema_version: a2d.fitness-evidence.v1`
+- `actual_tests_evaluated: true`
+- `non_regressing: true`
+- `fitness: 1.0`
+- `failed_cases: []`
+- local-wrapper result labels: `all_tests_pass`, `has_no_solution_search` (policy-declared), `hidden_acceptance`
+- source-patch gate support result labels include `all_tests_pass`
+- `source_diff_hash: 7f38f1a1abacf394ea92a0a90bd4c80022400a4d` in both fresh evidence artifacts, matching `git diff -- crates | git hash-object --stdin`
+- `candidate_patch_hash: 91d0dab9c9091c6f3a7634f547601ff36285b218`
+- `candidate_patch_applied: true`, `evaluator_checkout_mode: isolated_copy`, `original_checkout_mutated: false`
+- `candidate_patch_preflight_checked: true`, `candidate_patch_preflight_status: passed`, and a `candidate_patch_preflight_command` containing `git apply --check`
+- full validation: `cargo test` (289 passed, 2 ignored)
+
+This strengthens local-wrapper evidence binding and prevents evaluator/evidence claims for malformed or non-applicable candidate patch bytes. It still does not prove official Senior SWE-Bench mastery unless the provided evaluator command is the benchmark-provided official evaluator/holdouts.
