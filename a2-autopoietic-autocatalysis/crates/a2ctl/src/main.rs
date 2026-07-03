@@ -94,6 +94,11 @@ enum Commands {
         /// Auto-apply promoted patches via git apply.
         #[arg(long)]
         apply: bool,
+        /// Execution-level network policy for every autopilot task. Use
+        /// `isolated`/`allowlist:...` only when the selected execution path can
+        /// fail closed or run under an audited sandbox.
+        #[arg(long, value_parser = parse_network_policy_arg)]
+        network_policy: Option<a2_core::protocol::NetworkPolicy>,
         /// Explicit task to run instead of discovering project work. May be repeated.
         #[arg(long)]
         task: Vec<String>,
@@ -133,6 +138,9 @@ enum Commands {
         /// Auto-apply promoted patches via git apply.
         #[arg(long)]
         apply: bool,
+        /// Execution-level network policy forwarded to each autopilot run.
+        #[arg(long, value_parser = parse_network_policy_arg)]
+        network_policy: Option<a2_core::protocol::NetworkPolicy>,
         /// Explicit task forwarded to each autopilot run. May be repeated.
         #[arg(long)]
         task: Vec<String>,
@@ -249,6 +257,7 @@ struct AutopilotRunSummary {
     workspace: String,
     provider: String,
     max_iterations: usize,
+    network_policy: Option<a2_core::protocol::NetworkPolicy>,
     started_at: String,
     completed_at: String,
     total_iterations: usize,
@@ -303,6 +312,7 @@ struct ResidentAutopilotConfig {
     interval_secs: u64,
     max_runs: usize,
     apply: bool,
+    network_policy: Option<a2_core::protocol::NetworkPolicy>,
     task: Vec<String>,
     task_file: Vec<String>,
     dry_run: bool,
@@ -505,6 +515,16 @@ struct RunVerificationSpec {
     command: String,
     #[serde(default)]
     expect_exit: i32,
+}
+
+fn network_policy_arg_value(policy: &a2_core::protocol::NetworkPolicy) -> String {
+    match policy {
+        a2_core::protocol::NetworkPolicy::Open => "open".into(),
+        a2_core::protocol::NetworkPolicy::Isolated => "isolated".into(),
+        a2_core::protocol::NetworkPolicy::AllowList(endpoints) => {
+            format!("allowlist:{}", endpoints.join(","))
+        }
+    }
 }
 
 fn parse_network_policy_arg(value: &str) -> Result<a2_core::protocol::NetworkPolicy, String> {
@@ -807,6 +827,7 @@ async fn main() {
             max_tokens,
             timeout,
             apply,
+            network_policy,
             task,
             task_file,
             dry_run,
@@ -850,6 +871,7 @@ async fn main() {
                     "max_tokens": max_tokens,
                     "timeout": timeout,
                     "apply": apply,
+                    "network_policy": network_policy,
                     "dry_run": dry_run,
                 }),
             );
@@ -948,6 +970,9 @@ async fn main() {
                 });
                 task.id = a2_core::id::TaskId::from_external_key(&candidate.id);
                 task.title = candidate.title.clone();
+                if let Some(policy) = network_policy.clone() {
+                    task.network_policy = Some(policy);
+                }
 
                 let provider = providers[iteration % providers.len()].as_ref();
                 log_autopilot_event(
@@ -958,6 +983,7 @@ async fn main() {
                         "task_id": task.id.to_string(),
                         "candidate": autopilot_candidate_json(candidate),
                         "model": requested_model(provider),
+                        "network_policy": task.network_policy,
                     }),
                 );
 
@@ -1161,6 +1187,7 @@ async fn main() {
                 workspace: workspace_root.display().to_string(),
                 provider: provider.clone(),
                 max_iterations,
+                network_policy: network_policy.clone(),
                 started_at,
                 completed_at,
                 total_iterations: iteration_summaries.len(),
@@ -1196,6 +1223,7 @@ async fn main() {
                     "patches_produced": run_summary.patches_produced,
                     "applied_count": run_summary.applied_count,
                     "verified_count": run_summary.verified_count,
+                    "network_policy": run_summary.network_policy,
                     "stop_reason": run_summary.stop_reason,
                 }),
             );
@@ -1211,6 +1239,7 @@ async fn main() {
             interval_secs,
             max_runs,
             apply,
+            network_policy,
             task,
             task_file,
             dry_run,
@@ -1225,6 +1254,7 @@ async fn main() {
                 interval_secs,
                 max_runs,
                 apply,
+                network_policy,
                 task,
                 task_file,
                 dry_run,
@@ -2099,6 +2129,10 @@ fn resident_autopilot_args(config: &ResidentAutopilotConfig) -> Vec<String> {
     if config.apply {
         args.push("--apply".to_string());
     }
+    if let Some(policy) = &config.network_policy {
+        args.push("--network-policy".to_string());
+        args.push(network_policy_arg_value(policy));
+    }
     if config.dry_run {
         args.push("--dry-run".to_string());
     }
@@ -2129,6 +2163,7 @@ fn run_autopilot_resident(config: &ResidentAutopilotConfig) -> io::Result<()> {
             "interval_secs": config.interval_secs,
             "max_runs": config.max_runs,
             "apply": config.apply,
+            "network_policy": config.network_policy,
             "dry_run": config.dry_run,
         }),
     );
@@ -3249,6 +3284,7 @@ fn test_fibonacci() {
             workspace: "/tmp/workspace".into(),
             provider: "claude".into(),
             max_iterations: 3,
+            network_policy: Some(a2_core::protocol::NetworkPolicy::Isolated),
             started_at: "2026-05-25T12:00:00Z".into(),
             completed_at: "2026-05-25T12:01:00Z".into(),
             total_iterations: 2,
@@ -3313,6 +3349,7 @@ fn test_fibonacci() {
         assert_eq!(parsed["run_id"], "run-20260525T120000Z");
         assert_eq!(parsed["total_iterations"], 2);
         assert_eq!(parsed["total_tokens"], 4500);
+        assert_eq!(parsed["network_policy"], "Isolated");
         assert_eq!(parsed["patches_produced"], 1);
         assert_eq!(
             parsed["stop_reason"],
@@ -3349,6 +3386,7 @@ fn test_fibonacci() {
             workspace: "/tmp/ws".into(),
             provider: "claude".into(),
             max_iterations: 1,
+            network_policy: None,
             started_at: "2026-05-25T12:00:00Z".into(),
             completed_at: "2026-05-25T12:00:30Z".into(),
             total_iterations: 1,
@@ -3401,6 +3439,9 @@ fn test_fibonacci() {
             interval_secs: 30,
             max_runs: 4,
             apply: false,
+            network_policy: Some(a2_core::protocol::NetworkPolicy::AllowList(vec![
+                "https://api.openai.com".into(),
+            ])),
             task: vec!["improve summaries".into()],
             task_file: vec!["task.md".into()],
             dry_run: true,
@@ -3430,6 +3471,10 @@ fn test_fibonacci() {
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["--task-file", "task.md"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--network-policy", "allowlist:https://api.openai.com"])
         );
         assert!(args.iter().any(|arg| arg == "--dry-run"));
         assert!(!args.iter().any(|arg| arg == "--apply"));
@@ -3462,6 +3507,7 @@ fn test_fibonacci() {
             workspace: "/tmp/ws".into(),
             provider: "pi/zai/glm-5.1".into(),
             max_iterations: 2,
+            network_policy: None,
             started_at: "2026-05-26T12:00:00Z".into(),
             completed_at: "2026-05-26T12:01:00Z".into(),
             total_iterations: 1,
