@@ -14,6 +14,10 @@ use a2d_core::provider::{InvocationRequest, Provider, ProviderPolicy, ProviderRe
 use a2d_core::self_sandbox;
 use a2d_core::types::{ArtifactType, EnzymeDef, EnzymeId};
 use a2d_providers::cli::CliProvider;
+use senior_swe_bench::{
+    build_senior_swe_bench_audit, extract_senior_swe_bench_tasks,
+    render_senior_swe_bench_task_context,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -25,6 +29,8 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+mod senior_swe_bench;
 
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -53,6 +59,12 @@ fn main() {
             let artifact_path = args.get(3).map(String::as_str).unwrap_or("-");
             run_score_artifact(challenge_name, artifact_path);
         }
+        "senior-swe-bench-audit" => {
+            let input_path = args.get(2).map(String::as_str).unwrap_or("-");
+            let mode = args.get(3).map(String::as_str);
+            let task_id = args.get(4).map(String::as_str);
+            run_senior_swe_bench_audit(input_path, mode, task_id);
+        }
         "compare-provider-policy" | "policy-gate" => {
             let challenge_name = if arg2.is_empty() { "sudoku" } else { arg2 };
             let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -75,7 +87,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|challenge|score-artifact|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|challenge|score-artifact|senior-swe-bench-audit|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -2925,6 +2937,51 @@ fn read_artifact_or_exit(path_or_dash: &str) -> String {
         eprintln!("Failed to read artifact {path_or_dash}: {error}");
         std::process::exit(1);
     })
+}
+
+fn run_senior_swe_bench_audit(input_path: &str, mode: Option<&str>, task_id: Option<&str>) {
+    let input = read_artifact_or_exit(input_path);
+    let tasks = extract_senior_swe_bench_tasks(&input).unwrap_or_else(|error| {
+        eprintln!("Senior SWE-Bench audit error: {error}");
+        std::process::exit(1);
+    });
+
+    if let Some(mode) = mode {
+        if mode != "task-context" {
+            eprintln!("unknown senior-swe-bench-audit mode: {mode}");
+            eprintln!("Usage: a2d senior-swe-bench-audit <html|-> [task-context <task-id>]");
+            std::process::exit(1);
+        }
+    }
+
+    if mode == Some("task-context") {
+        let requested = task_id.unwrap_or_else(|| {
+            eprintln!("Usage: a2d senior-swe-bench-audit <html|-> task-context <task-id>");
+            std::process::exit(1);
+        });
+        for task in &tasks {
+            if let Some(hard) = &task.hard {
+                if hard.task_id == requested {
+                    println!("{}", render_senior_swe_bench_task_context(task, hard));
+                    return;
+                }
+            }
+            if let Some(guided) = &task.guided {
+                if guided.task_id == requested {
+                    println!("{}", render_senior_swe_bench_task_context(task, guided));
+                    return;
+                }
+            }
+        }
+        eprintln!("Senior SWE-Bench task id not found: {requested}");
+        std::process::exit(1);
+    }
+
+    let audit = build_senior_swe_bench_audit(&tasks, input_path);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&audit).expect("senior swe-bench audit must serialize")
+    );
 }
 
 fn score_artifact_exit_code(report: &a2d_core::benchmark::FitnessReport) -> i32 {

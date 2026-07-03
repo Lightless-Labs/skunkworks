@@ -5,6 +5,7 @@
 **Enhanced:** 2026-06-29 — structured `a2d.fitness-evidence.v1` artifacts now gate durability; live export/inspection path added for challenge runs
 **Enhanced:** 2026-06-30 — comparison modes export labeled canonical fitness evidence; provenance tightened to reject provider-produced evidence
 **Enhanced:** 2026-07-01 — exported evidence now records and validates source revision/diff provenance for the `crates` source scope
+**Enhanced:** 2026-07-03 — Senior SWE-Bench catalog integration is CLI-only external benchmark audit plumbing, not `a2d-core` challenge physics
 **Depends on:** Stage 1 (complete)
 
 ## Problem
@@ -103,3 +104,11 @@ Fresh source-patch gating smoke: `runs/20260701-fitness-evidence-provenance/chal
 Routine benchmark-driven evolver `enzyme_defs` mutations are now scoped to existing-enzyme `prompt_template` changes once `fitness_report` exists. Adding enzymes or changing reactants/products/catalysts is rejected in that routine feedback path as structural architecture work, while non-routine structural add/replace paths remain available. The evolver prompt also extracts structured `failed_cases` and per-case pass/fail status from `a2d.fitness-evidence.v1`, so prompt updates can target public/aggregate failure labels without inferring hidden holdout specifics.
 
 Fresh source-patch evidence: `runs/20260702-directed-evolver-fitness-evidence/challenge-sudoku2/sudoku-solver-cycle-0-fitness-evidence.json` and `runs/20260702-directed-evolver-fitness-evidence/challenge-sudoku2/sudoku-solver-cycle-0-consumed-by-cycle-1-fitness-evidence.json`, both `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, fitness 83% (5/6), `all_tests_pass: false`, `source_revision: f155d39`, `source_diff_hash: 7cc9a1c73e7f78fe74953c0d1e986b60ede18ea3`. This is non-regressing source-patch evidence for the directed-evolver gate, not a benchmark-mastery or repeated-reliability claim.
+
+## 2026-07-03 Update: Senior SWE-Bench External Audit Adapter
+
+Senior SWE-Bench bootstrap is deliberately outside `a2d-core`: the public task-list parser, catalog audit, and no-GitHub-solution-search task-context renderer live in the private CLI module `crates/a2d-cli/src/senior_swe_bench.rs` behind `a2d senior-swe-bench-audit`. `a2d-core` has no `senior_swe_bench` exports or references, preserving the boundary between generic A²D evidence/gating primitives and external benchmark adapters.
+
+The audit command parses the public Next.js/RSC task listing from `https://senior-swe-bench.snorkel.ai/tasks`, emits `a2d.senior-swe-bench-audit.v1`, and can render a task prompt preamble that forbids coding agents from searching GitHub/issues/PRs/commits/forks for benchmark solutions. Live audit artifact: `runs/20260703-senior-swe-bench-audit-evidence/audit/senior-swe-bench-audit.json` (50 benchmark tasks, 12 repos, `github_solution_search_allowed: false`).
+
+Fresh source-patch evidence: `runs/20260703-senior-swe-bench-audit-evidence/challenge-smoke/sudoku-solver-cycle-0-fitness-evidence.json`, `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, fitness 67% (4/6), failed cases `all_tests_pass` and `has_tests`, `source_revision: 05aaf3f`, `source_diff_hash: f2e2282d52631f75747a3ae69ba7b46bf75b8720`. Saved-artifact support evidence `runs/20260703-senior-swe-bench-audit-evidence/baseline-good/baseline-sudoku-solver-cycle-0-fitness-evidence.json` is full-passing with the same source diff hash. This is non-regressing source-patch/catalog-adapter evidence, not evidence that A²D solves Senior SWE-Bench tasks yet.
