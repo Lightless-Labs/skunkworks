@@ -229,11 +229,17 @@ Each line includes:
 
 ## Run A² Against Generated Tasks
 
-`a2ctl run` now accepts JSONL task input and will use `problem_statement` when present. For external benchmarks such as Senior SWE Bench (`https://senior-swe-bench.snorkel.ai/tasks`) or generated BigCodeBench/SWE-bench-style tasks, include `"no_external_solution_search": true`; A² propagates that flag into the coding-agent prompt as a benchmark-integrity instruction forbidding GitHub/public issue/PR/patch/solution-writeup search for task-specific solutions.
+`a2ctl run` now accepts JSONL task input and will use `problem_statement` when present. For external benchmarks such as Senior SWE Bench (`https://senior-swe-bench.snorkel.ai/tasks`) or generated BigCodeBench/SWE-bench-style tasks, include `"no_external_solution_search": true` and `"network_policy": "Isolated"` (or pass `--network-policy isolated` for plain-text task streams). A² currently treats restricted network policies as a fail-closed launch gate: coding-agent runs are blocked unless/until an audited sandbox/provider allowlist can enforce the requested policy at the process boundary. Do not count Senior SWE Bench evidence from prompt-only/no-policy runs.
 
 ```bash
 python3 bench/bigcodebench_runner.py \
-  | cargo run -p a2ctl -- run --provider codex --apply
+  | cargo run -p a2ctl -- run --provider codex --network-policy isolated --apply
+```
+
+Local sandbox primitive smoke (not benchmark evidence, and not yet wired around provider launches):
+
+```bash
+python3 bench/network_policy_smoke.py --self-test
 ```
 
 The generated prompts target per-task workspaces under `bench/workspaces/`.
