@@ -15,7 +15,8 @@ use a2d_core::self_sandbox;
 use a2d_core::types::{ArtifactType, EnzymeDef, EnzymeId};
 use a2d_providers::cli::CliProvider;
 use senior_swe_bench::{
-    build_senior_swe_bench_audit, extract_senior_swe_bench_tasks,
+    SeniorSweBenchTask, SeniorSweBenchVariant, build_senior_swe_bench_audit,
+    build_senior_swe_bench_task_package, extract_senior_swe_bench_tasks,
     render_senior_swe_bench_task_context,
 };
 use serde::Deserialize;
@@ -60,6 +61,12 @@ fn main() {
             run_score_artifact(challenge_name, artifact_path);
         }
         "senior-swe-bench-audit" => {
+            if args.len() > 5 {
+                eprintln!(
+                    "Usage: a2d senior-swe-bench-audit <html|-> [task-context|task-package <task-id>]"
+                );
+                std::process::exit(1);
+            }
             let input_path = args.get(2).map(String::as_str).unwrap_or("-");
             let mode = args.get(3).map(String::as_str);
             let task_id = args.get(4).map(String::as_str);
@@ -2956,42 +2963,73 @@ fn read_artifact_or_exit(path_or_dash: &str) -> String {
     })
 }
 
+fn find_senior_swe_bench_task_variant<'a>(
+    tasks: &'a [SeniorSweBenchTask],
+    requested: &str,
+) -> Option<(
+    &'a SeniorSweBenchTask,
+    &'static str,
+    &'a SeniorSweBenchVariant,
+)> {
+    tasks.iter().find_map(|task| {
+        if let Some(hard) = &task.hard
+            && hard.task_id == requested
+        {
+            return Some((task, "hard", hard));
+        }
+        if let Some(guided) = &task.guided
+            && guided.task_id == requested
+        {
+            return Some((task, "guided", guided));
+        }
+        None
+    })
+}
+
 fn run_senior_swe_bench_audit(input_path: &str, mode: Option<&str>, task_id: Option<&str>) {
+    if let Some(mode) = mode {
+        if !matches!(mode, "task-context" | "task-package") {
+            eprintln!("unknown senior-swe-bench-audit mode: {mode}");
+            eprintln!(
+                "Usage: a2d senior-swe-bench-audit <html|-> [task-context|task-package <task-id>]"
+            );
+            std::process::exit(1);
+        }
+        if task_id.is_none() {
+            eprintln!("Usage: a2d senior-swe-bench-audit <html|-> {mode} <task-id>");
+            std::process::exit(1);
+        }
+    } else if task_id.is_some() {
+        eprintln!(
+            "Usage: a2d senior-swe-bench-audit <html|-> [task-context|task-package <task-id>]"
+        );
+        std::process::exit(1);
+    }
+
     let input = read_artifact_or_exit(input_path);
     let tasks = extract_senior_swe_bench_tasks(&input).unwrap_or_else(|error| {
         eprintln!("Senior SWE-Bench audit error: {error}");
         std::process::exit(1);
     });
 
-    if let Some(mode) = mode {
-        if mode != "task-context" {
-            eprintln!("unknown senior-swe-bench-audit mode: {mode}");
-            eprintln!("Usage: a2d senior-swe-bench-audit <html|-> [task-context <task-id>]");
-            std::process::exit(1);
+    if matches!(mode, Some("task-context" | "task-package")) {
+        let requested = task_id.expect("task id presence checked before reading input");
+        let (task, variant_name, variant) = find_senior_swe_bench_task_variant(&tasks, requested)
+            .unwrap_or_else(|| {
+                eprintln!("Senior SWE-Bench task id not found: {requested}");
+                std::process::exit(1);
+            });
+        if mode == Some("task-package") {
+            let package = build_senior_swe_bench_task_package(task, variant_name, variant);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&package)
+                    .expect("senior swe-bench task package must serialize")
+            );
+        } else {
+            println!("{}", render_senior_swe_bench_task_context(task, variant));
         }
-    }
-
-    if mode == Some("task-context") {
-        let requested = task_id.unwrap_or_else(|| {
-            eprintln!("Usage: a2d senior-swe-bench-audit <html|-> task-context <task-id>");
-            std::process::exit(1);
-        });
-        for task in &tasks {
-            if let Some(hard) = &task.hard {
-                if hard.task_id == requested {
-                    println!("{}", render_senior_swe_bench_task_context(task, hard));
-                    return;
-                }
-            }
-            if let Some(guided) = &task.guided {
-                if guided.task_id == requested {
-                    println!("{}", render_senior_swe_bench_task_context(task, guided));
-                    return;
-                }
-            }
-        }
-        eprintln!("Senior SWE-Bench task id not found: {requested}");
-        std::process::exit(1);
+        return;
     }
 
     let audit = build_senior_swe_bench_audit(&tasks, input_path);
@@ -4715,6 +4753,23 @@ mod tests {
         ArtifactType::from(name)
     }
 
+    fn rust_files_under(dir: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(path) = stack.pop() {
+            for entry in fs::read_dir(path).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+        files
+    }
+
     fn fitness(passed: usize, total: usize) -> a2d_core::benchmark::FitnessReport {
         a2d_core::benchmark::FitnessReport {
             total,
@@ -4735,6 +4790,61 @@ mod tests {
         assert_eq!(score_artifact_exit_code(&fitness(6, 6)), 0);
         assert_eq!(score_artifact_exit_code(&fitness(5, 6)), 2);
         assert_eq!(score_artifact_exit_code(&fitness(0, 0)), 2);
+    }
+
+    #[test]
+    fn senior_swe_bench_task_variant_lookup_finds_hard_and_guided_ids() {
+        let task = SeniorSweBenchTask {
+            family: "family".to_string(),
+            repo: "repo".to_string(),
+            repo_slug: "owner/repo".to_string(),
+            task_type: "bug".to_string(),
+            segment: "investigate".to_string(),
+            tags: Vec::new(),
+            in_benchmark: true,
+            in_sample: false,
+            version: "2026.06".to_string(),
+            description: "desc".to_string(),
+            taxonomy: Default::default(),
+            environment: Default::default(),
+            hard: Some(SeniorSweBenchVariant {
+                task_id: "task-hard".to_string(),
+                difficulty: "frontier".to_string(),
+            }),
+            guided: Some(SeniorSweBenchVariant {
+                task_id: "task-guided".to_string(),
+                difficulty: "solved".to_string(),
+            }),
+        };
+        let tasks = vec![task];
+
+        assert_eq!(
+            find_senior_swe_bench_task_variant(&tasks, "task-hard")
+                .map(|(_, variant_name, _)| variant_name),
+            Some("hard")
+        );
+        assert_eq!(
+            find_senior_swe_bench_task_variant(&tasks, "task-guided")
+                .map(|(_, variant_name, _)| variant_name),
+            Some("guided")
+        );
+        assert!(find_senior_swe_bench_task_variant(&tasks, "missing").is_none());
+    }
+
+    #[test]
+    fn a2d_core_does_not_contain_senior_swe_bench_adapter_code() {
+        let core_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../a2d-core/src");
+        let mut checked = 0usize;
+        for file in rust_files_under(&core_src) {
+            let content = fs::read_to_string(&file).unwrap();
+            assert!(
+                !content.contains("senior_swe_bench") && !content.contains("Senior SWE-Bench"),
+                "Senior SWE-Bench adapter text leaked into a2d-core file {}",
+                file.display()
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "core source scan should inspect Rust files");
     }
 
     #[test]

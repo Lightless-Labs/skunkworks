@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub const SENIOR_SWE_BENCH_AUDIT_SCHEMA: &str = "a2d.senior-swe-bench-audit.v1";
+pub const SENIOR_SWE_BENCH_TASK_PACKAGE_SCHEMA: &str = "a2d.senior-swe-bench-task-package.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SeniorSweBenchTask {
@@ -103,6 +104,36 @@ pub struct SeniorSweBenchAgentRestrictions {
     pub allowed_github_use: &'static str,
     pub forbidden_actions: Vec<&'static str>,
     pub required_agent_preamble: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SeniorSweBenchTaskPackage {
+    pub schema_version: &'static str,
+    pub task_id: String,
+    pub family: String,
+    pub repo: String,
+    pub segment: String,
+    pub task_type: String,
+    pub tags: Vec<String>,
+    pub in_benchmark: bool,
+    pub in_sample: bool,
+    pub version: String,
+    pub variant: String,
+    pub difficulty: String,
+    pub description: String,
+    pub taxonomy: SeniorSweBenchTaxonomy,
+    pub environment: SeniorSweBenchEnvironment,
+    pub agent_restrictions: SeniorSweBenchAgentRestrictions,
+    pub coding_agent_context: String,
+    pub evaluation: SeniorSweBenchEvaluationStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SeniorSweBenchEvaluationStatus {
+    pub status: &'static str,
+    pub evaluator: &'static str,
+    pub fitness: Option<String>,
+    pub note: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,6 +244,38 @@ pub fn build_senior_swe_bench_audit(
         difficulties,
         hidden_holdout_applicability: "catalog-audit-only: no candidate patch is evaluated here; use the official Senior SWE-Bench evaluator/holdouts for task fitness",
         agent_restrictions: senior_swe_bench_agent_restrictions(),
+    }
+}
+
+pub fn build_senior_swe_bench_task_package(
+    task: &SeniorSweBenchTask,
+    variant_name: &str,
+    variant: &SeniorSweBenchVariant,
+) -> SeniorSweBenchTaskPackage {
+    SeniorSweBenchTaskPackage {
+        schema_version: SENIOR_SWE_BENCH_TASK_PACKAGE_SCHEMA,
+        task_id: variant.task_id.clone(),
+        family: task.family.clone(),
+        repo: repository_id(task),
+        segment: task.segment.clone(),
+        task_type: task.task_type.clone(),
+        tags: task.tags.clone(),
+        in_benchmark: task.in_benchmark,
+        in_sample: task.in_sample,
+        version: task.version.clone(),
+        variant: variant_name.to_string(),
+        difficulty: variant.difficulty.clone(),
+        description: task.description.clone(),
+        taxonomy: task.taxonomy.clone(),
+        environment: task.environment.clone(),
+        agent_restrictions: senior_swe_bench_agent_restrictions(),
+        coding_agent_context: render_senior_swe_bench_task_context(task, variant),
+        evaluation: SeniorSweBenchEvaluationStatus {
+            status: "not_evaluated",
+            evaluator: "official_senior_swe_bench",
+            fitness: None,
+            note: "run the official Senior SWE-Bench evaluator/holdouts against a candidate patch before claiming task fitness",
+        },
     }
 }
 
@@ -361,6 +424,32 @@ mod tests {
         assert!(context.contains("Do not search GitHub"));
         assert!(context.contains("firezone-fix-connlib-align-device-hard"));
         assert!(context.contains("benchmark-provided checkout and local tests/harness only"));
+    }
+
+    #[test]
+    fn task_package_carries_context_policy_and_not_evaluated_status() {
+        let task = extract_senior_swe_bench_tasks(sample_next_payload())
+            .unwrap()
+            .remove(0);
+        let package =
+            build_senior_swe_bench_task_package(&task, "hard", task.hard.as_ref().unwrap());
+
+        assert_eq!(package.schema_version, SENIOR_SWE_BENCH_TASK_PACKAGE_SCHEMA);
+        assert_eq!(package.task_id, "firezone-fix-connlib-align-device-hard");
+        assert_eq!(package.repo, "firezone/firezone");
+        assert_eq!(package.variant, "hard");
+        assert!(package.in_benchmark);
+        assert!(!package.in_sample);
+        assert_eq!(package.tags, vec!["firezone", "rust"]);
+        assert!(!package.agent_restrictions.github_solution_search_allowed);
+        assert!(
+            package
+                .coding_agent_context
+                .contains("Do not search GitHub")
+        );
+        assert_eq!(package.evaluation.status, "not_evaluated");
+        assert_eq!(package.evaluation.evaluator, "official_senior_swe_bench");
+        assert_eq!(package.evaluation.fitness, None);
     }
 
     #[test]
