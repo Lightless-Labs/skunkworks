@@ -5,7 +5,7 @@
 **Enhanced:** 2026-06-29 — structured `a2d.fitness-evidence.v1` artifacts now gate durability; live export/inspection path added for challenge runs
 **Enhanced:** 2026-06-30 — comparison modes export labeled canonical fitness evidence; provenance tightened to reject provider-produced evidence
 **Enhanced:** 2026-07-01 — exported evidence now records and validates source revision/diff provenance for the `crates` source scope
-**Enhanced:** 2026-07-03 — Senior SWE-Bench catalog integration is CLI-only external benchmark audit plumbing, not `a2d-core` challenge physics
+**Enhanced:** 2026-07-03 — Senior SWE-Bench catalog integration is CLI-only external benchmark audit plumbing, not `a2d-core` challenge physics; coder prompt now carries generic benchmark no-solution-search integrity rule
 **Depends on:** Stage 1 (complete)
 
 ## Problem
@@ -112,3 +112,11 @@ Senior SWE-Bench bootstrap is deliberately outside `a2d-core`: the public task-l
 The audit command parses the public Next.js/RSC task listing from `https://senior-swe-bench.snorkel.ai/tasks`, emits `a2d.senior-swe-bench-audit.v1`, and can render a task prompt preamble that forbids coding agents from searching GitHub/issues/PRs/commits/forks for benchmark solutions. Live audit artifact: `runs/20260703-senior-swe-bench-audit-evidence/audit/senior-swe-bench-audit.json` (50 benchmark tasks, 12 repos, `github_solution_search_allowed: false`).
 
 Fresh source-patch evidence: `runs/20260703-senior-swe-bench-audit-evidence/challenge-smoke/sudoku-solver-cycle-0-fitness-evidence.json`, `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, fitness 67% (4/6), failed cases `all_tests_pass` and `has_tests`, `source_revision: 05aaf3f`, `source_diff_hash: f2e2282d52631f75747a3ae69ba7b46bf75b8720`. Saved-artifact support evidence `runs/20260703-senior-swe-bench-audit-evidence/baseline-good/baseline-sudoku-solver-cycle-0-fitness-evidence.json` is full-passing with the same source diff hash. This is non-regressing source-patch/catalog-adapter evidence, not evidence that A²D solves Senior SWE-Bench tasks yet.
+
+## 2026-07-03 Update: Coder Benchmark Integrity Prompt
+
+The seed coder prompt now includes a generic benchmark-integrity rule: if the requirements, design, or plan say not to search GitHub, issues, pull requests, commits, forks, public web pages, or solution writeups for benchmark answers, the coder must obey that restriction and solve from provided context plus local tests only. This supports Senior SWE-Bench task contexts without adding benchmark-specific code to `a2d-core`.
+
+Loaded coder prompt normalization now preserves evolved prompt text when it already contains `design` and `plan`; if such a prompt lacks the integrity rule, A²D appends the rule instead of replacing the whole prompt. Focused coverage includes `normalize_loaded_enzymes_preserves_evolved_coder_prompt_when_adding_integrity_rule`.
+
+Fresh source-patch evidence: `runs/20260703-coder-benchmark-integrity-evidence/challenge-smoke/sudoku-solver-cycle-0-fitness-evidence.json`, `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, fitness 67% (4/6), failed cases `all_tests_pass` and `has_tests`, `source_revision: 2f88a93`, `source_diff_hash: 9916603b8d352a3316b9e1964392693f33fa41ec`. Saved-artifact support evidence `runs/20260703-coder-benchmark-integrity-evidence/baseline-good/baseline-sudoku-solver-cycle-0-fitness-evidence.json` is full-passing with the same source diff hash. This is non-regressing source-patch/prompt-integrity evidence, not proof of Senior SWE-Bench task-solving.

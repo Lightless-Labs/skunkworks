@@ -246,22 +246,29 @@ fn baseline_food() -> BTreeSet<ArtifactType> {
 }
 
 fn coder_prompt_template() -> String {
-    "You are a Rust programmer. You receive three complementary artifacts:\n\
-     - design: concrete structure or reference implementation details\n\
-     - plan: the intended architecture or implementation steps\n\
-     - requirements: the user-visible contract to satisfy\n\n\
-     Synthesize all three into a SINGLE complete Rust source file.\n\
-     Prefer the most specific, most constrained instructions when the artifacts differ.\n\
-     The file MUST:\n\
-     1. Contain a main() function\n\
-     2. Include #[cfg(test)] mod tests with at least 3 test cases\n\
-     3. Use Result<T, E> for error handling where appropriate\n\
-     4. Include /// doc comments on public functions\n\
-     5. Compile with `rustc --edition 2024`\n\
-     6. Do NOT define a module named `a2d_acceptance` — that module will be appended by the system. If you define it, compilation will fail with a duplicate definition error.\n\
-     7. Place all your tests in a module named `tests` (i.e. `#[cfg(test)] mod tests { ... }`), NOT `a2d_acceptance`.\n\n\
-     Output ONLY the Rust source code inside ```rust fences. No explanation."
-        .to_string()
+    format!(
+        "You are a Rust programmer. You receive three complementary artifacts:\n\
+         - design: concrete structure or reference implementation details\n\
+         - plan: the intended architecture or implementation steps\n\
+         - requirements: the user-visible contract to satisfy\n\n\
+         Synthesize all three into a SINGLE complete Rust source file.\n\
+         Prefer the most specific, most constrained instructions when the artifacts differ.\n\
+         {}\n\
+         The file MUST:\n\
+         1. Contain a main() function\n\
+         2. Include #[cfg(test)] mod tests with at least 3 test cases\n\
+         3. Use Result<T, E> for error handling where appropriate\n\
+         4. Include /// doc comments on public functions\n\
+         5. Compile with `rustc --edition 2024`\n\
+         6. Do NOT define a module named `a2d_acceptance` — that module will be appended by the system. If you define it, compilation will fail with a duplicate definition error.\n\
+         7. Place all your tests in a module named `tests` (i.e. `#[cfg(test)] mod tests {{ ... }}`), NOT `a2d_acceptance`.\n\n\
+         Output ONLY the Rust source code inside ```rust fences. No explanation.",
+        coder_benchmark_integrity_rule()
+    )
+}
+
+fn coder_benchmark_integrity_rule() -> &'static str {
+    "Benchmark integrity rule: if the requirements, design, or plan say not to search GitHub, issues, pull requests, commits, forks, public web pages, or solution writeups for benchmark answers, obey that restriction strictly. Solve from the provided context and local tests only."
 }
 
 fn normalize_loaded_enzymes(mut enzymes: Vec<EnzymeDef>) -> Vec<EnzymeDef> {
@@ -279,12 +286,22 @@ fn normalize_loaded_enzymes(mut enzymes: Vec<EnzymeDef>) -> Vec<EnzymeDef> {
         coder.catalysts.insert(ArtifactType::from("enzyme_defs"));
         coder.catalysts.insert(ArtifactType::from("failure_report"));
 
-        let needs_prompt_upgrade = coder
+        let structurally_legacy_prompt = coder
             .prompt_template
             .as_deref()
             .is_none_or(|template| !(template.contains("design") && template.contains("plan")));
-        if needs_prompt_upgrade {
+        if structurally_legacy_prompt {
             coder.prompt_template = Some(coder_prompt_template());
+        } else if coder
+            .prompt_template
+            .as_deref()
+            .is_some_and(|template| !template.contains("Benchmark integrity rule"))
+        {
+            let existing = coder.prompt_template.take().unwrap_or_default();
+            coder.prompt_template = Some(format!(
+                "{existing}\n\n{}",
+                coder_benchmark_integrity_rule()
+            ));
         }
     }
 
@@ -5807,6 +5824,20 @@ mod tests {
         assert!(germline.food().contains(&art("provider_policy")));
         assert!(architect.catalysts.contains(&art("provider_health_report")));
         assert!(architect.catalysts.contains(&art("provider_policy")));
+        assert!(
+            coder
+                .prompt_template
+                .as_deref()
+                .unwrap()
+                .contains("Benchmark integrity rule")
+        );
+        assert!(
+            coder
+                .prompt_template
+                .as_deref()
+                .unwrap()
+                .contains("not to search GitHub")
+        );
     }
 
     #[test]
@@ -5831,6 +5862,37 @@ mod tests {
         );
         assert!(coder.catalysts.contains(&art("enzyme_defs")));
         assert!(coder.prompt_template.as_deref().unwrap().contains("design"));
+        assert!(
+            coder
+                .prompt_template
+                .as_deref()
+                .unwrap()
+                .contains("Benchmark integrity rule")
+        );
+    }
+
+    #[test]
+    fn normalize_loaded_enzymes_preserves_evolved_coder_prompt_when_adding_integrity_rule() {
+        let evolved = EnzymeDef {
+            id: EnzymeId::from("coder"),
+            reactants: BTreeSet::from([art("design"), art("plan"), art("requirements")]),
+            products: BTreeSet::from([art("code")]),
+            catalysts: BTreeSet::from([art("enzyme_defs")]),
+            prompt_template: Some(
+                "Use design, plan, and requirements. Preserve this evolved hint.".to_string(),
+            ),
+        };
+
+        let normalized = normalize_loaded_enzymes(vec![evolved]);
+        let coder = normalized
+            .into_iter()
+            .find(|enzyme| enzyme.id == EnzymeId::from("coder"))
+            .unwrap();
+        let prompt = coder.prompt_template.as_deref().unwrap();
+
+        assert!(prompt.contains("Preserve this evolved hint"));
+        assert!(prompt.contains("Benchmark integrity rule"));
+        assert!(prompt.contains("not to search GitHub"));
     }
 
     #[test]
