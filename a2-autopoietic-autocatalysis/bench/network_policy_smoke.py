@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Smoke-test the host primitive A² can use for benchmark egress denial.
+"""Smoke-test A² network-policy primitives and fail-closed launch behavior.
 
-This is intentionally not benchmark evidence. It proves a spawned child process can
-be run under an OS-level no-network sandbox on hosts that provide macOS
-``sandbox-exec``. A real Senior SWE Bench run still needs this kind of primitive
-wired into the coding-agent/provider launch path with any required provider
-allowlist.
+These checks are intentionally not benchmark evidence. The default smoke proves a
+spawned child process can be run under an OS-level no-network sandbox on hosts
+that provide macOS ``sandbox-exec``. ``--a2ctl-run-smoke`` separately exercises
+the real ``a2ctl run --network-policy isolated`` path and expects the current
+fail-closed launch gate to refuse provider launch with a nonzero exit. A real
+Senior SWE Bench run still needs a sandbox/provider allowlist wired into the
+coding-agent/provider launch path.
 """
 
 from __future__ import annotations
@@ -25,6 +27,8 @@ DENY_NETWORK_PROFILE = """(version 1)
 (allow default)
 (deny network*)
 """
+
+A2CTL_RUN_SMOKE_TASK = "A2 network fail closed smoke task\n"
 
 
 def sandbox_exec() -> str:
@@ -128,23 +132,100 @@ def run_smoke() -> dict[str, Any]:
         }
 
 
+def repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def run_a2ctl_launch_gate_smoke(provider: str) -> dict[str, Any]:
+    binary_name = provider.split("/", 1)[0]
+    provider_binary = shutil.which(binary_name)
+    command = [
+        "cargo",
+        "run",
+        "-q",
+        "-p",
+        "a2ctl",
+        "--",
+        "run",
+        "--provider",
+        provider,
+        "--network-policy",
+        "isolated",
+        "--max-tokens",
+        "10",
+        "--timeout",
+        "5",
+    ]
+    if provider_binary is None:
+        return {
+            "complete": False,
+            "description": "a2ctl run restricted-policy launch-gate smoke",
+            "command": command,
+            "provider_binary": None,
+            "returncode": None,
+            "stdout": "",
+            "stderr": f"provider binary `{binary_name}` not found on PATH",
+            "passed": False,
+        }
+
+    process = subprocess.run(
+        command,
+        cwd=repo_root(),
+        input=A2CTL_RUN_SMOKE_TASK,
+        text=True,
+        capture_output=True,
+        timeout=180,
+    )
+    expected_catalyst_message = f"network_policy=Isolated prevents launching provider `{binary_name}`"
+    expected_cli_message = "restricted network policy blocked provider launch"
+    combined_output = process.stdout + "\n" + process.stderr
+    passed = (
+        process.returncode != 0
+        and expected_catalyst_message in combined_output
+        and expected_cli_message in process.stderr
+        and "no candidate patch produced" in process.stderr
+    )
+    return {
+        "complete": passed,
+        "description": "a2ctl run restricted-policy launch-gate smoke",
+        "command": command,
+        "provider_binary": provider_binary,
+        "returncode": process.returncode,
+        "stdout": process.stdout,
+        "stderr": process.stderr,
+        "expected_catalyst_message": expected_catalyst_message,
+        "expected_cli_stderr_substring": expected_cli_message,
+        "passed": passed,
+    }
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--self-test", action="store_true", help="run the smoke and print PASS/FAIL")
+    parser.add_argument("--self-test", action="store_true", help="run the selected smoke and print PASS/FAIL")
+    parser.add_argument("--a2ctl-run-smoke", action="store_true", help="exercise a2ctl run --network-policy isolated and require fail-closed nonzero exit")
+    parser.add_argument("--provider", default="opencode", help="provider/model for --a2ctl-run-smoke (default: opencode)")
     parser.add_argument("--json", action="store_true", help="print the full smoke result as JSON")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    result = run_smoke()
+    if args.a2ctl_run_smoke:
+        result = run_a2ctl_launch_gate_smoke(args.provider)
+        pass_message = "PASS a2ctl run launch-gate smoke: restricted policy blocked provider launch with nonzero exit"
+        fail_message = "FAIL a2ctl run launch-gate smoke"
+    else:
+        result = run_smoke()
+        pass_message = "PASS network policy smoke: sandboxed child process had network egress denied"
+        fail_message = "FAIL network policy smoke"
+
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     elif args.self_test:
         if result["complete"]:
-            print("PASS network policy smoke: sandboxed child process had network egress denied")
+            print(pass_message)
         else:
-            print("FAIL network policy smoke")
+            print(fail_message)
             print(json.dumps(result, indent=2, sort_keys=True))
     else:
         print(json.dumps(result, indent=2, sort_keys=True))

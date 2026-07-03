@@ -236,10 +236,16 @@ python3 bench/bigcodebench_runner.py \
   | cargo run -p a2ctl -- run --provider codex --network-policy isolated --apply
 ```
 
-Local sandbox primitive smoke (not benchmark evidence, and not yet wired around provider launches):
+Local network-policy smokes (not benchmark evidence):
 
 ```bash
+# Host primitive only: proves sandbox-exec can deny TCP egress for a spawned child.
 python3 bench/network_policy_smoke.py --self-test
+
+# Real a2ctl launch-gate path: proves restricted policy currently blocks provider launch
+# with a nonzero exit instead of counting a no-candidate discard as success.
+# Requires the selected provider binary on PATH; default provider is opencode.
+python3 bench/network_policy_smoke.py --a2ctl-run-smoke --self-test
 ```
 
 The generated prompts target per-task workspaces under `bench/workspaces/`.
