@@ -447,6 +447,8 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
             if args.allow_dirty_source
             else True,
             "dirty_source_allowed": args.allow_dirty_source,
+            "benchmark_task_network_policy": "Isolated",
+            "restricted_network_policy_current_behavior": "fail_closed_provider_launch_until_audited_sandbox_provider_allowlist",
         },
         "commands": {
             "harness": display_command(fresh_command(args)),
@@ -461,6 +463,7 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
             "No results JSONL, demo-evidence JSON, or fresh provenance contract result was created by this preflight; the named results/evidence paths are future outputs only.",
             "Live provider auth, quota, and model availability are not verified until the fresh run executes.",
             "Clean-source readiness and source revision metadata are checked before fresh results/evidence files are created; newly generated rows record that pre-run source state, and the new artifacts must then be archived deliberately.",
+            "Benchmark task payloads request network_policy=Isolated; current provider-backed runs under restricted policy are expected to fail closed until an audited sandbox/provider allowlist exists.",
             "This report is readiness evidence only; it is not loop evidence and contains no failed-attempt/retry/promotion proof.",
         ],
     }
@@ -737,7 +740,7 @@ def fresh_validation_summary(args: argparse.Namespace) -> str:
         f"all rows match run_id {args.run_id!r} or numeric suffixed variants; "
         "all rows share one source revision/branch/dirty-state and source_head_short prefixes source_head; "
         "no host-specific path markers are present; "
-        "no_external_solution_search=true is recorded for every row; "
+        "no_external_solution_search=true and network_policy=Isolated are recorded for every row; "
         f"required provenance fields are present; {dirty_requirement}; "
         f"max_tokens={args.max_tokens}; timeout_secs={args.timeout}"
     )
@@ -752,8 +755,9 @@ def fresh_preflight_summary(args: argparse.Namespace) -> str:
     return (
         "# preflight checked local prerequisites: empty results/evidence paths; "
         f"provider binary {provider_binary_name(args.provider)!r} present; "
-        f"local provider config present when supported; {source_check}. "
-        "Live provider auth, quota, and model availability are not verified until the fresh run executes."
+        f"local provider config present when supported; {source_check}; "
+        "benchmark task payloads request network_policy=Isolated. "
+        "Live provider auth, quota, model availability, and audited sandbox/provider-allowlist execution are not verified until the fresh run executes."
     )
 
 
@@ -2990,6 +2994,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("all rows match run_id 'fresh-demo'", output)
         self.assertIn("no host-specific path markers are present", output)
         self.assertIn("source_dirty=false", output)
+        self.assertIn("no_external_solution_search=true and network_policy=Isolated are recorded for every row", output)
         self.assertIn(str(results.with_suffix(".demo-evidence.json")), output)
         self.assertIn("verify-evidence-contract", output)
         self.assertIn("--fresh-run-id", output)
@@ -3059,9 +3064,14 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("# preflight checked local prerequisites", output)
         self.assertIn("dirty source allowed", output)
-        self.assertIn("Live provider auth, quota, and model availability are not verified", output)
+        self.assertIn("benchmark task payloads request network_policy=Isolated", output)
+        self.assertIn(
+            "Live provider auth, quota, model availability, and audited sandbox/provider-allowlist execution are not verified",
+            output,
+        )
         self.assertIn("bench/self_correction.py", output)
         self.assertIn("# would validate fresh results before scoring", output)
+        self.assertIn("no_external_solution_search=true and network_policy=Isolated are recorded for every row", output)
         self.assertIn(str(results.with_suffix(".demo-evidence.json")), output)
         self.assertIn("verify-evidence-contract", output)
         self.assertIn("--reference-evidence-json", output)
@@ -3125,7 +3135,15 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIsNone(data["checks"]["local_provider_config_present_when_supported"])
         self.assertTrue(data["checks"]["dirty_source_allowed"])
         self.assertIsNone(data["checks"]["source_clean_checked_before_output_creation"])
-        self.assertIn("before fresh results/evidence files are created", " ".join(data["notes"]))
+        self.assertEqual(data["checks"]["benchmark_task_network_policy"], "Isolated")
+        self.assertEqual(
+            data["checks"]["restricted_network_policy_current_behavior"],
+            "fail_closed_provider_launch_until_audited_sandbox_provider_allowlist",
+        )
+        notes = " ".join(data["notes"])
+        self.assertIn("before fresh results/evidence files are created", notes)
+        self.assertIn("network_policy=Isolated", notes)
+        self.assertIn("fail closed until an audited sandbox/provider allowlist exists", notes)
         self.assertIn("bench/self_correction.py", data["commands"]["harness"])
         self.assertIn("--demo-evidence-json", data["commands"]["scorer"])
         self.assertIn("verify-evidence-contract", data["commands"]["fresh_provenance_contract"])
