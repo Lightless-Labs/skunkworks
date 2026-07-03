@@ -156,6 +156,15 @@ pub struct SeniorSweBenchLocalEvaluation {
     pub candidate_patch: String,
     pub candidate_patch_hash: String,
     pub checkout: String,
+    pub evaluator_checkout: String,
+    pub candidate_patch_applied: bool,
+    pub evaluator_checkout_mode: String,
+    pub original_checkout_mutated: bool,
+    pub source_revision: String,
+    pub source_tree_dirty: bool,
+    pub source_diff_scope: String,
+    pub source_diff_hash: String,
+    pub evidence_command: String,
     pub evaluator_command: Vec<String>,
     pub github_solution_search_allowed: bool,
     pub stdout_preview: String,
@@ -288,6 +297,15 @@ pub fn build_senior_swe_bench_local_evaluation(
     candidate_patch: impl Into<String>,
     candidate_patch_hash: impl Into<String>,
     checkout: impl Into<String>,
+    evaluator_checkout: impl Into<String>,
+    candidate_patch_applied: bool,
+    evaluator_checkout_mode: impl Into<String>,
+    original_checkout_mutated: bool,
+    source_revision: impl Into<String>,
+    source_tree_dirty: bool,
+    source_diff_scope: impl Into<String>,
+    source_diff_hash: impl Into<String>,
+    evidence_command: impl Into<String>,
     evaluator_command: Vec<String>,
     stdout: &str,
     stderr: &str,
@@ -303,6 +321,15 @@ pub fn build_senior_swe_bench_local_evaluation(
         candidate_patch: candidate_patch.into(),
         candidate_patch_hash: candidate_patch_hash.into(),
         checkout: checkout.into(),
+        evaluator_checkout: evaluator_checkout.into(),
+        candidate_patch_applied,
+        evaluator_checkout_mode: evaluator_checkout_mode.into(),
+        original_checkout_mutated,
+        source_revision: source_revision.into(),
+        source_tree_dirty,
+        source_diff_scope: source_diff_scope.into(),
+        source_diff_hash: source_diff_hash.into(),
+        evidence_command: evidence_command.into(),
         evaluator_command,
         github_solution_search_allowed: package.github_solution_search_allowed,
         stdout_preview: preview_text(stdout),
@@ -779,6 +806,15 @@ mod tests {
             "candidate.diff",
             "patchhash",
             "checkout",
+            "patched-checkout",
+            true,
+            "isolated_copy",
+            false,
+            "revision",
+            true,
+            "crates",
+            "0123456789abcdef0123456789abcdef01234567",
+            "senior-swe-bench-evaluate --task-package task.json",
             vec!["./test.sh".to_string()],
             &"x".repeat(2500),
             "",
@@ -790,6 +826,22 @@ mod tests {
         );
         assert_eq!(evaluation.status, "passed");
         assert_eq!(evaluation.candidate_patch_hash, "patchhash");
+        assert_eq!(evaluation.evaluator_checkout, "patched-checkout");
+        assert!(evaluation.candidate_patch_applied);
+        assert_eq!(evaluation.evaluator_checkout_mode, "isolated_copy");
+        assert!(!evaluation.original_checkout_mutated);
+        assert_eq!(evaluation.source_revision, "revision");
+        assert!(evaluation.source_tree_dirty);
+        assert_eq!(evaluation.source_diff_scope, "crates");
+        assert_eq!(
+            evaluation.source_diff_hash,
+            "0123456789abcdef0123456789abcdef01234567"
+        );
+        assert!(
+            evaluation
+                .evidence_command
+                .contains("senior-swe-bench-evaluate")
+        );
         assert!(evaluation.stdout_preview.ends_with("...[truncated]"));
         assert!(evaluation.note.contains("local evaluator wrapper only"));
         assert!(!evaluation.github_solution_search_allowed);

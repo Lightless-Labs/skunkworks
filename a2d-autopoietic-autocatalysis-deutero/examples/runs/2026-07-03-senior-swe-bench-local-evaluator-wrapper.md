@@ -206,3 +206,43 @@ Negative smokes:
 ## Status
 
 This is still a local evaluator wrapper smoke, not proof of official Senior SWE-Bench task mastery. The remaining gap is to point this wrapper at a real benchmark-provided official evaluator/hidden-holdout command and then wire a challenge/cycle path that uses it without exposing hidden tests or public solution search.
+
+## Isolated candidate-patch application follow-up
+
+The evaluator wrapper now supports explicit opt-in patch application:
+
+```bash
+A2D_SENIOR_SWE_BENCH_PATCHED_CHECKOUT_DIR=runs/20260703-senior-swe-bench-apply-patch-evidence/patched-temp \
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260703-senior-swe-bench-apply-patch-evidence/local-evaluator/fitness \
+  cargo run -q -p a2d -- senior-swe-bench-evaluate \
+  --task-cycle-input runs/20260703-senior-swe-bench-apply-patch-evidence/task-cycle-input/firezone-fix-connlib-align-device-hard-cycle-input.json \
+  --candidate-patch runs/20260703-senior-swe-bench-apply-patch-evidence/local-evaluator/candidate.diff \
+  --checkout runs/20260703-senior-swe-bench-apply-patch-evidence/checkout \
+  --apply-candidate-patch \
+  --output runs/20260703-senior-swe-bench-apply-patch-evidence/local-evaluator/firezone-fix-connlib-align-device-hard-apply-patch-local-evaluation.json \
+  -- "$PWD/runs/20260703-senior-swe-bench-apply-patch-evidence/local-evaluator/mock-official-evaluator.sh"
+```
+
+Artifacts:
+
+- `runs/20260703-senior-swe-bench-apply-patch-evidence/local-evaluator/firezone-fix-connlib-align-device-hard-apply-patch-local-evaluation.json`
+- `runs/20260703-senior-swe-bench-apply-patch-evidence/local-evaluator/fitness/senior-swe-bench-firezone-fix-connlib-align-device-hard-cycle-0-fitness-evidence.json`
+
+Evidence inspection:
+
+- `schema_version: a2d.fitness-evidence.v1`
+- `actual_tests_evaluated: true`
+- `non_regressing: true`
+- `fitness: 1.0`
+- `failed_cases: []`
+- result labels: `all_tests_pass`, `has_no_solution_search` (policy-declared), `hidden_acceptance`
+- `source_diff_hash: 77239a6992caaf3f39525d36242febec8c6dab73`
+- `candidate_patch_hash: 91d0dab9c9091c6f3a7634f547601ff36285b218`
+- `candidate_patch_applied: true`
+- `evaluator_checkout_mode: isolated_copy`
+- `evaluator_checkout` points at `runs/20260703-senior-swe-bench-apply-patch-evidence/patched-temp/...` and is distinct from `checkout`
+- `original_checkout_mutated: false`
+- `evaluator_kind: provided_local_command`
+- full validation: `cargo test` (284 passed, 2 ignored)
+
+Smoke inspection also confirmed the evaluator saw the patched file contents, the original checkout remained unmodified, the recorded candidate patch hash matched `git hash-object`, both the fitness evidence and local evaluation `source_diff_hash` matched `git diff -- crates | git hash-object --stdin`, the recorded evaluator checkout was distinct from the original checkout, and the patched temp checkout child was removed after evaluation. Focused regression tests cover rejected temp roots inside the original checkout, symlink/new-file mutation detection, and symlink escape mutation detection. The flag is opt-in so benchmark harnesses that expect an unmodified checkout plus patch path can continue using the default behavior.

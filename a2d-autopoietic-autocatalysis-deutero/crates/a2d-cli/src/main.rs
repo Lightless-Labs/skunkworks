@@ -3000,7 +3000,7 @@ fn find_senior_swe_bench_task_variant<'a>(
 fn run_senior_swe_bench_evaluate(args: &[String]) {
     let config = parse_senior_swe_bench_evaluate_args(args).unwrap_or_else(|error| {
         eprintln!("{error}");
-        eprintln!("Usage: a2d senior-swe-bench-evaluate (--task-package <json>|--task-cycle-input <json>) --candidate-patch <diff> --checkout <dir> [--output <json>] -- <local-evaluator> [args...]");
+        eprintln!("Usage: a2d senior-swe-bench-evaluate (--task-package <json>|--task-cycle-input <json>) --candidate-patch <diff> --checkout <dir> [--apply-candidate-patch] [--output <json>] -- <local-evaluator> [args...]");
         std::process::exit(1);
     });
     let package = load_senior_swe_bench_evaluation_task(&config).unwrap_or_else(|error| {
@@ -3025,8 +3025,31 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
         eprintln!("Senior SWE-Bench candidate patch hash error: {error}");
         std::process::exit(1);
     });
+    let original_checkout_before =
+        checkout_content_fingerprint(&config.checkout).unwrap_or_else(|error| {
+            eprintln!("Senior SWE-Bench original checkout fingerprint error: {error}");
+            std::process::exit(1);
+        });
 
-    let outcome = run_local_senior_swe_bench_evaluator(&package, &config);
+    let prepared_checkout =
+        prepare_senior_swe_bench_evaluator_checkout(&config).unwrap_or_else(|error| {
+            eprintln!("Senior SWE-Bench evaluator checkout error: {error}");
+            std::process::exit(1);
+        });
+
+    let mut outcome = run_local_senior_swe_bench_evaluator(&package, &config, &prepared_checkout);
+    let original_checkout_mutated = original_checkout_mutated_after_evaluator(
+        &config.checkout,
+        &original_checkout_before,
+        &mut outcome,
+    );
+    if config.apply_candidate_patch && original_checkout_mutated {
+        outcome.status_success = false;
+        outcome.stderr = format!(
+            "{}\nSenior SWE-Bench local evaluator mutated the original checkout while --apply-candidate-patch requires isolated evaluation",
+            outcome.stderr
+        );
+    }
     let fitness = senior_swe_bench_local_fitness_report(&outcome);
     let evidence_path = if outcome.status_success {
         fitness_evidence_export_dir()
@@ -3037,22 +3060,38 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
                     &format!("senior-swe-bench-{}", safe_file_stem(&package.task_id)),
                     Some(&candidate_patch_hash),
                     Some("provided_local_command"),
+                    Some(prepared_checkout.candidate_patch_applied),
+                    Some(prepared_checkout.evaluator_checkout_mode),
+                    Some(original_checkout_mutated),
+                    Some(&config.candidate_patch),
+                    Some(&prepared_checkout.evaluator_checkout),
                 )
                 .unwrap_or_else(|error| {
                     eprintln!("Senior SWE-Bench fitness evidence export error: {error}");
                     std::process::exit(1);
                 });
-                validate_fitness_evidence_candidate_patch_binding(&path, &config.candidate_patch)
-                    .unwrap_or_else(|error| {
-                        eprintln!("Senior SWE-Bench fitness evidence binding error: {error}");
-                        std::process::exit(1);
-                    });
+                validate_fitness_evidence_candidate_patch_binding(
+                    &path,
+                    &config.candidate_patch,
+                    Some(prepared_checkout.candidate_patch_applied),
+                    Some(prepared_checkout.evaluator_checkout_mode),
+                    Some(original_checkout_mutated),
+                    Some(&prepared_checkout.evaluator_checkout),
+                )
+                .unwrap_or_else(|error| {
+                    eprintln!("Senior SWE-Bench fitness evidence binding error: {error}");
+                    std::process::exit(1);
+                });
                 path
             })
             .map(|path| path.to_string_lossy().to_string())
     } else {
         None
     };
+    let source_provenance = collect_source_provenance().unwrap_or_else(|error| {
+        eprintln!("Senior SWE-Bench local evaluation source provenance error: {error}");
+        std::process::exit(1);
+    });
     let evaluation = build_senior_swe_bench_local_evaluation(
         &package,
         if outcome.status_success {
@@ -3064,6 +3103,15 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
         config.candidate_patch.to_string_lossy(),
         candidate_patch_hash,
         config.checkout.to_string_lossy(),
+        prepared_checkout.evaluator_checkout.to_string_lossy(),
+        prepared_checkout.candidate_patch_applied,
+        prepared_checkout.evaluator_checkout_mode,
+        original_checkout_mutated,
+        source_provenance.source_revision,
+        source_provenance.source_tree_dirty,
+        source_provenance.source_diff_scope,
+        source_provenance.source_diff_hash,
+        source_provenance.evidence_command,
         config.command.clone(),
         &outcome.stdout,
         &outcome.stderr,
@@ -3109,6 +3157,7 @@ struct SeniorSweBenchEvaluateConfig {
     candidate_patch: PathBuf,
     checkout: PathBuf,
     output: Option<PathBuf>,
+    apply_candidate_patch: bool,
     command: Vec<String>,
 }
 
@@ -3128,6 +3177,7 @@ fn parse_senior_swe_bench_evaluate_args(
     let mut candidate_patch = None;
     let mut checkout = None;
     let mut output = None;
+    let mut apply_candidate_patch = false;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -3147,6 +3197,7 @@ fn parse_senior_swe_bench_evaluate_args(
                         .ok_or_else(|| "missing --candidate-patch".to_string())?,
                     checkout: checkout.ok_or_else(|| "missing --checkout".to_string())?,
                     output,
+                    apply_candidate_patch,
                     command,
                 });
             }
@@ -3184,6 +3235,9 @@ fn parse_senior_swe_bench_evaluate_args(
                     args.get(index)
                         .ok_or_else(|| "--output requires a path".to_string())?,
                 ));
+            }
+            "--apply-candidate-patch" => {
+                apply_candidate_patch = true;
             }
             other => {
                 return Err(format!(
@@ -3225,6 +3279,297 @@ fn load_senior_swe_bench_evaluation_task(
     }
 }
 
+#[derive(Debug)]
+struct SeniorSweBenchPreparedCheckout {
+    evaluator_checkout: PathBuf,
+    candidate_patch_applied: bool,
+    evaluator_checkout_mode: &'static str,
+    _cleanup: Option<SeniorSweBenchCheckoutCleanup>,
+}
+
+#[derive(Debug)]
+struct SeniorSweBenchCheckoutCleanup {
+    path: PathBuf,
+}
+
+impl Drop for SeniorSweBenchCheckoutCleanup {
+    fn drop(&mut self) {
+        if env::var("A2D_SENIOR_SWE_BENCH_KEEP_PATCHED_CHECKOUT")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            return;
+        }
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn prepare_senior_swe_bench_evaluator_checkout(
+    config: &SeniorSweBenchEvaluateConfig,
+) -> Result<SeniorSweBenchPreparedCheckout, String> {
+    if !config.apply_candidate_patch {
+        return Ok(SeniorSweBenchPreparedCheckout {
+            evaluator_checkout: config.checkout.clone(),
+            candidate_patch_applied: false,
+            evaluator_checkout_mode: "supplied_checkout",
+            _cleanup: None,
+        });
+    }
+
+    let temp_root = env::var("A2D_SENIOR_SWE_BENCH_PATCHED_CHECKOUT_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env::temp_dir().join("a2d-senior-swe-bench-evaluator"));
+    validate_patched_checkout_temp_root(&config.checkout, &temp_root)?;
+    fs::create_dir_all(&temp_root).map_err(|error| {
+        format!(
+            "failed to create patched checkout temp root {}: {error}",
+            temp_root.display()
+        )
+    })?;
+    let evaluator_checkout = temp_root.join(format!("patched-checkout-{}", unique_suffix()));
+    copy_dir_recursively(&config.checkout, &evaluator_checkout)?;
+    apply_candidate_patch_to_checkout(&evaluator_checkout, &config.candidate_patch).map_err(
+        |error| {
+            let _ = fs::remove_dir_all(&evaluator_checkout);
+            error
+        },
+    )?;
+
+    Ok(SeniorSweBenchPreparedCheckout {
+        evaluator_checkout: evaluator_checkout.clone(),
+        candidate_patch_applied: true,
+        evaluator_checkout_mode: "isolated_copy",
+        _cleanup: Some(SeniorSweBenchCheckoutCleanup {
+            path: evaluator_checkout,
+        }),
+    })
+}
+
+fn validate_patched_checkout_temp_root(checkout: &Path, temp_root: &Path) -> Result<(), String> {
+    if path_may_resolve_inside(temp_root, checkout) {
+        return Err(format!(
+            "refusing to place patched checkout temp root {} inside original checkout {}",
+            temp_root.display(),
+            checkout.display()
+        ));
+    }
+    Ok(())
+}
+
+fn copy_dir_recursively(source: &Path, destination: &Path) -> Result<(), String> {
+    if path_may_resolve_inside(destination, source) {
+        return Err(format!(
+            "refusing to copy checkout {} into its own descendant {}",
+            source.display(),
+            destination.display()
+        ));
+    }
+    fs::create_dir_all(destination).map_err(|error| {
+        format!(
+            "failed to create checkout copy {}: {error}",
+            destination.display()
+        )
+    })?;
+    for entry in fs::read_dir(source)
+        .map_err(|error| format!("failed to read checkout {}: {error}", source.display()))?
+    {
+        let entry = entry.map_err(|error| format!("failed to read checkout entry: {error}"))?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("failed to inspect {}: {error}", source_path.display()))?;
+        if file_type.is_dir() {
+            copy_dir_recursively(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&source_path, &destination_path).map_err(|error| {
+                format!(
+                    "failed to copy {} to {}: {error}",
+                    source_path.display(),
+                    destination_path.display()
+                )
+            })?;
+        } else if file_type.is_symlink() {
+            copy_symlink(&source_path, &destination_path)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn copy_symlink(source: &Path, destination: &Path) -> Result<(), String> {
+    let target = fs::read_link(source)
+        .map_err(|error| format!("failed to read symlink {}: {error}", source.display()))?;
+    std::os::unix::fs::symlink(&target, destination).map_err(|error| {
+        format!(
+            "failed to copy symlink {} to {}: {error}",
+            source.display(),
+            destination.display()
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn copy_symlink(source: &Path, destination: &Path) -> Result<(), String> {
+    let target = fs::read_link(source)
+        .map_err(|error| format!("failed to read symlink {}: {error}", source.display()))?;
+    let resolved = source
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(target);
+    if resolved.is_dir() {
+        copy_dir_recursively(&resolved, destination)
+    } else {
+        fs::copy(&resolved, destination)
+            .map(|_| ())
+            .map_err(|error| {
+                format!(
+                    "failed to copy symlink target {} to {}: {error}",
+                    resolved.display(),
+                    destination.display()
+                )
+            })
+    }
+}
+
+fn path_may_resolve_inside(path: &Path, root: &Path) -> bool {
+    let root = match fs::canonicalize(root) {
+        Ok(root) => root,
+        Err(_) => return false,
+    };
+    let absolute = normalize_absolute_path(path);
+    if absolute == root || absolute.starts_with(&root) {
+        return true;
+    }
+    let mut ancestor = absolute.as_path();
+    loop {
+        if ancestor.exists() {
+            return fs::canonicalize(ancestor)
+                .is_ok_and(|canonical| canonical == root || canonical.starts_with(&root));
+        }
+        match ancestor.parent() {
+            Some(parent) => ancestor = parent,
+            None => return false,
+        }
+    }
+}
+
+fn normalize_absolute_path(path: &Path) -> PathBuf {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str())
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+        }
+    }
+    normalized
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CheckoutContentFingerprint {
+    entries: Vec<(String, String)>,
+}
+
+fn checkout_content_fingerprint(checkout: &Path) -> Result<CheckoutContentFingerprint, String> {
+    let root = fs::canonicalize(checkout).map_err(|error| {
+        format!(
+            "failed to canonicalize checkout {}: {error}",
+            checkout.display()
+        )
+    })?;
+    let mut stack = vec![root.clone()];
+    let mut entries = Vec::new();
+    while let Some(path) = stack.pop() {
+        let mut children = fs::read_dir(&path)
+            .map_err(|error| format!("failed to read checkout {}: {error}", path.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to read checkout entry: {error}"))?;
+        children.sort_by_key(|entry| entry.path());
+        for entry in children {
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(&root)
+                .map_err(|error| format!("failed to relativize {}: {error}", path.display()))?
+                .to_string_lossy()
+                .to_string();
+            let metadata = fs::symlink_metadata(&path)
+                .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+            if metadata.file_type().is_symlink() {
+                let target = fs::read_link(&path).map_err(|error| {
+                    format!("failed to read symlink {}: {error}", path.display())
+                })?;
+                entries.push((relative, format!("symlink:{}", target.to_string_lossy())));
+            } else if metadata.is_dir() {
+                entries.push((relative, "dir".to_string()));
+                stack.push(path);
+            } else if metadata.is_file() {
+                entries.push((relative, format!("file:{}", file_content_hash(&path)?)));
+            } else {
+                entries.push((relative, "other".to_string()));
+            }
+        }
+    }
+    entries.sort();
+    Ok(CheckoutContentFingerprint { entries })
+}
+
+fn original_checkout_mutated_after_evaluator(
+    checkout: &Path,
+    before: &CheckoutContentFingerprint,
+    outcome: &mut SeniorSweBenchLocalOutcome,
+) -> bool {
+    match checkout_content_fingerprint(checkout) {
+        Ok(after) => after != *before,
+        Err(error) => {
+            outcome.stderr = format!(
+                "{}\nSenior SWE-Bench original checkout fingerprint after evaluator failed: {error}",
+                outcome.stderr
+            );
+            true
+        }
+    }
+}
+
+fn apply_candidate_patch_to_checkout(
+    checkout: &Path,
+    candidate_patch: &Path,
+) -> Result<(), String> {
+    let patch_path = fs::canonicalize(candidate_patch)
+        .map_err(|error| format!("failed to canonicalize candidate patch: {error}"))?;
+    let output = Command::new("git")
+        .arg("apply")
+        .arg("--whitespace=nowarn")
+        .arg("--")
+        .arg(&patch_path)
+        .current_dir(checkout)
+        .output()
+        .map_err(|error| format!("failed to run git apply {}: {error}", patch_path.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git apply {} failed in {}: {}",
+            patch_path.display(),
+            checkout.display(),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
+}
+
 fn file_content_hash(path: &Path) -> Result<String, String> {
     let output = Command::new("git")
         .arg("hash-object")
@@ -3252,9 +3597,14 @@ fn file_content_hash(path: &Path) -> Result<String, String> {
 fn run_local_senior_swe_bench_evaluator(
     package: &SeniorSweBenchTaskPackageSummary,
     config: &SeniorSweBenchEvaluateConfig,
+    prepared_checkout: &SeniorSweBenchPreparedCheckout,
 ) -> SeniorSweBenchLocalOutcome {
     let candidate_patch = fs::canonicalize(&config.candidate_patch)
         .unwrap_or_else(|_| config.candidate_patch.clone());
+    let original_checkout =
+        fs::canonicalize(&config.checkout).unwrap_or_else(|_| config.checkout.clone());
+    let evaluator_checkout = fs::canonicalize(&prepared_checkout.evaluator_checkout)
+        .unwrap_or_else(|_| prepared_checkout.evaluator_checkout.clone());
     let stdout_path = unique_temp_path("senior-swe-bench-evaluator", "stdout");
     let stderr_path = unique_temp_path("senior-swe-bench-evaluator", "stderr");
     let stdout_file = fs::File::create(&stdout_path).unwrap_or_else(|error| {
@@ -3268,10 +3618,23 @@ fn run_local_senior_swe_bench_evaluator(
     let mut command = Command::new(&config.command[0]);
     command
         .args(&config.command[1..])
-        .current_dir(&config.checkout)
+        .current_dir(&evaluator_checkout)
         .env("A2D_SENIOR_SWE_BENCH_TASK_ID", &package.task_id)
         .env("A2D_SENIOR_SWE_BENCH_REPO", &package.repo)
         .env("A2D_SENIOR_SWE_BENCH_CANDIDATE_PATCH", &candidate_patch)
+        .env("A2D_SENIOR_SWE_BENCH_ORIGINAL_CHECKOUT", &original_checkout)
+        .env(
+            "A2D_SENIOR_SWE_BENCH_EVALUATOR_CHECKOUT",
+            &evaluator_checkout,
+        )
+        .env(
+            "A2D_SENIOR_SWE_BENCH_CANDIDATE_PATCH_APPLIED",
+            if prepared_checkout.candidate_patch_applied {
+                "true"
+            } else {
+                "false"
+            },
+        )
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     let mut child = command.spawn().unwrap_or_else(|error| {
@@ -3356,6 +3719,11 @@ fn export_standalone_fitness_evidence(
     challenge_name: &str,
     candidate_patch_hash: Option<&str>,
     evaluator_kind: Option<&str>,
+    candidate_patch_applied: Option<bool>,
+    evaluator_checkout_mode: Option<&str>,
+    original_checkout_mutated: Option<bool>,
+    candidate_patch_path: Option<&Path>,
+    evaluator_checkout_path: Option<&Path>,
 ) -> Result<PathBuf, String> {
     fs::create_dir_all(export_dir).map_err(|error| {
         format!(
@@ -3382,6 +3750,18 @@ fn export_standalone_fitness_evidence(
                 Value::String(candidate_patch_hash.to_string()),
             );
     }
+    if let Some(candidate_patch_path) = candidate_patch_path {
+        value
+            .as_object_mut()
+            .ok_or_else(|| {
+                "fitness evidence must be a JSON object before candidate patch path provenance"
+                    .to_string()
+            })?
+            .insert(
+                "candidate_patch_path".to_string(),
+                Value::String(candidate_patch_path.to_string_lossy().to_string()),
+            );
+    }
     if let Some(evaluator_kind) = evaluator_kind {
         value
             .as_object_mut()
@@ -3391,6 +3771,54 @@ fn export_standalone_fitness_evidence(
             .insert(
                 "evaluator_kind".to_string(),
                 Value::String(evaluator_kind.to_string()),
+            );
+    }
+    if let Some(evaluator_checkout_path) = evaluator_checkout_path {
+        value
+            .as_object_mut()
+            .ok_or_else(|| {
+                "fitness evidence must be a JSON object before evaluator checkout path provenance"
+                    .to_string()
+            })?
+            .insert(
+                "evaluator_checkout".to_string(),
+                Value::String(evaluator_checkout_path.to_string_lossy().to_string()),
+            );
+    }
+    if let Some(candidate_patch_applied) = candidate_patch_applied {
+        value
+            .as_object_mut()
+            .ok_or_else(|| {
+                "fitness evidence must be a JSON object before candidate patch application provenance"
+                    .to_string()
+            })?
+            .insert(
+                "candidate_patch_applied".to_string(),
+                Value::Bool(candidate_patch_applied),
+            );
+    }
+    if let Some(evaluator_checkout_mode) = evaluator_checkout_mode {
+        value
+            .as_object_mut()
+            .ok_or_else(|| {
+                "fitness evidence must be a JSON object before evaluator checkout provenance"
+                    .to_string()
+            })?
+            .insert(
+                "evaluator_checkout_mode".to_string(),
+                Value::String(evaluator_checkout_mode.to_string()),
+            );
+    }
+    if let Some(original_checkout_mutated) = original_checkout_mutated {
+        value
+            .as_object_mut()
+            .ok_or_else(|| {
+                "fitness evidence must be a JSON object before checkout mutation provenance"
+                    .to_string()
+            })?
+            .insert(
+                "original_checkout_mutated".to_string(),
+                Value::Bool(original_checkout_mutated),
             );
     }
     validate_exported_fitness_evidence_value(&value)?;
@@ -3409,6 +3837,10 @@ fn export_standalone_fitness_evidence(
 fn validate_fitness_evidence_candidate_patch_binding(
     evidence_path: &Path,
     candidate_patch_path: &Path,
+    expected_candidate_patch_applied: Option<bool>,
+    expected_evaluator_checkout_mode: Option<&str>,
+    expected_original_checkout_mutated: Option<bool>,
+    expected_evaluator_checkout_path: Option<&Path>,
 ) -> Result<(), String> {
     let bytes = fs::read(evidence_path).map_err(|error| {
         format!(
@@ -3431,6 +3863,61 @@ fn validate_fitness_evidence_candidate_patch_binding(
         .get("evaluator_kind")
         .and_then(Value::as_str)
         .ok_or_else(|| "fitness evidence missing evaluator_kind".to_string())?;
+    let evidence_patch_path = value
+        .get("candidate_patch_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "fitness evidence missing candidate_patch_path".to_string())?;
+    if !paths_equivalent(Path::new(evidence_patch_path), candidate_patch_path) {
+        return Err(format!(
+            "fitness evidence candidate_patch_path {evidence_patch_path} does not match current candidate patch path {}",
+            candidate_patch_path.display()
+        ));
+    }
+    if let Some(expected) = expected_candidate_patch_applied {
+        let actual = value
+            .get("candidate_patch_applied")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| "fitness evidence missing candidate_patch_applied".to_string())?;
+        if actual != expected {
+            return Err(format!(
+                "fitness evidence candidate_patch_applied {actual} does not match expected {expected}"
+            ));
+        }
+    }
+    if let Some(expected) = expected_evaluator_checkout_mode {
+        let actual = value
+            .get("evaluator_checkout_mode")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "fitness evidence missing evaluator_checkout_mode".to_string())?;
+        if actual != expected {
+            return Err(format!(
+                "fitness evidence evaluator_checkout_mode {actual} does not match expected {expected}"
+            ));
+        }
+    }
+    if let Some(expected) = expected_original_checkout_mutated {
+        let actual = value
+            .get("original_checkout_mutated")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| "fitness evidence missing original_checkout_mutated".to_string())?;
+        if actual != expected {
+            return Err(format!(
+                "fitness evidence original_checkout_mutated {actual} does not match expected {expected}"
+            ));
+        }
+    }
+    if let Some(expected) = expected_evaluator_checkout_path {
+        let actual = value
+            .get("evaluator_checkout")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "fitness evidence missing evaluator_checkout".to_string())?;
+        if !paths_equivalent(Path::new(actual), expected) {
+            return Err(format!(
+                "fitness evidence evaluator_checkout {actual} does not match current evaluator checkout {}",
+                expected.display()
+            ));
+        }
+    }
     let current_hash = file_content_hash(candidate_patch_path)?;
     if evidence_hash != current_hash {
         return Err(format!(
@@ -3438,6 +3925,16 @@ fn validate_fitness_evidence_candidate_patch_binding(
         ));
     }
     Ok(())
+}
+
+fn paths_equivalent(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 fn standalone_fitness_evidence_delta(report: &FitnessReport) -> f64 {
@@ -4763,36 +5260,60 @@ fn fitness_evidence_export_path(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceProvenance {
+    source_revision: String,
+    source_tree_dirty: bool,
+    source_diff_scope: String,
+    source_diff_hash: String,
+    evidence_command: String,
+}
+
+fn collect_source_provenance() -> Result<SourceProvenance, String> {
+    let source_diff_scope = "crates".to_string();
+    let source_revision = git_scope_revision(&source_diff_scope)?;
+    let source_status = git_status_for_scope(&source_diff_scope)?;
+    reject_untracked_source_files(&source_diff_scope, &source_status)?;
+    let source_tree_dirty = !source_status.is_empty();
+    let source_diff_hash = git_diff_hash_for_scope(&source_diff_scope)?;
+    let command = env::args().skip(1).collect::<Vec<_>>().join(" ");
+    Ok(SourceProvenance {
+        source_revision,
+        source_tree_dirty,
+        source_diff_scope,
+        source_diff_hash,
+        evidence_command: if command.is_empty() {
+            "<unknown>".to_string()
+        } else {
+            command
+        },
+    })
+}
+
 fn add_export_source_provenance(mut value: Value) -> Result<Value, String> {
+    let provenance = collect_source_provenance()?;
     let object = value
         .as_object_mut()
         .ok_or_else(|| "fitness evidence must be a JSON object before provenance".to_string())?;
     object.insert(
         "source_revision".to_string(),
-        Value::String(git_scope_revision("crates")?),
+        Value::String(provenance.source_revision),
     );
-    let source_status = git_status_for_scope("crates")?;
-    reject_untracked_source_files("crates", &source_status)?;
     object.insert(
         "source_tree_dirty".to_string(),
-        Value::Bool(!source_status.is_empty()),
+        Value::Bool(provenance.source_tree_dirty),
     );
     object.insert(
         "source_diff_scope".to_string(),
-        Value::String("crates".to_string()),
+        Value::String(provenance.source_diff_scope),
     );
     object.insert(
         "source_diff_hash".to_string(),
-        Value::String(git_diff_hash_for_scope("crates")?),
+        Value::String(provenance.source_diff_hash),
     );
-    let command = env::args().skip(1).collect::<Vec<_>>().join(" ");
     object.insert(
         "evidence_command".to_string(),
-        Value::String(if command.is_empty() {
-            "<unknown>".to_string()
-        } else {
-            command
-        }),
+        Value::String(provenance.evidence_command),
     );
     Ok(value)
 }
@@ -4962,7 +5483,12 @@ fn validate_exportable_fitness_evidence_shape(bytes: &[u8]) -> Result<Value, Str
         "source_revision",
         "source_tree_dirty",
         "candidate_patch_hash",
+        "candidate_patch_path",
         "evaluator_kind",
+        "evaluator_checkout",
+        "candidate_patch_applied",
+        "evaluator_checkout_mode",
+        "original_checkout_mutated",
     ]);
     for field in object.keys() {
         if !required_fields.contains(field.as_str())
@@ -5145,8 +5671,44 @@ fn validate_exported_fitness_evidence_value(value: &Value) -> Result<(), String>
             );
         }
     }
+    if let Some(candidate_patch_path_value) = value.get("candidate_patch_path") {
+        let candidate_patch_path = candidate_patch_path_value.as_str().ok_or_else(|| {
+            "exported fitness evidence candidate_patch_path is not a string".to_string()
+        })?;
+        if candidate_patch_path.trim().is_empty() {
+            return Err("exported fitness evidence candidate_patch_path is empty".to_string());
+        }
+    }
     validate_optional_evaluator_kind(value)?;
+    validate_optional_patch_application_provenance(value)?;
 
+    Ok(())
+}
+
+fn validate_optional_patch_application_provenance(value: &Value) -> Result<(), String> {
+    if let Some(applied_value) = value.get("candidate_patch_applied") {
+        applied_value.as_bool().ok_or_else(|| {
+            "exported fitness evidence candidate_patch_applied is not a bool".to_string()
+        })?;
+    }
+    if let Some(mutated_value) = value.get("original_checkout_mutated") {
+        mutated_value.as_bool().ok_or_else(|| {
+            "exported fitness evidence original_checkout_mutated is not a bool".to_string()
+        })?;
+    }
+    if let Some(mode_value) = value.get("evaluator_checkout_mode") {
+        let mode = mode_value.as_str().ok_or_else(|| {
+            "exported fitness evidence evaluator_checkout_mode is not a string".to_string()
+        })?;
+        match mode {
+            "supplied_checkout" | "isolated_copy" => {}
+            _ => {
+                return Err(format!(
+                    "exported fitness evidence evaluator_checkout_mode is unreviewed: {mode}"
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -5375,10 +5937,25 @@ mod tests {
         assert_eq!(config.task_cycle_input, None);
         assert_eq!(config.candidate_patch, PathBuf::from("candidate.diff"));
         assert_eq!(config.checkout, PathBuf::from("checkout"));
+        assert!(!config.apply_candidate_patch);
         assert_eq!(
             config.command,
             vec!["./official-evaluator".to_string(), "--task".to_string()]
         );
+
+        let apply_patch_args = vec![
+            "--task-package".to_string(),
+            "task.json".to_string(),
+            "--candidate-patch".to_string(),
+            "candidate.diff".to_string(),
+            "--checkout".to_string(),
+            "checkout".to_string(),
+            "--apply-candidate-patch".to_string(),
+            "--".to_string(),
+            "./official-evaluator".to_string(),
+        ];
+        let apply_config = parse_senior_swe_bench_evaluate_args(&apply_patch_args).unwrap();
+        assert!(apply_config.apply_candidate_patch);
 
         let cycle_input_args = vec![
             "--task-cycle-input".to_string(),
@@ -5427,6 +6004,252 @@ mod tests {
     }
 
     #[test]
+    fn senior_swe_bench_prepare_checkout_applies_patch_to_isolated_copy() {
+        let root =
+            env::temp_dir().join(format!("a2d-senior-swe-bench-prepare-{}", unique_suffix()));
+        let checkout = root.join("checkout");
+        fs::create_dir_all(&checkout).unwrap();
+        fs::write(checkout.join("lib.rs"), "original\n").unwrap();
+        let patch = root.join("candidate.diff");
+        fs::write(
+            &patch,
+            "--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-original\n+patched\n",
+        )
+        .unwrap();
+        let config = SeniorSweBenchEvaluateConfig {
+            task_package: Some(root.join("task.json")),
+            task_cycle_input: None,
+            candidate_patch: patch,
+            checkout: checkout.clone(),
+            output: None,
+            apply_candidate_patch: true,
+            command: vec!["sh".to_string(), "evaluator.sh".to_string()],
+        };
+
+        let prepared = prepare_senior_swe_bench_evaluator_checkout(&config).unwrap();
+
+        assert!(prepared.candidate_patch_applied);
+        assert_eq!(prepared.evaluator_checkout_mode, "isolated_copy");
+        assert_ne!(prepared.evaluator_checkout, checkout);
+        assert_eq!(
+            fs::read_to_string(checkout.join("lib.rs")).unwrap(),
+            "original\n"
+        );
+        assert_eq!(
+            fs::read_to_string(prepared.evaluator_checkout.join("lib.rs")).unwrap(),
+            "patched\n"
+        );
+        drop(prepared);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn senior_swe_bench_evaluator_runs_in_patched_checkout_when_enabled() {
+        let root = env::temp_dir().join(format!(
+            "a2d-senior-swe-bench-evaluator-{}",
+            unique_suffix()
+        ));
+        let checkout = root.join("checkout");
+        fs::create_dir_all(&checkout).unwrap();
+        fs::write(checkout.join("lib.rs"), "original\n").unwrap();
+        let patch = root.join("candidate.diff");
+        fs::write(
+            &patch,
+            "--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-original\n+patched\n",
+        )
+        .unwrap();
+        let evaluator = root.join("evaluator.sh");
+        fs::write(
+            &evaluator,
+            "set -eu\ntest \"$(cat lib.rs)\" = \"patched\"\ntest \"$(cat \"$A2D_SENIOR_SWE_BENCH_ORIGINAL_CHECKOUT/lib.rs\")\" = \"original\"\ntest \"$A2D_SENIOR_SWE_BENCH_CANDIDATE_PATCH_APPLIED\" = \"true\"\necho patched-checkout-ok\n",
+        )
+        .unwrap();
+        let config = SeniorSweBenchEvaluateConfig {
+            task_package: Some(root.join("task.json")),
+            task_cycle_input: None,
+            candidate_patch: patch,
+            checkout: checkout.clone(),
+            output: None,
+            apply_candidate_patch: true,
+            command: vec!["sh".to_string(), evaluator.to_string_lossy().to_string()],
+        };
+        let package = SeniorSweBenchTaskPackageSummary {
+            task_id: "task-hard".to_string(),
+            repo: "owner/repo".to_string(),
+            github_solution_search_allowed: false,
+        };
+
+        let prepared = prepare_senior_swe_bench_evaluator_checkout(&config).unwrap();
+        let outcome = run_local_senior_swe_bench_evaluator(&package, &config, &prepared);
+
+        assert!(outcome.status_success, "stderr: {}", outcome.stderr);
+        assert!(outcome.stdout.contains("patched-checkout-ok"));
+        assert_eq!(
+            fs::read_to_string(checkout.join("lib.rs")).unwrap(),
+            "original\n"
+        );
+        drop(prepared);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn senior_swe_bench_rejects_patched_temp_root_inside_original_checkout() {
+        let root = env::temp_dir().join(format!(
+            "a2d-senior-swe-bench-temp-root-{}",
+            unique_suffix()
+        ));
+        let checkout = root.join("checkout");
+        fs::create_dir_all(&checkout).unwrap();
+
+        let direct_descendant = checkout.join("patched-temp");
+        assert!(
+            validate_patched_checkout_temp_root(&checkout, &direct_descendant)
+                .unwrap_err()
+                .contains("inside original checkout")
+        );
+
+        #[cfg(unix)]
+        {
+            let checkout_link = root.join("checkout-link");
+            std::os::unix::fs::symlink(&checkout, &checkout_link).unwrap();
+            let symlink_descendant = checkout_link.join("patched-temp");
+            assert!(
+                validate_patched_checkout_temp_root(&checkout, &symlink_descendant)
+                    .unwrap_err()
+                    .contains("inside original checkout")
+            );
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn senior_swe_bench_checkout_fingerprint_detects_new_files_in_empty_directories() {
+        let root = env::temp_dir().join(format!(
+            "a2d-senior-swe-bench-fingerprint-dir-{}",
+            unique_suffix()
+        ));
+        let checkout = root.join("checkout");
+        let empty = checkout.join("empty");
+        fs::create_dir_all(&empty).unwrap();
+
+        let before = checkout_content_fingerprint(&checkout).unwrap();
+        fs::write(empty.join("created-by-evaluator.txt"), "new\n").unwrap();
+        let after = checkout_content_fingerprint(&checkout).unwrap();
+
+        assert_ne!(before, after);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn senior_swe_bench_checkout_fingerprint_detects_symlink_retargeting() {
+        let root = env::temp_dir().join(format!(
+            "a2d-senior-swe-bench-fingerprint-symlink-{}",
+            unique_suffix()
+        ));
+        let checkout = root.join("checkout");
+        fs::create_dir_all(&checkout).unwrap();
+        fs::write(checkout.join("target-a.txt"), "a\n").unwrap();
+        fs::write(checkout.join("target-b.txt"), "b\n").unwrap();
+        let link = checkout.join("link.txt");
+        std::os::unix::fs::symlink("target-a.txt", &link).unwrap();
+
+        let before = checkout_content_fingerprint(&checkout).unwrap();
+        fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink("target-b.txt", &link).unwrap();
+        let after = checkout_content_fingerprint(&checkout).unwrap();
+
+        assert_ne!(before, after);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn senior_swe_bench_apply_patch_detects_original_mutation_through_symlink_escape() {
+        let root = env::temp_dir().join(format!(
+            "a2d-senior-swe-bench-symlink-escape-{}",
+            unique_suffix()
+        ));
+        let checkout = root.join("checkout");
+        fs::create_dir_all(&checkout).unwrap();
+        fs::write(checkout.join("lib.rs"), "original\n").unwrap();
+        fs::write(checkout.join("target.txt"), "original-target\n").unwrap();
+        std::os::unix::fs::symlink(checkout.join("target.txt"), checkout.join("escape")).unwrap();
+        let patch = root.join("candidate.diff");
+        fs::write(
+            &patch,
+            "--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-original\n+patched\n",
+        )
+        .unwrap();
+        let evaluator = root.join("evaluator.sh");
+        fs::write(
+            &evaluator,
+            "set -eu\ntest \"$(cat lib.rs)\" = \"patched\"\nprintf mutated-through-symlink > escape\n",
+        )
+        .unwrap();
+        let config = SeniorSweBenchEvaluateConfig {
+            task_package: Some(root.join("task.json")),
+            task_cycle_input: None,
+            candidate_patch: patch,
+            checkout: checkout.clone(),
+            output: None,
+            apply_candidate_patch: true,
+            command: vec!["sh".to_string(), evaluator.to_string_lossy().to_string()],
+        };
+        let package = SeniorSweBenchTaskPackageSummary {
+            task_id: "task-hard".to_string(),
+            repo: "owner/repo".to_string(),
+            github_solution_search_allowed: false,
+        };
+        let before = checkout_content_fingerprint(&checkout).unwrap();
+        let prepared = prepare_senior_swe_bench_evaluator_checkout(&config).unwrap();
+        let mut outcome = run_local_senior_swe_bench_evaluator(&package, &config, &prepared);
+
+        assert!(outcome.status_success, "stderr: {}", outcome.stderr);
+        assert!(original_checkout_mutated_after_evaluator(
+            &checkout,
+            &before,
+            &mut outcome
+        ));
+        assert_eq!(
+            fs::read_to_string(checkout.join("target.txt")).unwrap(),
+            "mutated-through-symlink"
+        );
+        drop(prepared);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn senior_swe_bench_patch_apply_failure_prevents_prepared_checkout() {
+        let root =
+            env::temp_dir().join(format!("a2d-senior-swe-bench-badpatch-{}", unique_suffix()));
+        let checkout = root.join("checkout");
+        fs::create_dir_all(&checkout).unwrap();
+        fs::write(checkout.join("lib.rs"), "original\n").unwrap();
+        let patch = root.join("candidate.diff");
+        fs::write(&patch, "not a unified diff\n").unwrap();
+        let config = SeniorSweBenchEvaluateConfig {
+            task_package: Some(root.join("task.json")),
+            task_cycle_input: None,
+            candidate_patch: patch,
+            checkout: checkout.clone(),
+            output: None,
+            apply_candidate_patch: true,
+            command: vec!["sh".to_string(), "evaluator.sh".to_string()],
+        };
+
+        let error = prepare_senior_swe_bench_evaluator_checkout(&config).unwrap_err();
+
+        assert!(error.contains("git apply"));
+        assert_eq!(
+            fs::read_to_string(checkout.join("lib.rs")).unwrap(),
+            "original\n"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn senior_swe_bench_local_fitness_evidence_contains_holdout_and_policy_status() {
         let report = senior_swe_bench_local_fitness_report(&SeniorSweBenchLocalOutcome {
             status_success: true,
@@ -5454,6 +6277,16 @@ mod tests {
         ));
         fs::write(&candidate_patch_path, "diff --git a/lib.rs b/lib.rs\n").unwrap();
         let candidate_patch_hash = file_content_hash(&candidate_patch_path).unwrap();
+        let evaluator_checkout_path = env::temp_dir().join(format!(
+            "a2d-senior-swe-bench-evaluator-checkout-{}",
+            unique_suffix()
+        ));
+        fs::create_dir_all(&evaluator_checkout_path).unwrap();
+        let other_evaluator_checkout_path = env::temp_dir().join(format!(
+            "a2d-senior-swe-bench-other-evaluator-checkout-{}",
+            unique_suffix()
+        ));
+        fs::create_dir_all(&other_evaluator_checkout_path).unwrap();
         let report = senior_swe_bench_local_fitness_report(&SeniorSweBenchLocalOutcome {
             status_success: true,
             exit_code: Some(0),
@@ -5473,9 +6306,23 @@ mod tests {
             Value::String(candidate_patch_hash.clone()),
         );
         object.insert(
+            "candidate_patch_path".to_string(),
+            Value::String(candidate_patch_path.to_string_lossy().to_string()),
+        );
+        object.insert(
             "evaluator_kind".to_string(),
             Value::String("provided_local_command".to_string()),
         );
+        object.insert(
+            "evaluator_checkout".to_string(),
+            Value::String(evaluator_checkout_path.to_string_lossy().to_string()),
+        );
+        object.insert("candidate_patch_applied".to_string(), Value::Bool(true));
+        object.insert(
+            "evaluator_checkout_mode".to_string(),
+            Value::String("isolated_copy".to_string()),
+        );
+        object.insert("original_checkout_mutated".to_string(), Value::Bool(false));
         object.insert(
             "evidence_command".to_string(),
             Value::String("senior-swe-bench-evaluate --task-package task.json".to_string()),
@@ -5485,6 +6332,10 @@ mod tests {
         assert_eq!(
             evidence["candidate_patch_hash"].as_str(),
             Some(candidate_patch_hash.as_str())
+        );
+        assert_eq!(
+            evidence["candidate_patch_path"].as_str(),
+            Some(candidate_patch_path.to_str().unwrap())
         );
         assert_eq!(
             evidence["evaluator_kind"].as_str(),
@@ -5500,8 +6351,15 @@ mod tests {
             serde_json::to_vec_pretty(&evidence).expect("evidence serializes"),
         )
         .unwrap();
-        validate_fitness_evidence_candidate_patch_binding(&evidence_path, &candidate_patch_path)
-            .expect("matching candidate patch hash is accepted");
+        validate_fitness_evidence_candidate_patch_binding(
+            &evidence_path,
+            &candidate_patch_path,
+            Some(true),
+            Some("isolated_copy"),
+            Some(false),
+            Some(&evaluator_checkout_path),
+        )
+        .expect("matching candidate patch binding is accepted");
 
         let mut missing_candidate_hash = evidence.clone();
         missing_candidate_hash
@@ -5516,10 +6374,37 @@ mod tests {
         assert!(
             validate_fitness_evidence_candidate_patch_binding(
                 &evidence_path,
-                &candidate_patch_path
+                &candidate_patch_path,
+                Some(true),
+                Some("isolated_copy"),
+                Some(false),
+                Some(&evaluator_checkout_path),
             )
             .expect_err("missing candidate patch hash is rejected")
             .contains("missing candidate_patch_hash")
+        );
+
+        let mut missing_candidate_path = evidence.clone();
+        missing_candidate_path
+            .as_object_mut()
+            .unwrap()
+            .remove("candidate_patch_path");
+        fs::write(
+            &evidence_path,
+            serde_json::to_vec_pretty(&missing_candidate_path).expect("evidence serializes"),
+        )
+        .unwrap();
+        assert!(
+            validate_fitness_evidence_candidate_patch_binding(
+                &evidence_path,
+                &candidate_patch_path,
+                Some(true),
+                Some("isolated_copy"),
+                Some(false),
+                Some(&evaluator_checkout_path),
+            )
+            .expect_err("missing candidate patch path is rejected")
+            .contains("missing candidate_patch_path")
         );
 
         let mut missing_evaluator_kind = evidence.clone();
@@ -5535,10 +6420,121 @@ mod tests {
         assert!(
             validate_fitness_evidence_candidate_patch_binding(
                 &evidence_path,
-                &candidate_patch_path
+                &candidate_patch_path,
+                Some(true),
+                Some("isolated_copy"),
+                Some(false),
+                Some(&evaluator_checkout_path),
             )
             .expect_err("missing evaluator kind is rejected")
             .contains("missing evaluator_kind")
+        );
+
+        let mut missing_evaluator_checkout = evidence.clone();
+        missing_evaluator_checkout
+            .as_object_mut()
+            .unwrap()
+            .remove("evaluator_checkout");
+        fs::write(
+            &evidence_path,
+            serde_json::to_vec_pretty(&missing_evaluator_checkout).expect("evidence serializes"),
+        )
+        .unwrap();
+        assert!(
+            validate_fitness_evidence_candidate_patch_binding(
+                &evidence_path,
+                &candidate_patch_path,
+                Some(true),
+                Some("isolated_copy"),
+                Some(false),
+                Some(&evaluator_checkout_path),
+            )
+            .expect_err("missing evaluator checkout is rejected")
+            .contains("missing evaluator_checkout")
+        );
+
+        let mut missing_applied = evidence.clone();
+        missing_applied
+            .as_object_mut()
+            .unwrap()
+            .remove("candidate_patch_applied");
+        fs::write(
+            &evidence_path,
+            serde_json::to_vec_pretty(&missing_applied).expect("evidence serializes"),
+        )
+        .unwrap();
+        assert!(
+            validate_fitness_evidence_candidate_patch_binding(
+                &evidence_path,
+                &candidate_patch_path,
+                Some(true),
+                Some("isolated_copy"),
+                Some(false),
+                Some(&evaluator_checkout_path),
+            )
+            .expect_err("missing applied flag is rejected")
+            .contains("missing candidate_patch_applied")
+        );
+
+        let mut mismatched_path = evidence.clone();
+        mismatched_path["candidate_patch_path"] = json!("/tmp/other-candidate.diff");
+        fs::write(
+            &evidence_path,
+            serde_json::to_vec_pretty(&mismatched_path).expect("evidence serializes"),
+        )
+        .unwrap();
+        assert!(
+            validate_fitness_evidence_candidate_patch_binding(
+                &evidence_path,
+                &candidate_patch_path,
+                Some(true),
+                Some("isolated_copy"),
+                Some(false),
+                Some(&evaluator_checkout_path),
+            )
+            .expect_err("mismatched candidate patch path is rejected")
+            .contains("does not match current candidate patch path")
+        );
+
+        let mut mismatched_evaluator_checkout = evidence.clone();
+        mismatched_evaluator_checkout["evaluator_checkout"] =
+            json!(other_evaluator_checkout_path.to_string_lossy().to_string());
+        fs::write(
+            &evidence_path,
+            serde_json::to_vec_pretty(&mismatched_evaluator_checkout).expect("evidence serializes"),
+        )
+        .unwrap();
+        assert!(
+            validate_fitness_evidence_candidate_patch_binding(
+                &evidence_path,
+                &candidate_patch_path,
+                Some(true),
+                Some("isolated_copy"),
+                Some(false),
+                Some(&evaluator_checkout_path),
+            )
+            .expect_err("mismatched evaluator checkout is rejected")
+            .contains("does not match current evaluator checkout")
+        );
+
+        let mut mismatched_applied = evidence.clone();
+        mismatched_applied["candidate_patch_applied"] = json!(false);
+        fs::write(
+            &evidence_path,
+            serde_json::to_vec_pretty(&mismatched_applied).expect("evidence serializes"),
+        )
+        .unwrap();
+        assert!(
+            validate_fitness_evidence_candidate_patch_binding(
+                &evidence_path,
+                &candidate_patch_path,
+                Some(true),
+                Some("isolated_copy"),
+                Some(false),
+                Some(&evaluator_checkout_path),
+            )
+            .expect_err("mismatched applied flag is rejected")
+            .contains("candidate_patch_applied")
         );
 
         evidence["candidate_patch_hash"] = json!("0123456789abcdef0123456789abcdef01234567");
@@ -5550,7 +6546,11 @@ mod tests {
         assert!(
             validate_fitness_evidence_candidate_patch_binding(
                 &evidence_path,
-                &candidate_patch_path
+                &candidate_patch_path,
+                Some(true),
+                Some("isolated_copy"),
+                Some(false),
+                Some(&evaluator_checkout_path),
             )
             .expect_err("mismatched candidate patch hash is rejected")
             .contains("does not match current candidate patch hash")
@@ -5558,6 +6558,8 @@ mod tests {
 
         fs::remove_file(candidate_patch_path).unwrap();
         fs::remove_file(evidence_path).unwrap();
+        fs::remove_dir_all(evaluator_checkout_path).unwrap();
+        fs::remove_dir_all(other_evaluator_checkout_path).unwrap();
     }
 
     #[test]
