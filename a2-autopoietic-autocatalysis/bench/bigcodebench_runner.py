@@ -229,6 +229,7 @@ def task_to_payload(task: dict[str, Any], repo_root: Path, workspace_dir: Path) 
         "category": category,
         "difficulty": "hard",
         "repo_path": str(workspace_path),
+        "no_external_solution_search": True,
         "problem_statement": build_problem_statement(
             task_id=task_id,
             workspace_relpath=workspace_relpath,
@@ -278,5 +279,26 @@ def main() -> int:
     return 0
 
 
+def self_test() -> int:
+    payload = task_to_payload(
+        {
+            "task_id": "example/1",
+            "instruct_prompt": "Implement the function.",
+            "code_prompt": "def task_func():\n    pass\n",
+            "test": "class TestTask(unittest.TestCase):\n    def test_task(self):\n        self.assertTrue(True)\n",
+            "entry_point": "task_func",
+            "libs": ["math"],
+        },
+        repo_root=Path("/repo"),
+        workspace_dir=Path("bench/workspaces"),
+    )
+    assert payload["benchmark"] == "bigcodebench-hard"
+    assert payload["no_external_solution_search"] is True
+    assert "https://github.com" not in payload["problem_statement"]
+    return 0
+
+
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        raise SystemExit(self_test())
     raise SystemExit(main())

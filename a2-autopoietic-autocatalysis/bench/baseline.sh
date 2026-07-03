@@ -62,6 +62,8 @@ $DESCRIPTION
 
 After making changes, run: $VERIFY_CMD
 
+Benchmark integrity constraint: do not search GitHub, public issue trackers, public pull requests, public patches, or solution writeups for this task. Solve using only this checked-out repository, the task statement, local documentation, and verifier output from this worktree. If you use online documentation, use it only for general API reference, not task-specific solutions.
+
 Make sure the verify command passes before finishing." \
         < /dev/null 2>/dev/null \
         | jq -r 'select(.type == "text") | .text // empty' \

@@ -654,6 +654,18 @@ impl WorktreeCatalyst {
             }
         }
 
+        if task.no_external_solution_search {
+            prompt.push_str(
+                "\n\n## Benchmark Integrity\n\n\
+                 - Do not search GitHub, public issue trackers, public pull requests, \n\
+                 public patches, or solution writeups for this task.\n\
+                 - Solve using only the checked-out repository, the task statement, \n\
+                 local documentation, and verifier output produced in this worktree.\n\
+                 - If you use online documentation, use it only for general API \n\
+                 reference, not task-specific solutions.\n",
+            );
+        }
+
         prompt.push_str("\n\n## Workspace Structure\n\n");
         prompt.push_str(self.workspace_structure());
 
@@ -1019,6 +1031,7 @@ mod tests {
             source: TaskSource::External {
                 origin: "test".into(),
             },
+            no_external_solution_search: false,
             created_at: Utc::now(),
         };
         let context = ContextPack {
@@ -1038,6 +1051,47 @@ mod tests {
         assert!(!prompt.contains("hidden_test"));
         assert!(prompt.contains("## Relevant Files"));
         assert!(prompt.contains("- crates/a2ctl/src/main.rs"));
+    }
+
+    #[test]
+    fn prompt_includes_benchmark_integrity_guard_when_requested() {
+        let repo_dir = std::env::temp_dir().join(format!("a2-prompt-{}", uuid::Uuid::now_v7()));
+        let catalyst = WorktreeCatalyst::new(repo_dir);
+        let mut task = TaskContract {
+            id: TaskId::new(),
+            title: "Solve benchmark task".into(),
+            description: "Fix the benchmark failure.".into(),
+            acceptance_criteria: vec![],
+            verification_commands: vec![],
+            budget: Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 4,
+            },
+            priority: Priority::Normal,
+            source: TaskSource::External {
+                origin: "senior-swe-bench".into(),
+            },
+            no_external_solution_search: true,
+            created_at: Utc::now(),
+        };
+        let context = ContextPack {
+            germline_version: GermlineVersion::new(),
+            relevant_files: vec![],
+            prior_attempts: vec![],
+            retrieved_motifs: vec![],
+        };
+
+        let prompt = catalyst.build_prompt(&task, &context);
+        assert!(prompt.contains("## Benchmark Integrity"));
+        assert!(prompt.contains("Do not search GitHub"));
+        assert!(prompt.contains("public pull requests"));
+        assert!(prompt.contains("not task-specific solutions"));
+
+        task.no_external_solution_search = false;
+        let prompt_without_guard = catalyst.build_prompt(&task, &context);
+        assert!(!prompt_without_guard.contains("## Benchmark Integrity"));
+        assert!(!prompt_without_guard.contains("Do not search GitHub"));
     }
 
     #[test]
@@ -1071,6 +1125,7 @@ mod tests {
             source: TaskSource::External {
                 origin: "test".into(),
             },
+            no_external_solution_search: false,
             created_at: Utc::now(),
         };
         let context = ContextPack {
@@ -1117,6 +1172,7 @@ mod tests {
             source: TaskSource::External {
                 origin: "test".into(),
             },
+            no_external_solution_search: false,
             created_at: Utc::now(),
         };
         let context = ContextPack {
@@ -1171,6 +1227,7 @@ mod tests {
             source: TaskSource::External {
                 origin: "integration-test".into(),
             },
+            no_external_solution_search: false,
             created_at: Utc::now(),
         };
 

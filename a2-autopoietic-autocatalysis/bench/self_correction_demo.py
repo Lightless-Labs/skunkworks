@@ -504,6 +504,16 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
     ]:
         if report.get(key) is not False:
             raise RuntimeError(f"fresh preflight report {key} must be false")
+    for key, label in [("results", "results"), ("evidence_json", "evidence")]:
+        declared_path = report.get(key)
+        if isinstance(declared_path, str) and declared_path:
+            resolved = repo_path(Path(declared_path))
+            if resolved.exists() and resolved.stat().st_size > 0:
+                raise RuntimeError(
+                    f"fresh preflight report declared {label}_created=false, but the "
+                    f"declared {label} path now contains data: {declared_path}. "
+                    "Generate a new just-in-time preflight report before treating readiness as current."
+                )
     source_metadata = report.get("source_metadata")
     if not isinstance(source_metadata, dict):
         raise RuntimeError("fresh preflight report lacks source_metadata")
@@ -622,6 +632,7 @@ def validate_fresh_rows(
                 "source_dirty",
                 "max_tokens",
                 "timeout_secs",
+                "no_external_solution_search",
             )
             if key not in row
         ]
@@ -633,6 +644,7 @@ def validate_fresh_rows(
         source_head_short = row.get("source_head_short")
         source_branch = row.get("source_branch")
         source_dirty = row.get("source_dirty")
+        no_external_solution_search = row.get("no_external_solution_search")
         if not isinstance(source_head, str) or len(source_head) not in (40, 64):
             raise RuntimeError(
                 f"fresh demo row {index} records invalid source_head={source_head!r}"
@@ -688,6 +700,11 @@ def validate_fresh_rows(
                 f"fresh demo row {index} records timeout_secs={row.get('timeout_secs')!r}; "
                 f"expected {timeout_secs}"
             )
+        if no_external_solution_search is not True:
+            raise RuntimeError(
+                f"fresh demo row {index} does not record no_external_solution_search=true; "
+                "fresh provider-backed benchmark evidence must audit the no-GitHub solution-search guard"
+            )
         if row_has_verifier_gated_promotion(row) and not promotion_artifact_matches_row(row):
             raise RuntimeError(
                 f"fresh demo row {index} has verifier-gated promotion without a matching promotion artifact"
@@ -713,6 +730,7 @@ def fresh_validation_summary(args: argparse.Namespace) -> str:
         f"all rows match run_id {args.run_id!r} or numeric suffixed variants; "
         "all rows share one source revision/branch/dirty-state and source_head_short prefixes source_head; "
         "no host-specific path markers are present; "
+        "no_external_solution_search=true is recorded for every row; "
         f"required provenance fields are present; {dirty_requirement}; "
         f"max_tokens={args.max_tokens}; timeout_secs={args.timeout}"
     )
@@ -2279,6 +2297,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "source_dirty": False,
                 "max_tokens": 100_000,
                 "timeout_secs": 1800,
+                "no_external_solution_search": True,
             }
             calls = 0
 
@@ -2446,6 +2465,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "source_dirty": False,
                 "max_tokens": 100_000,
                 "timeout_secs": 1800,
+                "no_external_solution_search": True,
             }
         ]
 
@@ -3209,6 +3229,73 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("readiness only", output)
         self.assertIn("not loop evidence", output)
 
+    def test_verify_preflight_report_rejects_declared_future_outputs_that_now_exist(self) -> None:
+        current = {
+            "source_head": "1234567890abcdef1234567890abcdef12345678",
+            "source_dirty": False,
+            "source_head_short": "1234567",
+            "source_branch": "main",
+        }
+        for populated_field, expected in [
+            ("results", "declared results_created=false.*results path now contains data"),
+            ("evidence_json", "declared evidence_created=false.*evidence path now contains data"),
+        ]:
+            with self.subTest(populated_field=populated_field), tempfile.TemporaryDirectory() as tmpdir:
+                results = Path(tmpdir) / "fresh-results.jsonl"
+                evidence = Path(tmpdir) / "fresh.demo-evidence.json"
+                output_path = results if populated_field == "results" else evidence
+                output_path.write_text('{"run_id": "fresh-demo"}\n', encoding="utf-8")
+                report = {
+                    "mode": "fresh_preflight",
+                    "creates_loop_evidence": False,
+                    "provider_backed_benchmark_executed": False,
+                    "results_created": False,
+                    "evidence_json_created": False,
+                    "fresh_provenance_contract_executed": False,
+                    "live_provider_auth_quota_model_checked": False,
+                    "results": str(results),
+                    "evidence_json": str(evidence),
+                    "source_metadata": {
+                        "source_head": current["source_head"],
+                        "source_dirty": current["source_dirty"],
+                    },
+                }
+                report_path = Path(tmpdir) / "fresh.report.json"
+                report_path.write_text(json.dumps(report), encoding="utf-8")
+                with mock.patch(__name__ + ".current_source_metadata", return_value=current), contextlib.redirect_stdout(
+                    io.StringIO()
+                ), self.assertRaisesRegex(RuntimeError, expected):
+                    verify_fresh_preflight_report(report_path, require_current_head=True)
+
+    def test_verify_preflight_report_allows_legacy_reports_without_output_paths(self) -> None:
+        report = {
+            "mode": "fresh_preflight",
+            "creates_loop_evidence": False,
+            "provider_backed_benchmark_executed": False,
+            "results_created": False,
+            "evidence_json_created": False,
+            "fresh_provenance_contract_executed": False,
+            "live_provider_auth_quota_model_checked": False,
+            "source_metadata": {
+                "source_head": "1234567890abcdef1234567890abcdef12345678",
+                "source_dirty": False,
+            },
+        }
+        current = {
+            "source_head": "1234567890abcdef1234567890abcdef12345678",
+            "source_dirty": False,
+            "source_head_short": "1234567",
+            "source_branch": "main",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            stdout = io.StringIO()
+            with mock.patch(__name__ + ".current_source_metadata", return_value=current), contextlib.redirect_stdout(stdout):
+                verify_fresh_preflight_report(report_path, require_current_head=True)
+
+        self.assertIn("PASS source snapshot matches current HEAD/state", stdout.getvalue())
+
     def test_verify_preflight_report_require_current_head_rejects_stale_snapshot(self) -> None:
         report = {
             "mode": "fresh_preflight",
@@ -3462,6 +3549,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "source_dirty": False,
                     "max_tokens": 100_000,
                     "timeout_secs": 1800,
+                    "no_external_solution_search": True,
                 },
                 {
                     "run_id": "fresh-demo-2",
@@ -3471,6 +3559,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "source_dirty": False,
                     "max_tokens": 100_000,
                     "timeout_secs": 1800,
+                    "no_external_solution_search": True,
                 },
             ]
             results.write_text(
@@ -3497,6 +3586,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             "source_dirty": False,
             "max_tokens": 100_000,
             "timeout_secs": 1800,
+            "no_external_solution_search": True,
         }
         scenarios = [
             (
@@ -3545,6 +3635,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "source_dirty": False,
                 "max_tokens": 100_000,
                 "timeout_secs": 1800,
+                "no_external_solution_search": True,
                 "stdout": "tool output leaked /Users/example/project/file.rs",
             }
             results.write_text(json.dumps(row) + "\n", encoding="utf-8")
@@ -3577,6 +3668,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "source_dirty": False,
                 "max_tokens": 100_000,
                 "timeout_secs": 1800,
+                "no_external_solution_search": True,
                 "promotion": {
                     "verifier_gated": True,
                     "evidence_present": True,
@@ -3609,6 +3701,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "source_dirty": False,
                         "max_tokens": 100_000,
                         "timeout_secs": 1800,
+                        "no_external_solution_search": True,
                     }
                 )
                 + "\n",
@@ -3638,6 +3731,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "source_dirty": False,
                         "max_tokens": 100_000,
                         "timeout_secs": 1800,
+                        "no_external_solution_search": True,
                     }
                 )
                 + "\n",
@@ -3715,6 +3809,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "source_dirty": True,
                         "max_tokens": 100_000,
                         "timeout_secs": 1800,
+                        "no_external_solution_search": True,
                     }
                 )
                 + "\n",
@@ -3744,6 +3839,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "source_dirty": False,
                         "max_tokens": 99_999,
                         "timeout_secs": 1800,
+                        "no_external_solution_search": True,
                     }
                 )
                 + "\n",

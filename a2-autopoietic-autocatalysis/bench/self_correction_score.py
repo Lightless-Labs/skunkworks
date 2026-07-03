@@ -53,6 +53,7 @@ class SelfCorrectionRecord:
     source_head_short: str | None = None
     source_branch: str | None = None
     source_dirty: bool | None = None
+    no_external_solution_search: bool | None = None
 
     def __init__(
         self,
@@ -85,6 +86,7 @@ class SelfCorrectionRecord:
         source_head_short: str | None = None,
         source_branch: str | None = None,
         source_dirty: bool | None = None,
+        no_external_solution_search: bool | None = None,
     ) -> None:
         object.__setattr__(self, "task_id", task_id)
         object.__setattr__(self, "run_id", run_id)
@@ -140,6 +142,7 @@ class SelfCorrectionRecord:
         object.__setattr__(self, "source_head_short", source_head_short)
         object.__setattr__(self, "source_branch", source_branch)
         object.__setattr__(self, "source_dirty", source_dirty)
+        object.__setattr__(self, "no_external_solution_search", no_external_solution_search)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -313,6 +316,9 @@ def load_records(path: Path) -> list[SelfCorrectionRecord]:
                         else None
                     ),
                     source_dirty=optional_bool(payload.get("source_dirty")),
+                    no_external_solution_search=optional_bool(
+                        payload.get("no_external_solution_search")
+                    ),
                 )
             )
     return records
@@ -609,6 +615,8 @@ def normalized_evidence_row(record: SelfCorrectionRecord) -> dict[str, Any]:
         "promotion_lineage_reconciled_by_core": record.promotion_lineage_reconciled_by_core,
         "promotion_verify_returncode": record.promotion_verify_returncode,
     }
+    if record.no_external_solution_search is not None:
+        row["no_external_solution_search"] = record.no_external_solution_search
     if record.source_head is not None:
         row["source_head"] = record.source_head
         row["source_head_short"] = record.source_head_short

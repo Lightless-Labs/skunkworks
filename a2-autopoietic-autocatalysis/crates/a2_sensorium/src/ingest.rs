@@ -68,6 +68,7 @@ impl Ingester {
                         .unwrap_or("unknown")
                 ),
             },
+            no_external_solution_search: false,
             created_at: Utc::now(),
         }
     }

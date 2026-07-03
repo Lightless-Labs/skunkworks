@@ -894,6 +894,7 @@ mod tests {
                 source: TaskSource::External {
                     origin: "test".into(),
                 },
+                no_external_solution_search: false,
                 created_at: Utc::now(),
             },
             budget: Budget {
@@ -995,6 +996,7 @@ mod tests {
                 source: TaskSource::External {
                     origin: "test".into(),
                 },
+                no_external_solution_search: false,
                 created_at: Utc::now(),
             },
             budget: Budget {
@@ -1101,6 +1103,7 @@ mod tests {
                 source: TaskSource::External {
                     origin: "test".into(),
                 },
+                no_external_solution_search: false,
                 created_at: Utc::now(),
             },
             budget: Budget {
@@ -1304,6 +1307,7 @@ mod tests {
                 source: TaskSource::External {
                     origin: "test".into(),
                 },
+                no_external_solution_search: false,
                 created_at: Utc::now(),
             },
             budget: Budget {
@@ -1346,6 +1350,7 @@ mod tests {
                 source: TaskSource::External {
                     origin: "test".into(),
                 },
+                no_external_solution_search: false,
                 created_at: Utc::now(),
             },
             budget: Budget {

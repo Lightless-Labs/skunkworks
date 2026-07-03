@@ -29,6 +29,11 @@ pub struct TaskContract {
     pub budget: Budget,
     pub priority: Priority,
     pub source: TaskSource,
+    /// Benchmark integrity guard: when true, coding agents must solve from the
+    /// provided task/repo/verifier evidence and must not search GitHub or public
+    /// solution repositories for task-specific solutions.
+    #[serde(default)]
+    pub no_external_solution_search: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -337,5 +342,22 @@ mod tests {
         assert!(s.contains("tests=true"), "got: {s}");
         assert!(s.contains("tokens=500"), "got: {s}");
         assert!(s.contains("duration=12.3s"), "got: {s}");
+    }
+
+    #[test]
+    fn task_contract_defaults_external_solution_search_guard_for_legacy_json() {
+        let json = serde_json::json!({
+            "id": TaskId::new(),
+            "title": "Legacy archived task",
+            "description": "Old lineage/task JSON did not carry benchmark-integrity metadata.",
+            "acceptance_criteria": [],
+            "verification_commands": [],
+            "budget": {"max_tokens": 1000, "max_duration_secs": 60, "max_calls": 1},
+            "priority": "Normal",
+            "source": {"External": {"origin": "archive"}},
+            "created_at": Utc::now(),
+        });
+        let task: TaskContract = serde_json::from_value(json).unwrap();
+        assert!(!task.no_external_solution_search);
     }
 }

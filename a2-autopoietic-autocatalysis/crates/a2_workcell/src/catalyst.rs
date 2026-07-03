@@ -59,6 +59,13 @@ impl GeneralistCatalyst {
 
         prompt.push_str(&self.relevant_files_section(context).await);
 
+        if task.no_external_solution_search {
+            prompt.push_str("## Benchmark Integrity\n\n");
+            prompt.push_str("- Do not search GitHub, public issue trackers, public pull requests, public patches, or solution writeups for this task.\n");
+            prompt.push_str("- Solve using only the checked-out repository, the task statement, local documentation, and verifier output produced in this worktree.\n");
+            prompt.push_str("- If you use online documentation, use it only for general API reference, not task-specific solutions.\n\n");
+        }
+
         prompt.push_str("## Instructions\n\n");
         prompt.push_str("Produce a clean, minimal unified diff that addresses the task.\n");
         prompt.push_str("Use explicit `Diff`, `Rationale`, and `Test Suggestions` sections.\n");
@@ -317,6 +324,7 @@ mod tests {
             source: TaskSource::External {
                 origin: "test".into(),
             },
+            no_external_solution_search: false,
             created_at: Utc::now(),
         }
     }
@@ -354,6 +362,30 @@ mod tests {
         assert!(prompt.contains("Suggest the most relevant tests"));
 
         tokio::fs::remove_file(path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn prompt_includes_benchmark_integrity_guard_when_requested() {
+        let catalyst = GeneralistCatalyst::new();
+        let context = ContextPack {
+            germline_version: GermlineVersion::new(),
+            relevant_files: vec![],
+            prior_attempts: vec![],
+            retrieved_motifs: vec![],
+        };
+        let mut task = make_task();
+        task.no_external_solution_search = true;
+
+        let prompt = catalyst.build_prompt(&task, &context).await;
+        assert!(prompt.contains("## Benchmark Integrity"));
+        assert!(prompt.contains("Do not search GitHub"));
+        assert!(prompt.contains("public pull requests"));
+        assert!(prompt.contains("not task-specific solutions"));
+
+        task.no_external_solution_search = false;
+        let prompt_without_guard = catalyst.build_prompt(&task, &context).await;
+        assert!(!prompt_without_guard.contains("## Benchmark Integrity"));
+        assert!(!prompt_without_guard.contains("Do not search GitHub"));
     }
 
     #[tokio::test]

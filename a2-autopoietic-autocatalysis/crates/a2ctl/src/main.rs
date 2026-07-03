@@ -488,6 +488,8 @@ struct RunInputTask {
     task_id: Option<String>,
     #[serde(default)]
     verification_commands: Vec<RunVerificationSpec>,
+    #[serde(default)]
+    no_external_solution_search: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1519,6 +1521,7 @@ async fn run_benchmark_suite(model: &str) -> Result<(), String> {
         };
 
         let mut task = ingester.from_human(&bench_task.task.title, &bench_task.task.description);
+        task.no_external_solution_search = true;
         task.verification_commands = vec![a2_core::protocol::TaskVerificationCommand {
             command: bench_task.verify.command.clone(),
             expect_exit: bench_task.verify.expect_exit,
@@ -1832,6 +1835,7 @@ fn task_from_run_input(
                     expect_exit: verification.expect_exit,
                 })
                 .collect();
+            task.no_external_solution_search = input.no_external_solution_search;
 
             task
         }
@@ -2933,6 +2937,19 @@ mod tests {
             "cargo test -p a2ctl hidden_case"
         );
         assert_eq!(task.verification_commands[0].expect_exit, 0);
+    }
+
+    #[test]
+    fn json_run_input_sets_no_external_solution_search_guard() {
+        let ingester = a2_sensorium::ingest::Ingester::new(build_budget(50_000, 300));
+        let task = task_from_run_input(
+            &ingester,
+            parse_run_input(
+                r#"{"task_id":"senior-swe-bench-1","problem_statement":"Fix benchmark task","no_external_solution_search":true}"#,
+            ),
+        );
+
+        assert!(task.no_external_solution_search);
     }
 
     #[test]

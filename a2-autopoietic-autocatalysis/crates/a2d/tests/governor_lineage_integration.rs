@@ -160,6 +160,7 @@ fn sample_task() -> TaskContract {
         source: TaskSource::External {
             origin: "integration-test".into(),
         },
+        no_external_solution_search: false,
         created_at: Utc::now(),
     }
 }
