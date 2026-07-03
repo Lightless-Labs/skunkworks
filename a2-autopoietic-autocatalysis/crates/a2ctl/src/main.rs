@@ -63,6 +63,12 @@ enum Commands {
         /// Auto-apply promoted patches via git apply.
         #[arg(long)]
         apply: bool,
+        /// Execution-level network policy for every stdin task. Use `isolated`
+        /// to fail closed unless the selected catalyst/provider can enforce an
+        /// audited network sandbox, or `allowlist:<url>[,<url>...]` for a future
+        /// provider-endpoint allowlist.
+        #[arg(long, value_parser = parse_network_policy_arg)]
+        network_policy: Option<a2_core::protocol::NetworkPolicy>,
         /// Benchmark ablation: disable the anti-repeat retry prompt motif while
         /// keeping prior lineage and verifier-derived retry context enabled.
         #[arg(long)]
@@ -501,6 +507,37 @@ struct RunVerificationSpec {
     expect_exit: i32,
 }
 
+fn parse_network_policy_arg(value: &str) -> Result<a2_core::protocol::NetworkPolicy, String> {
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("open") {
+        return Ok(a2_core::protocol::NetworkPolicy::Open);
+    }
+    if trimmed.eq_ignore_ascii_case("isolated") {
+        return Ok(a2_core::protocol::NetworkPolicy::Isolated);
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if let Some(rest) = lower
+        .strip_prefix("allowlist:")
+        .or_else(|| lower.strip_prefix("allow-list:"))
+    {
+        let prefix_len = trimmed.len() - rest.len();
+        let endpoints: Vec<String> = trimmed[prefix_len..]
+            .split(',')
+            .map(str::trim)
+            .filter(|endpoint| !endpoint.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
+        if endpoints.is_empty() {
+            return Err("allowlist network policy requires at least one endpoint".into());
+        }
+        return Ok(a2_core::protocol::NetworkPolicy::AllowList(endpoints));
+    }
+    Err(
+        "network policy must be one of: open, isolated, allowlist:<endpoint>[,<endpoint>...]"
+            .into(),
+    )
+}
+
 const DEFAULT_STAGNATION_WINDOW: usize = 3;
 const DEFAULT_BENCH_MAX_TOKENS: u64 = 100_000;
 const DEFAULT_BENCH_TIMEOUT_SECS: u64 = 1800;
@@ -618,6 +655,7 @@ async fn main() {
             timeout,
             provider,
             apply,
+            network_policy,
             disable_anti_repeat_retry,
         } => {
             let budget = build_budget(max_tokens, timeout);
@@ -685,7 +723,11 @@ async fn main() {
                     continue;
                 }
 
-                let task = task_from_run_input(&ingester, parse_run_input(raw_line));
+                let task = task_from_run_input_with_network_policy(
+                    &ingester,
+                    parse_run_input(raw_line),
+                    network_policy.clone(),
+                );
 
                 let title = task.title.clone();
 
@@ -1846,6 +1888,18 @@ fn task_from_run_input(
     }
 }
 
+fn task_from_run_input_with_network_policy(
+    ingester: &a2_sensorium::ingest::Ingester,
+    input: ParsedRunInput,
+    network_policy: Option<a2_core::protocol::NetworkPolicy>,
+) -> a2_core::protocol::TaskContract {
+    let mut task = task_from_run_input(ingester, input);
+    if let Some(policy) = network_policy {
+        task.network_policy = Some(policy);
+    }
+    task
+}
+
 fn derive_run_title(problem_statement: &str) -> &str {
     problem_statement
         .lines()
@@ -2944,6 +2998,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_run_network_policy_cli_values() {
+        assert_eq!(
+            parse_network_policy_arg("isolated").unwrap(),
+            a2_core::protocol::NetworkPolicy::Isolated
+        );
+        assert_eq!(
+            parse_network_policy_arg("Open").unwrap(),
+            a2_core::protocol::NetworkPolicy::Open
+        );
+        assert_eq!(
+            parse_network_policy_arg("allowlist:https://api.openai.com, https://api.anthropic.com")
+                .unwrap(),
+            a2_core::protocol::NetworkPolicy::AllowList(vec![
+                "https://api.openai.com".into(),
+                "https://api.anthropic.com".into(),
+            ])
+        );
+        assert!(parse_network_policy_arg("allowlist:").is_err());
+        assert!(parse_network_policy_arg("prompt-only").is_err());
+    }
+
+    #[test]
     fn json_run_input_sets_no_external_solution_search_guard() {
         let ingester = a2_sensorium::ingest::Ingester::new(build_budget(50_000, 300));
         let task = task_from_run_input(
@@ -2954,6 +3030,38 @@ mod tests {
         );
 
         assert!(task.no_external_solution_search);
+        assert_eq!(
+            task.network_policy,
+            Some(a2_core::protocol::NetworkPolicy::Isolated)
+        );
+    }
+
+    #[test]
+    fn run_network_policy_cli_applies_to_plain_text_tasks() {
+        let ingester = a2_sensorium::ingest::Ingester::new(build_budget(50_000, 300));
+        let task = task_from_run_input_with_network_policy(
+            &ingester,
+            parse_run_input("Fix Senior SWE Bench task without public solution lookup"),
+            Some(a2_core::protocol::NetworkPolicy::Isolated),
+        );
+
+        assert_eq!(
+            task.network_policy,
+            Some(a2_core::protocol::NetworkPolicy::Isolated)
+        );
+    }
+
+    #[test]
+    fn run_network_policy_cli_overrides_json_task_policy() {
+        let ingester = a2_sensorium::ingest::Ingester::new(build_budget(50_000, 300));
+        let task = task_from_run_input_with_network_policy(
+            &ingester,
+            parse_run_input(
+                r#"{"task_id":"bench-1","problem_statement":"Fix task","network_policy":"Open"}"#,
+            ),
+            Some(a2_core::protocol::NetworkPolicy::Isolated),
+        );
+
         assert_eq!(
             task.network_policy,
             Some(a2_core::protocol::NetworkPolicy::Isolated)
