@@ -10,6 +10,8 @@ use std::fmt;
 
 pub const SENIOR_SWE_BENCH_AUDIT_SCHEMA: &str = "a2d.senior-swe-bench-audit.v1";
 pub const SENIOR_SWE_BENCH_TASK_PACKAGE_SCHEMA: &str = "a2d.senior-swe-bench-task-package.v1";
+pub const SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA: &str =
+    "a2d.senior-swe-bench-local-evaluation.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SeniorSweBenchTask {
@@ -137,6 +139,32 @@ pub struct SeniorSweBenchEvaluationStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeniorSweBenchTaskPackageSummary {
+    pub task_id: String,
+    pub repo: String,
+    pub github_solution_search_allowed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SeniorSweBenchLocalEvaluation {
+    pub schema_version: &'static str,
+    pub task_id: String,
+    pub repo: String,
+    pub evaluator: &'static str,
+    pub status: String,
+    pub exit_code: Option<i32>,
+    pub candidate_patch: String,
+    pub checkout: String,
+    pub evaluator_command: Vec<String>,
+    pub github_solution_search_allowed: bool,
+    pub stdout_preview: String,
+    pub stderr_preview: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fitness_evidence_path: Option<String>,
+    pub note: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeniorSweBenchError {
     MissingTasksArray,
     UnterminatedTasksArray,
@@ -160,6 +188,72 @@ impl fmt::Display for SeniorSweBenchError {
 }
 
 impl std::error::Error for SeniorSweBenchError {}
+
+pub fn parse_senior_swe_bench_task_package(
+    input: &str,
+) -> Result<SeniorSweBenchTaskPackageSummary, String> {
+    let value: serde_json::Value = serde_json::from_str(input)
+        .map_err(|error| format!("invalid Senior SWE-Bench task package JSON: {error}"))?;
+    let schema = value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Senior SWE-Bench task package missing schema_version".to_string())?;
+    if schema != SENIOR_SWE_BENCH_TASK_PACKAGE_SCHEMA {
+        return Err(format!(
+            "expected {SENIOR_SWE_BENCH_TASK_PACKAGE_SCHEMA}, got {schema}"
+        ));
+    }
+    let task_id = required_string(&value, "task_id")?;
+    let repo = required_string(&value, "repo")?;
+    let github_solution_search_allowed = value
+        .get("agent_restrictions")
+        .and_then(|restrictions| restrictions.get("github_solution_search_allowed"))
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| {
+            "Senior SWE-Bench task package missing agent_restrictions.github_solution_search_allowed"
+                .to_string()
+        })?;
+    if github_solution_search_allowed {
+        return Err(
+            "Senior SWE-Bench task package allows GitHub solution search; refusing evaluation"
+                .to_string(),
+        );
+    }
+    Ok(SeniorSweBenchTaskPackageSummary {
+        task_id,
+        repo,
+        github_solution_search_allowed,
+    })
+}
+
+pub fn build_senior_swe_bench_local_evaluation(
+    package: &SeniorSweBenchTaskPackageSummary,
+    status: impl Into<String>,
+    exit_code: Option<i32>,
+    candidate_patch: impl Into<String>,
+    checkout: impl Into<String>,
+    evaluator_command: Vec<String>,
+    stdout: &str,
+    stderr: &str,
+    fitness_evidence_path: Option<String>,
+) -> SeniorSweBenchLocalEvaluation {
+    SeniorSweBenchLocalEvaluation {
+        schema_version: SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA,
+        task_id: package.task_id.clone(),
+        repo: package.repo.clone(),
+        evaluator: "provided_local_command",
+        status: status.into(),
+        exit_code,
+        candidate_patch: candidate_patch.into(),
+        checkout: checkout.into(),
+        evaluator_command,
+        github_solution_search_allowed: package.github_solution_search_allowed,
+        stdout_preview: preview_text(stdout),
+        stderr_preview: preview_text(stderr),
+        fitness_evidence_path,
+        note: "local evaluator wrapper only; claim official Senior SWE-Bench fitness only when this command runs the benchmark-provided official evaluator/holdouts",
+    }
+}
 
 pub fn extract_senior_swe_bench_tasks(
     input: &str,
@@ -354,6 +448,24 @@ fn find_json_array_end(input: &str, start: usize) -> Option<usize> {
     None
 }
 
+fn required_string(value: &serde_json::Value, field: &str) -> Result<String, String> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| format!("Senior SWE-Bench task package missing {field}"))
+}
+
+fn preview_text(value: &str) -> String {
+    const LIMIT: usize = 2000;
+    let mut preview = value.chars().take(LIMIT).collect::<String>();
+    if value.chars().count() > LIMIT {
+        preview.push_str("...[truncated]");
+    }
+    preview
+}
+
 fn bump(map: &mut BTreeMap<String, usize>, key: String) {
     *map.entry(key).or_insert(0) += 1;
 }
@@ -450,6 +562,52 @@ mod tests {
         assert_eq!(package.evaluation.status, "not_evaluated");
         assert_eq!(package.evaluation.evaluator, "official_senior_swe_bench");
         assert_eq!(package.evaluation.fitness, None);
+    }
+
+    #[test]
+    fn task_package_parser_rejects_solution_search_allowed() {
+        let task = extract_senior_swe_bench_tasks(sample_next_payload())
+            .unwrap()
+            .remove(0);
+        let package =
+            build_senior_swe_bench_task_package(&task, "hard", task.hard.as_ref().unwrap());
+        let mut value = serde_json::to_value(&package).unwrap();
+        let summary = parse_senior_swe_bench_task_package(&value.to_string()).unwrap();
+        assert_eq!(summary.task_id, "firezone-fix-connlib-align-device-hard");
+        assert_eq!(summary.repo, "firezone/firezone");
+        assert!(!summary.github_solution_search_allowed);
+
+        value["agent_restrictions"]["github_solution_search_allowed"] = serde_json::json!(true);
+        let error = parse_senior_swe_bench_task_package(&value.to_string()).unwrap_err();
+        assert!(error.contains("allows GitHub solution search"));
+    }
+
+    #[test]
+    fn local_evaluation_result_redacts_long_output_and_stays_not_official_claim() {
+        let package = SeniorSweBenchTaskPackageSummary {
+            task_id: "task-hard".to_string(),
+            repo: "owner/repo".to_string(),
+            github_solution_search_allowed: false,
+        };
+        let evaluation = build_senior_swe_bench_local_evaluation(
+            &package,
+            "passed",
+            Some(0),
+            "candidate.diff",
+            "checkout",
+            vec!["./test.sh".to_string()],
+            &"x".repeat(2500),
+            "",
+            Some("evidence.json".to_string()),
+        );
+        assert_eq!(
+            evaluation.schema_version,
+            SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA
+        );
+        assert_eq!(evaluation.status, "passed");
+        assert!(evaluation.stdout_preview.ends_with("...[truncated]"));
+        assert!(evaluation.note.contains("local evaluator wrapper only"));
+        assert!(!evaluation.github_solution_search_allowed);
     }
 
     #[test]

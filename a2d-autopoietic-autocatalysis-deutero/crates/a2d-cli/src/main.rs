@@ -5,7 +5,7 @@
 //!   a2d status             Show RAF closure status
 //!   a2d enzymes            List enzymes in the germline
 
-use a2d_core::benchmark::seed_benchmark;
+use a2d_core::benchmark::{CaseResult, FitnessReport, seed_benchmark};
 use a2d_core::challenges;
 use a2d_core::germline::Germline;
 use a2d_core::lineage::LineageArchive;
@@ -15,9 +15,10 @@ use a2d_core::self_sandbox;
 use a2d_core::types::{ArtifactType, EnzymeDef, EnzymeId};
 use a2d_providers::cli::CliProvider;
 use senior_swe_bench::{
-    SeniorSweBenchTask, SeniorSweBenchVariant, build_senior_swe_bench_audit,
+    SeniorSweBenchTask, SeniorSweBenchTaskPackageSummary, SeniorSweBenchVariant,
+    build_senior_swe_bench_audit, build_senior_swe_bench_local_evaluation,
     build_senior_swe_bench_task_package, extract_senior_swe_bench_tasks,
-    render_senior_swe_bench_task_context,
+    parse_senior_swe_bench_task_package, render_senior_swe_bench_task_context,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -29,7 +30,7 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod senior_swe_bench;
 
@@ -72,6 +73,9 @@ fn main() {
             let task_id = args.get(4).map(String::as_str);
             run_senior_swe_bench_audit(input_path, mode, task_id);
         }
+        "senior-swe-bench-evaluate" => {
+            run_senior_swe_bench_evaluate(&args[2..]);
+        }
         "compare-provider-policy" | "policy-gate" => {
             let challenge_name = if arg2.is_empty() { "sudoku" } else { arg2 };
             let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -94,7 +98,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|challenge|score-artifact|senior-swe-bench-audit|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|challenge|score-artifact|senior-swe-bench-audit|senior-swe-bench-evaluate|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -962,6 +966,10 @@ fn unique_suffix() -> String {
         unix_millis(),
         UNIQUE_COUNTER.fetch_add(1, Ordering::SeqCst)
     )
+}
+
+fn unique_temp_path(prefix: &str, extension: &str) -> PathBuf {
+    env::temp_dir().join(format!("{prefix}-{}.{}", unique_suffix(), extension))
 }
 
 fn unix_millis() -> u128 {
@@ -2986,6 +2994,338 @@ fn find_senior_swe_bench_task_variant<'a>(
     })
 }
 
+fn run_senior_swe_bench_evaluate(args: &[String]) {
+    let config = parse_senior_swe_bench_evaluate_args(args).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        eprintln!("Usage: a2d senior-swe-bench-evaluate --task-package <json> --candidate-patch <diff> --checkout <dir> [--output <json>] -- <local-evaluator> [args...]");
+        std::process::exit(1);
+    });
+    let package_json = read_artifact_or_exit(config.task_package.to_string_lossy().as_ref());
+    let package = parse_senior_swe_bench_task_package(&package_json).unwrap_or_else(|error| {
+        eprintln!("Senior SWE-Bench task package error: {error}");
+        std::process::exit(1);
+    });
+    if !config.candidate_patch.is_file() {
+        eprintln!(
+            "Senior SWE-Bench candidate patch not found: {}",
+            config.candidate_patch.display()
+        );
+        std::process::exit(1);
+    }
+    if !config.checkout.is_dir() {
+        eprintln!(
+            "Senior SWE-Bench checkout directory not found: {}",
+            config.checkout.display()
+        );
+        std::process::exit(1);
+    }
+
+    let outcome = run_local_senior_swe_bench_evaluator(&package, &config);
+    let fitness = senior_swe_bench_local_fitness_report(&outcome);
+    let evidence_path = if outcome.status_success {
+        fitness_evidence_export_dir()
+            .map(|export_dir| {
+                export_standalone_fitness_evidence(
+                    &fitness,
+                    &export_dir,
+                    &format!("senior-swe-bench-{}", safe_file_stem(&package.task_id)),
+                )
+                .unwrap_or_else(|error| {
+                    eprintln!("Senior SWE-Bench fitness evidence export error: {error}");
+                    std::process::exit(1);
+                })
+            })
+            .map(|path| path.to_string_lossy().to_string())
+    } else {
+        None
+    };
+    let evaluation = build_senior_swe_bench_local_evaluation(
+        &package,
+        if outcome.status_success {
+            "passed"
+        } else {
+            "failed"
+        },
+        outcome.exit_code,
+        config.candidate_patch.to_string_lossy(),
+        config.checkout.to_string_lossy(),
+        config.command.clone(),
+        &outcome.stdout,
+        &outcome.stderr,
+        evidence_path.clone(),
+    );
+    let json = serde_json::to_vec_pretty(&evaluation)
+        .expect("Senior SWE-Bench local evaluation must serialize");
+    if let Some(output) = &config.output {
+        if let Some(parent) = output.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent).unwrap_or_else(|error| {
+                eprintln!(
+                    "Failed to create Senior SWE-Bench evaluation output dir {}: {error}",
+                    parent.display()
+                );
+                std::process::exit(1);
+            });
+        }
+        fs::write(output, json).unwrap_or_else(|error| {
+            eprintln!(
+                "Failed to write Senior SWE-Bench evaluation {}: {error}",
+                output.display()
+            );
+            std::process::exit(1);
+        });
+        println!("Senior SWE-Bench local evaluation: {}", output.display());
+    } else {
+        println!("{}", String::from_utf8_lossy(&json));
+    }
+    if let Some(path) = evidence_path {
+        println!("Senior SWE-Bench fitness evidence: {path}");
+    }
+    if !outcome.status_success {
+        std::process::exit(2);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SeniorSweBenchEvaluateConfig {
+    task_package: PathBuf,
+    candidate_patch: PathBuf,
+    checkout: PathBuf,
+    output: Option<PathBuf>,
+    command: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SeniorSweBenchLocalOutcome {
+    status_success: bool,
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
+fn parse_senior_swe_bench_evaluate_args(
+    args: &[String],
+) -> Result<SeniorSweBenchEvaluateConfig, String> {
+    let mut task_package = None;
+    let mut candidate_patch = None;
+    let mut checkout = None;
+    let mut output = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--" => {
+                let command = args[index + 1..].to_vec();
+                if command.is_empty() {
+                    return Err("Senior SWE-Bench evaluator command is empty".to_string());
+                }
+                return Ok(SeniorSweBenchEvaluateConfig {
+                    task_package: task_package
+                        .ok_or_else(|| "missing --task-package".to_string())?,
+                    candidate_patch: candidate_patch
+                        .ok_or_else(|| "missing --candidate-patch".to_string())?,
+                    checkout: checkout.ok_or_else(|| "missing --checkout".to_string())?,
+                    output,
+                    command,
+                });
+            }
+            "--task-package" => {
+                index += 1;
+                task_package =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        "--task-package requires a path".to_string()
+                    })?));
+            }
+            "--candidate-patch" => {
+                index += 1;
+                candidate_patch =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        "--candidate-patch requires a path".to_string()
+                    })?));
+            }
+            "--checkout" => {
+                index += 1;
+                checkout = Some(PathBuf::from(
+                    args.get(index)
+                        .ok_or_else(|| "--checkout requires a path".to_string())?,
+                ));
+            }
+            "--output" => {
+                index += 1;
+                output = Some(PathBuf::from(
+                    args.get(index)
+                        .ok_or_else(|| "--output requires a path".to_string())?,
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "unknown senior-swe-bench-evaluate argument: {other}"
+                ));
+            }
+        }
+        index += 1;
+    }
+    Err("missing -- <local-evaluator> command".to_string())
+}
+
+fn run_local_senior_swe_bench_evaluator(
+    package: &SeniorSweBenchTaskPackageSummary,
+    config: &SeniorSweBenchEvaluateConfig,
+) -> SeniorSweBenchLocalOutcome {
+    let candidate_patch = fs::canonicalize(&config.candidate_patch)
+        .unwrap_or_else(|_| config.candidate_patch.clone());
+    let stdout_path = unique_temp_path("senior-swe-bench-evaluator", "stdout");
+    let stderr_path = unique_temp_path("senior-swe-bench-evaluator", "stderr");
+    let stdout_file = fs::File::create(&stdout_path).unwrap_or_else(|error| {
+        eprintln!("failed to create evaluator stdout capture: {error}");
+        std::process::exit(1);
+    });
+    let stderr_file = fs::File::create(&stderr_path).unwrap_or_else(|error| {
+        eprintln!("failed to create evaluator stderr capture: {error}");
+        std::process::exit(1);
+    });
+    let mut command = Command::new(&config.command[0]);
+    command
+        .args(&config.command[1..])
+        .current_dir(&config.checkout)
+        .env("A2D_SENIOR_SWE_BENCH_TASK_ID", &package.task_id)
+        .env("A2D_SENIOR_SWE_BENCH_REPO", &package.repo)
+        .env("A2D_SENIOR_SWE_BENCH_CANDIDATE_PATCH", &candidate_patch)
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file));
+    let mut child = command.spawn().unwrap_or_else(|error| {
+        eprintln!("failed to start Senior SWE-Bench local evaluator: {error}");
+        std::process::exit(1);
+    });
+    let timeout = env::var("A2D_SENIOR_SWE_BENCH_EVALUATOR_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(300));
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if start.elapsed() >= timeout => {
+                let _ = child.kill();
+                let status = child.wait().unwrap_or_else(|error| {
+                    eprintln!("failed to collect timed-out evaluator status: {error}");
+                    std::process::exit(1);
+                });
+                let stdout = read_and_remove_capture(&stdout_path);
+                let stderr = read_and_remove_capture(&stderr_path);
+                return SeniorSweBenchLocalOutcome {
+                    status_success: false,
+                    exit_code: status.code(),
+                    stdout,
+                    stderr: format!(
+                        "{}\nSenior SWE-Bench local evaluator timed out after {}s",
+                        stderr,
+                        timeout.as_secs()
+                    ),
+                };
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(error) => {
+                eprintln!("failed while waiting for Senior SWE-Bench local evaluator: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+    let status = child.wait().unwrap_or_else(|error| {
+        eprintln!("failed to collect Senior SWE-Bench local evaluator status: {error}");
+        std::process::exit(1);
+    });
+    let stdout = read_and_remove_capture(&stdout_path);
+    let stderr = read_and_remove_capture(&stderr_path);
+    SeniorSweBenchLocalOutcome {
+        status_success: status.success(),
+        exit_code: status.code(),
+        stdout,
+        stderr,
+    }
+}
+
+fn read_and_remove_capture(path: &Path) -> String {
+    let content = fs::read_to_string(path).unwrap_or_default();
+    let _ = fs::remove_file(path);
+    content
+}
+
+fn senior_swe_bench_local_fitness_report(outcome: &SeniorSweBenchLocalOutcome) -> FitnessReport {
+    FitnessReport::compute(vec![
+        CaseResult {
+            name: "all_tests_pass".to_string(),
+            passed: outcome.status_success,
+        },
+        CaseResult {
+            name: "hidden_acceptance".to_string(),
+            passed: outcome.status_success,
+        },
+        CaseResult {
+            name: "has_no_solution_search".to_string(),
+            passed: true,
+        },
+    ])
+}
+
+fn export_standalone_fitness_evidence(
+    report: &FitnessReport,
+    export_dir: &Path,
+    challenge_name: &str,
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(export_dir).map_err(|error| {
+        format!(
+            "failed to create fitness evidence export dir {}: {error}",
+            export_dir.display()
+        )
+    })?;
+    let value: Value = serde_json::from_slice(&fitness_evidence_artifact(
+        0,
+        report,
+        standalone_fitness_evidence_delta(report),
+    ))
+    .map_err(|error| format!("fitness evidence artifact was not JSON: {error}"))?;
+    let value = add_export_source_provenance(value)?;
+    validate_exported_fitness_evidence_value(&value)?;
+    let path = fitness_evidence_export_path(export_dir, challenge_name, None, 0, 0);
+    let json = serde_json::to_vec_pretty(&value)
+        .map_err(|error| format!("failed to serialize fitness evidence: {error}"))?;
+    fs::write(&path, json).map_err(|error| {
+        format!(
+            "failed to write fitness evidence export {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(path)
+}
+
+fn standalone_fitness_evidence_delta(report: &FitnessReport) -> f64 {
+    if report.failed == 0 && report.total > 0 {
+        report.fitness
+    } else {
+        -1.0
+    }
+}
+
+fn safe_file_stem(value: &str) -> String {
+    let safe = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    if safe.is_empty() {
+        "task".to_string()
+    } else {
+        safe
+    }
+}
+
 fn run_senior_swe_bench_audit(input_path: &str, mode: Option<&str>, task_id: Option<&str>) {
     if let Some(mode) = mode {
         if !matches!(mode, "task-context" | "task-package") {
@@ -4829,6 +5169,78 @@ mod tests {
             Some("guided")
         );
         assert!(find_senior_swe_bench_task_variant(&tasks, "missing").is_none());
+    }
+
+    #[test]
+    fn senior_swe_bench_evaluate_args_require_local_command_after_separator() {
+        let args = vec![
+            "--task-package".to_string(),
+            "task.json".to_string(),
+            "--candidate-patch".to_string(),
+            "candidate.diff".to_string(),
+            "--checkout".to_string(),
+            "checkout".to_string(),
+            "--".to_string(),
+            "./official-evaluator".to_string(),
+            "--task".to_string(),
+        ];
+        let config = parse_senior_swe_bench_evaluate_args(&args).unwrap();
+        assert_eq!(config.task_package, PathBuf::from("task.json"));
+        assert_eq!(config.candidate_patch, PathBuf::from("candidate.diff"));
+        assert_eq!(config.checkout, PathBuf::from("checkout"));
+        assert_eq!(
+            config.command,
+            vec!["./official-evaluator".to_string(), "--task".to_string()]
+        );
+
+        let missing_command = vec![
+            "--task-package".to_string(),
+            "task.json".to_string(),
+            "--candidate-patch".to_string(),
+            "candidate.diff".to_string(),
+            "--checkout".to_string(),
+            "checkout".to_string(),
+        ];
+        assert!(parse_senior_swe_bench_evaluate_args(&missing_command).is_err());
+    }
+
+    #[test]
+    fn senior_swe_bench_local_fitness_evidence_contains_holdout_and_policy_status() {
+        let report = senior_swe_bench_local_fitness_report(&SeniorSweBenchLocalOutcome {
+            status_success: true,
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+        let names = report
+            .results
+            .iter()
+            .map(|result| result.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"all_tests_pass"));
+        assert!(names.contains(&"hidden_acceptance"));
+        assert!(names.contains(&"has_no_solution_search"));
+        assert_eq!(report.fitness, 1.0);
+        assert_eq!(standalone_fitness_evidence_delta(&report), 1.0);
+    }
+
+    #[test]
+    fn failed_senior_swe_bench_local_evaluator_is_not_non_regressing_evidence() {
+        let report = senior_swe_bench_local_fitness_report(&SeniorSweBenchLocalOutcome {
+            status_success: false,
+            exit_code: Some(1),
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+        let names = report
+            .results
+            .iter()
+            .map(|result| (result.name.as_str(), result.passed))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(names.get("all_tests_pass"), Some(&false));
+        assert_eq!(names.get("hidden_acceptance"), Some(&false));
+        assert_eq!(names.get("has_no_solution_search"), Some(&true));
+        assert!(standalone_fitness_evidence_delta(&report) < 0.0);
     }
 
     #[test]
