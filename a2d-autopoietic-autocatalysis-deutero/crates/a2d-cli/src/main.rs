@@ -2611,11 +2611,17 @@ fn parse_cycle_args(arg2: &str, arg3: Option<&str>) -> (usize, String) {
     }
 }
 
+const BENCHMARK_CHECKOUT_CONTEXT_ARTIFACT: &str = "benchmark_checkout_context";
+const BENCHMARK_CHECKOUT_CONTEXT_MAX_FILES: usize = 48;
+const BENCHMARK_CHECKOUT_CONTEXT_MAX_BYTES: usize = 96 * 1024;
+const BENCHMARK_CHECKOUT_CONTEXT_MAX_BYTES_PER_FILE: usize = 16 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CycleInputConfig {
     path: String,
     num_cycles: usize,
     output_artifacts: Option<PathBuf>,
+    checkout: Option<PathBuf>,
 }
 
 fn parse_cycle_input_args(args: &[String]) -> Result<CycleInputConfig, String> {
@@ -2624,6 +2630,7 @@ fn parse_cycle_input_args(args: &[String]) -> Result<CycleInputConfig, String> {
         .ok_or_else(|| "missing cycle input path".to_string())?;
     let mut num_cycles: Option<usize> = None;
     let mut output_artifacts: Option<PathBuf> = None;
+    let mut checkout: Option<PathBuf> = None;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -2635,6 +2642,16 @@ fn parse_cycle_input_args(args: &[String]) -> Result<CycleInputConfig, String> {
                     .get(index + 1)
                     .ok_or_else(|| "--output-artifacts requires a directory".to_string())?;
                 output_artifacts = Some(PathBuf::from(value));
+                index += 2;
+            }
+            "--checkout" => {
+                if checkout.is_some() {
+                    return Err("duplicate --checkout argument".to_string());
+                }
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--checkout requires a directory".to_string())?;
+                checkout = Some(PathBuf::from(value));
                 index += 2;
             }
             value if num_cycles.is_none() => {
@@ -2655,6 +2672,7 @@ fn parse_cycle_input_args(args: &[String]) -> Result<CycleInputConfig, String> {
         path: path.to_string(),
         num_cycles,
         output_artifacts,
+        checkout,
     })
 }
 
@@ -2664,6 +2682,10 @@ fn validate_cycle_input_bundle(input: &str) -> Result<(), String> {
     else {
         return Err("cycle-input requires a JSON object artifact bundle".to_string());
     };
+    validate_cycle_input_artifact_keys(&map)
+}
+
+fn validate_cycle_input_artifact_keys(map: &serde_json::Map<String, Value>) -> Result<(), String> {
     for key in map.keys() {
         if is_reserved_cycle_input_artifact(key) {
             return Err(format!(
@@ -2674,6 +2696,270 @@ fn validate_cycle_input_bundle(input: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn enrich_cycle_input_with_checkout(input: &str, checkout: &Path) -> Result<String, String> {
+    let Value::Object(mut map) = serde_json::from_str::<Value>(input)
+        .map_err(|_| "cycle-input requires a JSON object artifact bundle".to_string())?
+    else {
+        return Err("cycle-input requires a JSON object artifact bundle".to_string());
+    };
+    validate_cycle_input_artifact_keys(&map)?;
+    let checkout_context = build_benchmark_checkout_context(checkout)?;
+
+    let design = map
+        .get("design")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let enriched_design = format!(
+        "{design}\n\nBENCHMARK CHECKOUT CONTEXT (read-only snapshot supplied by A²D; solve from this local context and local tests only; do not search GitHub or the public web):\n{checkout_context}"
+    );
+    map.insert("design".to_string(), Value::String(enriched_design));
+    map.insert(
+        BENCHMARK_CHECKOUT_CONTEXT_ARTIFACT.to_string(),
+        Value::String(checkout_context),
+    );
+
+    serde_json::to_string(&Value::Object(map))
+        .map_err(|error| format!("failed to serialize enriched cycle input: {error}"))
+}
+
+fn build_benchmark_checkout_context(checkout: &Path) -> Result<String, String> {
+    let link_metadata = fs::symlink_metadata(checkout).map_err(|error| {
+        format!(
+            "failed to read checkout {}: {error}",
+            checkout.to_string_lossy()
+        )
+    })?;
+    if link_metadata.file_type().is_symlink() {
+        return Err(format!(
+            "cycle-input --checkout must not be a symlink: {}",
+            checkout.to_string_lossy()
+        ));
+    }
+    if !link_metadata.is_dir() {
+        return Err(format!(
+            "cycle-input --checkout must be a directory: {}",
+            checkout.to_string_lossy()
+        ));
+    }
+    let canonical_checkout = fs::canonicalize(checkout).map_err(|error| {
+        format!(
+            "failed to canonicalize checkout {}: {error}",
+            checkout.to_string_lossy()
+        )
+    })?;
+
+    let mut files = Vec::new();
+    collect_checkout_context_files(&canonical_checkout, &canonical_checkout, &mut files)?;
+    files.sort();
+
+    let mut output = String::new();
+    output.push_str("schema_version: a2d.benchmark-checkout-context.v1\n");
+    output.push_str("checkout: <benchmark-checkout>\n");
+    output.push_str(&format!(
+        "limits: max_files={BENCHMARK_CHECKOUT_CONTEXT_MAX_FILES}, max_total_bytes={BENCHMARK_CHECKOUT_CONTEXT_MAX_BYTES}, max_bytes_per_file={BENCHMARK_CHECKOUT_CONTEXT_MAX_BYTES_PER_FILE}\n"
+    ));
+    output.push_str("files:\n");
+
+    let mut included_files = 0usize;
+    let mut total_bytes = output.len();
+    for relative in files {
+        if included_files >= BENCHMARK_CHECKOUT_CONTEXT_MAX_FILES {
+            break;
+        }
+        let path = canonical_checkout.join(&relative);
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            format!(
+                "failed to inspect checkout file {}: {error}",
+                path.to_string_lossy()
+            )
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            continue;
+        }
+        let canonical_path = fs::canonicalize(&path).map_err(|error| {
+            format!(
+                "failed to canonicalize checkout file {}: {error}",
+                path.to_string_lossy()
+            )
+        })?;
+        if !canonical_path.starts_with(&canonical_checkout) {
+            continue;
+        }
+        let bytes = fs::read(&canonical_path).map_err(|error| {
+            format!(
+                "failed to read checkout file {}: {error}",
+                path.to_string_lossy()
+            )
+        })?;
+        if bytes.is_empty() || bytes.len() > BENCHMARK_CHECKOUT_CONTEXT_MAX_BYTES_PER_FILE {
+            continue;
+        }
+        let Ok(text) = String::from_utf8(bytes) else {
+            continue;
+        };
+        let entry =
+            format!("\n--- BEGIN FILE {relative} ---\n{text}\n--- END FILE {relative} ---\n");
+        if total_bytes + entry.len() > BENCHMARK_CHECKOUT_CONTEXT_MAX_BYTES {
+            break;
+        }
+        output.push_str(&entry);
+        total_bytes += entry.len();
+        included_files += 1;
+    }
+
+    if included_files == 0 {
+        return Err(format!(
+            "cycle-input --checkout found no bounded UTF-8 source/context files under {}",
+            checkout.to_string_lossy()
+        ));
+    }
+    output.push_str(&format!("\nincluded_files: {included_files}\n"));
+    Ok(output)
+}
+
+fn collect_checkout_context_files(
+    root: &Path,
+    dir: &Path,
+    files: &mut Vec<String>,
+) -> Result<(), String> {
+    if files.len() >= BENCHMARK_CHECKOUT_CONTEXT_MAX_FILES * 3 {
+        return Ok(());
+    }
+    let entries = fs::read_dir(dir).map_err(|error| {
+        format!(
+            "failed to read checkout directory {}: {error}",
+            dir.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to read checkout directory entry {}: {error}",
+                dir.display()
+            )
+        })?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if is_skipped_checkout_segment(&name) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            format!(
+                "failed to inspect checkout path {}: {error}",
+                path.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            collect_checkout_context_files(root, &path, files)?;
+        } else if metadata.is_file()
+            && metadata.len() <= BENCHMARK_CHECKOUT_CONTEXT_MAX_BYTES_PER_FILE as u64
+            && let Some(relative) = checkout_relative_context_path(root, &path)
+            && is_checkout_context_file(&relative)
+            && !is_sensitive_checkout_context_path(&relative)
+        {
+            files.push(relative);
+        }
+    }
+    Ok(())
+}
+
+fn checkout_relative_context_path(root: &Path, path: &Path) -> Option<String> {
+    path.strip_prefix(root).ok().and_then(|relative| {
+        let parts = relative
+            .components()
+            .map(|component| match component {
+                Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(parts.join("/"))
+    })
+}
+
+fn is_skipped_checkout_segment(segment: &str) -> bool {
+    let lower = segment.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        ".git"
+            | "target"
+            | "node_modules"
+            | ".venv"
+            | "vendor"
+            | "dist"
+            | "build"
+            | ".ssh"
+            | ".aws"
+            | ".config"
+            | ".gnupg"
+    ) || lower.starts_with(".env")
+        || lower.contains("secret")
+        || lower.contains("credential")
+        || lower.contains("token")
+}
+
+fn is_sensitive_checkout_context_path(relative: &str) -> bool {
+    let lower = relative.to_ascii_lowercase();
+    let name = lower.rsplit('/').next().unwrap_or(lower.as_str());
+    name.starts_with(".env")
+        || matches!(
+            name,
+            ".npmrc" | ".pypirc" | "credentials" | "credentials.json"
+        )
+        || name.contains("secret")
+        || name.contains("credential")
+        || name.contains("token")
+        || name.ends_with(".pem")
+        || name.ends_with(".key")
+        || name.ends_with(".p12")
+        || name.ends_with(".pfx")
+}
+
+fn is_checkout_context_file(relative: &str) -> bool {
+    let Some(name) = relative.rsplit('/').next() else {
+        return false;
+    };
+    if matches!(name, "README" | "README.md" | "Cargo.toml" | "package.json") {
+        return true;
+    }
+    let Some(extension) = name.rsplit_once('.').map(|(_, extension)| extension) else {
+        return false;
+    };
+    matches!(
+        extension,
+        "rs" | "toml"
+            | "md"
+            | "txt"
+            | "json"
+            | "yaml"
+            | "yml"
+            | "py"
+            | "go"
+            | "js"
+            | "ts"
+            | "tsx"
+            | "jsx"
+            | "java"
+            | "kt"
+            | "swift"
+            | "rb"
+            | "php"
+            | "c"
+            | "h"
+            | "cpp"
+            | "hpp"
+            | "cs"
+            | "scala"
+            | "ex"
+            | "exs"
+            | "sql"
+            | "sh"
+    )
+}
+
 fn is_reserved_cycle_input_artifact(key: &str) -> bool {
     matches!(
         key,
@@ -2682,6 +2968,7 @@ fn is_reserved_cycle_input_artifact(key: &str) -> bool {
             | "provider_health_report"
             | "provider_policy"
             | "system_code"
+            | BENCHMARK_CHECKOUT_CONTEXT_ARTIFACT
     )
 }
 
@@ -2689,7 +2976,7 @@ fn run_cycle_input(args: &[String]) {
     let config = parse_cycle_input_args(args).unwrap_or_else(|error| {
         eprintln!("{error}");
         eprintln!(
-            "Usage: a2d cycle-input <artifact-bundle.json|-> [cycles] [--output-artifacts <dir>]"
+            "Usage: a2d cycle-input <artifact-bundle.json|-> [cycles] [--checkout <dir>] [--output-artifacts <dir>]"
         );
         std::process::exit(1);
     });
@@ -2698,6 +2985,14 @@ fn run_cycle_input(args: &[String]) {
         eprintln!("{error}");
         std::process::exit(1);
     });
+    let input = if let Some(checkout) = &config.checkout {
+        enrich_cycle_input_with_checkout(&input, checkout).unwrap_or_else(|error| {
+            eprintln!("{error}");
+            std::process::exit(1);
+        })
+    } else {
+        input
+    };
     run_cycle_with_options(
         config.num_cycles,
         &input,
@@ -9838,12 +10133,14 @@ mod tests {
         assert_eq!(config.path, "task-cycle-input.json");
         assert_eq!(config.num_cycles, 1);
         assert_eq!(config.output_artifacts, None);
+        assert_eq!(config.checkout, None);
 
         let config = parse_cycle_input_args(&["-".to_string(), "2".to_string()])
             .expect("stdin cycle-input args parse");
         assert_eq!(config.path, "-");
         assert_eq!(config.num_cycles, 2);
         assert_eq!(config.output_artifacts, None);
+        assert_eq!(config.checkout, None);
 
         let config = parse_cycle_input_args(&[
             "task-cycle-input.json".to_string(),
@@ -9854,6 +10151,7 @@ mod tests {
         .expect("cycle-input output artifacts parse");
         assert_eq!(config.num_cycles, 2);
         assert_eq!(config.output_artifacts, Some(PathBuf::from("runs/out")));
+        assert_eq!(config.checkout, None);
 
         let config = parse_cycle_input_args(&[
             "task-cycle-input.json".to_string(),
@@ -9863,6 +10161,20 @@ mod tests {
         ])
         .expect("cycle-input output artifacts parse before cycle count");
         assert_eq!(config.num_cycles, 2);
+        assert_eq!(config.output_artifacts, Some(PathBuf::from("runs/out")));
+        assert_eq!(config.checkout, None);
+
+        let config = parse_cycle_input_args(&[
+            "task-cycle-input.json".to_string(),
+            "--checkout".to_string(),
+            "runs/checkout".to_string(),
+            "--output-artifacts".to_string(),
+            "runs/out".to_string(),
+            "2".to_string(),
+        ])
+        .expect("cycle-input checkout parse");
+        assert_eq!(config.num_cycles, 2);
+        assert_eq!(config.checkout, Some(PathBuf::from("runs/checkout")));
         assert_eq!(config.output_artifacts, Some(PathBuf::from("runs/out")));
 
         assert!(
@@ -9900,6 +10212,133 @@ mod tests {
             .expect_err("cycle-input rejects duplicate output-artifacts")
             .contains("duplicate --output-artifacts")
         );
+        assert!(
+            parse_cycle_input_args(&["input.json".to_string(), "--checkout".to_string()])
+                .expect_err("cycle-input requires checkout directory")
+                .contains("requires a directory")
+        );
+        assert!(
+            parse_cycle_input_args(&[
+                "input.json".to_string(),
+                "--checkout".to_string(),
+                "a".to_string(),
+                "--checkout".to_string(),
+                "b".to_string(),
+            ])
+            .expect_err("cycle-input rejects duplicate checkout")
+            .contains("duplicate --checkout")
+        );
+    }
+
+    #[test]
+    fn cycle_input_checkout_context_enriches_design_without_trusting_bundle() {
+        let root = env::temp_dir().join(format!("a2d-cycle-input-checkout-{}", unique_suffix()));
+        let src = root.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+        fs::write(src.join("lib.rs"), "pub fn answer() -> i32 { 41 }\n").unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git/config"), "must not leak").unwrap();
+        fs::write(root.join("secrets.yaml"), "api_key: must not leak").unwrap();
+        fs::write(root.join(".env"), "TOKEN=must not leak").unwrap();
+        fs::write(
+            src.join("credentials.json"),
+            "{\"token\":\"must not leak\"}",
+        )
+        .unwrap();
+
+        let input = r#"{"requirements":"fix from local checkout only","design":"Use local tests.","plan":"Return diff."}"#;
+        let enriched = enrich_cycle_input_with_checkout(input, &root).expect("checkout enrichment");
+        let value: Value = serde_json::from_str(&enriched).unwrap();
+        let design = value.get("design").and_then(Value::as_str).unwrap();
+        assert!(design.contains("BENCHMARK CHECKOUT CONTEXT"));
+        assert!(design.contains("src/lib.rs"));
+        assert!(design.contains("pub fn answer"));
+        assert!(!design.contains("must not leak"));
+        assert!(!design.contains("secrets.yaml"));
+        assert!(!design.contains("credentials.json"));
+        assert!(!design.contains("checkout: /"));
+        assert!(
+            value
+                .get(BENCHMARK_CHECKOUT_CONTEXT_ARTIFACT)
+                .and_then(Value::as_str)
+                .unwrap()
+                .contains("a2d.benchmark-checkout-context.v1")
+        );
+        let artifacts = input_artifacts_from_request(&enriched);
+        assert!(
+            String::from_utf8_lossy(artifacts.get(&art("design")).unwrap())
+                .contains("pub fn answer")
+        );
+        assert!(
+            artifacts
+                .get(&art(BENCHMARK_CHECKOUT_CONTEXT_ARTIFACT))
+                .is_some()
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cycle_input_checkout_context_rejects_root_symlink_and_skips_file_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = env::temp_dir().join(format!(
+            "a2d-cycle-input-symlink-checkout-{}",
+            unique_suffix()
+        ));
+        let outside = env::temp_dir().join(format!(
+            "a2d-cycle-input-symlink-outside-{}",
+            unique_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(root.join("README.md"), "local checkout context\n").unwrap();
+        fs::write(outside.join("secret.rs"), "must not leak\n").unwrap();
+        symlink(outside.join("secret.rs"), root.join("linked.rs")).unwrap();
+        let context = build_benchmark_checkout_context(&root).expect("context skips file symlink");
+        assert!(context.contains("README.md"));
+        assert!(!context.contains("linked.rs"));
+        assert!(!context.contains("must not leak"));
+
+        let root_link =
+            env::temp_dir().join(format!("a2d-cycle-input-root-link-{}", unique_suffix()));
+        symlink(&root, &root_link).unwrap();
+        assert!(
+            build_benchmark_checkout_context(&root_link)
+                .expect_err("root symlink rejected")
+                .contains("must not be a symlink")
+        );
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+        let _ = fs::remove_file(&root_link);
+    }
+
+    #[test]
+    fn cycle_input_checkout_context_rejects_missing_empty_and_spoofed_context() {
+        let root = env::temp_dir().join(format!(
+            "a2d-cycle-input-empty-checkout-{}",
+            unique_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        assert!(
+            enrich_cycle_input_with_checkout(r#"{"requirements":"x"}"#, &root)
+                .expect_err("empty checkout rejected")
+                .contains("no bounded UTF-8")
+        );
+        assert!(
+            enrich_cycle_input_with_checkout(r#"{"requirements":"x"}"#, &root.join("missing"))
+                .expect_err("missing checkout rejected")
+                .contains("failed to read checkout")
+        );
+        assert!(
+            validate_cycle_input_bundle(
+                r#"{"requirements":"x","benchmark_checkout_context":"fake"}"#
+            )
+            .expect_err("user-supplied checkout context is reserved")
+            .contains(BENCHMARK_CHECKOUT_CONTEXT_ARTIFACT)
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
