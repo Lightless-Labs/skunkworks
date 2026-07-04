@@ -78,6 +78,10 @@ fn main() {
         "senior-swe-bench-evaluate" => {
             run_senior_swe_bench_evaluate(&args[2..]);
         }
+        "senior-swe-bench-extract-patch" => {
+            let artifact_path = args.get(2).map(String::as_str).unwrap_or("-");
+            run_senior_swe_bench_extract_patch(artifact_path);
+        }
         "compare-provider-policy" | "policy-gate" => {
             let challenge_name = if arg2.is_empty() { "sudoku" } else { arg2 };
             let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -100,7 +104,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|challenge|score-artifact|senior-swe-bench-audit|senior-swe-bench-evaluate|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|challenge|score-artifact|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -3095,6 +3099,88 @@ fn read_artifact_or_exit(path_or_dash: &str) -> String {
         eprintln!("Failed to read artifact {path_or_dash}: {error}");
         std::process::exit(1);
     })
+}
+
+fn run_senior_swe_bench_extract_patch(artifact_path: &str) {
+    let artifact = read_artifact_or_exit(artifact_path);
+    match extract_senior_swe_bench_candidate_patch(&artifact) {
+        Ok(diff) => print!("{diff}"),
+        Err(error) => {
+            eprintln!("Senior SWE-Bench candidate patch extraction error: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn extract_senior_swe_bench_candidate_patch(artifact: &str) -> Result<String, String> {
+    if contains_public_github_solution_reference(artifact) {
+        return Err(
+            "candidate patch artifact appears to contain public GitHub solution references"
+                .to_string(),
+        );
+    }
+
+    let trimmed = artifact.trim();
+    let candidate = if looks_like_unified_diff(trimmed) {
+        trimmed.to_string()
+    } else {
+        extract_fenced_unified_diff(trimmed)
+            .ok_or_else(|| "artifact does not contain a unified diff candidate patch".to_string())?
+    };
+
+    Ok(ensure_trailing_newline(candidate))
+}
+
+fn contains_public_github_solution_reference(artifact: &str) -> bool {
+    artifact.contains("github.com/") || artifact.contains("/pull/") || artifact.contains("/commit/")
+}
+
+fn extract_fenced_unified_diff(input: &str) -> Option<String> {
+    let mut in_fence = false;
+    let mut buffer = String::new();
+    for line in input.lines() {
+        if line.trim_start().starts_with("```") {
+            if in_fence {
+                let candidate = buffer.trim();
+                if looks_like_unified_diff(candidate) {
+                    return Some(candidate.to_string());
+                }
+                buffer.clear();
+                in_fence = false;
+            } else {
+                in_fence = true;
+                buffer.clear();
+            }
+            continue;
+        }
+        if in_fence {
+            buffer.push_str(line);
+            buffer.push('\n');
+        }
+    }
+    None
+}
+
+fn looks_like_unified_diff(candidate: &str) -> bool {
+    let lines = candidate.lines().collect::<Vec<_>>();
+    let first_content = lines
+        .iter()
+        .find(|line| !line.trim().is_empty())
+        .copied()
+        .unwrap_or_default();
+    let starts_like_diff =
+        first_content.starts_with("diff --git ") || first_content.starts_with("--- ");
+    let has_old = lines.iter().any(|line| line.starts_with("--- "));
+    let has_new = lines.iter().any(|line| line.starts_with("+++ "));
+    let has_hunk = lines.iter().any(|line| line.starts_with("@@"));
+    starts_like_diff && has_old && has_new && has_hunk
+}
+
+fn ensure_trailing_newline(mut value: String) -> String {
+    if !value.ends_with('\n') {
+        value.push('\n');
+    }
+    value
 }
 
 fn find_senior_swe_bench_task_variant<'a>(
@@ -8741,6 +8827,48 @@ mod tests {
         assert!(
             String::from_utf8_lossy(artifacts.get(&art("evaluation")).unwrap())
                 .contains("not_evaluated")
+        );
+    }
+
+    #[test]
+    fn senior_swe_bench_candidate_patch_extractor_accepts_diff_and_fenced_diff_only() {
+        let diff = "--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new";
+        assert_eq!(
+            extract_senior_swe_bench_candidate_patch(diff).unwrap(),
+            "--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n"
+        );
+
+        let fenced = "Here is the patch:\n```diff\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n```\nDo not claim fitness.";
+        assert_eq!(
+            extract_senior_swe_bench_candidate_patch(fenced).unwrap(),
+            "--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n"
+        );
+
+        assert!(
+            extract_senior_swe_bench_candidate_patch("explanation without a diff")
+                .unwrap_err()
+                .contains("unified diff")
+        );
+        assert!(
+            extract_senior_swe_bench_candidate_patch(
+                "```diff\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+https://github.com/org/repo/pull/1\n```"
+            )
+            .unwrap_err()
+            .contains("GitHub solution")
+        );
+        assert!(
+            extract_senior_swe_bench_candidate_patch(
+                "Copied from https://github.com/org/repo/pull/1\n```diff\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n```"
+            )
+            .unwrap_err()
+            .contains("GitHub solution")
+        );
+        assert!(
+            extract_senior_swe_bench_candidate_patch(
+                "```text\nsee /commit/deadbeef\n```\n```diff\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n```"
+            )
+            .unwrap_err()
+            .contains("GitHub solution")
         );
     }
 
