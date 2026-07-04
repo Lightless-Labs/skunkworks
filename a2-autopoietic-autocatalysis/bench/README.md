@@ -236,6 +236,15 @@ python3 bench/bigcodebench_runner.py \
   | cargo run -p a2ctl -- run --provider codex --network-policy isolated --apply
 ```
 
+For the generic task generator, prefer JSONL so the policy fields travel with each task object and reach `a2ctl run`'s per-line JSON ingestion path:
+
+```bash
+python3 bench/generate_tasks.py --source self --limit 1 --jsonl \
+  | cargo run -p a2ctl -- run --provider opencode --apply
+```
+
+Plain-text generator output cannot embed the task-level policy and must be paired with `a2ctl run --network-policy isolated`; JSON array output (`--json`) remains the legacy array of task-description strings for inspection/export, not direct `a2ctl run` stdin.
+
 Local network-policy smokes (not benchmark evidence):
 
 ```bash
