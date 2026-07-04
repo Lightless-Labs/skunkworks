@@ -304,10 +304,6 @@ impl WorktreeCatalyst {
         worktree_path: &Path,
         network_policy: Option<&NetworkPolicy>,
     ) -> A2Result<(String, String, String, u64, u64)> {
-        #[cfg(test)]
-        if provider_id == "mock" {
-            return self.run_mock_agent(worktree_path).await;
-        }
         if matches!(
             network_policy,
             Some(NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))
@@ -320,9 +316,13 @@ impl WorktreeCatalyst {
             return Err(A2Error::CatalystFailure(
                 self.id.clone(),
                 format!(
-                    "network_policy={policy_name} prevents launching provider `{provider_id}` from the worktree catalyst until an audited network sandbox/provider allowlist is implemented; use a local/mock provider or run with network_policy=Open when unrestricted network access is intentional"
+                    "network_policy={policy_name} prevents launching provider `{provider_id}` from the worktree catalyst until an audited network sandbox/provider allowlist is implemented; run with network_policy=Open only when unrestricted network access is intentional"
                 ),
             ));
+        }
+        #[cfg(test)]
+        if provider_id == "mock" {
+            return self.run_mock_agent(worktree_path).await;
         }
         match provider_id {
             "claude" => self.run_claude(model_id, prompt, worktree_path).await,
@@ -1135,6 +1135,92 @@ mod tests {
             .unwrap_err();
         let message = format!("{error}");
         assert!(message.contains("network_policy=Isolated prevents launching provider `opencode`"));
+        assert!(message.contains("audited network sandbox/provider allowlist"));
+    }
+
+    #[tokio::test]
+    async fn mock_agent_cannot_bypass_restricted_network_policy() {
+        let repo_dir = std::env::temp_dir().join(format!("a2-prompt-{}", uuid::Uuid::now_v7()));
+        let catalyst = WorktreeCatalyst::new(repo_dir.clone());
+
+        let error = catalyst
+            .run_agent(
+                "mock",
+                "model",
+                "prompt",
+                &repo_dir,
+                Some(&NetworkPolicy::Isolated),
+            )
+            .await
+            .unwrap_err();
+        let message = format!("{error}");
+        assert!(message.contains("network_policy=Isolated prevents launching provider `mock`"));
+        assert!(message.contains("audited network sandbox/provider allowlist"));
+    }
+
+    #[tokio::test]
+    async fn mock_agent_cannot_bypass_allowlist_network_policy() {
+        let repo_dir = std::env::temp_dir().join(format!("a2-prompt-{}", uuid::Uuid::now_v7()));
+        let catalyst = WorktreeCatalyst::new(repo_dir.clone());
+
+        let error = catalyst
+            .run_agent(
+                "mock",
+                "model",
+                "prompt",
+                &repo_dir,
+                Some(&NetworkPolicy::AllowList(vec![
+                    "https://api.openai.com".to_string(),
+                ])),
+            )
+            .await
+            .unwrap_err();
+        let message = format!("{error}");
+        assert!(message.contains("network_policy=AllowList prevents launching provider `mock`"));
+        assert!(message.contains("audited network sandbox/provider allowlist"));
+    }
+
+    #[tokio::test]
+    async fn execute_with_mock_refuses_restricted_network_policy_before_patch_bundle() {
+        let repo_dir =
+            std::env::temp_dir().join(format!("a2-policy-execute-{}", uuid::Uuid::now_v7()));
+        fs::create_dir_all(&repo_dir).unwrap();
+        init_git_repo_with_rust_project(&repo_dir).await;
+
+        let catalyst = WorktreeCatalyst::new(repo_dir.clone());
+        let task = TaskContract {
+            id: TaskId::new(),
+            title: "Restricted policy cannot produce patch".into(),
+            description: "Mock worktree execution must not bypass network policy.".into(),
+            acceptance_criteria: vec![],
+            verification_commands: vec![],
+            budget: Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 4,
+            },
+            priority: Priority::Normal,
+            source: TaskSource::External {
+                origin: "test".into(),
+            },
+            no_external_solution_search: true,
+            network_policy: Some(NetworkPolicy::Isolated),
+            created_at: Utc::now(),
+        };
+        let context = ContextPack {
+            germline_version: GermlineVersion::new(),
+            relevant_files: vec![repo_dir.join("src/lib.rs")],
+            prior_attempts: vec![],
+            retrieved_motifs: vec![],
+        };
+        let model = MockModelProvider {
+            provider_id: "mock",
+            model_id: "mock",
+        };
+
+        let error = catalyst.execute(&task, &context, &model).await.unwrap_err();
+        let message = format!("{error}");
+        assert!(message.contains("network_policy=Isolated prevents launching provider `mock`"));
         assert!(message.contains("audited network sandbox/provider allowlist"));
     }
 
