@@ -15,6 +15,12 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
+const AGENT_NETWORK_BOUNDARY_ADVISORY: &str = "  [INFO] agent_network_boundary: not part of the 6/6 sentinel gate; run `python3 bench/agent_network_boundary_check.py --self-test` and `--require-sandbox-runtime` before treating external benchmark evidence as uncontaminated";
+
+fn sentinel_non_gating_advisory() -> &'static str {
+    AGENT_NETWORK_BOUNDARY_ADVISORY
+}
+
 #[derive(Parser)]
 #[command(name = "a2ctl", version, about = "A² — Autopoietic Autocatalysis")]
 struct Cli {
@@ -1424,6 +1430,9 @@ async fn main() {
                 result.results.iter().filter(|r| r.passed).count(),
                 result.results.len()
             );
+            println!();
+            println!("Non-gating advisory checks:");
+            println!("{}", sentinel_non_gating_advisory());
 
             if result.all_passed {
                 println!("Sentinel gate: PASS");
@@ -2997,6 +3006,17 @@ mod tests {
         assert!(output.contains("321"));
         assert!(output.contains("1.2s"));
         assert!(output.contains("yes"));
+    }
+
+    #[test]
+    fn sentinel_advisory_is_non_gating_and_not_pass_shaped() {
+        let advisory = sentinel_non_gating_advisory();
+        assert!(advisory.contains("[INFO] agent_network_boundary"));
+        assert!(advisory.contains("not part of the 6/6 sentinel gate"));
+        assert!(advisory.contains("agent_network_boundary_check.py --self-test"));
+        assert!(advisory.contains("--require-sandbox-runtime"));
+        assert!(!advisory.contains("[PASS]"));
+        assert!(!advisory.contains("Sentinel gate: PASS"));
     }
 
     #[test]
