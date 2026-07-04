@@ -645,6 +645,360 @@ pub fn build_senior_swe_bench_cycle_input(
     })
 }
 
+pub fn build_senior_swe_bench_cycle_input_feedback(
+    cycle_input: &str,
+    local_evaluation: &str,
+) -> Result<serde_json::Value, String> {
+    let package = parse_senior_swe_bench_cycle_input(cycle_input)?;
+    let mut cycle_value: serde_json::Value = serde_json::from_str(cycle_input)
+        .map_err(|error| format!("invalid Senior SWE-Bench cycle input JSON: {error}"))?;
+    reject_reserved_cycle_feedback_artifacts(&cycle_value)?;
+    reject_public_solution_refs_in_cycle_feedback_content(&cycle_value)?;
+    let evaluation_value: serde_json::Value = serde_json::from_str(local_evaluation)
+        .map_err(|error| format!("invalid Senior SWE-Bench local evaluation JSON: {error}"))?;
+    let schema = evaluation_value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Senior SWE-Bench local evaluation missing schema_version".to_string())?;
+    if schema != SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA {
+        return Err(format!(
+            "expected {SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA}, got {schema}"
+        ));
+    }
+    let task_id = safe_benchmark_identifier("task_id", &package.task_id, false)?;
+    let evaluation_task_id = safe_benchmark_identifier(
+        "task_id",
+        &required_string(&evaluation_value, "task_id")?,
+        false,
+    )?;
+    if evaluation_task_id != task_id {
+        return Err(format!(
+            "Senior SWE-Bench local evaluation task_id {evaluation_task_id} does not match cycle input {task_id}"
+        ));
+    }
+    let repo = safe_benchmark_identifier("repo", &package.repo, true)?;
+    let evaluation_repo =
+        safe_benchmark_identifier("repo", &required_string(&evaluation_value, "repo")?, true)?;
+    if evaluation_repo != repo {
+        return Err(format!(
+            "Senior SWE-Bench local evaluation repo {evaluation_repo} does not match cycle input {repo}"
+        ));
+    }
+    let github_solution_search_allowed = evaluation_value
+        .get("github_solution_search_allowed")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| {
+            "Senior SWE-Bench local evaluation missing github_solution_search_allowed".to_string()
+        })?;
+    ensure_solution_search_forbidden(github_solution_search_allowed, "local evaluation")?;
+
+    let status = safe_evaluation_status(&required_string(&evaluation_value, "status")?)?;
+    let evaluator = safe_evaluator_kind(&required_string(&evaluation_value, "evaluator")?)?;
+    let official_hidden_holdouts = match evaluation_value.get("official_hidden_holdouts") {
+        Some(value) => value.as_bool().ok_or_else(|| {
+            "Senior SWE-Bench local evaluation official_hidden_holdouts must be boolean".to_string()
+        })?,
+        None => false,
+    };
+    let feedback_visibility = evaluation_value
+        .get("feedback_visibility")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("redacted_by_default");
+    let may_show_evaluator_output = !official_hidden_holdouts
+        && evaluator != "official_senior_swe_bench"
+        && feedback_visibility == "public_local_test_output";
+    let candidate_patch_hash =
+        safe_candidate_patch_hash(&required_string(&evaluation_value, "candidate_patch_hash")?)?;
+    let exit_code = evaluation_value
+        .get("exit_code")
+        .and_then(serde_json::Value::as_i64)
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "not_reported".to_string());
+    let stdout_preview = feedback_preview_for_cycle_input(
+        &evaluation_value,
+        "stdout_preview",
+        may_show_evaluator_output,
+    )?;
+    let stderr_preview = feedback_preview_for_cycle_input(
+        &evaluation_value,
+        "stderr_preview",
+        may_show_evaluator_output,
+    )?;
+    let fitness_evidence_path = if evaluation_value
+        .get("fitness_evidence_path")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|path| !path.trim().is_empty())
+    {
+        "[present; path omitted from coder feedback]"
+    } else {
+        "none"
+    };
+
+    let feedback = format!(
+        "SENIOR SWE-BENCH EVALUATOR FEEDBACK (from previous candidate patch; coder-visible context only, not a seeded fitness_report or failure_report):\n\
+         - task_id: {task_id}\n\
+         - repo: {repo}\n\
+         - evaluator_kind: {evaluator}\n\
+         - status: {status}\n\
+         - exit_code: {exit_code}\n\
+         - candidate_patch_hash: {candidate_patch_hash}\n\
+         - fitness_evidence_path: {fitness_evidence_path}\n\
+         - stdout_preview: {stdout_preview}\n\
+         - stderr_preview: {stderr_preview}\n\n\
+         Use this evaluator feedback to revise the next candidate patch. Preserve the no-GitHub/public-solution-search rule, solve only from supplied local checkout context and local tests, and return only a unified diff candidate patch."
+    );
+
+    let object = cycle_value
+        .as_object_mut()
+        .ok_or_else(|| "Senior SWE-Bench cycle input must be a JSON object".to_string())?;
+    let design = object
+        .get("design")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    object.insert(
+        "design".to_string(),
+        serde_json::Value::String(format!("{design}\n\n{feedback}")),
+    );
+    let plan = object
+        .get("plan")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    object.insert(
+        "plan".to_string(),
+        serde_json::Value::String(format!(
+            "1. Read the Senior SWE-Bench evaluator feedback from the previous candidate patch.\n2. Use the supplied checkout context/local tests to address the reported failure without public solution search.\n3. Return only a revised unified diff candidate patch.\n\nPrevious plan:\n{plan}"
+        )),
+    );
+    if let Some(evaluation) = object
+        .get_mut("evaluation")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        evaluation.insert(
+            "status".to_string(),
+            serde_json::Value::String("not_evaluated".to_string()),
+        );
+        evaluation.insert("fitness".to_string(), serde_json::Value::Null);
+        evaluation.insert(
+            "note".to_string(),
+            serde_json::Value::String(
+                "previous evaluator feedback is included in design; run evaluator again before claiming task fitness".to_string(),
+            ),
+        );
+    }
+    Ok(cycle_value)
+}
+
+fn safe_feedback_atom(field: &str, value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.chars().any(|ch| ch.is_control()) {
+        return Err(format!(
+            "Senior SWE-Bench local evaluation {field} is not safe for coder feedback"
+        ));
+    }
+    if contains_public_solution_reference_in_feedback(trimmed) {
+        return Err(format!(
+            "Senior SWE-Bench local evaluation {field} contains public solution reference"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn safe_benchmark_identifier(
+    field: &str,
+    value: &str,
+    allow_single_slash: bool,
+) -> Result<String, String> {
+    let safe = safe_feedback_atom(field, value)?;
+    if safe.len() > 200 {
+        return Err(format!(
+            "Senior SWE-Bench local evaluation {field} is too long for coder feedback"
+        ));
+    }
+    let slash_count = safe.chars().filter(|ch| *ch == '/').count();
+    if (!allow_single_slash && slash_count > 0) || (allow_single_slash && slash_count != 1) {
+        return Err(format!(
+            "Senior SWE-Bench local evaluation {field} is not a safe benchmark identifier"
+        ));
+    }
+    if !safe
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/'))
+    {
+        return Err(format!(
+            "Senior SWE-Bench local evaluation {field} is not a safe benchmark identifier"
+        ));
+    }
+    if safe.starts_with('/') || safe.ends_with('/') || safe.contains("//") {
+        return Err(format!(
+            "Senior SWE-Bench local evaluation {field} is not a safe benchmark identifier"
+        ));
+    }
+    Ok(safe)
+}
+
+fn safe_evaluation_status(value: &str) -> Result<String, String> {
+    match safe_feedback_atom("status", value)?.as_str() {
+        "passed" => Ok("passed".to_string()),
+        "failed" => Ok("failed".to_string()),
+        other => Err(format!(
+            "Senior SWE-Bench local evaluation status is not a reviewed value: {other}"
+        )),
+    }
+}
+
+fn safe_evaluator_kind(value: &str) -> Result<String, String> {
+    match safe_feedback_atom("evaluator", value)?.as_str() {
+        "provided_local_command" => Ok("provided_local_command".to_string()),
+        "official_senior_swe_bench" => Ok("official_senior_swe_bench".to_string()),
+        other => Err(format!(
+            "Senior SWE-Bench local evaluation evaluator is not a reviewed value: {other}"
+        )),
+    }
+}
+
+fn safe_candidate_patch_hash(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.len() < 6 || !trimmed.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(
+            "Senior SWE-Bench local evaluation candidate_patch_hash must be a hex git hash"
+                .to_string(),
+        );
+    }
+    safe_feedback_atom("candidate_patch_hash", trimmed)
+}
+
+fn feedback_preview_for_cycle_input(
+    evaluation_value: &serde_json::Value,
+    field: &str,
+    may_show_evaluator_output: bool,
+) -> Result<String, String> {
+    let Some(raw) = evaluation_value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Ok(String::new());
+    };
+    if !may_show_evaluator_output {
+        return Ok(
+            "[redacted: evaluator output is not declared public local-test feedback]".to_string(),
+        );
+    }
+    if contains_public_solution_reference_in_feedback(raw) {
+        return Err(format!(
+            "Senior SWE-Bench local evaluation {field} contains public solution reference"
+        ));
+    }
+    Ok(preview_text(raw))
+}
+
+fn reject_reserved_cycle_feedback_artifacts(value: &serde_json::Value) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Senior SWE-Bench cycle input must be a JSON object".to_string())?;
+    for key in object.keys() {
+        if !matches!(
+            key.as_str(),
+            "requirements" | "design" | "plan" | "benchmark_context" | "evaluation"
+        ) {
+            return Err(format!(
+                "Senior SWE-Bench cycle input feedback cannot preserve non-task-context artifact: {key}"
+            ));
+        }
+    }
+    reject_reserved_cycle_feedback_artifacts_at(value, "$")
+}
+
+fn reject_reserved_cycle_feedback_artifacts_at(
+    value: &serde_json::Value,
+    path: &str,
+) -> Result<(), String> {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, nested) in object {
+                let nested_path = format!("{path}.{key}");
+                if matches!(
+                    key.as_str(),
+                    "fitness_report"
+                        | "failure_report"
+                        | "provider_health_report"
+                        | "provider_policy"
+                        | "system_code"
+                        | "system_patch"
+                        | "test_results"
+                        | "enzyme_defs"
+                        | "code"
+                        | "benchmark_checkout_context"
+                ) {
+                    return Err(format!(
+                        "Senior SWE-Bench cycle input feedback cannot preserve reserved runtime artifact: {nested_path}"
+                    ));
+                }
+                reject_reserved_cycle_feedback_artifacts_at(nested, &nested_path)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(items) => {
+            for (index, nested) in items.iter().enumerate() {
+                reject_reserved_cycle_feedback_artifacts_at(nested, &format!("{path}[{index}]"))?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn reject_public_solution_refs_in_cycle_feedback_content(
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    reject_public_solution_refs_in_cycle_feedback_content_at(value, "$")
+}
+
+fn reject_public_solution_refs_in_cycle_feedback_content_at(
+    value: &serde_json::Value,
+    path: &str,
+) -> Result<(), String> {
+    match value {
+        serde_json::Value::String(text) => {
+            if contains_public_solution_reference_in_feedback(text) {
+                Err(format!(
+                    "Senior SWE-Bench cycle input feedback cannot preserve public solution reference at {path}"
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        serde_json::Value::Object(object) => {
+            for (key, nested) in object {
+                reject_public_solution_refs_in_cycle_feedback_content_at(
+                    nested,
+                    &format!("{path}.{key}"),
+                )?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(items) => {
+            for (index, nested) in items.iter().enumerate() {
+                reject_public_solution_refs_in_cycle_feedback_content_at(
+                    nested,
+                    &format!("{path}[{index}]"),
+                )?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn contains_public_solution_reference_in_feedback(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("github.com")
+        || lower.contains("githubusercontent.com")
+        || lower.contains("/pull/")
+        || lower.contains("/commit/")
+        || lower.contains("/issues/")
+        || lower.contains("refs/pull")
+}
+
 pub fn render_senior_swe_bench_task_context(
     task: &SeniorSweBenchTask,
     variant: &SeniorSweBenchVariant,
@@ -923,6 +1277,350 @@ mod tests {
             parse_senior_swe_bench_cycle_input(&fitness_bearing.to_string())
                 .unwrap_err()
                 .contains("fitness must be null")
+        );
+    }
+
+    #[test]
+    fn cycle_input_feedback_injects_evaluator_failure_without_reserved_artifacts() {
+        let task = extract_senior_swe_bench_tasks(sample_next_payload())
+            .unwrap()
+            .remove(0);
+        let input = build_senior_swe_bench_cycle_input(&task, "hard", task.hard.as_ref().unwrap());
+        let local_evaluation = serde_json::json!({
+            "schema_version": SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA,
+            "task_id": "firezone-fix-connlib-align-device-hard",
+            "repo": "firezone/firezone",
+            "evaluator": "provided_local_command",
+            "status": "failed",
+            "exit_code": 2,
+            "candidate_patch": "candidate.diff",
+            "candidate_patch_hash": "abc12300",
+            "checkout": "checkout",
+            "evaluator_checkout": "checkout",
+            "candidate_patch_applied": true,
+            "evaluator_checkout_mode": "isolated_copy",
+            "original_checkout_mutated": false,
+            "candidate_patch_preflight_checked": true,
+            "candidate_patch_preflight_status": "passed",
+            "candidate_patch_preflight_command": "git apply --check -- candidate.diff",
+            "source_revision": "rev",
+            "source_tree_dirty": true,
+            "source_diff_scope": "crates",
+            "source_diff_hash": "hash",
+            "evidence_command": "senior-swe-bench-evaluate ...",
+            "evaluator_command": ["./evaluator"],
+            "github_solution_search_allowed": false,
+            "feedback_visibility": "public_local_test_output",
+            "stdout_preview": "public local test output",
+            "stderr_preview": "missing public local route assertion",
+            "fitness_evidence_path": null,
+            "note": "local evaluator wrapper only"
+        });
+
+        let feedback = build_senior_swe_bench_cycle_input_feedback(
+            &input.to_string(),
+            &local_evaluation.to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            feedback["evaluation"]["status"].as_str(),
+            Some("not_evaluated")
+        );
+        assert!(feedback["evaluation"]["fitness"].is_null());
+        assert!(feedback.get("fitness_report").is_none());
+        assert!(feedback.get("failure_report").is_none());
+        let design = feedback["design"].as_str().unwrap();
+        assert!(design.contains("SENIOR SWE-BENCH EVALUATOR FEEDBACK"));
+        assert!(design.contains("status: failed"));
+        assert!(design.contains("candidate_patch_hash: abc12300"));
+        assert!(design.contains("missing public local route assertion"));
+        assert!(design.contains("not a seeded fitness_report or failure_report"));
+        assert!(design.contains("no-GitHub/public-solution-search"));
+        assert_eq!(
+            feedback["benchmark_context"]["github_solution_search_allowed"].as_bool(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn cycle_input_feedback_redacts_official_hidden_holdout_output() {
+        let task = extract_senior_swe_bench_tasks(sample_next_payload())
+            .unwrap()
+            .remove(0);
+        let input = build_senior_swe_bench_cycle_input(&task, "hard", task.hard.as_ref().unwrap());
+        let local_evaluation = serde_json::json!({
+            "schema_version": SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA,
+            "task_id": "firezone-fix-connlib-align-device-hard",
+            "repo": "firezone/firezone",
+            "evaluator": "official_senior_swe_bench",
+            "status": "failed",
+            "exit_code": 2,
+            "candidate_patch_hash": "abc12300",
+            "github_solution_search_allowed": false,
+            "official_hidden_holdouts": true,
+            "stdout_preview": "SECRET_PUBLIC_TEST_CONTEXT",
+            "stderr_preview": "SECRET_HIDDEN_HOLDOUT_FAILURE"
+        });
+
+        let feedback = build_senior_swe_bench_cycle_input_feedback(
+            &input.to_string(),
+            &local_evaluation.to_string(),
+        )
+        .unwrap();
+        let design = feedback["design"].as_str().unwrap();
+
+        assert!(design.contains("not declared public local-test feedback"));
+        assert!(!design.contains("SECRET_PUBLIC_TEST_CONTEXT"));
+        assert!(!design.contains("SECRET_HIDDEN_HOLDOUT_FAILURE"));
+    }
+
+    #[test]
+    fn cycle_input_feedback_redacts_local_output_unless_visibility_is_public() {
+        let task = extract_senior_swe_bench_tasks(sample_next_payload())
+            .unwrap()
+            .remove(0);
+        let input = build_senior_swe_bench_cycle_input(&task, "hard", task.hard.as_ref().unwrap());
+        let local_evaluation = serde_json::json!({
+            "schema_version": SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA,
+            "task_id": "firezone-fix-connlib-align-device-hard",
+            "repo": "firezone/firezone",
+            "evaluator": "provided_local_command",
+            "status": "failed",
+            "exit_code": 2,
+            "candidate_patch_hash": "abc12300",
+            "github_solution_search_allowed": false,
+            "stdout_preview": "POTENTIALLY_HIDDEN_OUTPUT",
+            "stderr_preview": "POTENTIALLY_HIDDEN_FAILURE"
+        });
+
+        let feedback = build_senior_swe_bench_cycle_input_feedback(
+            &input.to_string(),
+            &local_evaluation.to_string(),
+        )
+        .unwrap();
+        let design = feedback["design"].as_str().unwrap();
+
+        assert!(design.contains("not declared public local-test feedback"));
+        assert!(!design.contains("POTENTIALLY_HIDDEN_OUTPUT"));
+        assert!(!design.contains("POTENTIALLY_HIDDEN_FAILURE"));
+    }
+
+    #[test]
+    fn cycle_input_feedback_rejects_public_solution_references_in_visible_feedback() {
+        let task = extract_senior_swe_bench_tasks(sample_next_payload())
+            .unwrap()
+            .remove(0);
+        let input = build_senior_swe_bench_cycle_input(&task, "hard", task.hard.as_ref().unwrap());
+        let local_evaluation = serde_json::json!({
+            "schema_version": SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA,
+            "task_id": "firezone-fix-connlib-align-device-hard",
+            "repo": "firezone/firezone",
+            "evaluator": "provided_local_command",
+            "status": "failed",
+            "exit_code": 2,
+            "candidate_patch_hash": "abc12300",
+            "github_solution_search_allowed": false,
+            "feedback_visibility": "public_local_test_output",
+            "stdout_preview": "see https://github.com/firezone/firezone/pull/123",
+            "stderr_preview": ""
+        });
+
+        let err = build_senior_swe_bench_cycle_input_feedback(
+            &input.to_string(),
+            &local_evaluation.to_string(),
+        )
+        .expect_err("public solution references must not enter coder feedback");
+
+        assert!(err.contains("public solution reference"), "{err}");
+    }
+
+    #[test]
+    fn cycle_input_feedback_rejects_solution_references_already_in_cycle_input() {
+        let task = extract_senior_swe_bench_tasks(sample_next_payload())
+            .unwrap()
+            .remove(0);
+        let mut input =
+            build_senior_swe_bench_cycle_input(&task, "hard", task.hard.as_ref().unwrap());
+        input["design"] = serde_json::json!(
+            "previous attempt copied https://github.com/firezone/firezone/pull/123"
+        );
+        let local_evaluation = serde_json::json!({
+            "schema_version": SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA,
+            "task_id": "firezone-fix-connlib-align-device-hard",
+            "repo": "firezone/firezone",
+            "evaluator": "provided_local_command",
+            "status": "failed",
+            "exit_code": 2,
+            "candidate_patch_hash": "abc12300",
+            "github_solution_search_allowed": false
+        });
+
+        let err = build_senior_swe_bench_cycle_input_feedback(
+            &input.to_string(),
+            &local_evaluation.to_string(),
+        )
+        .expect_err("cycle input solution references must not be preserved");
+
+        assert!(err.contains("public solution reference"), "{err}");
+        assert!(err.contains("$.design"), "{err}");
+    }
+
+    #[test]
+    fn cycle_input_feedback_rejects_solution_references_in_feedback_metadata() {
+        let task = extract_senior_swe_bench_tasks(sample_next_payload())
+            .unwrap()
+            .remove(0);
+        let input = build_senior_swe_bench_cycle_input(&task, "hard", task.hard.as_ref().unwrap());
+        let local_evaluation = serde_json::json!({
+            "schema_version": SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA,
+            "task_id": "firezone-fix-connlib-align-device-hard",
+            "repo": "firezone/firezone",
+            "evaluator": "provided_local_command",
+            "status": "https://github.com/firezone/firezone/commit/deadbeef",
+            "exit_code": 2,
+            "candidate_patch_hash": "abc12300",
+            "github_solution_search_allowed": false,
+            "fitness_evidence_path": "https://github.com/firezone/firezone/pull/123"
+        });
+
+        let err = build_senior_swe_bench_cycle_input_feedback(
+            &input.to_string(),
+            &local_evaluation.to_string(),
+        )
+        .expect_err("metadata fields must not carry public solution references");
+
+        assert!(
+            err.contains("status contains public solution reference"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn cycle_input_feedback_omits_fitness_evidence_path_from_design() {
+        let task = extract_senior_swe_bench_tasks(sample_next_payload())
+            .unwrap()
+            .remove(0);
+        let input = build_senior_swe_bench_cycle_input(&task, "hard", task.hard.as_ref().unwrap());
+        let local_evaluation = serde_json::json!({
+            "schema_version": SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA,
+            "task_id": "firezone-fix-connlib-align-device-hard",
+            "repo": "firezone/firezone",
+            "evaluator": "provided_local_command",
+            "status": "failed",
+            "exit_code": 2,
+            "candidate_patch_hash": "abc12300",
+            "github_solution_search_allowed": false,
+            "fitness_evidence_path": "runs/private/hidden/failure.json"
+        });
+
+        let feedback = build_senior_swe_bench_cycle_input_feedback(
+            &input.to_string(),
+            &local_evaluation.to_string(),
+        )
+        .unwrap();
+        let design = feedback["design"].as_str().unwrap();
+
+        assert!(design.contains("path omitted from coder feedback"));
+        assert!(!design.contains("runs/private/hidden/failure.json"));
+    }
+
+    #[test]
+    fn cycle_input_feedback_rejects_reserved_runtime_artifacts() {
+        let task = extract_senior_swe_bench_tasks(sample_next_payload())
+            .unwrap()
+            .remove(0);
+        let mut input =
+            build_senior_swe_bench_cycle_input(&task, "hard", task.hard.as_ref().unwrap());
+        input["benchmark_context"]["metadata"] = serde_json::json!({
+            "nested": [{"fitness_report": {"fake": true}}]
+        });
+        let local_evaluation = serde_json::json!({
+            "schema_version": SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA,
+            "task_id": "firezone-fix-connlib-align-device-hard",
+            "repo": "firezone/firezone",
+            "evaluator": "provided_local_command",
+            "status": "failed",
+            "exit_code": 2,
+            "candidate_patch_hash": "abc12300",
+            "github_solution_search_allowed": false
+        });
+
+        let err = build_senior_swe_bench_cycle_input_feedback(
+            &input.to_string(),
+            &local_evaluation.to_string(),
+        )
+        .expect_err("reserved runtime artifacts must not be preserved by feedback command");
+
+        assert!(err.contains("reserved runtime artifact"), "{err}");
+        assert!(err.contains("fitness_report"), "{err}");
+    }
+
+    #[test]
+    fn cycle_input_feedback_rejects_malformed_official_hidden_holdouts() {
+        let task = extract_senior_swe_bench_tasks(sample_next_payload())
+            .unwrap()
+            .remove(0);
+        let input = build_senior_swe_bench_cycle_input(&task, "hard", task.hard.as_ref().unwrap());
+        let local_evaluation = serde_json::json!({
+            "schema_version": SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA,
+            "task_id": "firezone-fix-connlib-align-device-hard",
+            "repo": "firezone/firezone",
+            "evaluator": "provided_local_command",
+            "status": "failed",
+            "exit_code": 2,
+            "candidate_patch_hash": "abc12300",
+            "github_solution_search_allowed": false,
+            "official_hidden_holdouts": "true",
+            "stdout_preview": "SECRET"
+        });
+
+        let err = build_senior_swe_bench_cycle_input_feedback(
+            &input.to_string(),
+            &local_evaluation.to_string(),
+        )
+        .expect_err("malformed hidden-holdout provenance must fail closed");
+
+        assert!(
+            err.contains("official_hidden_holdouts must be boolean"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn cycle_input_feedback_rejects_mismatched_or_solution_search_evaluation() {
+        let task = extract_senior_swe_bench_tasks(sample_next_payload())
+            .unwrap()
+            .remove(0);
+        let input = build_senior_swe_bench_cycle_input(&task, "hard", task.hard.as_ref().unwrap());
+        let mut local_evaluation = serde_json::json!({
+            "schema_version": SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA,
+            "task_id": "other-task",
+            "repo": "firezone/firezone",
+            "evaluator": "provided_local_command",
+            "status": "failed",
+            "candidate_patch_hash": "abc12300",
+            "github_solution_search_allowed": false
+        });
+
+        assert!(
+            build_senior_swe_bench_cycle_input_feedback(
+                &input.to_string(),
+                &local_evaluation.to_string(),
+            )
+            .unwrap_err()
+            .contains("does not match cycle input")
+        );
+
+        local_evaluation["task_id"] = serde_json::json!("firezone-fix-connlib-align-device-hard");
+        local_evaluation["github_solution_search_allowed"] = serde_json::json!(true);
+        assert!(
+            build_senior_swe_bench_cycle_input_feedback(
+                &input.to_string(),
+                &local_evaluation.to_string(),
+            )
+            .unwrap_err()
+            .contains("allows GitHub solution search")
         );
     }
 

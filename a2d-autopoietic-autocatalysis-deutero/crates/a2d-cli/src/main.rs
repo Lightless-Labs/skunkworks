@@ -16,10 +16,11 @@ use a2d_providers::cli::CliProvider;
 use senior_swe_bench::{
     SeniorSweBenchOfficialEvaluatorManifestSummary, SeniorSweBenchTask,
     SeniorSweBenchTaskPackageSummary, SeniorSweBenchVariant, build_senior_swe_bench_audit,
-    build_senior_swe_bench_cycle_input, build_senior_swe_bench_local_evaluation,
-    build_senior_swe_bench_task_package, extract_senior_swe_bench_tasks,
-    parse_senior_swe_bench_cycle_input, parse_senior_swe_bench_official_evaluator_manifest,
-    parse_senior_swe_bench_task_package, render_senior_swe_bench_task_context,
+    build_senior_swe_bench_cycle_input, build_senior_swe_bench_cycle_input_feedback,
+    build_senior_swe_bench_local_evaluation, build_senior_swe_bench_task_package,
+    extract_senior_swe_bench_tasks, parse_senior_swe_bench_cycle_input,
+    parse_senior_swe_bench_official_evaluator_manifest, parse_senior_swe_bench_task_package,
+    render_senior_swe_bench_task_context,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -92,6 +93,14 @@ fn main() {
             let artifact_path = args.get(2).map(String::as_str).unwrap_or("-");
             run_senior_swe_bench_diagnose_artifact(artifact_path);
         }
+        "senior-swe-bench-cycle-input-feedback" => {
+            let cycle_input_path = args.get(2).map(String::as_str).unwrap_or("-");
+            let evaluation_path = args.get(3).map(String::as_str).unwrap_or_else(|| {
+                eprintln!("Usage: a2d senior-swe-bench-cycle-input-feedback <task-cycle-input.json|-> <local-evaluation.json|->");
+                std::process::exit(1);
+            });
+            run_senior_swe_bench_cycle_input_feedback(cycle_input_path, evaluation_path);
+        }
         "compare-provider-policy" | "policy-gate" => {
             let challenge_name = if arg2.is_empty() { "sudoku" } else { arg2 };
             let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -114,7 +123,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-cycle-input-feedback|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -3850,6 +3859,21 @@ fn run_senior_swe_bench_diagnose_artifact(artifact_path: &str) {
     println!(
         "{}",
         serde_json::to_string_pretty(&diagnosis).expect("diagnosis must serialize")
+    );
+}
+
+fn run_senior_swe_bench_cycle_input_feedback(cycle_input_path: &str, evaluation_path: &str) {
+    let cycle_input = read_artifact_or_exit(cycle_input_path);
+    let local_evaluation = read_artifact_or_exit(evaluation_path);
+    let feedback = build_senior_swe_bench_cycle_input_feedback(&cycle_input, &local_evaluation)
+        .unwrap_or_else(|error| {
+            eprintln!("Senior SWE-Bench cycle input feedback error: {error}");
+            std::process::exit(1);
+        });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&feedback)
+            .expect("Senior SWE-Bench cycle input feedback must serialize")
     );
 }
 
