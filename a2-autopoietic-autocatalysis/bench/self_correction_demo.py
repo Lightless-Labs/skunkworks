@@ -42,6 +42,10 @@ DEFAULT_ARCHIVE_EVIDENCE = Path(
 )
 DEFAULT_FIXTURE = "compound-archive-same-crate-hidden"
 DEFAULT_PROVIDER = "opencode/minimax-coding-plan/MiniMax-M3"
+FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY = "Isolated"
+FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR = (
+    "fail_closed_provider_launch_until_audited_sandbox_provider_allowlist"
+)
 HOST_PATH_MARKERS = ("/Users", "/tmp", "/var/folders")
 EXPECTED_DEMO_REQUIREMENTS = [
     "failed_first_attempt",
@@ -447,8 +451,8 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
             if args.allow_dirty_source
             else True,
             "dirty_source_allowed": args.allow_dirty_source,
-            "benchmark_task_network_policy": "Isolated",
-            "restricted_network_policy_current_behavior": "fail_closed_provider_launch_until_audited_sandbox_provider_allowlist",
+            "benchmark_task_network_policy": FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY,
+            "restricted_network_policy_current_behavior": FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR,
         },
         "commands": {
             "harness": display_command(fresh_command(args)),
@@ -507,6 +511,30 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
     ]:
         if report.get(key) is not False:
             raise RuntimeError(f"fresh preflight report {key} must be false")
+    checks = report.get("checks")
+    current_report_shape = any(
+        key in report for key in ["checks", "results", "evidence_json", "preflight_report_json"]
+    )
+    if checks is None and not current_report_shape:
+        benchmark_task_network_policy = "legacy report: not recorded"
+        restricted_network_policy_current_behavior = "legacy report: not recorded"
+    else:
+        if not isinstance(checks, dict):
+            raise RuntimeError("fresh preflight report lacks checks")
+        if checks.get("benchmark_task_network_policy") != FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY:
+            raise RuntimeError(
+                "fresh preflight report checks.benchmark_task_network_policy must be "
+                f"{FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY}"
+            )
+        if checks.get("restricted_network_policy_current_behavior") != FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR:
+            raise RuntimeError(
+                "fresh preflight report checks.restricted_network_policy_current_behavior must record "
+                f"{FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR}"
+            )
+        benchmark_task_network_policy = checks["benchmark_task_network_policy"]
+        restricted_network_policy_current_behavior = checks[
+            "restricted_network_policy_current_behavior"
+        ]
     for key, label in [("results", "results"), ("evidence_json", "evidence")]:
         declared_path = report.get(key)
         if isinstance(declared_path, str) and declared_path:
@@ -535,6 +563,11 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
     print(f"  current_head: {current_head}")
     print(f"  report_source_dirty: {source_dirty}")
     print(f"  current_source_dirty: {current_dirty}")
+    print(f"  benchmark_task_network_policy: {benchmark_task_network_policy}")
+    print(
+        "  restricted_network_policy_current_behavior: "
+        f"{restricted_network_policy_current_behavior}"
+    )
     print("  readiness only: no provider-backed benchmark/results/evidence/contract/live-auth check ran")
     print("  not loop evidence: no failed-attempt/retry/promotion proof")
     if require_current_head and current_head != source_head:
@@ -1934,6 +1967,12 @@ class SelfCorrectionDemoTests(unittest.TestCase):
     def evidence_reference(self, evidence: dict[str, object]) -> dict[str, object]:
         return {"requirements": evidence["requirements"]}
 
+    def required_preflight_network_checks(self) -> dict[str, str]:
+        return {
+            "benchmark_task_network_policy": FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY,
+            "restricted_network_policy_current_behavior": FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR,
+        }
+
     def sync_embedded_rows_for_selector(
         self,
         evidence: dict[str, object],
@@ -3228,6 +3267,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             "evidence_json_created": False,
             "fresh_provenance_contract_executed": False,
             "live_provider_auth_quota_model_checked": False,
+            "checks": self.required_preflight_network_checks(),
             "source_metadata": {
                 "source_head": "1234567890abcdef1234567890abcdef12345678",
                 "source_dirty": False,
@@ -3248,6 +3288,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
         output = stdout.getvalue()
         self.assertIn("STALE source snapshot differs from current HEAD/state", output)
+        self.assertIn("benchmark_task_network_policy: Isolated", output)
+        self.assertIn("fail_closed_provider_launch_until_audited_sandbox_provider_allowlist", output)
         self.assertIn("readiness only", output)
         self.assertIn("not loop evidence", output)
 
@@ -3260,6 +3302,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             "evidence_json_created": False,
             "fresh_provenance_contract_executed": False,
             "live_provider_auth_quota_model_checked": False,
+            "checks": self.required_preflight_network_checks(),
             "source_metadata": {
                 "source_head": "1234567890abcdef1234567890abcdef12345678",
                 "source_dirty": True,
@@ -3280,6 +3323,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
         output = stdout.getvalue()
         self.assertIn("PASS source snapshot matches current HEAD/state", output)
+        self.assertIn("benchmark_task_network_policy: Isolated", output)
         self.assertIn("readiness only", output)
         self.assertIn("not loop evidence", output)
 
@@ -3309,6 +3353,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "live_provider_auth_quota_model_checked": False,
                     "results": str(results),
                     "evidence_json": str(evidence),
+                    "checks": self.required_preflight_network_checks(),
                     "source_metadata": {
                         "source_head": current["source_head"],
                         "source_dirty": current["source_dirty"],
@@ -3348,7 +3393,52 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             with mock.patch(__name__ + ".current_source_metadata", return_value=current), contextlib.redirect_stdout(stdout):
                 verify_fresh_preflight_report(report_path, require_current_head=True)
 
-        self.assertIn("PASS source snapshot matches current HEAD/state", stdout.getvalue())
+        output = stdout.getvalue()
+        self.assertIn("PASS source snapshot matches current HEAD/state", output)
+        self.assertIn("benchmark_task_network_policy: legacy report: not recorded", output)
+
+    def test_verify_preflight_report_rejects_missing_network_policy_audit_fields(self) -> None:
+        current = {
+            "source_head": "1234567890abcdef1234567890abcdef12345678",
+            "source_dirty": False,
+            "source_head_short": "1234567",
+            "source_branch": "main",
+        }
+        for checks, expected in [
+            ({}, "checks.benchmark_task_network_policy"),
+            (
+                {"benchmark_task_network_policy": "Isolated"},
+                "checks.restricted_network_policy_current_behavior",
+            ),
+            (
+                {
+                    "benchmark_task_network_policy": "Open",
+                    "restricted_network_policy_current_behavior": FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR,
+                },
+                "checks.benchmark_task_network_policy",
+            ),
+        ]:
+            with self.subTest(checks=checks), tempfile.TemporaryDirectory() as tmpdir:
+                report = {
+                    "mode": "fresh_preflight",
+                    "creates_loop_evidence": False,
+                    "provider_backed_benchmark_executed": False,
+                    "results_created": False,
+                    "evidence_json_created": False,
+                    "fresh_provenance_contract_executed": False,
+                    "live_provider_auth_quota_model_checked": False,
+                    "checks": checks,
+                    "source_metadata": {
+                        "source_head": current["source_head"],
+                        "source_dirty": current["source_dirty"],
+                    },
+                }
+                report_path = Path(tmpdir) / "fresh.report.json"
+                report_path.write_text(json.dumps(report), encoding="utf-8")
+                with mock.patch(__name__ + ".current_source_metadata", return_value=current), contextlib.redirect_stdout(
+                    io.StringIO()
+                ), self.assertRaisesRegex(RuntimeError, expected):
+                    verify_fresh_preflight_report(report_path, require_current_head=True)
 
     def test_verify_preflight_report_require_current_head_rejects_stale_snapshot(self) -> None:
         report = {
@@ -3359,6 +3449,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             "evidence_json_created": False,
             "fresh_provenance_contract_executed": False,
             "live_provider_auth_quota_model_checked": False,
+            "checks": self.required_preflight_network_checks(),
             "source_metadata": {
                 "source_head": "1234567890abcdef1234567890abcdef12345678",
                 "source_dirty": False,
