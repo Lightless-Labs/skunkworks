@@ -16,6 +16,8 @@ pub const SENIOR_SWE_BENCH_OFFICIAL_EVALUATOR_MANIFEST_SCHEMA: &str =
     "a2d.senior-swe-bench-official-evaluator-manifest.v1";
 pub const SENIOR_SWE_BENCH_CYCLE_RETRY_PLAN_SCHEMA: &str =
     "a2d.senior-swe-bench-cycle-retry-plan.v1";
+pub const SENIOR_SWE_BENCH_CYCLE_RETRY_STEP_SCHEMA: &str =
+    "a2d.senior-swe-bench-cycle-retry-step.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SeniorSweBenchTask {
@@ -720,6 +722,429 @@ pub fn build_senior_swe_bench_cycle_retry_plan(
         "attempts": attempts,
         "note": "planning/validation artifact only: this command starts no providers, runs no evaluator, and is not fitness evidence"
     }))
+}
+
+pub fn build_senior_swe_bench_cycle_retry_step(
+    retry_plan: &str,
+    attempt_index: usize,
+    cycle_input: &str,
+    local_evaluation: &str,
+) -> Result<serde_json::Value, String> {
+    let retry_plan_value: serde_json::Value = serde_json::from_str(retry_plan)
+        .map_err(|error| format!("invalid Senior SWE-Bench retry plan JSON: {error}"))?;
+    validate_senior_swe_bench_retry_plan_for_step(&retry_plan_value, attempt_index)?;
+    let package = parse_senior_swe_bench_cycle_input(cycle_input)?;
+    let cycle_value: serde_json::Value = serde_json::from_str(cycle_input)
+        .map_err(|error| format!("invalid Senior SWE-Bench cycle input JSON: {error}"))?;
+    reject_reserved_cycle_feedback_artifacts(&cycle_value)?;
+    reject_public_solution_refs_in_cycle_feedback_content(&cycle_value)?;
+    let plan_task_id = safe_benchmark_identifier(
+        "task_id",
+        &required_string(&retry_plan_value, "task_id")?,
+        false,
+    )?;
+    let plan_repo =
+        safe_benchmark_identifier("repo", &required_string(&retry_plan_value, "repo")?, true)?;
+    let task_id = safe_benchmark_identifier("task_id", &package.task_id, false)?;
+    let repo = safe_benchmark_identifier("repo", &package.repo, true)?;
+    if plan_task_id != task_id {
+        return Err(format!(
+            "Senior SWE-Bench retry plan task_id {plan_task_id} does not match cycle input {task_id}"
+        ));
+    }
+    if plan_repo != repo {
+        return Err(format!(
+            "Senior SWE-Bench retry plan repo {plan_repo} does not match cycle input {repo}"
+        ));
+    }
+
+    let evaluation_value: serde_json::Value = serde_json::from_str(local_evaluation)
+        .map_err(|error| format!("invalid Senior SWE-Bench local evaluation JSON: {error}"))?;
+    reject_public_solution_refs_in_cycle_feedback_content_at(&evaluation_value, "$")?;
+    let schema = evaluation_value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Senior SWE-Bench local evaluation missing schema_version".to_string())?;
+    if schema != SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA {
+        return Err(format!(
+            "expected {SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA}, got {schema}"
+        ));
+    }
+    let evaluation_task_id = safe_benchmark_identifier(
+        "task_id",
+        &required_string(&evaluation_value, "task_id")?,
+        false,
+    )?;
+    if evaluation_task_id != task_id {
+        return Err(format!(
+            "Senior SWE-Bench local evaluation task_id {evaluation_task_id} does not match cycle input {task_id}"
+        ));
+    }
+    let evaluation_repo =
+        safe_benchmark_identifier("repo", &required_string(&evaluation_value, "repo")?, true)?;
+    if evaluation_repo != repo {
+        return Err(format!(
+            "Senior SWE-Bench local evaluation repo {evaluation_repo} does not match cycle input {repo}"
+        ));
+    }
+    ensure_solution_search_forbidden(
+        evaluation_value
+            .get("github_solution_search_allowed")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| {
+                "Senior SWE-Bench local evaluation missing github_solution_search_allowed"
+                    .to_string()
+            })?,
+        "local evaluation",
+    )?;
+    let status = safe_evaluation_status(&required_string(&evaluation_value, "status")?)?;
+    let _evaluator = safe_evaluator_kind(&required_string(&evaluation_value, "evaluator")?)?;
+    let _candidate_patch_hash =
+        safe_candidate_patch_hash(&required_string(&evaluation_value, "candidate_patch_hash")?)?;
+    let is_final_attempt = attempt_index + 1
+        >= retry_plan_value
+            .get("max_attempts")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "Senior SWE-Bench retry plan missing max_attempts".to_string())?
+            as usize;
+
+    let mut step = serde_json::json!({
+        "schema_version": SENIOR_SWE_BENCH_CYCLE_RETRY_STEP_SCHEMA,
+        "task_id": task_id,
+        "repo": repo,
+        "attempt_index": attempt_index,
+        "max_attempts": retry_plan_value["max_attempts"],
+        "evaluation_status": status,
+        "provider_invocations_started": false,
+        "evaluator_invocations_started": false,
+        "fitness_claim_allowed_before_evidence": false,
+        "github_solution_search_allowed": false,
+        "note": "deterministic retry-step decision only: this command starts no providers, runs no evaluator, and is not fitness evidence"
+    });
+
+    match status.as_str() {
+        "failed" if !is_final_attempt => {
+            step["decision"] = serde_json::Value::String("build_next_cycle_input".to_string());
+            step["next_step"] = serde_json::Value::String(
+                "run a2d cycle-input with the included next_cycle_input, capture output artifacts, then extract/evaluate the candidate patch".to_string(),
+            );
+            step["next_cycle_input"] =
+                build_senior_swe_bench_cycle_input_feedback(cycle_input, local_evaluation)?;
+        }
+        "failed" => {
+            step["decision"] = serde_json::Value::String("stop".to_string());
+            step["stop_reason"] = serde_json::Value::String("max_attempts_exhausted".to_string());
+        }
+        "passed" => {
+            let Some(path) = evaluation_value
+                .get("fitness_evidence_path")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+            else {
+                step["decision"] = serde_json::Value::String("stop".to_string());
+                step["stop_reason"] =
+                    serde_json::Value::String("missing_fitness_evidence_path".to_string());
+                return Ok(step);
+            };
+            let path = safe_feedback_atom("fitness_evidence_path", path)?;
+            step["decision"] = serde_json::Value::String("inspect_fitness_evidence".to_string());
+            step["fitness_evidence_path"] = serde_json::Value::String(path.clone());
+            step["fitness_evidence_inspect_args"] =
+                serde_json::json!(["fitness-evidence-inspect", path, "--require-all-tests-pass"]);
+            step["next_step"] = serde_json::Value::String(
+                "run the suggested fitness-evidence-inspect command before claiming task fitness"
+                    .to_string(),
+            );
+        }
+        _ => unreachable!("safe_evaluation_status only returns reviewed statuses"),
+    }
+
+    Ok(step)
+}
+
+fn validate_senior_swe_bench_retry_plan_for_step(
+    retry_plan: &serde_json::Value,
+    attempt_index: usize,
+) -> Result<(), String> {
+    let schema = retry_plan
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Senior SWE-Bench retry plan missing schema_version".to_string())?;
+    if schema != SENIOR_SWE_BENCH_CYCLE_RETRY_PLAN_SCHEMA {
+        return Err(format!(
+            "expected {SENIOR_SWE_BENCH_CYCLE_RETRY_PLAN_SCHEMA}, got {schema}"
+        ));
+    }
+    safe_benchmark_identifier("task_id", &required_string(retry_plan, "task_id")?, false)?;
+    safe_benchmark_identifier("repo", &required_string(retry_plan, "repo")?, true)?;
+    ensure_solution_search_forbidden(
+        retry_plan
+            .get("github_solution_search_allowed")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| {
+                "Senior SWE-Bench retry plan missing github_solution_search_allowed".to_string()
+            })?,
+        "retry plan",
+    )?;
+    if retry_plan
+        .get("provider_invocations_started")
+        .and_then(serde_json::Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry plan must not have started provider invocations".to_string(),
+        );
+    }
+    if retry_plan
+        .get("fitness_claim_allowed_before_evidence")
+        .and_then(serde_json::Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry plan must forbid fitness claims before evidence".to_string(),
+        );
+    }
+    let max_attempts = retry_plan
+        .get("max_attempts")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| "Senior SWE-Bench retry plan missing max_attempts".to_string())?
+        as usize;
+    if !(1..=8).contains(&max_attempts) {
+        return Err("Senior SWE-Bench retry plan max_attempts must be in 1..=8".to_string());
+    }
+    if attempt_index >= max_attempts {
+        return Err(format!(
+            "Senior SWE-Bench retry step attempt_index {attempt_index} is outside max_attempts {max_attempts}"
+        ));
+    }
+    let attempts = retry_plan
+        .get("attempts")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "Senior SWE-Bench retry plan missing attempts".to_string())?;
+    if attempts.len() != max_attempts {
+        return Err(
+            "Senior SWE-Bench retry plan attempts length must match max_attempts".to_string(),
+        );
+    }
+    validate_retry_plan_string_array(
+        retry_plan,
+        "success_requires",
+        &[
+            "a2d.fitness-evidence.v1",
+            "actual_tests_evaluated:true",
+            "non_regressing:true",
+            "all_tests_pass:true",
+        ],
+    )?;
+    validate_retry_plan_string_array(
+        retry_plan,
+        "stop_criteria",
+        &[
+            "candidate_patch_extraction_failed",
+            "evaluation_passed_with_valid_fitness_evidence",
+            "evaluation_rejected_for_policy_or_binding_mismatch",
+            "max_attempts_exhausted",
+        ],
+    )?;
+    validate_retry_plan_information_barriers(retry_plan)?;
+    for (index, attempt) in attempts.iter().enumerate() {
+        validate_retry_plan_attempt(attempt, index, max_attempts)?;
+    }
+    let indexed_attempt = attempts
+        .get(attempt_index)
+        .ok_or_else(|| "Senior SWE-Bench retry plan missing indexed attempt".to_string())?;
+    if indexed_attempt
+        .get("attempt_index")
+        .and_then(serde_json::Value::as_u64)
+        != Some(attempt_index as u64)
+    {
+        return Err(
+            "Senior SWE-Bench retry plan indexed attempt does not match attempt_index".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_retry_plan_string_array(
+    retry_plan: &serde_json::Value,
+    field: &str,
+    required_entries: &[&str],
+) -> Result<(), String> {
+    let entries = retry_plan
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("Senior SWE-Bench retry plan missing {field}"))?;
+    if entries.is_empty() || entries.iter().any(|entry| entry.as_str().is_none()) {
+        return Err(format!(
+            "Senior SWE-Bench retry plan {field} must be a non-empty string array"
+        ));
+    }
+    for required in required_entries {
+        if !entries
+            .iter()
+            .any(|entry| entry.as_str() == Some(*required))
+        {
+            return Err(format!(
+                "Senior SWE-Bench retry plan {field} missing required entry {required}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_retry_plan_information_barriers(retry_plan: &serde_json::Value) -> Result<(), String> {
+    let barriers = retry_plan
+        .get("information_barriers")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "Senior SWE-Bench retry plan missing information_barriers".to_string())?;
+    if barriers
+        .get("public_github_solution_search_allowed")
+        .and_then(serde_json::Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry plan information_barriers must forbid public GitHub solution search"
+                .to_string(),
+        );
+    }
+    if barriers
+        .get("official_hidden_holdout_output_to_coder")
+        .and_then(serde_json::Value::as_str)
+        != Some("redacted")
+    {
+        return Err(
+            "Senior SWE-Bench retry plan information_barriers must redact official hidden holdout output"
+                .to_string(),
+        );
+    }
+    if barriers
+        .get("local_evaluator_output_to_coder")
+        .and_then(serde_json::Value::as_str)
+        != Some("only_when_feedback_visibility_is_public_local_test_output")
+    {
+        return Err(
+            "Senior SWE-Bench retry plan information_barriers must gate local evaluator output visibility"
+                .to_string(),
+        );
+    }
+    if barriers
+        .get("runtime_artifacts_seeded_from_cycle_input")
+        .and_then(serde_json::Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry plan information_barriers must forbid seeded runtime artifacts"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_retry_plan_attempt(
+    attempt: &serde_json::Value,
+    index: usize,
+    max_attempts: usize,
+) -> Result<(), String> {
+    if attempt
+        .get("attempt_index")
+        .and_then(serde_json::Value::as_u64)
+        != Some(index as u64)
+    {
+        return Err(format!(
+            "Senior SWE-Bench retry plan attempt {index} does not match attempt_index"
+        ));
+    }
+    let expected_source = if index == 0 {
+        "initial_task_cycle_input"
+    } else {
+        "feedback_from_previous_local_evaluation"
+    };
+    if attempt
+        .get("cycle_input_source")
+        .and_then(serde_json::Value::as_str)
+        != Some(expected_source)
+    {
+        return Err(format!(
+            "Senior SWE-Bench retry plan attempt {index} has invalid cycle_input_source"
+        ));
+    }
+    validate_retry_plan_attempt_string_array(
+        attempt,
+        index,
+        "required_gates",
+        &[
+            "run_cycle_input_with_output_artifacts",
+            "extract_unified_diff_candidate_patch",
+            "evaluate_candidate_patch_against_checkout",
+            "inspect_a2d_fitness_evidence_when_evaluator_passes",
+        ],
+    )?;
+    validate_retry_plan_attempt_string(
+        attempt,
+        index,
+        "on_patch_extraction_failure",
+        "stop_fail_closed_without_evaluator_or_fitness_claim",
+    )?;
+    validate_retry_plan_attempt_string(
+        attempt,
+        index,
+        "on_evaluation_passed",
+        "stop_success_only_after_a2d_fitness_evidence_v1_non_regressing_actual_tests",
+    )?;
+    validate_retry_plan_attempt_string(
+        attempt,
+        index,
+        "on_evaluation_failed",
+        if index + 1 < max_attempts {
+            "build_next_cycle_input_with_senior_swe_bench_cycle_input_feedback"
+        } else {
+            "stop_attempts_exhausted_without_fitness_claim"
+        },
+    )?;
+    Ok(())
+}
+
+fn validate_retry_plan_attempt_string(
+    attempt: &serde_json::Value,
+    index: usize,
+    field: &str,
+    expected: &str,
+) -> Result<(), String> {
+    if attempt.get(field).and_then(serde_json::Value::as_str) != Some(expected) {
+        return Err(format!(
+            "Senior SWE-Bench retry plan attempt {index} has invalid {field}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_retry_plan_attempt_string_array(
+    attempt: &serde_json::Value,
+    index: usize,
+    field: &str,
+    required_entries: &[&str],
+) -> Result<(), String> {
+    let entries = attempt
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("Senior SWE-Bench retry plan attempt {index} missing {field}"))?;
+    if entries.is_empty() || entries.iter().any(|entry| entry.as_str().is_none()) {
+        return Err(format!(
+            "Senior SWE-Bench retry plan attempt {index} {field} must be a non-empty string array"
+        ));
+    }
+    for required in required_entries {
+        if !entries
+            .iter()
+            .any(|entry| entry.as_str() == Some(*required))
+        {
+            return Err(format!(
+                "Senior SWE-Bench retry plan attempt {index} {field} missing required entry {required}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn build_senior_swe_bench_cycle_input_feedback(

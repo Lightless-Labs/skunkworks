@@ -17,10 +17,11 @@ use senior_swe_bench::{
     SeniorSweBenchOfficialEvaluatorManifestSummary, SeniorSweBenchTask,
     SeniorSweBenchTaskPackageSummary, SeniorSweBenchVariant, build_senior_swe_bench_audit,
     build_senior_swe_bench_cycle_input, build_senior_swe_bench_cycle_input_feedback,
-    build_senior_swe_bench_cycle_retry_plan, build_senior_swe_bench_local_evaluation,
-    build_senior_swe_bench_task_package, extract_senior_swe_bench_tasks,
-    parse_senior_swe_bench_cycle_input, parse_senior_swe_bench_official_evaluator_manifest,
-    parse_senior_swe_bench_task_package, render_senior_swe_bench_task_context,
+    build_senior_swe_bench_cycle_retry_plan, build_senior_swe_bench_cycle_retry_step,
+    build_senior_swe_bench_local_evaluation, build_senior_swe_bench_task_package,
+    extract_senior_swe_bench_tasks, parse_senior_swe_bench_cycle_input,
+    parse_senior_swe_bench_official_evaluator_manifest, parse_senior_swe_bench_task_package,
+    render_senior_swe_bench_task_context,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -114,6 +115,9 @@ fn main() {
                 .unwrap_or(3);
             run_senior_swe_bench_retry_plan(cycle_input_path, max_attempts);
         }
+        "senior-swe-bench-retry-step" => {
+            run_senior_swe_bench_retry_step(&args[2..]);
+        }
         "compare-provider-policy" | "policy-gate" => {
             let challenge_name = if arg2.is_empty() { "sudoku" } else { arg2 };
             let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -136,7 +140,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -3901,6 +3905,87 @@ fn run_senior_swe_bench_retry_plan(cycle_input_path: &str, max_attempts: usize) 
     println!(
         "{}",
         serde_json::to_string_pretty(&plan).expect("Senior SWE-Bench retry plan must serialize")
+    );
+}
+
+fn run_senior_swe_bench_retry_step(args: &[String]) {
+    let mut retry_plan_path = None;
+    let mut attempt_index = None;
+    let mut cycle_input_path = None;
+    let mut evaluation_path = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--retry-plan" => {
+                index += 1;
+                retry_plan_path = args.get(index).map(String::as_str);
+            }
+            "--attempt-index" => {
+                index += 1;
+                let raw = args.get(index).unwrap_or_else(|| {
+                    eprintln!("--attempt-index requires a value");
+                    std::process::exit(1);
+                });
+                attempt_index = Some(raw.parse::<usize>().unwrap_or_else(|_| {
+                    eprintln!("--attempt-index must be an integer");
+                    std::process::exit(1);
+                }));
+            }
+            "--task-cycle-input" => {
+                index += 1;
+                cycle_input_path = args.get(index).map(String::as_str);
+            }
+            "--local-evaluation" => {
+                index += 1;
+                evaluation_path = args.get(index).map(String::as_str);
+            }
+            other => {
+                eprintln!("unknown senior-swe-bench-retry-step argument: {other}");
+                std::process::exit(1);
+            }
+        }
+        index += 1;
+    }
+    let Some(retry_plan_path) = retry_plan_path else {
+        eprintln!(
+            "Usage: a2d senior-swe-bench-retry-step --retry-plan <json|-> --attempt-index <n> --task-cycle-input <json|-> --local-evaluation <json|->"
+        );
+        std::process::exit(1);
+    };
+    let Some(attempt_index) = attempt_index else {
+        eprintln!(
+            "Usage: a2d senior-swe-bench-retry-step --retry-plan <json|-> --attempt-index <n> --task-cycle-input <json|-> --local-evaluation <json|->"
+        );
+        std::process::exit(1);
+    };
+    let Some(cycle_input_path) = cycle_input_path else {
+        eprintln!(
+            "Usage: a2d senior-swe-bench-retry-step --retry-plan <json|-> --attempt-index <n> --task-cycle-input <json|-> --local-evaluation <json|->"
+        );
+        std::process::exit(1);
+    };
+    let Some(evaluation_path) = evaluation_path else {
+        eprintln!(
+            "Usage: a2d senior-swe-bench-retry-step --retry-plan <json|-> --attempt-index <n> --task-cycle-input <json|-> --local-evaluation <json|->"
+        );
+        std::process::exit(1);
+    };
+    let retry_plan = read_artifact_or_exit(retry_plan_path);
+    let cycle_input = read_artifact_or_exit(cycle_input_path);
+    let local_evaluation = read_artifact_or_exit(evaluation_path);
+    let step = build_senior_swe_bench_cycle_retry_step(
+        &retry_plan,
+        attempt_index,
+        &cycle_input,
+        &local_evaluation,
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Senior SWE-Bench retry step error: {error}");
+        std::process::exit(1);
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&step).expect("Senior SWE-Bench retry step must serialize")
     );
 }
 

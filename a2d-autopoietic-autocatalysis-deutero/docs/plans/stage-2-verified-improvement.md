@@ -10,6 +10,7 @@
 **Hardened:** 2026-07-04 — seed coder prompt now names the public `has_tests` fitness gate and exact Rust test module shape after repeated Sudoku evidence showed a generated-solution test-module omission
 **Enhanced:** 2026-07-04 — added a first-class `a2d fitness-evidence-inspect` CLI path for source-bound evidence review before persistence decisions
 **Enhanced:** 2026-07-04 — added explicit `a2d cycle-input` file/stdin bridge for JSON artifact bundles while rejecting reserved runtime evidence artifacts
+**Enhanced:** 2026-07-04 — added deterministic Senior SWE-Bench retry-step gate after bounded retry planning
 **Depends on:** Stage 1 (complete)
 
 ## Problem
@@ -289,3 +290,13 @@ Fresh source-patch gate support: `runs/20260704-senior-swe-bench-cycle-input-fee
 Focused validation: `cargo fmt --check`; `cargo test -p a2d --test senior_swe_bench_retry_plan -- --nocapture`. Full `cargo test` passed (323 passed, 2 ignored). Positive/negative smokes live under `runs/20260704-senior-swe-bench-retry-plan-evidence/` and prove bounded plan output plus fail-closed `max_attempts=9`. Independent reviewer found no blockers or warnings.
 
 Fresh source-patch gate support: `runs/20260704-senior-swe-bench-retry-plan-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`, `source_diff_hash: fa652ee3ca175bb5cb37d15ab106840d17c37f84`, matching `git diff --binary HEAD -- crates | git hash-object --stdin`. This remains bounded retry-planning/source-patch evidence, not an autonomous retry executor or official Senior SWE-Bench task mastery.
+
+## 2026-07-04 Update: Senior SWE-Bench Retry Step
+
+`a2d senior-swe-bench-retry-step --retry-plan <json|-> --attempt-index <n> --task-cycle-input <json|-> --local-evaluation <json|->` now turns one bounded retry plan and one local evaluation result into the next deterministic action. It starts no providers/evaluators and preserves `fitness_claim_allowed_before_evidence: false`.
+
+The command validates retry-plan schema, max-attempt bounds, success requirements, stop criteria, information barriers, per-attempt gates/transitions, task/repo binding to the cycle input, local-evaluation no-search policy, evaluator/status enums, and candidate-patch hash shape. Failed non-final attempts produce a safe feedback-enriched `next_cycle_input`; failed final attempts stop on max-attempt exhaustion; passed attempts only recommend `fitness-evidence-inspect <path> --require-all-tests-pass`; passed attempts with no evidence path stop fail-closed.
+
+Focused validation: `cargo fmt --check`; `cargo test -p a2d --test senior_swe_bench_retry_step -- --nocapture`. Full `cargo test` passed (325 passed, 2 ignored). Reviewer initially found stale evidence and partial retry-plan validation; the final slice tightened validation and regenerated fresh evidence. Positive/negative smokes live under `runs/20260704-senior-swe-bench-retry-step-evidence/` and prove failed/pass decisions plus fail-closed mismatched and schema-complete-malformed plans.
+
+Fresh source-patch gate support: `runs/20260704-senior-swe-bench-retry-step-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`, `source_diff_hash: f2073d167fcddc55903fa19d8e459d8b25d29e0c`, matching `git diff --binary HEAD -- crates | git hash-object --stdin`. This remains deterministic retry-step/source-patch evidence, not an autonomous retry executor or official Senior SWE-Bench task mastery.
