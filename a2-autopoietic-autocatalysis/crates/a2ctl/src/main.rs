@@ -22,6 +22,50 @@ fn sentinel_non_gating_advisories() -> [&'static str; 2] {
     [AGENT_NETWORK_BOUNDARY_ADVISORY, DEMO_EVIDENCE_ADVISORY]
 }
 
+fn render_sentinel_non_gating_advisory_block() -> String {
+    let mut output = String::from("Non-gating advisory checks:\n");
+    for advisory in sentinel_non_gating_advisories() {
+        output.push_str(advisory);
+        output.push('\n');
+    }
+    output
+}
+
+fn render_sentinel_output(workspace: &str, result: &a2_eval::sentinel::SuiteResult) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    writeln!(output, "A² Seed Sentinel Suite").expect("write to string should not fail");
+    writeln!(output, "Workspace: {workspace}").expect("write to string should not fail");
+    writeln!(output).expect("write to string should not fail");
+
+    for r in &result.results {
+        let icon = if r.passed { "PASS" } else { "FAIL" };
+        writeln!(output, "  [{icon}] {}: {}", r.name, r.detail)
+            .expect("write to string should not fail");
+    }
+
+    writeln!(output).expect("write to string should not fail");
+    writeln!(
+        output,
+        "Score: {:.0}% ({}/{})",
+        result.score * 100.0,
+        result.results.iter().filter(|r| r.passed).count(),
+        result.results.len()
+    )
+    .expect("write to string should not fail");
+    writeln!(output).expect("write to string should not fail");
+    output.push_str(&render_sentinel_non_gating_advisory_block());
+
+    if result.all_passed {
+        writeln!(output, "Sentinel gate: PASS").expect("write to string should not fail");
+    } else {
+        writeln!(output, "Sentinel gate: FAIL").expect("write to string should not fail");
+    }
+
+    output
+}
+
 #[derive(Parser)]
 #[command(name = "a2ctl", version, about = "A² — Autopoietic Autocatalysis")]
 struct Cli {
@@ -1411,36 +1455,13 @@ async fn main() {
             }
         }
         Commands::Sentinel { workspace } => {
-            println!("A² Seed Sentinel Suite");
-            println!("Workspace: {workspace}");
-            println!();
-
             let suite =
                 a2_eval::sentinel::SentinelSuite::seed_suite(std::path::PathBuf::from(&workspace));
             let result = suite.run_all();
 
-            for r in &result.results {
-                let icon = if r.passed { "PASS" } else { "FAIL" };
-                println!("  [{icon}] {}: {}", r.name, r.detail);
-            }
+            print!("{}", render_sentinel_output(&workspace, &result));
 
-            println!();
-            println!(
-                "Score: {:.0}% ({}/{})",
-                result.score * 100.0,
-                result.results.iter().filter(|r| r.passed).count(),
-                result.results.len()
-            );
-            println!();
-            println!("Non-gating advisory checks:");
-            for advisory in sentinel_non_gating_advisories() {
-                println!("{advisory}");
-            }
-
-            if result.all_passed {
-                println!("Sentinel gate: PASS");
-            } else {
-                println!("Sentinel gate: FAIL");
+            if !result.all_passed {
                 std::process::exit(1);
             }
         }
@@ -3042,6 +3063,193 @@ mod tests {
         assert!(advisory.contains("sentinel does not refresh or replace those checks"));
         assert!(!advisory.contains("[PASS]"));
         assert!(!advisory.contains("Sentinel gate: PASS"));
+    }
+
+    #[test]
+    fn sentinel_advisory_block_keeps_demo_evidence_visible_without_extra_gate() {
+        let block = render_sentinel_non_gating_advisory_block();
+        let lines: Vec<&str> = block.lines().collect();
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "Non-gating advisory checks:");
+        assert!(lines[1].contains("[INFO] agent_network_boundary"));
+        assert!(lines[2].contains("[INFO] demo_evidence"));
+        assert!(block.contains("python3 bench/self_correction_demo.py verify-demo-docs"));
+        assert!(block.contains(
+            "python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json"
+        ));
+        assert!(block.contains("sentinel does not refresh or replace those checks"));
+        assert!(!block.contains("[PASS]"));
+        assert!(!block.contains("[FAIL]"));
+        assert!(!block.contains("Sentinel gate:"));
+    }
+
+    fn normalize_sentinel_output_snapshot(output: &str) -> String {
+        output
+            .lines()
+            .map(|line| {
+                if line.starts_with("Workspace: ") {
+                    "Workspace: <workspace>".to_string()
+                } else {
+                    normalize_long_hex_runs(&normalize_iso_timestamps(&normalize_absolute_paths(
+                        line,
+                    )))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    }
+
+    fn normalize_absolute_paths(line: &str) -> String {
+        let chars: Vec<char> = line.chars().collect();
+        let mut normalized = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '/' && (i == 0 || chars[i - 1].is_whitespace()) {
+                normalized.push_str("<path>");
+                i += 1;
+                while i < chars.len()
+                    && !chars[i].is_whitespace()
+                    && !matches!(chars[i], '`' | ',' | ';' | ')')
+                {
+                    i += 1;
+                }
+            } else {
+                normalized.push(chars[i]);
+                i += 1;
+            }
+        }
+        normalized
+    }
+
+    fn normalize_iso_timestamps(line: &str) -> String {
+        let chars: Vec<char> = line.chars().collect();
+        let mut normalized = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            let looks_like_timestamp = i + 19 < chars.len()
+                && chars[i..i + 4].iter().all(|c| c.is_ascii_digit())
+                && chars[i + 4] == '-'
+                && chars[i + 5..i + 7].iter().all(|c| c.is_ascii_digit())
+                && chars[i + 7] == '-'
+                && chars[i + 8..i + 10].iter().all(|c| c.is_ascii_digit())
+                && chars[i + 10] == 'T';
+            if looks_like_timestamp {
+                normalized.push_str("<timestamp>");
+                i += 11;
+                while i < chars.len()
+                    && (chars[i].is_ascii_digit()
+                        || matches!(chars[i], ':' | '.' | '-' | '+' | 'Z'))
+                {
+                    i += 1;
+                }
+            } else {
+                normalized.push(chars[i]);
+                i += 1;
+            }
+        }
+        normalized
+    }
+
+    fn normalize_long_hex_runs(line: &str) -> String {
+        let chars: Vec<char> = line.chars().collect();
+        let mut normalized = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i].is_ascii_hexdigit() {
+                let start = i;
+                while i < chars.len() && chars[i].is_ascii_hexdigit() {
+                    i += 1;
+                }
+                if i - start >= 12 {
+                    normalized.push_str("<hex>");
+                } else {
+                    normalized.extend(chars[start..i].iter());
+                }
+            } else {
+                normalized.push(chars[i]);
+                i += 1;
+            }
+        }
+        normalized
+    }
+
+    #[test]
+    fn sentinel_full_pass_output_snapshot_normalizes_volatile_fields() {
+        let result = a2_eval::sentinel::SuiteResult {
+            results: vec![
+                a2_eval::sentinel::SentinelResult {
+                    name: "compile_check".into(),
+                    passed: true,
+                    detail: "compiled /tmp/a2-worktree at 2026-07-04T18:15:00Z commit 0123456789abcdef0123456789abcdef01234567".into(),
+                },
+                a2_eval::sentinel::SentinelResult {
+                    name: "unit_tests".into(),
+                    passed: true,
+                    detail: "tests passed".into(),
+                },
+                a2_eval::sentinel::SentinelResult {
+                    name: "unsafe_check".into(),
+                    passed: true,
+                    detail: "no unsafe blocks".into(),
+                },
+                a2_eval::sentinel::SentinelResult {
+                    name: "clippy".into(),
+                    passed: true,
+                    detail: "clippy clean".into(),
+                },
+                a2_eval::sentinel::SentinelResult {
+                    name: "docs".into(),
+                    passed: true,
+                    detail: "docs build".into(),
+                },
+                a2_eval::sentinel::SentinelResult {
+                    name: "lockfile".into(),
+                    passed: true,
+                    detail: "lockfile current".into(),
+                },
+            ],
+            all_passed: true,
+            score: 1.0,
+        };
+
+        let snapshot = normalize_sentinel_output_snapshot(&render_sentinel_output(
+            "/private/tmp/a2-workspace-2026-07-04T18:15:00Z",
+            &result,
+        ));
+
+        let expected = [
+            "A² Seed Sentinel Suite".to_string(),
+            "Workspace: <workspace>".to_string(),
+            String::new(),
+            "  [PASS] compile_check: compiled <path> at <timestamp> commit <hex>".to_string(),
+            "  [PASS] unit_tests: tests passed".to_string(),
+            "  [PASS] unsafe_check: no unsafe blocks".to_string(),
+            "  [PASS] clippy: clippy clean".to_string(),
+            "  [PASS] docs: docs build".to_string(),
+            "  [PASS] lockfile: lockfile current".to_string(),
+            String::new(),
+            "Score: 100% (6/6)".to_string(),
+            String::new(),
+            render_sentinel_non_gating_advisory_block()
+                .trim_end()
+                .to_string(),
+            "Sentinel gate: PASS".to_string(),
+        ]
+        .join("\n")
+            + "\n";
+
+        assert_eq!(snapshot, expected);
+        assert_eq!(snapshot.matches("[PASS]").count(), 6);
+        assert_eq!(snapshot.matches("[INFO]").count(), 2);
+        assert!(snapshot.contains("Score: 100% (6/6)"));
+        assert!(snapshot.contains("[INFO] demo_evidence"));
+        assert!(snapshot.contains("python3 bench/self_correction_demo.py verify-demo-docs"));
+        assert!(snapshot.contains(
+            "python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json"
+        ));
+        assert!(snapshot.contains("sentinel does not refresh or replace those checks"));
     }
 
     #[test]
