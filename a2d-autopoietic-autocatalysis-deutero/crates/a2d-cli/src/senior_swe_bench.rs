@@ -14,6 +14,8 @@ pub const SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA: &str =
     "a2d.senior-swe-bench-local-evaluation.v1";
 pub const SENIOR_SWE_BENCH_OFFICIAL_EVALUATOR_MANIFEST_SCHEMA: &str =
     "a2d.senior-swe-bench-official-evaluator-manifest.v1";
+pub const SENIOR_SWE_BENCH_CYCLE_RETRY_PLAN_SCHEMA: &str =
+    "a2d.senior-swe-bench-cycle-retry-plan.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SeniorSweBenchTask {
@@ -643,6 +645,81 @@ pub fn build_senior_swe_bench_cycle_input(
             "note": "run a local or official Senior SWE-Bench evaluator against the candidate patch before claiming task fitness"
         }
     })
+}
+
+pub fn build_senior_swe_bench_cycle_retry_plan(
+    cycle_input: &str,
+    max_attempts: usize,
+) -> Result<serde_json::Value, String> {
+    if max_attempts == 0 {
+        return Err(
+            "Senior SWE-Bench cycle retry plan max_attempts must be greater than zero".to_string(),
+        );
+    }
+    if max_attempts > 8 {
+        return Err(
+            "Senior SWE-Bench cycle retry plan max_attempts must be <= 8 for bounded execution"
+                .to_string(),
+        );
+    }
+    let package = parse_senior_swe_bench_cycle_input(cycle_input)?;
+    let cycle_value: serde_json::Value = serde_json::from_str(cycle_input)
+        .map_err(|error| format!("invalid Senior SWE-Bench cycle input JSON: {error}"))?;
+    reject_reserved_cycle_feedback_artifacts(&cycle_value)?;
+    reject_public_solution_refs_in_cycle_feedback_content(&cycle_value)?;
+
+    let attempts = (0..max_attempts)
+        .map(|attempt| {
+            serde_json::json!({
+                "attempt_index": attempt,
+                "cycle_input_source": if attempt == 0 { "initial_task_cycle_input" } else { "feedback_from_previous_local_evaluation" },
+                "required_gates": [
+                    "run_cycle_input_with_output_artifacts",
+                    "extract_unified_diff_candidate_patch",
+                    "evaluate_candidate_patch_against_checkout",
+                    "inspect_a2d_fitness_evidence_when_evaluator_passes"
+                ],
+                "on_patch_extraction_failure": "stop_fail_closed_without_evaluator_or_fitness_claim",
+                "on_evaluation_passed": "stop_success_only_after_a2d_fitness_evidence_v1_non_regressing_actual_tests",
+                "on_evaluation_failed": if attempt + 1 < max_attempts {
+                    "build_next_cycle_input_with_senior_swe_bench_cycle_input_feedback"
+                } else {
+                    "stop_attempts_exhausted_without_fitness_claim"
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(serde_json::json!({
+        "schema_version": SENIOR_SWE_BENCH_CYCLE_RETRY_PLAN_SCHEMA,
+        "task_id": package.task_id,
+        "repo": package.repo,
+        "github_solution_search_allowed": false,
+        "max_attempts": max_attempts,
+        "provider_invocations_started": false,
+        "fitness_claim_allowed_before_evidence": false,
+        "success_requires": [
+            "a2d.fitness-evidence.v1",
+            "actual_tests_evaluated:true",
+            "non_regressing:true",
+            "all_tests_pass:true",
+            "Senior SWE-Bench official mastery additionally requires official_senior_swe_bench evaluator_kind and manifest provenance"
+        ],
+        "stop_criteria": [
+            "candidate_patch_extraction_failed",
+            "evaluation_passed_with_valid_fitness_evidence",
+            "evaluation_rejected_for_policy_or_binding_mismatch",
+            "max_attempts_exhausted"
+        ],
+        "information_barriers": {
+            "public_github_solution_search_allowed": false,
+            "official_hidden_holdout_output_to_coder": "redacted",
+            "local_evaluator_output_to_coder": "only_when_feedback_visibility_is_public_local_test_output",
+            "runtime_artifacts_seeded_from_cycle_input": false
+        },
+        "attempts": attempts,
+        "note": "planning/validation artifact only: this command starts no providers, runs no evaluator, and is not fitness evidence"
+    }))
 }
 
 pub fn build_senior_swe_bench_cycle_input_feedback(
