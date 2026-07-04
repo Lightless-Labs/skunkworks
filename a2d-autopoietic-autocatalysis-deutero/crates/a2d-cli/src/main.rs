@@ -126,6 +126,9 @@ fn main() {
         "senior-swe-bench-retry-attempt-plan" => {
             run_senior_swe_bench_retry_attempt_plan(&args[2..]);
         }
+        "senior-swe-bench-retry-attempt-extract-patch" => {
+            run_senior_swe_bench_retry_attempt_extract_patch(&args[2..]);
+        }
         "compare-provider-policy" | "policy-gate" => {
             let challenge_name = if arg2.is_empty() { "sudoku" } else { arg2 };
             let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -148,7 +151,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -4222,6 +4225,203 @@ fn read_artifact_to_string(path: &Path) -> Result<String, String> {
         fs::read_to_string(path)
             .map_err(|error| format!("failed to read artifact {}: {error}", path.display()))
     }
+}
+
+fn run_senior_swe_bench_retry_attempt_extract_patch(args: &[String]) {
+    if args.len() != 1 {
+        eprintln!(
+            "Usage: a2d senior-swe-bench-retry-attempt-extract-patch <retry-attempt-plan.json|->"
+        );
+        std::process::exit(1);
+    }
+    let plan = read_artifact_or_exit(&args[0]);
+    let extraction =
+        build_senior_swe_bench_retry_attempt_extraction(&plan).unwrap_or_else(|error| {
+            eprintln!("Senior SWE-Bench retry attempt extraction error: {error}");
+            std::process::exit(1);
+        });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&extraction)
+            .expect("Senior SWE-Bench retry attempt extraction must serialize")
+    );
+}
+
+fn build_senior_swe_bench_retry_attempt_extraction(plan: &str) -> Result<Value, String> {
+    let value: Value = serde_json::from_str(plan)
+        .map_err(|error| format!("invalid Senior SWE-Bench retry attempt plan JSON: {error}"))?;
+    let schema = value
+        .get("schema_version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Senior SWE-Bench retry attempt plan missing schema_version".to_string())?;
+    if schema != "a2d.senior-swe-bench-retry-attempt-plan.v1" {
+        return Err(format!(
+            "expected a2d.senior-swe-bench-retry-attempt-plan.v1, got {schema}"
+        ));
+    }
+    let decision = value
+        .get("decision")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Senior SWE-Bench retry attempt plan missing decision".to_string())?;
+    if decision != "extract_and_evaluate_candidate_patch" {
+        return Err(format!(
+            "Senior SWE-Bench retry attempt plan decision must be extract_and_evaluate_candidate_patch, got {decision}"
+        ));
+    }
+    if value
+        .get("provider_invocations_started")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry attempt plan must not have started provider invocations"
+                .to_string(),
+        );
+    }
+    if value
+        .get("evaluator_invocations_started")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry attempt plan must not have started evaluator invocations"
+                .to_string(),
+        );
+    }
+    if value
+        .get("fitness_claim_allowed_before_evidence")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry attempt plan must forbid fitness claims before evidence"
+                .to_string(),
+        );
+    }
+
+    let selected = value.get("selected_artifact").ok_or_else(|| {
+        "Senior SWE-Bench retry attempt plan missing selected_artifact".to_string()
+    })?;
+    let selected_path = required_plan_string(selected, "path")?;
+    let selected_hash = required_plan_string(selected, "git_object_hash")?;
+    validate_git_object_hash(&selected_hash).map_err(|error| {
+        format!("Senior SWE-Bench retry attempt selected artifact git_object_hash {error}: {selected_hash}")
+    })?;
+    let selected_bytes = selected
+        .get("bytes")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry attempt selected artifact missing bytes".to_string()
+        })?;
+    let artifact_bytes = fs::read(&selected_path).map_err(|error| {
+        format!("failed to read selected candidate artifact {selected_path}: {error}")
+    })?;
+    if artifact_bytes.len() as u64 != selected_bytes {
+        return Err(format!(
+            "selected candidate artifact byte count mismatch for {selected_path}: plan {selected_bytes}, actual {}",
+            artifact_bytes.len()
+        ));
+    }
+    let actual_artifact_hash = git_hash_object_bytes(&artifact_bytes)?;
+    if actual_artifact_hash != selected_hash {
+        return Err(format!(
+            "selected candidate artifact hash mismatch for {selected_path}: plan {selected_hash}, actual {actual_artifact_hash}"
+        ));
+    }
+    let artifact = String::from_utf8(artifact_bytes).map_err(|error| {
+        format!("selected candidate artifact {selected_path} is not UTF-8 text: {error}")
+    })?;
+    let candidate_patch = extract_senior_swe_bench_candidate_patch(&artifact)?;
+    let actual_patch_hash = git_hash_object_bytes(candidate_patch.as_bytes())?;
+    let planned_patch_hash = required_plan_string(&value, "candidate_patch_hash")?;
+    validate_git_object_hash(&planned_patch_hash).map_err(|error| {
+        format!("Senior SWE-Bench retry attempt candidate_patch_hash {error}: {planned_patch_hash}")
+    })?;
+    if actual_patch_hash != planned_patch_hash {
+        return Err(format!(
+            "candidate patch hash mismatch: plan {planned_patch_hash}, actual {actual_patch_hash}"
+        ));
+    }
+    let planned_outputs = value
+        .get("planned_outputs")
+        .ok_or_else(|| "Senior SWE-Bench retry attempt plan missing planned_outputs".to_string())?;
+    let candidate_patch_path = required_plan_string(planned_outputs, "candidate_patch")?;
+    let candidate_patch_path = PathBuf::from(candidate_patch_path);
+    write_candidate_patch_idempotently(&candidate_patch_path, candidate_patch.as_bytes())?;
+
+    Ok(json!({
+        "schema_version": "a2d.senior-swe-bench-retry-attempt-extraction.v1",
+        "task_id": value.get("task_id").cloned().unwrap_or(Value::Null),
+        "repo": value.get("repo").cloned().unwrap_or(Value::Null),
+        "attempt_index": value.get("attempt_index").cloned().unwrap_or(Value::Null),
+        "candidate_patch_path": candidate_patch_path,
+        "candidate_patch_hash": actual_patch_hash,
+        "selected_artifact": selected.clone(),
+        "evaluate_args": value.get("evaluate_args").cloned().unwrap_or_else(|| json!([])),
+        "retry_step_args": value.get("retry_step_args").cloned().unwrap_or_else(|| json!([])),
+        "provider_invocations_started": false,
+        "evaluator_invocations_started": false,
+        "fitness_claim_allowed_before_evidence": false,
+        "github_solution_search_allowed": false,
+        "next_step": "run the emitted senior-swe-bench-evaluate command, then run the emitted senior-swe-bench-retry-step command",
+        "note": "deterministic retry-attempt extraction only: this command starts no providers/evaluators and is not fitness evidence",
+    }))
+}
+
+fn required_plan_string(value: &Value, field: &str) -> Result<String, String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| format!("Senior SWE-Bench retry attempt plan missing {field}"))
+}
+
+fn write_candidate_patch_idempotently(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if path.exists() {
+        let existing = fs::read(path).map_err(|error| {
+            format!(
+                "failed to read existing candidate patch {}: {error}",
+                path.display()
+            )
+        })?;
+        if existing == bytes {
+            return Ok(());
+        }
+        return Err(format!(
+            "candidate patch {} already exists with different bytes",
+            path.display()
+        ));
+    }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create candidate patch parent {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let temp = path.with_extension(format!(
+        "tmp-{}",
+        UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::write(&temp, bytes).map_err(|error| {
+        format!(
+            "failed to write temp candidate patch {}: {error}",
+            temp.display()
+        )
+    })?;
+    fs::rename(&temp, path).map_err(|error| {
+        let _ = fs::remove_file(&temp);
+        format!(
+            "failed to move temp candidate patch {} to {}: {error}",
+            temp.display(),
+            path.display()
+        )
+    })
 }
 
 fn run_senior_swe_bench_retry_step(args: &[String]) {
