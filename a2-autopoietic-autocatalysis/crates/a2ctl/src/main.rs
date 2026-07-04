@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 const AGENT_NETWORK_BOUNDARY_ADVISORY: &str = "  [INFO] agent_network_boundary: not part of the 6/6 sentinel gate; run `python3 bench/agent_network_boundary_check.py --self-test` and `--require-sandbox-runtime` before treating external benchmark evidence as uncontaminated";
 const DEFAULT_ARCHIVE_EVIDENCE_JSON: &str = "docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json";
 const DEFAULT_ARCHIVE_RESULTS_JSONL: &str = "docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.jsonl";
-const DEMO_EVIDENCE_ADVISORY: &str = "  [INFO] demo_evidence: not part of the 6/6 sentinel gate; run `python3 bench/self_correction_demo.py verify-demo-docs` and `python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json` to audit documented archived loop evidence; sentinel does not refresh or replace those checks";
+const DEMO_EVIDENCE_ADVISORY: &str = "  [INFO] demo_evidence: not part of the 6/6 sentinel gate; run `python3 bench/self_correction_demo.py verify-demo-docs` and `python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json` to audit documented archived loop evidence, or `cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence` for an opt-in combined gate; sentinel default does not refresh or replace those checks";
 const DEMO_EVIDENCE_PROOF_STEPS: [&str; 6] = [
     "failed_first_attempt",
     "archived_verifier_failure_evidence",
@@ -712,6 +712,15 @@ enum Commands {
         /// Workspace root path (defaults to current directory).
         #[arg(long, default_value = ".")]
         workspace: String,
+        /// Also require the archived demo-evidence contract after the 6/6 sentinel suite passes.
+        #[arg(long)]
+        require_demo_evidence: bool,
+        /// Archived JSONL artifact used by --require-demo-evidence.
+        #[arg(long, default_value = DEFAULT_ARCHIVE_RESULTS_JSONL)]
+        demo_archive: String,
+        /// Machine-readable demo evidence JSON used by --require-demo-evidence.
+        #[arg(long, default_value = DEFAULT_ARCHIVE_EVIDENCE_JSON)]
+        demo_evidence_json: String,
     },
     /// Verify an archived self-correction demo evidence contract.
     DemoEvidence {
@@ -1946,14 +1955,37 @@ async fn main() {
                 print!("{}", render_summary_table(&rows));
             }
         }
-        Commands::Sentinel { workspace } => {
+        Commands::Sentinel {
+            workspace,
+            require_demo_evidence,
+            demo_archive,
+            demo_evidence_json,
+        } => {
             let suite =
                 a2_eval::sentinel::SentinelSuite::seed_suite(std::path::PathBuf::from(&workspace));
             let result = suite.run_all();
 
             print!("{}", render_sentinel_output(&workspace, &result));
 
-            if !result.all_passed {
+            let mut failed = !result.all_passed;
+            if require_demo_evidence && result.all_passed {
+                println!();
+                println!("Required demo evidence gate:");
+                match run_demo_evidence_contract(&workspace, &demo_archive, &demo_evidence_json) {
+                    Ok(_) => {
+                        println!("  PASS archived demo evidence contract validated");
+                        println!("  archive: {demo_archive}");
+                        println!("  evidence: {demo_evidence_json}");
+                    }
+                    Err(error) => {
+                        eprintln!("  FAIL archived demo evidence contract rejected");
+                        eprintln!("{error}");
+                        failed = true;
+                    }
+                }
+            }
+
+            if failed {
                 std::process::exit(1);
             }
         }
@@ -3537,6 +3569,53 @@ mod tests {
     }
 
     #[test]
+    fn sentinel_cli_keeps_demo_evidence_gate_opt_in() {
+        let cli = Cli::try_parse_from(["a2ctl", "sentinel", "--workspace", "."]).unwrap();
+        match cli.command {
+            Commands::Sentinel {
+                workspace,
+                require_demo_evidence,
+                demo_archive,
+                demo_evidence_json,
+            } => {
+                assert_eq!(workspace, ".");
+                assert!(!require_demo_evidence);
+                assert_eq!(demo_archive, DEFAULT_ARCHIVE_RESULTS_JSONL);
+                assert_eq!(demo_evidence_json, DEFAULT_ARCHIVE_EVIDENCE_JSON);
+            }
+            _ => panic!("expected sentinel command"),
+        }
+    }
+
+    #[test]
+    fn sentinel_cli_accepts_required_demo_evidence_paths() {
+        let cli = Cli::try_parse_from([
+            "a2ctl",
+            "sentinel",
+            "--require-demo-evidence",
+            "--demo-archive",
+            "custom/results.jsonl",
+            "--demo-evidence-json",
+            "custom/evidence.json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Sentinel {
+                workspace,
+                require_demo_evidence,
+                demo_archive,
+                demo_evidence_json,
+            } => {
+                assert_eq!(workspace, ".");
+                assert!(require_demo_evidence);
+                assert_eq!(demo_archive, "custom/results.jsonl");
+                assert_eq!(demo_evidence_json, "custom/evidence.json");
+            }
+            _ => panic!("expected sentinel command"),
+        }
+    }
+
+    #[test]
     fn sentinel_advisory_is_non_gating_and_not_pass_shaped() {
         let advisories = sentinel_non_gating_advisories();
         let advisory = advisories
@@ -3564,7 +3643,8 @@ mod tests {
         assert!(advisory.contains(
             "python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json"
         ));
-        assert!(advisory.contains("sentinel does not refresh or replace those checks"));
+        assert!(advisory.contains("--require-demo-evidence"));
+        assert!(advisory.contains("sentinel default does not refresh or replace those checks"));
         assert!(!advisory.contains("[PASS]"));
         assert!(!advisory.contains("Sentinel gate: PASS"));
     }
@@ -3582,7 +3662,8 @@ mod tests {
         assert!(block.contains(
             "python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json"
         ));
-        assert!(block.contains("sentinel does not refresh or replace those checks"));
+        assert!(block.contains("--require-demo-evidence"));
+        assert!(block.contains("sentinel default does not refresh or replace those checks"));
         assert!(!block.contains("[PASS]"));
         assert!(!block.contains("[FAIL]"));
         assert!(!block.contains("Sentinel gate:"));
@@ -3753,7 +3834,8 @@ mod tests {
         assert!(snapshot.contains(
             "python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json"
         ));
-        assert!(snapshot.contains("sentinel does not refresh or replace those checks"));
+        assert!(snapshot.contains("--require-demo-evidence"));
+        assert!(snapshot.contains("sentinel default does not refresh or replace those checks"));
     }
 
     fn complete_demo_evidence_value() -> serde_json::Value {
