@@ -2611,30 +2611,46 @@ fn parse_cycle_args(arg2: &str, arg3: Option<&str>) -> (usize, String) {
 struct CycleInputConfig {
     path: String,
     num_cycles: usize,
+    output_artifacts: Option<PathBuf>,
 }
 
 fn parse_cycle_input_args(args: &[String]) -> Result<CycleInputConfig, String> {
     let path = args
         .first()
         .ok_or_else(|| "missing cycle input path".to_string())?;
-    let num_cycles = args
-        .get(1)
-        .map(|value| {
-            value
-                .parse::<usize>()
-                .map_err(|_| format!("invalid cycle count for cycle-input: {value}"))
-        })
-        .transpose()?
-        .unwrap_or(1);
+    let mut num_cycles: Option<usize> = None;
+    let mut output_artifacts: Option<PathBuf> = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--output-artifacts" => {
+                if output_artifacts.is_some() {
+                    return Err("duplicate --output-artifacts argument".to_string());
+                }
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--output-artifacts requires a directory".to_string())?;
+                output_artifacts = Some(PathBuf::from(value));
+                index += 2;
+            }
+            value if num_cycles.is_none() => {
+                let parsed = value
+                    .parse::<usize>()
+                    .map_err(|_| format!("invalid cycle count for cycle-input: {value}"))?;
+                num_cycles = Some(parsed);
+                index += 1;
+            }
+            value => return Err(format!("unknown cycle-input argument: {value}")),
+        }
+    }
+    let num_cycles = num_cycles.unwrap_or(1);
     if num_cycles == 0 {
         return Err("cycle-input cycle count must be greater than zero".to_string());
-    }
-    if args.len() > 2 {
-        return Err(format!("unknown cycle-input argument: {}", args[2]));
     }
     Ok(CycleInputConfig {
         path: path.to_string(),
         num_cycles,
+        output_artifacts,
     })
 }
 
@@ -2668,7 +2684,9 @@ fn is_reserved_cycle_input_artifact(key: &str) -> bool {
 fn run_cycle_input(args: &[String]) {
     let config = parse_cycle_input_args(args).unwrap_or_else(|error| {
         eprintln!("{error}");
-        eprintln!("Usage: a2d cycle-input <artifact-bundle.json|-> [cycles]");
+        eprintln!(
+            "Usage: a2d cycle-input <artifact-bundle.json|-> [cycles] [--output-artifacts <dir>]"
+        );
         std::process::exit(1);
     });
     let input = read_artifact_or_exit(&config.path);
@@ -2676,10 +2694,114 @@ fn run_cycle_input(args: &[String]) {
         eprintln!("{error}");
         std::process::exit(1);
     });
-    run_cycle(config.num_cycles, &input);
+    run_cycle_with_options(
+        config.num_cycles,
+        &input,
+        config.output_artifacts.as_deref(),
+    );
 }
 
 fn run_cycle(num_cycles: usize, requirements: &str) {
+    run_cycle_with_options(num_cycles, requirements, None);
+}
+
+fn export_cycle_output_artifacts(
+    report: &CycleReport,
+    output_dir: &Path,
+    manifest_records: &mut Vec<Value>,
+    reserved_paths: &mut BTreeSet<PathBuf>,
+) -> Result<Vec<PathBuf>, String> {
+    fs::create_dir_all(output_dir).map_err(|error| {
+        format!(
+            "failed to create output artifact directory {}: {error}",
+            output_dir.display()
+        )
+    })?;
+
+    let mut paths = Vec::new();
+    for entry in &report.lineage {
+        for (artifact, bytes) in &entry.outputs {
+            let file_name = format!(
+                "cycle-{}-{}-{}-{}.artifact",
+                entry.cycle,
+                sanitize_output_artifact_segment(&entry.workcell_id.0),
+                sanitize_output_artifact_segment(&entry.enzyme_id.0),
+                sanitize_output_artifact_segment(&artifact.0)
+            );
+            let path = output_dir.join(file_name);
+            if path.exists() || !reserved_paths.insert(path.clone()) {
+                return Err(format!(
+                    "cycle output artifact path already exists or collides: {}",
+                    path.display()
+                ));
+            }
+            fs::write(&path, bytes)
+                .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+            let hash = git_hash_object_bytes(bytes)?;
+            manifest_records.push(json!({
+                "cycle": entry.cycle,
+                "report_cycle": report.cycle,
+                "workcell_id": entry.workcell_id.0,
+                "enzyme_id": entry.enzyme_id.0,
+                "provider": entry.provider,
+                "artifact_type": artifact.0,
+                "path": path.to_string_lossy(),
+                "git_object_hash": hash,
+                "bytes": bytes.len(),
+            }));
+            paths.push(path);
+        }
+    }
+
+    Ok(paths)
+}
+
+fn write_cycle_output_artifact_manifest(
+    output_dir: &Path,
+    records: &[Value],
+) -> Result<Option<PathBuf>, String> {
+    if records.is_empty() {
+        return Ok(None);
+    }
+    let manifest_path = output_dir.join("manifest.json");
+    if manifest_path.exists() {
+        return Err(format!(
+            "cycle output artifact manifest already exists: {}",
+            manifest_path.display()
+        ));
+    }
+    let manifest = json!({
+        "schema_version": "a2d.cycle-output-artifacts.v1",
+        "artifacts": records,
+    });
+    let bytes = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| format!("failed to serialize output artifact manifest: {error}"))?;
+    fs::write(&manifest_path, bytes)
+        .map_err(|error| format!("failed to write {}: {error}", manifest_path.display()))?;
+    Ok(Some(manifest_path))
+}
+
+fn sanitize_output_artifact_segment(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if sanitized.is_empty() {
+        "artifact".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn run_cycle_with_options(num_cycles: usize, requirements: &str, output_artifacts: Option<&Path>) {
     println!("A²D Catalytic Cycle ({num_cycles} cycle(s))");
     println!("Requirements: {requirements}");
     println!("═══════════════════");
@@ -2699,6 +2821,19 @@ fn run_cycle(num_cycles: usize, requirements: &str) {
 
     let mut total_mutations = 0;
     let mut total_invocations = 0;
+    let mut output_artifact_manifest_records = Vec::new();
+    let mut output_artifact_reserved_paths = BTreeSet::new();
+
+    if let Some(output_dir) = output_artifacts {
+        let manifest_path = output_dir.join("manifest.json");
+        if manifest_path.exists() {
+            eprintln!(
+                "Output artifact export error: manifest already exists: {}",
+                manifest_path.display()
+            );
+            std::process::exit(1);
+        }
+    }
 
     for cycle_num in 1..=num_cycles {
         println!("\nRunning cycle {cycle_num}/{num_cycles}...");
@@ -2720,6 +2855,30 @@ fn run_cycle(num_cycles: usize, requirements: &str) {
                 }
                 a2d_core::workcell::WorkcellOutcome::Killed { reason } => {
                     println!("    outcome: KILLED — {reason:?}");
+                }
+            }
+        }
+
+        if let Some(output_dir) = output_artifacts {
+            match export_cycle_output_artifacts(
+                &report,
+                output_dir,
+                &mut output_artifact_manifest_records,
+                &mut output_artifact_reserved_paths,
+            ) {
+                Ok(paths) if paths.is_empty() => {
+                    println!("  Output artifacts: none materialized");
+                }
+                Ok(paths) => {
+                    println!(
+                        "  Output artifacts: {} file(s) under {}",
+                        paths.len(),
+                        output_dir.display()
+                    );
+                }
+                Err(error) => {
+                    eprintln!("  Output artifact export error: {error}");
+                    std::process::exit(1);
                 }
             }
         }
@@ -2843,6 +3002,15 @@ fn run_cycle(num_cycles: usize, requirements: &str) {
                     "  ⚠ No non-regressing actual-test fitness evidence — skipping patch apply"
                 );
             }
+        }
+    }
+
+    if let Some(output_dir) = output_artifacts {
+        if let Err(error) =
+            write_cycle_output_artifact_manifest(output_dir, &output_artifact_manifest_records)
+        {
+            eprintln!("Output artifact manifest error: {error}");
+            std::process::exit(1);
         }
     }
 
@@ -9575,11 +9743,33 @@ mod tests {
             .expect("default cycle-input args parse");
         assert_eq!(config.path, "task-cycle-input.json");
         assert_eq!(config.num_cycles, 1);
+        assert_eq!(config.output_artifacts, None);
 
         let config = parse_cycle_input_args(&["-".to_string(), "2".to_string()])
             .expect("stdin cycle-input args parse");
         assert_eq!(config.path, "-");
         assert_eq!(config.num_cycles, 2);
+        assert_eq!(config.output_artifacts, None);
+
+        let config = parse_cycle_input_args(&[
+            "task-cycle-input.json".to_string(),
+            "2".to_string(),
+            "--output-artifacts".to_string(),
+            "runs/out".to_string(),
+        ])
+        .expect("cycle-input output artifacts parse");
+        assert_eq!(config.num_cycles, 2);
+        assert_eq!(config.output_artifacts, Some(PathBuf::from("runs/out")));
+
+        let config = parse_cycle_input_args(&[
+            "task-cycle-input.json".to_string(),
+            "--output-artifacts".to_string(),
+            "runs/out".to_string(),
+            "2".to_string(),
+        ])
+        .expect("cycle-input output artifacts parse before cycle count");
+        assert_eq!(config.num_cycles, 2);
+        assert_eq!(config.output_artifacts, Some(PathBuf::from("runs/out")));
 
         assert!(
             parse_cycle_input_args(&[])
@@ -9600,6 +9790,121 @@ mod tests {
             .expect_err("cycle-input rejects extra args")
             .contains("unknown cycle-input argument")
         );
+        assert!(
+            parse_cycle_input_args(&["input.json".to_string(), "--output-artifacts".to_string()])
+                .expect_err("cycle-input requires output directory")
+                .contains("requires a directory")
+        );
+        assert!(
+            parse_cycle_input_args(&[
+                "input.json".to_string(),
+                "--output-artifacts".to_string(),
+                "runs/a".to_string(),
+                "--output-artifacts".to_string(),
+                "runs/b".to_string(),
+            ])
+            .expect_err("cycle-input rejects duplicate output-artifacts")
+            .contains("duplicate --output-artifacts")
+        );
+    }
+
+    #[test]
+    fn cycle_output_artifact_export_writes_cumulative_manifest_and_outputs() {
+        let mut outputs = BTreeMap::new();
+        outputs.insert(art("code"), b"diff --git a/lib.rs b/lib.rs\n".to_vec());
+        let mut first_entry = topology_entry(a2d_core::workcell::WorkcellOutcome::Success {
+            outputs: outputs.clone(),
+        });
+        first_entry.enzyme_id = EnzymeId::from("coder");
+        first_entry.outputs = outputs.clone();
+        let first_report = CycleReport {
+            cycle: 1,
+            lineage: vec![first_entry],
+            ..Default::default()
+        };
+        let mut second_entry = topology_entry(a2d_core::workcell::WorkcellOutcome::Success {
+            outputs: outputs.clone(),
+        });
+        second_entry.cycle = 2;
+        second_entry.workcell_id = a2d_core::workcell::WorkcellId("wc-0002".to_string());
+        second_entry.enzyme_id = EnzymeId::from("coder");
+        second_entry.outputs = outputs;
+        let second_report = CycleReport {
+            cycle: 2,
+            lineage: vec![second_entry],
+            ..Default::default()
+        };
+        let dir = env::temp_dir().join(format!(
+            "a2d-cycle-output-artifacts-test-{}",
+            unique_suffix()
+        ));
+        let mut records = Vec::new();
+        let mut reserved_paths = BTreeSet::new();
+
+        let first_paths =
+            export_cycle_output_artifacts(&first_report, &dir, &mut records, &mut reserved_paths)
+                .expect("first output artifact export");
+        let second_paths =
+            export_cycle_output_artifacts(&second_report, &dir, &mut records, &mut reserved_paths)
+                .expect("second output artifact export");
+        write_cycle_output_artifact_manifest(&dir, &records).expect("manifest write");
+
+        assert_eq!(first_paths.len() + second_paths.len(), 2);
+        assert!(first_paths[0].exists());
+        assert!(second_paths[0].exists());
+        assert_eq!(
+            fs::read(&first_paths[0]).unwrap(),
+            b"diff --git a/lib.rs b/lib.rs\n"
+        );
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(dir.join("manifest.json")).expect("manifest exists"))
+                .expect("manifest is JSON");
+        assert_eq!(manifest["schema_version"], "a2d.cycle-output-artifacts.v1");
+        assert_eq!(manifest["artifacts"].as_array().unwrap().len(), 2);
+        assert_eq!(manifest["artifacts"][0]["artifact_type"], "code");
+        assert_eq!(manifest["artifacts"][1]["report_cycle"], 2);
+        assert_eq!(manifest["artifacts"][0]["enzyme_id"], "coder");
+        assert_eq!(
+            manifest["artifacts"][0]["git_object_hash"],
+            git_hash_object_bytes(b"diff --git a/lib.rs b/lib.rs\n").unwrap()
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cycle_output_artifact_export_rejects_collisions_and_existing_manifest() {
+        let mut outputs = BTreeMap::new();
+        outputs.insert(art("code"), b"candidate".to_vec());
+        let mut entry = topology_entry(a2d_core::workcell::WorkcellOutcome::Success {
+            outputs: outputs.clone(),
+        });
+        entry.enzyme_id = EnzymeId::from("coder");
+        entry.outputs = outputs;
+        let report = CycleReport {
+            cycle: 1,
+            lineage: vec![entry],
+            ..Default::default()
+        };
+        let dir = env::temp_dir().join(format!(
+            "a2d-cycle-output-artifacts-collision-test-{}",
+            unique_suffix()
+        ));
+        let mut records = Vec::new();
+        let mut reserved_paths = BTreeSet::new();
+        export_cycle_output_artifacts(&report, &dir, &mut records, &mut reserved_paths)
+            .expect("first export succeeds");
+        assert!(
+            export_cycle_output_artifacts(&report, &dir, &mut records, &mut reserved_paths)
+                .expect_err("second export rejects collision")
+                .contains("collides")
+        );
+        write_cycle_output_artifact_manifest(&dir, &records).expect("manifest write");
+        assert!(
+            write_cycle_output_artifact_manifest(&dir, &records)
+                .expect_err("manifest overwrite rejected")
+                .contains("already exists")
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
