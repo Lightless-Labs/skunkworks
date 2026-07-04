@@ -94,6 +94,10 @@ fn main() {
             let artifact_path = args.get(2).map(String::as_str).unwrap_or("-");
             run_senior_swe_bench_diagnose_artifact(artifact_path);
         }
+        "senior-swe-bench-select-candidate-artifact" => {
+            let manifest_path = args.get(2).map(String::as_str).unwrap_or("-");
+            run_senior_swe_bench_select_candidate_artifact(manifest_path);
+        }
         "senior-swe-bench-cycle-input-feedback" => {
             let cycle_input_path = args.get(2).map(String::as_str).unwrap_or("-");
             let evaluation_path = args.get(3).map(String::as_str).unwrap_or_else(|| {
@@ -140,7 +144,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -3879,6 +3883,19 @@ fn run_senior_swe_bench_diagnose_artifact(artifact_path: &str) {
     );
 }
 
+fn run_senior_swe_bench_select_candidate_artifact(manifest_path: &str) {
+    let manifest = read_artifact_or_exit(manifest_path);
+    let selection = select_senior_swe_bench_candidate_artifact(&manifest).unwrap_or_else(|error| {
+        eprintln!("Senior SWE-Bench candidate artifact selection error: {error}");
+        std::process::exit(1);
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&selection)
+            .expect("candidate artifact selection must serialize")
+    );
+}
+
 fn run_senior_swe_bench_cycle_input_feedback(cycle_input_path: &str, evaluation_path: &str) {
     let cycle_input = read_artifact_or_exit(cycle_input_path);
     let local_evaluation = read_artifact_or_exit(evaluation_path);
@@ -3987,6 +4004,105 @@ fn run_senior_swe_bench_retry_step(args: &[String]) {
         "{}",
         serde_json::to_string_pretty(&step).expect("Senior SWE-Bench retry step must serialize")
     );
+}
+
+fn select_senior_swe_bench_candidate_artifact(manifest: &str) -> Result<Value, String> {
+    let value: Value = serde_json::from_str(manifest)
+        .map_err(|error| format!("invalid cycle output artifact manifest JSON: {error}"))?;
+    let schema = value
+        .get("schema_version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "cycle output artifact manifest missing schema_version".to_string())?;
+    if schema != "a2d.cycle-output-artifacts.v1" {
+        return Err(format!(
+            "expected a2d.cycle-output-artifacts.v1 manifest, got {schema}"
+        ));
+    }
+    let artifacts = value
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "cycle output artifact manifest missing artifacts array".to_string())?;
+    let candidates = artifacts
+        .iter()
+        .filter(|entry| {
+            entry.get("enzyme_id").and_then(Value::as_str) == Some("coder")
+                && entry.get("artifact_type").and_then(Value::as_str) == Some("code")
+        })
+        .collect::<Vec<_>>();
+    if candidates.len() != 1 {
+        return Err(format!(
+            "expected exactly one coder/code candidate artifact, found {}",
+            candidates.len()
+        ));
+    }
+    let candidate = candidates[0];
+    let path = required_manifest_string(candidate, "path")?;
+    let manifest_hash = required_manifest_string(candidate, "git_object_hash")?;
+    validate_git_object_hash(&manifest_hash).map_err(|error| {
+        format!("cycle output artifact manifest git_object_hash {error}: {manifest_hash}")
+    })?;
+    let bytes = candidate
+        .get("bytes")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "cycle output artifact candidate missing bytes".to_string())?;
+    let artifact_bytes = fs::read(&path)
+        .map_err(|error| format!("failed to read candidate artifact {path}: {error}"))?;
+    if artifact_bytes.len() as u64 != bytes {
+        return Err(format!(
+            "candidate artifact byte count mismatch for {path}: manifest {bytes}, actual {}",
+            artifact_bytes.len()
+        ));
+    }
+    let actual_hash = git_hash_object_bytes(&artifact_bytes)?;
+    if actual_hash != manifest_hash {
+        return Err(format!(
+            "candidate artifact hash mismatch for {path}: manifest {manifest_hash}, actual {actual_hash}"
+        ));
+    }
+    let artifact = String::from_utf8(artifact_bytes)
+        .map_err(|error| format!("candidate artifact {path} is not UTF-8 text: {error}"))?;
+    if contains_public_github_solution_reference(&artifact) {
+        return Err(
+            "candidate artifact contains public GitHub solution references and must be rejected"
+                .to_string(),
+        );
+    }
+    let diagnosis = diagnose_senior_swe_bench_candidate_patch_artifact(&artifact);
+
+    Ok(json!({
+        "schema_version": "a2d.senior-swe-bench-candidate-artifact-selection.v1",
+        "selected": {
+            "cycle": candidate.get("cycle").cloned().unwrap_or(Value::Null),
+            "report_cycle": candidate.get("report_cycle").cloned().unwrap_or(Value::Null),
+            "workcell_id": required_manifest_string(candidate, "workcell_id")?,
+            "enzyme_id": "coder",
+            "provider": required_manifest_string(candidate, "provider")?,
+            "artifact_type": "code",
+            "path": path,
+            "git_object_hash": manifest_hash,
+            "bytes": bytes,
+        },
+        "contains_unified_diff_candidate_patch": diagnosis["contains_unified_diff_candidate_patch"].clone(),
+        "contains_public_github_solution_reference": diagnosis["contains_public_github_solution_reference"].clone(),
+        "failure_kind": diagnosis["failure_kind"].clone(),
+        "artifact_preview": diagnosis["artifact_preview"].clone(),
+        "recommended_next_gate": diagnosis["recommended_next_gate"].clone(),
+        "extract_patch_args": ["senior-swe-bench-extract-patch", path],
+        "provider_invocations_started": false,
+        "evaluator_invocations_started": false,
+        "fitness_claim_allowed_before_evidence": false,
+        "note": "selection only: this starts no providers/evaluators and is not fitness evidence",
+    }))
+}
+
+fn required_manifest_string(value: &Value, field: &str) -> Result<String, String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| format!("cycle output artifact candidate missing {field}"))
 }
 
 fn extract_senior_swe_bench_candidate_patch(artifact: &str) -> Result<String, String> {
