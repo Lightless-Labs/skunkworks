@@ -248,7 +248,9 @@ Plain-text generator output cannot embed the task-level policy and must be paire
 Local network-policy smokes (not benchmark evidence):
 
 ```bash
-# Host primitive only: emits command/returncode/stdout/stderr for the denied TCP probe.
+# Host primitive only: --self-test prints PASS/FAIL; --json emits the exact
+# sandbox profile lines/hash plus command/returncode/stdout/stderr for the
+# denied TCP probe.
 python3 bench/network_policy_smoke.py --self-test
 python3 bench/network_policy_smoke.py --json
 

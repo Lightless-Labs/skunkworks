@@ -13,6 +13,7 @@ coding-agent/provider launch path.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import socket
@@ -20,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import unittest
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +31,57 @@ DENY_NETWORK_PROFILE = """(version 1)
 """
 
 A2CTL_RUN_SMOKE_TASK = "A2 network fail closed smoke task\n"
+
+
+def sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def sandbox_profile_metadata(profile_path: Path) -> dict[str, Any]:
+    profile_text = profile_path.read_text(encoding="utf-8")
+    return {
+        "engine": "sandbox-exec",
+        "profile_path": str(profile_path),
+        "profile_path_is_absolute": profile_path.is_absolute(),
+        "profile_path_lifetime": "ephemeral_tempfile_removed_after_smoke",
+        "durable_audit_fields": ["profile_sha256", "profile_lines"],
+        "profile_sha256": sha256_text(profile_text),
+        "profile_lines": profile_text.splitlines(),
+    }
+
+
+def command_profile_arg(command: list[str]) -> str | None:
+    for idx, arg in enumerate(command):
+        if arg == "-f" and idx + 1 < len(command):
+            return command[idx + 1]
+    return None
+
+
+def smoke_result_profile_audit_ok(result: dict[str, Any]) -> bool:
+    profile = result.get("sandbox_profile")
+    if not isinstance(profile, dict):
+        return False
+    profile_path = profile.get("profile_path")
+    if not isinstance(profile_path, str) or not profile_path:
+        return False
+    if not profile.get("profile_path_is_absolute") or not Path(profile_path).is_absolute():
+        return False
+    if profile.get("profile_path_lifetime") != "ephemeral_tempfile_removed_after_smoke":
+        return False
+    if profile.get("durable_audit_fields") != ["profile_sha256", "profile_lines"]:
+        return False
+    if profile.get("profile_sha256") != sha256_text(DENY_NETWORK_PROFILE):
+        return False
+    if profile.get("profile_lines") != DENY_NETWORK_PROFILE.splitlines():
+        return False
+    for probe_name in ("local_probe", "network_probe"):
+        probe = result.get(probe_name)
+        if not isinstance(probe, dict):
+            return False
+        command = probe.get("command")
+        if not isinstance(command, list) or command_profile_arg(command) != profile_path:
+            return False
+    return True
 
 
 def sandbox_exec() -> str:
@@ -66,6 +119,7 @@ def run_smoke() -> dict[str, Any]:
         tmp_path = Path(tmp)
         profile = tmp_path / "deny-network.sb"
         profile.write_text(DENY_NETWORK_PROFILE, encoding="utf-8")
+        profile_metadata = sandbox_profile_metadata(profile)
 
         local_file = tmp_path / "local-write.txt"
         local_command = [
@@ -113,10 +167,10 @@ def run_smoke() -> dict[str, Any]:
         local_ok = local_probe.returncode == 0 and local_file.read_text(encoding="utf-8") == "ok"
         network_blocked = network_probe.returncode != 0 and not observed["accepted"]
 
-        return {
+        result = {
             "complete": local_ok and network_blocked,
             "sandbox_binary": sandbox,
-            "sandbox_profile": DENY_NETWORK_PROFILE.strip().splitlines(),
+            "sandbox_profile": profile_metadata,
             "local_probe": {
                 "description": "sandboxed child can still run local filesystem work",
                 "command": local_command,
@@ -138,6 +192,12 @@ def run_smoke() -> dict[str, Any]:
                 "passed": network_blocked,
             },
         }
+        result["sandbox_profile_audit"] = {
+            "description": "sandbox profile metadata matches the -f profile path used by both sandbox-exec probes",
+            "passed": smoke_result_profile_audit_ok(result),
+        }
+        result["complete"] = result["complete"] and result["sandbox_profile_audit"]["passed"]
+        return result
 
 
 def repo_root() -> Path:
@@ -214,6 +274,80 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--provider", default="opencode", help="provider/model for --a2ctl-run-smoke (default: opencode)")
     parser.add_argument("--json", action="store_true", help="print the full smoke result as JSON")
     return parser.parse_args(argv)
+
+
+class NetworkPolicySmokeTests(unittest.TestCase):
+    def test_sandbox_profile_metadata_hashes_exact_profile_file_text(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="a2-network-policy-smoke-test-") as tmp:
+            profile = Path(tmp) / "deny-network.sb"
+            profile_text = "(version 1)\n(allow default)\n(deny network*)\n"
+            profile.write_text(profile_text, encoding="utf-8")
+
+            metadata = sandbox_profile_metadata(profile)
+
+            self.assertEqual(metadata["engine"], "sandbox-exec")
+            self.assertEqual(metadata["profile_path"], str(profile))
+            self.assertTrue(metadata["profile_path_is_absolute"])
+            self.assertTrue(Path(metadata["profile_path"]).is_absolute())
+            self.assertEqual(metadata["profile_path_lifetime"], "ephemeral_tempfile_removed_after_smoke")
+            self.assertEqual(metadata["durable_audit_fields"], ["profile_sha256", "profile_lines"])
+            self.assertEqual(metadata["profile_sha256"], sha256_text(profile_text))
+            self.assertEqual(
+                metadata["profile_lines"],
+                ["(version 1)", "(allow default)", "(deny network*)"],
+            )
+
+    def test_sandbox_profile_metadata_changes_when_profile_file_changes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="a2-network-policy-smoke-test-") as tmp:
+            profile = Path(tmp) / "deny-network.sb"
+            profile.write_text(DENY_NETWORK_PROFILE, encoding="utf-8")
+            original = sandbox_profile_metadata(profile)
+            profile.write_text(DENY_NETWORK_PROFILE + "; audit marker\n", encoding="utf-8")
+
+            changed = sandbox_profile_metadata(profile)
+
+            self.assertNotEqual(original["profile_sha256"], changed["profile_sha256"])
+
+    def test_smoke_result_profile_audit_requires_profile_commands_and_hash(self) -> None:
+        profile_path = "/tmp/deny-network.sb"
+        result = {
+            "sandbox_profile": {
+                "profile_path": profile_path,
+                "profile_path_is_absolute": True,
+                "profile_path_lifetime": "ephemeral_tempfile_removed_after_smoke",
+                "durable_audit_fields": ["profile_sha256", "profile_lines"],
+                "profile_sha256": sha256_text(DENY_NETWORK_PROFILE),
+                "profile_lines": DENY_NETWORK_PROFILE.splitlines(),
+            },
+            "local_probe": {"command": ["sandbox-exec", "-f", profile_path, "python3"]},
+            "network_probe": {"command": ["sandbox-exec", "-f", profile_path, "python3"]},
+        }
+        self.assertTrue(smoke_result_profile_audit_ok(result))
+
+        result["network_probe"] = {"command": ["sandbox-exec", "-f", "/tmp/other.sb", "python3"]}
+        self.assertFalse(smoke_result_profile_audit_ok(result))
+
+        result["sandbox_profile"]["profile_path"] = "relative.sb"
+        result["sandbox_profile"]["profile_path_is_absolute"] = False
+        result["local_probe"] = {"command": ["sandbox-exec", "-f", "relative.sb", "python3"]}
+        result["network_probe"] = {"command": ["sandbox-exec", "-f", "relative.sb", "python3"]}
+        self.assertFalse(smoke_result_profile_audit_ok(result))
+
+    def test_smoke_result_profile_audit_rejects_wrong_hash(self) -> None:
+        profile_path = "/tmp/deny-network.sb"
+        result = {
+            "sandbox_profile": {
+                "profile_path": profile_path,
+                "profile_path_is_absolute": True,
+                "profile_path_lifetime": "ephemeral_tempfile_removed_after_smoke",
+                "durable_audit_fields": ["profile_sha256", "profile_lines"],
+                "profile_sha256": sha256_text("(version 1)\n"),
+                "profile_lines": DENY_NETWORK_PROFILE.splitlines(),
+            },
+            "local_probe": {"command": ["sandbox-exec", "-f", profile_path, "python3"]},
+            "network_probe": {"command": ["sandbox-exec", "-f", profile_path, "python3"]},
+        }
+        self.assertFalse(smoke_result_profile_audit_ok(result))
 
 
 def main(argv: list[str]) -> int:
