@@ -9,6 +9,7 @@
 **Enhanced:** 2026-07-04 — built-in domain challenge catalogs moved out of `a2d-core` into the CLI/evaluation layer
 **Hardened:** 2026-07-04 — seed coder prompt now names the public `has_tests` fitness gate and exact Rust test module shape after repeated Sudoku evidence showed a generated-solution test-module omission
 **Enhanced:** 2026-07-04 — added a first-class `a2d fitness-evidence-inspect` CLI path for source-bound evidence review before persistence decisions
+**Enhanced:** 2026-07-04 — added explicit `a2d cycle-input` file/stdin bridge for JSON artifact bundles while rejecting reserved runtime evidence artifacts
 **Depends on:** Stage 1 (complete)
 
 ## Problem
@@ -101,6 +102,12 @@ Live topology evidence: `runs/20260630-topology-fitness-evidence/{seed,evolved}-
 Exported `a2d.fitness-evidence.v1` now includes source provenance fields for the source scope under test: `source_revision`, `source_tree_dirty`, `source_diff_scope`, `source_diff_hash`, and `evidence_command`. Export-time validation rejects missing provenance, forged diff hashes, revision mismatches, dirty-status mismatches, untracked files under `crates`, and stale current source diffs before writing evidence. The diff hash is computed from a repo-root pathspec for `a2d-autopoietic-autocatalysis-deutero/crates`, so invoking export from a crate subdirectory cannot silently hash an empty scope.
 
 Fresh source-patch gating smoke: `runs/20260701-fitness-evidence-provenance/challenge-smoke/sudoku-solver-cycle-0-fitness-evidence.json`, `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `all_tests_pass: true`, fitness 100% (6/6), `source_revision: ecdc3dc`, `source_diff_hash: db406660a8259a29169a6d72be4af2c62418703c`. Saved-artifact replay support evidence `runs/20260701-fitness-evidence-provenance/baseline-good/baseline-sudoku-solver-cycle-0-fitness-evidence.json` validates the same provenance/export plumbing with full-passing evidence and the same source diff hash, but is support evidence rather than the source-patch gate. This slice validates provenance/export plumbing, not a durable provider-policy or repeated benchmark-reliability improvement.
+
+## 2026-07-04 Update: Cycle Input Bridge
+
+Added `a2d cycle-input <artifact-bundle.json|-> [cycles]` as an explicit file/stdin entry for JSON artifact bundles such as Senior SWE-Bench `task-cycle-input` outputs. The command validates that input is a JSON object, rejects reserved runtime/mechanical artifacts (`fitness_report`, `failure_report`, `provider_health_report`, `provider_policy`, `system_code`) before provider invocation, and then reuses the existing artifact seeding path for task-context artifacts (`requirements`, `design`, `plan`, `benchmark_context`, `evaluation`). This keeps Senior SWE-Bench orchestration in the CLI/evaluation layer and prevents task input from impersonating benchmark/runtime evidence.
+
+Focused validation: `cargo fmt --check`; `cargo test -p a2d cycle_input -- --nocapture`; `cargo test -p a2d --test cycle_input -- --nocapture`. Full `cargo test` passed (300 passed, 2 ignored). Binary smokes under `runs/20260704-cycle-input-bridge-evidence/negative-smoke/` prove non-JSON stdin and reserved `fitness_report` inputs fail before printing `A²D Catalytic Cycle`. Fresh source-patch gate: `runs/20260704-cycle-input-bridge-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1` actual-test evidence with `source_diff_hash: 918971a1f1be72793a3fb2f6c68dfa9e300c0825`, matching `git diff --binary HEAD -- crates | git hash-object --stdin`. This is cycle-input bridge evidence, not official Senior SWE-Bench task mastery.
 
 ## 2026-07-04 Update: First-Class Fitness Evidence Inspection
 

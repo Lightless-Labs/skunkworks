@@ -48,6 +48,9 @@ fn main() {
             let (num_cycles, req) = parse_cycle_args(arg2, args.get(3).map(|s| s.as_str()));
             run_cycle(num_cycles, &req);
         }
+        "cycle-input" => {
+            run_cycle_input(&args[2..]);
+        }
         "challenge" => {
             let challenge_name = arg2;
             let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(3);
@@ -107,7 +110,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -2602,6 +2605,78 @@ fn parse_cycle_args(arg2: &str, arg3: Option<&str>) -> (usize, String) {
     } else {
         (1, arg2.to_string())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CycleInputConfig {
+    path: String,
+    num_cycles: usize,
+}
+
+fn parse_cycle_input_args(args: &[String]) -> Result<CycleInputConfig, String> {
+    let path = args
+        .first()
+        .ok_or_else(|| "missing cycle input path".to_string())?;
+    let num_cycles = args
+        .get(1)
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|_| format!("invalid cycle count for cycle-input: {value}"))
+        })
+        .transpose()?
+        .unwrap_or(1);
+    if num_cycles == 0 {
+        return Err("cycle-input cycle count must be greater than zero".to_string());
+    }
+    if args.len() > 2 {
+        return Err(format!("unknown cycle-input argument: {}", args[2]));
+    }
+    Ok(CycleInputConfig {
+        path: path.to_string(),
+        num_cycles,
+    })
+}
+
+fn validate_cycle_input_bundle(input: &str) -> Result<(), String> {
+    let Value::Object(map) = serde_json::from_str::<Value>(input)
+        .map_err(|_| "cycle-input requires a JSON object artifact bundle".to_string())?
+    else {
+        return Err("cycle-input requires a JSON object artifact bundle".to_string());
+    };
+    for key in map.keys() {
+        if is_reserved_cycle_input_artifact(key) {
+            return Err(format!(
+                "cycle-input cannot seed reserved runtime artifact: {key}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_reserved_cycle_input_artifact(key: &str) -> bool {
+    matches!(
+        key,
+        "fitness_report"
+            | "failure_report"
+            | "provider_health_report"
+            | "provider_policy"
+            | "system_code"
+    )
+}
+
+fn run_cycle_input(args: &[String]) {
+    let config = parse_cycle_input_args(args).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        eprintln!("Usage: a2d cycle-input <artifact-bundle.json|-> [cycles]");
+        std::process::exit(1);
+    });
+    let input = read_artifact_or_exit(&config.path);
+    validate_cycle_input_bundle(&input).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    });
+    run_cycle(config.num_cycles, &input);
 }
 
 fn run_cycle(num_cycles: usize, requirements: &str) {
@@ -9491,6 +9566,66 @@ mod tests {
         assert_eq!(
             artifacts.get(&art("enzyme_defs")).unwrap(),
             br#"[{"id":"coder"}]"#
+        );
+    }
+
+    #[test]
+    fn cycle_input_args_parse_path_and_positive_cycle_count() {
+        let config = parse_cycle_input_args(&["task-cycle-input.json".to_string()])
+            .expect("default cycle-input args parse");
+        assert_eq!(config.path, "task-cycle-input.json");
+        assert_eq!(config.num_cycles, 1);
+
+        let config = parse_cycle_input_args(&["-".to_string(), "2".to_string()])
+            .expect("stdin cycle-input args parse");
+        assert_eq!(config.path, "-");
+        assert_eq!(config.num_cycles, 2);
+
+        assert!(
+            parse_cycle_input_args(&[])
+                .expect_err("cycle-input requires an artifact path")
+                .contains("missing cycle input path")
+        );
+        assert!(
+            parse_cycle_input_args(&["input.json".to_string(), "0".to_string()])
+                .expect_err("cycle-input rejects zero cycles")
+                .contains("greater than zero")
+        );
+        assert!(
+            parse_cycle_input_args(&[
+                "input.json".to_string(),
+                "1".to_string(),
+                "extra".to_string()
+            ])
+            .expect_err("cycle-input rejects extra args")
+            .contains("unknown cycle-input argument")
+        );
+    }
+
+    #[test]
+    fn cycle_input_bundle_validation_rejects_reserved_runtime_artifacts() {
+        validate_cycle_input_bundle(r#"{"requirements":"REQS","design":"DESIGN","plan":"PLAN"}"#)
+            .expect("ordinary cycle input artifacts are allowed");
+
+        assert!(
+            validate_cycle_input_bundle("not json")
+                .expect_err("cycle-input requires JSON")
+                .contains("JSON object")
+        );
+        assert!(
+            validate_cycle_input_bundle(r#"["not", "object"]"#)
+                .expect_err("cycle-input requires object")
+                .contains("JSON object")
+        );
+        assert!(
+            validate_cycle_input_bundle(r#"{"requirements":"REQS","fitness_report":{}}"#)
+                .expect_err("cycle-input rejects reserved runtime evidence")
+                .contains("reserved runtime artifact")
+        );
+        assert!(
+            validate_cycle_input_bundle(r#"{"requirements":"REQS","failure_report":"fake"}"#)
+                .expect_err("cycle-input rejects reserved failure reports")
+                .contains("failure_report")
         );
     }
 
