@@ -46,6 +46,8 @@ FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY = "Isolated"
 FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR = (
     "fail_closed_provider_launch_until_audited_sandbox_provider_allowlist"
 )
+FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = False
+FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS = "not_implemented"
 HOST_PATH_MARKERS = ("/Users", "/tmp", "/var/folders")
 EXPECTED_DEMO_REQUIREMENTS = [
     "failed_first_attempt",
@@ -453,6 +455,8 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
             "dirty_source_allowed": args.allow_dirty_source,
             "benchmark_task_network_policy": FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY,
             "restricted_network_policy_current_behavior": FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR,
+            "audited_sandbox_provider_allowlist_enforced": FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED,
+            "audited_sandbox_provider_allowlist_status": FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS,
         },
         "commands": {
             "harness": display_command(fresh_command(args)),
@@ -468,6 +472,7 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
             "Live provider auth, quota, and model availability are not verified until the fresh run executes.",
             "Clean-source readiness and source revision metadata are checked before fresh results/evidence files are created; newly generated rows record that pre-run source state, and the new artifacts must then be archived deliberately.",
             "Benchmark task payloads request network_policy=Isolated; current provider-backed runs under restricted policy are expected to fail closed until an audited sandbox/provider allowlist exists.",
+            "No audited sandbox/provider allowlist is enforced for fresh provider-backed demo execution yet; this report records status=not_implemented rather than treating preflight as sandbox evidence.",
             "This report is readiness evidence only; it is not loop evidence and contains no failed-attempt/retry/promotion proof.",
         ],
     }
@@ -518,6 +523,8 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
     if checks is None and not current_report_shape:
         benchmark_task_network_policy = "legacy report: not recorded"
         restricted_network_policy_current_behavior = "legacy report: not recorded"
+        sandbox_provider_allowlist_enforced: object = "legacy report: not recorded"
+        sandbox_provider_allowlist_status = "legacy report: not recorded"
     else:
         if not isinstance(checks, dict):
             raise RuntimeError("fresh preflight report lacks checks")
@@ -531,9 +538,31 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
                 "fresh preflight report checks.restricted_network_policy_current_behavior must record "
                 f"{FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR}"
             )
+        if (
+            checks.get("audited_sandbox_provider_allowlist_enforced")
+            is not FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
+        ):
+            raise RuntimeError(
+                "fresh preflight report checks.audited_sandbox_provider_allowlist_enforced "
+                f"must be {FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED} until an audited sandbox/provider allowlist is wired"
+            )
+        if (
+            checks.get("audited_sandbox_provider_allowlist_status")
+            != FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS
+        ):
+            raise RuntimeError(
+                "fresh preflight report checks.audited_sandbox_provider_allowlist_status must record "
+                f"{FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS}"
+            )
         benchmark_task_network_policy = checks["benchmark_task_network_policy"]
         restricted_network_policy_current_behavior = checks[
             "restricted_network_policy_current_behavior"
+        ]
+        sandbox_provider_allowlist_enforced = checks[
+            "audited_sandbox_provider_allowlist_enforced"
+        ]
+        sandbox_provider_allowlist_status = checks[
+            "audited_sandbox_provider_allowlist_status"
         ]
     for key, label in [("results", "results"), ("evidence_json", "evidence")]:
         declared_path = report.get(key)
@@ -567,6 +596,14 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
     print(
         "  restricted_network_policy_current_behavior: "
         f"{restricted_network_policy_current_behavior}"
+    )
+    print(
+        "  audited_sandbox_provider_allowlist_enforced: "
+        f"{sandbox_provider_allowlist_enforced}"
+    )
+    print(
+        "  audited_sandbox_provider_allowlist_status: "
+        f"{sandbox_provider_allowlist_status}"
     )
     print("  readiness only: no provider-backed benchmark/results/evidence/contract/live-auth check ran")
     print("  not loop evidence: no failed-attempt/retry/promotion proof")
@@ -789,8 +826,9 @@ def fresh_preflight_summary(args: argparse.Namespace) -> str:
         "# preflight checked local prerequisites: empty results/evidence paths; "
         f"provider binary {provider_binary_name(args.provider)!r} present; "
         f"local provider config present when supported; {source_check}; "
-        "benchmark task payloads request network_policy=Isolated. "
-        "Live provider auth, quota, model availability, and audited sandbox/provider-allowlist execution are not verified until the fresh run executes."
+        "benchmark task payloads request network_policy=Isolated; "
+        "audited sandbox/provider-allowlist execution is not implemented/enforced yet. "
+        "Live provider auth, quota, and model availability are not verified until the fresh run executes."
     )
 
 
@@ -1967,10 +2005,12 @@ class SelfCorrectionDemoTests(unittest.TestCase):
     def evidence_reference(self, evidence: dict[str, object]) -> dict[str, object]:
         return {"requirements": evidence["requirements"]}
 
-    def required_preflight_network_checks(self) -> dict[str, str]:
+    def required_preflight_network_checks(self) -> dict[str, object]:
         return {
             "benchmark_task_network_policy": FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY,
             "restricted_network_policy_current_behavior": FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR,
+            "audited_sandbox_provider_allowlist_enforced": FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED,
+            "audited_sandbox_provider_allowlist_status": FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS,
         }
 
     def sync_embedded_rows_for_selector(
@@ -3105,9 +3145,10 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("dirty source allowed", output)
         self.assertIn("benchmark task payloads request network_policy=Isolated", output)
         self.assertIn(
-            "Live provider auth, quota, model availability, and audited sandbox/provider-allowlist execution are not verified",
+            "audited sandbox/provider-allowlist execution is not implemented/enforced yet",
             output,
         )
+        self.assertIn("Live provider auth, quota, and model availability are not verified", output)
         self.assertIn("bench/self_correction.py", output)
         self.assertIn("# would validate fresh results before scoring", output)
         self.assertIn("no_external_solution_search=true and network_policy=Isolated are recorded for every row", output)
@@ -3179,6 +3220,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             data["checks"]["restricted_network_policy_current_behavior"],
             "fail_closed_provider_launch_until_audited_sandbox_provider_allowlist",
         )
+        self.assertFalse(data["checks"]["audited_sandbox_provider_allowlist_enforced"])
+        self.assertEqual(data["checks"]["audited_sandbox_provider_allowlist_status"], "not_implemented")
         notes = " ".join(data["notes"])
         self.assertIn("before fresh results/evidence files are created", notes)
         self.assertIn("network_policy=Isolated", notes)
@@ -3290,6 +3333,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("STALE source snapshot differs from current HEAD/state", output)
         self.assertIn("benchmark_task_network_policy: Isolated", output)
         self.assertIn("fail_closed_provider_launch_until_audited_sandbox_provider_allowlist", output)
+        self.assertIn("audited_sandbox_provider_allowlist_enforced: False", output)
+        self.assertIn("audited_sandbox_provider_allowlist_status: not_implemented", output)
         self.assertIn("readiness only", output)
         self.assertIn("not loop evidence", output)
 
@@ -3324,6 +3369,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         output = stdout.getvalue()
         self.assertIn("PASS source snapshot matches current HEAD/state", output)
         self.assertIn("benchmark_task_network_policy: Isolated", output)
+        self.assertIn("audited_sandbox_provider_allowlist_enforced: False", output)
         self.assertIn("readiness only", output)
         self.assertIn("not loop evidence", output)
 
@@ -3414,8 +3460,26 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 {
                     "benchmark_task_network_policy": "Open",
                     "restricted_network_policy_current_behavior": FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR,
+                    "audited_sandbox_provider_allowlist_enforced": FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED,
+                    "audited_sandbox_provider_allowlist_status": FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS,
                 },
                 "checks.benchmark_task_network_policy",
+            ),
+            (
+                {
+                    "benchmark_task_network_policy": FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY,
+                    "restricted_network_policy_current_behavior": FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR,
+                },
+                "checks.audited_sandbox_provider_allowlist_enforced",
+            ),
+            (
+                {
+                    "benchmark_task_network_policy": FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY,
+                    "restricted_network_policy_current_behavior": FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR,
+                    "audited_sandbox_provider_allowlist_enforced": False,
+                    "audited_sandbox_provider_allowlist_status": "wired",
+                },
+                "checks.audited_sandbox_provider_allowlist_status",
             ),
         ]:
             with self.subTest(checks=checks), tempfile.TemporaryDirectory() as tmpdir:
