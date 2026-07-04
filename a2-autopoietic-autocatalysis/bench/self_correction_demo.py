@@ -1698,6 +1698,14 @@ def verify_evidence_contract(
             "  PASS fresh artifact provenance "
             f"(run_id={fresh_run_id!r}, max_tokens={max_tokens}, timeout_secs={timeout_secs})"
         )
+        artifact = evidence.get("artifact")
+        print("  archive_review: fresh artifacts are verified but not archived yet")
+        print(f"    artifact_jsonl: {artifact}")
+        print(f"    evidence_json: {evidence_json}")
+        print(
+            "    next: review and commit both artifacts, then rerun this contract with "
+            "--require-git-tracked-artifacts before treating them as archived demo proof"
+        )
     print(
         "  proved: failed_first_attempt -> archived_verifier_failure_evidence -> "
         "retry_context_from_failure_evidence -> later_passing_attempt -> "
@@ -2726,6 +2734,16 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn("outside the requested run_id", stderr.getvalue())
 
+    def test_verify_evidence_contract_archived_mode_omits_fresh_archive_review(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            verify_evidence_contract(DEFAULT_ARCHIVE_EVIDENCE, DEFAULT_ARCHIVE_EVIDENCE)
+
+        output = stdout.getvalue()
+        self.assertIn("mode: archived historical provider evidence", output)
+        self.assertNotIn("archive_review:", output)
+        self.assertNotIn("--require-git-tracked-artifacts", output)
+
     def test_verify_evidence_contract_prints_fresh_provenance_mode_when_checked(self) -> None:
         stdout = io.StringIO()
         evidence, rows = self.evidence_with_source_metadata()
@@ -2751,6 +2769,10 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         output = stdout.getvalue()
         self.assertIn("mode: fresh artifact provenance check", output)
         self.assertIn("PASS fresh artifact provenance", output)
+        self.assertIn("archive_review: fresh artifacts are verified but not archived yet", output)
+        self.assertIn(f"artifact_jsonl: {DEFAULT_ARCHIVE}", output)
+        self.assertIn(f"evidence_json: {DEFAULT_ARCHIVE_EVIDENCE}", output)
+        self.assertIn("--require-git-tracked-artifacts", output)
         self.assertIn("run_id='fresh-demo'", output)
         self.assertIn("source_metadata:", output)
 
