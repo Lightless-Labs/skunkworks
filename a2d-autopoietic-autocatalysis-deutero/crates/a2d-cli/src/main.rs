@@ -135,6 +135,9 @@ fn main() {
         "senior-swe-bench-retry-attempt-step" => {
             run_senior_swe_bench_retry_attempt_step(&args[2..]);
         }
+        "senior-swe-bench-retry-attempt-step-evidence" => {
+            run_senior_swe_bench_retry_attempt_step_evidence(&args[2..]);
+        }
         "compare-provider-policy" | "policy-gate" => {
             let challenge_name = if arg2.is_empty() { "sudoku" } else { arg2 };
             let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -157,7 +160,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|senior-swe-bench-retry-attempt-evaluate|senior-swe-bench-retry-attempt-step|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|senior-swe-bench-retry-attempt-evaluate|senior-swe-bench-retry-attempt-step|senior-swe-bench-retry-attempt-step-evidence|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -4883,6 +4886,484 @@ fn build_senior_swe_bench_retry_attempt_step_execution(evaluation: &str) -> Resu
         "next_step": "follow the embedded retry_step decision; run fitness-evidence-inspect only if retry_step says to",
         "note": "deterministic retry-attempt step execution only: this command runs exactly one planned retry-step command and does not inspect fitness evidence or claim fitness",
     }))
+}
+
+fn run_senior_swe_bench_retry_attempt_step_evidence(args: &[String]) {
+    if args.len() != 1 {
+        eprintln!(
+            "Usage: a2d senior-swe-bench-retry-attempt-step-evidence <retry-attempt-step-execution.json|->"
+        );
+        std::process::exit(1);
+    }
+    let step_execution = read_artifact_or_exit(&args[0]);
+    let evidence_execution =
+        build_senior_swe_bench_retry_attempt_step_evidence_execution(&step_execution)
+            .unwrap_or_else(|error| {
+                eprintln!("Senior SWE-Bench retry attempt step evidence error: {error}");
+                std::process::exit(1);
+            });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&evidence_execution)
+            .expect("Senior SWE-Bench retry attempt evidence execution must serialize")
+    );
+}
+
+fn build_senior_swe_bench_retry_attempt_step_evidence_execution(
+    step_execution: &str,
+) -> Result<Value, String> {
+    let value: Value = serde_json::from_str(step_execution).map_err(|error| {
+        format!("invalid Senior SWE-Bench retry attempt step execution JSON: {error}")
+    })?;
+    let schema = value
+        .get("schema_version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry attempt step execution missing schema_version".to_string()
+        })?;
+    if schema != "a2d.senior-swe-bench-retry-attempt-step-execution.v1" {
+        return Err(format!(
+            "expected a2d.senior-swe-bench-retry-attempt-step-execution.v1, got {schema}"
+        ));
+    }
+    if value
+        .get("provider_invocations_started")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry attempt step execution must not have started providers"
+                .to_string(),
+        );
+    }
+    if value
+        .get("evaluator_invocations_started")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry attempt step execution must not start evaluators".to_string(),
+        );
+    }
+    if value
+        .get("prior_evaluator_invocations_started")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(
+            "Senior SWE-Bench retry attempt step execution must record prior evaluator execution"
+                .to_string(),
+        );
+    }
+    if value.get("retry_step_started").and_then(Value::as_bool) != Some(true) {
+        return Err(
+            "Senior SWE-Bench retry attempt step execution must have started retry-step"
+                .to_string(),
+        );
+    }
+    if value
+        .get("fitness_evidence_inspection_started")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry attempt step execution must not have inspected fitness evidence"
+                .to_string(),
+        );
+    }
+    if value
+        .get("fitness_claim_allowed_before_evidence")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err("Senior SWE-Bench retry attempt step execution must forbid fitness claims before evidence".to_string());
+    }
+    if value
+        .get("github_solution_search_allowed")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err("Senior SWE-Bench retry attempt step execution must forbid public GitHub solution search".to_string());
+    }
+
+    let candidate_patch_path = PathBuf::from(required_plan_string(&value, "candidate_patch_path")?);
+    let candidate_patch_hash = required_plan_string(&value, "candidate_patch_hash")?;
+    validate_git_object_hash(&candidate_patch_hash).map_err(|error| {
+        format!(
+            "Senior SWE-Bench retry attempt candidate_patch_hash {error}: {candidate_patch_hash}"
+        )
+    })?;
+    let actual_patch_hash = file_content_hash(&candidate_patch_path)?;
+    if actual_patch_hash != candidate_patch_hash {
+        return Err(format!(
+            "candidate patch hash mismatch: step execution {candidate_patch_hash}, actual {actual_patch_hash}"
+        ));
+    }
+
+    let selected = value.get("selected_artifact").ok_or_else(|| {
+        "Senior SWE-Bench retry attempt step execution missing selected_artifact".to_string()
+    })?;
+    let selected_path = required_plan_string(selected, "path")?;
+    let selected_hash = required_plan_string(selected, "git_object_hash")?;
+    validate_git_object_hash(&selected_hash).map_err(|error| {
+        format!(
+            "Senior SWE-Bench retry attempt selected artifact git_object_hash {error}: {selected_hash}"
+        )
+    })?;
+    let selected_bytes = selected
+        .get("bytes")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry attempt selected artifact missing bytes".to_string()
+        })?;
+    let artifact_bytes = fs::read(&selected_path).map_err(|error| {
+        format!("failed to read selected candidate artifact {selected_path}: {error}")
+    })?;
+    if artifact_bytes.len() as u64 != selected_bytes {
+        return Err(format!(
+            "selected candidate artifact byte count mismatch for {selected_path}: step execution {selected_bytes}, actual {}",
+            artifact_bytes.len()
+        ));
+    }
+    let actual_artifact_hash = git_hash_object_bytes(&artifact_bytes)?;
+    if actual_artifact_hash != selected_hash {
+        return Err(format!(
+            "selected candidate artifact hash mismatch for {selected_path}: step execution {selected_hash}, actual {actual_artifact_hash}"
+        ));
+    }
+    let artifact = String::from_utf8(artifact_bytes).map_err(|error| {
+        format!("selected candidate artifact {selected_path} is not UTF-8 text: {error}")
+    })?;
+    let extracted_patch = extract_senior_swe_bench_candidate_patch(&artifact)?;
+    let extracted_hash = git_hash_object_bytes(extracted_patch.as_bytes())?;
+    if extracted_hash != candidate_patch_hash {
+        return Err(format!(
+            "candidate patch hash mismatch after re-extraction: step execution {candidate_patch_hash}, actual {extracted_hash}"
+        ));
+    }
+
+    let evaluate_args = value
+        .get("evaluate_args")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry attempt step execution missing evaluate_args".to_string()
+        })?
+        .iter()
+        .map(|arg| {
+            arg.as_str().map(ToString::to_string).ok_or_else(|| {
+                "Senior SWE-Bench retry attempt step execution evaluate_args contains non-string"
+                    .to_string()
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let evaluate_config = validate_retry_attempt_evaluate_args(
+        &evaluate_args,
+        &selected_path,
+        &candidate_patch_path,
+    )?;
+    let local_evaluation_path = evaluate_config
+        .output
+        .as_ref()
+        .expect("retry-attempt evaluate validation requires output")
+        .to_string_lossy()
+        .to_string();
+    if value.get("local_evaluation_path").and_then(Value::as_str)
+        != Some(local_evaluation_path.as_str())
+    {
+        return Err(
+            "Senior SWE-Bench retry attempt step execution local_evaluation_path does not match evaluate_args"
+                .to_string(),
+        );
+    }
+    let retry_step_args = value
+        .get("retry_step_args")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry attempt step execution missing retry_step_args".to_string()
+        })?
+        .iter()
+        .map(|arg| {
+            arg.as_str().map(ToString::to_string).ok_or_else(|| {
+                "Senior SWE-Bench retry attempt step execution retry_step_args contains non-string"
+                    .to_string()
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_retry_attempt_retry_step_args(
+        &retry_step_args,
+        &value,
+        &evaluate_config,
+        &local_evaluation_path,
+    )?;
+
+    let evaluate_exit_code = value
+        .get("evaluate_exit_code")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry attempt step execution missing evaluate_exit_code".to_string()
+        })?;
+    if evaluate_exit_code != 0 && evaluate_exit_code != 2 {
+        return Err(format!(
+            "Senior SWE-Bench retry attempt step execution has unsupported evaluate_exit_code {evaluate_exit_code}"
+        ));
+    }
+    let local_evaluation = validate_retry_attempt_local_evaluation(
+        &PathBuf::from(&local_evaluation_path),
+        &value,
+        &candidate_patch_path,
+        &candidate_patch_hash,
+        &evaluate_config,
+        Some(evaluate_exit_code as i32),
+    )?;
+    let local_status = local_evaluation
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("<invalid>")
+        .to_string();
+    if value.get("local_evaluation_status").and_then(Value::as_str) != Some(local_status.as_str()) {
+        return Err("Senior SWE-Bench retry attempt step execution local_evaluation_status does not match local evaluation".to_string());
+    }
+    if evaluate_exit_code != 0 || local_status != "passed" {
+        return Err(
+            "Senior SWE-Bench retry attempt step evidence inspection requires a passed local evaluation"
+                .to_string(),
+        );
+    }
+
+    let retry_step = value.get("retry_step").ok_or_else(|| {
+        "Senior SWE-Bench retry attempt step execution missing retry_step".to_string()
+    })?;
+    validate_retry_attempt_step_output(retry_step, &value, &local_evaluation, &local_status)?;
+    validate_retry_attempt_step_evidence_retry_step(retry_step, &value)?;
+    let fitness_evidence_path = retry_step
+        .get("fitness_evidence_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry attempt step evidence missing fitness_evidence_path".to_string()
+        })?;
+    let fitness_evidence_inspect_args = retry_step
+        .get("fitness_evidence_inspect_args")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry attempt step evidence missing fitness_evidence_inspect_args"
+                .to_string()
+        })?
+        .iter()
+        .map(|arg| {
+            arg.as_str().map(ToString::to_string).ok_or_else(|| {
+                "Senior SWE-Bench retry attempt step evidence inspection args contain non-string"
+                    .to_string()
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if fitness_evidence_inspect_args.len() != 3
+        || fitness_evidence_inspect_args[0] != "fitness-evidence-inspect"
+        || fitness_evidence_inspect_args[1] != fitness_evidence_path
+        || fitness_evidence_inspect_args[2] != "--require-all-tests-pass"
+    {
+        return Err("Senior SWE-Bench retry attempt step evidence has invalid planned fitness-evidence-inspect args".to_string());
+    }
+
+    let current_exe = env::current_exe()
+        .map_err(|error| format!("failed to resolve current a2d executable: {error}"))?;
+    let output = Command::new(current_exe)
+        .args(&fitness_evidence_inspect_args)
+        .output()
+        .map_err(|error| {
+            format!("failed to run planned fitness-evidence-inspect command: {error}")
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "planned fitness-evidence-inspect failed with exit {:?}: stdout={} stderr={}",
+            output.status.code(),
+            preview_text_lossy(&output.stdout),
+            preview_text_lossy(&output.stderr)
+        ));
+    }
+
+    let evidence_bytes = fs::read(fitness_evidence_path).map_err(|error| {
+        format!("failed to read inspected fitness evidence {fitness_evidence_path}: {error}")
+    })?;
+    let evidence: Value = serde_json::from_slice(&evidence_bytes).map_err(|error| {
+        format!("inspected fitness evidence {fitness_evidence_path} is not JSON: {error}")
+    })?;
+    inspect_fitness_evidence_value(&evidence, true).map_err(|error| {
+        format!(
+            "inspected fitness evidence {fitness_evidence_path} is invalid after command: {error}"
+        )
+    })?;
+    let evidence_candidate_patch_hash = evidence
+        .get("candidate_patch_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "inspected Senior SWE-Bench fitness evidence missing candidate_patch_hash".to_string()
+        })?;
+    if evidence_candidate_patch_hash != candidate_patch_hash {
+        return Err(format!(
+            "inspected Senior SWE-Bench fitness evidence candidate_patch_hash {evidence_candidate_patch_hash} does not match retry-attempt candidate patch hash {candidate_patch_hash}"
+        ));
+    }
+    let evidence_candidate_patch_path = evidence
+        .get("candidate_patch_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "inspected Senior SWE-Bench fitness evidence missing candidate_patch_path".to_string()
+        })?;
+    if evidence_candidate_patch_path != candidate_patch_path.to_string_lossy() {
+        return Err(format!(
+            "inspected Senior SWE-Bench fitness evidence candidate_patch_path {evidence_candidate_patch_path} does not match retry-attempt candidate patch path {}",
+            candidate_patch_path.display()
+        ));
+    }
+    let evidence_artifact_path = evidence
+        .get("candidate_patch_artifact_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "inspected Senior SWE-Bench fitness evidence missing candidate_patch_artifact_path"
+                .to_string()
+        })?;
+    if evidence_artifact_path != selected_path {
+        return Err(format!(
+            "inspected Senior SWE-Bench fitness evidence candidate_patch_artifact_path {evidence_artifact_path} does not match selected artifact {selected_path}"
+        ));
+    }
+    let evidence_artifact_hash = evidence
+        .get("candidate_patch_artifact_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "inspected Senior SWE-Bench fitness evidence missing candidate_patch_artifact_hash"
+                .to_string()
+        })?;
+    if evidence_artifact_hash != selected_hash {
+        return Err(format!(
+            "inspected Senior SWE-Bench fitness evidence candidate_patch_artifact_hash {evidence_artifact_hash} does not match selected artifact hash {selected_hash}"
+        ));
+    }
+    let evidence_evaluator_kind = evidence
+        .get("evaluator_kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "inspected Senior SWE-Bench fitness evidence missing evaluator_kind".to_string()
+        })?;
+    if !matches!(
+        evidence_evaluator_kind,
+        "provided_local_command" | "official_senior_swe_bench"
+    ) {
+        return Err(format!(
+            "inspected Senior SWE-Bench fitness evidence has unreviewed evaluator_kind {evidence_evaluator_kind}"
+        ));
+    }
+
+    let fitness_evidence_summary = json!({
+        "schema_version": evidence.get("schema_version").cloned().unwrap_or(Value::Null),
+        "actual_tests_evaluated": evidence.get("actual_tests_evaluated").cloned().unwrap_or(Value::Null),
+        "non_regressing": evidence.get("non_regressing").cloned().unwrap_or(Value::Null),
+        "fitness": evidence.get("fitness").cloned().unwrap_or(Value::Null),
+        "passed": evidence.get("passed").cloned().unwrap_or(Value::Null),
+        "failed": evidence.get("failed").cloned().unwrap_or(Value::Null),
+        "total": evidence.get("total").cloned().unwrap_or(Value::Null),
+        "source_revision": evidence.get("source_revision").cloned().unwrap_or(Value::Null),
+        "source_tree_dirty": evidence.get("source_tree_dirty").cloned().unwrap_or(Value::Null),
+        "source_diff_hash": evidence.get("source_diff_hash").cloned().unwrap_or(Value::Null),
+        "candidate_patch_hash": evidence.get("candidate_patch_hash").cloned().unwrap_or(Value::Null),
+        "candidate_patch_path": evidence.get("candidate_patch_path").cloned().unwrap_or(Value::Null),
+        "candidate_patch_artifact_path": evidence.get("candidate_patch_artifact_path").cloned().unwrap_or(Value::Null),
+        "candidate_patch_artifact_hash": evidence.get("candidate_patch_artifact_hash").cloned().unwrap_or(Value::Null),
+        "evaluator_kind": evidence.get("evaluator_kind").cloned().unwrap_or(Value::Null),
+    });
+
+    Ok(json!({
+        "schema_version": "a2d.senior-swe-bench-retry-attempt-step-evidence-execution.v1",
+        "task_id": value.get("task_id").cloned().unwrap_or(Value::Null),
+        "repo": value.get("repo").cloned().unwrap_or(Value::Null),
+        "attempt_index": value.get("attempt_index").cloned().unwrap_or(Value::Null),
+        "candidate_patch_path": candidate_patch_path,
+        "candidate_patch_hash": candidate_patch_hash,
+        "selected_artifact": selected.clone(),
+        "evaluate_args": evaluate_args,
+        "retry_step_args": retry_step_args,
+        "evaluate_exit_code": evaluate_exit_code,
+        "local_evaluation_path": local_evaluation_path,
+        "local_evaluation_status": local_status,
+        "retry_step": retry_step.clone(),
+        "fitness_evidence_path": fitness_evidence_path,
+        "fitness_evidence_inspect_args": fitness_evidence_inspect_args,
+        "fitness_evidence_inspect_exit_code": output.status.code().unwrap_or(0),
+        "fitness_evidence_inspect_stdout_preview": preview_text_lossy(&output.stdout),
+        "provider_invocations_started": false,
+        "evaluator_invocations_started": false,
+        "retry_step_started": false,
+        "prior_evaluator_invocations_started": true,
+        "prior_retry_step_started": true,
+        "fitness_evidence_inspection_started": true,
+        "fitness_evidence_inspection_passed": true,
+        "fitness_claim_allowed_before_evidence": false,
+        "fitness_claim_allowed_after_evidence_inspection": true,
+        "github_solution_search_allowed": false,
+        "fitness_evidence_summary": fitness_evidence_summary,
+        "next_step": "the planned a2d.fitness-evidence.v1 inspection gate passed; any benchmark success claim must still state evaluator_kind/provenance and must not overclaim local-wrapper evidence as official Senior SWE-Bench mastery",
+        "note": "deterministic retry-attempt evidence inspection only: this command runs exactly one planned fitness-evidence-inspect command after prior retry-step execution and starts no providers or evaluators",
+    }))
+}
+
+fn validate_retry_attempt_step_evidence_retry_step(
+    retry_step: &Value,
+    step_execution: &Value,
+) -> Result<(), String> {
+    let schema = retry_step
+        .get("schema_version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Senior SWE-Bench retry-step output missing schema_version".to_string())?;
+    if schema != "a2d.senior-swe-bench-cycle-retry-step.v1" {
+        return Err(format!(
+            "expected a2d.senior-swe-bench-cycle-retry-step.v1 retry-step output, got {schema}"
+        ));
+    }
+    for field in ["task_id", "repo", "attempt_index"] {
+        if retry_step.get(field) != step_execution.get(field) {
+            return Err(format!(
+                "Senior SWE-Bench retry-step output {field} does not match retry attempt step execution"
+            ));
+        }
+    }
+    if retry_step
+        .get("provider_invocations_started")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err("Senior SWE-Bench retry-step output must not start providers".to_string());
+    }
+    if retry_step
+        .get("evaluator_invocations_started")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err("Senior SWE-Bench retry-step output must not start evaluators".to_string());
+    }
+    if retry_step
+        .get("fitness_claim_allowed_before_evidence")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry-step output must forbid fitness claims before evidence"
+                .to_string(),
+        );
+    }
+    if retry_step
+        .get("github_solution_search_allowed")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry-step output must forbid public GitHub solution search"
+                .to_string(),
+        );
+    }
+    if retry_step.get("decision").and_then(Value::as_str) != Some("inspect_fitness_evidence") {
+        return Err("Senior SWE-Bench retry attempt evidence inspection requires retry-step decision inspect_fitness_evidence".to_string());
+    }
+    Ok(())
 }
 
 fn validate_retry_attempt_step_output(
