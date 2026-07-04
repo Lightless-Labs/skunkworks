@@ -802,25 +802,37 @@ mod tests {
 
     #[test]
     fn restricted_provider_network_policy_fails_closed_before_launch() {
-        let error = fail_if_provider_network_restricted_for_policy("opencode", Some("Isolated"))
-            .unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("opencode provider launch refused"));
-        assert!(message.contains("no audited provider network sandbox/allowlist yet"));
+        let providers = ["claude", "gemini", "codex", "pi", "opencode"];
+        let open_policies = [None, Some("Open"), Some(" open ")];
+        let restricted_policies = [
+            "Isolated",
+            " IsoLaTeD ",
+            "AllowList:https://api.openai.com",
+            " ALLOWLIST:https://api.anthropic.com ",
+        ];
 
-        let allowlist_error = fail_if_provider_network_restricted_for_policy(
-            "pi",
-            Some("AllowList:https://api.openai.com"),
-        )
-        .unwrap_err();
-        assert!(
-            allowlist_error
-                .to_string()
-                .contains("pi provider launch refused")
-        );
+        for provider in providers {
+            for policy in open_policies {
+                assert!(
+                    fail_if_provider_network_restricted_for_policy(provider, policy).is_ok(),
+                    "{provider} should allow unrestricted policy {policy:?}"
+                );
+            }
 
-        assert!(fail_if_provider_network_restricted_for_policy("codex", None).is_ok());
-        assert!(fail_if_provider_network_restricted_for_policy("codex", Some("Open")).is_ok());
+            for policy in restricted_policies {
+                let error = fail_if_provider_network_restricted_for_policy(provider, Some(policy))
+                    .unwrap_err();
+                let message = error.to_string();
+                assert!(
+                    message.contains(&format!("{provider} provider launch refused")),
+                    "unexpected error for {provider}/{policy}: {message}"
+                );
+                assert!(
+                    message.contains("no audited provider network sandbox/allowlist yet"),
+                    "restricted-policy error must explain this is a launch gate, not a sandbox: {message}"
+                );
+            }
+        }
     }
 
     #[tokio::test]
