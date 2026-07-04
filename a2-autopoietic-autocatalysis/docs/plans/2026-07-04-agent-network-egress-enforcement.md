@@ -37,6 +37,10 @@ Audited source versions:
   - `/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions/sandbox/index.ts`
   - shows `SandboxManager.wrapWithSandbox(command)` and `SandboxManager.initialize({ network: ... })` via `@anthropic-ai/sandbox-runtime`.
   - Current local global install check: `npm list -g @anthropic-ai/sandbox-runtime --depth=0` showed empty, so this runtime is not currently available globally.
+- Repo-local audit command:
+  - `python3 bench/agent_network_boundary_check.py --self-test` verifies the child-agent launch points and sandbox example remain locatable, while explicitly reporting whether the sandbox runtime is available.
+  - `python3 bench/agent_network_boundary_check.py --require-sandbox-runtime` is an intentional fail-closed precondition check for future enforcement work; on 2026-07-04 it exited 1 with `@anthropic-ai/sandbox-runtime not installed globally`.
+  - This audit is not benchmark evidence and must stay outside sentinel/pass criteria until it verifies actual child-agent egress enforcement rather than a missing prerequisite.
 
 ## Implementation direction
 
