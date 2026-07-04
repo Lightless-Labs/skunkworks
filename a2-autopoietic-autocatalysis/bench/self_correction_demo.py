@@ -252,6 +252,100 @@ def score_command(logfile: Path, evidence_json: Path | None = None) -> list[str]
     return command
 
 
+REGENERATION_VOLATILE_EVIDENCE_KEYS = frozenset(
+    {
+        "created_at",
+        "created_at_utc",
+        "evidence_json_path",
+        "evidence_output_path",
+        "generated_at",
+        "generated_at_utc",
+    }
+)
+
+
+def normalized_evidence_for_regeneration(value: object, *, _depth: int = 0) -> object:
+    """Normalize evidence JSON before comparing clean-room regeneration output.
+
+    This intentionally preserves the source artifact path and row selectors. Only
+    top-level evidence-output bookkeeping/timestamps are ignored so future
+    harmless emission metadata cannot mask stale causal-chain proof, while nested
+    row/proof fields remain semantically checked.
+    """
+    if isinstance(value, dict):
+        return {
+            key: normalized_evidence_for_regeneration(value[key], _depth=_depth + 1)
+            for key in sorted(value)
+            if _depth > 0 or key not in REGENERATION_VOLATILE_EVIDENCE_KEYS
+        }
+    if isinstance(value, list):
+        return [normalized_evidence_for_regeneration(item, _depth=_depth + 1) for item in value]
+    return value
+
+
+def canonical_json_sha256(value: object) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def normalized_evidence_sha256(path: Path) -> str:
+    return canonical_json_sha256(normalized_evidence_for_regeneration(load_evidence_json(path)))
+
+
+def require_existing_normalized_evidence_sha256(path: Path) -> str:
+    resolved = repo_path(path)
+    if not resolved.exists() or resolved.stat().st_size == 0:
+        raise RuntimeError(
+            "checked-in demo evidence JSON must exist and be non-empty before verify-archive scoring: "
+            f"{path}"
+        )
+    return normalized_evidence_sha256(path)
+
+
+def require_checked_in_evidence_unchanged(path: Path, original_sha256: str | None) -> None:
+    if original_sha256 is None:
+        return
+    current_sha256 = normalized_evidence_sha256(path)
+    if current_sha256 != original_sha256:
+        raise RuntimeError(
+            "verify-archive changed the normalized checked-in demo evidence JSON: "
+            f"before_sha256={original_sha256} after_sha256={current_sha256}. "
+            "Review and commit the regenerated evidence before treating it as archived proof."
+        )
+
+
+def verify_archive_evidence_regeneration(archive: Path, evidence_json: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="a2-archive-evidence-regeneration-") as tmpdir:
+        regenerated_evidence = Path(tmpdir) / "regenerated.demo-evidence.json"
+        if regenerated_evidence.exists():
+            raise RuntimeError(
+                "clean-room demo evidence regeneration output unexpectedly preexists: "
+                f"{regenerated_evidence}"
+            )
+        result = run_command(score_command(archive, regenerated_evidence), print_only=False)
+        if result != 0:
+            raise RuntimeError(
+                "clean-room demo evidence regeneration scorer failed before producing comparable output"
+            )
+        if not regenerated_evidence.exists() or regenerated_evidence.stat().st_size == 0:
+            raise RuntimeError(
+                "clean-room demo evidence regeneration did not create a non-empty evidence JSON"
+            )
+        expected = normalized_evidence_for_regeneration(load_evidence_json(evidence_json))
+        regenerated = normalized_evidence_for_regeneration(load_evidence_json(regenerated_evidence))
+        expected_sha = canonical_json_sha256(expected)
+        regenerated_sha = canonical_json_sha256(regenerated)
+        if expected != regenerated:
+            raise RuntimeError(
+                "clean-room demo evidence regeneration produced different evidence JSON: "
+                f"checked_in_sha256={expected_sha} regenerated_sha256={regenerated_sha}"
+            )
+        print(
+            "PASS clean-room evidence regeneration: temp output was absent before scoring; "
+            f"normalized SHA-256 matches checked-in evidence ({expected_sha})"
+        )
+
+
 def fresh_contract_command(args: argparse.Namespace, evidence_json: Path) -> list[str]:
     root = repo_root()
     command = [
@@ -2032,10 +2126,12 @@ def main(argv: list[str]) -> int:
         evidence_json = args.evidence_json
         if evidence_json is None and args.archive == DEFAULT_ARCHIVE:
             evidence_json = DEFAULT_ARCHIVE_EVIDENCE
+        original_evidence_sha256 = None
         if not args.print_only and evidence_json is not None:
             try:
                 require_git_tracked_path(evidence_json, label="demo evidence JSON")
                 require_git_tracked_path(args.archive, label="demo evidence contract artifact")
+                original_evidence_sha256 = require_existing_normalized_evidence_sha256(evidence_json)
             except RuntimeError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
@@ -2045,11 +2141,13 @@ def main(argv: list[str]) -> int:
         if result != 0 or args.print_only or evidence_json is None:
             return result
         try:
+            require_checked_in_evidence_unchanged(evidence_json, original_evidence_sha256)
             verify_evidence_contract(
                 evidence_json,
                 DEFAULT_ARCHIVE_EVIDENCE,
                 require_git_tracked_artifacts=True,
             )
+            verify_archive_evidence_regeneration(args.archive, evidence_json)
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -2610,7 +2708,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
     def test_default_verify_archive_runs_checked_in_six_step_contract_after_score(self) -> None:
         stdout = io.StringIO()
-        with mock.patch(__name__ + ".run_command", return_value=0) as run, contextlib.redirect_stdout(stdout):
+        with mock.patch(__name__ + ".run_command", return_value=0) as run, mock.patch(
+            __name__ + ".verify_archive_evidence_regeneration"
+        ) as regeneration, contextlib.redirect_stdout(stdout):
             result = main(["verify-archive"])
 
         self.assertEqual(result, 0)
@@ -2618,6 +2718,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             score_command(DEFAULT_ARCHIVE, DEFAULT_ARCHIVE_EVIDENCE),
             print_only=False,
         )
+        regeneration.assert_called_once_with(DEFAULT_ARCHIVE, DEFAULT_ARCHIVE_EVIDENCE)
         output = stdout.getvalue()
         self.assertIn(f"evidence: {DEFAULT_ARCHIVE_EVIDENCE}", output)
         self.assertIn(f"reference: {DEFAULT_ARCHIVE_EVIDENCE}", output)
@@ -2637,8 +2738,12 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
     def test_verify_archive_runs_evidence_contract_after_successful_score(self) -> None:
         with mock.patch(__name__ + ".require_git_tracked_path") as tracked, mock.patch(
+            __name__ + ".require_existing_normalized_evidence_sha256", return_value="a" * 64
+        ), mock.patch(__name__ + ".require_checked_in_evidence_unchanged") as unchanged, mock.patch(
             __name__ + ".run_command", return_value=0
-        ) as run, mock.patch(__name__ + ".verify_evidence_contract") as contract:
+        ) as run, mock.patch(__name__ + ".verify_evidence_contract") as contract, mock.patch(
+            __name__ + ".verify_archive_evidence_regeneration"
+        ) as regeneration:
             result = main(
                 [
                     "verify-archive",
@@ -2654,11 +2759,140 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         tracked.assert_any_call(Path("custom.demo-evidence.json"), label="demo evidence JSON")
         tracked.assert_any_call(Path("custom.jsonl"), label="demo evidence contract artifact")
         run.assert_called_once()
+        unchanged.assert_called_once_with(Path("custom.demo-evidence.json"), "a" * 64)
         contract.assert_called_once_with(
             Path("custom.demo-evidence.json"),
             DEFAULT_ARCHIVE_EVIDENCE,
             require_git_tracked_artifacts=True,
         )
+        regeneration.assert_called_once_with(Path("custom.jsonl"), Path("custom.demo-evidence.json"))
+
+    def test_verify_archive_clean_room_regeneration_matches_checked_in_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            expected = Path(tmpdir) / "expected.demo-evidence.json"
+            expected.write_text(
+                json.dumps(
+                    {
+                        "artifact": "docs/benchmark-results/self-correction/demo.jsonl",
+                        "complete": True,
+                        "generated_at": "old timestamp ignored",
+                        "demos": [{"requirement": "lineage_trajectory_recorded"}],
+                    },
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_run_command(command: list[str], *, print_only: bool = False) -> int:
+                self.assertFalse(print_only)
+                output_path = Path(command[command.index("--demo-evidence-json") + 1])
+                self.assertFalse(output_path.exists())
+                output_path.write_text(
+                    json.dumps(
+                        {
+                            "artifact": "docs/benchmark-results/self-correction/demo.jsonl",
+                            "complete": True,
+                            "generated_at": "new timestamp ignored",
+                            "demos": [{"requirement": "lineage_trajectory_recorded"}],
+                        },
+                        sort_keys=True,
+                    ),
+                    encoding="utf-8",
+                )
+                return 0
+
+            stdout = io.StringIO()
+            with mock.patch(__name__ + ".run_command", side_effect=fake_run_command), contextlib.redirect_stdout(stdout):
+                verify_archive_evidence_regeneration(Path("demo.jsonl"), expected)
+
+        self.assertIn("PASS clean-room evidence regeneration", stdout.getvalue())
+
+    def test_verify_archive_clean_room_regeneration_detects_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            expected = Path(tmpdir) / "expected.demo-evidence.json"
+            expected.write_text(json.dumps({"complete": True}), encoding="utf-8")
+
+            def fake_run_command(command: list[str], *, print_only: bool = False) -> int:
+                output_path = Path(command[command.index("--demo-evidence-json") + 1])
+                output_path.write_text(json.dumps({"complete": False}), encoding="utf-8")
+                return 0
+
+            with mock.patch(__name__ + ".run_command", side_effect=fake_run_command):
+                with self.assertRaisesRegex(RuntimeError, "regeneration produced different"):
+                    verify_archive_evidence_regeneration(Path("demo.jsonl"), expected)
+
+    def test_verify_archive_rejects_in_place_checked_in_evidence_mutation(self) -> None:
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            evidence = Path(tmpdir) / "custom.demo-evidence.json"
+            evidence.write_text(json.dumps({"complete": True}), encoding="utf-8")
+
+            def fake_run_command(command: list[str], *, print_only: bool = False) -> int:
+                evidence.write_text(json.dumps({"complete": False}), encoding="utf-8")
+                return 0
+
+            with mock.patch(__name__ + ".require_git_tracked_path"), mock.patch(
+                __name__ + ".run_command", side_effect=fake_run_command
+            ), mock.patch(__name__ + ".verify_evidence_contract") as contract, mock.patch(
+                __name__ + ".verify_archive_evidence_regeneration"
+            ) as regeneration, contextlib.redirect_stderr(stderr):
+                result = main(
+                    [
+                        "verify-archive",
+                        "--archive",
+                        "custom.jsonl",
+                        "--evidence-json",
+                        str(evidence),
+                    ]
+                )
+
+        self.assertEqual(result, 2)
+        self.assertIn("changed the normalized checked-in demo evidence", stderr.getvalue())
+        contract.assert_not_called()
+        regeneration.assert_not_called()
+
+    def test_verify_archive_rejects_missing_checked_in_evidence_before_scoring(self) -> None:
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing_evidence = Path(tmpdir) / "missing.demo-evidence.json"
+            with mock.patch(__name__ + ".require_git_tracked_path"), mock.patch(
+                __name__ + ".run_command"
+            ) as run, contextlib.redirect_stderr(stderr):
+                result = main(
+                    [
+                        "verify-archive",
+                        "--archive",
+                        "custom.jsonl",
+                        "--evidence-json",
+                        str(missing_evidence),
+                    ]
+                )
+
+        self.assertEqual(result, 2)
+        self.assertIn("must exist and be non-empty before verify-archive scoring", stderr.getvalue())
+        run.assert_not_called()
+
+    def test_verify_archive_rejects_invalid_checked_in_evidence_before_scoring(self) -> None:
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            invalid_evidence = Path(tmpdir) / "invalid.demo-evidence.json"
+            invalid_evidence.write_text("{not json", encoding="utf-8")
+            with mock.patch(__name__ + ".require_git_tracked_path"), mock.patch(
+                __name__ + ".run_command"
+            ) as run, contextlib.redirect_stderr(stderr):
+                result = main(
+                    [
+                        "verify-archive",
+                        "--archive",
+                        "custom.jsonl",
+                        "--evidence-json",
+                        str(invalid_evidence),
+                    ]
+                )
+
+        self.assertEqual(result, 2)
+        self.assertIn("demo evidence JSON is invalid JSON", stderr.getvalue())
+        run.assert_not_called()
 
     def test_verify_archive_rejects_untracked_paths_before_scoring(self) -> None:
         stderr = io.StringIO()
@@ -2735,8 +2969,10 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
     def test_verify_archive_skips_evidence_contract_when_scoring_fails(self) -> None:
         with mock.patch(__name__ + ".require_git_tracked_path"), mock.patch(
-            __name__ + ".run_command", return_value=1
-        ), mock.patch(__name__ + ".verify_evidence_contract") as contract:
+            __name__ + ".require_existing_normalized_evidence_sha256", return_value="a" * 64
+        ), mock.patch(__name__ + ".run_command", return_value=1), mock.patch(
+            __name__ + ".verify_evidence_contract"
+        ) as contract, mock.patch(__name__ + ".verify_archive_evidence_regeneration") as regeneration:
             result = main(
                 [
                     "verify-archive",
@@ -2749,6 +2985,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         contract.assert_not_called()
+        regeneration.assert_not_called()
 
     def test_fresh_refuses_provider_run_without_explicit_confirmation(self) -> None:
         stdout = io.StringIO()
