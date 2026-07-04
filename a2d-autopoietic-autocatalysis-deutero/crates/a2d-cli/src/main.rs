@@ -3843,6 +3843,22 @@ fn run_local_senior_swe_bench_evaluator(
         .current_dir(&evaluator_checkout)
         .env("A2D_SENIOR_SWE_BENCH_TASK_ID", &package.task_id)
         .env("A2D_SENIOR_SWE_BENCH_REPO", &package.repo)
+        .env(
+            "A2D_SENIOR_SWE_BENCH_GITHUB_SOLUTION_SEARCH_ALLOWED",
+            if package.github_solution_search_allowed {
+                "true"
+            } else {
+                "false"
+            },
+        )
+        .env(
+            "A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN",
+            if package.github_solution_search_allowed {
+                "false"
+            } else {
+                "true"
+            },
+        )
         .env("A2D_SENIOR_SWE_BENCH_CANDIDATE_PATCH", &candidate_patch)
         .env("A2D_SENIOR_SWE_BENCH_ORIGINAL_CHECKOUT", &original_checkout)
         .env(
@@ -6629,7 +6645,7 @@ mod tests {
         let evaluator = root.join("evaluator.sh");
         fs::write(
             &evaluator,
-            "set -eu\ntest \"$(cat lib.rs)\" = \"patched\"\ntest \"$(cat \"$A2D_SENIOR_SWE_BENCH_ORIGINAL_CHECKOUT/lib.rs\")\" = \"original\"\ntest \"$A2D_SENIOR_SWE_BENCH_CANDIDATE_PATCH_APPLIED\" = \"true\"\necho patched-checkout-ok\n",
+            "set -eu\ntest \"$(cat lib.rs)\" = \"patched\"\ntest \"$(cat \"$A2D_SENIOR_SWE_BENCH_ORIGINAL_CHECKOUT/lib.rs\")\" = \"original\"\ntest \"$A2D_SENIOR_SWE_BENCH_CANDIDATE_PATCH_APPLIED\" = \"true\"\ntest \"$A2D_SENIOR_SWE_BENCH_GITHUB_SOLUTION_SEARCH_ALLOWED\" = \"false\"\ntest \"$A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN\" = \"true\"\necho patched-checkout-ok\n",
         )
         .unwrap();
         let config = SeniorSweBenchEvaluateConfig {
