@@ -383,13 +383,37 @@ def ensure_clean_source() -> None:
         )
 
 
-def fresh_preflight(args: argparse.Namespace, evidence_json: Path) -> None:
+def ensure_fresh_output_paths_empty(args: argparse.Namespace, evidence_json: Path) -> None:
     ensure_fresh_results_path(args.results)
     ensure_fresh_evidence_path(evidence_json)
+
+
+def fresh_provider_preflight_after_output_paths(args: argparse.Namespace) -> None:
     ensure_provider_binary(args.provider)
     ensure_provider_config(args.provider)
     if not args.allow_dirty_source:
         ensure_clean_source()
+
+
+def fresh_preflight(args: argparse.Namespace, evidence_json: Path) -> None:
+    ensure_fresh_output_paths_empty(args, evidence_json)
+    fresh_provider_preflight_after_output_paths(args)
+
+
+def ensure_fresh_sandbox_provider_allowlist_ready() -> None:
+    if not FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED:
+        raise RuntimeError(
+            "fresh provider-backed runs are blocked because no audited sandbox/provider "
+            "allowlist is enforced yet; use --preflight-only for readiness checks, "
+            "or wire and verify sandbox/provider-allowlist enforcement before "
+            "running --confirm-provider-run"
+        )
+    if FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS != "enforced":
+        raise RuntimeError(
+            "fresh provider-backed runs require audited sandbox/provider allowlist "
+            "status=enforced; current status is "
+            f"{FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS}"
+        )
 
 
 def provider_config_checked(provider: str) -> bool:
@@ -1957,7 +1981,9 @@ def main(argv: list[str]) -> int:
             return 2
         if not args.print_only:
             try:
-                fresh_preflight(args, evidence_json)
+                ensure_fresh_output_paths_empty(args, evidence_json)
+                ensure_fresh_sandbox_provider_allowlist_ready()
+                fresh_provider_preflight_after_output_paths(args)
             except RuntimeError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
@@ -2370,12 +2396,42 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         preflight.assert_not_called()
         run.assert_not_called()
 
+    def test_fresh_refuses_confirmed_provider_run_without_enforced_sandbox_allowlist(self) -> None:
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            evidence = Path(tmpdir) / "fresh.demo-evidence.json"
+            with mock.patch(__name__ + ".fresh_provider_preflight_after_output_paths") as provider_preflight, mock.patch(
+                __name__ + ".run_command"
+            ) as run, contextlib.redirect_stderr(stderr):
+                result = main(
+                    [
+                        "fresh",
+                        "--results",
+                        str(results),
+                        "--evidence-json",
+                        str(evidence),
+                        "--run-id",
+                        "fresh-demo",
+                        "--confirm-provider-run",
+                    ]
+                )
+
+        self.assertEqual(result, 2)
+        self.assertIn("no audited sandbox/provider allowlist is enforced", stderr.getvalue())
+        self.assertFalse(results.exists())
+        self.assertFalse(evidence.exists())
+        provider_preflight.assert_not_called()
+        run.assert_not_called()
+
     def test_fresh_runs_evidence_contract_after_confirmed_successful_score(self) -> None:
-        with mock.patch(__name__ + ".fresh_preflight"), mock.patch(
-            __name__ + ".run_command", side_effect=[0, 0]
-        ) as run, mock.patch(__name__ + ".validate_fresh_results"), mock.patch(
-            __name__ + ".verify_fresh_evidence_targets_results"
-        ) as target_guard, mock.patch(__name__ + ".verify_evidence_contract") as contract:
+        with mock.patch(__name__ + ".ensure_fresh_sandbox_provider_allowlist_ready"), mock.patch(
+            __name__ + ".fresh_provider_preflight_after_output_paths"
+        ), mock.patch(__name__ + ".run_command", side_effect=[0, 0]) as run, mock.patch(
+            __name__ + ".validate_fresh_results"
+        ), mock.patch(__name__ + ".verify_fresh_evidence_targets_results") as target_guard, mock.patch(
+            __name__ + ".verify_evidence_contract"
+        ) as contract:
             result = main(
                 [
                     "fresh",
@@ -2442,9 +2498,11 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 return 0
 
             stderr = io.StringIO()
-            with mock.patch(__name__ + ".fresh_preflight"), mock.patch(
-                __name__ + ".run_command", side_effect=fake_run_command
-            ), mock.patch(__name__ + ".verify_evidence_contract") as contract, contextlib.redirect_stderr(stderr):
+            with mock.patch(__name__ + ".ensure_fresh_sandbox_provider_allowlist_ready"), mock.patch(
+                __name__ + ".fresh_provider_preflight_after_output_paths"
+            ), mock.patch(__name__ + ".run_command", side_effect=fake_run_command), mock.patch(
+                __name__ + ".verify_evidence_contract"
+            ) as contract, contextlib.redirect_stderr(stderr):
                 result = main(
                     [
                         "fresh",
