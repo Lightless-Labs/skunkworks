@@ -2710,7 +2710,7 @@ fn enrich_cycle_input_with_checkout(input: &str, checkout: &Path) -> Result<Stri
         .and_then(Value::as_str)
         .unwrap_or_default();
     let enriched_design = format!(
-        "{design}\n\nBENCHMARK CHECKOUT CONTEXT (read-only snapshot supplied by A²D; solve from this local context and local tests only; do not search GitHub or the public web):\n{checkout_context}"
+        "{design}\n\nBENCHMARK CHECKOUT CONTEXT (read-only snapshot supplied by A²D; solve from this local context and local tests only; do not search GitHub or the public web):\nCRITICAL: provider invocations are no-tools/artifact-only in isolated temporary working directories. You cannot run ls, cat, find, grep, shell commands, or any filesystem inspection tools against the benchmark checkout. Use only the supplied checkout snapshot text below, then return only a unified diff candidate patch.\n{checkout_context}"
     );
     map.insert("design".to_string(), Value::String(enriched_design));
     map.insert(
@@ -10252,6 +10252,9 @@ mod tests {
         let value: Value = serde_json::from_str(&enriched).unwrap();
         let design = value.get("design").and_then(Value::as_str).unwrap();
         assert!(design.contains("BENCHMARK CHECKOUT CONTEXT"));
+        assert!(design.contains("no-tools/artifact-only"));
+        assert!(design.contains("You cannot run ls, cat, find, grep"));
+        assert!(design.contains("return only a unified diff candidate patch"));
         assert!(design.contains("src/lib.rs"));
         assert!(design.contains("pub fn answer"));
         assert!(!design.contains("must not leak"));
