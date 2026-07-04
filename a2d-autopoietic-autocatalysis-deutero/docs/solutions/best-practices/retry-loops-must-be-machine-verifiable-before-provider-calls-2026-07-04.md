@@ -26,11 +26,13 @@ Before wiring a loop executor, add a retry-attempt planner that composes existin
 
 Then execute only one planned command at a time. The extraction executor should re-verify selected artifact bytes/hash, re-run patch extraction/public-solution rejection, require the extracted patch hash to match the plan, and write the planned patch path idempotently. It should emit the next evaluation/retry-step args but still start no providers or evaluators.
 
-The plan/step/attempt/extraction artifacts are not evidence and must start no providers or evaluators.
+The evaluator executor may run exactly one planned `senior-swe-bench-evaluate` command, but only after re-validating the extraction artifact, candidate patch, selected artifact, exact evaluator argv, and downstream retry-step argv. It must validate the local evaluation JSON independently of wrapper exit code and must not run retry-step or evidence inspection; a passed evaluation only points at evidence for the next gate.
+
+The plan/step/attempt/extraction/evaluation artifacts are not evidence and must not claim fitness.
 
 ## Evidence
 
-Implemented by `a2d senior-swe-bench-retry-plan`, `a2d senior-swe-bench-retry-step`, `a2d senior-swe-bench-retry-attempt-plan`, and `a2d senior-swe-bench-retry-attempt-extract-patch` in `crates/a2d-cli/src/main.rs` / `crates/a2d-cli/src/senior_swe_bench.rs`, with CLI coverage in `crates/a2d-cli/tests/senior_swe_bench_retry_plan.rs`, `crates/a2d-cli/tests/senior_swe_bench_retry_step.rs`, `crates/a2d-cli/tests/senior_swe_bench_retry_attempt_plan.rs`, and `crates/a2d-cli/tests/senior_swe_bench_retry_attempt_extract_patch.rs`.
+Implemented by `a2d senior-swe-bench-retry-plan`, `a2d senior-swe-bench-retry-step`, `a2d senior-swe-bench-retry-attempt-plan`, `a2d senior-swe-bench-retry-attempt-extract-patch`, and `a2d senior-swe-bench-retry-attempt-evaluate` in `crates/a2d-cli/src/main.rs` / `crates/a2d-cli/src/senior_swe_bench.rs`, with CLI coverage in `crates/a2d-cli/tests/senior_swe_bench_retry_plan.rs`, `crates/a2d-cli/tests/senior_swe_bench_retry_step.rs`, `crates/a2d-cli/tests/senior_swe_bench_retry_attempt_plan.rs`, `crates/a2d-cli/tests/senior_swe_bench_retry_attempt_extract_patch.rs`, and `crates/a2d-cli/tests/senior_swe_bench_retry_attempt_evaluate.rs`.
 
 Fresh retry-plan source-patch gate evidence: `runs/20260704-senior-swe-bench-retry-plan-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_diff_hash: fa652ee3ca175bb5cb37d15ab106840d17c37f84`.
 
@@ -40,4 +42,6 @@ Fresh retry-attempt-plan source-patch gate evidence: `runs/20260704-senior-swe-b
 
 Fresh retry-attempt-extract-patch source-patch gate evidence: pre-commit dirty-tree evidence `runs/20260704-senior-swe-bench-retry-attempt-extract-patch-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_diff_hash: aa8a4df265620b7ef92923a8e18ea693fd54b7b0`; post-commit clean-HEAD evidence `runs/20260704-postcommit-fitness-evidence-b0abcf6/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_revision: c7cd22e`, `source_tree_dirty: false`, and `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`.
 
-Run docs: `examples/runs/2026-07-04-senior-swe-bench-retry-plan.md`, `examples/runs/2026-07-04-senior-swe-bench-retry-step.md`, `examples/runs/2026-07-04-senior-swe-bench-retry-attempt-plan.md`, `examples/runs/2026-07-04-senior-swe-bench-retry-attempt-extract-patch.md`.
+Fresh retry-attempt-evaluate source-patch gate evidence: `runs/20260704-senior-swe-bench-retry-attempt-evaluate-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_revision: c7cd22e`, `source_tree_dirty: true`, `source_diff_scope: crates`, and `source_diff_hash: 24663b72742e27d26a149b2d7c7330bf195471ad`.
+
+Run docs: `examples/runs/2026-07-04-senior-swe-bench-retry-plan.md`, `examples/runs/2026-07-04-senior-swe-bench-retry-step.md`, `examples/runs/2026-07-04-senior-swe-bench-retry-attempt-plan.md`, `examples/runs/2026-07-04-senior-swe-bench-retry-attempt-extract-patch.md`, `examples/runs/2026-07-04-senior-swe-bench-retry-attempt-evaluate.md`.
