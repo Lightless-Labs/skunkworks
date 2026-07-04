@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-07-04 (session 63 — Sudoku test-gate prompt hardening)
+**Last updated:** 2026-07-04 (session 64 — fitness evidence inspect CLI)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
@@ -84,6 +84,8 @@ Monorepo HEAD includes a sibling A² self-correction benchmark commit (`Record M
 - **Provider-policy comparisons are now inspectable:** `a2d compare-provider-policy <challenge> <cycles> [policy-json|@path]` runs current and proposed policies with persistence disabled, prints policy deltas, and reports a gate decision.
 
 ### What happened this session
+
+- **Fitness evidence inspection CLI landed.** Lineage search found that A²D had strong evidence export/provenance gates but no first-class operator/automation command for reviewing an exported `a2d.fitness-evidence.v1` artifact before persistence decisions; prior run docs used manual `jq`/JSON inspection, which made it too easy to conflate partial non-regressing evidence with full aggregate acceptance. Added `a2d fitness-evidence-inspect <evidence.json> [--require-all-tests-pass]`. The command reuses exported-evidence schema/provenance validation, requires `actual_tests_evaluated: true` and `non_regressing: true`, prints reviewed summary fields, reports absent `hidden_acceptance` as `not_present`, and with `--require-all-tests-pass` requires `all_tests_pass: true`, zero failed totals, `passed == total`, and no failed result entries. Independent reviewer caught the initial too-weak `--require-all-tests-pass` check; it was tightened before persistence. Validation: `cargo fmt --check`; `cargo test -p a2d fitness_evidence_inspect_requires_current_non_regressing_actual_tests -- --nocapture`; `cargo test -p a2d --test score_artifact score_artifact_exports_fitness_evidence_before_nonzero_exit -- --nocapture`; full `cargo test` passed (296 passed, 2 ignored). Fresh source-patch gate: `runs/20260704-fitness-evidence-inspect-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1`, `source_diff_hash: 5370681c12650e4236e4fb1bcc2cc4600ebb4794`, matching `git diff --binary HEAD -- crates | git hash-object --stdin`. Run doc: `examples/runs/2026-07-04-fitness-evidence-inspect.md`; learning: `docs/solutions/best-practices/fitness-evidence-inspection-must-be-first-class-2026-07-04.md`. This gates the inspection CLI source patch; it is not a new repeated Sudoku mastery or official Senior SWE-Bench claim.
 
 - **Sudoku `has_tests` prompt hardening landed.** Lineage search found the repeated-seed reliability gap in `runs/20260630-sudoku-repeat-evidence/r1/sudoku-solver-cycle-0-fitness-evidence.json`: the generated artifact compiled and exposed the required Sudoku functions but failed public `has_tests`, so part of the 4/5 reliability issue was prompt-contract compliance rather than hidden solver behavior. The seed coder Rust-source contract now names the exact `#[cfg(test)] mod tests` header, states omission fails the mechanical `has_tests` fitness gate, and asks for normal, edge/invalid-input, and end-to-end tests. Unified-diff/Senior-SWE-Bench artifact behavior is unchanged. Focused validation: `cargo fmt --check`; `cargo test -p a2d seed_germline_coder_consumes_design_plan_and_requirements -- --nocapture`. Full `cargo test` passed (295 passed, 2 ignored). Fresh generated challenge evidence: `runs/20260704-sudoku-test-prompt-evidence/challenge-seed-r1/sudoku-solver-cycle-0-fitness-evidence.json`, `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 0.8333333333333334`, `failed_cases: ["all_tests_pass"]`, `has_tests: true`, `source_diff_hash: d44224bb8edd9d79608bb2b2646b00867f4cf4f1`. Fresh full-passing source-patch replay gate: `runs/20260704-sudoku-test-prompt-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `fitness: 1.0`, `failed_cases: []`, same source diff hash. Learning documented: `docs/solutions/best-practices/coder-prompts-must-name-mechanical-fitness-gates-2026-07-04.md`. This is non-regressing prompt-compliance/source-patch evidence, not Sudoku mastery; the generated challenge still failed hidden/aggregate `all_tests_pass`.
 
@@ -419,6 +421,7 @@ A2D_GERMLINE=seed a2d challenge sudoku 3  # force 4-enzyme seed topology
 a2d compare-topologies sudoku 3           # seed vs evolved without persistence
 a2d compare-provider-policy sudoku 1      # current vs proposed provider policy without persistence
 a2d score-artifact chess ./candidate.rs   # replay saved artifact against hidden holdouts (exit 2 on failure)
+a2d fitness-evidence-inspect runs/.../fitness-evidence.json --require-all-tests-pass
 a2d challenge chess 3
 a2d challenge rubiks 3
 

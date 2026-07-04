@@ -8,6 +8,7 @@
 **Enhanced:** 2026-07-03 — Senior SWE-Bench catalog/evaluator/cycle-input integration is CLI-only external benchmark audit plumbing, not `a2d-core` challenge physics; coder prompt now carries generic benchmark no-solution-search integrity rule; local evaluator evidence binds and verifies the exact candidate patch hash and evaluator provenance
 **Enhanced:** 2026-07-04 — built-in domain challenge catalogs moved out of `a2d-core` into the CLI/evaluation layer
 **Hardened:** 2026-07-04 — seed coder prompt now names the public `has_tests` fitness gate and exact Rust test module shape after repeated Sudoku evidence showed a generated-solution test-module omission
+**Enhanced:** 2026-07-04 — added a first-class `a2d fitness-evidence-inspect` CLI path for source-bound evidence review before persistence decisions
 **Depends on:** Stage 1 (complete)
 
 ## Problem
@@ -100,6 +101,12 @@ Live topology evidence: `runs/20260630-topology-fitness-evidence/{seed,evolved}-
 Exported `a2d.fitness-evidence.v1` now includes source provenance fields for the source scope under test: `source_revision`, `source_tree_dirty`, `source_diff_scope`, `source_diff_hash`, and `evidence_command`. Export-time validation rejects missing provenance, forged diff hashes, revision mismatches, dirty-status mismatches, untracked files under `crates`, and stale current source diffs before writing evidence. The diff hash is computed from a repo-root pathspec for `a2d-autopoietic-autocatalysis-deutero/crates`, so invoking export from a crate subdirectory cannot silently hash an empty scope.
 
 Fresh source-patch gating smoke: `runs/20260701-fitness-evidence-provenance/challenge-smoke/sudoku-solver-cycle-0-fitness-evidence.json`, `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `all_tests_pass: true`, fitness 100% (6/6), `source_revision: ecdc3dc`, `source_diff_hash: db406660a8259a29169a6d72be4af2c62418703c`. Saved-artifact replay support evidence `runs/20260701-fitness-evidence-provenance/baseline-good/baseline-sudoku-solver-cycle-0-fitness-evidence.json` validates the same provenance/export plumbing with full-passing evidence and the same source diff hash, but is support evidence rather than the source-patch gate. This slice validates provenance/export plumbing, not a durable provider-policy or repeated benchmark-reliability improvement.
+
+## 2026-07-04 Update: First-Class Fitness Evidence Inspection
+
+Added `a2d fitness-evidence-inspect <evidence.json> [--require-all-tests-pass]` so source-bound `a2d.fitness-evidence.v1` records can be reviewed through the same exported-evidence validator used by persistence gates instead of ad hoc JSON checks. The command requires current source provenance, `actual_tests_evaluated: true`, and `non_regressing: true`; with `--require-all-tests-pass`, it also requires `all_tests_pass: true`, zero failed cases by totals, and no failed result entries. Hidden holdout details remain redacted; absent `hidden_acceptance` is printed as `not_present`, not as a pass.
+
+Fresh source-patch gate: `runs/20260704-fitness-evidence-inspect-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1` actual-test evidence with `source_diff_hash: 5370681c12650e4236e4fb1bcc2cc4600ebb4794`, matching `git diff --binary HEAD -- crates | git hash-object --stdin`. Full `cargo test` passed (296 passed, 2 ignored). This is evidence for the inspection CLI/source patch, not repeated benchmark mastery.
 
 ## 2026-07-02 Update: Directed Routine Evolver Mutations
 

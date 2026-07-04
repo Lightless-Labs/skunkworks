@@ -151,6 +151,40 @@ fn score_artifact_exports_fitness_evidence_before_nonzero_exit() {
         evidence["failed_cases"],
         serde_json::json!(["all_tests_pass"])
     );
+
+    let inspect_output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args(["fitness-evidence-inspect", evidence_path.to_str().unwrap()])
+        .output()
+        .expect("inspect exported evidence");
+    assert!(inspect_output.status.success());
+    let inspect_stdout = String::from_utf8_lossy(&inspect_output.stdout);
+    assert!(
+        inspect_stdout.contains("actual_tests_evaluated: true"),
+        "{inspect_stdout}"
+    );
+    assert!(
+        inspect_stdout.contains("non_regressing: true"),
+        "{inspect_stdout}"
+    );
+    assert!(
+        inspect_stdout.contains("all_tests_pass: false"),
+        "{inspect_stdout}"
+    );
+
+    let require_pass_output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "fitness-evidence-inspect",
+            evidence_path.to_str().unwrap(),
+            "--require-all-tests-pass",
+        ])
+        .output()
+        .expect("inspect exported evidence with pass requirement");
+    assert_eq!(require_pass_output.status.code(), Some(1));
+    let require_pass_stderr = String::from_utf8_lossy(&require_pass_output.stderr);
+    assert!(
+        require_pass_stderr.contains("all_tests_pass"),
+        "{require_pass_stderr}"
+    );
 }
 
 fn assert_exported_provenance(evidence: &serde_json::Value) {

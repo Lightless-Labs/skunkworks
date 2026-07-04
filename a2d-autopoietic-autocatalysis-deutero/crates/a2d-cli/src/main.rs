@@ -63,6 +63,9 @@ fn main() {
             let artifact_path = args.get(3).map(String::as_str).unwrap_or("-");
             run_score_artifact(challenge_name, artifact_path);
         }
+        "fitness-evidence-inspect" => {
+            run_fitness_evidence_inspect(&args[2..]);
+        }
         "senior-swe-bench-audit" => {
             if args.len() > 5 {
                 eprintln!(
@@ -104,7 +107,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|challenge|score-artifact|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -3054,6 +3057,192 @@ fn run_score_artifact(challenge_name: &str, artifact_path: &str) {
     let exit_code = score_artifact_exit_code(&report);
     if exit_code != 0 {
         std::process::exit(exit_code);
+    }
+}
+
+fn run_fitness_evidence_inspect(args: &[String]) {
+    let config = parse_fitness_evidence_inspect_args(args).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        eprintln!("Usage: a2d fitness-evidence-inspect <evidence.json> [--require-all-tests-pass]");
+        std::process::exit(1);
+    });
+    let bytes = fs::read(&config.path).unwrap_or_else(|error| {
+        eprintln!(
+            "Fitness evidence inspect error: failed to read {}: {error}",
+            config.path.display()
+        );
+        std::process::exit(1);
+    });
+    let value = serde_json::from_slice::<Value>(&bytes).unwrap_or_else(|error| {
+        eprintln!(
+            "Fitness evidence inspect error: {} is not JSON: {error}",
+            config.path.display()
+        );
+        std::process::exit(1);
+    });
+    inspect_fitness_evidence_value(&value, config.require_all_tests_pass).unwrap_or_else(|error| {
+        eprintln!("Fitness evidence inspect error: {error}");
+        std::process::exit(1);
+    });
+    print_fitness_evidence_inspection(&config.path, &value);
+}
+
+struct FitnessEvidenceInspectConfig {
+    path: PathBuf,
+    require_all_tests_pass: bool,
+}
+
+fn parse_fitness_evidence_inspect_args(
+    args: &[String],
+) -> Result<FitnessEvidenceInspectConfig, String> {
+    let path = args
+        .first()
+        .ok_or_else(|| "missing fitness evidence path".to_string())?;
+    let mut require_all_tests_pass = false;
+    for arg in &args[1..] {
+        match arg.as_str() {
+            "--require-all-tests-pass" => require_all_tests_pass = true,
+            other => {
+                return Err(format!(
+                    "unknown fitness-evidence-inspect argument: {other}"
+                ));
+            }
+        }
+    }
+    Ok(FitnessEvidenceInspectConfig {
+        path: PathBuf::from(path),
+        require_all_tests_pass,
+    })
+}
+
+fn inspect_fitness_evidence_value(
+    value: &Value,
+    require_all_tests_pass: bool,
+) -> Result<(), String> {
+    validate_exported_fitness_evidence_value(value)?;
+    if !value
+        .get("actual_tests_evaluated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err("fitness evidence did not evaluate actual tests".to_string());
+    }
+    if !value
+        .get("non_regressing")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err("fitness evidence is regressing".to_string());
+    }
+    if require_all_tests_pass {
+        require_fitness_evidence_all_tests_pass(value)?;
+    }
+    Ok(())
+}
+
+fn require_fitness_evidence_all_tests_pass(value: &Value) -> Result<(), String> {
+    if !fitness_evidence_result_passed(value, "all_tests_pass") {
+        return Err("fitness evidence does not pass all_tests_pass".to_string());
+    }
+    let failed = value.get("failed").and_then(Value::as_u64).unwrap_or(1);
+    let passed = value.get("passed").and_then(Value::as_u64).unwrap_or(0);
+    let total = value
+        .get("total")
+        .and_then(Value::as_u64)
+        .unwrap_or(u64::MAX);
+    if failed != 0 || passed != total {
+        return Err(format!(
+            "fitness evidence all_tests_pass is inconsistent with passed/failed totals: passed={passed}, total={total}, failed={failed}"
+        ));
+    }
+    let results = value
+        .get("results")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "fitness evidence missing results array".to_string())?;
+    if let Some(failed_result) = results
+        .iter()
+        .find(|result| result.get("passed").and_then(Value::as_bool) == Some(false))
+    {
+        let name = failed_result
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("<unknown>");
+        return Err(format!(
+            "fitness evidence all_tests_pass is inconsistent with failed result: {name}"
+        ));
+    }
+    Ok(())
+}
+
+fn fitness_evidence_result_passed(value: &Value, name: &str) -> bool {
+    value
+        .get("results")
+        .and_then(Value::as_array)
+        .map(|results| {
+            results.iter().any(|result| {
+                result.get("name").and_then(Value::as_str) == Some(name)
+                    && result.get("passed").and_then(Value::as_bool) == Some(true)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn fitness_evidence_result_status(value: &Value, name: &str) -> &'static str {
+    value
+        .get("results")
+        .and_then(Value::as_array)
+        .and_then(|results| {
+            results.iter().find_map(|result| {
+                if result.get("name").and_then(Value::as_str) == Some(name) {
+                    match result.get("passed").and_then(Value::as_bool) {
+                        Some(true) => Some("true"),
+                        Some(false) => Some("false"),
+                        None => Some("invalid"),
+                    }
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or("not_present")
+}
+
+fn print_fitness_evidence_inspection(path: &Path, value: &Value) {
+    println!("Fitness evidence: {}", path.display());
+    println!(
+        "  schema_version: {}",
+        value["schema_version"].as_str().unwrap_or("<missing>")
+    );
+    println!(
+        "  actual_tests_evaluated: {}",
+        value["actual_tests_evaluated"].as_bool().unwrap_or(false)
+    );
+    println!(
+        "  non_regressing: {}",
+        value["non_regressing"].as_bool().unwrap_or(false)
+    );
+    println!(
+        "  fitness: {}",
+        value["fitness"].as_f64().unwrap_or_default()
+    );
+    println!(
+        "  passed/total: {}/{}",
+        value["passed"].as_u64().unwrap_or_default(),
+        value["total"].as_u64().unwrap_or_default()
+    );
+    println!(
+        "  all_tests_pass: {}",
+        fitness_evidence_result_passed(value, "all_tests_pass")
+    );
+    println!(
+        "  hidden_acceptance: {}",
+        fitness_evidence_result_status(value, "hidden_acceptance")
+    );
+    if let Some(failed_cases) = value.get("failed_cases") {
+        println!("  failed_cases: {failed_cases}");
+    }
+    if let Some(source_diff_hash) = value.get("source_diff_hash").and_then(Value::as_str) {
+        println!("  source_diff_hash: {source_diff_hash}");
     }
 }
 
@@ -8009,6 +8198,53 @@ mod tests {
                 .expect_err("generic evidence shape rejects official fields on local evidence")
                 .contains("non-official evaluator evidence")
         );
+    }
+
+    #[test]
+    fn fitness_evidence_inspect_requires_current_non_regressing_actual_tests() {
+        let mut evidence = add_export_source_provenance(complete_fitness_evidence(0)).unwrap();
+        inspect_fitness_evidence_value(&evidence, true)
+            .expect("current full-passing evidence is inspectable");
+
+        evidence["results"] = json!([
+            {"name": "compiles", "passed": true},
+            {"name": "has_tests", "passed": true},
+            {"name": "all_tests_pass", "passed": false},
+            {"name": "hidden_acceptance", "passed": false}
+        ]);
+        evidence["failed_cases"] = json!(["all_tests_pass", "hidden_acceptance"]);
+        evidence["failed"] = json!(2);
+        evidence["passed"] = json!(2);
+        evidence["fitness"] = json!(0.5);
+        inspect_fitness_evidence_value(&evidence, false).expect(
+            "partial non-regressing actual-test evidence is inspectable without pass requirement",
+        );
+        assert!(
+            inspect_fitness_evidence_value(&evidence, true)
+                .expect_err("all-tests-pass requirement rejects partial evidence")
+                .contains("all_tests_pass")
+        );
+
+        evidence["results"] = json!([
+            {"name": "compiles", "passed": true},
+            {"name": "has_tests", "passed": false},
+            {"name": "all_tests_pass", "passed": true}
+        ]);
+        evidence["failed_cases"] = json!(["has_tests"]);
+        evidence["failed"] = json!(1);
+        evidence["passed"] = json!(2);
+        evidence["fitness"] = json!(2.0 / 3.0);
+        let contradictory_error = inspect_fitness_evidence_value(&evidence, true)
+            .expect_err("all-tests-pass requirement rejects contradictory failed cases");
+        assert!(
+            contradictory_error.contains("inconsistent"),
+            "{contradictory_error}"
+        );
+
+        evidence["non_regressing"] = json!(false);
+        let error = inspect_fitness_evidence_value(&evidence, false)
+            .expect_err("regressing evidence is rejected");
+        assert!(error.contains("non_regressing"), "{error}");
     }
 
     #[test]
