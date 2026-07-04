@@ -38,6 +38,6 @@ Fresh retry-step source-patch gate evidence: `runs/20260704-senior-swe-bench-ret
 
 Fresh retry-attempt-plan source-patch gate evidence: `runs/20260704-senior-swe-bench-retry-attempt-plan-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_diff_hash: 95e5f526834ef5bce322ab1f474e9f9ef5fcba0b`.
 
-Fresh retry-attempt-extract-patch source-patch gate evidence: `runs/20260704-senior-swe-bench-retry-attempt-extract-patch-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_diff_hash: aa8a4df265620b7ef92923a8e18ea693fd54b7b0`.
+Fresh retry-attempt-extract-patch source-patch gate evidence: pre-commit dirty-tree evidence `runs/20260704-senior-swe-bench-retry-attempt-extract-patch-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_diff_hash: aa8a4df265620b7ef92923a8e18ea693fd54b7b0`; post-commit clean-HEAD evidence `runs/20260704-postcommit-fitness-evidence-b0abcf6/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_revision: c7cd22e`, `source_tree_dirty: false`, and `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`.
 
 Run docs: `examples/runs/2026-07-04-senior-swe-bench-retry-plan.md`, `examples/runs/2026-07-04-senior-swe-bench-retry-step.md`, `examples/runs/2026-07-04-senior-swe-bench-retry-attempt-plan.md`, `examples/runs/2026-07-04-senior-swe-bench-retry-attempt-extract-patch.md`.

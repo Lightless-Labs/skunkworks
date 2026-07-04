@@ -46,8 +46,16 @@ Smokes:
 
 Fresh source-patch evidence:
 
-- `runs/20260704-senior-swe-bench-retry-attempt-extract-patch-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`
+- Pre-commit dirty-tree source gate: `runs/20260704-senior-swe-bench-retry-attempt-extract-patch-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`
 - `source_diff_hash: aa8a4df265620b7ef92923a8e18ea693fd54b7b0`
-- Matches `git diff --binary HEAD -- crates | git hash-object --stdin`.
+- Matched the then-current `git diff --binary HEAD -- crates | git hash-object --stdin` before commit.
+
+Post-commit clean-HEAD evidence was regenerated after `b0abcf6` because the pre-commit evidence correctly stopped validating once the source tree became clean:
+
+- `runs/20260704-postcommit-fitness-evidence-b0abcf6/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`
+- `source_revision: c7cd22e` for `HEAD:a2d-autopoietic-autocatalysis-deutero/crates`
+- `source_tree_dirty: false`
+- `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`
+- `fitness-evidence-inspect --require-all-tests-pass` passed.
 
 This is deterministic extraction plumbing/source-patch evidence. It is not evaluator execution, an autonomous retry executor, or official Senior SWE-Bench mastery.
