@@ -48,6 +48,8 @@ FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR = (
 )
 FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = False
 FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS = "not_implemented"
+FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = True
+FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = "enforced"
 HOST_PATH_MARKERS = ("/Users", "/tmp", "/var/folders")
 EXPECTED_DEMO_REQUIREMENTS = [
     "failed_first_attempt",
@@ -844,6 +846,8 @@ def validate_fresh_rows(
                 "timeout_secs",
                 "no_external_solution_search",
                 "network_policy",
+                "audited_sandbox_provider_allowlist_enforced",
+                "audited_sandbox_provider_allowlist_status",
             )
             if key not in row
         ]
@@ -857,6 +861,12 @@ def validate_fresh_rows(
         source_dirty = row.get("source_dirty")
         no_external_solution_search = row.get("no_external_solution_search")
         network_policy = row.get("network_policy")
+        sandbox_provider_allowlist_enforced = row.get(
+            "audited_sandbox_provider_allowlist_enforced"
+        )
+        sandbox_provider_allowlist_status = row.get(
+            "audited_sandbox_provider_allowlist_status"
+        )
         if not isinstance(source_head, str) or len(source_head) not in (40, 64):
             raise RuntimeError(
                 f"fresh demo row {index} records invalid source_head={source_head!r}"
@@ -922,6 +932,23 @@ def validate_fresh_rows(
                 f"fresh demo row {index} records network_policy={network_policy!r}; "
                 "fresh provider-backed benchmark evidence must record the fail-closed benchmark agent network policy"
             )
+        if (
+            sandbox_provider_allowlist_enforced
+            is not FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
+        ):
+            raise RuntimeError(
+                "fresh demo row "
+                f"{index} records audited_sandbox_provider_allowlist_enforced="
+                f"{sandbox_provider_allowlist_enforced!r}; fresh provider-backed benchmark evidence "
+                "must record audited sandbox/provider allowlist enforcement"
+            )
+        if sandbox_provider_allowlist_status != FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_STATUS:
+            raise RuntimeError(
+                "fresh demo row "
+                f"{index} records audited_sandbox_provider_allowlist_status="
+                f"{sandbox_provider_allowlist_status!r}; fresh provider-backed benchmark evidence "
+                f"must record status={FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_STATUS!r}"
+            )
         if row_has_verifier_gated_promotion(row) and not promotion_artifact_matches_row(row):
             raise RuntimeError(
                 f"fresh demo row {index} has verifier-gated promotion without a matching promotion artifact"
@@ -948,6 +975,8 @@ def fresh_validation_summary(args: argparse.Namespace) -> str:
         "all rows share one source revision/branch/dirty-state and source_head_short prefixes source_head; "
         "no host-specific path markers are present; "
         "no_external_solution_search=true and network_policy=Isolated are recorded for every row; "
+        "audited_sandbox_provider_allowlist_enforced=true and "
+        "audited_sandbox_provider_allowlist_status='enforced' are recorded for every row; "
         f"required provenance fields are present; {dirty_requirement}; "
         f"max_tokens={args.max_tokens}; timeout_secs={args.timeout}"
     )
@@ -3085,6 +3114,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "timeout_secs": 1800,
                 "no_external_solution_search": True,
                 "network_policy": "Isolated",
+                "audited_sandbox_provider_allowlist_enforced": True,
+                "audited_sandbox_provider_allowlist_status": "enforced",
             }
             calls = 0
 
@@ -3270,6 +3301,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "timeout_secs": 1800,
                 "no_external_solution_search": True,
                 "network_policy": "Isolated",
+                "audited_sandbox_provider_allowlist_enforced": True,
+                "audited_sandbox_provider_allowlist_status": "enforced",
             }
         ]
 
@@ -4445,6 +4478,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "timeout_secs": 1800,
                     "no_external_solution_search": True,
                     "network_policy": "Isolated",
+                    "audited_sandbox_provider_allowlist_enforced": True,
+                    "audited_sandbox_provider_allowlist_status": "enforced",
                 },
                 {
                     "run_id": "fresh-demo-2",
@@ -4456,6 +4491,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "timeout_secs": 1800,
                     "no_external_solution_search": True,
                     "network_policy": "Isolated",
+                    "audited_sandbox_provider_allowlist_enforced": True,
+                    "audited_sandbox_provider_allowlist_status": "enforced",
                 },
             ]
             results.write_text(
@@ -4484,6 +4521,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             "timeout_secs": 1800,
             "no_external_solution_search": True,
             "network_policy": "Isolated",
+            "audited_sandbox_provider_allowlist_enforced": True,
+            "audited_sandbox_provider_allowlist_status": "enforced",
         }
         scenarios = [
             (
@@ -4534,6 +4573,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "timeout_secs": 1800,
                 "no_external_solution_search": True,
                 "network_policy": "Isolated",
+                "audited_sandbox_provider_allowlist_enforced": True,
+                "audited_sandbox_provider_allowlist_status": "enforced",
                 "stdout": "tool output leaked /Users/example/project/file.rs",
             }
             results.write_text(json.dumps(row) + "\n", encoding="utf-8")
@@ -4568,6 +4609,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "timeout_secs": 1800,
                 "no_external_solution_search": True,
                 "network_policy": "Isolated",
+                "audited_sandbox_provider_allowlist_enforced": True,
+                "audited_sandbox_provider_allowlist_status": "enforced",
                 "promotion": {
                     "verifier_gated": True,
                     "evidence_present": True,
@@ -4602,6 +4645,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "timeout_secs": 1800,
                         "no_external_solution_search": True,
                         "network_policy": "Isolated",
+                        "audited_sandbox_provider_allowlist_enforced": True,
+                        "audited_sandbox_provider_allowlist_status": "enforced",
                     }
                 )
                 + "\n",
@@ -4633,6 +4678,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "timeout_secs": 1800,
                         "no_external_solution_search": True,
                         "network_policy": "Isolated",
+                        "audited_sandbox_provider_allowlist_enforced": True,
+                        "audited_sandbox_provider_allowlist_status": "enforced",
                     }
                 )
                 + "\n",
@@ -4697,6 +4744,97 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 validate_fresh_results(args)
 
+    def test_validate_fresh_results_rejects_missing_sandbox_allowlist_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            results.write_text(
+                json.dumps(
+                    {
+                        "run_id": "fresh-demo-1",
+                        "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+                        "source_head_short": "abcdef1",
+                        "source_branch": "main",
+                        "source_dirty": False,
+                        "max_tokens": 100_000,
+                        "timeout_secs": 1800,
+                        "no_external_solution_search": True,
+                        "network_policy": "Isolated",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            with self.assertRaisesRegex(
+                RuntimeError, "audited_sandbox_provider_allowlist_enforced"
+            ):
+                validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_unenforced_sandbox_allowlist_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            row = {
+                "run_id": "fresh-demo-1",
+                "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+                "source_head_short": "abcdef1",
+                "source_branch": "main",
+                "source_dirty": False,
+                "max_tokens": 100_000,
+                "timeout_secs": 1800,
+                "no_external_solution_search": True,
+                "network_policy": "Isolated",
+                "audited_sandbox_provider_allowlist_enforced": False,
+                "audited_sandbox_provider_allowlist_status": "not_implemented",
+            }
+            results.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            with self.assertRaisesRegex(
+                RuntimeError, "must record audited sandbox/provider allowlist enforcement"
+            ):
+                validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_sandbox_allowlist_status_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            row = {
+                "run_id": "fresh-demo-1",
+                "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+                "source_head_short": "abcdef1",
+                "source_branch": "main",
+                "source_dirty": False,
+                "max_tokens": 100_000,
+                "timeout_secs": 1800,
+                "no_external_solution_search": True,
+                "network_policy": "Isolated",
+                "audited_sandbox_provider_allowlist_enforced": True,
+                "audited_sandbox_provider_allowlist_status": "wired",
+            }
+            results.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "must record status='enforced'"):
+                validate_fresh_results(args)
+
     def test_validate_fresh_results_rejects_dirty_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             results = Path(tmpdir) / "fresh.jsonl"
@@ -4712,6 +4850,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "timeout_secs": 1800,
                         "no_external_solution_search": True,
                         "network_policy": "Isolated",
+                        "audited_sandbox_provider_allowlist_enforced": True,
+                        "audited_sandbox_provider_allowlist_status": "enforced",
                     }
                 )
                 + "\n",
@@ -4743,6 +4883,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "timeout_secs": 1800,
                         "no_external_solution_search": True,
                         "network_policy": "Isolated",
+                        "audited_sandbox_provider_allowlist_enforced": True,
+                        "audited_sandbox_provider_allowlist_status": "enforced",
                     }
                 )
                 + "\n",

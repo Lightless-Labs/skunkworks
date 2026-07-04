@@ -27,6 +27,8 @@ from typing import Any
 from uuid import UUID
 
 CATEGORY = "self_correction"
+AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = False
+AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = "not_implemented"
 FIBONACCI_TASK_ID = "self-correction-fibonacci-regression"
 FIBONACCI_DESCRIPTION = """\
 The workspace contains a regression. `cargo test -p a2_core test_fibonacci` fails.
@@ -1080,6 +1082,12 @@ def result_record(
         "model": provider,
         "no_external_solution_search": bool(payload.get("no_external_solution_search")),
         "network_policy": payload.get("network_policy"),
+        "audited_sandbox_provider_allowlist_enforced": (
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
+        ),
+        "audited_sandbox_provider_allowlist_status": (
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS
+        ),
         **source_metadata,
         "max_tokens": max_tokens,
         "timeout_secs": timeout,
@@ -1581,6 +1589,8 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(record["source_head_short"], "abcdef")
         self.assertTrue(record["no_external_solution_search"])
         self.assertEqual(record["network_policy"], "Isolated")
+        self.assertFalse(record["audited_sandbox_provider_allowlist_enforced"])
+        self.assertEqual(record["audited_sandbox_provider_allowlist_status"], "not_implemented")
         self.assertEqual(record["source_branch"], "main")
         self.assertFalse(record["source_dirty"])
         self.assertEqual(record["max_tokens"], 12345)
