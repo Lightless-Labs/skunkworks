@@ -274,12 +274,13 @@ fn coder_prompt_template() -> String {
          {}\n\
          For Rust-source deliverables, the file MUST:\n\
          1. Contain a main() function\n\
-         2. Include #[cfg(test)] mod tests with at least 3 test cases\n\
+         2. Include the exact Rust test module header `#[cfg(test)] mod tests` with at least 3 test cases; omitting this fails the mechanical `has_tests` fitness gate even if the solution code works\n\
          3. Use Result<T, E> for error handling where appropriate\n\
          4. Include /// doc comments on public functions\n\
          5. Compile with `rustc --edition 2024`\n\
          6. Do NOT define a module named `a2d_acceptance` — that module will be appended by the system. If you define it, compilation will fail with a duplicate definition error.\n\
-         7. Place all your tests in a module named `tests` (i.e. `#[cfg(test)] mod tests {{ ... }}`), NOT `a2d_acceptance`.\n\n\
+         7. Place all your tests in a module named `tests` (i.e. `#[cfg(test)] mod tests {{ ... }}`), NOT `a2d_acceptance`.\n\
+         8. Test the normal path, at least one edge/invalid input, and one end-to-end behavior so the tests are meaningful rather than placeholder assertions.\n\n\
          For unified diff deliverables, output raw unified diff text without markdown fences so evaluators can apply and hash the patch bytes directly.\n\
          Output ONLY the requested artifact. No explanation.",
         coder_benchmark_integrity_rule()
@@ -9092,6 +9093,20 @@ mod tests {
                 .as_deref()
                 .unwrap()
                 .contains("without markdown fences")
+        );
+        assert!(
+            coder
+                .prompt_template
+                .as_deref()
+                .unwrap()
+                .contains("mechanical `has_tests` fitness gate")
+        );
+        assert!(
+            coder
+                .prompt_template
+                .as_deref()
+                .unwrap()
+                .contains("normal path, at least one edge/invalid input")
         );
     }
 
