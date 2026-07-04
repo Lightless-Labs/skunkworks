@@ -1722,6 +1722,89 @@ def run_command(command: list[str], *, print_only: bool) -> int:
     return subprocess.run(command, cwd=repo_root(), check=False).returncode
 
 
+def canonical_verify_archive_command() -> str:
+    return f"bench/self_correction_demo.py verify-archive --evidence-json {DEFAULT_ARCHIVE_EVIDENCE}"
+
+
+def handoff_demo_evidence_section(text: str) -> str:
+    heading = "## Reproducible Demo Evidence Map"
+    start = text.find(heading)
+    if start < 0:
+        return ""
+    next_heading = text.find("\n## ", start + len(heading))
+    return text[start:] if next_heading < 0 else text[start:next_heading]
+
+
+def todo_demo_evidence_bullet(text: str) -> str:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if "The demo-path evidence map" not in line:
+            continue
+        bullet_lines = [line]
+        for continuation in lines[index + 1 :]:
+            if continuation.startswith("- "):
+                break
+            bullet_lines.append(continuation)
+        return "\n".join(bullet_lines)
+    return ""
+
+
+def verify_demo_docs_texts(docs: dict[str, str]) -> None:
+    common_required = [
+        "python3 bench/self_correction_demo.py verify-demo-docs",
+        canonical_verify_archive_command(),
+        DEFAULT_ARCHIVE.as_posix(),
+        DEFAULT_ARCHIVE_EVIDENCE.as_posix(),
+    ]
+    caveat_required_lower = ["fresh provider-backed", "not proof"]
+    missing: list[str] = []
+    linked_blocks = {
+        "docs/HANDOFF.md Reproducible Demo Evidence Map": handoff_demo_evidence_section(
+            docs["docs/HANDOFF.md"]
+        ),
+        "todos/self-correction-loop.md demo-path evidence bullet": todo_demo_evidence_bullet(
+            docs["todos/self-correction-loop.md"]
+        ),
+    }
+    for block_name, block_text in linked_blocks.items():
+        for phrase in common_required:
+            if phrase not in block_text:
+                missing.append(f"{block_name}: {phrase}")
+        for requirement in EXPECTED_DEMO_REQUIREMENTS:
+            if requirement not in block_text:
+                missing.append(f"{block_name}: {requirement}")
+        lowered_block = block_text.lower()
+        for phrase in caveat_required_lower:
+            if phrase not in lowered_block:
+                missing.append(f"{block_name}: {phrase}")
+    todo_text = docs["todos/self-correction-loop.md"]
+    for phrase in [
+        "rerunnable archived-proof command",
+        "durable artifact",
+        "machine-readable causal-chain map",
+        "Fresh provider-backed regeneration remains explicitly unchecked/open",
+        "Neither preflight/report nor print-only proves",
+    ]:
+        if phrase not in todo_text:
+            missing.append(f"todos/self-correction-loop.md: {phrase}")
+    if missing:
+        raise RuntimeError("demo documentation audit missing required text: " + "; ".join(missing))
+
+
+def verify_demo_docs() -> None:
+    docs = {
+        "docs/HANDOFF.md": (repo_root() / "docs/HANDOFF.md").read_text(encoding="utf-8"),
+        "todos/self-correction-loop.md": (repo_root() / "todos/self-correction-loop.md").read_text(
+            encoding="utf-8"
+        ),
+    }
+    verify_demo_docs_texts(docs)
+    print(
+        "PASS demo docs: canonical archived rerun path, evidence artifacts, "
+        "six proof steps, and fresh-evidence caveats documented"
+    )
+
+
 def verify_documented_counts(*, update: bool = False) -> None:
     expected_python_counts = {
         "self_correction": unittest_count_for_script("bench/self_correction.py"),
@@ -1848,6 +1931,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "Rewrite the documented Rust/Python test-count markers before checking them. "
             "This still invokes cargo test -- --list and should be run explicitly, never "
             "from cargo/self-test paths."
+        ),
+    )
+
+    subparsers.add_parser(
+        "verify-demo-docs",
+        help=(
+            "Check that HANDOFF/TODO document the canonical archived demo rerun path, "
+            "durable evidence artifacts, six proof steps, and fresh-evidence caveats."
         ),
     )
 
@@ -1983,6 +2074,14 @@ def main(argv: list[str]) -> int:
     if args.mode == "verify-documented-counts":
         try:
             verify_documented_counts(update=args.update)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        return 0
+
+    if args.mode == "verify-demo-docs":
+        try:
+            verify_demo_docs()
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -2206,6 +2305,151 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             latest_verification_python_test_counts(repo_root() / "todos/self-correction-loop.md"),
             expected_counts,
         )
+
+    def demo_docs_fixture(self) -> dict[str, str]:
+        return {
+            "docs/HANDOFF.md": "\n".join(
+                [
+                    "## Reproducible Demo Evidence Map",
+                    "Fresh provider-backed regeneration is not proof until archived.",
+                    "python3 bench/self_correction_demo.py verify-demo-docs",
+                    canonical_verify_archive_command(),
+                    DEFAULT_ARCHIVE.as_posix(),
+                    DEFAULT_ARCHIVE_EVIDENCE.as_posix(),
+                    *EXPECTED_DEMO_REQUIREMENTS,
+                    "## Fresh Provider-Backed Demo Status",
+                ]
+            ),
+            "todos/self-correction-loop.md": "\n".join(
+                [
+                    "- The demo-path evidence map records "
+                    "python3 bench/self_correction_demo.py verify-demo-docs; "
+                    f"{canonical_verify_archive_command()}; "
+                    f"{DEFAULT_ARCHIVE.as_posix()}; "
+                    f"{DEFAULT_ARCHIVE_EVIDENCE.as_posix()}; "
+                    f"{'; '.join(EXPECTED_DEMO_REQUIREMENTS)}; "
+                    "rerunnable archived-proof command; durable artifact; "
+                    "machine-readable causal-chain map; "
+                    "Fresh provider-backed regeneration remains explicitly unchecked/open; "
+                    "Neither preflight/report nor print-only proves; "
+                    "fresh provider-backed regeneration is not proof yet",
+                ]
+            ),
+        }
+
+    def test_verify_demo_docs_texts_accepts_canonical_rerun_and_all_six_steps(self) -> None:
+        verify_demo_docs_texts(self.demo_docs_fixture())
+
+    def test_verify_demo_docs_texts_stops_handoff_section_at_next_h2(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["docs/HANDOFF.md"] = docs["docs/HANDOFF.md"].replace(
+            "retry_context_from_failure_evidence",
+            "",
+            1,
+        ).replace(
+            "## Fresh Provider-Backed Demo Status",
+            "## Unrelated Later Section\nretry_context_from_failure_evidence\n## Fresh Provider-Backed Demo Status",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "retry_context_from_failure_evidence"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_accepts_wrapped_todo_evidence_bullet(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["todos/self-correction-loop.md"] = docs["todos/self-correction-loop.md"].replace(
+            "; durable artifact; machine-readable causal-chain map; ",
+            "; durable artifact;\n  machine-readable causal-chain map; ",
+        )
+
+        verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_missing_retry_context_step(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["docs/HANDOFF.md"] = docs["docs/HANDOFF.md"].replace(
+            "retry_context_from_failure_evidence",
+            "",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "retry_context_from_failure_evidence"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_missing_verifier_gated_promotion_step(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["docs/HANDOFF.md"] = docs["docs/HANDOFF.md"].replace(
+            "verifier_gated_germline_promotion",
+            "",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "verifier_gated_germline_promotion"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_missing_handoff_evidence_path(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["docs/HANDOFF.md"] = docs["docs/HANDOFF.md"].replace(
+            DEFAULT_ARCHIVE_EVIDENCE.as_posix(),
+            "missing.demo-evidence.json",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, re.escape(DEFAULT_ARCHIVE_EVIDENCE.as_posix())):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_missing_handoff_fresh_caveat(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["docs/HANDOFF.md"] = docs["docs/HANDOFF.md"].replace(
+            "Fresh provider-backed regeneration is not proof until archived.",
+            "Archived regeneration caveat is documented elsewhere.",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "fresh provider-backed"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_missing_todo_evidence_path(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["todos/self-correction-loop.md"] = docs["todos/self-correction-loop.md"].replace(
+            DEFAULT_ARCHIVE_EVIDENCE.as_posix(),
+            "missing.demo-evidence.json",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, re.escape(DEFAULT_ARCHIVE_EVIDENCE.as_posix())):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_missing_todo_step_even_if_elsewhere(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["todos/self-correction-loop.md"] = docs["todos/self-correction-loop.md"].replace(
+            "retry_context_from_failure_evidence",
+            "",
+        ) + "\n- Unrelated note: retry_context_from_failure_evidence"
+
+        with self.assertRaisesRegex(RuntimeError, "retry_context_from_failure_evidence"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_missing_todo_retry_context_step(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["todos/self-correction-loop.md"] = docs["todos/self-correction-loop.md"].replace(
+            "retry_context_from_failure_evidence",
+            "",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "retry_context_from_failure_evidence"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_missing_todo_verifier_gated_promotion_step(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["todos/self-correction-loop.md"] = docs["todos/self-correction-loop.md"].replace(
+            "verifier_gated_germline_promotion",
+            "",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "verifier_gated_germline_promotion"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_cli_reports_success(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            result = main(["verify-demo-docs"])
+
+        self.assertEqual(result, 0)
+        self.assertIn("PASS demo docs", stdout.getvalue())
 
     def test_replace_documented_counts_updates_all_count_markers(self) -> None:
         original = "\n".join(
