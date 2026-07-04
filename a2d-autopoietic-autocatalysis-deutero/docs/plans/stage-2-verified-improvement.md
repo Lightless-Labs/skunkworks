@@ -15,6 +15,7 @@
 **Enhanced:** 2026-07-04 — added deterministic Senior SWE-Bench retry-attempt planning across selection, extraction, evaluation, and retry-step gates
 **Enhanced:** 2026-07-04 — added deterministic Senior SWE-Bench retry-attempt patch extraction from planned artifacts
 **Enhanced:** 2026-07-04 — added deterministic Senior SWE-Bench retry-attempt evaluator execution with strict local-evaluation and retry-step binding validation
+**Enhanced:** 2026-07-04 — added deterministic Senior SWE-Bench retry-attempt step execution while keeping evidence inspection as a separate gate
 **Depends on:** Stage 1 (complete)
 
 ## Problem
@@ -340,3 +341,12 @@ Fresh pre-commit source-patch gate support: `runs/20260704-senior-swe-bench-retr
 Focused validation: `cargo fmt --check`; `cargo test -p a2d --test senior_swe_bench_retry_attempt_evaluate -- --nocapture` (6 passed). Full `cargo test` passed. Positive/negative smokes live under `runs/20260704-senior-swe-bench-retry-attempt-evaluate-evidence/`, proving one planned evaluator execution, evaluator commands with their own `--` arguments, and fail-closed tampered patch, duplicate evaluator output flag, and retry-step local-evaluation mismatch cases.
 
 Fresh pre-commit source-patch gate support: `runs/20260704-senior-swe-bench-retry-attempt-evaluate-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`, `source_revision: c7cd22e`, `source_tree_dirty: true`, `source_diff_scope: crates`, and `source_diff_hash: 24663b72742e27d26a149b2d7c7330bf195471ad`, matching the current dirty `git diff --binary HEAD -- crates | git hash-object --stdin`. This remains deterministic retry-attempt evaluator/source-patch evidence, not a retry loop executor, not final evidence-inspection success, and not official Senior SWE-Bench task mastery.
+
+
+### Senior SWE-Bench retry-attempt step execution (2026-07-04)
+
+`a2d senior-swe-bench-retry-attempt-step <retry-attempt-evaluation.json|->` now executes exactly one planned retry-step command from a completed retry-attempt evaluation. It validates the evaluation schema and flags, re-checks candidate patch and selected artifact byte/hash provenance, re-validates evaluator and retry-step argv, re-reads the local evaluation JSON, binds source provenance to the current crates diff, checks local-wrapper vs official-manifest provenance, and validates the emitted `a2d.senior-swe-bench-cycle-retry-step.v1` decision. The command itself records `evaluator_invocations_started: false`, `prior_evaluator_invocations_started: true`, `retry_step_started: true`, and `fitness_evidence_inspection_started: false`, so passed evaluations still require the separate `fitness-evidence-inspect --require-all-tests-pass` gate before any success claim.
+
+Focused validation: `cargo fmt --check`; `cargo test -p a2d --test senior_swe_bench_retry_attempt_step --test senior_swe_bench_retry_attempt_evaluate --test senior_swe_bench_retry_step -- --nocapture`. Full `cargo test` passed. Positive/negative tests cover passed/failed retry-step decisions, tampered patches, stale local-evaluation source provenance, and mismatched retry-step args. Step smoke artifacts live under `runs/20260704-senior-swe-bench-retry-attempt-step-evidence/step-smoke/`.
+
+Fresh source-patch gate support: `runs/20260704-senior-swe-bench-retry-attempt-step-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`, `source_revision: dd6543b`, `source_tree_dirty: true`, `source_diff_scope: crates`, and `source_diff_hash: 405790bbe8085004f63156b9267997c29e34cc9a`, matching the frozen source diff hash in `runs/20260704-senior-swe-bench-retry-attempt-step-evidence/source-diff-hash.txt`. This remains deterministic retry-step/source-patch evidence, not a complete retry loop, not inspected task success, and not official Senior SWE-Bench mastery.

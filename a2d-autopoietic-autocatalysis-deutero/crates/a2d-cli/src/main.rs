@@ -132,6 +132,9 @@ fn main() {
         "senior-swe-bench-retry-attempt-evaluate" => {
             run_senior_swe_bench_retry_attempt_evaluate(&args[2..]);
         }
+        "senior-swe-bench-retry-attempt-step" => {
+            run_senior_swe_bench_retry_attempt_step(&args[2..]);
+        }
         "compare-provider-policy" | "policy-gate" => {
             let challenge_name = if arg2.is_empty() { "sudoku" } else { arg2 };
             let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -154,7 +157,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|senior-swe-bench-retry-attempt-evaluate|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|senior-swe-bench-retry-attempt-evaluate|senior-swe-bench-retry-attempt-step|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -4608,6 +4611,398 @@ fn build_senior_swe_bench_retry_attempt_evaluation(extraction: &str) -> Result<V
     Ok(result)
 }
 
+fn run_senior_swe_bench_retry_attempt_step(args: &[String]) {
+    if args.len() != 1 {
+        eprintln!(
+            "Usage: a2d senior-swe-bench-retry-attempt-step <retry-attempt-evaluation.json|->"
+        );
+        std::process::exit(1);
+    }
+    let evaluation = read_artifact_or_exit(&args[0]);
+    let step_execution = build_senior_swe_bench_retry_attempt_step_execution(&evaluation)
+        .unwrap_or_else(|error| {
+            eprintln!("Senior SWE-Bench retry attempt step error: {error}");
+            std::process::exit(1);
+        });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&step_execution)
+            .expect("Senior SWE-Bench retry attempt step execution must serialize")
+    );
+}
+
+fn build_senior_swe_bench_retry_attempt_step_execution(evaluation: &str) -> Result<Value, String> {
+    let value: Value = serde_json::from_str(evaluation).map_err(|error| {
+        format!("invalid Senior SWE-Bench retry attempt evaluation JSON: {error}")
+    })?;
+    let schema = value
+        .get("schema_version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry attempt evaluation missing schema_version".to_string()
+        })?;
+    if schema != "a2d.senior-swe-bench-retry-attempt-evaluation.v1" {
+        return Err(format!(
+            "expected a2d.senior-swe-bench-retry-attempt-evaluation.v1, got {schema}"
+        ));
+    }
+    if value
+        .get("provider_invocations_started")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry attempt evaluation must not have started provider invocations"
+                .to_string(),
+        );
+    }
+    if value
+        .get("evaluator_invocations_started")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(
+            "Senior SWE-Bench retry attempt evaluation must have started exactly one evaluator invocation"
+                .to_string(),
+        );
+    }
+    if value.get("retry_step_started").and_then(Value::as_bool) != Some(false) {
+        return Err(
+            "Senior SWE-Bench retry attempt evaluation must not have started retry-step"
+                .to_string(),
+        );
+    }
+    if value
+        .get("fitness_evidence_inspection_started")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry attempt evaluation must not have inspected fitness evidence"
+                .to_string(),
+        );
+    }
+    if value
+        .get("fitness_claim_allowed_before_evidence")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry attempt evaluation must forbid fitness claims before evidence"
+                .to_string(),
+        );
+    }
+    if value
+        .get("github_solution_search_allowed")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry attempt evaluation must forbid public GitHub solution search"
+                .to_string(),
+        );
+    }
+
+    let candidate_patch_path = PathBuf::from(required_plan_string(&value, "candidate_patch_path")?);
+    let planned_patch_hash = required_plan_string(&value, "candidate_patch_hash")?;
+    validate_git_object_hash(&planned_patch_hash).map_err(|error| {
+        format!("Senior SWE-Bench retry attempt candidate_patch_hash {error}: {planned_patch_hash}")
+    })?;
+    let actual_patch_hash = file_content_hash(&candidate_patch_path)?;
+    if actual_patch_hash != planned_patch_hash {
+        return Err(format!(
+            "candidate patch hash mismatch: evaluation {planned_patch_hash}, actual {actual_patch_hash}"
+        ));
+    }
+
+    let selected = value.get("selected_artifact").ok_or_else(|| {
+        "Senior SWE-Bench retry attempt evaluation missing selected_artifact".to_string()
+    })?;
+    let selected_path = required_plan_string(selected, "path")?;
+    let selected_hash = required_plan_string(selected, "git_object_hash")?;
+    validate_git_object_hash(&selected_hash).map_err(|error| {
+        format!("Senior SWE-Bench retry attempt selected artifact git_object_hash {error}: {selected_hash}")
+    })?;
+    let selected_bytes = selected
+        .get("bytes")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry attempt selected artifact missing bytes".to_string()
+        })?;
+    let artifact_bytes = fs::read(&selected_path).map_err(|error| {
+        format!("failed to read selected candidate artifact {selected_path}: {error}")
+    })?;
+    if artifact_bytes.len() as u64 != selected_bytes {
+        return Err(format!(
+            "selected candidate artifact byte count mismatch for {selected_path}: evaluation {selected_bytes}, actual {}",
+            artifact_bytes.len()
+        ));
+    }
+    let actual_artifact_hash = git_hash_object_bytes(&artifact_bytes)?;
+    if actual_artifact_hash != selected_hash {
+        return Err(format!(
+            "selected candidate artifact hash mismatch for {selected_path}: evaluation {selected_hash}, actual {actual_artifact_hash}"
+        ));
+    }
+    let artifact = String::from_utf8(artifact_bytes).map_err(|error| {
+        format!("selected candidate artifact {selected_path} is not UTF-8 text: {error}")
+    })?;
+    let extracted_patch = extract_senior_swe_bench_candidate_patch(&artifact)?;
+    let extracted_hash = git_hash_object_bytes(extracted_patch.as_bytes())?;
+    if extracted_hash != planned_patch_hash {
+        return Err(format!(
+            "candidate patch hash mismatch after re-extraction: evaluation {planned_patch_hash}, actual {extracted_hash}"
+        ));
+    }
+
+    let evaluate_args = value
+        .get("evaluate_args")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry attempt evaluation missing evaluate_args".to_string()
+        })?
+        .iter()
+        .map(|arg| {
+            arg.as_str().map(ToString::to_string).ok_or_else(|| {
+                "Senior SWE-Bench retry attempt evaluate_args contains non-string".to_string()
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let evaluate_config = validate_retry_attempt_evaluate_args(
+        &evaluate_args,
+        &selected_path,
+        &candidate_patch_path,
+    )?;
+    let local_evaluation_path = evaluate_config
+        .output
+        .as_ref()
+        .expect("retry-attempt evaluate validation requires output")
+        .to_string_lossy()
+        .to_string();
+    if value.get("local_evaluation_path").and_then(Value::as_str)
+        != Some(local_evaluation_path.as_str())
+    {
+        return Err(
+            "Senior SWE-Bench retry attempt evaluation local_evaluation_path does not match evaluate_args"
+                .to_string(),
+        );
+    }
+    let retry_step_args = value
+        .get("retry_step_args")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry attempt evaluation missing retry_step_args".to_string()
+        })?
+        .iter()
+        .map(|arg| {
+            arg.as_str().map(ToString::to_string).ok_or_else(|| {
+                "Senior SWE-Bench retry attempt retry_step_args contains non-string".to_string()
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_retry_attempt_retry_step_args(
+        &retry_step_args,
+        &value,
+        &evaluate_config,
+        &local_evaluation_path,
+    )?;
+
+    let evaluate_exit_code = value
+        .get("evaluate_exit_code")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry attempt evaluation missing evaluate_exit_code".to_string()
+        })?;
+    if evaluate_exit_code != 0 && evaluate_exit_code != 2 {
+        return Err(format!(
+            "Senior SWE-Bench retry attempt evaluation has unsupported evaluate_exit_code {evaluate_exit_code}"
+        ));
+    }
+    let local_evaluation = validate_retry_attempt_local_evaluation(
+        &PathBuf::from(&local_evaluation_path),
+        &value,
+        &candidate_patch_path,
+        &planned_patch_hash,
+        &evaluate_config,
+        Some(evaluate_exit_code as i32),
+    )?;
+    let local_status = local_evaluation
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("<invalid>")
+        .to_string();
+    if value.get("local_evaluation_status").and_then(Value::as_str) != Some(local_status.as_str()) {
+        return Err("Senior SWE-Bench retry attempt evaluation local_evaluation_status does not match local evaluation".to_string());
+    }
+
+    let current_exe = env::current_exe()
+        .map_err(|error| format!("failed to resolve current a2d executable: {error}"))?;
+    let output = Command::new(current_exe)
+        .args(&retry_step_args)
+        .output()
+        .map_err(|error| {
+            format!("failed to run planned senior-swe-bench-retry-step command: {error}")
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "planned senior-swe-bench-retry-step failed with exit {:?}: stdout={} stderr={}",
+            output.status.code(),
+            preview_text_lossy(&output.stdout),
+            preview_text_lossy(&output.stderr)
+        ));
+    }
+    let retry_step: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        format!(
+            "planned senior-swe-bench-retry-step wrote invalid JSON: {error}; stdout={}",
+            preview_text_lossy(&output.stdout)
+        )
+    })?;
+    validate_retry_attempt_step_output(&retry_step, &value, &local_evaluation, &local_status)?;
+
+    Ok(json!({
+        "schema_version": "a2d.senior-swe-bench-retry-attempt-step-execution.v1",
+        "task_id": value.get("task_id").cloned().unwrap_or(Value::Null),
+        "repo": value.get("repo").cloned().unwrap_or(Value::Null),
+        "attempt_index": value.get("attempt_index").cloned().unwrap_or(Value::Null),
+        "candidate_patch_path": candidate_patch_path,
+        "candidate_patch_hash": planned_patch_hash,
+        "selected_artifact": selected.clone(),
+        "evaluate_args": evaluate_args,
+        "retry_step_args": retry_step_args,
+        "evaluate_exit_code": evaluate_exit_code,
+        "local_evaluation_path": local_evaluation_path,
+        "local_evaluation_status": local_status,
+        "retry_step": retry_step,
+        "provider_invocations_started": false,
+        "evaluator_invocations_started": false,
+        "prior_evaluator_invocations_started": true,
+        "retry_step_started": true,
+        "fitness_evidence_inspection_started": false,
+        "fitness_claim_allowed_before_evidence": false,
+        "github_solution_search_allowed": false,
+        "next_step": "follow the embedded retry_step decision; run fitness-evidence-inspect only if retry_step says to",
+        "note": "deterministic retry-attempt step execution only: this command runs exactly one planned retry-step command and does not inspect fitness evidence or claim fitness",
+    }))
+}
+
+fn validate_retry_attempt_step_output(
+    retry_step: &Value,
+    evaluation: &Value,
+    local_evaluation: &Value,
+    local_status: &str,
+) -> Result<(), String> {
+    let schema = retry_step
+        .get("schema_version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Senior SWE-Bench retry-step output missing schema_version".to_string())?;
+    if schema != "a2d.senior-swe-bench-cycle-retry-step.v1" {
+        return Err(format!(
+            "expected a2d.senior-swe-bench-cycle-retry-step.v1 retry-step output, got {schema}"
+        ));
+    }
+    for field in ["task_id", "repo", "attempt_index"] {
+        if retry_step.get(field) != evaluation.get(field) {
+            return Err(format!(
+                "Senior SWE-Bench retry-step output {field} does not match retry attempt evaluation"
+            ));
+        }
+    }
+    if retry_step.get("evaluation_status").and_then(Value::as_str) != Some(local_status) {
+        return Err(
+            "Senior SWE-Bench retry-step output evaluation_status does not match local evaluation"
+                .to_string(),
+        );
+    }
+    if retry_step
+        .get("provider_invocations_started")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err("Senior SWE-Bench retry-step output must not start providers".to_string());
+    }
+    if retry_step
+        .get("evaluator_invocations_started")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err("Senior SWE-Bench retry-step output must not start evaluators".to_string());
+    }
+    if retry_step
+        .get("fitness_claim_allowed_before_evidence")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry-step output must forbid fitness claims before evidence"
+                .to_string(),
+        );
+    }
+    if retry_step
+        .get("github_solution_search_allowed")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry-step output must forbid public GitHub solution search"
+                .to_string(),
+        );
+    }
+    let decision = retry_step
+        .get("decision")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Senior SWE-Bench retry-step output missing decision".to_string())?;
+    match decision {
+        "build_next_cycle_input" => {
+            if retry_step.get("next_cycle_input").is_none() {
+                return Err(
+                    "Senior SWE-Bench retry-step output build_next_cycle_input missing next_cycle_input"
+                        .to_string(),
+                );
+            }
+        }
+        "inspect_fitness_evidence" => {
+            let args = retry_step
+                .get("fitness_evidence_inspect_args")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    "Senior SWE-Bench retry-step output inspect decision missing fitness_evidence_inspect_args"
+                        .to_string()
+                })?;
+            let Some(step_path) = retry_step
+                .get("fitness_evidence_path")
+                .and_then(Value::as_str)
+            else {
+                return Err("Senior SWE-Bench retry-step output inspect decision missing fitness_evidence_path".to_string());
+            };
+            let local_path = local_evaluation
+                .get("fitness_evidence_path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    "Senior SWE-Bench retry-step output inspect decision but local evaluation missing fitness_evidence_path".to_string()
+                })?;
+            if step_path != local_path {
+                return Err("Senior SWE-Bench retry-step output fitness_evidence_path does not match local evaluation".to_string());
+            }
+            if args.len() != 3
+                || args[0].as_str() != Some("fitness-evidence-inspect")
+                || args[1].as_str() != Some(step_path)
+                || args[2].as_str() != Some("--require-all-tests-pass")
+            {
+                return Err("Senior SWE-Bench retry-step output has invalid fitness evidence inspection args".to_string());
+            }
+        }
+        "stop" => {
+            required_non_empty_json_string(retry_step, "stop_reason")?;
+        }
+        other => {
+            return Err(format!(
+                "Senior SWE-Bench retry-step output contains unknown decision {other}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_retry_attempt_evaluate_args(
     evaluate_args: &[String],
     selected_path: &str,
@@ -4835,6 +5230,7 @@ fn validate_retry_attempt_local_evaluation(
             "Senior SWE-Bench local evaluation evaluator does not match evaluate_args".to_string(),
         );
     }
+    validate_retry_attempt_local_official_provenance(&value, evaluate_config, extraction)?;
     if value
         .get("github_solution_search_allowed")
         .and_then(Value::as_bool)
@@ -4964,6 +5360,118 @@ fn validate_retry_attempt_local_evaluation(
     }
 }
 
+fn validate_retry_attempt_local_official_provenance(
+    value: &Value,
+    evaluate_config: &SeniorSweBenchEvaluateConfig,
+    extraction: &Value,
+) -> Result<(), String> {
+    let official_fields = [
+        "official_evaluator_manifest_path",
+        "official_evaluator_manifest_hash",
+        "official_benchmark_url",
+        "official_task_id",
+        "official_repo",
+        "official_hidden_holdouts",
+        "official_github_solution_search_allowed",
+        "official_benchmark_provided_command",
+    ];
+    let Some(manifest_path) = &evaluate_config.official_evaluator_manifest else {
+        if official_fields
+            .iter()
+            .any(|field| value.get(field).is_some())
+        {
+            return Err(
+                "Senior SWE-Bench local evaluation includes official provenance for non-official evaluator"
+                    .to_string(),
+            );
+        }
+        return Ok(());
+    };
+
+    for field in official_fields {
+        if value.get(field).is_none() {
+            return Err(format!(
+                "official Senior SWE-Bench local evaluation missing {field}"
+            ));
+        }
+    }
+    let local_manifest_path =
+        required_non_empty_json_string(value, "official_evaluator_manifest_path")?;
+    if !paths_equivalent(Path::new(&local_manifest_path), manifest_path) {
+        return Err(
+            "official Senior SWE-Bench local evaluation manifest path does not match evaluate_args"
+                .to_string(),
+        );
+    }
+    let expected_manifest_hash = file_content_hash(manifest_path)?;
+    if value
+        .get("official_evaluator_manifest_hash")
+        .and_then(Value::as_str)
+        != Some(expected_manifest_hash.as_str())
+    {
+        return Err(
+            "official Senior SWE-Bench local evaluation manifest hash does not match manifest file"
+                .to_string(),
+        );
+    }
+    let official_task_id = required_non_empty_json_string(value, "official_task_id")?;
+    if extraction.get("task_id").and_then(Value::as_str) != Some(official_task_id.as_str()) {
+        return Err(
+            "official Senior SWE-Bench local evaluation task_id does not match retry attempt"
+                .to_string(),
+        );
+    }
+    let official_repo = required_non_empty_json_string(value, "official_repo")?;
+    if extraction.get("repo").and_then(Value::as_str) != Some(official_repo.as_str()) {
+        return Err(
+            "official Senior SWE-Bench local evaluation repo does not match retry attempt"
+                .to_string(),
+        );
+    }
+    if value
+        .get("official_hidden_holdouts")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(
+            "official Senior SWE-Bench local evaluation must declare hidden holdouts".to_string(),
+        );
+    }
+    if value
+        .get("official_github_solution_search_allowed")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err(
+            "official Senior SWE-Bench local evaluation must forbid GitHub solution search"
+                .to_string(),
+        );
+    }
+    let command = value
+        .get("official_benchmark_provided_command")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "official Senior SWE-Bench local evaluation benchmark command is not an array"
+                .to_string()
+        })?
+        .iter()
+        .map(|arg| {
+            arg.as_str().map(ToString::to_string).ok_or_else(|| {
+                "official Senior SWE-Bench local evaluation benchmark command contains non-string"
+                    .to_string()
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if command != evaluate_config.command {
+        return Err(
+            "official Senior SWE-Bench local evaluation benchmark command does not match evaluate_args"
+                .to_string(),
+        );
+    }
+    required_non_empty_json_string(value, "official_benchmark_url")?;
+    Ok(())
+}
+
 fn validate_retry_attempt_local_source_provenance(value: &Value) -> Result<(), String> {
     required_non_empty_json_string(value, "source_revision")?;
     if value
@@ -4983,6 +5491,27 @@ fn validate_retry_attempt_local_source_provenance(value: &Value) -> Result<(), S
         format!("Senior SWE-Bench local evaluation source_diff_hash {error}: {source_diff_hash}")
     })?;
     required_non_empty_json_string(value, "evidence_command")?;
+
+    let current_revision = git_scope_revision("crates")?;
+    if value.get("source_revision").and_then(Value::as_str) != Some(current_revision.as_str()) {
+        return Err(format!(
+            "Senior SWE-Bench local evaluation source_revision does not match current crates revision {current_revision}"
+        ));
+    }
+    let current_status = git_status_for_scope("crates")?;
+    reject_untracked_source_files("crates", &current_status)?;
+    let current_dirty = !current_status.is_empty();
+    if value.get("source_tree_dirty").and_then(Value::as_bool) != Some(current_dirty) {
+        return Err(format!(
+            "Senior SWE-Bench local evaluation source_tree_dirty does not match current dirty status {current_dirty}"
+        ));
+    }
+    let current_diff_hash = git_diff_hash_for_scope("crates")?;
+    if source_diff_hash != current_diff_hash {
+        return Err(format!(
+            "Senior SWE-Bench local evaluation source_diff_hash {source_diff_hash} does not match current crates diff hash {current_diff_hash}"
+        ));
+    }
     Ok(())
 }
 
