@@ -11,12 +11,23 @@
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 const AGENT_NETWORK_BOUNDARY_ADVISORY: &str = "  [INFO] agent_network_boundary: not part of the 6/6 sentinel gate; run `python3 bench/agent_network_boundary_check.py --self-test` and `--require-sandbox-runtime` before treating external benchmark evidence as uncontaminated";
+const DEFAULT_ARCHIVE_EVIDENCE_JSON: &str = "docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json";
+const DEFAULT_ARCHIVE_RESULTS_JSONL: &str = "docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.jsonl";
 const DEMO_EVIDENCE_ADVISORY: &str = "  [INFO] demo_evidence: not part of the 6/6 sentinel gate; run `python3 bench/self_correction_demo.py verify-demo-docs` and `python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json` to audit documented archived loop evidence; sentinel does not refresh or replace those checks";
+const DEMO_EVIDENCE_PROOF_STEPS: [&str; 6] = [
+    "failed_first_attempt",
+    "archived_verifier_failure_evidence",
+    "retry_context_from_failure_evidence",
+    "later_passing_attempt",
+    "lineage_trajectory_recorded",
+    "verifier_gated_germline_promotion",
+];
 
 fn sentinel_non_gating_advisories() -> [&'static str; 2] {
     [AGENT_NETWORK_BOUNDARY_ADVISORY, DEMO_EVIDENCE_ADVISORY]
@@ -64,6 +75,475 @@ fn render_sentinel_output(workspace: &str, result: &a2_eval::sentinel::SuiteResu
     }
 
     output
+}
+
+fn demo_evidence_command_args(archive: &str, evidence_json: &str) -> Vec<String> {
+    vec![
+        "bench/self_correction_demo.py".to_string(),
+        "verify-archive".to_string(),
+        "--archive".to_string(),
+        archive.to_string(),
+        "--evidence-json".to_string(),
+        evidence_json.to_string(),
+    ]
+}
+
+fn run_demo_evidence_contract(
+    workspace: &str,
+    archive: &str,
+    evidence_json: &str,
+) -> Result<String, String> {
+    let output = std::process::Command::new("python3")
+        .args(demo_evidence_command_args(archive, evidence_json))
+        .current_dir(workspace)
+        .output()
+        .map_err(|e| format!("failed to launch demo evidence verifier in `{workspace}`: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if !output.status.success() {
+        return Err(format!(
+            "demo evidence verifier failed with status {}\nstdout:\n{}\nstderr:\n{}",
+            output.status, stdout, stderr
+        ));
+    }
+
+    let summary = validate_demo_evidence_contract_artifact(workspace, evidence_json)?;
+    validate_demo_evidence_contract_output(&stdout, evidence_json, &summary.artifact)?;
+    Ok(stdout)
+}
+
+fn validate_demo_evidence_contract_output(
+    output: &str,
+    evidence_json: &str,
+    artifact: &str,
+) -> Result<(), String> {
+    let required_fragments = [
+        "mode: archived historical provider evidence; no fresh run-id provenance check requested",
+        artifact,
+        evidence_json,
+    ];
+    for fragment in required_fragments {
+        if !output.contains(fragment) {
+            return Err(format!(
+                "demo evidence verifier output omitted required fragment: {fragment}"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DemoEvidenceContractSummary {
+    artifact: String,
+    artifact_sha256: String,
+    demos: usize,
+}
+
+fn validate_demo_evidence_contract_artifact(
+    workspace: &str,
+    evidence_json: &str,
+) -> Result<DemoEvidenceContractSummary, String> {
+    let evidence_path = resolve_workspace_path(workspace, evidence_json);
+    let evidence_text = std::fs::read_to_string(&evidence_path)
+        .map_err(|e| format!("failed to read `{}`: {e}", evidence_path.display()))?;
+    let evidence: serde_json::Value = serde_json::from_str(&evidence_text)
+        .map_err(|e| format!("failed to parse `{}` as JSON: {e}", evidence_path.display()))?;
+    let summary = validate_demo_evidence_value(&evidence)?;
+    let artifact_path = resolve_workspace_path(workspace, &summary.artifact);
+    let artifact_bytes = std::fs::read(&artifact_path).map_err(|e| {
+        format!(
+            "failed to read referenced JSONL artifact `{}`: {e}",
+            summary.artifact
+        )
+    })?;
+    let actual_hash = format!("{:x}", Sha256::digest(&artifact_bytes));
+    if actual_hash != summary.artifact_sha256 {
+        return Err(format!(
+            "demo evidence artifact hash mismatch for `{}`: expected {}, found {actual_hash}",
+            summary.artifact, summary.artifact_sha256
+        ));
+    }
+    Ok(summary)
+}
+
+fn resolve_workspace_path(workspace: &str, path: &str) -> PathBuf {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        Path::new(workspace).join(path)
+    }
+}
+
+fn validate_demo_evidence_value(
+    evidence: &serde_json::Value,
+) -> Result<DemoEvidenceContractSummary, String> {
+    require_bool(evidence, "complete", true, "evidence")?;
+    let artifact = require_string(evidence, "artifact", "evidence")?.to_string();
+    let artifact_sha256 = require_string(evidence, "artifact_sha256", "evidence")?;
+    if artifact_sha256.len() != 64 || !artifact_sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("evidence.artifact_sha256 must be a 64-character hex digest".into());
+    }
+    let demos = require_array(evidence, "demos", "evidence")?;
+    if demos.is_empty() {
+        return Err("evidence.demos must contain at least one complete trajectory".into());
+    }
+
+    for (demo_index, demo) in demos.iter().enumerate() {
+        validate_demo_evidence_demo(demo, artifact_sha256, demo_index)?;
+    }
+
+    Ok(DemoEvidenceContractSummary {
+        artifact,
+        artifact_sha256: artifact_sha256.to_string(),
+        demos: demos.len(),
+    })
+}
+
+fn validate_demo_evidence_demo(
+    demo: &serde_json::Value,
+    artifact_sha256: &str,
+    demo_index: usize,
+) -> Result<(), String> {
+    let context = format!("demos[{demo_index}]");
+    let chain = require_array(demo, "causal_chain", &context)?;
+    for requirement in DEMO_EVIDENCE_PROOF_STEPS {
+        let _ = require_step(chain, requirement, &context)?;
+    }
+    let failed = require_step(chain, "failed_first_attempt", &context)?;
+    let archived = require_step(chain, "archived_verifier_failure_evidence", &context)?;
+    let retry = require_step(chain, "retry_context_from_failure_evidence", &context)?;
+    let later = require_step(chain, "later_passing_attempt", &context)?;
+    let lineage = require_step(chain, "lineage_trajectory_recorded", &context)?;
+    let promotion = require_step(chain, "verifier_gated_germline_promotion", &context)?;
+
+    let failed_selector = require_object_field(failed, "selector", "failed_first_attempt")?;
+    let failed_row = require_object_field(failed, "evidence_row", "failed_first_attempt")?;
+    require_bool(
+        failed_row,
+        "resolved",
+        false,
+        "failed_first_attempt.evidence_row",
+    )?;
+    require_positive_i64(
+        failed_row,
+        "verify_returncode",
+        "failed_first_attempt.evidence_row",
+    )?;
+
+    let archived_selector =
+        require_object_field(archived, "selector", "archived_verifier_failure_evidence")?;
+    if !same_selector(failed_selector, archived_selector) {
+        return Err(format!(
+            "{context}: archived verifier evidence selector does not match failed first attempt"
+        ));
+    }
+    let archived_fields =
+        require_object_field(archived, "fields", "archived_verifier_failure_evidence")?;
+    require_bool(
+        archived_fields,
+        "lineage_advanced",
+        true,
+        "archived_verifier_failure_evidence.fields",
+    )?;
+    require_increasing_lineage(archived_fields, "archived_verifier_failure_evidence.fields")?;
+
+    let archived_failure_selector = require_object_field(
+        retry,
+        "archived_failure_selector",
+        "retry_context_from_failure_evidence",
+    )?;
+    if !same_selector(failed_selector, archived_failure_selector) {
+        return Err(format!(
+            "{context}: retry context archived failure selector does not match failed first attempt"
+        ));
+    }
+    let retry_artifact_sha256 = require_string(
+        retry,
+        "archived_failure_artifact_sha256",
+        "retry_context_from_failure_evidence",
+    )?;
+    if retry_artifact_sha256 != artifact_sha256 {
+        return Err(format!(
+            "{context}: retry context archived failure hash does not match source artifact hash"
+        ));
+    }
+    let retry_fields = require_array(retry, "fields", "retry_context_from_failure_evidence")?;
+    if retry_fields.is_empty() {
+        return Err(format!(
+            "{context}: retry context has no causal field records"
+        ));
+    }
+    for retry_field in retry_fields {
+        require_bool(
+            retry_field,
+            "derived_from_failed_lineage",
+            true,
+            "retry_context_from_failure_evidence.fields[]",
+        )?;
+        require_bool(
+            retry_field,
+            "archived_verifier_failure_evidence",
+            true,
+            "retry_context_from_failure_evidence.fields[]",
+        )?;
+        require_bool(
+            retry_field,
+            "retry_context_links_archived_failure",
+            true,
+            "retry_context_from_failure_evidence.fields[]",
+        )?;
+        require_bool(
+            retry_field,
+            "prior_lineage_present",
+            true,
+            "retry_context_from_failure_evidence.fields[]",
+        )?;
+        require_positive_i64(
+            retry_field,
+            "failed_verify_returncode",
+            "retry_context_from_failure_evidence.fields[]",
+        )?;
+        let failed_after = require_i64(
+            retry_field,
+            "failed_lineage_records_after",
+            "retry_context_from_failure_evidence.fields[]",
+        )?;
+        let retry_before = require_i64(
+            retry_field,
+            "lineage_records_before",
+            "retry_context_from_failure_evidence.fields[]",
+        )?;
+        if retry_before < failed_after {
+            return Err(format!(
+                "{context}: retry lineage does not reach archived failed lineage boundary"
+            ));
+        }
+        let retry_failed_selector = require_object_field(
+            retry_field,
+            "failed_attempt_selector",
+            "retry_context_from_failure_evidence.fields[]",
+        )?;
+        if !same_selector(failed_selector, retry_failed_selector) {
+            return Err(format!(
+                "{context}: retry field failed_attempt_selector does not match failed first attempt"
+            ));
+        }
+    }
+
+    let later_selector = require_object_field(later, "selector", "later_passing_attempt")?;
+    if !same_run_task(failed_selector, later_selector) {
+        return Err(format!(
+            "{context}: later passing attempt is not in the failed run/task trajectory"
+        ));
+    }
+    let failed_attempt = require_i64(failed_selector, "attempt", "failed_first_attempt.selector")?;
+    let later_attempt = require_i64(later_selector, "attempt", "later_passing_attempt.selector")?;
+    if later_attempt <= failed_attempt {
+        return Err(format!(
+            "{context}: later passing attempt must occur after failed first attempt"
+        ));
+    }
+    let later_row = require_object_field(later, "evidence_row", "later_passing_attempt")?;
+    require_bool(
+        later_row,
+        "resolved",
+        true,
+        "later_passing_attempt.evidence_row",
+    )?;
+    require_i64_equals(
+        later_row,
+        "verify_returncode",
+        0,
+        "later_passing_attempt.evidence_row",
+    )?;
+
+    let lineage_fields = require_object_field(lineage, "fields", "lineage_trajectory_recorded")?;
+    let attempts = require_array(
+        lineage_fields,
+        "attempts",
+        "lineage_trajectory_recorded.fields",
+    )?;
+    if attempts.len() < 2
+        || !attempts
+            .iter()
+            .any(|attempt| attempt.as_i64() == Some(failed_attempt))
+        || !attempts
+            .iter()
+            .any(|attempt| attempt.as_i64() == Some(later_attempt))
+    {
+        return Err(format!(
+            "{context}: lineage trajectory must span failed and later attempts"
+        ));
+    }
+    require_increasing_lineage(lineage_fields, "lineage_trajectory_recorded.fields")?;
+
+    let promotion_selector =
+        require_object_field(promotion, "selector", "verifier_gated_germline_promotion")?;
+    if !same_selector(later_selector, promotion_selector) {
+        return Err(format!(
+            "{context}: verifier-gated promotion selector does not match later passing attempt"
+        ));
+    }
+    let promotion_fields =
+        require_object_field(promotion, "fields", "verifier_gated_germline_promotion")?;
+    require_i64_equals(
+        promotion_fields,
+        "verify_returncode",
+        0,
+        "verifier_gated_germline_promotion.fields",
+    )?;
+    require_bool(
+        promotion_fields,
+        "lineage_reconciled_by_core",
+        true,
+        "verifier_gated_germline_promotion.fields",
+    )?;
+    require_bool(
+        promotion_fields,
+        "promotion_evidence_present",
+        true,
+        "verifier_gated_germline_promotion.fields",
+    )?;
+
+    Ok(())
+}
+
+fn require_step<'a>(
+    chain: &'a [serde_json::Value],
+    requirement: &str,
+    context: &str,
+) -> Result<&'a serde_json::Value, String> {
+    let step = chain
+        .iter()
+        .find(|step| {
+            step.get("requirement").and_then(serde_json::Value::as_str) == Some(requirement)
+        })
+        .ok_or_else(|| format!("{context}: missing proof step {requirement}"))?;
+    require_string(step, "status", requirement).and_then(|status| {
+        if status == "proved" {
+            Ok(status)
+        } else {
+            Err(format!(
+                "{context}: proof step {requirement} has status {status}"
+            ))
+        }
+    })?;
+    Ok(step)
+}
+
+fn require_object_field<'a>(
+    value: &'a serde_json::Value,
+    field: &str,
+    context: &str,
+) -> Result<&'a serde_json::Value, String> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_object)
+        .map(|_| &value[field])
+        .ok_or_else(|| format!("{context}.{field} must be an object"))
+}
+
+fn require_array<'a>(
+    value: &'a serde_json::Value,
+    field: &str,
+    context: &str,
+) -> Result<&'a Vec<serde_json::Value>, String> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("{context}.{field} must be an array"))
+}
+
+fn require_string<'a>(
+    value: &'a serde_json::Value,
+    field: &str,
+    context: &str,
+) -> Result<&'a str, String> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("{context}.{field} must be a string"))
+}
+
+fn require_bool(
+    value: &serde_json::Value,
+    field: &str,
+    expected: bool,
+    context: &str,
+) -> Result<(), String> {
+    match value.get(field).and_then(serde_json::Value::as_bool) {
+        Some(actual) if actual == expected => Ok(()),
+        Some(actual) => Err(format!(
+            "{context}.{field} expected {expected}, found {actual}"
+        )),
+        None => Err(format!("{context}.{field} must be a bool")),
+    }
+}
+
+fn require_i64(value: &serde_json::Value, field: &str, context: &str) -> Result<i64, String> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_i64)
+        .ok_or_else(|| format!("{context}.{field} must be an integer"))
+}
+
+fn require_i64_equals(
+    value: &serde_json::Value,
+    field: &str,
+    expected: i64,
+    context: &str,
+) -> Result<(), String> {
+    let actual = require_i64(value, field, context)?;
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "{context}.{field} expected {expected}, found {actual}"
+        ))
+    }
+}
+
+fn require_positive_i64(
+    value: &serde_json::Value,
+    field: &str,
+    context: &str,
+) -> Result<(), String> {
+    let actual = require_i64(value, field, context)?;
+    if actual > 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "{context}.{field} must be positive, found {actual}"
+        ))
+    }
+}
+
+fn require_increasing_lineage(value: &serde_json::Value, context: &str) -> Result<(), String> {
+    let before = require_i64(value, "lineage_records_before", context)?;
+    let after = require_i64(value, "lineage_records_after", context)?;
+    if after > before {
+        Ok(())
+    } else {
+        Err(format!(
+            "{context} must advance lineage, found {before}->{after}"
+        ))
+    }
+}
+
+fn same_selector(left: &serde_json::Value, right: &serde_json::Value) -> bool {
+    same_run_task(left, right)
+        && left.get("attempt").and_then(serde_json::Value::as_i64)
+            == right.get("attempt").and_then(serde_json::Value::as_i64)
+}
+
+fn same_run_task(left: &serde_json::Value, right: &serde_json::Value) -> bool {
+    left.get("run_id").and_then(serde_json::Value::as_str)
+        == right.get("run_id").and_then(serde_json::Value::as_str)
+        && left.get("task_id").and_then(serde_json::Value::as_str)
+            == right.get("task_id").and_then(serde_json::Value::as_str)
 }
 
 #[derive(Parser)]
@@ -232,6 +712,18 @@ enum Commands {
         /// Workspace root path (defaults to current directory).
         #[arg(long, default_value = ".")]
         workspace: String,
+    },
+    /// Verify an archived self-correction demo evidence contract.
+    DemoEvidence {
+        /// Workspace root path (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Archived JSONL artifact to re-score before structural validation.
+        #[arg(long, default_value = DEFAULT_ARCHIVE_RESULTS_JSONL)]
+        archive: String,
+        /// Machine-readable demo evidence JSON to verify.
+        #[arg(long, default_value = DEFAULT_ARCHIVE_EVIDENCE_JSON)]
+        evidence_json: String,
     },
     /// Run the A² benchmark suite from bench/tasks.
     Bench {
@@ -1465,6 +1957,18 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::DemoEvidence {
+            workspace,
+            archive,
+            evidence_json,
+        } => match run_demo_evidence_contract(&workspace, &archive, &evidence_json) {
+            Ok(output) => print!("{output}"),
+            Err(error) => {
+                eprintln!("Demo evidence gate: FAIL");
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        },
         Commands::Bench { model } => {
             if let Err(e) = run_benchmark_suite(&model).await {
                 eprintln!("Benchmark suite failed: {e}");
@@ -3250,6 +3754,191 @@ mod tests {
             "python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json"
         ));
         assert!(snapshot.contains("sentinel does not refresh or replace those checks"));
+    }
+
+    fn complete_demo_evidence_value() -> serde_json::Value {
+        serde_json::json!({
+            "artifact": DEFAULT_ARCHIVE_RESULTS_JSONL,
+            "artifact_sha256": "33a83345adac350b9a79bdd7842ac0c0cad1b698f7fc636a8a12f0c32fe7cee3",
+            "complete": true,
+            "demos": [
+                {
+                    "causal_chain": [
+                        {
+                            "requirement": "failed_first_attempt",
+                            "status": "proved",
+                            "selector": {"run_id": "run-a", "task_id": "task-a", "attempt": 1},
+                            "evidence_row": {"resolved": false, "verify_returncode": 1}
+                        },
+                        {
+                            "requirement": "archived_verifier_failure_evidence",
+                            "status": "proved",
+                            "selector": {"run_id": "run-a", "task_id": "task-a", "attempt": 1},
+                            "fields": {
+                                "lineage_advanced": true,
+                                "lineage_records_before": 0,
+                                "lineage_records_after": 1
+                            }
+                        },
+                        {
+                            "requirement": "retry_context_from_failure_evidence",
+                            "status": "proved",
+                            "archived_failure_selector": {"run_id": "run-a", "task_id": "task-a", "attempt": 1},
+                            "archived_failure_artifact_sha256": "33a83345adac350b9a79bdd7842ac0c0cad1b698f7fc636a8a12f0c32fe7cee3",
+                            "fields": [
+                                {
+                                    "derived_from_failed_lineage": true,
+                                    "archived_verifier_failure_evidence": true,
+                                    "retry_context_links_archived_failure": true,
+                                    "prior_lineage_present": true,
+                                    "failed_verify_returncode": 1,
+                                    "failed_lineage_records_after": 1,
+                                    "lineage_records_before": 1,
+                                    "failed_attempt_selector": {"run_id": "run-a", "task_id": "task-a", "attempt": 1}
+                                }
+                            ]
+                        },
+                        {
+                            "requirement": "later_passing_attempt",
+                            "status": "proved",
+                            "selector": {"run_id": "run-a", "task_id": "task-a", "attempt": 2},
+                            "evidence_row": {"resolved": true, "verify_returncode": 0}
+                        },
+                        {
+                            "requirement": "lineage_trajectory_recorded",
+                            "status": "proved",
+                            "fields": {
+                                "attempts": [1, 2],
+                                "lineage_records_before": 0,
+                                "lineage_records_after": 2
+                            }
+                        },
+                        {
+                            "requirement": "verifier_gated_germline_promotion",
+                            "status": "proved",
+                            "selector": {"run_id": "run-a", "task_id": "task-a", "attempt": 2},
+                            "fields": {
+                                "verify_returncode": 0,
+                                "lineage_reconciled_by_core": true,
+                                "promotion_evidence_present": true
+                            }
+                        }
+                    ]
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn demo_evidence_command_forwards_archive_and_evidence_paths() {
+        assert_eq!(
+            demo_evidence_command_args("custom/results.jsonl", "custom/evidence.json"),
+            vec![
+                "bench/self_correction_demo.py".to_string(),
+                "verify-archive".to_string(),
+                "--archive".to_string(),
+                "custom/results.jsonl".to_string(),
+                "--evidence-json".to_string(),
+                "custom/evidence.json".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn demo_evidence_contract_accepts_complete_structural_chain() {
+        let summary = validate_demo_evidence_value(&complete_demo_evidence_value()).unwrap();
+        assert_eq!(summary.artifact, DEFAULT_ARCHIVE_RESULTS_JSONL);
+        assert_eq!(summary.demos, 1);
+    }
+
+    #[test]
+    fn demo_evidence_contract_rejects_retry_context_without_archived_failure_link() {
+        let mut evidence = complete_demo_evidence_value();
+        evidence["demos"][0]["causal_chain"][2]["fields"][0]["retry_context_links_archived_failure"] =
+            serde_json::Value::Bool(false);
+
+        let err = validate_demo_evidence_value(&evidence).unwrap_err();
+        assert!(err.contains("retry_context_links_archived_failure expected true"));
+    }
+
+    #[test]
+    fn demo_evidence_contract_rejects_non_later_passing_attempt() {
+        let mut evidence = complete_demo_evidence_value();
+        evidence["demos"][0]["causal_chain"][3]["selector"]["attempt"] = serde_json::json!(1);
+
+        let err = validate_demo_evidence_value(&evidence).unwrap_err();
+        assert!(err.contains("later passing attempt must occur after failed first attempt"));
+    }
+
+    #[test]
+    fn demo_evidence_contract_rejects_lineage_attempts_without_later_pass() {
+        let mut evidence = complete_demo_evidence_value();
+        evidence["demos"][0]["causal_chain"][4]["fields"]["attempts"] = serde_json::json!([1, 3]);
+
+        let err = validate_demo_evidence_value(&evidence).unwrap_err();
+        assert!(err.contains("lineage trajectory must span failed and later attempts"));
+    }
+
+    #[test]
+    fn demo_evidence_contract_rejects_promotion_not_tied_to_later_pass() {
+        let mut evidence = complete_demo_evidence_value();
+        evidence["demos"][0]["causal_chain"][5]["selector"]["attempt"] = serde_json::json!(3);
+
+        let err = validate_demo_evidence_value(&evidence).unwrap_err();
+        assert!(
+            err.contains("verifier-gated promotion selector does not match later passing attempt")
+        );
+    }
+
+    #[test]
+    fn demo_evidence_contract_rejects_missing_referenced_jsonl_artifact() {
+        let workspace =
+            std::env::temp_dir().join(format!("a2-missing-demo-artifact-{}", std::process::id()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let evidence_path = workspace.join("evidence.json");
+        std::fs::write(
+            &evidence_path,
+            serde_json::to_string(&complete_demo_evidence_value()).unwrap(),
+        )
+        .unwrap();
+
+        let err = validate_demo_evidence_contract_artifact(
+            workspace.to_str().unwrap(),
+            evidence_path.to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert!(err.contains("failed to read referenced JSONL artifact"));
+
+        std::fs::remove_file(evidence_path).unwrap();
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn demo_evidence_contract_rejects_referenced_jsonl_hash_mismatch() {
+        let workspace = std::env::temp_dir().join(format!(
+            "a2-mismatched-demo-artifact-{}",
+            std::process::id()
+        ));
+        let artifact_path = workspace.join(DEFAULT_ARCHIVE_RESULTS_JSONL);
+        std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+        std::fs::write(&artifact_path, b"stale or substituted jsonl\n").unwrap();
+        let evidence_path = workspace.join("evidence.json");
+        std::fs::write(
+            &evidence_path,
+            serde_json::to_string(&complete_demo_evidence_value()).unwrap(),
+        )
+        .unwrap();
+
+        let err = validate_demo_evidence_contract_artifact(
+            workspace.to_str().unwrap(),
+            evidence_path.to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert!(err.contains("demo evidence artifact hash mismatch"));
+
+        std::fs::remove_file(evidence_path).unwrap();
+        std::fs::remove_file(artifact_path).unwrap();
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]
