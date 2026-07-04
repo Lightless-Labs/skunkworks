@@ -12,6 +12,7 @@
 **Enhanced:** 2026-07-04 — added explicit `a2d cycle-input` file/stdin bridge for JSON artifact bundles while rejecting reserved runtime evidence artifacts
 **Enhanced:** 2026-07-04 — added deterministic Senior SWE-Bench retry-step gate after bounded retry planning
 **Enhanced:** 2026-07-04 — added deterministic Senior SWE-Bench candidate-artifact selection from cycle-output manifests
+**Enhanced:** 2026-07-04 — added deterministic Senior SWE-Bench retry-attempt planning across selection, extraction, evaluation, and retry-step gates
 **Depends on:** Stage 1 (complete)
 
 ## Problem
@@ -311,3 +312,13 @@ The command starts no providers/evaluators and sets `fitness_claim_allowed_befor
 Focused validation: `cargo fmt --check`; `cargo test -p a2d --test senior_swe_bench_select_candidate_artifact -- --nocapture`; `cargo test -p a2d senior_swe_bench -- --nocapture`; `cargo test -p a2d cycle_output_artifact -- --nocapture`. Full `cargo test` passed (327 passed, 2 ignored). Positive/negative smokes live under `runs/20260704-senior-swe-bench-candidate-artifact-selection-evidence/`.
 
 Fresh source-patch gate support: `runs/20260704-senior-swe-bench-candidate-artifact-selection-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`, `source_diff_hash: 5c973a79c75109b52d0b6e1349e9ceba84c3b6a9`, matching `git diff --binary HEAD -- crates | git hash-object --stdin`. This remains deterministic artifact-selection/source-patch evidence, not an autonomous retry executor or official Senior SWE-Bench task mastery.
+
+### Senior SWE-Bench retry-attempt planning (2026-07-04)
+
+`a2d senior-swe-bench-retry-attempt-plan --retry-plan <json|-> --attempt-index <n> --task-cycle-input <json|-> --cycle-output-manifest <json|-> --checkout <dir> --attempt-dir <dir> [--apply-candidate-patch] [--official-evaluator-manifest <json>] -- <evaluator> [args...]` now composes the already-gated handoff into one deterministic attempt plan without starting providers/evaluators, writing attempt files, or claiming fitness.
+
+The command validates the retry-plan schema/bounds through the retry-step validator, validates task-cycle-input task/repo/no-search binding, requires an existing checkout directory, reuses exact candidate-artifact selection, verifies public-GitHub-reference absence, and checks unified-diff extractability. Extractable artifacts emit planned output paths plus `extract_patch_args`, `evaluate_args`, and downstream `retry_step_args`; non-extractable prose stops with `candidate_patch_extraction_failed` and no evaluator args. Parser coverage rejects `--` with no evaluator command.
+
+Focused validation: `cargo fmt --check`; `cargo test -p a2d --test senior_swe_bench_retry_attempt_plan -- --nocapture`; `cargo test -p a2d --test senior_swe_bench_select_candidate_artifact -- --nocapture`; `cargo test -p a2d senior_swe_bench -- --nocapture`; `cargo test -p a2d cycle_output_artifact -- --nocapture`. Full `cargo test` passed. Positive/negative smokes live under `runs/20260704-senior-swe-bench-retry-attempt-plan-evidence/`.
+
+Fresh source-patch gate support: `runs/20260704-senior-swe-bench-retry-attempt-plan-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`, `source_diff_hash: 95e5f526834ef5bce322ab1f474e9f9ef5fcba0b`, matching `git diff --binary HEAD -- crates | git hash-object --stdin`. This remains deterministic retry-attempt planning/source-patch evidence, not an autonomous retry executor or official Senior SWE-Bench task mastery.

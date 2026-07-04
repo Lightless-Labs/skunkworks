@@ -22,14 +22,18 @@ Before starting providers or evaluators, emit a machine-readable retry plan that
 
 Then add a deterministic retry-step gate that consumes the plan plus a single evaluation result and chooses only the next safe action. The step should validate schema-complete plan fields (including stop criteria, barriers, and per-attempt transitions), produce feedback-enriched next cycle input only for failed non-final attempts, and treat passed evaluations as instructions to inspect evidence rather than as fitness claims.
 
-The plan/step artifacts are not evidence and must start no providers or evaluators.
+Before wiring a loop executor, add a retry-attempt planner that composes existing gates into command arguments only. It should select the exact coder artifact by manifest provenance, verify unified-diff extractability, emit planned extraction/evaluation/retry-step args, and stop with no evaluator args when extraction fails.
+
+The plan/step/attempt artifacts are not evidence and must start no providers or evaluators.
 
 ## Evidence
 
-Implemented by `a2d senior-swe-bench-retry-plan` and `a2d senior-swe-bench-retry-step` in `crates/a2d-cli/src/main.rs` / `crates/a2d-cli/src/senior_swe_bench.rs`, with CLI coverage in `crates/a2d-cli/tests/senior_swe_bench_retry_plan.rs` and `crates/a2d-cli/tests/senior_swe_bench_retry_step.rs`.
+Implemented by `a2d senior-swe-bench-retry-plan`, `a2d senior-swe-bench-retry-step`, and `a2d senior-swe-bench-retry-attempt-plan` in `crates/a2d-cli/src/main.rs` / `crates/a2d-cli/src/senior_swe_bench.rs`, with CLI coverage in `crates/a2d-cli/tests/senior_swe_bench_retry_plan.rs`, `crates/a2d-cli/tests/senior_swe_bench_retry_step.rs`, and `crates/a2d-cli/tests/senior_swe_bench_retry_attempt_plan.rs`.
 
 Fresh retry-plan source-patch gate evidence: `runs/20260704-senior-swe-bench-retry-plan-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_diff_hash: fa652ee3ca175bb5cb37d15ab106840d17c37f84`.
 
 Fresh retry-step source-patch gate evidence: `runs/20260704-senior-swe-bench-retry-step-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_diff_hash: f2073d167fcddc55903fa19d8e459d8b25d29e0c`.
 
-Run docs: `examples/runs/2026-07-04-senior-swe-bench-retry-plan.md`, `examples/runs/2026-07-04-senior-swe-bench-retry-step.md`.
+Fresh retry-attempt-plan source-patch gate evidence: `runs/20260704-senior-swe-bench-retry-attempt-plan-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_diff_hash: 95e5f526834ef5bce322ab1f474e9f9ef5fcba0b`.
+
+Run docs: `examples/runs/2026-07-04-senior-swe-bench-retry-plan.md`, `examples/runs/2026-07-04-senior-swe-bench-retry-step.md`, `examples/runs/2026-07-04-senior-swe-bench-retry-attempt-plan.md`.

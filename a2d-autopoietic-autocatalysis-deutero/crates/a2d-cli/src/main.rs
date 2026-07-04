@@ -22,6 +22,7 @@ use senior_swe_bench::{
     extract_senior_swe_bench_tasks, parse_senior_swe_bench_cycle_input,
     parse_senior_swe_bench_official_evaluator_manifest, parse_senior_swe_bench_task_package,
     render_senior_swe_bench_task_context,
+    validate_senior_swe_bench_retry_plan_and_cycle_input_for_attempt,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -122,6 +123,9 @@ fn main() {
         "senior-swe-bench-retry-step" => {
             run_senior_swe_bench_retry_step(&args[2..]);
         }
+        "senior-swe-bench-retry-attempt-plan" => {
+            run_senior_swe_bench_retry_attempt_plan(&args[2..]);
+        }
         "compare-provider-policy" | "policy-gate" => {
             let challenge_name = if arg2.is_empty() { "sudoku" } else { arg2 };
             let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -144,7 +148,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -3923,6 +3927,301 @@ fn run_senior_swe_bench_retry_plan(cycle_input_path: &str, max_attempts: usize) 
         "{}",
         serde_json::to_string_pretty(&plan).expect("Senior SWE-Bench retry plan must serialize")
     );
+}
+
+fn run_senior_swe_bench_retry_attempt_plan(args: &[String]) {
+    let config = parse_senior_swe_bench_retry_attempt_plan_args(args).unwrap_or_else(|error| {
+        eprintln!("Senior SWE-Bench retry attempt plan error: {error}");
+        eprintln!("Usage: a2d senior-swe-bench-retry-attempt-plan --retry-plan <json|-> --attempt-index <n> --task-cycle-input <json|-> --cycle-output-manifest <json|-> --checkout <dir> --attempt-dir <dir> [--apply-candidate-patch] [--official-evaluator-manifest <json>] -- <evaluator> [args...]");
+        std::process::exit(1);
+    });
+    let plan = build_senior_swe_bench_retry_attempt_plan(&config).unwrap_or_else(|error| {
+        eprintln!("Senior SWE-Bench retry attempt plan error: {error}");
+        std::process::exit(1);
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&plan)
+            .expect("Senior SWE-Bench retry attempt plan must serialize")
+    );
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SeniorSweBenchRetryAttemptPlanConfig {
+    retry_plan: PathBuf,
+    attempt_index: usize,
+    task_cycle_input: PathBuf,
+    cycle_output_manifest: PathBuf,
+    checkout: PathBuf,
+    attempt_dir: PathBuf,
+    apply_candidate_patch: bool,
+    official_evaluator_manifest: Option<PathBuf>,
+    evaluator_command: Vec<String>,
+}
+
+fn parse_senior_swe_bench_retry_attempt_plan_args(
+    args: &[String],
+) -> Result<SeniorSweBenchRetryAttemptPlanConfig, String> {
+    let mut retry_plan = None;
+    let mut attempt_index = None;
+    let mut task_cycle_input = None;
+    let mut cycle_output_manifest = None;
+    let mut checkout = None;
+    let mut attempt_dir = None;
+    let mut apply_candidate_patch = false;
+    let mut official_evaluator_manifest = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--" => {
+                let evaluator_command = args[index + 1..].to_vec();
+                if evaluator_command.is_empty() {
+                    return Err(
+                        "Senior SWE-Bench retry attempt evaluator command is empty".to_string()
+                    );
+                }
+                let config = SeniorSweBenchRetryAttemptPlanConfig {
+                    retry_plan: retry_plan.ok_or_else(|| "missing --retry-plan".to_string())?,
+                    attempt_index: attempt_index
+                        .ok_or_else(|| "missing --attempt-index".to_string())?,
+                    task_cycle_input: task_cycle_input
+                        .ok_or_else(|| "missing --task-cycle-input".to_string())?,
+                    cycle_output_manifest: cycle_output_manifest
+                        .ok_or_else(|| "missing --cycle-output-manifest".to_string())?,
+                    checkout: checkout.ok_or_else(|| "missing --checkout".to_string())?,
+                    attempt_dir: attempt_dir.ok_or_else(|| "missing --attempt-dir".to_string())?,
+                    apply_candidate_patch,
+                    official_evaluator_manifest,
+                    evaluator_command,
+                };
+                validate_retry_attempt_plan_stdin_inputs(&config)?;
+                return Ok(config);
+            }
+            "--retry-plan" => {
+                index += 1;
+                retry_plan = Some(PathBuf::from(
+                    args.get(index)
+                        .ok_or_else(|| "--retry-plan requires a path".to_string())?,
+                ));
+            }
+            "--attempt-index" => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| "--attempt-index requires a value".to_string())?;
+                attempt_index = Some(value.parse::<usize>().map_err(|error| {
+                    format!("--attempt-index must be a non-negative integer: {error}")
+                })?);
+            }
+            "--task-cycle-input" => {
+                index += 1;
+                task_cycle_input =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        "--task-cycle-input requires a path".to_string()
+                    })?));
+            }
+            "--cycle-output-manifest" => {
+                index += 1;
+                cycle_output_manifest =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        "--cycle-output-manifest requires a path".to_string()
+                    })?));
+            }
+            "--checkout" => {
+                index += 1;
+                checkout = Some(PathBuf::from(
+                    args.get(index)
+                        .ok_or_else(|| "--checkout requires a path".to_string())?,
+                ));
+            }
+            "--attempt-dir" => {
+                index += 1;
+                attempt_dir =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        "--attempt-dir requires a path".to_string()
+                    })?));
+            }
+            "--apply-candidate-patch" => apply_candidate_patch = true,
+            "--official-evaluator-manifest" => {
+                index += 1;
+                official_evaluator_manifest =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        "--official-evaluator-manifest requires a path".to_string()
+                    })?));
+            }
+            other => {
+                return Err(format!(
+                    "unknown senior-swe-bench-retry-attempt-plan argument: {other}"
+                ));
+            }
+        }
+        index += 1;
+    }
+    Err("missing -- <evaluator> command".to_string())
+}
+
+fn validate_retry_attempt_plan_stdin_inputs(
+    config: &SeniorSweBenchRetryAttemptPlanConfig,
+) -> Result<(), String> {
+    let stdin_inputs = [
+        ("--retry-plan", &config.retry_plan),
+        ("--task-cycle-input", &config.task_cycle_input),
+        ("--cycle-output-manifest", &config.cycle_output_manifest),
+    ]
+    .into_iter()
+    .filter(|(_, path)| path.as_path() == Path::new("-"))
+    .map(|(flag, _)| flag)
+    .collect::<Vec<_>>();
+    if stdin_inputs.len() > 1 {
+        return Err(format!(
+            "at most one retry-attempt-plan input may be read from stdin (-); got {}",
+            stdin_inputs.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+fn build_senior_swe_bench_retry_attempt_plan(
+    config: &SeniorSweBenchRetryAttemptPlanConfig,
+) -> Result<Value, String> {
+    let retry_plan = read_artifact_to_string(&config.retry_plan)?;
+    let cycle_input = read_artifact_to_string(&config.task_cycle_input)?;
+    let (retry_plan_value, package) =
+        validate_senior_swe_bench_retry_plan_and_cycle_input_for_attempt(
+            &retry_plan,
+            config.attempt_index,
+            &cycle_input,
+        )?;
+    if !config.checkout.is_dir() {
+        return Err(format!(
+            "Senior SWE-Bench checkout directory not found: {}",
+            config.checkout.display()
+        ));
+    }
+    if let Some(manifest) = &config.official_evaluator_manifest {
+        if manifest == Path::new("-") {
+            return Err(
+                "Senior SWE-Bench official evaluator manifest must be a file path, not stdin"
+                    .to_string(),
+            );
+        }
+        if !manifest.is_file() {
+            return Err(format!(
+                "Senior SWE-Bench official evaluator manifest not found: {}",
+                manifest.display()
+            ));
+        }
+    }
+    let manifest = read_artifact_to_string(&config.cycle_output_manifest)?;
+    let selection = select_senior_swe_bench_candidate_artifact(&manifest)?;
+    let selected_path = selection
+        .get("selected")
+        .and_then(|selected| selected.get("path"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "candidate artifact selection missing selected.path".to_string())?
+        .to_string();
+    let artifact = fs::read_to_string(&selected_path).map_err(|error| {
+        format!("failed to read selected candidate artifact {selected_path}: {error}")
+    })?;
+    let candidate_patch = match extract_senior_swe_bench_candidate_patch(&artifact) {
+        Ok(patch) => patch,
+        Err(error) => {
+            return Ok(json!({
+                "schema_version": "a2d.senior-swe-bench-retry-attempt-plan.v1",
+                "task_id": package.task_id,
+                "repo": package.repo,
+                "attempt_index": config.attempt_index,
+                "max_attempts": retry_plan_value["max_attempts"].clone(),
+                "decision": "stop",
+                "stop_reason": "candidate_patch_extraction_failed",
+                "extraction_error": error,
+                "candidate_selection": selection,
+                "provider_invocations_started": false,
+                "evaluator_invocations_started": false,
+                "fitness_claim_allowed_before_evidence": false,
+                "github_solution_search_allowed": false,
+                "note": "deterministic retry-attempt planning only: candidate artifact is not extractable, so no evaluator args are emitted",
+            }));
+        }
+    };
+    let candidate_patch_hash = git_hash_object_bytes(candidate_patch.as_bytes())?;
+    let candidate_patch_path = config.attempt_dir.join("candidate.patch");
+    let local_evaluation_path = config.attempt_dir.join("local-evaluation.json");
+    let mut evaluate_args = vec![
+        "senior-swe-bench-evaluate".to_string(),
+        "--task-cycle-input".to_string(),
+        config.task_cycle_input.display().to_string(),
+        "--candidate-patch-artifact".to_string(),
+        selected_path.clone(),
+        "--extracted-candidate-patch".to_string(),
+        candidate_patch_path.display().to_string(),
+        "--checkout".to_string(),
+        config.checkout.display().to_string(),
+    ];
+    if config.apply_candidate_patch {
+        evaluate_args.push("--apply-candidate-patch".to_string());
+    }
+    if let Some(manifest) = &config.official_evaluator_manifest {
+        evaluate_args.push("--official-evaluator-manifest".to_string());
+        evaluate_args.push(manifest.display().to_string());
+    }
+    evaluate_args.push("--output".to_string());
+    evaluate_args.push(local_evaluation_path.display().to_string());
+    evaluate_args.push("--".to_string());
+    evaluate_args.extend(config.evaluator_command.clone());
+
+    Ok(json!({
+        "schema_version": "a2d.senior-swe-bench-retry-attempt-plan.v1",
+        "task_id": package.task_id,
+        "repo": package.repo,
+        "attempt_index": config.attempt_index,
+        "max_attempts": retry_plan_value["max_attempts"].clone(),
+        "decision": "extract_and_evaluate_candidate_patch",
+        "candidate_selection": selection,
+        "selected_artifact": selection["selected"].clone(),
+        "contains_unified_diff_candidate_patch": true,
+        "candidate_patch_hash": candidate_patch_hash,
+        "planned_outputs": {
+            "candidate_patch": candidate_patch_path,
+            "local_evaluation": local_evaluation_path
+        },
+        "extract_patch_args": [
+            "senior-swe-bench-extract-patch",
+            selected_path
+        ],
+        "evaluate_args": evaluate_args,
+        "retry_step_args": [
+            "senior-swe-bench-retry-step",
+            "--retry-plan",
+            config.retry_plan.display().to_string(),
+            "--attempt-index",
+            config.attempt_index.to_string(),
+            "--task-cycle-input",
+            config.task_cycle_input.display().to_string(),
+            "--local-evaluation",
+            local_evaluation_path.display().to_string()
+        ],
+        "apply_candidate_patch": config.apply_candidate_patch,
+        "official_evaluator_manifest": config.official_evaluator_manifest.as_ref().map(|path| path.display().to_string()),
+        "provider_invocations_started": false,
+        "evaluator_invocations_started": false,
+        "fitness_claim_allowed_before_evidence": false,
+        "github_solution_search_allowed": false,
+        "note": "deterministic retry-attempt planning only: this command starts no providers/evaluators, writes no attempt files, and is not fitness evidence",
+    }))
+}
+
+fn read_artifact_to_string(path: &Path) -> Result<String, String> {
+    if path == Path::new("-") {
+        let mut input = String::new();
+        std::io::stdin()
+            .read_to_string(&mut input)
+            .map_err(|error| format!("failed to read artifact from stdin: {error}"))?;
+        Ok(input)
+    } else {
+        fs::read_to_string(path)
+            .map_err(|error| format!("failed to read artifact {}: {error}", path.display()))
+    }
 }
 
 fn run_senior_swe_bench_retry_step(args: &[String]) {

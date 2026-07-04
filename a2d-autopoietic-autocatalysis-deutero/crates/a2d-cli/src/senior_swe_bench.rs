@@ -863,6 +863,50 @@ pub fn build_senior_swe_bench_cycle_retry_step(
     Ok(step)
 }
 
+pub fn validate_senior_swe_bench_cycle_retry_plan_step(
+    retry_plan: &str,
+    attempt_index: usize,
+) -> Result<serde_json::Value, String> {
+    let retry_plan_value: serde_json::Value = serde_json::from_str(retry_plan)
+        .map_err(|error| format!("invalid Senior SWE-Bench retry plan JSON: {error}"))?;
+    validate_senior_swe_bench_retry_plan_for_step(&retry_plan_value, attempt_index)?;
+    Ok(retry_plan_value)
+}
+
+pub fn validate_senior_swe_bench_retry_plan_and_cycle_input_for_attempt(
+    retry_plan: &str,
+    attempt_index: usize,
+    cycle_input: &str,
+) -> Result<(serde_json::Value, SeniorSweBenchTaskPackageSummary), String> {
+    let retry_plan_value =
+        validate_senior_swe_bench_cycle_retry_plan_step(retry_plan, attempt_index)?;
+    let package = parse_senior_swe_bench_cycle_input(cycle_input)?;
+    let cycle_value: serde_json::Value = serde_json::from_str(cycle_input)
+        .map_err(|error| format!("invalid Senior SWE-Bench cycle input JSON: {error}"))?;
+    reject_reserved_cycle_feedback_artifacts(&cycle_value)?;
+    reject_public_solution_refs_in_cycle_feedback_content(&cycle_value)?;
+    let plan_task_id = safe_benchmark_identifier(
+        "task_id",
+        &required_string(&retry_plan_value, "task_id")?,
+        false,
+    )?;
+    let plan_repo =
+        safe_benchmark_identifier("repo", &required_string(&retry_plan_value, "repo")?, true)?;
+    let task_id = safe_benchmark_identifier("task_id", &package.task_id, false)?;
+    let repo = safe_benchmark_identifier("repo", &package.repo, true)?;
+    if plan_task_id != task_id {
+        return Err(format!(
+            "Senior SWE-Bench retry plan task_id {plan_task_id} does not match cycle input {task_id}"
+        ));
+    }
+    if plan_repo != repo {
+        return Err(format!(
+            "Senior SWE-Bench retry plan repo {plan_repo} does not match cycle input {repo}"
+        ));
+    }
+    Ok((retry_plan_value, package))
+}
+
 fn validate_senior_swe_bench_retry_plan_for_step(
     retry_plan: &serde_json::Value,
     attempt_index: usize,
