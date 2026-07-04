@@ -88,6 +88,10 @@ fn main() {
             let artifact_path = args.get(2).map(String::as_str).unwrap_or("-");
             run_senior_swe_bench_extract_patch(artifact_path);
         }
+        "senior-swe-bench-diagnose-artifact" => {
+            let artifact_path = args.get(2).map(String::as_str).unwrap_or("-");
+            run_senior_swe_bench_diagnose_artifact(artifact_path);
+        }
         "compare-provider-policy" | "policy-gate" => {
             let challenge_name = if arg2.is_empty() { "sudoku" } else { arg2 };
             let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -110,7 +114,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -3545,6 +3549,15 @@ fn run_senior_swe_bench_extract_patch(artifact_path: &str) {
     }
 }
 
+fn run_senior_swe_bench_diagnose_artifact(artifact_path: &str) {
+    let artifact = read_artifact_or_exit(artifact_path);
+    let diagnosis = diagnose_senior_swe_bench_candidate_patch_artifact(&artifact);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&diagnosis).expect("diagnosis must serialize")
+    );
+}
+
 fn extract_senior_swe_bench_candidate_patch(artifact: &str) -> Result<String, String> {
     if contains_public_github_solution_reference(artifact) {
         return Err(
@@ -3557,15 +3570,96 @@ fn extract_senior_swe_bench_candidate_patch(artifact: &str) -> Result<String, St
     let candidate = if looks_like_unified_diff(trimmed) {
         trimmed.to_string()
     } else {
-        extract_fenced_unified_diff(trimmed)
-            .ok_or_else(|| "artifact does not contain a unified diff candidate patch".to_string())?
+        extract_fenced_unified_diff(trimmed).ok_or_else(|| {
+            format!(
+                "artifact does not contain a unified diff candidate patch; diagnosis: {}",
+                senior_swe_bench_patch_artifact_failure_kind(artifact)
+            )
+        })?
     };
 
     Ok(ensure_trailing_newline(candidate))
 }
 
+fn diagnose_senior_swe_bench_candidate_patch_artifact(artifact: &str) -> Value {
+    let trimmed = artifact.trim();
+    let extracted_patch = if contains_public_github_solution_reference(artifact) {
+        None
+    } else if looks_like_unified_diff(trimmed) {
+        Some(trimmed.to_string())
+    } else {
+        extract_fenced_unified_diff(trimmed)
+    };
+    let failure_kind = if extracted_patch.is_some() {
+        "candidate_patch_extractable"
+    } else {
+        senior_swe_bench_patch_artifact_failure_kind(artifact)
+    };
+    let recommended_next_gate = match failure_kind {
+        "candidate_patch_extractable" => {
+            "run senior-swe-bench-evaluate against a benchmark checkout/evaluator before claiming task fitness"
+        }
+        "public_solution_reference" => {
+            "reject the artifact; public GitHub solution references violate the Senior SWE-Bench agent policy"
+        }
+        "checkout_context_not_exercised" => {
+            "verify the provider had usable local checkout/tool context before adding prompt-only enrichment"
+        }
+        _ => {
+            "treat as output-contract failure; retry or improve the coder contract only after checkout access is known-good"
+        }
+    };
+
+    let contains_public_solution_reference = contains_public_github_solution_reference(artifact);
+    let artifact_preview = if contains_public_solution_reference {
+        "<redacted: public GitHub solution reference>".to_string()
+    } else {
+        preview(artifact, 400)
+    };
+
+    json!({
+        "schema_version": "a2d.senior-swe-bench-artifact-diagnosis.v1",
+        "contains_unified_diff_candidate_patch": extracted_patch.is_some(),
+        "contains_public_github_solution_reference": contains_public_solution_reference,
+        "failure_kind": failure_kind,
+        "artifact_bytes": artifact.len(),
+        "artifact_preview": artifact_preview,
+        "recommended_next_gate": recommended_next_gate,
+        "note": "diagnostic only: this is not fitness evidence and cannot support a Senior SWE-Bench mastery claim",
+    })
+}
+
+fn senior_swe_bench_patch_artifact_failure_kind(artifact: &str) -> &'static str {
+    if contains_public_github_solution_reference(artifact) {
+        "public_solution_reference"
+    } else if artifact_defers_to_checkout_inspection(artifact) {
+        "checkout_context_not_exercised"
+    } else {
+        "output_contract_not_followed"
+    }
+}
+
+fn artifact_defers_to_checkout_inspection(artifact: &str) -> bool {
+    let normalized = artifact.to_ascii_lowercase();
+    [
+        "i'll inspect",
+        "i will inspect",
+        "inspect the local checkout",
+        "inspect the provided checkout",
+        "exploring the repository",
+        "explore the repository",
+        "repository structure",
+        "let me start by exploring",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
 fn contains_public_github_solution_reference(artifact: &str) -> bool {
-    artifact.contains("github.com/") || artifact.contains("/pull/") || artifact.contains("/commit/")
+    let normalized = artifact.to_ascii_lowercase();
+    normalized.contains("github.com/")
+        || normalized.contains("/pull/")
+        || normalized.contains("/commit/")
 }
 
 fn extract_fenced_unified_diff(input: &str) -> Option<String> {
@@ -9991,6 +10085,13 @@ mod tests {
         assert!(
             extract_senior_swe_bench_candidate_patch(
                 "```diff\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+https://github.com/org/repo/pull/1\n```"
+            )
+            .unwrap_err()
+            .contains("GitHub solution")
+        );
+        assert!(
+            extract_senior_swe_bench_candidate_patch(
+                "```diff\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+HTTPS://GitHub.com/org/repo/PuLl/1\n```"
             )
             .unwrap_err()
             .contains("GitHub solution")
