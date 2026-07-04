@@ -1879,7 +1879,16 @@ def verify_demo_docs_texts(docs: dict[str, str]) -> None:
         DEFAULT_ARCHIVE.as_posix(),
         DEFAULT_ARCHIVE_EVIDENCE.as_posix(),
     ]
-    caveat_required_lower = ["fresh provider-backed", "not proof"]
+    caveat_required_lower = [
+        "fresh provider-backed",
+        "not proof",
+        "preflight-only",
+        "readiness",
+        "confirmed fresh run path",
+        "fails closed",
+        "not_implemented",
+        "audited_sandbox_provider_allowlist_status",
+    ]
     missing: list[str] = []
     linked_blocks = {
         "docs/HANDOFF.md Reproducible Demo Evidence Map": handoff_demo_evidence_section(
@@ -2438,7 +2447,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             "docs/HANDOFF.md": "\n".join(
                 [
                     "## Reproducible Demo Evidence Map",
-                    "Fresh provider-backed regeneration is not proof until archived.",
+                    "Fresh provider-backed regeneration is not proof until archived; "
+                    "preflight-only is readiness; the confirmed fresh run path fails closed at "
+                    "not_implemented until audited_sandbox_provider_allowlist_status=enforced.",
                     "python3 bench/self_correction_demo.py verify-demo-docs",
                     canonical_verify_archive_command(),
                     DEFAULT_ARCHIVE.as_posix(),
@@ -2459,6 +2470,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "machine-readable causal-chain map; "
                     "Fresh provider-backed regeneration remains explicitly unchecked/open; "
                     "Neither preflight/report nor print-only proves; "
+                    "preflight-only is readiness; the confirmed fresh run path fails closed at "
+                    "not_implemented until audited_sandbox_provider_allowlist_status=enforced; "
                     "fresh provider-backed regeneration is not proof yet",
                 ]
             ),
@@ -2523,11 +2536,23 @@ class SelfCorrectionDemoTests(unittest.TestCase):
     def test_verify_demo_docs_texts_rejects_missing_handoff_fresh_caveat(self) -> None:
         docs = self.demo_docs_fixture()
         docs["docs/HANDOFF.md"] = docs["docs/HANDOFF.md"].replace(
-            "Fresh provider-backed regeneration is not proof until archived.",
+            "Fresh provider-backed regeneration is not proof until archived; "
+            "preflight-only is readiness; the confirmed fresh run path fails closed at "
+            "not_implemented until audited_sandbox_provider_allowlist_status=enforced.",
             "Archived regeneration caveat is documented elsewhere.",
         )
 
         with self.assertRaisesRegex(RuntimeError, "fresh provider-backed"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_missing_handoff_fail_closed_caveat(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["docs/HANDOFF.md"] = docs["docs/HANDOFF.md"].replace(
+            "the confirmed fresh run path fails closed at not_implemented until ",
+            "confirmed fresh runs are available after ",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "fails closed"):
             verify_demo_docs_texts(docs)
 
     def test_verify_demo_docs_texts_rejects_missing_todo_evidence_path(self) -> None:
