@@ -87,7 +87,7 @@ See `docs/solutions/architectural-insights/` for full analysis.
 
 ### Challenges
 
-Run via `a2d challenge <name> <cycles>`. Available: chess, sudoku, rubiks. Each has requirements, string checks, sandbox compilation, and acceptance tests. See `crates/a2d-core/src/challenges.rs`.
+Run via `a2d challenge <name> <cycles>`. Available: chess, sudoku, rubiks. Each has requirements, string checks, sandbox compilation, and acceptance tests. The domain challenge catalog lives outside core in `crates/a2d-cli/src/challenges.rs`.
 
 ### Examples
 

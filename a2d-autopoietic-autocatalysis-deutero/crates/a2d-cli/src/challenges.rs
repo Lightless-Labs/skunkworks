@@ -4,7 +4,7 @@
 //! The system attempts to build real software, and the failure to do so
 //! drives the evolution of its enzyme capabilities.
 
-use crate::benchmark::{BenchmarkCase, BenchmarkSuite, FitnessReport};
+use a2d_core::benchmark::{BenchmarkCase, BenchmarkSuite, FitnessReport};
 
 /// A challenge: a task description + benchmark suite for evaluation.
 pub struct Challenge {
@@ -20,6 +20,7 @@ pub struct Challenge {
 /// Baseline: what a single model produces on the same task, evaluated
 /// with the same benchmark. If the catalytic cycle can't beat this,
 /// it's overhead.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Baseline {
     pub provider: String,
@@ -50,6 +51,7 @@ impl Challenge {
     /// Run the challenge requirements through a single model invocation
     /// and evaluate the result with the same benchmark. This is the bar
     /// the catalytic cycle must clear.
+    #[allow(dead_code)]
     pub fn establish_baseline(&self, code_output: &str, provider_name: &str) -> Baseline {
         let fitness = self.score_artifact(code_output);
         let compiled = fitness

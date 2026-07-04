@@ -35,7 +35,7 @@ The existing root-level chess artifacts predate the 2026-06-08 API/acceptance ex
 
 Next useful validation remains one of:
 
-1. replay a newly generated chess candidate that targets the current `crates/a2d-core/src/challenges.rs` contract; or
+1. replay a newly generated chess candidate that targets the current challenge contract (`crates/a2d-cli/src/challenges.rs` after the 2026-07-04 core-boundary cleanup); or
 2. run a bounded live chess challenge and then replay any captured candidate artifact with `a2d score-artifact chess <path>`.
 
 ## Learning

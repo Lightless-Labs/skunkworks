@@ -52,11 +52,11 @@ pub const PROTECTED_FILES: &[&str] = &[
 ///
 /// This is narrower than "every non-protected Rust file". The architect's job is
 /// to improve the A²D mechanism: orchestration, provider integration, runtime
-/// routing, CLI wiring, and challenge contracts. Incidental library/demo modules
-/// such as prime/email are intentionally excluded so a self-modification cannot
+/// routing and CLI wiring. Benchmark challenge catalogs are intentionally
+/// outside this allowlist because they contain hidden-holdout oracle logic.
+/// Incidental library/demo modules such as prime/email are intentionally excluded so a self-modification cannot
 /// pass self-sandbox by rewriting unrelated code.
 pub const AUTOMATED_MODIFIABLE_FILES: &[&str] = &[
-    "crates/a2d-core/src/challenges.rs",
     "crates/a2d-core/src/lineage.rs",
     "crates/a2d-core/src/metabolism.rs",
     "crates/a2d-core/src/observer.rs",
@@ -355,7 +355,6 @@ mod tests {
     fn mechanism_files_are_automated_modifiable() {
         assert!(is_automated_modifiable("crates/a2d-core/src/metabolism.rs"));
         assert!(is_automated_modifiable("crates/a2d-core/src/types.rs"));
-        assert!(is_automated_modifiable("crates/a2d-core/src/challenges.rs"));
         assert!(is_automated_modifiable(
             "crates/a2d-core/tests/bootstrap.rs"
         ));
@@ -372,6 +371,17 @@ mod tests {
         assert!(!is_protected("crates/a2d-core/src/email.rs"));
         assert!(!is_automated_modifiable("crates/a2d-core/src/prime.rs"));
         assert!(!is_automated_modifiable("crates/a2d-core/src/email.rs"));
+    }
+
+    #[test]
+    fn challenge_catalogs_are_not_core_modifiable_surface() {
+        assert!(!is_automated_modifiable("crates/a2d-cli/src/challenges.rs"));
+        assert!(
+            !Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/challenges.rs")
+                .exists(),
+            "domain challenge catalog should live outside a2d-core"
+        );
     }
 
     #[test]

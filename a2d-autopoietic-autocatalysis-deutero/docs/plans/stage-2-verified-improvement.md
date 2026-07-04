@@ -6,6 +6,7 @@
 **Enhanced:** 2026-06-30 — comparison modes export labeled canonical fitness evidence; provenance tightened to reject provider-produced evidence
 **Enhanced:** 2026-07-01 — exported evidence now records and validates source revision/diff provenance for the `crates` source scope
 **Enhanced:** 2026-07-03 — Senior SWE-Bench catalog/evaluator/cycle-input integration is CLI-only external benchmark audit plumbing, not `a2d-core` challenge physics; coder prompt now carries generic benchmark no-solution-search integrity rule; local evaluator evidence binds and verifies the exact candidate patch hash and evaluator provenance
+**Enhanced:** 2026-07-04 — built-in domain challenge catalogs moved out of `a2d-core` into the CLI/evaluation layer
 **Depends on:** Stage 1 (complete)
 
 ## Problem
@@ -184,3 +185,11 @@ The seed coder prompt now includes a generic benchmark-integrity rule: if the re
 Loaded coder prompt normalization now preserves evolved prompt text when it already contains `design` and `plan`; if such a prompt lacks the integrity rule, A²D appends the rule instead of replacing the whole prompt. Focused coverage includes `normalize_loaded_enzymes_preserves_evolved_coder_prompt_when_adding_integrity_rule`.
 
 Fresh source-patch evidence: `runs/20260703-coder-benchmark-integrity-evidence/challenge-smoke/sudoku-solver-cycle-0-fitness-evidence.json`, `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, fitness 67% (4/6), failed cases `all_tests_pass` and `has_tests`, `source_revision: 2f88a93`, `source_diff_hash: 9916603b8d352a3316b9e1964392693f33fa41ec`. Saved-artifact support evidence `runs/20260703-coder-benchmark-integrity-evidence/baseline-good/baseline-sudoku-solver-cycle-0-fitness-evidence.json` is full-passing with the same source diff hash. This is non-regressing source-patch/prompt-integrity evidence, not proof of Senior SWE-Bench task-solving.
+
+## 2026-07-04 Update: Challenge Catalog Boundary Cleanup
+
+Built-in domain challenge definitions and hidden acceptance-test catalogs (`sudoku`, `chess`, `rubiks`) now live in the CLI/evaluation layer at `crates/a2d-cli/src/challenges.rs` instead of `a2d-core`. `a2d-core` now exposes generic benchmark/sandbox/evidence/gating primitives only; it no longer exports `pub mod challenges`, and regression tests scan core for domain challenge catalog terms. The self-sandbox automated-modifiable allowlist also excludes both the old core challenge path and the new CLI challenge catalog path, preserving hidden-holdout oracle integrity from automated `SystemPatch` edits.
+
+Validation: `cargo fmt --check`; focused `cargo test -p a2d-core challenge_catalogs_are_not_core_modifiable_surface -- --nocapture`; focused `cargo test -p a2d challenges:: -- --nocapture`; full `cargo test` passed (293 passed, 2 ignored). Independent review flagged hidden-holdout mutability in the first draft; the final slice removed `crates/a2d-cli/src/challenges.rs` from the self-sandbox allowlist.
+
+Fresh source-patch evidence: `runs/20260704-challenge-catalog-boundary-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, fitness 100% (6/6), `failed_cases: []`, result labels include `all_tests_pass`, `source_revision: 3e3c34e`, `source_diff_hash: da45da61907809b691d825410e4d0fdf3b0a6f67`. This is source-patch boundary evidence and hidden-holdout replay evidence, not new benchmark mastery.

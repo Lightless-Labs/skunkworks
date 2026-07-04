@@ -9,8 +9,8 @@ The handoff identified weak non-sudoku acceptance coverage: chess needed castlin
 
 ## Scope
 
-- Strengthen `chess` hidden acceptance tests in `crates/a2d-core/src/challenges.rs`.
-- Add a concrete Rubik's hidden acceptance suite in `crates/a2d-core/src/challenges.rs`.
+- Strengthen `chess` hidden acceptance tests in the challenge catalog (`crates/a2d-cli/src/challenges.rs` after the 2026-07-04 core-boundary cleanup).
+- Add a concrete Rubik's hidden acceptance suite in the challenge catalog (`crates/a2d-cli/src/challenges.rs` after the 2026-07-04 core-boundary cleanup).
 - Tighten challenge requirement strings where hidden tests require an explicit callable API.
 - Add lightweight unit coverage that the challenge definitions retain the intended hidden acceptance dimensions.
 

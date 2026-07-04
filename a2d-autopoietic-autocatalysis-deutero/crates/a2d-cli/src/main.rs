@@ -6,7 +6,6 @@
 //!   a2d enzymes            List enzymes in the germline
 
 use a2d_core::benchmark::{CaseResult, FitnessReport, seed_benchmark};
-use a2d_core::challenges;
 use a2d_core::germline::Germline;
 use a2d_core::lineage::LineageArchive;
 use a2d_core::metabolism::{CycleReport, InvocationLineage, Metabolism, fitness_evidence_artifact};
@@ -34,6 +33,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod challenges;
 mod senior_swe_bench;
 
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -7344,6 +7344,35 @@ mod tests {
                 "Senior SWE-Bench adapter text leaked into a2d-core file {}",
                 file.display()
             );
+            checked += 1;
+        }
+        assert!(checked > 0, "core source scan should inspect Rust files");
+    }
+
+    #[test]
+    fn a2d_core_does_not_contain_domain_challenge_catalog_code() {
+        let core_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../a2d-core/src");
+        let forbidden = [
+            "sudoku_solver",
+            "rubiks_cube",
+            "chess_engine",
+            "sudoku-solver",
+            "rubiks-cube",
+            "chess-engine",
+            "a2d_rubiks_acceptance",
+            "solves_easy_puzzle",
+            "seeded_scramble_is_replayable_and_solvable",
+        ];
+        let mut checked = 0usize;
+        for file in rust_files_under(&core_src) {
+            let content = fs::read_to_string(&file).unwrap();
+            for term in forbidden {
+                assert!(
+                    !content.contains(term),
+                    "domain challenge catalog term {term:?} leaked into a2d-core file {}",
+                    file.display()
+                );
+            }
             checked += 1;
         }
         assert!(checked > 0, "core source scan should inspect Rust files");

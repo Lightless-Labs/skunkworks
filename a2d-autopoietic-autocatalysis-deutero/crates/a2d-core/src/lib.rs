@@ -1,5 +1,4 @@
 pub mod benchmark;
-pub mod challenges;
 pub mod email;
 pub mod germline;
 pub mod lineage;

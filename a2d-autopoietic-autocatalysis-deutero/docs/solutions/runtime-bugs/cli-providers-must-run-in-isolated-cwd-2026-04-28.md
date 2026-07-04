@@ -7,7 +7,7 @@ problem_type: safety_boundary
 component: cli-provider
 symptoms:
   - "A model invocation modified repository source files outside the SystemPatch/self-sandbox path"
-  - "GLM architect changed crates/a2d-core/src/challenges.rs directly during a live challenge run"
+  - "GLM architect changed the then-existing core challenge catalog directly during a live challenge run"
   - "Report showed zero accepted patches, but git status showed source modifications"
 root_cause: provider_cli_had_repo_cwd_and_tool_write_access
 resolution_type: code_fix
@@ -26,7 +26,7 @@ tags:
 
 ## Problem
 
-During live validation after switching the default provider to GLM 5.1, the provider invocation returned successfully, but `git status` showed `crates/a2d-core/src/challenges.rs` modified even though the cycle reported `0 patches`.
+During live validation after switching the default provider to GLM 5.1, the provider invocation returned successfully, but `git status` showed the then-existing core challenge catalog modified even though the cycle reported `0 patches`. That catalog later moved to `crates/a2d-cli/src/challenges.rs` as part of the 2026-07-04 core-boundary cleanup.
 
 The diff changed the Sudoku challenge requirements directly. That means the CLI coding provider had edited repository files as a side effect of model execution, bypassing the intended autopoietic path:
 

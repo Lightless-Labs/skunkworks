@@ -7,7 +7,7 @@ topic: fitness-evidence-self-improvement
 
 ## Codebase Context
 - A²D is a Rust 2024 workspace with `a2d-core`, `a2d-providers`, and `a2d-cli`; local validation uses `cargo test`.
-- Challenge scoring is centralized in `crates/a2d-core/src/challenges.rs`: `Challenge::scoring_benchmark()` attaches hidden acceptance tests, and `Challenge::score_artifact()` replays generated artifacts against the same visible+hidden benchmark.
+- Challenge scoring is centralized in the CLI/evaluation-layer challenge catalog (`crates/a2d-cli/src/challenges.rs` after the 2026-07-04 core-boundary cleanup): `Challenge::scoring_benchmark()` attaches hidden acceptance tests, and `Challenge::score_artifact()` replays generated artifacts against the same visible+hidden benchmark.
 - Fitness evaluation lives in `crates/a2d-core/src/benchmark.rs`: `BenchmarkSuite::evaluate()` returns `FitnessReport { total, passed, failed, fitness, results, diagnostic }`. Diagnostics intentionally omit hidden acceptance source code.
 - Runtime feedback lives in `crates/a2d-core/src/metabolism.rs`: after a code-producing invocation, the metabolism evaluates code, stores `fitness_report` and `failure_report` artifacts, records `fitness_delta`, and routes later cycles to coder/evolver/architect.
 - Durable lineage decisions live in `crates/a2d-cli/src/main.rs`: `run_cycle` commits accepted mutations if the cycle did not regress; `run_challenge` commits the current germline only when challenge best fitness improves.
