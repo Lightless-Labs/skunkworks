@@ -283,6 +283,25 @@ def repo_path(path: Path) -> Path:
     return path if path.is_absolute() else repo_root() / path
 
 
+def repo_relative_path_for_git(path: Path, *, label: str) -> str:
+    resolved = repo_path(path).resolve(strict=False)
+    root = repo_root().resolve(strict=False)
+    try:
+        return resolved.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise RuntimeError(f"{label} is outside the repository: {path}") from exc
+
+
+def require_git_tracked_path(path: Path, *, label: str) -> None:
+    relative = repo_relative_path_for_git(path, label=label)
+    tracked_paths = set(git_output(["ls-files", "--", relative]).splitlines())
+    if relative not in tracked_paths:
+        raise RuntimeError(
+            f"{label} is not git-tracked: {path}. "
+            "Reproducible archived demo evidence must use git-tracked artifact files."
+        )
+
+
 def ensure_output_path_empty(path: Path, *, label: str) -> None:
     resolved = repo_path(path)
     if resolved.exists() and resolved.stat().st_size > 0:
@@ -1178,6 +1197,7 @@ def validate_demo_evidence_contract(
     reference: dict[str, object],
     *,
     evidence_label: str,
+    require_git_tracked_artifact: bool = False,
 ) -> None:
     """Validate a demo evidence JSON against the archived proof contract.
 
@@ -1205,6 +1225,8 @@ def validate_demo_evidence_contract(
     artifact_path = repo_path(Path(artifact))
     if not artifact_path.exists():
         raise RuntimeError(f"demo evidence contract artifact was not found: {artifact}")
+    if require_git_tracked_artifact:
+        require_git_tracked_path(Path(artifact), label="demo evidence contract artifact")
     artifact_sha256 = evidence.get("artifact_sha256")
     if not isinstance(artifact_sha256, str) or len(artifact_sha256) != 64:
         raise RuntimeError("demo evidence contract requires a 64-character artifact_sha256")
@@ -1634,13 +1656,17 @@ def verify_evidence_contract(
     max_tokens: int = 100_000,
     timeout_secs: int = 1800,
     allow_dirty_source: bool = False,
+    require_git_tracked_artifacts: bool = False,
 ) -> None:
+    if require_git_tracked_artifacts:
+        require_git_tracked_path(evidence_json, label="demo evidence JSON")
     evidence = load_evidence_json(evidence_json)
     reference = load_evidence_json(reference_evidence_json)
     validate_demo_evidence_contract(
         evidence,
         reference,
         evidence_label=str(evidence_json),
+        require_git_tracked_artifact=require_git_tracked_artifacts,
     )
     if fresh_run_id is not None:
         artifact = evidence.get("artifact")
@@ -1791,6 +1817,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Allow source_dirty=true rows when --fresh-run-id is supplied.",
     )
+    contract.add_argument(
+        "--require-git-tracked-artifacts",
+        action="store_true",
+        help=(
+            "Fail unless the evidence JSON and referenced JSONL artifact are tracked by git. "
+            "verify-archive enables this automatically for the durable archived demo path."
+        ),
+    )
 
     documented_counts = subparsers.add_parser(
         "verify-documented-counts",
@@ -1899,13 +1933,24 @@ def main(argv: list[str]) -> int:
         evidence_json = args.evidence_json
         if evidence_json is None and args.archive == DEFAULT_ARCHIVE:
             evidence_json = DEFAULT_ARCHIVE_EVIDENCE
+        if not args.print_only and evidence_json is not None:
+            try:
+                require_git_tracked_path(evidence_json, label="demo evidence JSON")
+                require_git_tracked_path(args.archive, label="demo evidence contract artifact")
+            except RuntimeError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
         result = run_command(
             score_command(args.archive, evidence_json), print_only=args.print_only
         )
         if result != 0 or args.print_only or evidence_json is None:
             return result
         try:
-            verify_evidence_contract(evidence_json, DEFAULT_ARCHIVE_EVIDENCE)
+            verify_evidence_contract(
+                evidence_json,
+                DEFAULT_ARCHIVE_EVIDENCE,
+                require_git_tracked_artifacts=True,
+            )
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -1920,6 +1965,7 @@ def main(argv: list[str]) -> int:
                 max_tokens=args.max_tokens,
                 timeout_secs=args.timeout,
                 allow_dirty_source=args.allow_dirty_source,
+                require_git_tracked_artifacts=args.require_git_tracked_artifacts,
             )
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -2338,9 +2384,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("verifier_gated_germline_promotion: source=", output)
 
     def test_verify_archive_runs_evidence_contract_after_successful_score(self) -> None:
-        with mock.patch(__name__ + ".run_command", return_value=0) as run, mock.patch(
-            __name__ + ".verify_evidence_contract"
-        ) as contract:
+        with mock.patch(__name__ + ".require_git_tracked_path") as tracked, mock.patch(
+            __name__ + ".run_command", return_value=0
+        ) as run, mock.patch(__name__ + ".verify_evidence_contract") as contract:
             result = main(
                 [
                     "verify-archive",
@@ -2352,15 +2398,93 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
+        self.assertEqual(tracked.call_count, 2)
+        tracked.assert_any_call(Path("custom.demo-evidence.json"), label="demo evidence JSON")
+        tracked.assert_any_call(Path("custom.jsonl"), label="demo evidence contract artifact")
         run.assert_called_once()
         contract.assert_called_once_with(
-            Path("custom.demo-evidence.json"), DEFAULT_ARCHIVE_EVIDENCE
+            Path("custom.demo-evidence.json"),
+            DEFAULT_ARCHIVE_EVIDENCE,
+            require_git_tracked_artifacts=True,
         )
 
+    def test_verify_archive_rejects_untracked_paths_before_scoring(self) -> None:
+        stderr = io.StringIO()
+        with mock.patch(
+            __name__ + ".require_git_tracked_path",
+            side_effect=RuntimeError("demo evidence JSON is not git-tracked"),
+        ), mock.patch(__name__ + ".run_command") as run, contextlib.redirect_stderr(stderr):
+            result = main(
+                [
+                    "verify-archive",
+                    "--archive",
+                    "custom.jsonl",
+                    "--evidence-json",
+                    "custom.demo-evidence.json",
+                ]
+            )
+
+        self.assertEqual(result, 2)
+        self.assertIn("not git-tracked", stderr.getvalue())
+        run.assert_not_called()
+
+    def test_verify_evidence_contract_cli_forwards_tracked_artifact_requirement(self) -> None:
+        with mock.patch(__name__ + ".verify_evidence_contract") as contract:
+            result = main(
+                [
+                    "verify-evidence-contract",
+                    "--evidence-json",
+                    "custom.demo-evidence.json",
+                    "--reference-evidence-json",
+                    str(DEFAULT_ARCHIVE_EVIDENCE),
+                    "--require-git-tracked-artifacts",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        contract.assert_called_once_with(
+            Path("custom.demo-evidence.json"),
+            DEFAULT_ARCHIVE_EVIDENCE,
+            fresh_run_id=None,
+            max_tokens=100_000,
+            timeout_secs=1800,
+            allow_dirty_source=False,
+            require_git_tracked_artifacts=True,
+        )
+
+    def test_require_git_tracked_path_normalizes_absolute_repo_paths(self) -> None:
+        with mock.patch(__name__ + ".git_output", return_value=DEFAULT_ARCHIVE.as_posix()) as git:
+            require_git_tracked_path(
+                repo_root() / DEFAULT_ARCHIVE,
+                label="demo evidence contract artifact",
+            )
+
+        git.assert_called_once_with(["ls-files", "--", DEFAULT_ARCHIVE.as_posix()])
+
+    def test_verify_evidence_contract_rejects_untracked_artifact_when_required(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        with mock.patch(__name__ + ".git_output", return_value=""):
+            with self.assertRaisesRegex(RuntimeError, "artifact is not git-tracked"):
+                validate_demo_evidence_contract(
+                    evidence,
+                    self.evidence_reference(evidence),
+                    evidence_label="untracked-artifact.demo-evidence.json",
+                    require_git_tracked_artifact=True,
+                )
+
+    def test_verify_evidence_contract_rejects_untracked_evidence_json_when_required(self) -> None:
+        with mock.patch(__name__ + ".git_output", return_value=""):
+            with self.assertRaisesRegex(RuntimeError, "demo evidence JSON is not git-tracked"):
+                verify_evidence_contract(
+                    DEFAULT_ARCHIVE_EVIDENCE,
+                    DEFAULT_ARCHIVE_EVIDENCE,
+                    require_git_tracked_artifacts=True,
+                )
+
     def test_verify_archive_skips_evidence_contract_when_scoring_fails(self) -> None:
-        with mock.patch(__name__ + ".run_command", return_value=1), mock.patch(
-            __name__ + ".verify_evidence_contract"
-        ) as contract:
+        with mock.patch(__name__ + ".require_git_tracked_path"), mock.patch(
+            __name__ + ".run_command", return_value=1
+        ), mock.patch(__name__ + ".verify_evidence_contract") as contract:
             result = main(
                 [
                     "verify-archive",
