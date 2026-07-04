@@ -3637,6 +3637,30 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     evidence_label="missing-promotion.demo-evidence.json",
                 )
 
+    def test_verify_evidence_contract_rejects_promotion_fields_spoof_without_artifact_evidence(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        promotion_step = evidence["demos"][0]["causal_chain"][5]
+        promotion_selector = promotion_step["selector"]
+        rows = load_jsonl_rows(repo_path(DEFAULT_ARCHIVE))
+        promotion_row = require_artifact_row(
+            artifact_rows_by_selector(rows), promotion_selector, label="test promotion selector"
+        )
+        promotion_row["stdout"] = ""
+        promotion_row["stderr"] = ""
+        promotion_row["promotion_evidence_present"] = False
+        promotion_step["fields"]["promotion_evidence_present"] = True
+        self.sync_embedded_rows_for_selector(
+            evidence, promotion_selector, normalized_artifact_row(promotion_row)
+        )
+
+        with mock.patch(__name__ + ".load_jsonl_rows", return_value=rows):
+            with self.assertRaisesRegex(RuntimeError, "promotion lacks gated apply evidence"):
+                validate_demo_evidence_contract(
+                    evidence,
+                    self.evidence_reference(evidence),
+                    evidence_label="promotion-field-spoof.demo-evidence.json",
+                )
+
     def test_verify_evidence_contract_rejects_stringly_legacy_promotion_booleans(self) -> None:
         evidence = self.archived_demo_contract_evidence()
         promotion_step = evidence["demos"][0]["causal_chain"][5]
