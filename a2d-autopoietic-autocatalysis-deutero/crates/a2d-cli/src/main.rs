@@ -87,6 +87,9 @@ fn main() {
         "senior-swe-bench-evaluate" => {
             run_senior_swe_bench_evaluate(&args[2..]);
         }
+        "senior-swe-bench-official-evaluator-manifest-inspect" => {
+            run_senior_swe_bench_official_evaluator_manifest_inspect(&args[2..]);
+        }
         "senior-swe-bench-extract-patch" => {
             let artifact_path = args.get(2).map(String::as_str).unwrap_or("-");
             run_senior_swe_bench_extract_patch(artifact_path);
@@ -178,7 +181,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|senior-swe-bench-retry-attempt-evaluate|senior-swe-bench-retry-attempt-step|senior-swe-bench-retry-attempt-step-evidence|senior-swe-bench-retry-run-result|senior-swe-bench-retry-status|senior-swe-bench-retry-execute|senior-swe-bench-retry-resume-attempt-plan|senior-swe-bench-retry-run-next-cycle|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-official-evaluator-manifest-inspect|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|senior-swe-bench-retry-attempt-evaluate|senior-swe-bench-retry-attempt-step|senior-swe-bench-retry-attempt-step-evidence|senior-swe-bench-retry-run-result|senior-swe-bench-retry-status|senior-swe-bench-retry-execute|senior-swe-bench-retry-resume-attempt-plan|senior-swe-bench-retry-run-next-cycle|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -9071,6 +9074,147 @@ fn find_senior_swe_bench_task_variant<'a>(
         }
         None
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SeniorSweBenchOfficialEvaluatorManifestInspectConfig {
+    task_package: Option<PathBuf>,
+    task_cycle_input: Option<PathBuf>,
+    official_evaluator_manifest: PathBuf,
+    command: Vec<String>,
+}
+
+fn run_senior_swe_bench_official_evaluator_manifest_inspect(args: &[String]) {
+    let config = parse_senior_swe_bench_official_evaluator_manifest_inspect_args(args)
+        .unwrap_or_else(|error| {
+            eprintln!("Senior SWE-Bench official evaluator manifest inspect error: {error}");
+            eprintln!("Usage: a2d senior-swe-bench-official-evaluator-manifest-inspect (--task-package <json>|--task-cycle-input <json>) --official-evaluator-manifest <json> -- <evaluator> [args...]");
+            std::process::exit(1);
+        });
+    let inspection = build_senior_swe_bench_official_evaluator_manifest_inspection(&config)
+        .unwrap_or_else(|error| {
+            eprintln!("Senior SWE-Bench official evaluator manifest inspect error: {error}");
+            std::process::exit(1);
+        });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&inspection)
+            .expect("Senior SWE-Bench official evaluator manifest inspection must serialize")
+    );
+}
+
+fn parse_senior_swe_bench_official_evaluator_manifest_inspect_args(
+    args: &[String],
+) -> Result<SeniorSweBenchOfficialEvaluatorManifestInspectConfig, String> {
+    let mut task_package = None;
+    let mut task_cycle_input = None;
+    let mut official_evaluator_manifest = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--" => {
+                let command = args[index + 1..].to_vec();
+                if command.is_empty() {
+                    return Err(
+                        "Senior SWE-Bench official evaluator manifest inspect evaluator command is empty"
+                            .to_string(),
+                    );
+                }
+                validate_senior_swe_bench_task_input_args(
+                    task_package.as_ref(),
+                    task_cycle_input.as_ref(),
+                )?;
+                let config = SeniorSweBenchOfficialEvaluatorManifestInspectConfig {
+                    task_package,
+                    task_cycle_input,
+                    official_evaluator_manifest: official_evaluator_manifest
+                        .ok_or_else(|| "missing --official-evaluator-manifest".to_string())?,
+                    command,
+                };
+                if !config.official_evaluator_manifest.is_file() {
+                    return Err(format!(
+                        "Senior SWE-Bench official evaluator manifest not found: {}",
+                        config.official_evaluator_manifest.display()
+                    ));
+                }
+                return Ok(config);
+            }
+            "--task-package" => {
+                index += 1;
+                task_package =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        "--task-package requires a path".to_string()
+                    })?));
+            }
+            "--task-cycle-input" => {
+                index += 1;
+                task_cycle_input =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        "--task-cycle-input requires a path".to_string()
+                    })?));
+            }
+            "--official-evaluator-manifest" => {
+                index += 1;
+                official_evaluator_manifest =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        "--official-evaluator-manifest requires a path".to_string()
+                    })?));
+            }
+            other => {
+                return Err(format!(
+                    "unknown senior-swe-bench-official-evaluator-manifest-inspect argument: {other}"
+                ));
+            }
+        }
+        index += 1;
+    }
+    Err("missing -- <evaluator> command".to_string())
+}
+
+fn load_senior_swe_bench_official_manifest_inspect_task(
+    config: &SeniorSweBenchOfficialEvaluatorManifestInspectConfig,
+) -> Result<SeniorSweBenchTaskPackageSummary, String> {
+    if let Some(task_package) = &config.task_package {
+        let package_json = read_artifact_or_exit(task_package.to_string_lossy().as_ref());
+        parse_senior_swe_bench_task_package(&package_json)
+            .map_err(|error| format!("task package error: {error}"))
+    } else if let Some(task_cycle_input) = &config.task_cycle_input {
+        let cycle_input_json = read_artifact_or_exit(task_cycle_input.to_string_lossy().as_ref());
+        parse_senior_swe_bench_cycle_input(&cycle_input_json)
+            .map_err(|error| format!("task cycle input error: {error}"))
+    } else {
+        Err("missing --task-package or --task-cycle-input".to_string())
+    }
+}
+
+fn build_senior_swe_bench_official_evaluator_manifest_inspection(
+    config: &SeniorSweBenchOfficialEvaluatorManifestInspectConfig,
+) -> Result<Value, String> {
+    let package = load_senior_swe_bench_official_manifest_inspect_task(config)?;
+    let manifest_json = read_artifact_to_string(&config.official_evaluator_manifest)?;
+    let manifest = parse_senior_swe_bench_official_evaluator_manifest(
+        &manifest_json,
+        &package,
+        &config.command,
+    )?;
+    let manifest_hash = file_content_hash(&config.official_evaluator_manifest)?;
+    Ok(json!({
+        "schema_version": "a2d.senior-swe-bench-official-evaluator-manifest-inspection.v1",
+        "task_id": manifest.task_id,
+        "repo": manifest.repo,
+        "official_evaluator_manifest_path": config.official_evaluator_manifest,
+        "official_evaluator_manifest_hash": manifest_hash,
+        "official_benchmark_url": manifest.benchmark_url,
+        "official_hidden_holdouts": manifest.hidden_holdouts,
+        "official_github_solution_search_allowed": manifest.github_solution_search_allowed,
+        "official_benchmark_provided_command": manifest.benchmark_provided_command,
+        "evaluator_invocations_started": false,
+        "fitness_evidence_inspection_started": false,
+        "github_solution_search_allowed": false,
+        "fitness_claim_allowed_before_evidence": false,
+        "official_senior_swe_bench_mastery": false,
+        "note": "manifest inspection only: validates official evaluator provenance without running evaluators or claiming fitness",
+    }))
 }
 
 fn run_senior_swe_bench_evaluate(args: &[String]) {

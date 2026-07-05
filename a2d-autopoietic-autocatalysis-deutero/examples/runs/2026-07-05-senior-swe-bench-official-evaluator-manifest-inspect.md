@@ -1,0 +1,30 @@
+# Senior SWE-Bench Official Evaluator Manifest Inspect
+
+**Date:** 2026-07-05
+**Status:** source-patch evidence passed; not official Senior SWE-Bench mastery
+
+## What changed
+
+Added CLI-only `a2d senior-swe-bench-official-evaluator-manifest-inspect` to validate an official evaluator manifest before evaluator execution. The command accepts either `--task-package <json>` or `--task-cycle-input <json>`, requires `--official-evaluator-manifest <json>`, and checks the exact benchmark-provided evaluator argv after `--`.
+
+The inspection output is `a2d.senior-swe-bench-official-evaluator-manifest-inspection.v1` and records the manifest path/hash, benchmark URL, hidden-holdout/no-search fields, exact evaluator command, and explicit false flags for evaluator invocation, evidence inspection, pre-evidence fitness claims, and public GitHub solution search.
+
+## Validation
+
+```bash
+cargo fmt --check
+cargo test -p a2d --test senior_swe_bench_official_evaluator_manifest -- --nocapture
+cargo test
+
+target/debug/a2d fitness-evidence-inspect \
+  runs/20260705-official-evaluator-manifest-inspect-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
+```
+
+Focused integration tests passed (3 tests). Full `cargo test` passed. Reviewer found no blockers or warnings.
+
+## Evidence
+
+Source-patch gate: `runs/20260705-official-evaluator-manifest-inspect-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1` actual-test evidence with `source_diff_hash: ea715543a40f05f1f0ae918a855f6a5da470224a`, matching `git diff --cached --binary HEAD -- crates | git hash-object --stdin`.
+
+This is manifest-inspection and source-patch evidence only. It proves the CLI gate is validated without running the evaluator; it does not prove official Senior SWE-Bench task success or A²D benchmark mastery.
