@@ -114,6 +114,57 @@ fn write_manifest(root: &std::path::Path, name: &str, bytes: &[u8]) -> std::path
     manifest
 }
 
+fn write_retry_next_cycle_execution(
+    fixture: &Fixture,
+    status: &str,
+    stop_reason: &str,
+    manifest: &std::path::Path,
+) -> std::path::PathBuf {
+    let retry_execution_path = fixture.work_dir.join("retry-execution.json");
+    let retry_execution: serde_json::Value =
+        serde_json::from_slice(&fs::read(&retry_execution_path).unwrap()).unwrap();
+    let next_cycle_command = retry_execution["next_cycle_command"].clone();
+    let path = fixture
+        .work_dir
+        .join("attempt-1/retry-next-cycle-execution.json");
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": "a2d.senior-swe-bench-retry-next-cycle-execution.v1",
+            "status": status,
+            "stop_reason": stop_reason,
+            "task_id": "task-hard",
+            "repo": "owner/repo",
+            "attempt_index": 1,
+            "retry_execution_path": retry_execution_path,
+            "next_cycle_command": next_cycle_command,
+            "task_cycle_input": fixture.work_dir.join("attempt-0/next-cycle-input.json"),
+            "checkout": fixture.checkout,
+            "output_artifacts_dir": fixture.work_dir.join("attempt-1/cycle-output-artifacts"),
+            "cycle_output_manifest": manifest,
+            "cycle_output_manifest_git_object_hash": git_hash_object_bytes(&fs::read(manifest).unwrap()),
+            "cycle_output_artifact_count": 1,
+            "cycle_input_command_started": status == "success",
+            "cycle_input_command_spawned": status == "success",
+            "cycle_input_command_timed_out": false,
+            "cycle_input_spawn_error": serde_json::Value::Null,
+            "cycle_input_exit_code": if status == "success" { serde_json::json!(0) } else { serde_json::json!(1) },
+            "cycle_input_stdout_preview": "",
+            "cycle_input_stderr_preview": "",
+            "provider_invocations_started_by_this_command": status == "success",
+            "evaluator_invocations_started": false,
+            "fitness_evidence_inspection_started": false,
+            "fitness_claim_allowed_before_evidence": false,
+            "fitness_claim_allowed_after_cycle": false,
+            "github_solution_search_allowed": false,
+            "note": "test retry next-cycle execution summary"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    path
+}
+
 struct Fixture {
     root: std::path::PathBuf,
     retry_plan: std::path::PathBuf,
@@ -551,6 +602,294 @@ fn retry_resume_attempt_plan_consumes_persisted_next_cycle_boundary() {
     assert_eq!(
         value["fitness_claim_allowed_before_evidence"].as_bool(),
         Some(false)
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_resume_attempt_plan_consumes_successful_next_cycle_execution_summary() {
+    let fixture = write_fixture(
+        "resume-next-cycle-summary",
+        2,
+        "echo public failure >&2\nexit 1\n",
+    );
+    let first = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run first retry execute");
+    assert_eq!(first.status.code(), Some(2));
+
+    let next_manifest_dir = fixture.work_dir.join("attempt-1/cycle-output-artifacts");
+    fs::create_dir_all(&next_manifest_dir).unwrap();
+    let generated_manifest = write_manifest(
+        &next_manifest_dir,
+        "candidate",
+        b"diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
+    );
+    let next_manifest = next_manifest_dir.join("manifest.json");
+    fs::rename(&generated_manifest, &next_manifest).unwrap();
+    let next_cycle_execution = write_retry_next_cycle_execution(
+        &fixture,
+        "success",
+        "cycle_output_manifest_ready",
+        &next_manifest,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-resume-attempt-plan",
+            "--next-cycle-execution",
+            next_cycle_execution.to_str().unwrap(),
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry resume attempt plan from next-cycle summary");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["schema_version"].as_str(),
+        Some("a2d.senior-swe-bench-retry-attempt-plan.v1")
+    );
+    assert_eq!(value["attempt_index"].as_u64(), Some(1));
+    assert_eq!(
+        value["cycle_output_manifest"],
+        serde_json::json!(next_manifest.to_string_lossy())
+    );
+    assert_eq!(
+        value["fitness_claim_allowed_before_evidence"].as_bool(),
+        Some(false)
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_resume_attempt_plan_rejects_stale_next_cycle_execution_manifest_hash() {
+    let fixture = write_fixture(
+        "resume-stale-next-cycle-summary",
+        2,
+        "echo public failure >&2\nexit 1\n",
+    );
+    let first = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run first retry execute");
+    assert_eq!(first.status.code(), Some(2));
+
+    let next_manifest_dir = fixture.work_dir.join("attempt-1/cycle-output-artifacts");
+    fs::create_dir_all(&next_manifest_dir).unwrap();
+    let generated_manifest = write_manifest(
+        &next_manifest_dir,
+        "candidate",
+        b"diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
+    );
+    let next_manifest = next_manifest_dir.join("manifest.json");
+    fs::rename(&generated_manifest, &next_manifest).unwrap();
+    let next_cycle_execution = write_retry_next_cycle_execution(
+        &fixture,
+        "success",
+        "cycle_output_manifest_ready",
+        &next_manifest,
+    );
+    let replacement_manifest = write_manifest(
+        &next_manifest_dir,
+        "replacement",
+        b"diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+other\n",
+    );
+    fs::rename(&replacement_manifest, &next_manifest).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-resume-attempt-plan",
+            "--next-cycle-execution",
+            next_cycle_execution.to_str().unwrap(),
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry resume attempt plan from stale next-cycle summary");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("manifest hash"));
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_resume_attempt_plan_rejects_next_cycle_execution_fitness_claim_fields() {
+    let fixture = write_fixture(
+        "resume-fitness-claim-summary",
+        2,
+        "echo public failure >&2\nexit 1\n",
+    );
+    let first = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run first retry execute");
+    assert_eq!(first.status.code(), Some(2));
+
+    let next_manifest_dir = fixture.work_dir.join("attempt-1/cycle-output-artifacts");
+    fs::create_dir_all(&next_manifest_dir).unwrap();
+    let generated_manifest = write_manifest(
+        &next_manifest_dir,
+        "candidate",
+        b"diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
+    );
+    let next_manifest = next_manifest_dir.join("manifest.json");
+    fs::rename(&generated_manifest, &next_manifest).unwrap();
+    let next_cycle_execution = write_retry_next_cycle_execution(
+        &fixture,
+        "success",
+        "cycle_output_manifest_ready",
+        &next_manifest,
+    );
+    let mut summary: serde_json::Value =
+        serde_json::from_slice(&fs::read(&next_cycle_execution).unwrap()).unwrap();
+    summary["fitness"] = serde_json::json!(1.0);
+    fs::write(
+        &next_cycle_execution,
+        serde_json::to_vec_pretty(&summary).unwrap(),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-resume-attempt-plan",
+            "--next-cycle-execution",
+            next_cycle_execution.to_str().unwrap(),
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry resume attempt plan from claim-bearing next-cycle summary");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("pre-evidence fitness claim"));
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_resume_attempt_plan_rejects_failed_next_cycle_execution_summary() {
+    let fixture = write_fixture(
+        "resume-failed-next-cycle-summary",
+        2,
+        "echo public failure >&2\nexit 1\n",
+    );
+    let first = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run first retry execute");
+    assert_eq!(first.status.code(), Some(2));
+
+    let next_manifest_dir = fixture.work_dir.join("attempt-1/cycle-output-artifacts");
+    fs::create_dir_all(&next_manifest_dir).unwrap();
+    let generated_manifest = write_manifest(
+        &next_manifest_dir,
+        "candidate",
+        b"diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
+    );
+    let next_manifest = next_manifest_dir.join("manifest.json");
+    fs::rename(&generated_manifest, &next_manifest).unwrap();
+    let next_cycle_execution = write_retry_next_cycle_execution(
+        &fixture,
+        "failed",
+        "cycle_input_command_failed",
+        &next_manifest,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-resume-attempt-plan",
+            "--next-cycle-execution",
+            next_cycle_execution.to_str().unwrap(),
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry resume attempt plan from failed next-cycle summary");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("requires successful retry next-cycle execution")
     );
 
     let _ = fs::remove_dir_all(fixture.root);

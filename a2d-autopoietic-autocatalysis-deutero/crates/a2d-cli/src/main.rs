@@ -5349,6 +5349,7 @@ struct SeniorSweBenchRetryResumeAttemptPlanConfig {
     retry_execution: PathBuf,
     retry_plan: PathBuf,
     cycle_output_manifest: PathBuf,
+    next_cycle_execution: Option<PathBuf>,
     apply_candidate_patch: bool,
     official_evaluator_manifest: Option<PathBuf>,
     evaluator_command: Vec<String>,
@@ -5376,7 +5377,7 @@ struct SeniorSweBenchRetryRunNextCycleConfig {
 fn run_senior_swe_bench_retry_resume_attempt_plan(args: &[String]) {
     let config = parse_senior_swe_bench_retry_resume_attempt_plan_args(args).unwrap_or_else(|error| {
         eprintln!("Senior SWE-Bench retry resume attempt plan error: {error}");
-        eprintln!("Usage: a2d senior-swe-bench-retry-resume-attempt-plan --retry-execution <retry-execution.json> --retry-plan <retry-plan.json> --cycle-output-manifest <manifest.json> [--apply-candidate-patch] [--official-evaluator-manifest <json>] -- <evaluator> [args...]");
+        eprintln!("Usage: a2d senior-swe-bench-retry-resume-attempt-plan (--retry-execution <retry-execution.json> --cycle-output-manifest <manifest.json> | --next-cycle-execution <retry-next-cycle-execution.json>) --retry-plan <retry-plan.json> [--apply-candidate-patch] [--official-evaluator-manifest <json>] -- <evaluator> [args...]");
         std::process::exit(1);
     });
     let plan = build_senior_swe_bench_retry_resume_attempt_plan(&config).unwrap_or_else(|error| {
@@ -5457,6 +5458,7 @@ fn parse_senior_swe_bench_retry_resume_attempt_plan_args(
     let mut retry_execution = None;
     let mut retry_plan = None;
     let mut cycle_output_manifest = None;
+    let mut next_cycle_execution = None;
     let mut apply_candidate_patch = false;
     let mut official_evaluator_manifest = None;
     let mut index = 0usize;
@@ -5470,12 +5472,18 @@ fn parse_senior_swe_bench_retry_resume_attempt_plan_args(
                             .to_string(),
                     );
                 }
+                let retry_plan = retry_plan.ok_or_else(|| "missing --retry-plan".to_string())?;
+                let (retry_execution, cycle_output_manifest) =
+                    resolve_retry_resume_attempt_boundary_paths(
+                        retry_execution,
+                        cycle_output_manifest,
+                        next_cycle_execution.clone(),
+                    )?;
                 let config = SeniorSweBenchRetryResumeAttemptPlanConfig {
-                    retry_execution: retry_execution
-                        .ok_or_else(|| "missing --retry-execution".to_string())?,
-                    retry_plan: retry_plan.ok_or_else(|| "missing --retry-plan".to_string())?,
-                    cycle_output_manifest: cycle_output_manifest
-                        .ok_or_else(|| "missing --cycle-output-manifest".to_string())?,
+                    retry_execution,
+                    retry_plan,
+                    cycle_output_manifest,
+                    next_cycle_execution,
                     apply_candidate_patch,
                     official_evaluator_manifest,
                     evaluator_command,
@@ -5504,6 +5512,13 @@ fn parse_senior_swe_bench_retry_resume_attempt_plan_args(
                         "--cycle-output-manifest requires a path".to_string()
                     })?));
             }
+            "--next-cycle-execution" => {
+                index += 1;
+                next_cycle_execution =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        "--next-cycle-execution requires a path".to_string()
+                    })?));
+            }
             "--apply-candidate-patch" => apply_candidate_patch = true,
             "--official-evaluator-manifest" => {
                 index += 1;
@@ -5521,6 +5536,26 @@ fn parse_senior_swe_bench_retry_resume_attempt_plan_args(
         index += 1;
     }
     Err("missing -- <evaluator> command".to_string())
+}
+
+fn resolve_retry_resume_attempt_boundary_paths(
+    retry_execution: Option<PathBuf>,
+    cycle_output_manifest: Option<PathBuf>,
+    next_cycle_execution: Option<PathBuf>,
+) -> Result<(PathBuf, PathBuf), String> {
+    if let Some(next_cycle_execution) = next_cycle_execution {
+        if retry_execution.is_some() || cycle_output_manifest.is_some() {
+            return Err(
+                "use either --next-cycle-execution or the --retry-execution/--cycle-output-manifest pair, not both"
+                    .to_string(),
+            );
+        }
+        return load_senior_swe_bench_retry_next_cycle_execution_paths(&next_cycle_execution);
+    }
+    Ok((
+        retry_execution.ok_or_else(|| "missing --retry-execution".to_string())?,
+        cycle_output_manifest.ok_or_else(|| "missing --cycle-output-manifest".to_string())?,
+    ))
 }
 
 fn validate_retry_resume_attempt_plan_config(
@@ -5543,6 +5578,14 @@ fn validate_retry_resume_attempt_plan_config(
             ));
         }
     }
+    if let Some(next_cycle_execution) = &config.next_cycle_execution
+        && !next_cycle_execution.is_file()
+    {
+        return Err(format!(
+            "Senior SWE-Bench retry next-cycle execution not found: {}",
+            next_cycle_execution.display()
+        ));
+    }
     if let Some(manifest) = &config.official_evaluator_manifest
         && !manifest.is_file()
     {
@@ -5552,6 +5595,223 @@ fn validate_retry_resume_attempt_plan_config(
         ));
     }
     Ok(())
+}
+
+fn load_senior_swe_bench_retry_next_cycle_execution_paths(
+    next_cycle_execution_path: &Path,
+) -> Result<(PathBuf, PathBuf), String> {
+    if next_cycle_execution_path == Path::new("-") {
+        return Err(
+            "Senior SWE-Bench retry resume attempt plan requires next-cycle execution file paths"
+                .to_string(),
+        );
+    }
+    if !next_cycle_execution_path.is_file() {
+        return Err(format!(
+            "Senior SWE-Bench retry next-cycle execution not found: {}",
+            next_cycle_execution_path.display()
+        ));
+    }
+    let text = read_artifact_to_string(next_cycle_execution_path)?;
+    let execution: Value = serde_json::from_str(&text).map_err(|error| {
+        format!("invalid Senior SWE-Bench retry next-cycle execution JSON: {error}")
+    })?;
+    let schema = execution
+        .get("schema_version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry next-cycle execution missing schema_version".to_string()
+        })?;
+    if schema != "a2d.senior-swe-bench-retry-next-cycle-execution.v1" {
+        return Err(format!(
+            "expected a2d.senior-swe-bench-retry-next-cycle-execution.v1, got {schema}"
+        ));
+    }
+    if execution.get("status").and_then(Value::as_str) != Some("success") {
+        return Err(
+            "Senior SWE-Bench retry resume requires successful retry next-cycle execution"
+                .to_string(),
+        );
+    }
+    if execution.get("stop_reason").and_then(Value::as_str) != Some("cycle_output_manifest_ready") {
+        return Err(
+            "Senior SWE-Bench retry next-cycle execution must have cycle_output_manifest_ready stop_reason"
+                .to_string(),
+        );
+    }
+    for field in [
+        "task_id",
+        "repo",
+        "retry_execution_path",
+        "cycle_output_manifest",
+    ] {
+        if execution.get(field).and_then(Value::as_str).is_none() {
+            return Err(format!(
+                "Senior SWE-Bench retry next-cycle execution missing {field}"
+            ));
+        }
+    }
+    if execution
+        .get("attempt_index")
+        .and_then(Value::as_u64)
+        .is_none()
+    {
+        return Err(
+            "Senior SWE-Bench retry next-cycle execution missing attempt_index".to_string(),
+        );
+    }
+    let artifact_count = execution
+        .get("cycle_output_artifact_count")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry next-cycle execution missing cycle_output_artifact_count"
+                .to_string()
+        })?;
+    if artifact_count == 0 {
+        return Err(
+            "Senior SWE-Bench retry next-cycle execution recorded no output artifacts".to_string(),
+        );
+    }
+    for forbidden in [
+        "fitness",
+        "fitness_delta",
+        "fitness_evidence",
+        "fitness_evidence_path",
+        "terminal_run_result",
+        "official_senior_swe_bench_mastery",
+    ] {
+        if execution.get(forbidden).is_some() {
+            return Err(format!(
+                "Senior SWE-Bench retry next-cycle execution must not contain pre-evidence fitness claim field {forbidden}"
+            ));
+        }
+    }
+    for (field, expected) in [
+        ("cycle_input_command_started", true),
+        ("cycle_input_command_spawned", true),
+        ("cycle_input_command_timed_out", false),
+        ("provider_invocations_started_by_this_command", true),
+        ("evaluator_invocations_started", false),
+        ("fitness_evidence_inspection_started", false),
+        ("fitness_claim_allowed_before_evidence", false),
+        ("fitness_claim_allowed_after_cycle", false),
+        ("github_solution_search_allowed", false),
+    ] {
+        if execution.get(field).and_then(Value::as_bool) != Some(expected) {
+            return Err(format!(
+                "Senior SWE-Bench retry next-cycle execution {field} must be {expected}"
+            ));
+        }
+    }
+    if execution
+        .get("cycle_input_exit_code")
+        .and_then(Value::as_i64)
+        != Some(0)
+    {
+        return Err(
+            "Senior SWE-Bench retry next-cycle execution must record cycle_input_exit_code 0"
+                .to_string(),
+        );
+    }
+    let retry_execution = PathBuf::from(
+        execution
+            .get("retry_execution_path")
+            .and_then(Value::as_str)
+            .expect("validated retry_execution_path"),
+    );
+    if !retry_execution.is_file() {
+        return Err(format!(
+            "Senior SWE-Bench prior retry execution not found: {}",
+            retry_execution.display()
+        ));
+    }
+    let boundary = load_senior_swe_bench_retry_next_cycle_boundary(&retry_execution)?;
+    let task_id = execution
+        .get("task_id")
+        .and_then(Value::as_str)
+        .expect("validated task_id");
+    let repo = execution
+        .get("repo")
+        .and_then(Value::as_str)
+        .expect("validated repo");
+    let attempt_index = execution
+        .get("attempt_index")
+        .and_then(Value::as_u64)
+        .expect("validated attempt_index") as usize;
+    if task_id != boundary.task_id
+        || repo != boundary.repo
+        || attempt_index != boundary.attempt_index
+        || execution.get("next_cycle_command") != Some(&boundary.next_cycle_command)
+    {
+        return Err(
+            "Senior SWE-Bench retry next-cycle execution metadata does not match prior retry boundary"
+                .to_string(),
+        );
+    }
+    let expected_summary_path = boundary.attempt_dir.join("retry-next-cycle-execution.json");
+    if !paths_equivalent(next_cycle_execution_path, &expected_summary_path) {
+        return Err(format!(
+            "Senior SWE-Bench retry next-cycle execution path {} does not match expected boundary summary {}",
+            next_cycle_execution_path.display(),
+            expected_summary_path.display()
+        ));
+    }
+    let cycle_output_manifest = PathBuf::from(
+        execution
+            .get("cycle_output_manifest")
+            .and_then(Value::as_str)
+            .expect("validated cycle_output_manifest"),
+    );
+    if !paths_equivalent(&cycle_output_manifest, &boundary.expected_manifest) {
+        return Err(format!(
+            "Senior SWE-Bench retry next-cycle execution manifest {} does not match expected boundary manifest {}",
+            cycle_output_manifest.display(),
+            boundary.expected_manifest.display()
+        ));
+    }
+    for (field, path) in [
+        ("task_cycle_input", &boundary.task_cycle_input),
+        ("checkout", &boundary.checkout),
+        ("output_artifacts_dir", &boundary.output_artifacts_dir),
+    ] {
+        let recorded = execution
+            .get(field)
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                format!("Senior SWE-Bench retry next-cycle execution missing {field}")
+            })?;
+        if !paths_equivalent(Path::new(recorded), path) {
+            return Err(format!(
+                "Senior SWE-Bench retry next-cycle execution {field} {recorded} does not match boundary {}",
+                path.display()
+            ));
+        }
+    }
+    let manifest_hash = execution
+        .get("cycle_output_manifest_git_object_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry next-cycle execution missing cycle_output_manifest_git_object_hash"
+                .to_string()
+        })?;
+    validate_git_object_hash(manifest_hash).map_err(|error| {
+        format!(
+            "Senior SWE-Bench retry next-cycle execution cycle_output_manifest_git_object_hash {error}: {manifest_hash}"
+        )
+    })?;
+    let current_manifest_hash = file_content_hash(&cycle_output_manifest)?;
+    if current_manifest_hash != manifest_hash {
+        return Err(format!(
+            "Senior SWE-Bench retry next-cycle execution manifest hash {manifest_hash} does not match current manifest hash {current_manifest_hash}"
+        ));
+    }
+    let validated_count = validate_retry_next_cycle_manifest(&cycle_output_manifest)?;
+    if validated_count as u64 != artifact_count {
+        return Err(format!(
+            "Senior SWE-Bench retry next-cycle execution artifact count {artifact_count} does not match manifest count {validated_count}"
+        ));
+    }
+    Ok((retry_execution, cycle_output_manifest))
 }
 
 fn load_senior_swe_bench_retry_next_cycle_boundary(
@@ -5950,6 +6210,11 @@ where
         Err(_) if command_output.timed_out => ("failed", "cycle_input_command_timed_out", 0),
         Err(_) => ("failed", "cycle_input_command_failed", 0),
     };
+    let cycle_output_manifest_git_object_hash = if status == "success" {
+        Some(file_content_hash(&boundary.expected_manifest)?)
+    } else {
+        None
+    };
     let execution = json!({
         "schema_version": "a2d.senior-swe-bench-retry-next-cycle-execution.v1",
         "status": status,
@@ -5963,6 +6228,7 @@ where
         "checkout": boundary.checkout.display().to_string(),
         "output_artifacts_dir": boundary.output_artifacts_dir.display().to_string(),
         "cycle_output_manifest": boundary.expected_manifest.display().to_string(),
+        "cycle_output_manifest_git_object_hash": cycle_output_manifest_git_object_hash,
         "cycle_output_artifact_count": artifact_count,
         "cycle_input_command_started": command_spawned,
         "cycle_input_command_spawned": command_spawned,

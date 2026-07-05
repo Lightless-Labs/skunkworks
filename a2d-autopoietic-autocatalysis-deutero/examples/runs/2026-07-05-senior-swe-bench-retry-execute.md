@@ -188,3 +188,22 @@ target/debug/a2d fitness-evidence-inspect \
 Source-patch gate: `runs/20260705-retry-run-next-cycle-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: 254682e7891a408eeee2a43d78c76225ecaca7ed`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`.
 
 This is bounded next-cycle orchestration over persisted retry artifacts. It is not evaluator execution, not an official Senior SWE-Bench success claim, and does not prove top-level A²D goal completion.
+
+## Retry next-cycle summary resume addendum
+
+Follow-up hardening: `a2d senior-swe-bench-retry-resume-attempt-plan` can now consume the successful `attempt-N/retry-next-cycle-execution.json` summary directly via `--next-cycle-execution <retry-next-cycle-execution.json>`. `senior-swe-bench-retry-run-next-cycle` persists `cycle_output_manifest_git_object_hash` for successful summaries; the resume consumer recomputes the current manifest hash and rejects stale/overwritten manifests, failed summaries, summaries at the wrong attempt path, mismatched prior-boundary metadata/`next_cycle_command`, and pre-evidence fitness claim fields before it emits the next retry-attempt plan.
+
+Validation/evidence:
+
+```bash
+cargo fmt --check
+cargo test -p a2d --test senior_swe_bench_retry_execute -- --nocapture
+cargo test
+target/debug/a2d fitness-evidence-inspect \
+  runs/20260705-retry-next-cycle-summary-resume-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
+```
+
+Source-patch gate: `runs/20260705-retry-next-cycle-summary-resume-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: 4bd31c0927ac95d9bc48bca4a8c028626f36f6a1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`.
+
+This is retry summary/resume plumbing. It is not evaluator execution, not an official Senior SWE-Bench success claim, and does not prove top-level A²D goal completion.
