@@ -957,6 +957,7 @@ def validate_fresh_sandbox_provider_allowlist_evidence(
             f"fresh demo row {index} sandbox/provider allowlist evidence must record github.com as blocked"
         )
     blocked_host_set = {host.lower() for host in blocked_hosts if isinstance(host, str)}
+    allowed_endpoint_hosts: list[str] = []
     for endpoint in allowed_endpoints:
         parsed = urllib.parse.urlparse(endpoint)
         try:
@@ -977,6 +978,7 @@ def validate_fresh_sandbox_provider_allowlist_evidence(
             raise RuntimeError(
                 f"fresh demo row {index} sandbox/provider allowlist evidence must record real provider endpoints, not synthetic/local endpoint {endpoint_host}"
             )
+        allowed_endpoint_hosts.append(endpoint_host)
     sandbox_sha = evidence.get("sandbox_profile_sha256")
     sandbox_runtime = evidence.get("sandbox_runtime")
     has_profile_sha = isinstance(sandbox_sha, str) and re.fullmatch(r"[0-9a-f]{64}", sandbox_sha)
@@ -997,6 +999,41 @@ def validate_fresh_sandbox_provider_allowlist_evidence(
         if profile_hash != sandbox_sha:
             raise RuntimeError(
                 f"fresh demo row {index} sandbox/provider allowlist evidence sandbox_profile_lines must match sandbox_profile_sha256"
+            )
+        validate_fresh_sandbox_profile_lines(
+            profile_lines,
+            allowed_endpoint_hosts=allowed_endpoint_hosts,
+            blocked_host_set=blocked_host_set,
+            index=index,
+        )
+
+
+def sandbox_profile_active_line(line: str) -> str:
+    # macOS sandbox profiles are Scheme-like; `;` comments are common, and
+    # some generated/audited profiles also carry shell-style `#` comments.
+    # Comments are audit notes, not executable allow/deny rules.
+    return line.split(";", 1)[0].split("#", 1)[0].strip()
+
+
+def validate_fresh_sandbox_profile_lines(
+    profile_lines: list[str], *, allowed_endpoint_hosts: list[str], blocked_host_set: set[str], index: int
+) -> None:
+    active_lines = [line for line in (sandbox_profile_active_line(line) for line in profile_lines) if line]
+    active_profile_text = "\n".join(active_lines).lower()
+    if "(deny network" not in active_profile_text:
+        raise RuntimeError(
+            f"fresh demo row {index} sandbox/provider allowlist evidence sandbox_profile_lines must deny network by default"
+        )
+    for host in allowed_endpoint_hosts:
+        if host not in active_profile_text:
+            raise RuntimeError(
+                f"fresh demo row {index} sandbox/provider allowlist evidence sandbox_profile_lines must name allowed provider endpoint hosts"
+            )
+    for line in active_lines:
+        lowered = line.lower()
+        if "allow" in lowered and any(blocked_host in lowered for blocked_host in blocked_host_set):
+            raise RuntimeError(
+                f"fresh demo row {index} sandbox/provider allowlist evidence sandbox_profile_lines cannot allow blocked solution hosts"
             )
 
 
@@ -6030,6 +6067,68 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "sandbox_profile_lines must match sandbox_profile_sha256",
             ),
             (
+                {
+                    **self.fresh_sandbox_provider_allowlist_evidence(),
+                    "sandbox_profile_sha256": hashlib.sha256(
+                        "\n".join(["(version 1)", "(allow default)"]).encode("utf-8") + b"\n"
+                    ).hexdigest(),
+                    "sandbox_profile_lines": ["(version 1)", "(allow default)"],
+                },
+                "deny network by default",
+            ),
+            (
+                {
+                    **self.fresh_sandbox_provider_allowlist_evidence(),
+                    "sandbox_profile_sha256": hashlib.sha256(
+                        "\n".join(["(version 1)", "(allow default)", "(deny network*)"]).encode("utf-8") + b"\n"
+                    ).hexdigest(),
+                    "sandbox_profile_lines": ["(version 1)", "(allow default)", "(deny network*)"],
+                },
+                "allowed provider endpoint hosts",
+            ),
+            (
+                {
+                    **self.fresh_sandbox_provider_allowlist_evidence(),
+                    "sandbox_profile_sha256": hashlib.sha256(
+                        "\n".join([
+                            "(version 1)",
+                            "(allow default)",
+                            "(deny network*)",
+                            "; comment mentions api.openai.com but does not allow it",
+                        ]).encode("utf-8") + b"\n"
+                    ).hexdigest(),
+                    "sandbox_profile_lines": [
+                        "(version 1)",
+                        "(allow default)",
+                        "(deny network*)",
+                        "; comment mentions api.openai.com but does not allow it",
+                    ],
+                },
+                "allowed provider endpoint hosts",
+            ),
+            (
+                {
+                    **self.fresh_sandbox_provider_allowlist_evidence(),
+                    "sandbox_profile_sha256": hashlib.sha256(
+                        "\n".join([
+                            "(version 1)",
+                            "(allow default)",
+                            "(deny network*)",
+                            '(allow network-outbound (remote tcp "api.openai.com:443"))',
+                            '(allow network-outbound (remote tcp "github.com:443"))',
+                        ]).encode("utf-8") + b"\n"
+                    ).hexdigest(),
+                    "sandbox_profile_lines": [
+                        "(version 1)",
+                        "(allow default)",
+                        "(deny network*)",
+                        '(allow network-outbound (remote tcp "api.openai.com:443"))',
+                        '(allow network-outbound (remote tcp "github.com:443"))',
+                    ],
+                },
+                "cannot allow blocked solution hosts",
+            ),
+            (
                 {**self.fresh_sandbox_provider_allowlist_evidence(), "allowed_provider_endpoints": ["https://github.com"]},
                 "allows blocked solution host",
             ),
@@ -6080,6 +6179,26 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
                 with self.assertRaisesRegex(RuntimeError, message):
                     validate_fresh_results(args)
+
+    def test_validate_fresh_results_ignores_sandbox_profile_comment_hosts(self) -> None:
+        profile_lines = [
+            *TEST_SANDBOX_PROFILE_LINES,
+            "; audit note: do not allow github.com or raw.githubusercontent.com",
+            "# blocked hosts include github.com",
+        ]
+        evidence = {
+            **self.fresh_sandbox_provider_allowlist_evidence(),
+            "sandbox_profile_sha256": hashlib.sha256(
+                ("\n".join(profile_lines) + "\n").encode("utf-8")
+            ).hexdigest(),
+            "sandbox_profile_lines": profile_lines,
+        }
+        validate_fresh_sandbox_provider_allowlist_evidence(
+            {
+                "audited_sandbox_provider_allowlist_evidence": evidence,
+            },
+            index=1,
+        )
 
     def test_validate_fresh_results_rejects_dirty_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

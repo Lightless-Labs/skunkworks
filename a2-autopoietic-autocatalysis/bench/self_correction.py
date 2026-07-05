@@ -1082,6 +1082,7 @@ def validate_sandbox_provider_allowlist_evidence(evidence: dict[str, Any]) -> No
             "audited sandbox/provider allowlist evidence must record github.com as blocked"
         )
     blocked_host_set = {host.lower() for host in blocked_hosts if isinstance(host, str)}
+    allowed_endpoint_hosts: list[str] = []
     for endpoint in allowed_endpoints:
         parsed = urllib.parse.urlparse(endpoint)
         try:
@@ -1102,6 +1103,7 @@ def validate_sandbox_provider_allowlist_evidence(evidence: dict[str, Any]) -> No
             raise RuntimeError(
                 "audited sandbox/provider allowlist evidence must record real provider endpoints, not synthetic/local endpoints"
             )
+        allowed_endpoint_hosts.append(endpoint_host)
     sandbox_sha = evidence.get("sandbox_profile_sha256")
     sandbox_runtime = evidence.get("sandbox_runtime")
     has_profile_sha = isinstance(sandbox_sha, str) and len(sandbox_sha) == 64 and all(
@@ -1123,6 +1125,42 @@ def validate_sandbox_provider_allowlist_evidence(evidence: dict[str, Any]) -> No
         if sandbox_profile_lines_sha256(profile_lines) != sandbox_sha:
             raise RuntimeError(
                 "audited sandbox/provider allowlist evidence sandbox_profile_lines must match sandbox_profile_sha256"
+            )
+        validate_sandbox_profile_lines(
+            profile_lines,
+            allowed_endpoint_hosts=allowed_endpoint_hosts,
+            blocked_host_set=blocked_host_set,
+        )
+
+
+def sandbox_profile_active_line(line: str) -> str:
+    # macOS sandbox profiles are Scheme-like; `;` comments are common, and
+    # some generated/audited profiles also carry shell-style `#` comments.
+    # Comments are audit notes, not executable allow/deny rules.
+    return line.split(";", 1)[0].split("#", 1)[0].strip()
+
+
+def validate_sandbox_profile_lines(
+    profile_lines: list[str], *, allowed_endpoint_hosts: list[str], blocked_host_set: set[str]
+) -> None:
+    active_lines = [line for line in (sandbox_profile_active_line(line) for line in profile_lines) if line]
+    active_profile_text = "\n".join(active_lines).lower()
+    if "(deny network" not in active_profile_text:
+        raise RuntimeError(
+            "audited sandbox/provider allowlist evidence sandbox_profile_lines must deny network by default"
+        )
+    for host in allowed_endpoint_hosts:
+        if host not in active_profile_text:
+            raise RuntimeError(
+                "audited sandbox/provider allowlist evidence sandbox_profile_lines must name allowed provider endpoint hosts"
+            )
+    for line in active_lines:
+        lowered = line.lower()
+        if "allow" in lowered and any(
+            blocked_host in lowered for blocked_host in blocked_host_set
+        ):
+            raise RuntimeError(
+                "audited sandbox/provider allowlist evidence sandbox_profile_lines cannot allow blocked solution hosts"
             )
 
 
@@ -1911,6 +1949,50 @@ diff --git a/crates/a2ctl/src/main.rs b/crates/a2ctl/src/main.rs
             validate_sandbox_provider_allowlist_evidence(
                 {**base_evidence, "sandbox_profile_lines": ["(version 1)"]}
             )
+        profile_scenarios = [
+            (["(version 1)", "(allow default)"], "deny network by default"),
+            (["(version 1)", "(allow default)", "(deny network*)"], "allowed provider endpoint hosts"),
+            (
+                [
+                    "(version 1)",
+                    "(allow default)",
+                    "(deny network*)",
+                    "; comment mentions api.openai.com but does not allow it",
+                ],
+                "allowed provider endpoint hosts",
+            ),
+            (
+                [
+                    "(version 1)",
+                    "(allow default)",
+                    "(deny network*)",
+                    '(allow network-outbound (remote tcp "api.openai.com:443"))',
+                    '(allow network-outbound (remote tcp "github.com:443"))',
+                ],
+                "cannot allow blocked solution hosts",
+            ),
+        ]
+        for lines, message in profile_scenarios:
+            with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, message):
+                validate_sandbox_provider_allowlist_evidence(
+                    {
+                        **base_evidence,
+                        "sandbox_profile_sha256": sandbox_profile_lines_sha256(lines),
+                        "sandbox_profile_lines": lines,
+                    }
+                )
+        comment_only_blocked_host = [
+            *profile_lines,
+            '; audit note: do not allow github.com or raw.githubusercontent.com',
+            '# blocked hosts include github.com',
+        ]
+        validate_sandbox_provider_allowlist_evidence(
+            {
+                **base_evidence,
+                "sandbox_profile_sha256": sandbox_profile_lines_sha256(comment_only_blocked_host),
+                "sandbox_profile_lines": comment_only_blocked_host,
+            }
+        )
 
     def test_result_record_emits_durable_evidence_for_enforced_sandbox_allowlist(self) -> None:
         global AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
