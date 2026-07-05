@@ -263,6 +263,12 @@ Local network-policy smokes (not benchmark evidence):
 python3 bench/network_policy_smoke.py --self-test
 python3 bench/network_policy_smoke.py --json
 
+# Host allowlist primitive only: proves one synthetic ephemeral localhost endpoint
+# can be reached while a non-allowlisted localhost port is denied, and records a
+# separate public-solution-host negative control. This is not wired around agents.
+python3 bench/network_policy_smoke.py --allowlist-smoke --self-test
+python3 bench/network_policy_smoke.py --allowlist-smoke --json
+
 # Real a2ctl launch-gate path: proves restricted policy currently blocks provider launch
 # with a nonzero exit instead of counting a no-candidate discard as success.
 # Requires the selected provider binary on PATH; default provider is opencode.
