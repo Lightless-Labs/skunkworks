@@ -231,3 +231,24 @@ Source-patch gate: `runs/20260705-retry-resume-attempt-execute-evidence/actual-t
 Post-commit clean-HEAD evidence for implementation commit `543c8b6`: `runs/20260705-postcommit-fitness-evidence-543c8b6/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_tree_dirty: false`, clean `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`.
 
 This is bounded resumed-attempt execution plumbing. It is not an official Senior SWE-Bench success claim and does not prove top-level A²D goal completion.
+
+## Retry status validation addendum
+
+Follow-up command: `a2d senior-swe-bench-retry-status <retry-execution.json>`.
+
+This read-only validator classifies a persisted retry execution summary for orchestration without starting providers, evaluators, or evidence-inspection subprocesses. Successful summaries are accepted only after the command re-reads the referenced `a2d.fitness-evidence.v1`, applies all-tests-pass inspection semantics, checks `terminal_run_result.fitness_evidence_summary` against the current evidence, and derives evaluator kind / official mastery from inspected evidence rather than summary fields. Failed `precomputed_attempt_manifests_exhausted` summaries recursively reject embedded fitness/evidence/mastery claim fields before validating the saved next-cycle boundary; they report `next_action: run_next_cycle` while keeping `fitness_claim_allowed_by_status: false`.
+
+Validation/evidence:
+
+```bash
+cargo fmt --check
+cargo test -p a2d --test senior_swe_bench_retry_execute -- --nocapture
+cargo test
+target/debug/a2d fitness-evidence-inspect \
+  runs/20260705-retry-status-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
+```
+
+Source-patch gate: `runs/20260705-retry-status-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: dfe5453312e117d4c23fdd9b54fdc698c691fa65`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`.
+
+This is read-only retry status plumbing and local Sudoku source-patch evidence. Hidden holdouts are not applicable to this Sudoku score-artifact source-patch gate, and no official Senior SWE-Bench mastery is claimed.

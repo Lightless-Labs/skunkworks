@@ -24,6 +24,7 @@
 **Enhanced:** 2026-07-05 — retry executor now records the exact next `cycle-input` command/manifest boundary for failed non-final attempts
 **Enhanced:** 2026-07-05 — added retry resume attempt planning from persisted `next_cycle_command` boundaries
 **Enhanced:** 2026-07-05 — added bounded retry next-cycle execution for one persisted `cycle-input` command boundary
+**Enhanced:** 2026-07-05 — added read-only Senior SWE-Bench retry status validation over persisted retry summaries and underlying evidence gates
 **Depends on:** Stage 1 (complete)
 
 ## 2026-07-05 Update: Retry Executor Artifact Persistence
@@ -429,3 +430,11 @@ Fresh source-patch gate support: `runs/20260705-retry-next-cycle-summary-resume-
 Focused validation: `cargo fmt --check`; `cargo test -p a2d --test senior_swe_bench_retry_execute -- --nocapture` (20 passed). Full `cargo test` passed. Reviewer found no blockers after the output-path and symlink containment hardening.
 
 Fresh source-patch gate support: `runs/20260705-retry-resume-attempt-execute-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`, `source_diff_scope: crates`, and `source_diff_hash: 98af7f9d686c5db8a4ab243387ebd50516905b46`, matching `git diff --binary HEAD -- crates | git hash-object --stdin`. Post-commit clean-HEAD evidence for implementation commit `543c8b6`: `runs/20260705-postcommit-fitness-evidence-543c8b6/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_tree_dirty: false` and clean `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`. This remains bounded retry orchestration plumbing, not official Senior SWE-Bench mastery.
+
+### Senior SWE-Bench retry status validation (2026-07-05)
+
+`a2d senior-swe-bench-retry-status <retry-execution.json>` now provides a read-only validator/classifier for persisted retry summaries. For successful summaries it re-reads the referenced `a2d.fitness-evidence.v1`, requires non-regressing all-tests-pass inspection semantics, checks `terminal_run_result.fitness_evidence_summary` against the current evidence, and derives evaluator kind / official mastery only from the inspected evidence. For failed precomputed-manifest exhaustion it recursively rejects embedded fitness/evidence/mastery claim fields before validating the saved next-cycle boundary and reporting the next action without permitting a fitness claim.
+
+Focused validation: `cargo fmt --check`; `cargo test -p a2d --test senior_swe_bench_retry_execute -- --nocapture` (28 passed). Full `cargo test` passed. Reviewer found no blockers or warnings after recursive failed-summary claim rejection.
+
+Fresh source-patch gate support: `runs/20260705-retry-status-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`, `source_diff_scope: crates`, and `source_diff_hash: dfe5453312e117d4c23fdd9b54fdc698c691fa65`, matching `git diff --binary HEAD -- crates | git hash-object --stdin`. This remains read-only retry status plumbing, not official Senior SWE-Bench mastery.

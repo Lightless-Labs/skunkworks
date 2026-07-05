@@ -320,6 +320,496 @@ fn retry_execute_succeeds_on_first_precomputed_attempt_without_provider_invocati
 }
 
 #[test]
+fn retry_status_validates_success_evidence_before_allowing_claim() {
+    let fixture = write_fixture(
+        "status-success",
+        2,
+        "test \"${A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN}\" = true\ngrep -q new src/lib.rs\n",
+    );
+    let evidence_dir = fixture.root.join("fitness");
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .env("A2D_FITNESS_EVIDENCE_EXPORT_DIR", &evidence_dir)
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute");
+    assert_eq!(output.status.code(), Some(0));
+
+    let retry_execution = fixture.work_dir.join("retry-execution.json");
+    let status_output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-status",
+            retry_execution.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry status");
+    assert_eq!(
+        status_output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&status_output.stderr)
+    );
+    let status: serde_json::Value = serde_json::from_slice(&status_output.stdout).unwrap();
+    assert_eq!(
+        status["schema_version"].as_str(),
+        Some("a2d.senior-swe-bench-retry-status.v1")
+    );
+    assert_eq!(status["next_action"].as_str(), Some("completed_success"));
+    assert_eq!(
+        status["fitness_claim_allowed_by_status"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        status["fitness_evidence_validated_by_status"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        status["authoritative_evidence_gate"].as_str(),
+        Some("fitness-evidence-inspect --require-all-tests-pass")
+    );
+    assert_eq!(
+        status["fitness_evidence_inspection_performed_by_status"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        status["official_senior_swe_bench_mastery"].as_bool(),
+        Some(false)
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_status_rejects_regressing_success_evidence() {
+    let fixture = write_fixture(
+        "status-regressing-evidence",
+        2,
+        "test \"${A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN}\" = true\ngrep -q new src/lib.rs\n",
+    );
+    let evidence_dir = fixture.root.join("fitness");
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .env("A2D_FITNESS_EVIDENCE_EXPORT_DIR", &evidence_dir)
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute");
+    assert_eq!(output.status.code(), Some(0));
+    let retry_execution = fixture.work_dir.join("retry-execution.json");
+    let execution: serde_json::Value =
+        serde_json::from_slice(&fs::read(&retry_execution).unwrap()).unwrap();
+    let final_evidence_path = execution["final_evidence_path"].as_str().unwrap();
+    let mut evidence: serde_json::Value =
+        serde_json::from_slice(&fs::read(final_evidence_path).unwrap()).unwrap();
+    evidence["non_regressing"] = serde_json::json!(false);
+    fs::write(
+        final_evidence_path,
+        serde_json::to_vec_pretty(&evidence).unwrap(),
+    )
+    .unwrap();
+
+    let status_output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-status",
+            retry_execution.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry status");
+    assert_eq!(status_output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&status_output.stderr).contains("regressing"),
+        "stderr={}",
+        String::from_utf8_lossy(&status_output.stderr)
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_status_rejects_tampered_official_mastery_claim() {
+    let fixture = write_fixture(
+        "status-official-tamper",
+        2,
+        "test \"${A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN}\" = true\ngrep -q new src/lib.rs\n",
+    );
+    let evidence_dir = fixture.root.join("fitness");
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .env("A2D_FITNESS_EVIDENCE_EXPORT_DIR", &evidence_dir)
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute");
+    assert_eq!(output.status.code(), Some(0));
+    let retry_execution = fixture.work_dir.join("retry-execution.json");
+    let mut execution: serde_json::Value =
+        serde_json::from_slice(&fs::read(&retry_execution).unwrap()).unwrap();
+    execution["final_evaluator_kind"] = serde_json::json!("official_senior_swe_bench");
+    execution["official_senior_swe_bench_mastery"] = serde_json::json!(true);
+    execution["terminal_run_result"]["final_evaluator_kind"] =
+        serde_json::json!("official_senior_swe_bench");
+    execution["terminal_run_result"]["official_senior_swe_bench_mastery"] = serde_json::json!(true);
+    fs::write(
+        &retry_execution,
+        serde_json::to_vec_pretty(&execution).unwrap(),
+    )
+    .unwrap();
+
+    let status_output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-status",
+            retry_execution.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry status");
+    assert_eq!(status_output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&status_output.stderr).contains("evaluator_kind"),
+        "stderr={}",
+        String::from_utf8_lossy(&status_output.stderr)
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_status_rejects_stale_terminal_evidence_summary() {
+    let fixture = write_fixture(
+        "status-summary-tamper",
+        2,
+        "test \"${A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN}\" = true\ngrep -q new src/lib.rs\n",
+    );
+    let evidence_dir = fixture.root.join("fitness");
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .env("A2D_FITNESS_EVIDENCE_EXPORT_DIR", &evidence_dir)
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute");
+    assert_eq!(output.status.code(), Some(0));
+    let retry_execution = fixture.work_dir.join("retry-execution.json");
+    let mut execution: serde_json::Value =
+        serde_json::from_slice(&fs::read(&retry_execution).unwrap()).unwrap();
+    execution["terminal_run_result"]["fitness_evidence_summary"]["fitness"] =
+        serde_json::json!(0.5);
+    fs::write(
+        &retry_execution,
+        serde_json::to_vec_pretty(&execution).unwrap(),
+    )
+    .unwrap();
+
+    let status_output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-status",
+            retry_execution.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry status");
+    assert_eq!(status_output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&status_output.stderr).contains("fitness_evidence_summary"),
+        "stderr={}",
+        String::from_utf8_lossy(&status_output.stderr)
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_status_rejects_success_evidence_without_all_tests_pass() {
+    let fixture = write_fixture(
+        "status-failed-all-tests-evidence",
+        2,
+        "test \"${A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN}\" = true\ngrep -q new src/lib.rs\n",
+    );
+    let evidence_dir = fixture.root.join("fitness");
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .env("A2D_FITNESS_EVIDENCE_EXPORT_DIR", &evidence_dir)
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute");
+    assert_eq!(output.status.code(), Some(0));
+    let retry_execution = fixture.work_dir.join("retry-execution.json");
+    let execution: serde_json::Value =
+        serde_json::from_slice(&fs::read(&retry_execution).unwrap()).unwrap();
+    let final_evidence_path = execution["final_evidence_path"].as_str().unwrap();
+    let mut evidence: serde_json::Value =
+        serde_json::from_slice(&fs::read(final_evidence_path).unwrap()).unwrap();
+    let results = evidence["results"].as_array_mut().unwrap();
+    let all_tests_pass = results
+        .iter_mut()
+        .find(|result| result["name"].as_str() == Some("all_tests_pass"))
+        .expect("all_tests_pass result");
+    all_tests_pass["passed"] = serde_json::json!(false);
+    fs::write(
+        final_evidence_path,
+        serde_json::to_vec_pretty(&evidence).unwrap(),
+    )
+    .unwrap();
+
+    let status_output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-status",
+            retry_execution.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry status");
+    assert_eq!(status_output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&status_output.stderr).contains("all_tests_pass"),
+        "stderr={}",
+        String::from_utf8_lossy(&status_output.stderr)
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_status_rejects_failed_boundary_with_embedded_fitness_claims() {
+    let fixture = write_fixture(
+        "status-failed-claim-tamper",
+        2,
+        "echo public failure >&2\nexit 1\n",
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute");
+    assert_eq!(output.status.code(), Some(2));
+
+    let retry_execution = fixture.work_dir.join("retry-execution.json");
+    let mut execution: serde_json::Value =
+        serde_json::from_slice(&fs::read(&retry_execution).unwrap()).unwrap();
+    execution["terminal_run_result"] = serde_json::json!({
+        "status": "success",
+        "final_evidence_path": fixture.root.join("fake-evidence.json"),
+        "official_senior_swe_bench_mastery": true
+    });
+    execution["final_evidence_path"] = serde_json::json!(fixture.root.join("fake-evidence.json"));
+    execution["official_senior_swe_bench_mastery"] = serde_json::json!(true);
+    fs::write(
+        &retry_execution,
+        serde_json::to_vec_pretty(&execution).unwrap(),
+    )
+    .unwrap();
+
+    let status_output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-status",
+            retry_execution.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry status");
+    assert_eq!(status_output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&status_output.stderr).contains("pre-evidence fitness claim"),
+        "stderr={}",
+        String::from_utf8_lossy(&status_output.stderr)
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_status_rejects_nested_failed_boundary_fitness_claims() {
+    let fixture = write_fixture(
+        "status-nested-claim-tamper",
+        2,
+        "echo public failure >&2\nexit 1\n",
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute");
+    assert_eq!(output.status.code(), Some(2));
+
+    let retry_execution = fixture.work_dir.join("retry-execution.json");
+    let mut execution: serde_json::Value =
+        serde_json::from_slice(&fs::read(&retry_execution).unwrap()).unwrap();
+    execution["attempts"][0]["fitness_evidence_path"] =
+        serde_json::json!(fixture.root.join("fake-evidence.json"));
+    fs::write(
+        &retry_execution,
+        serde_json::to_vec_pretty(&execution).unwrap(),
+    )
+    .unwrap();
+
+    let status_output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-status",
+            retry_execution.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry status");
+    assert_eq!(status_output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&status_output.stderr)
+            .contains("attempts[0].fitness_evidence_path"),
+        "stderr={}",
+        String::from_utf8_lossy(&status_output.stderr)
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_status_reports_next_cycle_boundary_without_fitness_claim() {
+    let fixture = write_fixture("status-next-cycle", 2, "echo public failure >&2\nexit 1\n");
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute");
+    assert_eq!(output.status.code(), Some(2));
+
+    let retry_execution = fixture.work_dir.join("retry-execution.json");
+    let status_output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-status",
+            retry_execution.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry status");
+    assert_eq!(
+        status_output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&status_output.stderr)
+    );
+    let status: serde_json::Value = serde_json::from_slice(&status_output.stdout).unwrap();
+    assert_eq!(status["next_action"].as_str(), Some("run_next_cycle"));
+    assert_eq!(
+        status["fitness_claim_allowed_by_status"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        status["fitness_evidence_inspection_performed_by_status"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(status["next_cycle_attempt_index"].as_u64(), Some(1));
+    assert_eq!(
+        status["next_cycle_command"],
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&retry_execution).unwrap()).unwrap()
+            ["next_cycle_command"]
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
 fn retry_execute_stops_after_attempt_exhaustion_without_evidence_claim() {
     let fixture = write_fixture("exhausted", 1, "echo public failure >&2\nexit 1\n");
     let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
