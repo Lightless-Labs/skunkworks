@@ -23,8 +23,12 @@ Add a read-only manifest-inspection gate before evaluator execution. The gate sh
 
 This turns "official evaluator" from a convention into data that later evaluator/evidence gates can bind to. It also gives controllers an auditable preflight step that can fail closed before any hidden evaluator side effects occur.
 
+Downstream retry/executor commands should not merely trust an inspection JSON blob. Before evaluator execution they should re-read the current manifest, recompute its content hash, parse it against the current task and evaluator argv, compare the canonical no-side-effect inspection fields, and persist a canonical copy for the retry work directory. Manifest URL trust must be origin/authority based (`https://senior-swe-bench.snorkel.ai`), not substring based.
+
 ## Evidence
 
 Implemented by `a2d senior-swe-bench-official-evaluator-manifest-inspect` in `crates/a2d-cli/src/main.rs` with integration coverage in `crates/a2d-cli/tests/senior_swe_bench_official_evaluator_manifest.rs`. The tests use side-effecting evaluator sentinel scripts and assert the sentinel is absent on both success and command-mismatch failure.
 
 Fresh source-patch evidence: `runs/20260705-official-evaluator-manifest-inspect-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_diff_hash: ea715543a40f05f1f0ae918a855f6a5da470224a`. This is CLI/source-patch evidence only, not official Senior SWE-Bench mastery.
+
+Follow-up retry-execute binding evidence: `runs/20260705-retry-execute-official-inspection-binding-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_diff_hash: c1a3b13f3267d3d8378f73519ae01cc531792dba`. Regression tests cover missing inspection, valid persistence before evaluator execution, noncanonical hand-written inspection rejection, unsafe manifest/inspection rejection, and spoofed URL rejection. This is still source-patch evidence, not official Senior SWE-Bench mastery.

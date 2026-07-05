@@ -304,3 +304,31 @@ git diff --binary HEAD -- crates | git hash-object --stdin
 Source-patch gate: `runs/20260705-retry-next-cycle-boundary-hardening-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_tree_dirty: true`, `source_diff_hash: acf2f0cbb24b87ccb056b1cf33a398bfe62fb121`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`.
 
 This is retry boundary validation hardening and local Sudoku source-patch evidence. It is not a provider/evaluator run, not an official Senior SWE-Bench success claim, and not top-level A²D goal completion.
+
+## Retry official manifest inspection binding addendum
+
+Follow-up hardening: `senior-swe-bench-retry-execute` now requires a prior official manifest inspection artifact whenever `--official-evaluator-manifest` is supplied:
+
+```text
+--official-evaluator-manifest <json> --official-evaluator-manifest-inspection <json>
+```
+
+Before any evaluator side effect, retry execution now revalidates the inspection against the current task, manifest path, current manifest `git hash-object` hash, exact evaluator argv, canonical no-side-effect fields, and a freshly parsed current manifest. It persists a canonical copy as `official-evaluator-manifest-inspection.json` in the retry work dir and records that path in the terminal retry summary. The official manifest URL trust check now uses the HTTPS authority `senior-swe-bench.snorkel.ai`, not substring matching.
+
+Validation/evidence:
+
+```bash
+cargo fmt --check
+cargo test -p a2d senior_swe_bench::tests::official_evaluator_manifest_requires_holdouts_no_search_and_matching_command -- --nocapture
+cargo test -p a2d --test senior_swe_bench_retry_execute official_manifest -- --nocapture
+cargo test -p a2d --test senior_swe_bench_official_evaluator_manifest -- --nocapture
+cargo test
+target/debug/a2d fitness-evidence-inspect \
+  runs/20260705-retry-execute-official-inspection-binding-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
+git diff --cached --binary HEAD -- crates | git hash-object --stdin
+```
+
+Source-patch gate: `runs/20260705-retry-execute-official-inspection-binding-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_tree_dirty: true`, `source_diff_hash: c1a3b13f3267d3d8378f73519ae01cc531792dba`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`.
+
+This is retry official-manifest inspection binding and local Sudoku source-patch evidence. It is not evaluator execution evidence, not an official Senior SWE-Bench success claim, and not top-level A²D goal completion.

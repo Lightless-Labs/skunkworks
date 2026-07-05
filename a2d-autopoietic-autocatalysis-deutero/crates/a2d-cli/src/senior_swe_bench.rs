@@ -345,9 +345,9 @@ pub fn parse_senior_swe_bench_official_evaluator_manifest(
         ));
     }
     let benchmark_url = required_string(&value, "benchmark_url")?;
-    if !benchmark_url.contains("senior-swe-bench.snorkel.ai") {
+    if !is_trusted_senior_swe_bench_url_origin(&benchmark_url) {
         return Err(format!(
-            "Senior SWE-Bench official evaluator manifest benchmark_url is not Senior SWE-Bench: {benchmark_url}"
+            "Senior SWE-Bench official evaluator manifest benchmark_url is not a trusted Senior SWE-Bench HTTPS origin: {benchmark_url}"
         ));
     }
     let task_id = required_string(&value, "task_id")?;
@@ -424,6 +424,14 @@ pub fn parse_senior_swe_bench_official_evaluator_manifest(
         github_solution_search_allowed,
         benchmark_provided_command,
     })
+}
+
+fn is_trusted_senior_swe_bench_url_origin(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    authority == "senior-swe-bench.snorkel.ai"
 }
 
 pub fn build_senior_swe_bench_local_evaluation(
@@ -2215,6 +2223,19 @@ mod tests {
         assert_eq!(parsed.repo, "owner/repo");
         assert!(parsed.hidden_holdouts);
         assert!(!parsed.github_solution_search_allowed);
+
+        let mut spoofed_url = manifest.clone();
+        spoofed_url["benchmark_url"] =
+            serde_json::json!("https://evil.example/tasks?u=senior-swe-bench.snorkel.ai");
+        assert!(
+            parse_senior_swe_bench_official_evaluator_manifest(
+                &spoofed_url.to_string(),
+                &package,
+                &parsed.benchmark_provided_command,
+            )
+            .unwrap_err()
+            .contains("trusted Senior SWE-Bench HTTPS origin")
+        );
 
         let mut no_holdouts = manifest.clone();
         no_holdouts["hidden_holdouts"] = serde_json::json!(false);

@@ -128,6 +128,88 @@ fn write_executable_script(path: &std::path::Path, body: &str) {
         .expect("chmod script");
 }
 
+fn write_official_manifest(
+    root: &std::path::Path,
+    evaluator: &std::path::Path,
+) -> std::path::PathBuf {
+    let manifest = root.join("official-manifest.json");
+    fs::write(
+        &manifest,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": "a2d.senior-swe-bench-official-evaluator-manifest.v1",
+            "benchmark_url": "https://senior-swe-bench.snorkel.ai/tasks/task-hard",
+            "task_id": "task-hard",
+            "repo": "owner/repo",
+            "hidden_holdouts": true,
+            "github_solution_search_allowed": false,
+            "benchmark_provided_command": [evaluator.to_string_lossy()]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    manifest
+}
+
+fn write_forged_official_manifest_inspection(
+    fixture: &Fixture,
+    manifest: &std::path::Path,
+) -> std::path::PathBuf {
+    let hash = git_hash_object_bytes(&fs::read(manifest).unwrap());
+    let path = fixture
+        .root
+        .join("forged-official-manifest-inspection.json");
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": "a2d.senior-swe-bench-official-evaluator-manifest-inspection.v1",
+            "task_id": "task-hard",
+            "repo": "owner/repo",
+            "official_evaluator_manifest_path": manifest,
+            "official_evaluator_manifest_hash": hash,
+            "official_benchmark_url": "https://senior-swe-bench.snorkel.ai/tasks/task-hard",
+            "official_hidden_holdouts": true,
+            "official_github_solution_search_allowed": false,
+            "official_benchmark_provided_command": [fixture.evaluator.to_string_lossy()],
+            "provider_invocations_started": false,
+            "evaluator_invocations_started": false,
+            "fitness_evidence_inspection_started": false,
+            "github_solution_search_allowed": false,
+            "fitness_claim_allowed_before_evidence": false,
+            "official_senior_swe_bench_mastery": false
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    path
+}
+
+fn write_official_manifest_inspection(
+    fixture: &Fixture,
+    manifest: &std::path::Path,
+) -> std::path::PathBuf {
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-official-evaluator-manifest-inspect",
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--official-evaluator-manifest",
+            manifest.to_str().unwrap(),
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run official manifest inspect");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let path = fixture.root.join("official-manifest-inspection.json");
+    fs::write(&path, output.stdout).unwrap();
+    path
+}
+
 fn write_retry_next_cycle_execution(
     fixture: &Fixture,
     status: &str,
@@ -315,6 +397,213 @@ fn retry_execute_succeeds_on_first_precomputed_attempt_without_provider_invocati
         serde_json::from_slice(&fs::read(fixture.work_dir.join("retry-execution.json")).unwrap())
             .unwrap();
     assert_eq!(persisted_execution, value);
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_execute_persists_official_manifest_inspection_before_evaluator() {
+    let fixture = write_fixture(
+        "official-inspection",
+        2,
+        "test \"${A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN}\" = true\ngrep -q new src/lib.rs\n",
+    );
+    let official_manifest = write_official_manifest(&fixture.root, &fixture.evaluator);
+    let inspection = write_official_manifest_inspection(&fixture, &official_manifest);
+    let evidence_dir = fixture.root.join("fitness");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .env("A2D_FITNESS_EVIDENCE_EXPORT_DIR", &evidence_dir)
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--official-evaluator-manifest",
+            official_manifest.to_str().unwrap(),
+            "--official-evaluator-manifest-inspection",
+            inspection.to_str().unwrap(),
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let persisted_inspection = fixture
+        .work_dir
+        .join("official-evaluator-manifest-inspection.json");
+    assert_eq!(
+        value["official_evaluator_manifest_inspection_path"].as_str(),
+        Some(persisted_inspection.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        value["official_evaluator_manifest_inspection_validated"].as_bool(),
+        Some(true)
+    );
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&fs::read(&persisted_inspection).unwrap()).unwrap();
+    assert_eq!(
+        persisted["schema_version"].as_str(),
+        Some("a2d.senior-swe-bench-official-evaluator-manifest-inspection.v1")
+    );
+    assert_eq!(
+        persisted["official_evaluator_manifest_path"].as_str(),
+        Some(official_manifest.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        persisted["evaluator_invocations_started"].as_bool(),
+        Some(false)
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_execute_rejects_noncanonical_official_manifest_inspection_before_evaluator() {
+    let fixture = write_fixture(
+        "official-noncanonical-inspection",
+        2,
+        "touch evaluator-ran\n",
+    );
+    let official_manifest = write_official_manifest(&fixture.root, &fixture.evaluator);
+    let forged_inspection = write_forged_official_manifest_inspection(&fixture, &official_manifest);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--official-evaluator-manifest",
+            official_manifest.to_str().unwrap(),
+            "--official-evaluator-manifest-inspection",
+            forged_inspection.to_str().unwrap(),
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("note"),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !fixture.checkout.join("evaluator-ran").exists(),
+        "noncanonical inspection must fail before evaluator execution"
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_execute_requires_official_manifest_inspection_with_official_manifest() {
+    let fixture = write_fixture("official-missing-inspection", 2, "touch evaluator-ran\n");
+    let official_manifest = write_official_manifest(&fixture.root, &fixture.evaluator);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--official-evaluator-manifest",
+            official_manifest.to_str().unwrap(),
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("official-evaluator-manifest-inspection"),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !fixture.checkout.join("evaluator-ran").exists(),
+        "missing inspection must fail before evaluator execution"
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_execute_rejects_forged_official_manifest_inspection() {
+    let fixture = write_fixture("official-forged-inspection", 2, "touch evaluator-ran\n");
+    let official_manifest = write_official_manifest(&fixture.root, &fixture.evaluator);
+    let mut manifest_value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&official_manifest).unwrap()).unwrap();
+    manifest_value["hidden_holdouts"] = serde_json::json!(false);
+    fs::write(
+        &official_manifest,
+        serde_json::to_vec_pretty(&manifest_value).unwrap(),
+    )
+    .unwrap();
+    let forged_inspection = write_forged_official_manifest_inspection(&fixture, &official_manifest);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--official-evaluator-manifest",
+            official_manifest.to_str().unwrap(),
+            "--official-evaluator-manifest-inspection",
+            forged_inspection.to_str().unwrap(),
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("hidden_holdouts"),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !fixture.checkout.join("evaluator-ran").exists(),
+        "forged inspection must fail before evaluator execution"
+    );
 
     let _ = fs::remove_dir_all(fixture.root);
 }
