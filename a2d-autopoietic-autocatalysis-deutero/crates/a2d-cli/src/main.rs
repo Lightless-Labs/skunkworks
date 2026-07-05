@@ -5654,15 +5654,7 @@ fn build_senior_swe_bench_retry_execution(
                             .to_string()
                     })?;
                 let next_cycle_input_path = attempt_dir.join("next-cycle-input.json");
-                let next_bytes = serde_json::to_vec_pretty(&next_cycle_input).map_err(|error| {
-                    format!("failed to serialize Senior SWE-Bench next cycle input: {error}")
-                })?;
-                fs::write(&next_cycle_input_path, next_bytes).map_err(|error| {
-                    format!(
-                        "failed to write Senior SWE-Bench next cycle input {}: {error}",
-                        next_cycle_input_path.display()
-                    )
-                })?;
+                write_json_artifact(&next_cycle_input_path, &next_cycle_input)?;
                 record["next_cycle_input_path"] = json!(next_cycle_input_path);
                 record["fitness_evidence_inspection_passed"] = json!(false);
                 attempt_records.push(record);

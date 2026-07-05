@@ -94,3 +94,20 @@ target/debug/a2d fitness-evidence-inspect \
 Source-patch gate: `runs/20260705-senior-swe-bench-retry-execute-artifacts-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: 0a6c6625acac24d056b8c3dc38331c47f8c5eb5b`. A transient local retry-execute smoke confirmed the composed path, but host-local evaluator/temp paths were not committed. This remains non-official benchmark plumbing evidence.
 
 Post-commit clean-HEAD evidence: `runs/20260705-postcommit-fitness-evidence-7167562/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_revision: 7b528d1`, `source_tree_dirty: false`, `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`.
+
+## Next-cycle input no-overwrite addendum
+
+Follow-up hardening: failed non-final attempts now write `attempt-<n>/next-cycle-input.json` via the same fail-closed JSON artifact helper as the retry attempt/run artifacts. This prevents a stale feedback input from being silently overwritten before a later retry/cycle orchestration step consumes it.
+
+Validation/evidence:
+
+```bash
+cargo fmt --check
+cargo test -p a2d --test senior_swe_bench_retry_execute -- --nocapture
+cargo test
+target/debug/a2d fitness-evidence-inspect \
+  runs/20260705-retry-execute-next-cycle-input-no-overwrite-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
+```
+
+Source-patch gate: `runs/20260705-retry-execute-next-cycle-input-no-overwrite-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: 875e1a0f511cb98ad1736e21f964e8f5d0f0efab`.

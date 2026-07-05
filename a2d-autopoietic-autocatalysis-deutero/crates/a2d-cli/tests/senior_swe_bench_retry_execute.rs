@@ -377,6 +377,53 @@ fn retry_execute_reports_precomputed_manifest_exhaustion_before_max_attempts() {
         serde_json::from_slice(&fs::read(fixture.work_dir.join("retry-execution.json")).unwrap())
             .unwrap();
     assert_eq!(persisted_execution, value);
+    let next_cycle_input: serde_json::Value = serde_json::from_slice(
+        &fs::read(fixture.work_dir.join("attempt-0/next-cycle-input.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        next_cycle_input["evaluation"]["status"].as_str(),
+        Some("not_evaluated")
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_execute_rejects_stale_next_cycle_input_before_overwrite() {
+    let fixture = write_fixture("stale-next-cycle", 2, "echo public failure >&2\nexit 1\n");
+    fs::create_dir_all(fixture.work_dir.join("attempt-0")).unwrap();
+    fs::write(
+        fixture.work_dir.join("attempt-0/next-cycle-input.json"),
+        "{\"stale\":true}\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("artifact already exists"));
+    let stale: serde_json::Value = serde_json::from_slice(
+        &fs::read(fixture.work_dir.join("attempt-0/next-cycle-input.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stale["stale"].as_bool(), Some(true));
 
     let _ = fs::remove_dir_all(fixture.root);
 }
