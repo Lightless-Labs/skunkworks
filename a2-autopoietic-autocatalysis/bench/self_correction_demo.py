@@ -54,6 +54,16 @@ FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = "enforced"
 FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD = (
     "audited_sandbox_provider_allowlist_evidence"
 )
+AGENT_NETWORK_BOUNDARY_INVENTORY_COMMAND = [
+    "python3",
+    "bench/agent_network_boundary_check.py",
+    "--self-test",
+]
+AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND = [
+    "python3",
+    "bench/agent_network_boundary_check.py",
+    "--require-sandbox-runtime",
+]
 SENIOR_SWE_BENCH_SOURCE = "senior-swe-bench"
 SENIOR_SWE_BENCH_PROVENANCE_FIELDS = (
     "senior_swe_bench_export_sha256",
@@ -528,6 +538,31 @@ def fresh_preflight(args: argparse.Namespace, evidence_json: Path) -> None:
     fresh_provider_preflight_after_output_paths(args)
 
 
+def ensure_agent_network_boundary_precondition_ready() -> None:
+    result = subprocess.run(
+        AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND,
+        cwd=repo_root(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail_parts = []
+        if result.stdout.strip():
+            detail_parts.append(f"stdout={result.stdout.strip()!r}")
+        if result.stderr.strip():
+            detail_parts.append(f"stderr={result.stderr.strip()!r}")
+        details = "; ".join(detail_parts)
+        if details:
+            details = f" ({details})"
+        raise RuntimeError(
+            "fresh provider-backed runs are blocked because the agent network boundary "
+            "precondition failed closed before provider launch; command="
+            f"{display_command(AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND)!r}{details}"
+        )
+
+
 def ensure_fresh_sandbox_provider_allowlist_ready() -> None:
     if not FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED:
         raise RuntimeError(
@@ -609,8 +644,11 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
             "restricted_network_policy_current_behavior": FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR,
             "audited_sandbox_provider_allowlist_enforced": FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED,
             "audited_sandbox_provider_allowlist_status": FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS,
+            "agent_network_boundary_precondition_required": True,
         },
         "commands": {
+            "agent_network_boundary_inventory": display_command(AGENT_NETWORK_BOUNDARY_INVENTORY_COMMAND),
+            "agent_network_boundary_precondition": display_command(AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND),
             "harness": display_command(fresh_command(args)),
             "validation": fresh_validation_summary(args),
             "scorer": display_command(score_command(args.results, evidence_json)),
@@ -625,6 +663,7 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
             "Clean-source readiness and source revision metadata are checked before fresh results/evidence files are created; newly generated rows record that pre-run source state, and the new artifacts must then be archived deliberately.",
             "Benchmark task payloads request network_policy=Isolated; current provider-backed runs under restricted policy are expected to fail closed until an audited sandbox/provider allowlist exists.",
             "No audited sandbox/provider allowlist is enforced for fresh provider-backed demo execution yet; this report records status=not_implemented rather than treating preflight as sandbox evidence.",
+            "The confirmed fresh wrapper runs the agent network boundary precondition command before provider launch; it is expected to fail closed until sandbox runtime support and launch wrappers are wired.",
             "This report is readiness evidence only; it is not loop evidence and contains no failed-attempt/retry/promotion proof.",
         ],
     }
@@ -677,6 +716,7 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
         restricted_network_policy_current_behavior = "legacy report: not recorded"
         sandbox_provider_allowlist_enforced: object = "legacy report: not recorded"
         sandbox_provider_allowlist_status = "legacy report: not recorded"
+        agent_network_boundary_precondition_required: object = "legacy report: not recorded"
     else:
         if not isinstance(checks, dict):
             raise RuntimeError("fresh preflight report lacks checks")
@@ -706,6 +746,10 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
                 "fresh preflight report checks.audited_sandbox_provider_allowlist_status must record "
                 f"{FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS}"
             )
+        if checks.get("agent_network_boundary_precondition_required") is not True:
+            raise RuntimeError(
+                "fresh preflight report checks.agent_network_boundary_precondition_required must be true"
+            )
         benchmark_task_network_policy = checks["benchmark_task_network_policy"]
         restricted_network_policy_current_behavior = checks[
             "restricted_network_policy_current_behavior"
@@ -715,6 +759,9 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
         ]
         sandbox_provider_allowlist_status = checks[
             "audited_sandbox_provider_allowlist_status"
+        ]
+        agent_network_boundary_precondition_required = checks[
+            "agent_network_boundary_precondition_required"
         ]
     for key, label in [("results", "results"), ("evidence_json", "evidence")]:
         declared_path = report.get(key)
@@ -756,6 +803,10 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
     print(
         "  audited_sandbox_provider_allowlist_status: "
         f"{sandbox_provider_allowlist_status}"
+    )
+    print(
+        "  agent_network_boundary_precondition_required: "
+        f"{agent_network_boundary_precondition_required}"
     )
     print("  readiness only: no provider-backed benchmark/results/evidence/contract/live-auth check ran")
     print("  not loop evidence: no failed-attempt/retry/promotion proof")
@@ -2432,6 +2483,7 @@ def main(argv: list[str]) -> int:
         if not args.print_only:
             try:
                 ensure_fresh_output_paths_empty(args, evidence_json)
+                ensure_agent_network_boundary_precondition_ready()
                 ensure_fresh_sandbox_provider_allowlist_ready()
                 fresh_provider_preflight_after_output_paths(args)
             except RuntimeError as exc:
@@ -2488,6 +2540,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             "restricted_network_policy_current_behavior": FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR,
             "audited_sandbox_provider_allowlist_enforced": FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED,
             "audited_sandbox_provider_allowlist_status": FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS,
+            "agent_network_boundary_precondition_required": True,
         }
 
     def fresh_sandbox_provider_allowlist_evidence(self) -> dict[str, object]:
@@ -3306,12 +3359,55 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         preflight.assert_not_called()
         run.assert_not_called()
 
-    def test_fresh_refuses_confirmed_provider_run_without_enforced_sandbox_allowlist(self) -> None:
+    def test_fresh_refuses_confirmed_provider_run_when_agent_boundary_precondition_fails(self) -> None:
         stderr = io.StringIO()
         with tempfile.TemporaryDirectory() as tmpdir:
             results = Path(tmpdir) / "fresh.jsonl"
             evidence = Path(tmpdir) / "fresh.demo-evidence.json"
-            with mock.patch(__name__ + ".fresh_provider_preflight_after_output_paths") as provider_preflight, mock.patch(
+            failed = subprocess.CompletedProcess(
+                AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND,
+                1,
+                stdout="",
+                stderr="sandbox runtime missing",
+            )
+            with mock.patch(__name__ + ".subprocess.run", return_value=failed) as run_precondition, mock.patch(
+                __name__ + ".ensure_fresh_sandbox_provider_allowlist_ready"
+            ) as sandbox_ready, mock.patch(
+                __name__ + ".fresh_provider_preflight_after_output_paths"
+            ) as provider_preflight, mock.patch(
+                __name__ + ".run_command"
+            ) as run, contextlib.redirect_stderr(stderr):
+                result = main(
+                    [
+                        "fresh",
+                        "--results",
+                        str(results),
+                        "--evidence-json",
+                        str(evidence),
+                        "--run-id",
+                        "fresh-demo",
+                        "--confirm-provider-run",
+                    ]
+                )
+
+        self.assertEqual(result, 2)
+        self.assertIn("agent network boundary precondition failed closed", stderr.getvalue())
+        self.assertIn("sandbox runtime missing", stderr.getvalue())
+        self.assertFalse(results.exists())
+        self.assertFalse(evidence.exists())
+        run_precondition.assert_called_once()
+        sandbox_ready.assert_not_called()
+        provider_preflight.assert_not_called()
+        run.assert_not_called()
+
+    def test_fresh_refuses_confirmed_provider_run_without_enforced_sandbox_allowlist_after_boundary_passes(self) -> None:
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            evidence = Path(tmpdir) / "fresh.demo-evidence.json"
+            with mock.patch(__name__ + ".ensure_agent_network_boundary_precondition_ready") as boundary_ready, mock.patch(
+                __name__ + ".fresh_provider_preflight_after_output_paths"
+            ) as provider_preflight, mock.patch(
                 __name__ + ".run_command"
             ) as run, contextlib.redirect_stderr(stderr):
                 result = main(
@@ -3331,11 +3427,14 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("no audited sandbox/provider allowlist is enforced", stderr.getvalue())
         self.assertFalse(results.exists())
         self.assertFalse(evidence.exists())
+        boundary_ready.assert_called_once_with()
         provider_preflight.assert_not_called()
         run.assert_not_called()
 
     def test_fresh_runs_evidence_contract_after_confirmed_successful_score(self) -> None:
-        with mock.patch(__name__ + ".ensure_fresh_sandbox_provider_allowlist_ready"), mock.patch(
+        with mock.patch(__name__ + ".ensure_agent_network_boundary_precondition_ready"), mock.patch(
+            __name__ + ".ensure_fresh_sandbox_provider_allowlist_ready"
+        ), mock.patch(
             __name__ + ".fresh_provider_preflight_after_output_paths"
         ), mock.patch(__name__ + ".run_command", side_effect=[0, 0]) as run, mock.patch(
             __name__ + ".validate_fresh_results"
@@ -3414,7 +3513,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 return 0
 
             stderr = io.StringIO()
-            with mock.patch(__name__ + ".ensure_fresh_sandbox_provider_allowlist_ready"), mock.patch(
+            with mock.patch(__name__ + ".ensure_agent_network_boundary_precondition_ready"), mock.patch(
+                __name__ + ".ensure_fresh_sandbox_provider_allowlist_ready"
+            ), mock.patch(
                 __name__ + ".fresh_provider_preflight_after_output_paths"
             ), mock.patch(__name__ + ".run_command", side_effect=fake_run_command), mock.patch(
                 __name__ + ".verify_evidence_contract"
@@ -4316,8 +4417,19 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("before fresh results/evidence files are created", notes)
         self.assertIn("network_policy=Isolated", notes)
         self.assertIn("fail closed until an audited sandbox/provider allowlist exists", notes)
+        self.assertIn("agent network boundary precondition", notes)
+        self.assertIn("expected to fail closed", notes)
         self.assertIn("bench/self_correction.py", data["commands"]["harness"])
         self.assertIn("--demo-evidence-json", data["commands"]["scorer"])
+        self.assertTrue(data["checks"]["agent_network_boundary_precondition_required"])
+        self.assertEqual(
+            data["commands"]["agent_network_boundary_inventory"],
+            "python3 bench/agent_network_boundary_check.py --self-test",
+        )
+        self.assertEqual(
+            data["commands"]["agent_network_boundary_precondition"],
+            "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime",
+        )
         self.assertIn("verify-evidence-contract", data["commands"]["fresh_provenance_contract"])
         self.assertIn("--reference-evidence-json", data["commands"]["fresh_provenance_contract"])
         self.assertIn(str(DEFAULT_ARCHIVE_EVIDENCE), data["commands"]["fresh_provenance_contract"])
@@ -4425,6 +4537,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("fail_closed_provider_launch_until_audited_sandbox_provider_allowlist", output)
         self.assertIn("audited_sandbox_provider_allowlist_enforced: False", output)
         self.assertIn("audited_sandbox_provider_allowlist_status: not_implemented", output)
+        self.assertIn("agent_network_boundary_precondition_required: True", output)
         self.assertIn("readiness only", output)
         self.assertIn("not loop evidence", output)
 
@@ -4460,6 +4573,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("PASS source snapshot matches current HEAD/state", output)
         self.assertIn("benchmark_task_network_policy: Isolated", output)
         self.assertIn("audited_sandbox_provider_allowlist_enforced: False", output)
+        self.assertIn("agent_network_boundary_precondition_required: True", output)
         self.assertIn("readiness only", output)
         self.assertIn("not loop evidence", output)
 
@@ -4568,8 +4682,18 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "restricted_network_policy_current_behavior": FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR,
                     "audited_sandbox_provider_allowlist_enforced": False,
                     "audited_sandbox_provider_allowlist_status": "wired",
+                    "agent_network_boundary_precondition_required": True,
                 },
                 "checks.audited_sandbox_provider_allowlist_status",
+            ),
+            (
+                {
+                    "benchmark_task_network_policy": FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY,
+                    "restricted_network_policy_current_behavior": FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR,
+                    "audited_sandbox_provider_allowlist_enforced": FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED,
+                    "audited_sandbox_provider_allowlist_status": FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS,
+                },
+                "checks.agent_network_boundary_precondition_required",
             ),
         ]:
             with self.subTest(checks=checks), tempfile.TemporaryDirectory() as tmpdir:
