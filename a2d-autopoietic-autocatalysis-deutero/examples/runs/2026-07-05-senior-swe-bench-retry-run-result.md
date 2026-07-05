@@ -66,4 +66,4 @@ target/debug/a2d fitness-evidence-inspect \
   --require-all-tests-pass
 ```
 
-The evidence is actual-test source-patch evidence for this CLI change. It is not a claim that A²D has solved an official Senior SWE-Bench task.
+The evidence is actual-test source-patch evidence for this CLI change. After commit `74b9248`, clean-HEAD evidence was regenerated at `runs/20260705-postcommit-fitness-evidence-74b9248/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`; it passes `fitness-evidence-inspect --require-all-tests-pass`, records `source_revision: 82011ed` for `HEAD:a2d-autopoietic-autocatalysis-deutero/crates`, `source_tree_dirty: false`, and clean `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`. It is not a claim that A²D has solved an official Senior SWE-Bench task.
