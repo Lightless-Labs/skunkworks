@@ -20,6 +20,7 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import ipaddress
 import json
 import re
 import shutil
@@ -952,7 +953,10 @@ def validate_fresh_sandbox_provider_allowlist_evidence(
     blocked_host_set = {host.lower() for host in blocked_hosts if isinstance(host, str)}
     for endpoint in allowed_endpoints:
         parsed = urllib.parse.urlparse(endpoint)
-        endpoint_host = (parsed.hostname or "").lower()
+        try:
+            endpoint_host = (parsed.hostname or "").lower()
+        except ValueError:
+            endpoint_host = ""
         if parsed.scheme != "https" or not endpoint_host:
             raise RuntimeError(
                 f"fresh demo row {index} sandbox/provider allowlist evidence must record https provider endpoints"
@@ -963,6 +967,10 @@ def validate_fresh_sandbox_provider_allowlist_evidence(
             raise RuntimeError(
                 f"fresh demo row {index} sandbox/provider allowlist evidence allows blocked solution host {endpoint_host}"
             )
+        if provider_endpoint_host_is_malformed(endpoint_host) or provider_endpoint_host_is_synthetic_or_local(endpoint_host):
+            raise RuntimeError(
+                f"fresh demo row {index} sandbox/provider allowlist evidence must record real provider endpoints, not synthetic/local endpoint {endpoint_host}"
+            )
     sandbox_sha = evidence.get("sandbox_profile_sha256")
     sandbox_runtime = evidence.get("sandbox_runtime")
     has_profile_sha = isinstance(sandbox_sha, str) and re.fullmatch(r"[0-9a-f]{64}", sandbox_sha)
@@ -971,6 +979,48 @@ def validate_fresh_sandbox_provider_allowlist_evidence(
         raise RuntimeError(
             f"fresh demo row {index} sandbox/provider allowlist evidence must record durable sandbox runtime or profile hash"
         )
+
+
+def provider_endpoint_host_is_malformed(host: str) -> bool:
+    if any(character.isspace() for character in host):
+        return True
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    host = host.rstrip(".")
+    if not host or len(host) > 253:
+        return True
+    labels = host.split(".")
+    return any(
+        not label
+        or len(label) > 63
+        or label.startswith("-")
+        or label.endswith("-")
+        or not all(character.isascii() and (character.isalnum() or character == "-") for character in label)
+        for label in labels
+    )
+
+
+def provider_endpoint_host_is_synthetic_or_local(host: str) -> bool:
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    if host in {"example.com", "example.net", "example.org"}:
+        return True
+    if host.endswith((".example", ".example.com", ".example.net", ".example.org", ".invalid", ".test")):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return (
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_unspecified
+    )
 
 
 def validate_senior_swe_bench_fresh_provenance(row: dict[str, object], *, index: int) -> None:
@@ -2716,7 +2766,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             "launch_boundary": "candidate-worktree agent subprocess",
             "benchmark_network_policy": "Isolated",
             "provider_endpoint_allowlist_enforced": True,
-            "allowed_provider_endpoints": ["https://api.example-provider.invalid"],
+            "allowed_provider_endpoints": ["https://api.openai.com"],
             "public_solution_egress_blocked": True,
             "blocked_solution_hosts": ["github.com", "raw.githubusercontent.com"],
             "sandbox_profile_sha256": TEST_SANDBOX_PROFILE_SHA256,
@@ -5924,6 +5974,34 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             (
                 {**self.fresh_sandbox_provider_allowlist_evidence(), "allowed_provider_endpoints": ["https://github.com"]},
                 "allows blocked solution host",
+            ),
+            (
+                {**self.fresh_sandbox_provider_allowlist_evidence(), "allowed_provider_endpoints": ["https://api.example-provider.invalid"]},
+                "real provider endpoints",
+            ),
+            (
+                {**self.fresh_sandbox_provider_allowlist_evidence(), "allowed_provider_endpoints": ["https://localhost:1234"]},
+                "real provider endpoints",
+            ),
+            (
+                {**self.fresh_sandbox_provider_allowlist_evidence(), "allowed_provider_endpoints": ["https://example.com"]},
+                "real provider endpoints",
+            ),
+            (
+                {**self.fresh_sandbox_provider_allowlist_evidence(), "allowed_provider_endpoints": ["https://provider.test"]},
+                "real provider endpoints",
+            ),
+            (
+                {**self.fresh_sandbox_provider_allowlist_evidence(), "allowed_provider_endpoints": ["https://192.168.0.10"]},
+                "real provider endpoints",
+            ),
+            (
+                {**self.fresh_sandbox_provider_allowlist_evidence(), "allowed_provider_endpoints": ["https://169.254.1.1"]},
+                "real provider endpoints",
+            ),
+            (
+                {**self.fresh_sandbox_provider_allowlist_evidence(), "allowed_provider_endpoints": ["https://not a host"]},
+                "real provider endpoints",
             ),
         ]
         for evidence, message in scenarios:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ipaddress
 import json
 import os
 import shutil
@@ -1078,7 +1079,10 @@ def validate_sandbox_provider_allowlist_evidence(evidence: dict[str, Any]) -> No
     blocked_host_set = {host.lower() for host in blocked_hosts if isinstance(host, str)}
     for endpoint in allowed_endpoints:
         parsed = urllib.parse.urlparse(endpoint)
-        endpoint_host = (parsed.hostname or "").lower()
+        try:
+            endpoint_host = (parsed.hostname or "").lower()
+        except ValueError:
+            endpoint_host = ""
         if parsed.scheme != "https" or not endpoint_host:
             raise RuntimeError(
                 "audited sandbox/provider allowlist evidence must record https provider endpoints"
@@ -1088,6 +1092,10 @@ def validate_sandbox_provider_allowlist_evidence(evidence: dict[str, Any]) -> No
         ):
             raise RuntimeError(
                 "audited sandbox/provider allowlist evidence cannot allow blocked solution hosts"
+            )
+        if provider_endpoint_host_is_malformed(endpoint_host) or provider_endpoint_host_is_synthetic_or_local(endpoint_host):
+            raise RuntimeError(
+                "audited sandbox/provider allowlist evidence must record real provider endpoints, not synthetic/local endpoints"
             )
     sandbox_sha = evidence.get("sandbox_profile_sha256")
     sandbox_runtime = evidence.get("sandbox_runtime")
@@ -1099,6 +1107,48 @@ def validate_sandbox_provider_allowlist_evidence(evidence: dict[str, Any]) -> No
         raise RuntimeError(
             "audited sandbox/provider allowlist evidence must record durable sandbox runtime or profile hash"
         )
+
+
+def provider_endpoint_host_is_malformed(host: str) -> bool:
+    if any(character.isspace() for character in host):
+        return True
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    host = host.rstrip(".")
+    if not host or len(host) > 253:
+        return True
+    labels = host.split(".")
+    return any(
+        not label
+        or len(label) > 63
+        or label.startswith("-")
+        or label.endswith("-")
+        or not all(character.isascii() and (character.isalnum() or character == "-") for character in label)
+        for label in labels
+    )
+
+
+def provider_endpoint_host_is_synthetic_or_local(host: str) -> bool:
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    if host in {"example.com", "example.net", "example.org"}:
+        return True
+    if host.endswith((".example", ".example.com", ".example.net", ".example.org", ".invalid", ".test")):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return (
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_unspecified
+    )
 
 
 def sandbox_provider_allowlist_audit_fields() -> dict[str, Any]:
@@ -1804,6 +1854,32 @@ diff --git a/crates/a2ctl/src/main.rs b/crates/a2ctl/src/main.rs
             AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = original_status
             AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE = original_evidence
 
+    def test_result_record_rejects_synthetic_or_local_provider_allowlist_endpoints(self) -> None:
+        base_evidence = {
+            "status": "enforced",
+            "enforcement_layer": "test-sandbox-wrapper",
+            "launch_boundary": "candidate-worktree agent subprocess",
+            "benchmark_network_policy": "Isolated",
+            "provider_endpoint_allowlist_enforced": True,
+            "allowed_provider_endpoints": ["https://api.openai.com"],
+            "public_solution_egress_blocked": True,
+            "blocked_solution_hosts": ["github.com", "raw.githubusercontent.com"],
+            "sandbox_profile_sha256": "0" * 64,
+        }
+        for endpoint in (
+            "https://api.example-provider.invalid",
+            "https://localhost:1234",
+            "https://example.com",
+            "https://provider.test",
+            "https://192.168.0.10",
+            "https://169.254.1.1",
+            "https://not a host",
+        ):
+            with self.subTest(endpoint=endpoint):
+                evidence = {**base_evidence, "allowed_provider_endpoints": [endpoint]}
+                with self.assertRaisesRegex(RuntimeError, "real provider endpoints"):
+                    validate_sandbox_provider_allowlist_evidence(evidence)
+
     def test_result_record_emits_durable_evidence_for_enforced_sandbox_allowlist(self) -> None:
         global AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
         global AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS
@@ -1817,7 +1893,7 @@ diff --git a/crates/a2ctl/src/main.rs b/crates/a2ctl/src/main.rs
             "launch_boundary": "candidate-worktree agent subprocess",
             "benchmark_network_policy": "Isolated",
             "provider_endpoint_allowlist_enforced": True,
-            "allowed_provider_endpoints": ["https://api.example-provider.invalid"],
+            "allowed_provider_endpoints": ["https://api.openai.com"],
             "public_solution_egress_blocked": True,
             "blocked_solution_hosts": ["github.com", "raw.githubusercontent.com"],
             "sandbox_profile_sha256": "0" * 64,

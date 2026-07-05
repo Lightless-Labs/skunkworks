@@ -4836,7 +4836,7 @@ mod tests {
             "launch_boundary": "candidate-worktree agent subprocess",
             "benchmark_network_policy": "Isolated",
             "provider_endpoint_allowlist_enforced": true,
-            "allowed_provider_endpoints": ["https://api.example-provider.invalid"],
+            "allowed_provider_endpoints": ["https://api.openai.com"],
             "public_solution_egress_blocked": true,
             "blocked_solution_hosts": ["github.com"],
             "sandbox_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -4936,7 +4936,7 @@ mod tests {
             "launch_boundary": "candidate-worktree agent subprocess",
             "benchmark_network_policy": "Isolated",
             "provider_endpoint_allowlist_enforced": true,
-            "allowed_provider_endpoints": ["https://api.example-provider.invalid"],
+            "allowed_provider_endpoints": ["https://api.openai.com"],
             "public_solution_egress_blocked": true,
             "blocked_solution_hosts": ["github.com"],
             "sandbox_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
