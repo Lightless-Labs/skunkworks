@@ -7209,7 +7209,23 @@ fn build_senior_swe_bench_retry_status(
             if stop_reason == "precomputed_attempt_manifests_exhausted" {
                 let boundary =
                     load_senior_swe_bench_retry_next_cycle_boundary(&config.retry_execution)?;
+                let next_gate_command = json!({
+                    "command": "a2d",
+                    "argv": [
+                        "senior-swe-bench-retry-run-next-cycle",
+                        "--retry-execution",
+                        config.retry_execution.to_string_lossy(),
+                    ],
+                    "provider_invocations_started": false,
+                    "evaluator_invocations_started": false,
+                    "fitness_evidence_inspection_started": false,
+                    "fitness_claim_allowed_before_evidence": false,
+                    "github_solution_search_allowed": false,
+                    "retry_execution_path_binding": "as_supplied_to_status; rerun from the same working directory if relative",
+                    "note": "status handoff only; running this command may start exactly one bounded cycle-input provider boundary, but this status command has not started it",
+                });
                 result["next_action"] = json!("run_next_cycle");
+                result["next_gate_command"] = next_gate_command;
                 result["next_cycle_command"] = boundary.next_cycle_command;
                 result["next_cycle_attempt_index"] = json!(boundary.attempt_index);
                 result["next_cycle_task_input"] = json!(boundary.task_cycle_input);

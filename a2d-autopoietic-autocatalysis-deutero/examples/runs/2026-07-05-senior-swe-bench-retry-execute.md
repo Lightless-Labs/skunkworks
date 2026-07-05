@@ -252,3 +252,29 @@ target/debug/a2d fitness-evidence-inspect \
 Source-patch gate: `runs/20260705-retry-status-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: dfe5453312e117d4c23fdd9b54fdc698c691fa65`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`.
 
 This is read-only retry status plumbing and local Sudoku source-patch evidence. Hidden holdouts are not applicable to this Sudoku score-artifact source-patch gate, and no official Senior SWE-Bench mastery is claimed.
+
+## Retry status next-gate handoff addendum
+
+Follow-up hardening: failed `precomputed_attempt_manifests_exhausted` status output now includes a controller-facing `next_gate_command`:
+
+```text
+a2d senior-swe-bench-retry-run-next-cycle --retry-execution <retry-execution.json>
+```
+
+The raw persisted `next_cycle_command` remains in the status output for boundary audit. The new handoff metadata explicitly records that the status command has not started providers, evaluators, evidence inspection, or any pre-evidence fitness claim, and carries `github_solution_search_allowed: false`. If the supplied retry-execution path is relative, `retry_execution_path_binding` documents that the handoff should be rerun from the same working directory rather than persisting host-local absolute paths.
+
+Validation/evidence:
+
+```bash
+cargo fmt --check
+cargo test -p a2d --test senior_swe_bench_retry_execute -- --nocapture
+cargo test
+target/debug/a2d fitness-evidence-inspect \
+  runs/20260705-retry-status-next-gate-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
+git diff --binary HEAD -- crates | git hash-object --stdin
+```
+
+Source-patch gate: `runs/20260705-retry-status-next-gate-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_tree_dirty: true`, `source_diff_hash: ac9fbc4682beeafa2f394a394ce49113984045ee`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`.
+
+This is read-only retry handoff plumbing and local Sudoku source-patch evidence. It is not an official Senior SWE-Bench success claim and does not prove top-level A²D goal completion.
