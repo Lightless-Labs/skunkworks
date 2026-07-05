@@ -160,4 +160,6 @@ target/debug/a2d fitness-evidence-inspect \
 
 Source-patch gate: `runs/20260705-retry-resume-attempt-plan-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: f927a382b84f1280994776f4285b1adf4b8a723d`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`.
 
+Post-commit clean-HEAD evidence: `runs/20260705-postcommit-fitness-evidence-58150c5/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_revision: 074fd8c`, `source_tree_dirty: false`, `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`.
+
 This is resume orchestration planning over persisted retry artifacts. It is not an official Senior SWE-Bench success claim and does not prove top-level A²D goal completion.
