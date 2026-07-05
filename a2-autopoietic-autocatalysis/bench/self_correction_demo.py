@@ -2759,6 +2759,18 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("PASS demo docs", stdout.getvalue())
 
+    def test_generate_tasks_self_test_covers_senior_swe_bench_policy_payloads(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(repo_root() / "bench/generate_tasks.py"), "--self-test"],
+            cwd=repo_root(),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+
+        self.assertIn("PASS generate_tasks self-test", result.stdout)
+
     def test_replace_documented_counts_updates_all_count_markers(self) -> None:
         original = "\n".join(
             [
