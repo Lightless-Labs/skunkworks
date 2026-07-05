@@ -28,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -50,6 +51,12 @@ FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = False
 FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS = "not_implemented"
 FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = True
 FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = "enforced"
+FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD = (
+    "audited_sandbox_provider_allowlist_evidence"
+)
+TEST_SANDBOX_PROFILE_SHA256 = hashlib.sha256(
+    b"a2-test-deny-public-solution-egress-allow-provider-endpoints"
+).hexdigest()
 HOST_PATH_MARKERS = ("/Users", "/tmp", "/var/folders")
 EXPECTED_DEMO_REQUIREMENTS = [
     "failed_first_attempt",
@@ -808,6 +815,72 @@ def validate_fresh_rows_for_host_path_markers(
             )
 
 
+def validate_fresh_sandbox_provider_allowlist_evidence(
+    row: dict[str, object], *, index: int
+) -> None:
+    evidence = row.get(FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD)
+    if not isinstance(evidence, dict):
+        raise RuntimeError(
+            "fresh demo row "
+            f"{index} records audited sandbox/provider allowlist enforcement without "
+            f"{FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD} evidence"
+        )
+    for key in ("status", "enforcement_layer", "launch_boundary"):
+        if not isinstance(evidence.get(key), str) or not evidence.get(key):
+            raise RuntimeError(
+                f"fresh demo row {index} sandbox/provider allowlist evidence lacks {key}"
+            )
+    if evidence.get("status") != FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_STATUS:
+        raise RuntimeError(
+            f"fresh demo row {index} sandbox/provider allowlist evidence status must be "
+            f"{FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_STATUS!r}"
+        )
+    if evidence.get("benchmark_network_policy") != FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY:
+        raise RuntimeError(
+            f"fresh demo row {index} sandbox/provider allowlist evidence must record "
+            f"benchmark_network_policy={FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY!r}"
+        )
+    for key in ("provider_endpoint_allowlist_enforced", "public_solution_egress_blocked"):
+        if evidence.get(key) is not True:
+            raise RuntimeError(
+                f"fresh demo row {index} sandbox/provider allowlist evidence must record {key}=true"
+            )
+    allowed_endpoints = evidence.get("allowed_provider_endpoints")
+    if not isinstance(allowed_endpoints, list) or not allowed_endpoints or not all(
+        isinstance(endpoint, str) and endpoint for endpoint in allowed_endpoints
+    ):
+        raise RuntimeError(
+            f"fresh demo row {index} sandbox/provider allowlist evidence must record allowed_provider_endpoints"
+        )
+    blocked_hosts = evidence.get("blocked_solution_hosts")
+    if not isinstance(blocked_hosts, list) or "github.com" not in blocked_hosts:
+        raise RuntimeError(
+            f"fresh demo row {index} sandbox/provider allowlist evidence must record github.com as blocked"
+        )
+    blocked_host_set = {host.lower() for host in blocked_hosts if isinstance(host, str)}
+    for endpoint in allowed_endpoints:
+        parsed = urllib.parse.urlparse(endpoint)
+        endpoint_host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https" or not endpoint_host:
+            raise RuntimeError(
+                f"fresh demo row {index} sandbox/provider allowlist evidence must record https provider endpoints"
+            )
+        if endpoint_host in blocked_host_set or any(
+            endpoint_host.endswith(f".{blocked_host}") for blocked_host in blocked_host_set
+        ):
+            raise RuntimeError(
+                f"fresh demo row {index} sandbox/provider allowlist evidence allows blocked solution host {endpoint_host}"
+            )
+    sandbox_sha = evidence.get("sandbox_profile_sha256")
+    sandbox_runtime = evidence.get("sandbox_runtime")
+    has_profile_sha = isinstance(sandbox_sha, str) and re.fullmatch(r"[0-9a-f]{64}", sandbox_sha)
+    has_runtime = isinstance(sandbox_runtime, str) and bool(sandbox_runtime)
+    if not has_profile_sha and not has_runtime:
+        raise RuntimeError(
+            f"fresh demo row {index} sandbox/provider allowlist evidence must record durable sandbox runtime or profile hash"
+        )
+
+
 def validate_fresh_rows(
     rows: list[dict[str, object]],
     *,
@@ -950,6 +1023,7 @@ def validate_fresh_rows(
                 f"{sandbox_provider_allowlist_status!r}; fresh provider-backed benchmark evidence "
                 f"must record status={FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_STATUS!r}"
             )
+        validate_fresh_sandbox_provider_allowlist_evidence(row, index=index)
         if row_has_verifier_gated_promotion(row) and not promotion_artifact_matches_row(row):
             raise RuntimeError(
                 f"fresh demo row {index} has verifier-gated promotion without a matching promotion artifact"
@@ -976,8 +1050,9 @@ def fresh_validation_summary(args: argparse.Namespace) -> str:
         "all rows share one source revision/branch/dirty-state and source_head_short prefixes source_head; "
         "no host-specific path markers are present; "
         "no_external_solution_search=true and network_policy=Isolated are recorded for every row; "
-        "audited_sandbox_provider_allowlist_enforced=true and "
-        "audited_sandbox_provider_allowlist_status='enforced' are recorded for every row; "
+        "audited_sandbox_provider_allowlist_enforced=true, "
+        "audited_sandbox_provider_allowlist_status='enforced', and durable "
+        "audited sandbox/provider allowlist evidence are recorded for every row; "
         f"required provenance fields are present; {dirty_requirement}; "
         f"max_tokens={args.max_tokens}; timeout_secs={args.timeout}"
     )
@@ -2367,6 +2442,30 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             "audited_sandbox_provider_allowlist_status": FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS,
         }
 
+    def fresh_sandbox_provider_allowlist_evidence(self) -> dict[str, object]:
+        return {
+            "status": "enforced",
+            "enforcement_layer": "test sandbox wrapper around coding-agent provider launch",
+            "launch_boundary": "candidate-worktree agent subprocess",
+            "benchmark_network_policy": "Isolated",
+            "provider_endpoint_allowlist_enforced": True,
+            "allowed_provider_endpoints": ["https://api.example-provider.invalid"],
+            "public_solution_egress_blocked": True,
+            "blocked_solution_hosts": ["github.com", "raw.githubusercontent.com"],
+            "sandbox_profile_sha256": TEST_SANDBOX_PROFILE_SHA256,
+        }
+
+    def fresh_audit_fields(self) -> dict[str, object]:
+        return {
+            "no_external_solution_search": True,
+            "network_policy": "Isolated",
+            "audited_sandbox_provider_allowlist_enforced": True,
+            "audited_sandbox_provider_allowlist_status": "enforced",
+            FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                self.fresh_sandbox_provider_allowlist_evidence()
+            ),
+        }
+
     def sync_embedded_rows_for_selector(
         self,
         evidence: dict[str, object],
@@ -3186,6 +3285,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "network_policy": "Isolated",
                 "audited_sandbox_provider_allowlist_enforced": True,
                 "audited_sandbox_provider_allowlist_status": "enforced",
+                FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                    self.fresh_sandbox_provider_allowlist_evidence()
+                ),
             }
             calls = 0
 
@@ -3446,6 +3548,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "network_policy": "Isolated",
                 "audited_sandbox_provider_allowlist_enforced": True,
                 "audited_sandbox_provider_allowlist_status": "enforced",
+                FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                    self.fresh_sandbox_provider_allowlist_evidence()
+                ),
             }
         ]
 
@@ -4647,6 +4752,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "network_policy": "Isolated",
                     "audited_sandbox_provider_allowlist_enforced": True,
                     "audited_sandbox_provider_allowlist_status": "enforced",
+                    FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                        self.fresh_sandbox_provider_allowlist_evidence()
+                    ),
                 },
                 {
                     "run_id": "fresh-demo-2",
@@ -4660,6 +4768,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "network_policy": "Isolated",
                     "audited_sandbox_provider_allowlist_enforced": True,
                     "audited_sandbox_provider_allowlist_status": "enforced",
+                    FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                        self.fresh_sandbox_provider_allowlist_evidence()
+                    ),
                 },
             ]
             results.write_text(
@@ -4690,6 +4801,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             "network_policy": "Isolated",
             "audited_sandbox_provider_allowlist_enforced": True,
             "audited_sandbox_provider_allowlist_status": "enforced",
+            FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                self.fresh_sandbox_provider_allowlist_evidence()
+            ),
         }
         scenarios = [
             (
@@ -4742,6 +4856,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "network_policy": "Isolated",
                 "audited_sandbox_provider_allowlist_enforced": True,
                 "audited_sandbox_provider_allowlist_status": "enforced",
+                FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                    self.fresh_sandbox_provider_allowlist_evidence()
+                ),
                 "stdout": "tool output leaked /Users/example/project/file.rs",
             }
             results.write_text(json.dumps(row) + "\n", encoding="utf-8")
@@ -4778,6 +4895,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "network_policy": "Isolated",
                 "audited_sandbox_provider_allowlist_enforced": True,
                 "audited_sandbox_provider_allowlist_status": "enforced",
+                FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                    self.fresh_sandbox_provider_allowlist_evidence()
+                ),
                 "promotion": {
                     "verifier_gated": True,
                     "evidence_present": True,
@@ -4814,6 +4934,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "network_policy": "Isolated",
                         "audited_sandbox_provider_allowlist_enforced": True,
                         "audited_sandbox_provider_allowlist_status": "enforced",
+                        FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                            self.fresh_sandbox_provider_allowlist_evidence()
+                        ),
                     }
                 )
                 + "\n",
@@ -4847,6 +4970,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "network_policy": "Isolated",
                         "audited_sandbox_provider_allowlist_enforced": True,
                         "audited_sandbox_provider_allowlist_status": "enforced",
+                        FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                            self.fresh_sandbox_provider_allowlist_evidence()
+                        ),
                     }
                 )
                 + "\n",
@@ -5002,6 +5128,87 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "must record status='enforced'"):
                 validate_fresh_results(args)
 
+    def test_validate_fresh_results_rejects_missing_sandbox_allowlist_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            row = {
+                "run_id": "fresh-demo-1",
+                "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+                "source_head_short": "abcdef1",
+                "source_branch": "main",
+                "source_dirty": False,
+                "max_tokens": 100_000,
+                "timeout_secs": 1800,
+                "no_external_solution_search": True,
+                "network_policy": "Isolated",
+                "audited_sandbox_provider_allowlist_enforced": True,
+                "audited_sandbox_provider_allowlist_status": "enforced",
+            }
+            results.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            with self.assertRaisesRegex(
+                RuntimeError, "without audited_sandbox_provider_allowlist_evidence evidence"
+            ):
+                validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_incomplete_sandbox_allowlist_evidence(self) -> None:
+        base_row = {
+            "run_id": "fresh-demo-1",
+            "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+            "source_head_short": "abcdef1",
+            "source_branch": "main",
+            "source_dirty": False,
+            "max_tokens": 100_000,
+            "timeout_secs": 1800,
+            "no_external_solution_search": True,
+            "network_policy": "Isolated",
+            "audited_sandbox_provider_allowlist_enforced": True,
+            "audited_sandbox_provider_allowlist_status": "enforced",
+        }
+        scenarios = [
+            (
+                {**self.fresh_sandbox_provider_allowlist_evidence(), "provider_endpoint_allowlist_enforced": False},
+                "provider_endpoint_allowlist_enforced=true",
+            ),
+            (
+                {**self.fresh_sandbox_provider_allowlist_evidence(), "blocked_solution_hosts": ["example.com"]},
+                "github.com as blocked",
+            ),
+            (
+                {**self.fresh_sandbox_provider_allowlist_evidence(), "sandbox_profile_sha256": "not-a-sha"},
+                "durable sandbox runtime or profile hash",
+            ),
+            (
+                {**self.fresh_sandbox_provider_allowlist_evidence(), "allowed_provider_endpoints": ["https://github.com"]},
+                "allows blocked solution host",
+            ),
+        ]
+        for evidence, message in scenarios:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as tmpdir:
+                results = Path(tmpdir) / "fresh.jsonl"
+                row = {
+                    **base_row,
+                    FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: evidence,
+                }
+                results.write_text(json.dumps(row) + "\n", encoding="utf-8")
+                args = argparse.Namespace(
+                    results=results,
+                    run_id="fresh-demo",
+                    allow_dirty_source=False,
+                    max_tokens=100_000,
+                    timeout=1800,
+                )
+
+                with self.assertRaisesRegex(RuntimeError, message):
+                    validate_fresh_results(args)
+
     def test_validate_fresh_results_rejects_dirty_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             results = Path(tmpdir) / "fresh.jsonl"
@@ -5019,6 +5226,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "network_policy": "Isolated",
                         "audited_sandbox_provider_allowlist_enforced": True,
                         "audited_sandbox_provider_allowlist_status": "enforced",
+                        FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                            self.fresh_sandbox_provider_allowlist_evidence()
+                        ),
                     }
                 )
                 + "\n",
@@ -5052,6 +5262,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "network_policy": "Isolated",
                         "audited_sandbox_provider_allowlist_enforced": True,
                         "audited_sandbox_provider_allowlist_status": "enforced",
+                        FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                            self.fresh_sandbox_provider_allowlist_evidence()
+                        ),
                     }
                 )
                 + "\n",

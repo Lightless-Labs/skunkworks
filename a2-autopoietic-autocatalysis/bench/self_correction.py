@@ -20,6 +20,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,7 @@ from uuid import UUID
 CATEGORY = "self_correction"
 AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = False
 AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = "not_implemented"
+AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE: dict[str, Any] | None = None
 FIBONACCI_TASK_ID = "self-correction-fibonacci-regression"
 FIBONACCI_DESCRIPTION = """\
 The workspace contains a regression. `cargo test -p a2_core test_fibonacci` fails.
@@ -1044,6 +1046,96 @@ def workspace_label(workspace: Path) -> str:
     return workspace.name
 
 
+def validate_sandbox_provider_allowlist_evidence(evidence: dict[str, Any]) -> None:
+    for key in ("status", "enforcement_layer", "launch_boundary"):
+        if not isinstance(evidence.get(key), str) or not evidence.get(key):
+            raise RuntimeError(
+                f"audited sandbox/provider allowlist evidence lacks {key}"
+            )
+    if evidence.get("status") != "enforced":
+        raise RuntimeError("audited sandbox/provider allowlist evidence status must be enforced")
+    if evidence.get("benchmark_network_policy") != "Isolated":
+        raise RuntimeError(
+            "audited sandbox/provider allowlist evidence must record benchmark_network_policy=Isolated"
+        )
+    for key in ("provider_endpoint_allowlist_enforced", "public_solution_egress_blocked"):
+        if evidence.get(key) is not True:
+            raise RuntimeError(
+                f"audited sandbox/provider allowlist evidence must record {key}=true"
+            )
+    allowed_endpoints = evidence.get("allowed_provider_endpoints")
+    if not isinstance(allowed_endpoints, list) or not allowed_endpoints or not all(
+        isinstance(endpoint, str) and endpoint for endpoint in allowed_endpoints
+    ):
+        raise RuntimeError(
+            "audited sandbox/provider allowlist evidence must record allowed_provider_endpoints"
+        )
+    blocked_hosts = evidence.get("blocked_solution_hosts")
+    if not isinstance(blocked_hosts, list) or "github.com" not in blocked_hosts:
+        raise RuntimeError(
+            "audited sandbox/provider allowlist evidence must record github.com as blocked"
+        )
+    blocked_host_set = {host.lower() for host in blocked_hosts if isinstance(host, str)}
+    for endpoint in allowed_endpoints:
+        parsed = urllib.parse.urlparse(endpoint)
+        endpoint_host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https" or not endpoint_host:
+            raise RuntimeError(
+                "audited sandbox/provider allowlist evidence must record https provider endpoints"
+            )
+        if endpoint_host in blocked_host_set or any(
+            endpoint_host.endswith(f".{blocked_host}") for blocked_host in blocked_host_set
+        ):
+            raise RuntimeError(
+                "audited sandbox/provider allowlist evidence cannot allow blocked solution hosts"
+            )
+    sandbox_sha = evidence.get("sandbox_profile_sha256")
+    sandbox_runtime = evidence.get("sandbox_runtime")
+    has_profile_sha = isinstance(sandbox_sha, str) and len(sandbox_sha) == 64 and all(
+        character in "0123456789abcdef" for character in sandbox_sha.lower()
+    )
+    has_runtime = isinstance(sandbox_runtime, str) and bool(sandbox_runtime)
+    if not has_profile_sha and not has_runtime:
+        raise RuntimeError(
+            "audited sandbox/provider allowlist evidence must record durable sandbox runtime or profile hash"
+        )
+
+
+def sandbox_provider_allowlist_audit_fields() -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "audited_sandbox_provider_allowlist_enforced": (
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
+        ),
+        "audited_sandbox_provider_allowlist_status": (
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS
+        ),
+    }
+    enforcement_claimed = (
+        AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
+        or AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS == "enforced"
+    )
+    if enforcement_claimed:
+        if (
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED is not True
+            or AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS != "enforced"
+            or not isinstance(AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE, dict)
+        ):
+            raise RuntimeError(
+                "audited sandbox/provider allowlist marked enforced without durable evidence"
+            )
+        validate_sandbox_provider_allowlist_evidence(
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE
+        )
+        fields["audited_sandbox_provider_allowlist_evidence"] = (
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE
+        )
+    elif AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE is not None:
+        raise RuntimeError(
+            "audited sandbox/provider allowlist evidence recorded without enforced status"
+        )
+    return fields
+
+
 def result_record(
     *,
     payload: dict[str, Any],
@@ -1082,12 +1174,7 @@ def result_record(
         "model": provider,
         "no_external_solution_search": bool(payload.get("no_external_solution_search")),
         "network_policy": payload.get("network_policy"),
-        "audited_sandbox_provider_allowlist_enforced": (
-            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
-        ),
-        "audited_sandbox_provider_allowlist_status": (
-            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS
-        ),
+        **sandbox_provider_allowlist_audit_fields(),
         **source_metadata,
         "max_tokens": max_tokens,
         "timeout_secs": timeout,
@@ -1591,6 +1678,7 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(record["network_policy"], "Isolated")
         self.assertFalse(record["audited_sandbox_provider_allowlist_enforced"])
         self.assertEqual(record["audited_sandbox_provider_allowlist_status"], "not_implemented")
+        self.assertNotIn("audited_sandbox_provider_allowlist_evidence", record)
         self.assertEqual(record["source_branch"], "main")
         self.assertFalse(record["source_dirty"])
         self.assertEqual(record["max_tokens"], 12345)
@@ -1676,6 +1764,97 @@ diff --git a/crates/a2ctl/src/main.rs b/crates/a2ctl/src/main.rs
         self.assertEqual(stats["touched_file_count"], 2)
         self.assertEqual(stats["diff_added_lines"], 3)
         self.assertEqual(stats["diff_removed_lines"], 1)
+
+    def test_result_record_requires_durable_evidence_for_enforced_sandbox_allowlist(self) -> None:
+        global AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
+        global AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS
+        global AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE
+        original_enforced = AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
+        original_status = AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS
+        original_evidence = AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE
+        try:
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = True
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = "enforced"
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE = None
+            payload = task_payload(FIXTURES["fibonacci"], "run", 1)
+            verify_result = CommandResult(FIBONACCI_VERIFY_COMMAND, 1, "", "fail", 0.1)
+            with self.assertRaisesRegex(RuntimeError, "without durable evidence"):
+                result_record(
+                    payload=payload,
+                    provider="gemini",
+                    workspace=Path("/tmp/workspace"),
+                    a2_result=None,
+                    verify_result=verify_result,
+                    lineage_before=0,
+                    lineage_after=1,
+                    lineage_reconciled_by_core=False,
+                    patch_stats={},
+                    anti_repeat_retry_enabled=True,
+                    source_metadata={
+                        "source_head": "abcdef",
+                        "source_head_short": "abcdef",
+                        "source_branch": "main",
+                        "source_dirty": False,
+                    },
+                    max_tokens=123,
+                    timeout=456,
+                )
+        finally:
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = original_enforced
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = original_status
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE = original_evidence
+
+    def test_result_record_emits_durable_evidence_for_enforced_sandbox_allowlist(self) -> None:
+        global AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
+        global AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS
+        global AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE
+        original_enforced = AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
+        original_status = AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS
+        original_evidence = AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE
+        evidence = {
+            "status": "enforced",
+            "enforcement_layer": "test-sandbox-wrapper",
+            "launch_boundary": "candidate-worktree agent subprocess",
+            "benchmark_network_policy": "Isolated",
+            "provider_endpoint_allowlist_enforced": True,
+            "allowed_provider_endpoints": ["https://api.example-provider.invalid"],
+            "public_solution_egress_blocked": True,
+            "blocked_solution_hosts": ["github.com", "raw.githubusercontent.com"],
+            "sandbox_profile_sha256": "0" * 64,
+        }
+        try:
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = True
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = "enforced"
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE = evidence
+            payload = task_payload(FIXTURES["fibonacci"], "run", 1)
+            verify_result = CommandResult(FIBONACCI_VERIFY_COMMAND, 1, "", "fail", 0.1)
+            record = result_record(
+                payload=payload,
+                provider="gemini",
+                workspace=Path("/tmp/workspace"),
+                a2_result=None,
+                verify_result=verify_result,
+                lineage_before=0,
+                lineage_after=1,
+                lineage_reconciled_by_core=False,
+                patch_stats={},
+                anti_repeat_retry_enabled=True,
+                source_metadata={
+                    "source_head": "abcdef",
+                    "source_head_short": "abcdef",
+                    "source_branch": "main",
+                    "source_dirty": False,
+                },
+                max_tokens=123,
+                timeout=456,
+            )
+            self.assertTrue(record["audited_sandbox_provider_allowlist_enforced"])
+            self.assertEqual(record["audited_sandbox_provider_allowlist_status"], "enforced")
+            self.assertEqual(record["audited_sandbox_provider_allowlist_evidence"], evidence)
+        finally:
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = original_enforced
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = original_status
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE = original_evidence
 
 
 if __name__ == "__main__":
