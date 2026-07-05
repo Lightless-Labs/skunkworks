@@ -1067,22 +1067,25 @@ def audit_a2_worktree_catalyst_launch_gate(path: Path = A2_WORKTREE_CATALYST) ->
             launches.append({"function": function_name, "found": False, "command_new_present": False})
             continue
         provider_executable = rust_executable_body_without_strings(provider_body)
+        command_new_present = bool(rust_command_new_offsets(provider_executable))
+        first_command_index = first_top_level_rust_code_regex_match_offset(provider_body, r"\bCommand::new\s*\(")
+        sandbox_command_index = first_top_level_rust_code_regex_match_offset(
+            provider_body,
+            r"\bCommand::new\s*\(\s*\"sandbox-exec\"",
+        )
         launches.append(
             {
                 "function": function_name,
                 "found": True,
-                "command_new_present": bool(rust_command_new_offsets(provider_executable)),
-                "sandbox_exec_present": bool(
-                    rust_code_regex_match_offsets(
-                        strip_rust_comments(provider_body, strip_strings=False),
-                        r"\bCommand::new\s*\(\s*\"sandbox-exec\"",
-                    )
-                ),
+                "command_new_present": command_new_present,
+                "sandbox_exec_present": sandbox_command_index >= 0 and sandbox_command_index == first_command_index,
             }
         )
     result["provider_command_launch_functions"] = launches
-    result["sandbox_exec_launch_wrapper_present"] = any(item.get("sandbox_exec_present") for item in launches)
     provider_launches_present = all(item.get("found") and item.get("command_new_present") for item in launches)
+    result["sandbox_exec_launch_wrapper_present"] = provider_launches_present and all(
+        item.get("sandbox_exec_present") for item in launches
+    )
     result["fail_closed_before_provider_launch"] = (
         result["restricted_policy_error_before_mock"]
         and result["restricted_policy_error_before_provider_dispatch"]
@@ -1161,6 +1164,11 @@ def audit_a2_broker_launch_gate(path: Path = A2_BROKER) -> dict[str, Any]:
         guard_pattern = rf"^\s*{guard_statement}"
         guard_index = first_top_level_rust_code_regex_match_offset(generate_body, guard_pattern, re.MULTILINE)
         command_index = first_top_level_rust_code_regex_match_offset(generate_body, r"\bCommand::new\s*\(")
+        sandbox_command_index = first_top_level_rust_code_regex_match_offset(
+            generate_body,
+            r"\bCommand::new\s*\(\s*\"sandbox-exec\"",
+        )
+        sandbox_exec_present = sandbox_command_index >= 0 and sandbox_command_index == command_index
         guards.append(
             {
                 "provider": provider,
@@ -1169,14 +1177,12 @@ def audit_a2_broker_launch_gate(path: Path = A2_BROKER) -> dict[str, Any]:
                 "guard_found": guard_index >= 0,
                 "command_new_after_guard": command_index >= 0,
                 "guard_before_command_new": guard_index >= 0 and command_index >= 0 and guard_index < command_index,
+                "sandbox_exec_present": sandbox_exec_present,
             }
         )
     result["provider_generate_guards"] = guards
-    result["sandbox_exec_launch_wrapper_present"] = bool(
-        rust_code_regex_match_offsets(
-            strip_rust_comments(text, strip_strings=False),
-            r"\bCommand::new\s*\(\s*\"sandbox-exec\"",
-        )
+    result["sandbox_exec_launch_wrapper_present"] = bool(guards) and all(
+        item.get("sandbox_exec_present") for item in guards
     )
     result["fail_closed_before_provider_launch"] = (
         result["policy_helper_rejects_isolated"]
@@ -1935,6 +1941,68 @@ impl<'a> ModelProvider for PiProvider {
         self.assertTrue(result["policy_helper_rejects_allowlist"])
         self.assertFalse(result["fail_closed_before_provider_launch"])
         self.assertTrue(all(not item["guard_before_command_new"] for item in result["provider_generate_guards"]))
+
+    def test_a2_worktree_launch_gate_rejects_sandbox_exec_after_direct_provider_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "worktree_catalyst.rs"
+            provider_functions = "\n".join(
+                f'async fn {function_name}() {{ Command::new("{provider}"); Command::new("sandbox-exec"); }}'
+                for function_name, provider in [
+                    ("run_claude", "claude"),
+                    ("run_codex", "codex"),
+                    ("run_gemini", "gemini"),
+                    ("run_opencode", "opencode"),
+                    ("run_pi", "pi"),
+                ]
+            )
+            path.write_text(
+                'async fn run_agent() {\n'
+                '  if matches!(network_policy, Some(NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) {\n'
+                '    return Err(error);\n'
+                '  }\n'
+                '  if provider_id == "mock" { return self.run_mock_agent(worktree_path).await; }\n'
+                '  match provider_id { _ => self.run_claude(model_id, prompt, worktree_path).await }\n'
+                '}\n'
+                + provider_functions,
+                encoding="utf-8",
+            )
+            result = audit_a2_worktree_catalyst_launch_gate(path)
+
+        self.assertTrue(result["fail_closed_before_provider_launch"])
+        self.assertFalse(result["sandbox_exec_launch_wrapper_present"])
+        self.assertTrue(all(not item["sandbox_exec_present"] for item in result["provider_command_launch_functions"]))
+
+    def test_a2_broker_launch_gate_rejects_sandbox_exec_after_direct_provider_command(self) -> None:
+        provider_impls = "\n".join(
+            f'''impl ModelProvider for {impl_name} {{
+    async fn generate(&self) {{
+        fail_if_provider_network_restricted("{provider}")?;
+        Command::new("{provider}");
+        Command::new("sandbox-exec");
+    }}
+}}'''
+            for provider, impl_name in [
+                ("claude", "ClaudeProvider"),
+                ("gemini", "GeminiProvider"),
+                ("codex", "CodexProvider"),
+                ("pi", "PiProvider"),
+                ("opencode", "OpenCodeProvider"),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "broker.rs"
+            path.write_text(
+                'fn fail_if_provider_network_restricted_for_policy() {\n'
+                '  if normalized == "isolated" || normalized.starts_with("allowlist") { return Err(error); }\n'
+                '}\n'
+                + provider_impls,
+                encoding="utf-8",
+            )
+            result = audit_a2_broker_launch_gate(path)
+
+        self.assertTrue(result["fail_closed_before_provider_launch"])
+        self.assertFalse(result["sandbox_exec_launch_wrapper_present"])
+        self.assertTrue(all(not item["sandbox_exec_present"] for item in result["provider_generate_guards"]))
 
     def test_a2_worktree_launch_gate_detects_fail_closed_before_provider_dispatch(self) -> None:
         result = audit_a2_worktree_catalyst_launch_gate()
