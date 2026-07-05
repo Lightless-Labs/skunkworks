@@ -163,3 +163,28 @@ Source-patch gate: `runs/20260705-retry-resume-attempt-plan-evidence/actual-test
 Post-commit clean-HEAD evidence: `runs/20260705-postcommit-fitness-evidence-58150c5/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_revision: 074fd8c`, `source_tree_dirty: false`, `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`.
 
 This is resume orchestration planning over persisted retry artifacts. It is not an official Senior SWE-Bench success claim and does not prove top-level A²D goal completion.
+
+## Retry next-cycle execution addendum
+
+Follow-up command: `a2d senior-swe-bench-retry-run-next-cycle --retry-execution <retry-execution.json>`.
+
+This consumes a failed retry execution whose saved `next_cycle_command` points at the next `cycle-input` run. It validates the failed/precomputed-manifest-exhausted boundary, exact argv order, expected manifest path, task/repo identity against the next cycle input, checkout/input existence, attempt metadata, no-pre-evidence-fitness flags, and absent pre-existing manifest before running the current `a2d` executable once. Child execution is bounded by `A2D_SENIOR_SWE_BENCH_RETRY_NEXT_CYCLE_TIMEOUT_SECS` (default 1800s). It persists `attempt-N/retry-next-cycle-execution.json` on success, nonzero exit, spawn failure, timeout, or invalid manifest; no evaluator, retry-step, or `fitness-evidence-inspect` command is started.
+
+Success requires a valid `a2d.cycle-output-artifacts.v1` manifest whose artifacts have readable paths, byte counts, and matching `git hash-object` hashes. Failed/spawn/timeout summaries keep `fitness_claim_allowed_after_cycle: false`.
+
+Validation/evidence:
+
+```bash
+cargo fmt --check
+cargo test -p a2d retry_run_next_cycle -- --list
+cargo test -p a2d retry_run_next_cycle -- --nocapture
+cargo test -p a2d --test senior_swe_bench_retry_execute -- --nocapture
+cargo test
+target/debug/a2d fitness-evidence-inspect \
+  runs/20260705-retry-run-next-cycle-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
+```
+
+Source-patch gate: `runs/20260705-retry-run-next-cycle-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: 254682e7891a408eeee2a43d78c76225ecaca7ed`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`.
+
+This is bounded next-cycle orchestration over persisted retry artifacts. It is not evaluator execution, not an official Senior SWE-Bench success claim, and does not prove top-level A²D goal completion.
