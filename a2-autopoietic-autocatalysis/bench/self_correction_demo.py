@@ -62,6 +62,11 @@ AGENT_NETWORK_BOUNDARY_INVENTORY_COMMAND = [
     "bench/agent_network_boundary_check.py",
     "--self-test",
 ]
+AGENT_NETWORK_BOUNDARY_INVENTORY_JSON_COMMAND = [
+    "python3",
+    "bench/agent_network_boundary_check.py",
+    "--json",
+]
 AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND = [
     "python3",
     "bench/agent_network_boundary_check.py",
@@ -611,9 +616,97 @@ def ensure_preflight_report_path(report: Path, *, results: Path, evidence_json: 
     ensure_output_path_empty(report, label="preflight report")
 
 
-def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dict[str, object]:
+def ensure_preflight_boundary_inventory_path(
+    path: Path,
+    *,
+    results: Path,
+    evidence_json: Path,
+    preflight_report_json: Path | None,
+) -> None:
+    if paths_alias(path, results):
+        raise RuntimeError(
+            "fresh demo boundary inventory path must be distinct from results path: "
+            f"{path}"
+        )
+    if paths_alias(path, evidence_json):
+        raise RuntimeError(
+            "fresh demo boundary inventory path must be distinct from evidence path: "
+            f"{path}"
+        )
+    if preflight_report_json is not None and paths_alias(path, preflight_report_json):
+        raise RuntimeError(
+            "fresh demo boundary inventory path must be distinct from preflight report path: "
+            f"{path}"
+        )
+    ensure_output_path_empty(path, label="boundary inventory")
+
+
+def run_agent_network_boundary_inventory_json(path: Path) -> dict[str, object]:
+    result = subprocess.run(
+        AGENT_NETWORK_BOUNDARY_INVENTORY_JSON_COMMAND,
+        cwd=repo_root(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail_parts = []
+        if result.stdout.strip():
+            detail_parts.append(f"stdout={result.stdout.strip()!r}")
+        if result.stderr.strip():
+            detail_parts.append(f"stderr={result.stderr.strip()!r}")
+        details = "; ".join(detail_parts)
+        if details:
+            details = f" ({details})"
+        raise RuntimeError(
+            "agent network boundary inventory JSON command failed during fresh preflight; "
+            f"command={display_command(AGENT_NETWORK_BOUNDARY_INVENTORY_JSON_COMMAND)!r}{details}"
+        )
+    try:
+        inventory = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "agent network boundary inventory JSON command produced invalid JSON"
+        ) from exc
+    if not isinstance(inventory, dict):
+        raise RuntimeError("agent network boundary inventory JSON is not an object")
+    resolved = repo_path(path)
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_text(json.dumps(inventory, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    a2_boundary = inventory.get("a2_owned_provider_launch_boundary")
+    sandbox_runtime = inventory.get("sandbox_runtime")
+    return {
+        "path": str(path),
+        "command": display_command(AGENT_NETWORK_BOUNDARY_INVENTORY_JSON_COMMAND),
+        "status": "recorded",
+        "creates_loop_evidence": False,
+        "proves_runtime_sandbox_enforcement": False,
+        "a2_owned_fail_closed": bool(
+            isinstance(a2_boundary, dict)
+            and a2_boundary.get("fail_closed_restricted_policies") is True
+        ),
+        "a2_owned_sandbox_enforced": bool(
+            isinstance(a2_boundary, dict)
+            and a2_boundary.get("sandbox_enforced_for_restricted_policies") is True
+        ),
+        "sandbox_runtime_available": bool(
+            isinstance(sandbox_runtime, dict) and sandbox_runtime.get("available") is True
+        ),
+        "launch_sandbox_enforced": bool(inventory.get("launch_sandbox_enforced") is True),
+    }
+
+
+def fresh_preflight_report(
+    args: argparse.Namespace,
+    evidence_json: Path,
+    *,
+    boundary_inventory: dict[str, object] | None = None,
+) -> dict[str, object]:
     config_checked = provider_config_checked(args.provider)
     source_metadata = current_source_metadata()
+    boundary_inventory_path = getattr(args, "preflight_boundary_inventory_json", None)
+    boundary_inventory_created = boundary_inventory is not None
     return {
         "mode": "fresh_preflight",
         "creates_loop_evidence": False,
@@ -625,6 +718,9 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
         "results": str(args.results),
         "evidence_json": str(evidence_json),
         "preflight_report_json": str(args.preflight_report_json),
+        "boundary_inventory_created": boundary_inventory_created,
+        "boundary_inventory_json": str(boundary_inventory_path) if boundary_inventory_path else None,
+        "boundary_inventory": boundary_inventory,
         "fixture": args.fixture,
         "provider": args.provider,
         "run_id": args.run_id,
@@ -656,9 +752,13 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
             "agent_network_boundary_precondition_required": True,
             "agent_network_boundary_precondition_executed": FRESH_PREFLIGHT_AGENT_NETWORK_BOUNDARY_PRECONDITION_EXECUTED,
             "agent_network_boundary_precondition_status": FRESH_PREFLIGHT_AGENT_NETWORK_BOUNDARY_PRECONDITION_STATUS,
+            "agent_network_boundary_inventory_json_requested": boundary_inventory_path is not None,
+            "agent_network_boundary_inventory_json_executed": boundary_inventory_created,
+            "agent_network_boundary_inventory_json_status": "recorded" if boundary_inventory_created else "not_requested",
         },
         "commands": {
             "agent_network_boundary_inventory": display_command(AGENT_NETWORK_BOUNDARY_INVENTORY_COMMAND),
+            "agent_network_boundary_inventory_json": display_command(AGENT_NETWORK_BOUNDARY_INVENTORY_JSON_COMMAND),
             "agent_network_boundary_precondition": display_command(AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND),
             "harness": display_command(fresh_command(args)),
             "validation": fresh_validation_summary(args),
@@ -675,6 +775,7 @@ def fresh_preflight_report(args: argparse.Namespace, evidence_json: Path) -> dic
             "Benchmark task payloads request network_policy=Isolated; current provider-backed runs under restricted policy are expected to fail closed until an audited sandbox/provider allowlist exists.",
             "No audited sandbox/provider allowlist is enforced for fresh provider-backed demo execution yet; this report records status=not_implemented rather than treating preflight as sandbox evidence.",
             "This preflight records the agent network boundary precondition command but does not execute it; the confirmed fresh wrapper runs it before provider launch and it is expected to fail closed until sandbox runtime support and launch wrappers are wired.",
+            "Optional --preflight-boundary-inventory-json records the source-boundary --json audit for operators, but that inventory is still readiness/gap evidence only and does not prove runtime sandbox enforcement or loop behavior.",
             "This report is readiness evidence only; it is not loop evidence and contains no failed-attempt/retry/promotion proof.",
         ],
     }
@@ -718,6 +819,31 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
     ]:
         if report.get(key) is not False:
             raise RuntimeError(f"fresh preflight report {key} must be false")
+    boundary_inventory_created = report.get("boundary_inventory_created")
+    boundary_inventory = report.get("boundary_inventory")
+    if boundary_inventory_created is True:
+        if not isinstance(boundary_inventory, dict):
+            raise RuntimeError(
+                "fresh preflight report boundary_inventory_created=true but lacks boundary_inventory"
+            )
+        if boundary_inventory.get("creates_loop_evidence") is not False:
+            raise RuntimeError("fresh preflight boundary inventory must not claim loop evidence")
+        if boundary_inventory.get("proves_runtime_sandbox_enforcement") is not False:
+            raise RuntimeError(
+                "fresh preflight boundary inventory must not claim runtime sandbox enforcement"
+            )
+        declared_inventory_path = report.get("boundary_inventory_json")
+        if isinstance(declared_inventory_path, str) and declared_inventory_path:
+            resolved_inventory = repo_path(Path(declared_inventory_path))
+            if not resolved_inventory.exists() or resolved_inventory.stat().st_size == 0:
+                raise RuntimeError(
+                    "fresh preflight report declares a boundary inventory artifact, but the path is missing or empty: "
+                    f"{declared_inventory_path}"
+                )
+    elif boundary_inventory_created is False and boundary_inventory is not None:
+        raise RuntimeError(
+            "fresh preflight report has boundary_inventory despite boundary_inventory_created=false"
+        )
     checks = report.get("checks")
     current_report_shape = any(
         key in report for key in ["checks", "results", "evidence_json", "preflight_report_json"]
@@ -2634,6 +2760,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "provider auth, quota, or model availability."
         ),
     )
+    fresh.add_argument(
+        "--preflight-boundary-inventory-json",
+        type=Path,
+        help=(
+            "With --preflight-only, optionally run `python3 bench/agent_network_boundary_check.py --json` "
+            "and write the source-boundary inventory to this path. This is readiness/gap evidence only, "
+            "not runtime sandbox enforcement or loop proof."
+        ),
+    )
     fresh.add_argument("--print-only", action="store_true")
 
     defaultable_argv = list(argv)
@@ -2732,13 +2867,31 @@ def main(argv: list[str]) -> int:
         if args.preflight_report_json and not args.preflight_only:
             print("error: --preflight-report-json requires --preflight-only", file=sys.stderr)
             return 2
+        if args.preflight_boundary_inventory_json and not args.preflight_only:
+            print("error: --preflight-boundary-inventory-json requires --preflight-only", file=sys.stderr)
+            return 2
         if args.preflight_only:
             try:
                 fresh_preflight(args, evidence_json)
+                boundary_inventory = None
+                if args.preflight_boundary_inventory_json:
+                    ensure_preflight_boundary_inventory_path(
+                        args.preflight_boundary_inventory_json,
+                        results=args.results,
+                        evidence_json=evidence_json,
+                        preflight_report_json=args.preflight_report_json,
+                    )
+                    boundary_inventory = run_agent_network_boundary_inventory_json(
+                        args.preflight_boundary_inventory_json
+                    )
                 if args.preflight_report_json:
                     write_fresh_preflight_report(
                         args.preflight_report_json,
-                        fresh_preflight_report(args, evidence_json),
+                        fresh_preflight_report(
+                            args,
+                            evidence_json,
+                            boundary_inventory=boundary_inventory,
+                        ),
                         results=args.results,
                         evidence_json=evidence_json,
                     )
@@ -2746,6 +2899,8 @@ def main(argv: list[str]) -> int:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
             print(fresh_preflight_summary(args))
+            if args.preflight_boundary_inventory_json:
+                print(f"# wrote agent network boundary inventory: {args.preflight_boundary_inventory_json}")
             if args.preflight_report_json:
                 print(f"# wrote preflight report: {args.preflight_report_json}")
             run_command(fresh_command(args), print_only=True)
@@ -4915,6 +5070,181 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("1800", data["commands"]["fresh_provenance_contract"])
         self.assertIn("future outputs only", " ".join(data["notes"]))
         self.assertIn("not loop evidence", " ".join(data["notes"]))
+
+    def test_fresh_preflight_can_write_boundary_inventory_artifact_and_report_summary(self) -> None:
+        original_which = shutil.which
+        shutil.which = lambda binary: f"/usr/bin/{binary}"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                stdout = io.StringIO()
+                results = Path(tmpdir) / "fresh-preflight.jsonl"
+                report = Path(tmpdir) / "fresh-preflight.report.json"
+                inventory = Path(tmpdir) / "fresh-preflight.boundary.json"
+
+                def write_inventory(path: Path) -> dict[str, object]:
+                    path.write_text(
+                        json.dumps({"launch_sandbox_enforced": False}) + "\n",
+                        encoding="utf-8",
+                    )
+                    return {
+                        "path": str(path),
+                        "command": "python3 bench/agent_network_boundary_check.py --json",
+                        "status": "recorded",
+                        "creates_loop_evidence": False,
+                        "proves_runtime_sandbox_enforcement": False,
+                        "a2_owned_fail_closed": True,
+                        "a2_owned_sandbox_enforced": False,
+                        "sandbox_runtime_available": False,
+                        "launch_sandbox_enforced": False,
+                    }
+
+                with mock.patch(
+                    __name__ + ".run_agent_network_boundary_inventory_json",
+                    side_effect=write_inventory,
+                ) as run_inventory, contextlib.redirect_stdout(stdout):
+                    result = main(
+                        [
+                            "fresh",
+                            "--results",
+                            str(results),
+                            "--run-id",
+                            "fresh-demo",
+                            "--allow-dirty-source",
+                            "--provider",
+                            "local-test-provider/model",
+                            "--preflight-only",
+                            "--preflight-report-json",
+                            str(report),
+                            "--preflight-boundary-inventory-json",
+                            str(inventory),
+                        ]
+                    )
+                data = json.loads(report.read_text(encoding="utf-8"))
+                inventory_exists = inventory.exists()
+                with contextlib.redirect_stdout(io.StringIO()):
+                    verify_fresh_preflight_report(report)
+        finally:
+            shutil.which = original_which
+
+        self.assertEqual(result, 0)
+        run_inventory.assert_called_once_with(inventory)
+        self.assertTrue(inventory_exists)
+        self.assertIn("# wrote agent network boundary inventory", stdout.getvalue())
+        self.assertIn("# wrote preflight report", stdout.getvalue())
+        self.assertTrue(data["boundary_inventory_created"])
+        self.assertEqual(data["boundary_inventory_json"], str(inventory))
+        self.assertFalse(data["boundary_inventory"]["creates_loop_evidence"])
+        self.assertFalse(data["boundary_inventory"]["proves_runtime_sandbox_enforcement"])
+        self.assertTrue(data["checks"]["agent_network_boundary_inventory_json_requested"])
+        self.assertTrue(data["checks"]["agent_network_boundary_inventory_json_executed"])
+        self.assertEqual(data["checks"]["agent_network_boundary_inventory_json_status"], "recorded")
+
+    def test_preflight_boundary_inventory_requires_preflight_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stderr = io.StringIO()
+            results = Path(tmpdir) / "fresh.jsonl"
+            inventory = Path(tmpdir) / "fresh.boundary.json"
+            with contextlib.redirect_stderr(stderr):
+                result = main(
+                    [
+                        "fresh",
+                        "--results",
+                        str(results),
+                        "--run-id",
+                        "fresh-demo",
+                        "--preflight-boundary-inventory-json",
+                        str(inventory),
+                    ]
+                )
+
+        self.assertEqual(result, 2)
+        self.assertIn("--preflight-boundary-inventory-json requires --preflight-only", stderr.getvalue())
+        self.assertFalse(inventory.exists())
+
+    def test_fresh_preflight_boundary_inventory_refuses_non_empty_file(self) -> None:
+        original_which = shutil.which
+        shutil.which = lambda binary: f"/usr/bin/{binary}"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                stderr = io.StringIO()
+                results = Path(tmpdir) / "fresh.jsonl"
+                inventory = Path(tmpdir) / "fresh.boundary.json"
+                inventory.write_text('{"stale": true}\n', encoding="utf-8")
+                with contextlib.redirect_stderr(stderr):
+                    result = main(
+                        [
+                            "fresh",
+                            "--results",
+                            str(results),
+                            "--run-id",
+                            "fresh-demo",
+                            "--allow-dirty-source",
+                            "--provider",
+                            "local-test-provider/model",
+                            "--preflight-only",
+                            "--preflight-boundary-inventory-json",
+                            str(inventory),
+                        ]
+                    )
+        finally:
+            shutil.which = original_which
+
+        self.assertEqual(result, 2)
+        self.assertIn("fresh demo boundary inventory path already contains data", stderr.getvalue())
+
+    def test_fresh_preflight_boundary_inventory_refuses_report_alias(self) -> None:
+        original_which = shutil.which
+        shutil.which = lambda binary: f"/usr/bin/{binary}"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                stderr = io.StringIO()
+                results = Path(tmpdir) / "fresh.jsonl"
+                report = Path(tmpdir) / "fresh.report.json"
+                with contextlib.redirect_stderr(stderr):
+                    result = main(
+                        [
+                            "fresh",
+                            "--results",
+                            str(results),
+                            "--run-id",
+                            "fresh-demo",
+                            "--allow-dirty-source",
+                            "--provider",
+                            "local-test-provider/model",
+                            "--preflight-only",
+                            "--preflight-report-json",
+                            str(report),
+                            "--preflight-boundary-inventory-json",
+                            str(report),
+                        ]
+                    )
+        finally:
+            shutil.which = original_which
+
+        self.assertEqual(result, 2)
+        self.assertIn("boundary inventory path must be distinct from preflight report path", stderr.getvalue())
+        self.assertFalse(report.exists())
+
+    def test_fresh_preflight_boundary_inventory_alias_guard_resolves_symlinked_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            real_dir = root / "real"
+            real_dir.mkdir()
+            symlink_dir = root / "link"
+            try:
+                symlink_dir.symlink_to(real_dir, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("filesystem does not support directory symlinks")
+            results = real_dir / "fresh.jsonl"
+            inventory_alias = symlink_dir / "fresh.jsonl"
+
+            with self.assertRaisesRegex(RuntimeError, "boundary inventory path must be distinct from results path"):
+                ensure_preflight_boundary_inventory_path(
+                    inventory_alias,
+                    results=results,
+                    evidence_json=real_dir / "fresh.demo-evidence.json",
+                    preflight_report_json=real_dir / "fresh.report.json",
+                )
 
     def test_fresh_preflight_report_records_clean_check_before_output_creation(self) -> None:
         args = argparse.Namespace(
