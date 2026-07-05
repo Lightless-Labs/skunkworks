@@ -363,6 +363,7 @@ def fresh_contract_command(args: argparse.Namespace, evidence_json: Path) -> lis
         str(args.max_tokens),
         "--timeout",
         str(args.timeout),
+        "--require-current-head",
     ]
     if args.allow_dirty_source:
         command.append("--allow-dirty-source")
@@ -1315,6 +1316,23 @@ def validate_evidence_source_metadata(
                 )
 
 
+def require_fresh_evidence_source_head_matches_current(evidence: dict[str, object]) -> None:
+    metadata = require_mapping(evidence.get("source_metadata"), label="source_metadata")
+    source_head = metadata.get("source_head")
+    source_head_short = metadata.get("source_head_short")
+    current = current_source_metadata()
+    current_head = current["source_head"]
+    if source_head != current_head:
+        raise RuntimeError(
+            "fresh demo evidence source_metadata.source_head differs from current HEAD; "
+            "rerun the confirmed fresh provider-backed command from the intended HEAD"
+        )
+    if not isinstance(source_head_short, str) or not current_head.startswith(source_head_short):
+        raise RuntimeError(
+            "fresh demo evidence source_metadata.source_head_short does not prefix current HEAD"
+        )
+
+
 def validate_demo_evidence_contract(
     evidence: dict[str, object],
     reference: dict[str, object],
@@ -1780,7 +1798,11 @@ def verify_evidence_contract(
     timeout_secs: int = 1800,
     allow_dirty_source: bool = False,
     require_git_tracked_artifacts: bool = False,
+    require_current_head: bool = False,
 ) -> None:
+    if require_current_head and fresh_run_id is None:
+        raise RuntimeError("--require-current-head is only supported with --fresh-run-id fresh provenance checks")
+    current_head_required = fresh_run_id is not None
     if require_git_tracked_artifacts:
         require_git_tracked_path(evidence_json, label="demo evidence JSON")
     evidence = load_evidence_json(evidence_json)
@@ -1805,6 +1827,8 @@ def verify_evidence_contract(
         )
         if not isinstance(evidence.get("source_metadata"), dict):
             raise RuntimeError("fresh demo evidence contract requires source_metadata")
+        if current_head_required:
+            require_fresh_evidence_source_head_matches_current(evidence)
     print("Demo evidence contract check")
     print(f"  evidence: {evidence_json}")
     print(f"  reference: {reference_evidence_json}")
@@ -1821,6 +1845,9 @@ def verify_evidence_contract(
             "  PASS fresh artifact provenance "
             f"(run_id={fresh_run_id!r}, max_tokens={max_tokens}, timeout_secs={timeout_secs})"
         )
+        if current_head_required:
+            source_head = require_mapping(evidence.get("source_metadata"), label="source_metadata").get("source_head")
+            print(f"  PASS current-head provenance (source_head={source_head})")
         artifact = evidence.get("artifact")
         print("  archive_review: fresh artifacts are verified but not archived yet")
         print(f"    artifact_jsonl: {artifact}")
@@ -1888,6 +1915,7 @@ def verify_demo_docs_texts(docs: dict[str, str]) -> None:
         "fails closed",
         "not_implemented",
         "audited_sandbox_provider_allowlist_status",
+        "--require-current-head",
     ]
     missing: list[str] = []
     linked_blocks = {
@@ -2039,6 +2067,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--allow-dirty-source",
         action="store_true",
         help="Allow source_dirty=true rows when --fresh-run-id is supplied.",
+    )
+    contract.add_argument(
+        "--require-current-head",
+        action="store_true",
+        help=(
+            "Explicitly request the current-HEAD provenance gate. Fresh provenance "
+            "checks with --fresh-run-id require this gate by default; archived "
+            "historical evidence without --fresh-run-id is not current-HEAD gated."
+        ),
     )
     contract.add_argument(
         "--require-git-tracked-artifacts",
@@ -2201,6 +2238,7 @@ def main(argv: list[str]) -> int:
                 timeout_secs=args.timeout,
                 allow_dirty_source=args.allow_dirty_source,
                 require_git_tracked_artifacts=args.require_git_tracked_artifacts,
+                require_current_head=args.require_current_head,
             )
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -2304,6 +2342,7 @@ def main(argv: list[str]) -> int:
                 max_tokens=args.max_tokens,
                 timeout_secs=args.timeout,
                 allow_dirty_source=args.allow_dirty_source,
+                require_current_head=True,
             )
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -2424,6 +2463,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         command = fresh_contract_command(args, Path("docs/results/fresh.demo-evidence.json"))
 
         self.assertIn("--allow-dirty-source", command)
+        self.assertIn("--require-current-head", command)
 
     def test_documented_python_test_counts_match_self_tests(self) -> None:
         expected_counts = {
@@ -2449,7 +2489,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "## Reproducible Demo Evidence Map",
                     "Fresh provider-backed regeneration is not proof until archived; "
                     "preflight-only is readiness; the confirmed fresh run path fails closed at "
-                    "not_implemented until audited_sandbox_provider_allowlist_status=enforced.",
+                    "not_implemented until audited_sandbox_provider_allowlist_status=enforced; "
+                    "fresh provenance uses --require-current-head.",
                     "python3 bench/self_correction_demo.py verify-demo-docs",
                     canonical_verify_archive_command(),
                     DEFAULT_ARCHIVE.as_posix(),
@@ -2472,6 +2513,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "Neither preflight/report nor print-only proves; "
                     "preflight-only is readiness; the confirmed fresh run path fails closed at "
                     "not_implemented until audited_sandbox_provider_allowlist_status=enforced; "
+                    "fresh provenance uses --require-current-head; "
                     "fresh provider-backed regeneration is not proof yet",
                 ]
             ),
@@ -2538,7 +2580,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         docs["docs/HANDOFF.md"] = docs["docs/HANDOFF.md"].replace(
             "Fresh provider-backed regeneration is not proof until archived; "
             "preflight-only is readiness; the confirmed fresh run path fails closed at "
-            "not_implemented until audited_sandbox_provider_allowlist_status=enforced.",
+            "not_implemented until audited_sandbox_provider_allowlist_status=enforced; "
+            "fresh provenance uses --require-current-head.",
             "Archived regeneration caveat is documented elsewhere.",
         )
 
@@ -2990,6 +3033,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             timeout_secs=1800,
             allow_dirty_source=False,
             require_git_tracked_artifacts=True,
+            require_current_head=False,
         )
 
     def test_require_git_tracked_path_normalizes_absolute_repo_paths(self) -> None:
@@ -3123,6 +3167,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             max_tokens=100_000,
             timeout_secs=1800,
             allow_dirty_source=False,
+            require_current_head=True,
         )
 
     def test_fresh_rejects_post_score_results_mutation_before_contract(self) -> None:
@@ -3289,7 +3334,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             __name__ + ".load_jsonl_rows", return_value=rows
         ), mock.patch(__name__ + ".load_jsonl", return_value=rows) as load_rows, mock.patch(
             __name__ + ".validate_fresh_rows"
-        ) as validate_rows, contextlib.redirect_stdout(stdout):
+        ) as validate_rows, mock.patch(
+            __name__ + ".current_source_metadata", return_value=evidence["source_metadata"]
+        ), contextlib.redirect_stdout(stdout):
             verify_evidence_contract(
                 DEFAULT_ARCHIVE_EVIDENCE,
                 DEFAULT_ARCHIVE_EVIDENCE,
@@ -3306,12 +3353,83 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         output = stdout.getvalue()
         self.assertIn("mode: fresh artifact provenance check", output)
         self.assertIn("PASS fresh artifact provenance", output)
+        self.assertIn("PASS current-head provenance", output)
         self.assertIn("archive_review: fresh artifacts are verified but not archived yet", output)
         self.assertIn(f"artifact_jsonl: {DEFAULT_ARCHIVE}", output)
         self.assertIn(f"evidence_json: {DEFAULT_ARCHIVE_EVIDENCE}", output)
         self.assertIn("--require-git-tracked-artifacts", output)
         self.assertIn("run_id='fresh-demo'", output)
         self.assertIn("source_metadata:", output)
+
+    def test_verify_evidence_contract_requires_fresh_run_id_for_current_head_gate(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "only supported with --fresh-run-id"):
+            verify_evidence_contract(
+                DEFAULT_ARCHIVE_EVIDENCE,
+                DEFAULT_ARCHIVE_EVIDENCE,
+                require_current_head=True,
+            )
+
+    def test_verify_evidence_contract_fresh_current_head_gate_rejects_stale_source_by_default(self) -> None:
+        evidence = {
+            "artifact": "docs/benchmark-results/self-correction/fresh.jsonl",
+            "source_metadata": {
+                "source_head": "1234567890abcdef1234567890abcdef12345678",
+                "source_head_short": "1234567",
+                "source_branch": "main",
+                "source_dirty": False,
+            },
+        }
+        current = {
+            "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+            "source_head_short": "abcdef1",
+            "source_branch": "main",
+            "source_dirty": False,
+        }
+        with mock.patch(__name__ + ".load_evidence_json", side_effect=[evidence, {"requirements": EXPECTED_DEMO_REQUIREMENTS}]), mock.patch(
+            __name__ + ".validate_demo_evidence_contract"
+        ), mock.patch(__name__ + ".load_jsonl", return_value=[]), mock.patch(
+            __name__ + ".validate_fresh_rows"
+        ), mock.patch(__name__ + ".current_source_metadata", return_value=current):
+            with self.assertRaisesRegex(RuntimeError, "differs from current HEAD"):
+                verify_evidence_contract(
+                    DEFAULT_ARCHIVE_EVIDENCE,
+                    DEFAULT_ARCHIVE_EVIDENCE,
+                    fresh_run_id="fresh-demo",
+                )
+
+    def test_verify_evidence_contract_fresh_current_head_gate_prints_pass(self) -> None:
+        source_head = "1234567890abcdef1234567890abcdef12345678"
+        evidence = {
+            "artifact": "docs/benchmark-results/self-correction/fresh.jsonl",
+            "requirements": EXPECTED_DEMO_REQUIREMENTS,
+            "demos": [],
+            "source_metadata": {
+                "source_head": source_head,
+                "source_head_short": "1234567",
+                "source_branch": "main",
+                "source_dirty": False,
+            },
+        }
+        current = {
+            "source_head": source_head,
+            "source_head_short": "1234567",
+            "source_branch": "main",
+            "source_dirty": False,
+        }
+        stdout = io.StringIO()
+        with mock.patch(__name__ + ".load_evidence_json", side_effect=[evidence, {"requirements": EXPECTED_DEMO_REQUIREMENTS}]), mock.patch(
+            __name__ + ".validate_demo_evidence_contract"
+        ), mock.patch(__name__ + ".load_jsonl", return_value=[]), mock.patch(
+            __name__ + ".validate_fresh_rows"
+        ), mock.patch(__name__ + ".current_source_metadata", return_value=current), contextlib.redirect_stdout(stdout):
+            verify_evidence_contract(
+                DEFAULT_ARCHIVE_EVIDENCE,
+                DEFAULT_ARCHIVE_EVIDENCE,
+                fresh_run_id="fresh-demo",
+                require_current_head=True,
+            )
+
+        self.assertIn("PASS current-head provenance", stdout.getvalue())
 
     def test_verify_evidence_contract_fresh_provenance_requires_source_metadata(self) -> None:
         evidence = self.archived_demo_contract_evidence()
