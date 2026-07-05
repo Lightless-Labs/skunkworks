@@ -72,8 +72,14 @@ SENIOR_SWE_BENCH_PROVENANCE_FIELDS = (
     "senior_swe_bench_export_sha256",
     "senior_swe_bench_export_row_index",
 )
+TEST_SANDBOX_PROFILE_LINES = [
+    "(version 1)",
+    "(allow default)",
+    "(deny network*)",
+    '(allow network-outbound (remote tcp "api.openai.com:443"))',
+]
 TEST_SANDBOX_PROFILE_SHA256 = hashlib.sha256(
-    b"a2-test-deny-public-solution-egress-allow-provider-endpoints"
+    ("\n".join(TEST_SANDBOX_PROFILE_LINES) + "\n").encode("utf-8")
 ).hexdigest()
 HOST_PATH_MARKERS = ("/Users", "/tmp", "/var/folders")
 EXPECTED_DEMO_REQUIREMENTS = [
@@ -979,6 +985,19 @@ def validate_fresh_sandbox_provider_allowlist_evidence(
         raise RuntimeError(
             f"fresh demo row {index} sandbox/provider allowlist evidence must record durable sandbox runtime or profile hash"
         )
+    if has_profile_sha:
+        profile_lines = evidence.get("sandbox_profile_lines")
+        if not isinstance(profile_lines, list) or not profile_lines or not all(
+            isinstance(line, str) for line in profile_lines
+        ):
+            raise RuntimeError(
+                f"fresh demo row {index} sandbox/provider allowlist evidence with sandbox_profile_sha256 must record sandbox_profile_lines"
+            )
+        profile_hash = hashlib.sha256(("\n".join(profile_lines) + "\n").encode("utf-8")).hexdigest()
+        if profile_hash != sandbox_sha:
+            raise RuntimeError(
+                f"fresh demo row {index} sandbox/provider allowlist evidence sandbox_profile_lines must match sandbox_profile_sha256"
+            )
 
 
 def provider_endpoint_host_is_malformed(host: str) -> bool:
@@ -2781,6 +2800,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             "public_solution_egress_blocked": True,
             "blocked_solution_hosts": ["github.com", "raw.githubusercontent.com"],
             "sandbox_profile_sha256": TEST_SANDBOX_PROFILE_SHA256,
+            "sandbox_profile_lines": TEST_SANDBOX_PROFILE_LINES,
         }
 
     def fresh_audit_fields(self) -> dict[str, object]:
@@ -6000,6 +6020,14 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             (
                 {**self.fresh_sandbox_provider_allowlist_evidence(), "sandbox_profile_sha256": "not-a-sha"},
                 "durable sandbox runtime or profile hash",
+            ),
+            (
+                {k: v for k, v in self.fresh_sandbox_provider_allowlist_evidence().items() if k != "sandbox_profile_lines"},
+                "sandbox_profile_lines",
+            ),
+            (
+                {**self.fresh_sandbox_provider_allowlist_evidence(), "sandbox_profile_lines": ["(version 1)"]},
+                "sandbox_profile_lines must match sandbox_profile_sha256",
             ),
             (
                 {**self.fresh_sandbox_provider_allowlist_evidence(), "allowed_provider_endpoints": ["https://github.com"]},

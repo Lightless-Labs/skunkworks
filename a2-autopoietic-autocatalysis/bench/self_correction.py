@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import ipaddress
 import json
 import os
@@ -1047,6 +1048,10 @@ def workspace_label(workspace: Path) -> str:
     return workspace.name
 
 
+def sandbox_profile_lines_sha256(lines: list[str]) -> str:
+    return hashlib.sha256(("\n".join(lines) + "\n").encode("utf-8")).hexdigest()
+
+
 def validate_sandbox_provider_allowlist_evidence(evidence: dict[str, Any]) -> None:
     for key in ("status", "enforcement_layer", "launch_boundary"):
         if not isinstance(evidence.get(key), str) or not evidence.get(key):
@@ -1107,6 +1112,18 @@ def validate_sandbox_provider_allowlist_evidence(evidence: dict[str, Any]) -> No
         raise RuntimeError(
             "audited sandbox/provider allowlist evidence must record durable sandbox runtime or profile hash"
         )
+    if has_profile_sha:
+        profile_lines = evidence.get("sandbox_profile_lines")
+        if not isinstance(profile_lines, list) or not profile_lines or not all(
+            isinstance(line, str) for line in profile_lines
+        ):
+            raise RuntimeError(
+                "audited sandbox/provider allowlist evidence with sandbox_profile_sha256 must record sandbox_profile_lines"
+            )
+        if sandbox_profile_lines_sha256(profile_lines) != sandbox_sha:
+            raise RuntimeError(
+                "audited sandbox/provider allowlist evidence sandbox_profile_lines must match sandbox_profile_sha256"
+            )
 
 
 def provider_endpoint_host_is_malformed(host: str) -> bool:
@@ -1855,6 +1872,12 @@ diff --git a/crates/a2ctl/src/main.rs b/crates/a2ctl/src/main.rs
             AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE = original_evidence
 
     def test_result_record_rejects_synthetic_or_local_provider_allowlist_endpoints(self) -> None:
+        profile_lines = [
+            "(version 1)",
+            "(allow default)",
+            "(deny network*)",
+            '(allow network-outbound (remote tcp "api.openai.com:443"))',
+        ]
         base_evidence = {
             "status": "enforced",
             "enforcement_layer": "test-sandbox-wrapper",
@@ -1864,7 +1887,8 @@ diff --git a/crates/a2ctl/src/main.rs b/crates/a2ctl/src/main.rs
             "allowed_provider_endpoints": ["https://api.openai.com"],
             "public_solution_egress_blocked": True,
             "blocked_solution_hosts": ["github.com", "raw.githubusercontent.com"],
-            "sandbox_profile_sha256": "0" * 64,
+            "sandbox_profile_sha256": sandbox_profile_lines_sha256(profile_lines),
+            "sandbox_profile_lines": profile_lines,
         }
         for endpoint in (
             "https://api.example-provider.invalid",
@@ -1879,6 +1903,14 @@ diff --git a/crates/a2ctl/src/main.rs b/crates/a2ctl/src/main.rs
                 evidence = {**base_evidence, "allowed_provider_endpoints": [endpoint]}
                 with self.assertRaisesRegex(RuntimeError, "real provider endpoints"):
                     validate_sandbox_provider_allowlist_evidence(evidence)
+        with self.assertRaisesRegex(RuntimeError, "sandbox_profile_lines"):
+            validate_sandbox_provider_allowlist_evidence(
+                {key: value for key, value in base_evidence.items() if key != "sandbox_profile_lines"}
+            )
+        with self.assertRaisesRegex(RuntimeError, "sandbox_profile_lines must match"):
+            validate_sandbox_provider_allowlist_evidence(
+                {**base_evidence, "sandbox_profile_lines": ["(version 1)"]}
+            )
 
     def test_result_record_emits_durable_evidence_for_enforced_sandbox_allowlist(self) -> None:
         global AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
@@ -1887,6 +1919,12 @@ diff --git a/crates/a2ctl/src/main.rs b/crates/a2ctl/src/main.rs
         original_enforced = AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
         original_status = AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS
         original_evidence = AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE
+        profile_lines = [
+            "(version 1)",
+            "(allow default)",
+            "(deny network*)",
+            '(allow network-outbound (remote tcp "api.openai.com:443"))',
+        ]
         evidence = {
             "status": "enforced",
             "enforcement_layer": "test-sandbox-wrapper",
@@ -1896,7 +1934,8 @@ diff --git a/crates/a2ctl/src/main.rs b/crates/a2ctl/src/main.rs
             "allowed_provider_endpoints": ["https://api.openai.com"],
             "public_solution_egress_blocked": True,
             "blocked_solution_hosts": ["github.com", "raw.githubusercontent.com"],
-            "sandbox_profile_sha256": "0" * 64,
+            "sandbox_profile_sha256": sandbox_profile_lines_sha256(profile_lines),
+            "sandbox_profile_lines": profile_lines,
         }
         try:
             AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = True
