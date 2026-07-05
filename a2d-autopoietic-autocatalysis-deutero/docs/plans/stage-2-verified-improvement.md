@@ -21,6 +21,7 @@
 **Enhanced:** 2026-07-05 — added a bounded Senior SWE-Bench retry executor over precomputed cycle-output manifests and existing evidence gates
 **Enhanced:** 2026-07-05 — retry executor now persists attempt/run artifacts for auditability without making them fitness evidence
 **Hardened:** 2026-07-05 — retry executor next-cycle input now uses the same fail-closed JSON artifact persistence as other retry artifacts
+**Enhanced:** 2026-07-05 — retry executor now records the exact next `cycle-input` command/manifest boundary for failed non-final attempts
 **Depends on:** Stage 1 (complete)
 
 ## 2026-07-05 Update: Retry Executor Artifact Persistence
@@ -30,6 +31,8 @@ The bounded `a2d senior-swe-bench-retry-execute` command now writes the intermed
 Fresh source-patch evidence: `runs/20260705-senior-swe-bench-retry-execute-artifacts-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1` actual-test evidence with `source_diff_hash: 0a6c6625acac24d056b8c3dc38331c47f8c5eb5b`. A transient local retry-execute smoke confirmed the composed path, but its host-local evaluator/temp paths were not committed. The focused retry-execute unit tests cover persisted artifact semantics; the committed run evidence is the portable source-bound `a2d.fitness-evidence.v1` artifact. The persisted retry artifacts are audit/replay material only; the underlying `a2d.fitness-evidence.v1` remains the authoritative gate, and `provided_local_command` evidence is not official Senior SWE-Bench mastery.
 
 Follow-up hardening: failed non-final attempts now write `next-cycle-input.json` through the same fail-closed JSON artifact helper rather than raw `fs::write`. Regression coverage proves the feedback input exists when a failed attempt stops because precomputed manifests are exhausted, and proves a stale pre-existing `next-cycle-input.json` is rejected without overwrite. Fresh source-patch evidence: `runs/20260705-retry-execute-next-cycle-input-no-overwrite-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_diff_hash: 875e1a0f511cb98ad1736e21f964e8f5d0f0efab`.
+
+Next resume handoff hardening: failed non-final attempts now record a `next_cycle_command` in both the attempt record and terminal retry execution summary. The command is data, not an already-started provider invocation: it records `a2d` plus argv `cycle-input <next-cycle-input.json> 1 --checkout <checkout> --output-artifacts <attempt-N/cycle-output-artifacts>`, the expected next manifest path, and flags that no provider invocation or fitness claim has started yet. Regression coverage asserts the exact `cycle-input` parser order and no pre-evidence claim flags. Fresh source-patch evidence: `runs/20260705-retry-execute-next-cycle-command-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_diff_hash: 781675eec3e4e261c7b5ab08f114a06f78d9e603`.
 
 ## Problem
 

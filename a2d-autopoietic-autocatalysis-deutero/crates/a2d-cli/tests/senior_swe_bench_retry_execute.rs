@@ -373,14 +373,47 @@ fn retry_execute_reports_precomputed_manifest_exhaustion_before_max_attempts() {
     assert_eq!(value["attempts_executed"].as_u64(), Some(1));
     assert_eq!(value["evaluator_invocations_started"].as_bool(), Some(true));
     assert_eq!(value["provider_invocations_started"].as_bool(), Some(false));
+    let next_cycle_input_path = fixture.work_dir.join("attempt-0/next-cycle-input.json");
+    let next_cycle_output_dir = fixture.work_dir.join("attempt-1/cycle-output-artifacts");
+    assert_eq!(
+        value["attempts"][0]["next_cycle_command"]["argv"],
+        serde_json::json!([
+            "cycle-input",
+            next_cycle_input_path.to_string_lossy(),
+            "1",
+            "--checkout",
+            fixture.checkout.to_string_lossy(),
+            "--output-artifacts",
+            next_cycle_output_dir.to_string_lossy(),
+        ])
+    );
+    assert_eq!(
+        value["attempts"][0]["next_cycle_command"]["expected_manifest_path"],
+        serde_json::json!(
+            next_cycle_output_dir
+                .join("manifest.json")
+                .to_string_lossy()
+        )
+    );
+    assert_eq!(
+        value["attempts"][0]["next_cycle_command"]["provider_invocations_started"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        value["attempts"][0]["next_cycle_command"]["fitness_claim_allowed_before_evidence"]
+            .as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        value["next_cycle_command"],
+        value["attempts"][0]["next_cycle_command"]
+    );
     let persisted_execution: serde_json::Value =
         serde_json::from_slice(&fs::read(fixture.work_dir.join("retry-execution.json")).unwrap())
             .unwrap();
     assert_eq!(persisted_execution, value);
-    let next_cycle_input: serde_json::Value = serde_json::from_slice(
-        &fs::read(fixture.work_dir.join("attempt-0/next-cycle-input.json")).unwrap(),
-    )
-    .unwrap();
+    let next_cycle_input: serde_json::Value =
+        serde_json::from_slice(&fs::read(&next_cycle_input_path).unwrap()).unwrap();
     assert_eq!(
         next_cycle_input["evaluation"]["status"].as_str(),
         Some("not_evaluated")

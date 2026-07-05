@@ -113,3 +113,28 @@ target/debug/a2d fitness-evidence-inspect \
 Source-patch gate: `runs/20260705-retry-execute-next-cycle-input-no-overwrite-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: 875e1a0f511cb98ad1736e21f964e8f5d0f0efab`.
 
 Post-commit clean-HEAD evidence: `runs/20260705-postcommit-fitness-evidence-e88c627/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_revision: 748e18f`, `source_tree_dirty: false`, `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`.
+
+## Next-cycle command persistence addendum
+
+Follow-up hardening: when a failed non-final attempt produces a feedback-enriched `next-cycle-input.json`, the retry execution attempt record and terminal summary now include `next_cycle_command`. This records the exact next live cycle boundary without starting it:
+
+```text
+a2d cycle-input <attempt-N/next-cycle-input.json> 1 \
+  --checkout <benchmark-checkout> \
+  --output-artifacts <attempt-N+1/cycle-output-artifacts>
+```
+
+The record also includes the expected next `manifest.json` path plus `provider_invocations_started: false` and `fitness_claim_allowed_before_evidence: false`. The executor still consumes only precomputed manifests; this command data is for the next resume/live-provider orchestration step.
+
+Validation/evidence:
+
+```bash
+cargo fmt --check
+cargo test -p a2d --test senior_swe_bench_retry_execute -- --nocapture
+cargo test
+target/debug/a2d fitness-evidence-inspect \
+  runs/20260705-retry-execute-next-cycle-command-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
+```
+
+Source-patch gate: `runs/20260705-retry-execute-next-cycle-command-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: 781675eec3e4e261c7b5ab08f114a06f78d9e603`.

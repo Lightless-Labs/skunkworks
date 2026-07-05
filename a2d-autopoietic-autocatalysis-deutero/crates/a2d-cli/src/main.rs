@@ -5655,7 +5655,17 @@ fn build_senior_swe_bench_retry_execution(
                     })?;
                 let next_cycle_input_path = attempt_dir.join("next-cycle-input.json");
                 write_json_artifact(&next_cycle_input_path, &next_cycle_input)?;
+                let next_cycle_output_dir = config.work_dir.join(format!(
+                    "attempt-{}/cycle-output-artifacts",
+                    attempt_index + 1
+                ));
+                let next_cycle_command = retry_execute_next_cycle_command(
+                    &next_cycle_input_path,
+                    &config.checkout,
+                    &next_cycle_output_dir,
+                );
                 record["next_cycle_input_path"] = json!(next_cycle_input_path);
+                record["next_cycle_command"] = next_cycle_command;
                 record["fitness_evidence_inspection_passed"] = json!(false);
                 attempt_records.push(record);
                 current_cycle_input = next_cycle_input_path;
@@ -5701,6 +5711,28 @@ fn build_senior_swe_bench_retry_execution(
     Ok(terminal)
 }
 
+fn retry_execute_next_cycle_command(
+    next_cycle_input_path: &Path,
+    checkout: &Path,
+    output_artifacts_dir: &Path,
+) -> Value {
+    json!({
+        "command": "a2d",
+        "argv": [
+            "cycle-input",
+            next_cycle_input_path.to_string_lossy(),
+            "1",
+            "--checkout",
+            checkout.to_string_lossy(),
+            "--output-artifacts",
+            output_artifacts_dir.to_string_lossy(),
+        ],
+        "expected_manifest_path": output_artifacts_dir.join("manifest.json").to_string_lossy(),
+        "provider_invocations_started": false,
+        "fitness_claim_allowed_before_evidence": false,
+    })
+}
+
 fn write_json_artifact(path: &Path, value: &Value) -> Result<(), String> {
     if path.exists() {
         return Err(format!(
@@ -5741,6 +5773,10 @@ fn retry_execution_terminal_result(
             || attempt.get("local_evaluation_path").is_some()
             || attempt.get("local_evaluation_status").is_some()
     });
+    let next_cycle_command = attempts
+        .last()
+        .and_then(|attempt| attempt.get("next_cycle_command"))
+        .cloned();
     let mut result = json!({
         "schema_version": "a2d.senior-swe-bench-retry-execution.v1",
         "status": status,
@@ -5757,6 +5793,9 @@ fn retry_execution_terminal_result(
         "fitness_claim_allowed_after_evidence_inspection": status == "success",
         "note": "bounded retry executor summary over precomputed cycle-output manifests; cycle/provider execution remains outside this command, and the underlying a2d.fitness-evidence.v1 remains the authoritative evidence gate",
     });
+    if let Some(next_cycle_command) = next_cycle_command {
+        result["next_cycle_command"] = next_cycle_command;
+    }
     if let Some(run_result) = terminal_run_result {
         result["final_evidence_path"] = run_result
             .get("final_evidence_path")
