@@ -58,6 +58,9 @@ class SelfCorrectionRecord:
     benchmark_source: str | None = None
     senior_swe_bench_export_sha256: str | None = None
     senior_swe_bench_export_row_index: int | None = None
+    audited_sandbox_provider_allowlist_enforced: bool | None = None
+    audited_sandbox_provider_allowlist_status: str | None = None
+    audited_sandbox_provider_allowlist_evidence: dict[str, Any] | None = None
 
     def __init__(
         self,
@@ -95,6 +98,9 @@ class SelfCorrectionRecord:
         benchmark_source: str | None = None,
         senior_swe_bench_export_sha256: str | None = None,
         senior_swe_bench_export_row_index: int | None = None,
+        audited_sandbox_provider_allowlist_enforced: bool | None = None,
+        audited_sandbox_provider_allowlist_status: str | None = None,
+        audited_sandbox_provider_allowlist_evidence: dict[str, Any] | None = None,
     ) -> None:
         object.__setattr__(self, "task_id", task_id)
         object.__setattr__(self, "run_id", run_id)
@@ -159,6 +165,21 @@ class SelfCorrectionRecord:
         object.__setattr__(
             self, "senior_swe_bench_export_row_index", senior_swe_bench_export_row_index
         )
+        object.__setattr__(
+            self,
+            "audited_sandbox_provider_allowlist_enforced",
+            audited_sandbox_provider_allowlist_enforced,
+        )
+        object.__setattr__(
+            self,
+            "audited_sandbox_provider_allowlist_status",
+            audited_sandbox_provider_allowlist_status,
+        )
+        object.__setattr__(
+            self,
+            "audited_sandbox_provider_allowlist_evidence",
+            audited_sandbox_provider_allowlist_evidence,
+        )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -191,7 +212,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def optional_int(value: Any) -> int | None:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
     try:
         return int(value)
@@ -209,6 +230,15 @@ def optional_positive_int(value: Any) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     return None
+
+
+def attempt_value(value: Any) -> int:
+    if value is None:
+        return 1
+    parsed = optional_int(value)
+    if parsed is None:
+        return 0
+    return max(parsed, 1)
 
 
 def touched_files_from_payload(payload: dict[str, Any]) -> tuple[str, ...]:
@@ -250,7 +280,7 @@ def payload_has_promotion_evidence(payload: dict[str, Any]) -> bool:
             and promotion.get("evidence_present") is True
         )
     if "promotion_evidence_present" in payload:
-        return bool(payload["promotion_evidence_present"])
+        return payload["promotion_evidence_present"] is True
     output = "\n".join(
         str(payload.get(key) or "") for key in ("stdout", "stderr")
     ).lower()
@@ -270,13 +300,11 @@ def load_records(path: Path) -> list[SelfCorrectionRecord]:
                 SelfCorrectionRecord(
                     task_id=str(payload.get("task_id") or f"task-{index:04d}"),
                     run_id=str(payload.get("run_id") or f"run-{index:04d}"),
-                    attempt=max(int(payload.get("attempt") or 1), 1),
-                    resolved=bool(payload.get("resolved")),
-                    prior_lineage_present=bool(payload.get("prior_lineage_present")),
-                    anti_repeat_retry_enabled=(
-                        bool(payload["anti_repeat_retry_enabled"])
-                        if "anti_repeat_retry_enabled" in payload
-                        else None
+                    attempt=attempt_value(payload.get("attempt")),
+                    resolved=payload.get("resolved") is True,
+                    prior_lineage_present=payload.get("prior_lineage_present") is True,
+                    anti_repeat_retry_enabled=optional_bool(
+                        payload.get("anti_repeat_retry_enabled")
                     ),
                     a2_returncode=optional_int(payload.get("a2_returncode")),
                     verify_returncode=optional_int(payload.get("verify_returncode")),
@@ -294,10 +322,8 @@ def load_records(path: Path) -> list[SelfCorrectionRecord]:
                     lineage_records_after=optional_int(
                         payload.get("lineage_records_after")
                     ),
-                    lineage_reconciled_by_core=(
-                        bool(payload["lineage_reconciled_by_core"])
-                        if "lineage_reconciled_by_core" in payload
-                        else None
+                    lineage_reconciled_by_core=optional_bool(
+                        payload.get("lineage_reconciled_by_core")
                     ),
                     verifier_failure_evidence_present=payload_has_verifier_failure_evidence(
                         payload
@@ -359,6 +385,20 @@ def load_records(path: Path) -> list[SelfCorrectionRecord]:
                     ),
                     senior_swe_bench_export_row_index=optional_positive_int(
                         payload.get("senior_swe_bench_export_row_index")
+                    ),
+                    audited_sandbox_provider_allowlist_enforced=optional_bool(
+                        payload.get("audited_sandbox_provider_allowlist_enforced")
+                    ),
+                    audited_sandbox_provider_allowlist_status=(
+                        str(payload["audited_sandbox_provider_allowlist_status"])
+                        if isinstance(payload.get("audited_sandbox_provider_allowlist_status"), str)
+                        and payload.get("audited_sandbox_provider_allowlist_status")
+                        else None
+                    ),
+                    audited_sandbox_provider_allowlist_evidence=(
+                        payload.get("audited_sandbox_provider_allowlist_evidence")
+                        if isinstance(payload.get("audited_sandbox_provider_allowlist_evidence"), dict)
+                        else None
                     ),
                 )
             )
@@ -560,6 +600,8 @@ def demo_run_ids(records: list[SelfCorrectionRecord]) -> list[tuple[str, str]]:
         if len(attempts) < 2:
             continue
         first = attempts[0]
+        if first.attempt != 1:
+            continue
         later_attempts = attempts[1:]
         promotion_attempts = [
             record
@@ -666,6 +708,18 @@ def normalized_evidence_row(record: SelfCorrectionRecord) -> dict[str, Any]:
         row["senior_swe_bench_export_sha256"] = record.senior_swe_bench_export_sha256
     if record.senior_swe_bench_export_row_index is not None:
         row["senior_swe_bench_export_row_index"] = record.senior_swe_bench_export_row_index
+    if record.audited_sandbox_provider_allowlist_enforced is not None:
+        row["audited_sandbox_provider_allowlist_enforced"] = (
+            record.audited_sandbox_provider_allowlist_enforced
+        )
+    if record.audited_sandbox_provider_allowlist_status is not None:
+        row["audited_sandbox_provider_allowlist_status"] = (
+            record.audited_sandbox_provider_allowlist_status
+        )
+    if record.audited_sandbox_provider_allowlist_evidence is not None:
+        row["audited_sandbox_provider_allowlist_evidence"] = (
+            record.audited_sandbox_provider_allowlist_evidence
+        )
     if record.source_head is not None:
         row["source_head"] = record.source_head
         row["source_head_short"] = record.source_head_short
@@ -1588,6 +1642,191 @@ class SelfCorrectionScoreTests(unittest.TestCase):
             row["senior_swe_bench_export_sha256"],
         )
         self.assertEqual(records[0].senior_swe_bench_export_row_index, 42)
+
+    def test_load_records_omits_malformed_verifier_and_promotion_fields_from_demo_evidence(self) -> None:
+        rows = [
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 1,
+                "resolved": False,
+                "prior_lineage_present": False,
+                "verify_returncode": True,
+                "verify_command": "cargo test -p demo hidden_regression",
+                "lineage_records_before": 0,
+                "lineage_records_after": 1,
+                "verifier_failure_evidence_present": True,
+            },
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 2,
+                "resolved": True,
+                "prior_lineage_present": True,
+                "verify_returncode": 0,
+                "lineage_records_before": 1,
+                "lineage_records_after": 2,
+                "lineage_reconciled_by_core": True,
+                "promotion_evidence_present": "false",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logfile = Path(tmpdir) / "records.jsonl"
+            logfile.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            records = load_records(logfile)
+
+        self.assertIsNone(records[0].verify_returncode)
+        self.assertFalse(records[1].promotion_evidence_present)
+        evidence_map = demo_evidence_map(
+            records,
+            artifact_label="malformed.jsonl",
+            artifact_sha256="b" * 64,
+        )
+        self.assertFalse(evidence_map["complete"])
+
+    def test_load_records_preserves_sandbox_allowlist_audit_fields(self) -> None:
+        evidence = {
+            "status": "enforced",
+            "enforcement_layer": "test sandbox wrapper",
+            "launch_boundary": "candidate-worktree agent subprocess",
+            "benchmark_network_policy": "Isolated",
+            "provider_endpoint_allowlist_enforced": True,
+            "allowed_provider_endpoints": ["https://api.example-provider.invalid"],
+            "public_solution_egress_blocked": True,
+            "blocked_solution_hosts": ["github.com"],
+            "sandbox_profile_sha256": "a" * 64,
+        }
+        row = {
+            "task_id": "task",
+            "run_id": "run",
+            "attempt": 1,
+            "resolved": True,
+            "prior_lineage_present": False,
+            "audited_sandbox_provider_allowlist_enforced": True,
+            "audited_sandbox_provider_allowlist_status": "enforced",
+            "audited_sandbox_provider_allowlist_evidence": evidence,
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logfile = Path(tmpdir) / "records.jsonl"
+            logfile.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            records = load_records(logfile)
+
+        self.assertEqual(records[0].audited_sandbox_provider_allowlist_enforced, True)
+        self.assertEqual(records[0].audited_sandbox_provider_allowlist_status, "enforced")
+        self.assertEqual(records[0].audited_sandbox_provider_allowlist_evidence, evidence)
+        normalized = normalized_evidence_row(records[0])
+        self.assertEqual(normalized["audited_sandbox_provider_allowlist_enforced"], True)
+        self.assertEqual(normalized["audited_sandbox_provider_allowlist_status"], "enforced")
+        self.assertEqual(normalized["audited_sandbox_provider_allowlist_evidence"], evidence)
+
+    def test_load_records_rejects_bool_attempt_as_proof_selector(self) -> None:
+        rows = [
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": True,
+                "resolved": False,
+                "prior_lineage_present": False,
+                "verify_returncode": 1,
+                "lineage_records_before": 0,
+                "lineage_records_after": 1,
+                "verifier_failure_evidence_present": True,
+            },
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 2,
+                "resolved": True,
+                "prior_lineage_present": True,
+                "verify_returncode": 0,
+                "lineage_records_before": 1,
+                "lineage_records_after": 2,
+                "lineage_reconciled_by_core": True,
+                "promotion_evidence_present": True,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logfile = Path(tmpdir) / "records.jsonl"
+            logfile.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            records = load_records(logfile)
+
+        self.assertEqual(records[0].attempt, 0)
+        self.assertEqual(demo_run_ids(records), [])
+        evidence_map = demo_evidence_map(
+            records,
+            artifact_label="bool-attempt.jsonl",
+            artifact_sha256="b" * 64,
+        )
+        self.assertFalse(evidence_map["complete"])
+
+    def test_load_records_rejects_stringly_core_booleans_as_proof(self) -> None:
+        rows = [
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 1,
+                "resolved": False,
+                "prior_lineage_present": False,
+                "verify_returncode": 1,
+                "lineage_records_before": 0,
+                "lineage_records_after": 1,
+                "verifier_failure_evidence_present": True,
+            },
+            {
+                "task_id": "task",
+                "run_id": "run",
+                "attempt": 2,
+                "resolved": "true",
+                "prior_lineage_present": "true",
+                "verify_returncode": 0,
+                "lineage_records_before": 1,
+                "lineage_records_after": 2,
+                "lineage_reconciled_by_core": "true",
+                "promotion_evidence_present": True,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logfile = Path(tmpdir) / "records.jsonl"
+            logfile.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            records = load_records(logfile)
+
+        self.assertFalse(records[1].resolved)
+        self.assertFalse(records[1].prior_lineage_present)
+        self.assertIsNone(records[1].lineage_reconciled_by_core)
+        self.assertEqual(demo_run_ids(records), [])
+        evidence_map = demo_evidence_map(
+            records,
+            artifact_label="stringly-core-bools.jsonl",
+            artifact_sha256="b" * 64,
+        )
+        self.assertFalse(evidence_map["complete"])
+
+    def test_load_records_omits_malformed_sandbox_allowlist_audit_fields(self) -> None:
+        row = {
+            "task_id": "task",
+            "run_id": "run",
+            "attempt": 1,
+            "resolved": True,
+            "prior_lineage_present": False,
+            "audited_sandbox_provider_allowlist_enforced": "true",
+            "audited_sandbox_provider_allowlist_status": [],
+            "audited_sandbox_provider_allowlist_evidence": "not-a-map",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logfile = Path(tmpdir) / "records.jsonl"
+            logfile.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            records = load_records(logfile)
+
+        self.assertIsNone(records[0].audited_sandbox_provider_allowlist_enforced)
+        self.assertIsNone(records[0].audited_sandbox_provider_allowlist_status)
+        self.assertIsNone(records[0].audited_sandbox_provider_allowlist_evidence)
+        normalized = normalized_evidence_row(records[0])
+        for key in (
+            "audited_sandbox_provider_allowlist_enforced",
+            "audited_sandbox_provider_allowlist_status",
+            "audited_sandbox_provider_allowlist_evidence",
+        ):
+            self.assertNotIn(key, normalized)
 
     def test_load_records_rejects_malformed_senior_swe_export_row_index_for_normalized_evidence(self) -> None:
         for malformed in ("7", 7.9, True, 0, -1):

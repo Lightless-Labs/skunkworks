@@ -1331,7 +1331,7 @@ def load_jsonl_rows(path: Path) -> list[dict[str, object]]:
 
 
 def optional_int_value(value: object) -> int | None:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
     try:
         return int(value)  # type: ignore[arg-type]
@@ -1341,6 +1341,18 @@ def optional_int_value(value: object) -> int | None:
 
 def optional_bool_value(value: object) -> bool | None:
     if value is True or value is False:
+        return value
+    return None
+
+
+def optional_string_value(value: object) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def optional_positive_int_value(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     return None
 
@@ -1399,8 +1411,8 @@ def normalized_artifact_row(row: dict[str, object]) -> dict[str, object]:
         "run_id": str(row.get("run_id") or ""),
         "task_id": str(row.get("task_id") or ""),
         "attempt": max(int(row.get("attempt") or 1), 1),
-        "resolved": bool(row.get("resolved")),
-        "prior_lineage_present": bool(row.get("prior_lineage_present")),
+        "resolved": row.get("resolved") is True,
+        "prior_lineage_present": row.get("prior_lineage_present") is True,
         "a2_returncode": optional_int_value(row.get("a2_returncode")),
         "verify_returncode": optional_int_value(row.get("verify_returncode")),
         "verify_command": str(row["verify_command"]) if row.get("verify_command") else None,
@@ -1411,9 +1423,7 @@ def normalized_artifact_row(row: dict[str, object]) -> dict[str, object]:
         "diff_removed_lines": optional_int_value(row.get("diff_removed_lines")),
         "lineage_records_before": optional_int_value(row.get("lineage_records_before")),
         "lineage_records_after": optional_int_value(row.get("lineage_records_after")),
-        "lineage_reconciled_by_core": bool(row["lineage_reconciled_by_core"])
-        if "lineage_reconciled_by_core" in row
-        else None,
+        "lineage_reconciled_by_core": optional_bool_value(row.get("lineage_reconciled_by_core")),
         "verifier_failure_evidence_present": row.get("verifier_failure_evidence_present") is True
         if "verifier_failure_evidence_present" in row
         else None,
@@ -1429,13 +1439,26 @@ def normalized_artifact_row(row: dict[str, object]) -> dict[str, object]:
     }
     for key in (
         "no_external_solution_search",
+        "audited_sandbox_provider_allowlist_enforced",
+    ):
+        value = optional_bool_value(row.get(key))
+        if value is not None:
+            normalized[key] = value
+    for key in (
         "network_policy",
         "benchmark_source",
         "senior_swe_bench_export_sha256",
-        "senior_swe_bench_export_row_index",
+        "audited_sandbox_provider_allowlist_status",
     ):
-        if key in row:
-            normalized[key] = row.get(key)
+        value = optional_string_value(row.get(key))
+        if value is not None:
+            normalized[key] = value
+    row_index = optional_positive_int_value(row.get("senior_swe_bench_export_row_index"))
+    if row_index is not None:
+        normalized["senior_swe_bench_export_row_index"] = row_index
+    audit_evidence = row.get("audited_sandbox_provider_allowlist_evidence")
+    if isinstance(audit_evidence, dict):
+        normalized["audited_sandbox_provider_allowlist_evidence"] = audit_evidence
     if "source_head" in row:
         normalized["source_head"] = row.get("source_head")
         normalized["source_head_short"] = row.get("source_head_short")
@@ -1448,7 +1471,12 @@ def selector_tuple(selector: dict[str, object], *, label: str) -> tuple[str, str
     run_id = selector.get("run_id")
     task_id = selector.get("task_id")
     attempt = selector.get("attempt")
-    if not isinstance(run_id, str) or not isinstance(task_id, str) or not isinstance(attempt, int):
+    if (
+        not isinstance(run_id, str)
+        or not isinstance(task_id, str)
+        or not isinstance(attempt, int)
+        or isinstance(attempt, bool)
+    ):
         raise RuntimeError(f"demo evidence contract selector lacks run_id/task_id/attempt at {label}")
     return (run_id, task_id, attempt)
 
@@ -1478,6 +1506,20 @@ def require_artifact_row(
         raise RuntimeError(f"demo evidence contract selector missing from artifact: {key}") from exc
 
 
+def strict_int(value: object, *, label: str) -> int:
+    if type(value) is int:
+        return value
+    raise RuntimeError(f"demo evidence contract {label} must be an integer")
+
+
+def strict_json_equal(left: object, right: object) -> bool:
+    return json.dumps(left, sort_keys=True, separators=(",", ":")) == json.dumps(
+        right,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def require_embedded_row_matches_artifact(
     step: dict[str, object],
     artifact_row: dict[str, object],
@@ -1486,7 +1528,7 @@ def require_embedded_row_matches_artifact(
 ) -> dict[str, object]:
     embedded = require_mapping(step.get("evidence_row"), label=f"{label}.evidence_row")
     expected = normalized_artifact_row(artifact_row)
-    if embedded != expected:
+    if not strict_json_equal(embedded, expected):
         raise RuntimeError(f"demo evidence contract embedded row differs from artifact at {label}")
     return embedded
 
@@ -1649,10 +1691,17 @@ def validate_demo_evidence_contract(
             raise RuntimeError("demo evidence contract first attempt is not failed")
         if failed_embedded_row.get("resolved") is not False:
             raise RuntimeError("demo evidence contract first attempt artifact row is not failed")
-        failed_verify = failed_fields.get("verify_returncode")
-        if not isinstance(failed_verify, int) or failed_verify == 0:
+        failed_verify = strict_int(
+            failed_fields.get("verify_returncode"),
+            label="failed_first_attempt.fields.verify_returncode",
+        )
+        if failed_verify == 0:
             raise RuntimeError("demo evidence contract first attempt lacks verifier failure")
-        if failed_embedded_row.get("verify_returncode") != failed_verify:
+        failed_embedded_verify = strict_int(
+            failed_embedded_row.get("verify_returncode"),
+            label="failed_first_attempt.evidence_row.verify_returncode",
+        )
+        if failed_embedded_verify != failed_verify:
             raise RuntimeError("demo evidence contract failed verifier status differs from artifact")
         failed_command = failed_fields.get("verify_command")
         if not isinstance(failed_command, str) or not failed_command.strip():
@@ -1680,13 +1729,27 @@ def validate_demo_evidence_contract(
         )
         if archived_fields.get("lineage_advanced") is not True:
             raise RuntimeError("demo evidence contract failure evidence did not advance lineage")
-        if archived_embedded_row.get("lineage_records_before") != archived_fields.get("lineage_records_before"):
+        archived_field_before = strict_int(
+            archived_fields.get("lineage_records_before"),
+            label="archived_verifier_failure_evidence.fields.lineage_records_before",
+        )
+        archived_field_after = strict_int(
+            archived_fields.get("lineage_records_after"),
+            label="archived_verifier_failure_evidence.fields.lineage_records_after",
+        )
+        archived_before = strict_int(
+            archived_embedded_row.get("lineage_records_before"),
+            label="archived_verifier_failure_evidence.evidence_row.lineage_records_before",
+        )
+        archived_after = strict_int(
+            archived_embedded_row.get("lineage_records_after"),
+            label="archived_verifier_failure_evidence.evidence_row.lineage_records_after",
+        )
+        if archived_before != archived_field_before:
             raise RuntimeError("demo evidence contract archived lineage start differs from artifact")
-        if archived_embedded_row.get("lineage_records_after") != archived_fields.get("lineage_records_after"):
+        if archived_after != archived_field_after:
             raise RuntimeError("demo evidence contract archived lineage end differs from artifact")
-        archived_before = archived_embedded_row.get("lineage_records_before")
-        archived_after = archived_embedded_row.get("lineage_records_after")
-        if not isinstance(archived_before, int) or not isinstance(archived_after, int) or archived_after <= archived_before:
+        if archived_after <= archived_before:
             raise RuntimeError("demo evidence contract failure evidence did not advance lineage")
         retry_step = require_mapping(
             chain[reference_requirements.index("retry_context_from_failure_evidence")],
@@ -1708,9 +1771,10 @@ def validate_demo_evidence_contract(
             raise RuntimeError("demo evidence contract requires paired retry selectors and fields")
         if len(retry_embedded_rows) != len(retry_selectors):
             raise RuntimeError("demo evidence contract requires paired retry selectors and evidence rows")
-        failed_lineage_after = archived_fields.get("lineage_records_after")
-        if not isinstance(failed_lineage_after, int):
-            raise RuntimeError("demo evidence contract archived failure lacks lineage_records_after")
+        failed_lineage_after = strict_int(
+            archived_fields.get("lineage_records_after"),
+            label="archived_verifier_failure_evidence.fields.lineage_records_after",
+        )
         if retry_step.get("archived_failure_selector") != failed_selector:
             raise RuntimeError(
                 "demo evidence contract retry summary is not tied to archived failure selector"
@@ -1719,7 +1783,11 @@ def validate_demo_evidence_contract(
             raise RuntimeError(
                 "demo evidence contract retry summary is not tied to archived failure artifact hash"
             )
-        if retry_step.get("failed_lineage_records_after") != failed_lineage_after:
+        retry_summary_failed_after = strict_int(
+            retry_step.get("failed_lineage_records_after"),
+            label="retry_context_from_failure_evidence.failed_lineage_records_after",
+        )
+        if retry_summary_failed_after != failed_lineage_after:
             raise RuntimeError(
                 "demo evidence contract retry summary does not carry failed lineage boundary"
             )
@@ -1731,8 +1799,11 @@ def validate_demo_evidence_contract(
             )
             if retry_selector.get("run_id") != run_id or retry_selector.get("task_id") != task_id:
                 raise RuntimeError("demo evidence contract retry selector differs from failed run/task")
-            retry_attempt = retry_selector.get("attempt")
-            if not isinstance(retry_attempt, int) or retry_attempt <= failed_attempt:
+            retry_attempt = strict_int(
+                retry_selector.get("attempt"),
+                label=f"retry_context_from_failure_evidence.selectors[{field_index}].attempt",
+            )
+            if retry_attempt <= failed_attempt:
                 raise RuntimeError("demo evidence contract retry attempt does not follow failure")
             retry_attempts.add(retry_attempt)
             retry_row = require_artifact_row(
@@ -1744,7 +1815,7 @@ def validate_demo_evidence_contract(
                 retry_embedded_rows[field_index],
                 label=f"demos[{demo_index}].retry_context_from_failure_evidence.evidence_rows[{field_index}]",
             )
-            if retry_embedded_row != normalized_artifact_row(retry_row):
+            if not strict_json_equal(retry_embedded_row, normalized_artifact_row(retry_row)):
                 raise RuntimeError("demo evidence contract embedded retry row differs from artifact")
             field = require_mapping(
                 field_value,
@@ -1752,18 +1823,33 @@ def validate_demo_evidence_contract(
             )
             if field.get("failed_attempt_selector") != failed_selector:
                 raise RuntimeError("demo evidence contract retry is not tied to failed selector")
-            if field.get("failed_verify_returncode") != failed_verify:
+            retry_failed_returncode = strict_int(
+                field.get("failed_verify_returncode"),
+                label=f"retry_context_from_failure_evidence.fields[{field_index}].failed_verify_returncode",
+            )
+            if retry_failed_returncode != failed_verify:
                 raise RuntimeError("demo evidence contract retry does not carry failed verifier status")
             if field.get("failed_verify_command") != failed_fields.get("verify_command"):
                 raise RuntimeError("demo evidence contract retry does not carry failed verifier command")
-            if field.get("failed_lineage_records_after") != failed_lineage_after:
+            retry_failed_after = strict_int(
+                field.get("failed_lineage_records_after"),
+                label=f"retry_context_from_failure_evidence.fields[{field_index}].failed_lineage_records_after",
+            )
+            if retry_failed_after != failed_lineage_after:
                 raise RuntimeError("demo evidence contract retry does not carry failed lineage boundary")
-            lineage_before = field.get("lineage_records_before")
-            if not isinstance(lineage_before, int) or lineage_before < failed_lineage_after:
+            lineage_before = strict_int(
+                field.get("lineage_records_before"),
+                label=f"retry_context_from_failure_evidence.fields[{field_index}].lineage_records_before",
+            )
+            if lineage_before < failed_lineage_after:
                 raise RuntimeError("demo evidence contract retry lineage predates archived failure")
             if retry_embedded_row.get("prior_lineage_present") is not True:
                 raise RuntimeError("demo evidence contract retry artifact row lacks prior lineage")
-            if retry_embedded_row.get("lineage_records_before") != lineage_before:
+            retry_embedded_before = strict_int(
+                retry_embedded_row.get("lineage_records_before"),
+                label=f"retry_context_from_failure_evidence.evidence_rows[{field_index}].lineage_records_before",
+            )
+            if retry_embedded_before != lineage_before:
                 raise RuntimeError("demo evidence contract retry lineage differs from artifact")
             if field.get("derived_from_failed_lineage") is not True:
                 raise RuntimeError("demo evidence contract retry is not derived from failed lineage")
@@ -1781,8 +1867,11 @@ def validate_demo_evidence_contract(
         )
         if later_selector.get("run_id") != run_id or later_selector.get("task_id") != task_id:
             raise RuntimeError("demo evidence contract later pass selector differs from failed run/task")
-        later_attempt = later_selector.get("attempt")
-        if not isinstance(later_attempt, int) or later_attempt not in retry_attempts:
+        later_attempt = strict_int(
+            later_selector.get("attempt"),
+            label="later_passing_attempt.selector.attempt",
+        )
+        if later_attempt not in retry_attempts:
             raise RuntimeError("demo evidence contract later pass is not one of the linked retries")
         later_row = require_artifact_row(
             artifact_index,
@@ -1798,9 +1887,17 @@ def validate_demo_evidence_contract(
             later_step.get("fields"),
             label=f"demos[{demo_index}].later_passing_attempt.fields",
         )
-        if later_fields.get("resolved") is not True or later_fields.get("verify_returncode") != 0:
+        later_verify = strict_int(
+            later_fields.get("verify_returncode"),
+            label="later_passing_attempt.fields.verify_returncode",
+        )
+        if later_fields.get("resolved") is not True or later_verify != 0:
             raise RuntimeError("demo evidence contract later attempt is not verifier-passing")
-        if later_embedded_row.get("resolved") is not True or later_embedded_row.get("verify_returncode") != 0:
+        later_embedded_verify = strict_int(
+            later_embedded_row.get("verify_returncode"),
+            label="later_passing_attempt.evidence_row.verify_returncode",
+        )
+        if later_embedded_row.get("resolved") is not True or later_embedded_verify != 0:
             raise RuntimeError("demo evidence contract later artifact row is not verifier-passing")
         lineage_step = require_mapping(
             chain[reference_requirements.index("lineage_trajectory_recorded")],
@@ -1810,9 +1907,15 @@ def validate_demo_evidence_contract(
             lineage_step.get("fields"),
             label=f"demos[{demo_index}].lineage_trajectory_recorded.fields",
         )
-        before = lineage_fields.get("lineage_records_before")
-        after = lineage_fields.get("lineage_records_after")
-        if not isinstance(before, int) or not isinstance(after, int) or after <= before:
+        before = strict_int(
+            lineage_fields.get("lineage_records_before"),
+            label="lineage_trajectory_recorded.fields.lineage_records_before",
+        )
+        after = strict_int(
+            lineage_fields.get("lineage_records_after"),
+            label="lineage_trajectory_recorded.fields.lineage_records_after",
+        )
+        if after <= before:
             raise RuntimeError("demo evidence contract lineage trajectory does not advance")
         lineage_rows = require_sequence(
             lineage_step.get("evidence_rows"),
@@ -1836,15 +1939,27 @@ def validate_demo_evidence_contract(
                 lineage_selector,
                 label=f"demos[{demo_index}].lineage_trajectory_recorded.evidence_rows[{lineage_index}]",
             )
-            if lineage_embedded_row != normalized_artifact_row(lineage_artifact_row):
+            if not strict_json_equal(lineage_embedded_row, normalized_artifact_row(lineage_artifact_row)):
                 raise RuntimeError("demo evidence contract lineage row differs from artifact")
             if lineage_embedded_row.get("run_id") != run_id or lineage_embedded_row.get("task_id") != task_id:
                 raise RuntimeError("demo evidence contract lineage row differs from failed run/task")
-            lineage_attempt = lineage_embedded_row.get("attempt")
-            if not isinstance(lineage_attempt, int):
-                raise RuntimeError("demo evidence contract lineage row lacks attempt")
+            lineage_attempt = strict_int(
+                lineage_embedded_row.get("attempt"),
+                label=f"lineage_trajectory_recorded.evidence_rows[{lineage_index}].attempt",
+            )
             lineage_attempts.append(lineage_attempt)
-        if lineage_attempts != lineage_fields.get("attempts"):
+        lineage_field_attempt_values = require_sequence(
+            lineage_fields.get("attempts"),
+            label=f"demos[{demo_index}].lineage_trajectory_recorded.fields.attempts",
+        )
+        lineage_field_attempts = [
+            strict_int(
+                attempt,
+                label=f"lineage_trajectory_recorded.fields.attempts[{attempt_index}]",
+            )
+            for attempt_index, attempt in enumerate(lineage_field_attempt_values)
+        ]
+        if lineage_attempts != lineage_field_attempts:
             raise RuntimeError("demo evidence contract lineage attempts differ from artifact")
         if failed_attempt not in lineage_attempts or later_attempt not in lineage_attempts:
             raise RuntimeError("demo evidence contract lineage does not span failed attempt and later pass")
@@ -1869,9 +1984,17 @@ def validate_demo_evidence_contract(
         )
         if promotion_embedded_row.get("lineage_reconciled_by_core") is not True:
             raise RuntimeError("demo evidence contract promotion artifact lacks core lineage reconciliation")
-        if promotion_fields.get("verify_returncode") != promotion_embedded_row.get("verify_returncode"):
+        promotion_verify = strict_int(
+            promotion_fields.get("verify_returncode"),
+            label="verifier_gated_germline_promotion.fields.verify_returncode",
+        )
+        promotion_embedded_verify = strict_int(
+            promotion_embedded_row.get("verify_returncode"),
+            label="verifier_gated_germline_promotion.evidence_row.verify_returncode",
+        )
+        if promotion_verify != promotion_embedded_verify:
             raise RuntimeError("demo evidence contract promotion verifier status differs from artifact")
-        if promotion_fields.get("verify_returncode") != 0:
+        if promotion_verify != 0:
             raise RuntimeError("demo evidence contract promotion is not verifier-passing")
         if promotion_fields.get("lineage_reconciled_by_core") != promotion_embedded_row.get("lineage_reconciled_by_core"):
             raise RuntimeError("demo evidence contract promotion core reconciliation differs from artifact")
@@ -1889,7 +2012,9 @@ def validate_demo_evidence_contract(
             and promotion_fields.get("promotion_lineage_reconciled_by_core") is True
             and promotion_embedded_row.get("promotion_lineage_reconciled_by_core") is True
             and promotion_fields.get("promotion_verify_returncode") == 0
+            and type(promotion_fields.get("promotion_verify_returncode")) is int
             and promotion_embedded_row.get("promotion_verify_returncode") == 0
+            and type(promotion_embedded_row.get("promotion_verify_returncode")) is int
         )
         if not (legacy_promotion_evidence or structured_promotion_evidence):
             raise RuntimeError("demo evidence contract promotion lacks gated apply evidence")
@@ -2665,6 +2790,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "benchmark_source": SENIOR_SWE_BENCH_SOURCE,
                 "senior_swe_bench_export_sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
                 "senior_swe_bench_export_row_index": 9,
+                "audited_sandbox_provider_allowlist_enforced": True,
+                "audited_sandbox_provider_allowlist_status": "enforced",
+                "audited_sandbox_provider_allowlist_evidence": self.fresh_sandbox_provider_allowlist_evidence(),
                 "stdout": "verbose output should stay in source JSONL only",
             }
         )
@@ -2677,6 +2805,68 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
         )
         self.assertEqual(normalized["senior_swe_bench_export_row_index"], 9)
+        self.assertEqual(normalized["audited_sandbox_provider_allowlist_enforced"], True)
+        self.assertEqual(normalized["audited_sandbox_provider_allowlist_status"], "enforced")
+        self.assertEqual(
+            normalized["audited_sandbox_provider_allowlist_evidence"],
+            self.fresh_sandbox_provider_allowlist_evidence(),
+        )
+        malformed = normalized_artifact_row(
+            {
+                "run_id": "fresh-demo-1",
+                "task_id": "senior-task",
+                "attempt": 1,
+                "resolved": False,
+                "prior_lineage_present": False,
+                "no_external_solution_search": "true",
+                "network_policy": [],
+                "benchmark_source": "",
+                "senior_swe_bench_export_sha256": {},
+                "senior_swe_bench_export_row_index": "9",
+                "audited_sandbox_provider_allowlist_enforced": "true",
+                "audited_sandbox_provider_allowlist_status": [],
+                "audited_sandbox_provider_allowlist_evidence": "not-a-map",
+            }
+        )
+        for key in (
+            "no_external_solution_search",
+            "network_policy",
+            "benchmark_source",
+            "senior_swe_bench_export_sha256",
+            "senior_swe_bench_export_row_index",
+            "audited_sandbox_provider_allowlist_enforced",
+            "audited_sandbox_provider_allowlist_status",
+            "audited_sandbox_provider_allowlist_evidence",
+        ):
+            self.assertNotIn(key, malformed)
+        bool_numeric = normalized_artifact_row(
+            {
+                "run_id": "fresh-demo-1",
+                "task_id": "senior-task",
+                "attempt": 1,
+                "resolved": False,
+                "prior_lineage_present": False,
+                "verify_returncode": True,
+                "lineage_records_before": False,
+                "lineage_records_after": True,
+            }
+        )
+        self.assertIsNone(bool_numeric["verify_returncode"])
+        self.assertIsNone(bool_numeric["lineage_records_before"])
+        self.assertIsNone(bool_numeric["lineage_records_after"])
+        stringly_booleans = normalized_artifact_row(
+            {
+                "run_id": "fresh-demo-1",
+                "task_id": "senior-task",
+                "attempt": 1,
+                "resolved": "true",
+                "prior_lineage_present": "true",
+                "lineage_reconciled_by_core": "false",
+            }
+        )
+        self.assertFalse(stringly_booleans["resolved"])
+        self.assertFalse(stringly_booleans["prior_lineage_present"])
+        self.assertIsNone(stringly_booleans["lineage_reconciled_by_core"])
         self.assertNotIn("stdout", normalized)
 
     def test_default_verify_archive_command_scores_known_artifact(self) -> None:
@@ -2993,6 +3183,32 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("`python3 bench/self_correction_demo.py --self-test` ran 78 tests OK", updated)
         self.assertIn("`python3 bench/self_correction_score.py --self-test` ran 35 tests OK", updated)
         self.assertIn("`python3 bench/self_correction.py --self-test` ran 26 tests OK", updated)
+
+    def test_verify_documented_counts_rejects_stale_docs_without_update(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            handoff = root / "docs/HANDOFF.md"
+            todo = root / "todos/self-correction-loop.md"
+            handoff.parent.mkdir(parents=True)
+            todo.parent.mkdir(parents=True)
+            stale = (
+                "| Tests | 1 Rust + 2 self-correction Python + 3 scoring Python + 4 demo-wrapper Python tests |\n"
+                "Latest: `python3 bench/self_correction_demo.py --self-test` ran 4 tests OK; "
+                "`python3 bench/self_correction_score.py --self-test` ran 3 tests OK; "
+                "`python3 bench/self_correction.py --self-test` ran 2 tests OK.\n"
+            )
+            handoff.write_text(stale, encoding="utf-8")
+            todo.write_text(stale, encoding="utf-8")
+
+            with mock.patch(__name__ + ".repo_root", return_value=root), mock.patch(
+                __name__ + ".cargo_rust_test_count", return_value=117
+            ), mock.patch(
+                __name__ + ".unittest_count_for_script", side_effect=[26, 35]
+            ), mock.patch(
+                __name__ + ".current_module_self_test_count", return_value=78
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Rust test count does not match"):
+                    verify_documented_counts(update=False)
 
     def test_verify_documented_counts_update_mode_rewrites_docs_before_checking(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3769,6 +3985,20 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     fresh_run_id="fresh-demo",
                 )
 
+    def test_verify_evidence_contract_fresh_rejects_evidence_rows_missing_sandbox_audit_snapshot(self) -> None:
+        evidence, rows = self.evidence_with_source_metadata()
+        for row in rows:
+            row.update(self.fresh_audit_fields())
+        with mock.patch(__name__ + ".load_evidence_json", side_effect=[evidence, self.evidence_reference(evidence)]), mock.patch(
+            __name__ + ".load_jsonl_rows", return_value=rows
+        ):
+            with self.assertRaisesRegex(RuntimeError, "embedded row differs from artifact"):
+                verify_evidence_contract(
+                    DEFAULT_ARCHIVE_EVIDENCE,
+                    DEFAULT_ARCHIVE_EVIDENCE,
+                    fresh_run_id="fresh-demo",
+                )
+
     def test_verify_evidence_contract_fresh_current_head_gate_prints_pass(self) -> None:
         source_head = "1234567890abcdef1234567890abcdef12345678"
         evidence = {
@@ -3903,6 +4133,38 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("verifier_gated_germline_promotion: source=", output)
         self.assertIn("verify_returncode=0", output)
         self.assertIn("lineage_reconciled_by_core=True", output)
+
+    def test_verify_evidence_contract_rejects_bool_numeric_embedded_row_mismatch(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        rows = load_jsonl_rows(repo_path(DEFAULT_ARCHIVE))
+        failed_selector = evidence["demos"][0]["causal_chain"][0]["selector"]
+        failed_row = require_artifact_row(
+            artifact_rows_by_selector(rows),
+            failed_selector,
+            label="failed first attempt",
+        )
+        failed_row["verify_returncode"] = True
+        failed_row["lineage_records_before"] = False
+        failed_row["lineage_records_after"] = True
+
+        with mock.patch(__name__ + ".load_jsonl_rows", return_value=rows):
+            with self.assertRaisesRegex(RuntimeError, "embedded row differs from artifact"):
+                validate_demo_evidence_contract(
+                    evidence,
+                    self.evidence_reference(evidence),
+                    evidence_label="bool-numeric.demo-evidence.json",
+                )
+
+    def test_verify_evidence_contract_rejects_bool_selector_attempt(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        evidence["demos"][0]["causal_chain"][0]["selector"]["attempt"] = True
+
+        with self.assertRaisesRegex(RuntimeError, "selector lacks run_id/task_id/attempt"):
+            validate_demo_evidence_contract(
+                evidence,
+                self.evidence_reference(evidence),
+                evidence_label="bool-selector.demo-evidence.json",
+            )
 
     def test_verify_evidence_contract_rejects_artifact_hash_mismatch(self) -> None:
         evidence = self.archived_demo_contract_evidence()
@@ -5507,6 +5769,42 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 RuntimeError, "audited_sandbox_provider_allowlist_enforced"
             ):
                 validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_malformed_sandbox_allowlist_audit(self) -> None:
+        base_row = {
+            "run_id": "fresh-demo-1",
+            "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+            "source_head_short": "abcdef1",
+            "source_branch": "main",
+            "source_dirty": False,
+            "max_tokens": 100_000,
+            "timeout_secs": 1800,
+            "no_external_solution_search": True,
+            "network_policy": "Isolated",
+            "audited_sandbox_provider_allowlist_enforced": True,
+            "audited_sandbox_provider_allowlist_status": "enforced",
+            "audited_sandbox_provider_allowlist_evidence": self.fresh_sandbox_provider_allowlist_evidence(),
+        }
+        malformed_cases = {
+            "audited_sandbox_provider_allowlist_enforced": "true",
+            "audited_sandbox_provider_allowlist_status": [],
+            "audited_sandbox_provider_allowlist_evidence": "not-a-map",
+        }
+        args = argparse.Namespace(
+            run_id="fresh-demo",
+            allow_dirty_source=False,
+            max_tokens=100_000,
+            timeout=1800,
+        )
+        for field, malformed in malformed_cases.items():
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmpdir:
+                results = Path(tmpdir) / "fresh.jsonl"
+                row = dict(base_row)
+                row[field] = malformed
+                results.write_text(json.dumps(row) + "\n", encoding="utf-8")
+                args.results = results
+                with self.assertRaises(RuntimeError):
+                    validate_fresh_results(args)
 
     def test_validate_fresh_results_rejects_unenforced_sandbox_allowlist_audit(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

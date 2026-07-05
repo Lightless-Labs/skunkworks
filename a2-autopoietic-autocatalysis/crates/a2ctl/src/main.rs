@@ -239,25 +239,53 @@ fn validate_demo_evidence_rows_against_artifact(
     for (demo_index, demo) in demos.iter().enumerate() {
         let context = format!("demos[{demo_index}]");
         let chain = require_array(demo, "causal_chain", &context)?;
-        let promotion = require_step(chain, "verifier_gated_germline_promotion", &context)?;
-        let promotion_selector =
-            require_object_field(promotion, "selector", "verifier_gated_germline_promotion")?;
-        let embedded_promotion_row = require_object_field(
-            promotion,
-            "evidence_row",
-            "verifier_gated_germline_promotion",
-        )?;
-        let source_promotion_row = unique_artifact_row_for_selector(
-            artifact_rows,
-            promotion_selector,
-            "verifier_gated_germline_promotion.selector",
-        )?;
-        let normalized_source_row = normalized_demo_evidence_row_from_payload(source_promotion_row);
-        if normalized_source_row != *embedded_promotion_row {
-            return Err(format!(
-                "{context}: verifier-gated promotion evidence_row does not match the selected JSONL artifact row"
-            ));
+        for step in chain {
+            let requirement = step
+                .get("requirement")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<unknown>");
+            if let Some(embedded_row) = step.get("evidence_row") {
+                let selector = require_object_field(step, "selector", requirement)?;
+                validate_embedded_demo_row_against_artifact(
+                    artifact_rows,
+                    selector,
+                    embedded_row,
+                    &context,
+                    requirement,
+                )?;
+            }
+            if let Some(rows) = step.get("evidence_rows") {
+                let rows = rows.as_array().ok_or_else(|| {
+                    format!("{context}: {requirement}.evidence_rows must be an array")
+                })?;
+                for (row_index, embedded_row) in rows.iter().enumerate() {
+                    validate_embedded_demo_row_against_artifact(
+                        artifact_rows,
+                        embedded_row,
+                        embedded_row,
+                        &context,
+                        &format!("{requirement}.evidence_rows[{row_index}]"),
+                    )?;
+                }
+            }
         }
+    }
+    Ok(())
+}
+
+fn validate_embedded_demo_row_against_artifact(
+    artifact_rows: &[serde_json::Value],
+    selector: &serde_json::Value,
+    embedded_row: &serde_json::Value,
+    context: &str,
+    label: &str,
+) -> Result<(), String> {
+    let source_row = unique_artifact_row_for_selector(artifact_rows, selector, label)?;
+    let normalized_source_row = normalized_demo_evidence_row_from_payload(source_row);
+    if normalized_source_row != *embedded_row {
+        return Err(format!(
+            "{context}: {label} evidence_row does not match the selected JSONL artifact row"
+        ));
     }
     Ok(())
 }
@@ -307,11 +335,18 @@ fn normalized_demo_evidence_row_from_payload(payload: &serde_json::Value) -> ser
     );
     row.insert(
         "resolved".into(),
-        serde_json::Value::Bool(json_truthy(payload.get("resolved"))),
+        serde_json::Value::Bool(
+            payload.get("resolved").and_then(serde_json::Value::as_bool) == Some(true),
+        ),
     );
     row.insert(
         "prior_lineage_present".into(),
-        serde_json::Value::Bool(json_truthy(payload.get("prior_lineage_present"))),
+        serde_json::Value::Bool(
+            payload
+                .get("prior_lineage_present")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true),
+        ),
     );
     insert_optional_i64(&mut row, "a2_returncode", payload.get("a2_returncode"));
     insert_optional_i64(
@@ -419,13 +454,38 @@ fn normalized_demo_evidence_row_from_payload(payload: &serde_json::Value) -> ser
         "promotion_verify_returncode",
         promotion.and_then(|promotion| promotion.get("verify_returncode")),
     );
-    if payload.get("no_external_solution_search").is_some() {
-        insert_optional_bool(
-            &mut row,
-            "no_external_solution_search",
-            payload.get("no_external_solution_search"),
-        );
-    }
+    insert_valid_optional_bool(
+        &mut row,
+        "no_external_solution_search",
+        payload.get("no_external_solution_search"),
+    );
+    insert_valid_optional_string(&mut row, "network_policy", payload.get("network_policy"));
+    insert_valid_optional_string(&mut row, "benchmark_source", payload.get("benchmark_source"));
+    insert_valid_optional_string(
+        &mut row,
+        "senior_swe_bench_export_sha256",
+        payload.get("senior_swe_bench_export_sha256"),
+    );
+    insert_valid_optional_positive_i64(
+        &mut row,
+        "senior_swe_bench_export_row_index",
+        payload.get("senior_swe_bench_export_row_index"),
+    );
+    insert_valid_optional_bool(
+        &mut row,
+        "audited_sandbox_provider_allowlist_enforced",
+        payload.get("audited_sandbox_provider_allowlist_enforced"),
+    );
+    insert_valid_optional_string(
+        &mut row,
+        "audited_sandbox_provider_allowlist_status",
+        payload.get("audited_sandbox_provider_allowlist_status"),
+    );
+    insert_valid_optional_object(
+        &mut row,
+        "audited_sandbox_provider_allowlist_evidence",
+        payload.get("audited_sandbox_provider_allowlist_evidence"),
+    );
     if payload
         .get("source_head")
         .and_then(serde_json::Value::as_str)
@@ -472,22 +532,51 @@ fn insert_optional_bool(
     );
 }
 
+fn insert_valid_optional_bool(
+    row: &mut serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    value: Option<&serde_json::Value>,
+) {
+    if let Some(value) = value.and_then(serde_json::Value::as_bool) {
+        row.insert(field.into(), serde_json::Value::Bool(value));
+    }
+}
+
+fn insert_valid_optional_string(
+    row: &mut serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    value: Option<&serde_json::Value>,
+) {
+    if let Some(value) = value.and_then(serde_json::Value::as_str).filter(|value| !value.is_empty()) {
+        row.insert(field.into(), serde_json::Value::from(value));
+    }
+}
+
+fn insert_valid_optional_positive_i64(
+    row: &mut serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    value: Option<&serde_json::Value>,
+) {
+    if let Some(value) = value.and_then(serde_json::Value::as_i64).filter(|value| *value > 0) {
+        row.insert(field.into(), serde_json::Value::from(value));
+    }
+}
+
+fn insert_valid_optional_object(
+    row: &mut serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    value: Option<&serde_json::Value>,
+) {
+    if value.and_then(serde_json::Value::as_object).is_some() {
+        row.insert(field.into(), value.cloned().unwrap_or(serde_json::Value::Null));
+    }
+}
+
 fn optional_i64(value: Option<&serde_json::Value>) -> Option<i64> {
     match value? {
         serde_json::Value::Number(number) => number.as_i64(),
         serde_json::Value::String(text) => text.parse::<i64>().ok(),
         _ => None,
-    }
-}
-
-fn json_truthy(value: Option<&serde_json::Value>) -> bool {
-    match value {
-        Some(serde_json::Value::Bool(value)) => *value,
-        Some(serde_json::Value::Null) | None => false,
-        Some(serde_json::Value::Number(number)) => number.as_i64() != Some(0),
-        Some(serde_json::Value::String(text)) => !text.is_empty(),
-        Some(serde_json::Value::Array(array)) => !array.is_empty(),
-        Some(serde_json::Value::Object(object)) => !object.is_empty(),
     }
 }
 
@@ -523,7 +612,7 @@ fn payload_has_promotion_evidence(payload: &serde_json::Value) -> bool {
                 == Some(true);
     }
     if let Some(value) = payload.get("promotion_evidence_present") {
-        return json_truthy(Some(value));
+        return value.as_bool() == Some(true);
     }
     let output = ["stdout", "stderr"]
         .iter()
@@ -588,6 +677,12 @@ fn validate_demo_evidence_demo(
     let failed_selector = require_object_field(failed, "selector", "failed_first_attempt")?;
     require_selector_fields(failed_selector, "failed_first_attempt.selector")?;
     let failed_row = require_object_field(failed, "evidence_row", "failed_first_attempt")?;
+    let failed_attempt = require_i64(failed_selector, "attempt", "failed_first_attempt.selector")?;
+    if !same_selector(failed_selector, failed_row) {
+        return Err(format!(
+            "{context}: failed evidence row selector does not match failed first attempt"
+        ));
+    }
     require_bool(
         failed_row,
         "resolved",
@@ -613,11 +708,32 @@ fn validate_demo_evidence_demo(
     }
     let archived_fields =
         require_object_field(archived, "fields", "archived_verifier_failure_evidence")?;
+    let archived_row = require_object_field(
+        archived,
+        "evidence_row",
+        "archived_verifier_failure_evidence",
+    )?;
     require_bool(
         archived_fields,
         "lineage_advanced",
         true,
         "archived_verifier_failure_evidence.fields",
+    )?;
+    if !same_selector(archived_selector, archived_row) {
+        return Err(format!(
+            "{context}: archived verifier evidence row selector does not match archived selector"
+        ));
+    }
+    require_bool(
+        archived_row,
+        "resolved",
+        false,
+        "archived_verifier_failure_evidence.evidence_row",
+    )?;
+    require_positive_i64(
+        archived_row,
+        "verify_returncode",
+        "archived_verifier_failure_evidence.evidence_row",
     )?;
     require_increasing_lineage(archived_fields, "archived_verifier_failure_evidence.fields")?;
 
@@ -651,7 +767,54 @@ fn validate_demo_evidence_demo(
             "{context}: retry context has no causal field records"
         ));
     }
-    for retry_field in retry_fields {
+    let retry_rows = require_array(
+        retry,
+        "evidence_rows",
+        "retry_context_from_failure_evidence",
+    )?;
+    let retry_selectors = require_array(
+        retry,
+        "selectors",
+        "retry_context_from_failure_evidence",
+    )?;
+    if retry_rows.len() != retry_fields.len() || retry_selectors.len() != retry_fields.len() {
+        return Err(format!(
+            "{context}: retry context selectors/evidence_rows must pair with causal field records"
+        ));
+    }
+    for (retry_index, retry_field) in retry_fields.iter().enumerate() {
+        let retry_row = &retry_rows[retry_index];
+        let retry_selector = &retry_selectors[retry_index];
+        require_selector_fields(
+            retry_selector,
+            "retry_context_from_failure_evidence.selectors[]",
+        )?;
+        if !same_selector(retry_selector, retry_row) {
+            return Err(format!(
+                "{context}: retry evidence row selector does not match retry selector"
+            ));
+        }
+        if !same_run_task(failed_selector, retry_row) {
+            return Err(format!(
+                "{context}: retry evidence row is not in the failed run/task trajectory"
+            ));
+        }
+        let retry_row_attempt = require_i64(
+            retry_row,
+            "attempt",
+            "retry_context_from_failure_evidence.evidence_rows[]",
+        )?;
+        if retry_row_attempt <= failed_attempt {
+            return Err(format!(
+                "{context}: retry evidence row must occur after failed first attempt"
+            ));
+        }
+        require_bool(
+            retry_row,
+            "prior_lineage_present",
+            true,
+            "retry_context_from_failure_evidence.evidence_rows[]",
+        )?;
         require_bool(
             retry_field,
             "derived_from_failed_lineage",
@@ -691,6 +854,26 @@ fn validate_demo_evidence_demo(
             "lineage_records_before",
             "retry_context_from_failure_evidence.fields[]",
         )?;
+        let retry_row_before = require_i64(
+            retry_row,
+            "lineage_records_before",
+            "retry_context_from_failure_evidence.evidence_rows[]",
+        )?;
+        if retry_row_before != retry_before {
+            return Err(format!(
+                "{context}: retry evidence row lineage boundary does not match causal fields"
+            ));
+        }
+        let retry_field_attempt = require_i64(
+            retry_field,
+            "attempt",
+            "retry_context_from_failure_evidence.fields[]",
+        )?;
+        if retry_field_attempt != retry_row_attempt {
+            return Err(format!(
+                "{context}: retry evidence row attempt does not match causal fields"
+            ));
+        }
         if retry_before < failed_after {
             return Err(format!(
                 "{context}: retry lineage does not reach archived failed lineage boundary"
@@ -719,7 +902,6 @@ fn validate_demo_evidence_demo(
             "{context}: later passing attempt is not in the failed run/task trajectory"
         ));
     }
-    let failed_attempt = require_i64(failed_selector, "attempt", "failed_first_attempt.selector")?;
     let later_attempt = require_i64(later_selector, "attempt", "later_passing_attempt.selector")?;
     if later_attempt <= failed_attempt {
         return Err(format!(
@@ -727,6 +909,11 @@ fn validate_demo_evidence_demo(
         ));
     }
     let later_row = require_object_field(later, "evidence_row", "later_passing_attempt")?;
+    if !same_selector(later_selector, later_row) {
+        return Err(format!(
+            "{context}: later passing evidence row selector does not match later passing attempt"
+        ));
+    }
     require_bool(
         later_row,
         "resolved",
@@ -741,6 +928,12 @@ fn validate_demo_evidence_demo(
     )?;
 
     let lineage_fields = require_object_field(lineage, "fields", "lineage_trajectory_recorded")?;
+    let lineage_rows = require_array(lineage, "evidence_rows", "lineage_trajectory_recorded")?;
+    if lineage_rows.len() < 2 {
+        return Err(format!(
+            "{context}: lineage trajectory evidence_rows must include failed and later attempts"
+        ));
+    }
     let attempts = require_array(
         lineage_fields,
         "attempts",
@@ -756,6 +949,29 @@ fn validate_demo_evidence_demo(
     {
         return Err(format!(
             "{context}: lineage trajectory must span failed and later attempts"
+        ));
+    }
+    let mut lineage_has_failed = false;
+    let mut lineage_has_later = false;
+    for lineage_row in lineage_rows {
+        if !same_run_task(failed_selector, lineage_row) {
+            return Err(format!(
+                "{context}: lineage evidence row is not in the failed run/task trajectory"
+            ));
+        }
+        match require_i64(
+            lineage_row,
+            "attempt",
+            "lineage_trajectory_recorded.evidence_rows[]",
+        )? {
+            attempt if attempt == failed_attempt => lineage_has_failed = true,
+            attempt if attempt == later_attempt => lineage_has_later = true,
+            _ => {}
+        }
+    }
+    if !(lineage_has_failed && lineage_has_later) {
+        return Err(format!(
+            "{context}: lineage evidence rows must include failed and later attempts"
         ));
     }
     require_increasing_lineage(lineage_fields, "lineage_trajectory_recorded.fields")?;
@@ -778,6 +994,11 @@ fn validate_demo_evidence_demo(
         "evidence_row",
         "verifier_gated_germline_promotion",
     )?;
+    if !same_selector(promotion_selector, promotion_row) {
+        return Err(format!(
+            "{context}: verifier-gated promotion evidence row selector does not match promotion selector"
+        ));
+    }
     require_i64_equals(
         promotion_fields,
         "verify_returncode",
@@ -4354,12 +4575,25 @@ mod tests {
                             "requirement": "failed_first_attempt",
                             "status": "proved",
                             "selector": {"run_id": "run-a", "task_id": "task-a", "attempt": 1},
-                            "evidence_row": {"resolved": false, "verify_returncode": 1}
+                            "evidence_row": {
+                                "run_id": "run-a",
+                                "task_id": "task-a",
+                                "attempt": 1,
+                                "resolved": false,
+                                "verify_returncode": 1
+                            }
                         },
                         {
                             "requirement": "archived_verifier_failure_evidence",
                             "status": "proved",
                             "selector": {"run_id": "run-a", "task_id": "task-a", "attempt": 1},
+                            "evidence_row": {
+                                "run_id": "run-a",
+                                "task_id": "task-a",
+                                "attempt": 1,
+                                "resolved": false,
+                                "verify_returncode": 1
+                            },
                             "fields": {
                                 "lineage_advanced": true,
                                 "lineage_records_before": 0,
@@ -4371,6 +4605,18 @@ mod tests {
                             "status": "proved",
                             "archived_failure_selector": {"run_id": "run-a", "task_id": "task-a", "attempt": 1},
                             "archived_failure_artifact_sha256": "33a83345adac350b9a79bdd7842ac0c0cad1b698f7fc636a8a12f0c32fe7cee3",
+                            "selectors": [{"run_id": "run-a", "task_id": "task-a", "attempt": 2}],
+                            "evidence_rows": [
+                                {
+                                    "run_id": "run-a",
+                                    "task_id": "task-a",
+                                    "attempt": 2,
+                                    "resolved": true,
+                                    "prior_lineage_present": true,
+                                    "lineage_records_before": 1,
+                                    "verify_returncode": 0
+                                }
+                            ],
                             "fields": [
                                 {
                                     "derived_from_failed_lineage": true,
@@ -4380,6 +4626,7 @@ mod tests {
                                     "failed_verify_returncode": 1,
                                     "failed_lineage_records_after": 1,
                                     "lineage_records_before": 1,
+                                    "attempt": 2,
                                     "failed_attempt_selector": {"run_id": "run-a", "task_id": "task-a", "attempt": 1}
                                 }
                             ]
@@ -4388,11 +4635,33 @@ mod tests {
                             "requirement": "later_passing_attempt",
                             "status": "proved",
                             "selector": {"run_id": "run-a", "task_id": "task-a", "attempt": 2},
-                            "evidence_row": {"resolved": true, "verify_returncode": 0}
+                            "evidence_row": {
+                                "run_id": "run-a",
+                                "task_id": "task-a",
+                                "attempt": 2,
+                                "resolved": true,
+                                "verify_returncode": 0
+                            }
                         },
                         {
                             "requirement": "lineage_trajectory_recorded",
                             "status": "proved",
+                            "evidence_rows": [
+                                {
+                                    "run_id": "run-a",
+                                    "task_id": "task-a",
+                                    "attempt": 1,
+                                    "resolved": false,
+                                    "verify_returncode": 1
+                                },
+                                {
+                                    "run_id": "run-a",
+                                    "task_id": "task-a",
+                                    "attempt": 2,
+                                    "resolved": true,
+                                    "verify_returncode": 0
+                                }
+                            ],
                             "fields": {
                                 "attempts": [1, 2],
                                 "lineage_records_before": 0,
@@ -4404,6 +4673,9 @@ mod tests {
                             "status": "proved",
                             "selector": {"run_id": "run-a", "task_id": "task-a", "attempt": 2},
                             "evidence_row": {
+                                "run_id": "run-a",
+                                "task_id": "task-a",
+                                "attempt": 2,
                                 "verify_returncode": 0,
                                 "lineage_reconciled_by_core": true,
                                 "promotion_evidence_present": true
@@ -4417,6 +4689,26 @@ mod tests {
                     ]
                 }
             ]
+        })
+    }
+
+    fn failed_artifact_payload() -> serde_json::Value {
+        serde_json::json!({
+            "run_id": "run-a",
+            "task_id": "task-a",
+            "attempt": 1,
+            "resolved": false,
+            "prior_lineage_present": false,
+            "a2_returncode": 0,
+            "verify_returncode": 1,
+            "verify_command": "cargo test -p a2_archive",
+            "touched_files": [],
+            "diff_added_lines": 0,
+            "diff_removed_lines": 0,
+            "lineage_records_before": 0,
+            "lineage_records_after": 1,
+            "lineage_reconciled_by_core": false,
+            "verifier_failure_evidence_present": true
         })
     }
 
@@ -4445,7 +4737,10 @@ mod tests {
         rows: &[serde_json::Value],
         embedded_promotion_row: serde_json::Value,
     ) -> (serde_json::Value, Vec<u8>) {
-        let artifact_text = rows
+        let failed_row = failed_artifact_payload();
+        let mut artifact_rows = vec![failed_row.clone()];
+        artifact_rows.extend_from_slice(rows);
+        let artifact_text = artifact_rows
             .iter()
             .map(|row| serde_json::to_string(row).unwrap())
             .collect::<Vec<_>>()
@@ -4453,10 +4748,20 @@ mod tests {
             + "\n";
         let mut evidence = complete_demo_evidence_value();
         let artifact_sha256 = format!("{:x}", Sha256::digest(artifact_text.as_bytes()));
+        let promotion_row = rows.first().cloned().unwrap_or_else(|| promotion_artifact_payload(true));
+        let normalized_failed_row = normalized_demo_evidence_row_from_payload(&failed_row);
+        let normalized_promotion_row = normalized_demo_evidence_row_from_payload(&promotion_row);
         evidence["artifact"] = serde_json::Value::String(artifact.to_string());
         evidence["artifact_sha256"] = serde_json::Value::String(artifact_sha256.clone());
+        evidence["demos"][0]["causal_chain"][0]["evidence_row"] = normalized_failed_row.clone();
+        evidence["demos"][0]["causal_chain"][1]["evidence_row"] = normalized_failed_row.clone();
         evidence["demos"][0]["causal_chain"][2]["archived_failure_artifact_sha256"] =
             serde_json::Value::String(artifact_sha256);
+        evidence["demos"][0]["causal_chain"][2]["evidence_rows"] =
+            serde_json::Value::Array(vec![normalized_promotion_row.clone()]);
+        evidence["demos"][0]["causal_chain"][3]["evidence_row"] = normalized_promotion_row.clone();
+        evidence["demos"][0]["causal_chain"][4]["evidence_rows"] =
+            serde_json::Value::Array(vec![normalized_failed_row, normalized_promotion_row]);
         evidence["demos"][0]["causal_chain"][5]["evidence_row"] = embedded_promotion_row;
         (evidence, artifact_text.into_bytes())
     }
@@ -4507,6 +4812,160 @@ mod tests {
         .unwrap();
         assert_eq!(summary.demos, 1);
 
+        std::fs::remove_file(evidence_path).unwrap();
+        std::fs::remove_file(artifact_path).unwrap();
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn demo_evidence_artifact_validation_rejects_embedded_row_missing_sandbox_audit_fields() {
+        let workspace = std::env::temp_dir().join(format!(
+            "a2-promotion-row-sandbox-audit-missing-{}",
+            std::process::id()
+        ));
+        let artifact = "evidence/results.jsonl";
+        let artifact_path = workspace.join(artifact);
+        std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+        let mut promotion_row = promotion_artifact_payload(true);
+        promotion_row["audited_sandbox_provider_allowlist_enforced"] = serde_json::Value::Bool(true);
+        promotion_row["audited_sandbox_provider_allowlist_status"] =
+            serde_json::Value::String("enforced".to_string());
+        promotion_row["audited_sandbox_provider_allowlist_evidence"] = serde_json::json!({
+            "status": "enforced",
+            "enforcement_layer": "test sandbox wrapper",
+            "launch_boundary": "candidate-worktree agent subprocess",
+            "benchmark_network_policy": "Isolated",
+            "provider_endpoint_allowlist_enforced": true,
+            "allowed_provider_endpoints": ["https://api.example-provider.invalid"],
+            "public_solution_egress_blocked": true,
+            "blocked_solution_hosts": ["github.com"],
+            "sandbox_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        });
+        let mut embedded_row = normalized_demo_evidence_row_from_payload(&promotion_row);
+        embedded_row
+            .as_object_mut()
+            .unwrap()
+            .remove("audited_sandbox_provider_allowlist_evidence");
+        let (evidence, artifact_bytes) = complete_demo_evidence_with_artifact_rows(
+            artifact,
+            std::slice::from_ref(&promotion_row),
+            embedded_row,
+        );
+        std::fs::write(&artifact_path, artifact_bytes).unwrap();
+        let evidence_path = workspace.join("evidence.json");
+        std::fs::write(&evidence_path, serde_json::to_string(&evidence).unwrap()).unwrap();
+
+        let err = validate_demo_evidence_contract_artifact(
+            workspace.to_str().unwrap(),
+            evidence_path.to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("verifier_gated_germline_promotion evidence_row does not match"),
+            "unexpected error: {err}"
+        );
+
+        std::fs::remove_file(evidence_path).unwrap();
+        std::fs::remove_file(artifact_path).unwrap();
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn demo_evidence_row_normalization_omits_malformed_optional_provenance_and_audit_fields() {
+        let mut row = promotion_artifact_payload(true);
+        row["resolved"] = serde_json::Value::String("true".to_string());
+        row["prior_lineage_present"] = serde_json::Value::String("true".to_string());
+        row["lineage_reconciled_by_core"] = serde_json::Value::String("false".to_string());
+        row["no_external_solution_search"] = serde_json::Value::String("true".to_string());
+        row["network_policy"] = serde_json::Value::Array(vec![]);
+        row["benchmark_source"] = serde_json::Value::String(String::new());
+        row["senior_swe_bench_export_sha256"] = serde_json::json!({});
+        row["senior_swe_bench_export_row_index"] = serde_json::Value::String("9".to_string());
+        row["audited_sandbox_provider_allowlist_enforced"] =
+            serde_json::Value::String("true".to_string());
+        row["audited_sandbox_provider_allowlist_status"] = serde_json::Value::Array(vec![]);
+        row["audited_sandbox_provider_allowlist_evidence"] =
+            serde_json::Value::String("not-a-map".to_string());
+
+        let normalized = normalized_demo_evidence_row_from_payload(&row);
+        let object = normalized.as_object().unwrap();
+        assert_eq!(object.get("resolved").and_then(serde_json::Value::as_bool), Some(false));
+        assert_eq!(
+            object
+                .get("prior_lineage_present")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(object.get("lineage_reconciled_by_core"), Some(&serde_json::Value::Null));
+        for field in [
+            "no_external_solution_search",
+            "network_policy",
+            "benchmark_source",
+            "senior_swe_bench_export_sha256",
+            "senior_swe_bench_export_row_index",
+            "audited_sandbox_provider_allowlist_enforced",
+            "audited_sandbox_provider_allowlist_status",
+            "audited_sandbox_provider_allowlist_evidence",
+        ] {
+            assert!(!object.contains_key(field), "{field} should be omitted when malformed");
+        }
+    }
+
+    #[test]
+    fn demo_evidence_artifact_validation_rejects_embedded_failed_row_missing_sandbox_audit_fields() {
+        let workspace = std::env::temp_dir().join(format!(
+            "a2-failed-row-sandbox-audit-missing-{}",
+            std::process::id()
+        ));
+        let artifact = "evidence/results.jsonl";
+        let artifact_path = workspace.join(artifact);
+        std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+        let promotion_row = promotion_artifact_payload(true);
+        let (mut evidence, artifact_bytes) = complete_demo_evidence_with_artifact_rows(
+            artifact,
+            std::slice::from_ref(&promotion_row),
+            normalized_demo_evidence_row_from_payload(&promotion_row),
+        );
+        let mut failed_row = failed_artifact_payload();
+        failed_row["audited_sandbox_provider_allowlist_enforced"] = serde_json::Value::Bool(true);
+        failed_row["audited_sandbox_provider_allowlist_status"] =
+            serde_json::Value::String("enforced".to_string());
+        failed_row["audited_sandbox_provider_allowlist_evidence"] = serde_json::json!({
+            "status": "enforced",
+            "enforcement_layer": "test sandbox wrapper",
+            "launch_boundary": "candidate-worktree agent subprocess",
+            "benchmark_network_policy": "Isolated",
+            "provider_endpoint_allowlist_enforced": true,
+            "allowed_provider_endpoints": ["https://api.example-provider.invalid"],
+            "public_solution_egress_blocked": true,
+            "blocked_solution_hosts": ["github.com"],
+            "sandbox_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        });
+        let artifact_text = [failed_row.clone(), promotion_row]
+            .iter()
+            .map(|row| serde_json::to_string(row).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let artifact_sha256 = format!("{:x}", Sha256::digest(artifact_text.as_bytes()));
+        evidence["artifact_sha256"] = serde_json::Value::String(artifact_sha256.clone());
+        evidence["demos"][0]["causal_chain"][2]["archived_failure_artifact_sha256"] =
+            serde_json::Value::String(artifact_sha256);
+        std::fs::write(&artifact_path, artifact_text).unwrap();
+        let evidence_path = workspace.join("evidence.json");
+        std::fs::write(&evidence_path, serde_json::to_string(&evidence).unwrap()).unwrap();
+
+        let err = validate_demo_evidence_contract_artifact(
+            workspace.to_str().unwrap(),
+            evidence_path.to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("failed_first_attempt evidence_row does not match"),
+            "unexpected error: {err}"
+        );
+
+        drop(artifact_bytes);
         std::fs::remove_file(evidence_path).unwrap();
         std::fs::remove_file(artifact_path).unwrap();
         std::fs::remove_dir_all(workspace).unwrap();
@@ -4623,6 +5082,38 @@ mod tests {
 
         let err = validate_demo_evidence_value(&evidence).unwrap_err();
         assert!(err.contains("retry_context_links_archived_failure expected true"));
+    }
+
+    #[test]
+    fn demo_evidence_contract_rejects_missing_retry_evidence_rows() {
+        let mut evidence = complete_demo_evidence_value();
+        evidence["demos"][0]["causal_chain"][2]
+            .as_object_mut()
+            .unwrap()
+            .remove("evidence_rows");
+
+        let err = validate_demo_evidence_value(&evidence).unwrap_err();
+        assert!(err.contains("retry_context_from_failure_evidence.evidence_rows must be an array"));
+    }
+
+    #[test]
+    fn demo_evidence_contract_rejects_retry_evidence_row_from_other_run() {
+        let mut evidence = complete_demo_evidence_value();
+        evidence["demos"][0]["causal_chain"][2]["evidence_rows"][0]["run_id"] =
+            serde_json::Value::String("other-run".to_string());
+
+        let err = validate_demo_evidence_value(&evidence).unwrap_err();
+        assert!(err.contains("retry evidence row selector does not match retry selector"));
+    }
+
+    #[test]
+    fn demo_evidence_contract_rejects_lineage_evidence_row_from_other_run() {
+        let mut evidence = complete_demo_evidence_value();
+        evidence["demos"][0]["causal_chain"][4]["evidence_rows"][1]["run_id"] =
+            serde_json::Value::String("other-run".to_string());
+
+        let err = validate_demo_evidence_value(&evidence).unwrap_err();
+        assert!(err.contains("lineage evidence row is not in the failed run/task trajectory"));
     }
 
     #[test]
