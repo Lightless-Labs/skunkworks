@@ -111,3 +111,5 @@ target/debug/a2d fitness-evidence-inspect \
 ```
 
 Source-patch gate: `runs/20260705-retry-execute-next-cycle-input-no-overwrite-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: 875e1a0f511cb98ad1736e21f964e8f5d0f0efab`.
+
+Post-commit clean-HEAD evidence: `runs/20260705-postcommit-fitness-evidence-e88c627/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_revision: 748e18f`, `source_tree_dirty: false`, `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`.
