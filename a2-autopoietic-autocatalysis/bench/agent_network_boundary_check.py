@@ -28,6 +28,9 @@ PI_SUBAGENT = PI_PACKAGE / "examples/extensions/subagent/index.ts"
 PI_SANDBOX = PI_PACKAGE / "examples/extensions/sandbox/index.ts"
 FOUNDRY_REPO = Path("/Users/thomas/.pi/agent/git/github.com/Lightless-Labs/foundry")
 FOUNDRY_TEAM = FOUNDRY_REPO / "extensions/pi-foundry-team/index.ts"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+A2_WORKTREE_CATALYST = REPO_ROOT / "crates/a2_workcell/src/worktree_catalyst.rs"
+A2_BROKER = REPO_ROOT / "crates/a2_broker/src/broker.rs"
 SANDBOX_RUNTIME_PACKAGE = "@anthropic-ai/sandbox-runtime"
 
 
@@ -208,10 +211,7 @@ def find_function_declaration_start(text: str, function_name: str) -> int | None
     return None
 
 
-def extract_function_body(text: str, function_name: str) -> str | None:
-    start = find_function_declaration_start(text, function_name)
-    if start is None:
-        return None
+def extract_braced_body(text: str, start: int) -> str | None:
     brace_start = text.find("{", start)
     if brace_start < 0:
         return None
@@ -268,6 +268,124 @@ def extract_function_body(text: str, function_name: str) -> str | None:
                 return text[brace_start + 1 : index]
         index += 1
     return None
+
+
+def extract_function_body(text: str, function_name: str) -> str | None:
+    start = find_function_declaration_start(text, function_name)
+    if start is None:
+        return None
+    return extract_braced_body(text, start)
+
+
+def mask_rust_non_code_preserving_offsets(text: str) -> str:
+    output: list[str] = []
+    index = 0
+    block_comment_depth = 0
+    in_line_comment = False
+    in_string: str | None = None
+    escaped = False
+    while index < len(text):
+        char = text[index]
+        next_char = text[index + 1] if index + 1 < len(text) else ""
+
+        if in_line_comment:
+            if char == "\n":
+                in_line_comment = False
+                output.append(char)
+            else:
+                output.append(" ")
+            index += 1
+            continue
+        if block_comment_depth > 0:
+            if char == "/" and next_char == "*":
+                block_comment_depth += 1
+                output.extend("  ")
+                index += 2
+                continue
+            if char == "*" and next_char == "/":
+                block_comment_depth -= 1
+                output.extend("  ")
+                index += 2
+                continue
+            output.append("\n" if char == "\n" else " ")
+            index += 1
+            continue
+        if in_string is not None:
+            output.append("\n" if char == "\n" else " ")
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == in_string:
+                in_string = None
+            index += 1
+            continue
+
+        raw_end = rust_raw_string_end(text, index)
+        if raw_end is not None:
+            raw_text = text[index:raw_end]
+            output.extend("\n" if current == "\n" else " " for current in raw_text)
+            index = raw_end
+            continue
+        char_end = rust_char_literal_end(text, index)
+        if char_end is not None:
+            char_text = text[index:char_end]
+            output.extend("\n" if current == "\n" else " " for current in char_text)
+            index = char_end
+            continue
+        if char == '"':
+            in_string = char
+            output.append(" ")
+            index += 1
+            continue
+        if char == "/" and next_char == "/":
+            in_line_comment = True
+            output.extend("  ")
+            index += 2
+            continue
+        if char == "/" and next_char == "*":
+            block_comment_depth = 1
+            output.extend("  ")
+            index += 2
+            continue
+
+        output.append(char)
+        index += 1
+    return "".join(output)
+
+
+def find_rust_function_declaration_start(text: str, function_name: str) -> int | None:
+    masked = mask_rust_non_code_preserving_offsets(text)
+    pattern = re.compile(
+        rf"^\s*(?:pub\s+)?(?:async\s+)?fn\s+{re.escape(function_name)}\b",
+        re.MULTILINE,
+    )
+    match = pattern.search(masked)
+    return match.start() if match else None
+
+
+def extract_rust_braced_body(text: str, start: int) -> str | None:
+    masked = mask_rust_non_code_preserving_offsets(text)
+    brace_start = masked.find("{", start)
+    if brace_start < 0:
+        return None
+    depth = 0
+    for index in range(brace_start, len(masked)):
+        char = masked[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace_start + 1 : index]
+    return None
+
+
+def extract_rust_function_body(text: str, function_name: str) -> str | None:
+    start = find_rust_function_declaration_start(text, function_name)
+    if start is None:
+        return None
+    return extract_rust_braced_body(text, start)
 
 
 def strip_typescript_comments(text: str, *, strip_strings: bool = False) -> str:
@@ -556,6 +674,542 @@ def classify_spawn_call(
     return None
 
 
+def rust_raw_string_end(text: str, start: int) -> int | None:
+    index = start
+    if index < len(text) and text[index] == "b":
+        index += 1
+    if index >= len(text) or text[index] != "r":
+        return None
+    index += 1
+    hashes = 0
+    while index < len(text) and text[index] == "#":
+        hashes += 1
+        index += 1
+    if index >= len(text) or text[index] != '"':
+        return None
+    index += 1
+    terminator = '"' + ("#" * hashes)
+    end = text.find(terminator, index)
+    if end < 0:
+        return len(text)
+    return end + len(terminator)
+
+
+def rust_char_literal_end(text: str, start: int) -> int | None:
+    index = start
+    if index < len(text) and text[index] == "b" and index + 1 < len(text) and text[index + 1] == "'":
+        index += 1
+    if index >= len(text) or text[index] != "'":
+        return None
+    content = index + 1
+    if content >= len(text) or text[content] == "\n":
+        return None
+    if text[content].isalpha() or text[content] == "_":
+        if content + 1 < len(text) and text[content + 1] == "'":
+            return content + 2
+        return None
+    if text[content] == "\\":
+        cursor = content + 1
+        if cursor < len(text) and text[cursor] == "u" and cursor + 1 < len(text) and text[cursor + 1] == "{":
+            end_brace = text.find("}", cursor + 2)
+            if end_brace < 0:
+                return None
+            cursor = end_brace + 1
+        else:
+            cursor += 1
+    else:
+        cursor = content + 1
+    if cursor < len(text) and text[cursor] == "'":
+        return cursor + 1
+    return None
+
+
+def rust_string_literal_ranges(text: str) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    index = 0
+    while index < len(text):
+        raw_end = rust_raw_string_end(text, index)
+        if raw_end is not None:
+            ranges.append((index, raw_end))
+            index = raw_end
+            continue
+        char_end = rust_char_literal_end(text, index)
+        if char_end is not None:
+            ranges.append((index, char_end))
+            index = char_end
+            continue
+        char = text[index]
+        if char != '"':
+            index += 1
+            continue
+        start = index
+        index += 1
+        escaped = False
+        while index < len(text):
+            current = text[index]
+            if escaped:
+                escaped = False
+            elif current == "\\":
+                escaped = True
+            elif current == '"':
+                index += 1
+                break
+            index += 1
+        ranges.append((start, index))
+    return ranges
+
+
+def mask_rust_comments_preserving_offsets(text: str) -> str:
+    output: list[str] = []
+    index = 0
+    block_comment_depth = 0
+    in_line_comment = False
+    while index < len(text):
+        char = text[index]
+        next_char = text[index + 1] if index + 1 < len(text) else ""
+
+        if in_line_comment:
+            if char == "\n":
+                in_line_comment = False
+                output.append(char)
+            else:
+                output.append(" ")
+            index += 1
+            continue
+        if block_comment_depth > 0:
+            if char == "/" and next_char == "*":
+                block_comment_depth += 1
+                output.extend("  ")
+                index += 2
+                continue
+            if char == "*" and next_char == "/":
+                block_comment_depth -= 1
+                output.extend("  ")
+                index += 2
+                continue
+            output.append("\n" if char == "\n" else " ")
+            index += 1
+            continue
+
+        raw_end = rust_raw_string_end(text, index)
+        if raw_end is not None:
+            output.append(text[index:raw_end])
+            index = raw_end
+            continue
+        char_end = rust_char_literal_end(text, index)
+        if char_end is not None:
+            output.append(text[index:char_end])
+            index = char_end
+            continue
+        if char == '"':
+            start = index
+            index += 1
+            escaped = False
+            while index < len(text):
+                current = text[index]
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == '"':
+                    index += 1
+                    break
+                index += 1
+            output.append(text[start:index])
+            continue
+        if char == "/" and next_char == "/":
+            in_line_comment = True
+            output.extend("  ")
+            index += 2
+            continue
+        if char == "/" and next_char == "*":
+            block_comment_depth = 1
+            output.extend("  ")
+            index += 2
+            continue
+
+        output.append(char)
+        index += 1
+    return "".join(output)
+
+
+def strip_rust_comments(text: str, *, strip_strings: bool = False) -> str:
+    output: list[str] = []
+    index = 0
+    block_comment_depth = 0
+    in_line_comment = False
+    in_string: str | None = None
+    escaped = False
+    while index < len(text):
+        char = text[index]
+        next_char = text[index + 1] if index + 1 < len(text) else ""
+
+        if in_line_comment:
+            if char == "\n":
+                in_line_comment = False
+                output.append(char)
+            index += 1
+            continue
+        if block_comment_depth > 0:
+            if char == "/" and next_char == "*":
+                block_comment_depth += 1
+                index += 2
+                continue
+            if char == "*" and next_char == "/":
+                block_comment_depth -= 1
+                index += 2
+                continue
+            if char == "\n":
+                output.append(char)
+            index += 1
+            continue
+        if in_string is not None:
+            output.append("\n" if char == "\n" else (" " if strip_strings else char))
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == in_string:
+                in_string = None
+            index += 1
+            continue
+
+        raw_end = rust_raw_string_end(text, index)
+        if raw_end is not None:
+            raw_text = text[index:raw_end]
+            if strip_strings:
+                output.extend("\n" if current == "\n" else " " for current in raw_text)
+            else:
+                output.append(raw_text)
+            index = raw_end
+            continue
+        char_end = rust_char_literal_end(text, index)
+        if char_end is not None:
+            char_text = text[index:char_end]
+            if strip_strings:
+                output.extend("\n" if current == "\n" else " " for current in char_text)
+            else:
+                output.append(char_text)
+            index = char_end
+            continue
+        if char == '"':
+            in_string = char
+            output.append(" " if strip_strings else char)
+            index += 1
+            continue
+        if char == "/" and next_char == "/":
+            in_line_comment = True
+            index += 2
+            continue
+        if char == "/" and next_char == "*":
+            block_comment_depth = 1
+            index += 2
+            continue
+
+        output.append(char)
+        index += 1
+    return "".join(output)
+
+
+def rust_executable_body_without_strings(body: str) -> str:
+    return strip_rust_comments(body, strip_strings=True)
+
+
+def rust_command_new_offsets(body_without_strings: str) -> list[int]:
+    return [match.start() for match in re.finditer(r"\bCommand::new\s*\(", body_without_strings)]
+
+
+def code_regex_match_offsets(text: str, pattern: str, flags: int = 0) -> list[int]:
+    ranges = string_literal_ranges(text)
+    return [
+        match.start()
+        for match in re.finditer(pattern, text, flags)
+        if not offset_inside_ranges(match.start(), ranges)
+    ]
+
+
+def first_code_regex_match_offset(text: str, pattern: str, flags: int = 0) -> int:
+    offsets = code_regex_match_offsets(text, pattern, flags)
+    return offsets[0] if offsets else -1
+
+
+def rust_code_regex_match_offsets(text: str, pattern: str, flags: int = 0) -> list[int]:
+    ranges = rust_string_literal_ranges(text)
+    return [
+        match.start()
+        for match in re.finditer(pattern, text, flags)
+        if not offset_inside_ranges(match.start(), ranges)
+    ]
+
+
+def first_rust_code_regex_match_offset(text: str, pattern: str, flags: int = 0) -> int:
+    offsets = rust_code_regex_match_offsets(text, pattern, flags)
+    return offsets[0] if offsets else -1
+
+
+def rust_brace_depth_at(text: str, offset: int) -> int:
+    masked = mask_rust_non_code_preserving_offsets(text)
+    depth = 0
+    for char in masked[:offset]:
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+    return depth
+
+
+def top_level_rust_code_regex_match_offsets(text: str, pattern: str, flags: int = 0) -> list[int]:
+    comments_masked = mask_rust_comments_preserving_offsets(text)
+    return [
+        offset
+        for offset in rust_code_regex_match_offsets(comments_masked, pattern, flags)
+        if rust_brace_depth_at(text, offset) == 0
+    ]
+
+
+def first_top_level_rust_code_regex_match_offset(text: str, pattern: str, flags: int = 0) -> int:
+    offsets = top_level_rust_code_regex_match_offsets(text, pattern, flags)
+    return offsets[0] if offsets else -1
+
+
+def extract_rust_braced_body_span(text: str, start: int) -> tuple[str, int, int] | None:
+    masked = mask_rust_non_code_preserving_offsets(text)
+    brace_start = masked.find("{", start)
+    if brace_start < 0:
+        return None
+    depth = 0
+    for index in range(brace_start, len(masked)):
+        char = masked[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return (text[brace_start + 1 : index], brace_start, index)
+    return None
+
+
+def has_top_level_return_err(block: str) -> bool:
+    return bool(top_level_rust_code_regex_match_offsets(block, r"\breturn\s+Err\b"))
+
+
+def find_restricted_policy_return_err_span(executable: str) -> tuple[int, int] | None:
+    pattern = re.compile(
+        r"\bif\s+matches!\s*\(\s*network_policy\s*,\s*"
+        r"Some\s*\(\s*NetworkPolicy::Isolated\s*\|\s*NetworkPolicy::AllowList\s*\(\s*_\s*\)\s*\)\s*\)",
+        re.MULTILINE | re.DOTALL,
+    )
+    for match in pattern.finditer(executable):
+        span = extract_rust_braced_body_span(executable, match.start())
+        if span is None:
+            continue
+        block, block_start, block_end = span
+        return_offsets = top_level_rust_code_regex_match_offsets(block, r"\breturn\s+Err\b")
+        if return_offsets:
+            return (block_start + 1 + return_offsets[0], block_end)
+    return None
+
+
+def helper_rejects_policy_with_return(helper: str, condition_pattern: str) -> bool:
+    helper_code = mask_rust_comments_preserving_offsets(helper)
+    condition_offsets = rust_code_regex_match_offsets(helper_code, condition_pattern, re.MULTILINE | re.DOTALL)
+    if not condition_offsets:
+        return False
+    for if_match in re.finditer(r"\bif\b", helper_code):
+        span = extract_rust_braced_body_span(helper_code, if_match.start())
+        if span is None:
+            continue
+        block, block_start, _block_end = span
+        if has_top_level_return_err(block) and any(if_match.start() < condition < block_start for condition in condition_offsets):
+            return True
+    return False
+
+
+def audit_a2_worktree_catalyst_launch_gate(path: Path = A2_WORKTREE_CATALYST) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "path": str(path),
+        "run_agent_found": False,
+        "restricted_policy_check_present": False,
+        "restricted_policy_error_before_mock": False,
+        "restricted_policy_error_before_provider_dispatch": False,
+        "provider_command_launch_functions": [],
+        "sandbox_exec_launch_wrapper_present": False,
+        "fail_closed_before_provider_launch": False,
+        "reason": None,
+    }
+    if not path.exists():
+        result["reason"] = "file_not_found"
+        return result
+    text = path.read_text(encoding="utf-8")
+    body = extract_rust_function_body(text, "run_agent")
+    if body is None:
+        result["reason"] = "run_agent_not_found"
+        return result
+    result["run_agent_found"] = True
+    executable = rust_executable_body_without_strings(body)
+    restricted_return_span = find_restricted_policy_return_err_span(executable)
+    error_index = restricted_return_span[0] if restricted_return_span is not None else -1
+    mock_index = executable.find("run_mock_agent")
+    dispatch_index = executable.find("match provider_id")
+    result["restricted_policy_check_present"] = restricted_return_span is not None
+    result["restricted_policy_error_before_mock"] = (
+        result["restricted_policy_check_present"] and mock_index >= 0 and error_index < mock_index
+    )
+    result["restricted_policy_error_before_provider_dispatch"] = (
+        result["restricted_policy_check_present"] and dispatch_index >= 0 and error_index < dispatch_index
+    )
+
+    provider_functions = ["run_claude", "run_codex", "run_gemini", "run_opencode", "run_pi"]
+    launches: list[dict[str, Any]] = []
+    for function_name in provider_functions:
+        provider_body = extract_rust_function_body(text, function_name)
+        if provider_body is None:
+            launches.append({"function": function_name, "found": False, "command_new_present": False})
+            continue
+        provider_executable = rust_executable_body_without_strings(provider_body)
+        launches.append(
+            {
+                "function": function_name,
+                "found": True,
+                "command_new_present": bool(rust_command_new_offsets(provider_executable)),
+                "sandbox_exec_present": bool(
+                    rust_code_regex_match_offsets(
+                        strip_rust_comments(provider_body, strip_strings=False),
+                        r"\bCommand::new\s*\(\s*\"sandbox-exec\"",
+                    )
+                ),
+            }
+        )
+    result["provider_command_launch_functions"] = launches
+    result["sandbox_exec_launch_wrapper_present"] = any(item.get("sandbox_exec_present") for item in launches)
+    provider_launches_present = all(item.get("found") and item.get("command_new_present") for item in launches)
+    result["fail_closed_before_provider_launch"] = (
+        result["restricted_policy_error_before_mock"]
+        and result["restricted_policy_error_before_provider_dispatch"]
+        and provider_launches_present
+    )
+    if not result["fail_closed_before_provider_launch"]:
+        result["reason"] = "restricted policies are not visibly refused before every provider launch path"
+    return result
+
+
+def extract_rust_impl_body(text: str, impl_name: str) -> str | None:
+    masked = mask_rust_non_code_preserving_offsets(text)
+    pattern = re.compile(
+        rf"^\s*impl\s*(?:<[^>{{}}]*>\s*)?ModelProvider\s+for\s+{re.escape(impl_name)}\b",
+        re.MULTILINE,
+    )
+    match = pattern.search(masked)
+    if match is None:
+        return None
+    return extract_rust_braced_body(text, match.start())
+
+
+def audit_a2_broker_launch_gate(path: Path = A2_BROKER) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "path": str(path),
+        "policy_helper_found": False,
+        "policy_helper_rejects_isolated": False,
+        "policy_helper_rejects_allowlist": False,
+        "provider_generate_guards": [],
+        "sandbox_exec_launch_wrapper_present": False,
+        "fail_closed_before_provider_launch": False,
+        "reason": None,
+    }
+    if not path.exists():
+        result["reason"] = "file_not_found"
+        return result
+    text = path.read_text(encoding="utf-8")
+    helper = extract_rust_function_body(text, "fail_if_provider_network_restricted_for_policy")
+    if helper is None:
+        result["reason"] = "policy_helper_not_found"
+        return result
+    result["policy_helper_found"] = True
+    result["policy_helper_rejects_isolated"] = helper_rejects_policy_with_return(
+        helper,
+        r"\b[a-zA-Z_][\w]*\s*==\s*\"isolated\"",
+    )
+    result["policy_helper_rejects_allowlist"] = helper_rejects_policy_with_return(
+        helper,
+        r"\b[a-zA-Z_][\w]*\.starts_with\s*\(\s*\"allowlist\"\s*\)",
+    )
+
+    providers = [
+        ("claude", "ClaudeProvider"),
+        ("gemini", "GeminiProvider"),
+        ("codex", "CodexProvider"),
+        ("pi", "PiProvider"),
+        ("opencode", "OpenCodeProvider"),
+    ]
+    guards: list[dict[str, Any]] = []
+    for provider, impl_name in providers:
+        impl_body = extract_rust_impl_body(text, impl_name)
+        generate_body = extract_rust_function_body(impl_body, "generate") if impl_body is not None else None
+        if generate_body is None:
+            guards.append(
+                {
+                    "provider": provider,
+                    "impl": impl_name,
+                    "generate_found": False,
+                    "guard_found": False,
+                    "command_new_after_guard": False,
+                    "guard_before_command_new": False,
+                }
+            )
+            continue
+        guard_statement = re.escape(f'fail_if_provider_network_restricted("{provider}")?;')
+        guard_pattern = rf"^\s*{guard_statement}"
+        guard_index = first_top_level_rust_code_regex_match_offset(generate_body, guard_pattern, re.MULTILINE)
+        command_index = first_top_level_rust_code_regex_match_offset(generate_body, r"\bCommand::new\s*\(")
+        guards.append(
+            {
+                "provider": provider,
+                "impl": impl_name,
+                "generate_found": True,
+                "guard_found": guard_index >= 0,
+                "command_new_after_guard": command_index >= 0,
+                "guard_before_command_new": guard_index >= 0 and command_index >= 0 and guard_index < command_index,
+            }
+        )
+    result["provider_generate_guards"] = guards
+    result["sandbox_exec_launch_wrapper_present"] = bool(
+        rust_code_regex_match_offsets(
+            strip_rust_comments(text, strip_strings=False),
+            r"\bCommand::new\s*\(\s*\"sandbox-exec\"",
+        )
+    )
+    result["fail_closed_before_provider_launch"] = (
+        result["policy_helper_rejects_isolated"]
+        and result["policy_helper_rejects_allowlist"]
+        and all(item["guard_before_command_new"] for item in guards)
+    )
+    if not result["fail_closed_before_provider_launch"]:
+        result["reason"] = "provider wrappers do not visibly reject restricted network policy before Command::new"
+    return result
+
+
+def a2_owned_sandbox_enforced_for_all_provider_surfaces(worktree: dict[str, Any], broker: dict[str, Any]) -> bool:
+    return bool(worktree["sandbox_exec_launch_wrapper_present"] and broker["sandbox_exec_launch_wrapper_present"])
+
+
+def audit_a2_owned_provider_launch_boundaries() -> dict[str, Any]:
+    worktree = audit_a2_worktree_catalyst_launch_gate()
+    broker = audit_a2_broker_launch_gate()
+    fail_closed = bool(worktree["fail_closed_before_provider_launch"] and broker["fail_closed_before_provider_launch"])
+    sandbox_enforced = a2_owned_sandbox_enforced_for_all_provider_surfaces(worktree, broker)
+    return {
+        "worktree_catalyst": worktree,
+        "broker": broker,
+        "fail_closed_restricted_policies": fail_closed,
+        "sandbox_enforced_for_restricted_policies": sandbox_enforced,
+        "interpretation": (
+            "A2-owned provider launch paths visibly fail closed before provider Command::new for restricted policies, but do not show a sandbox/provider allowlist wrapper yet."
+            if fail_closed and not sandbox_enforced
+            else "A2-owned provider launch path policy enforcement needs review before restricted-policy benchmark evidence is trusted."
+        ),
+    }
+
+
 def find_function_sandbox_enforcement(path: Path, function_name: str) -> dict[str, Any]:
     result: dict[str, Any] = {
         "path": str(path),
@@ -670,11 +1324,17 @@ def audit() -> dict[str, Any]:
         for key, item in actual_launch_sandbox_enforcement.items()
         if key != "required_in_actual_launch_code_not_examples"
     )
+    a2_owned_provider_launch_boundary = audit_a2_owned_provider_launch_boundaries()
+
+    a2_owned_fail_closed = a2_owned_provider_launch_boundary["fail_closed_restricted_policies"]
 
     return {
         "schema": "a2.agent-network-boundary-audit.v1",
         "not_benchmark_evidence": True,
-        "complete": launch_boundaries_found and sandbox_example_found and actual_launch_boundaries_found,
+        "complete": launch_boundaries_found
+        and sandbox_example_found
+        and actual_launch_boundaries_found
+        and a2_owned_fail_closed,
         "actual_launch_boundaries_found": actual_launch_boundaries_found,
         "launch_sandbox_enforced": launch_sandbox_enforced,
         "pi_package": {
@@ -694,11 +1354,14 @@ def audit() -> dict[str, Any]:
         "sandbox_example": sandbox_checks,
         "sandbox_runtime": sandbox_runtime,
         "actual_launch_sandbox_enforcement": actual_launch_sandbox_enforcement,
+        "a2_owned_provider_launch_boundary": a2_owned_provider_launch_boundary,
         "conclusion": (
-            "Child pi launch boundaries are identifiable, but sandbox runtime is not available globally and actual child-agent launch functions do not show sandbox enforcement; "
+            "A2-owned provider launch paths visibly fail closed for restricted policies, and child pi launch boundaries are identifiable, but sandbox runtime is not available globally and actual child-agent launch functions do not show sandbox enforcement; "
             "benchmark child-agent network isolation remains unenforced until a sandbox/provider allowlist is wired at these spawn points."
-            if not sandbox_runtime["available"] or not launch_sandbox_enforced
+            if a2_owned_fail_closed and (not sandbox_runtime["available"] or not launch_sandbox_enforced)
             else "Child pi launch boundaries, a global sandbox runtime, and sandbox-wrapped spawn paths are present; next step is to run an end-to-end enforcement probe."
+            if a2_owned_fail_closed
+            else "A2-owned provider launch paths do not visibly fail closed before provider launch; fix the A2 launch gate before treating restricted-policy benchmark evidence as uncontaminated."
         ),
     }
 
@@ -721,6 +1384,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def require_sandbox_runtime_failures(result: dict[str, Any]) -> list[str]:
     failures: list[str] = []
+    a2_boundary = result.get("a2_owned_provider_launch_boundary")
+    if not isinstance(a2_boundary, dict) or not a2_boundary.get("fail_closed_restricted_policies"):
+        failures.append("A2-owned provider launch paths do not visibly fail closed for restricted policies")
     if not result["sandbox_runtime"]["available"]:
         failures.append("@anthropic-ai/sandbox-runtime not installed globally")
     if not result["launch_sandbox_enforced"]:
@@ -1018,14 +1684,321 @@ class AgentNetworkBoundaryCheckTests(unittest.TestCase):
         self.assertTrue(result["spawn_present"])
         self.assertEqual(result["sandbox_markers"], [])
 
+    def test_rust_masking_ignores_raw_strings_and_nested_block_comments(self) -> None:
+        text = (
+            'fn demo() {\n'
+            '  let inert = r##"Command::new(\"sandbox-exec\")"##;\n'
+            '  /* outer Command::new("sandbox-exec") /* nested Command::new("sandbox-exec") */ still comment */\n'
+            '  let real = Command::new("opencode");\n'
+            '}\n'
+        )
+        without_comments = strip_rust_comments(text, strip_strings=False)
+        without_strings = strip_rust_comments(text, strip_strings=True)
+
+        self.assertEqual(
+            rust_code_regex_match_offsets(without_comments, r"\bCommand::new\s*\(\s*\"sandbox-exec\""),
+            [],
+        )
+        self.assertEqual(len(rust_command_new_offsets(without_strings)), 1)
+
+    def test_extract_rust_impl_body_handles_lifetimes_attributes_and_char_braces(self) -> None:
+        text = r'''
+const INERT: &str = r##"
+impl ModelProvider for PiProvider {
+    async fn generate(&self) { Command::new("pi"); }
+}
+"##;
+
+#[async_trait]
+impl<'a> ModelProvider for PiProvider {
+    async fn generate(&self) {
+        let open = '{';
+        let close = '}';
+        let quote = '\'';
+        fail_if_provider_network_restricted("pi")?;
+        Command::new("pi");
+    }
+}
+'''
+        impl_body = extract_rust_impl_body(text, "PiProvider")
+        self.assertIsNotNone(impl_body)
+        assert impl_body is not None
+        self.assertIn("let open = '{';", impl_body)
+        generate_body = extract_rust_function_body(impl_body, "generate")
+        self.assertIsNotNone(generate_body)
+        assert generate_body is not None
+        self.assertIn('fail_if_provider_network_restricted("pi")?;', generate_body)
+        self.assertIn('Command::new("pi")', generate_body)
+
+    def test_a2_broker_launch_gate_rejects_guard_in_inner_closure_before_command_new(self) -> None:
+        provider_impls = "\n".join(
+            f'''impl ModelProvider for {impl_name} {{
+    async fn generate(&self) {{
+        let _inert_guard = || {{
+            fail_if_provider_network_restricted("{provider}")?;
+            Ok::<(), A2Error>(())
+        }};
+        Command::new("{provider}");
+    }}
+}}'''
+            for provider, impl_name in [
+                ("claude", "ClaudeProvider"),
+                ("gemini", "GeminiProvider"),
+                ("codex", "CodexProvider"),
+                ("pi", "PiProvider"),
+                ("opencode", "OpenCodeProvider"),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "broker.rs"
+            path.write_text(
+                'fn fail_if_provider_network_restricted_for_policy() {\n'
+                '  if normalized == "isolated" || normalized.starts_with("allowlist") { return Err(error); }\n'
+                '}\n'
+                + provider_impls,
+                encoding="utf-8",
+            )
+            result = audit_a2_broker_launch_gate(path)
+
+        self.assertTrue(result["policy_helper_rejects_isolated"])
+        self.assertTrue(result["policy_helper_rejects_allowlist"])
+        self.assertFalse(result["fail_closed_before_provider_launch"])
+        self.assertTrue(all(item["command_new_after_guard"] for item in result["provider_generate_guards"]))
+        self.assertTrue(all(not item["guard_before_command_new"] for item in result["provider_generate_guards"]))
+
+    def test_a2_worktree_launch_gate_rejects_policy_markers_only_in_rust_comments_or_strings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "worktree_catalyst.rs"
+            path.write_text(
+                'async fn run_agent() {\n'
+                '  let inert = r##"NetworkPolicy::Isolated NetworkPolicy::AllowList return Err"##;\n'
+                '  /* NetworkPolicy::Isolated /* NetworkPolicy::AllowList return Err */ still comment */\n'
+                '  if provider_id == "mock" { return self.run_mock_agent(worktree_path).await; }\n'
+                '  match provider_id { _ => self.run_claude(model_id, prompt, worktree_path).await }\n'
+                '}\n'
+                'async fn run_claude() { Command::new("claude"); }\n'
+                'async fn run_codex() { Command::new("codex"); }\n'
+                'async fn run_gemini() { Command::new("gemini"); }\n'
+                'async fn run_opencode() { Command::new("opencode"); }\n'
+                'async fn run_pi() { Command::new("pi"); }\n',
+                encoding="utf-8",
+            )
+            result = audit_a2_worktree_catalyst_launch_gate(path)
+
+        self.assertTrue(result["run_agent_found"])
+        self.assertFalse(result["restricted_policy_check_present"])
+        self.assertFalse(result["fail_closed_before_provider_launch"])
+
+    def test_a2_worktree_launch_gate_rejects_disconnected_policy_markers_and_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "worktree_catalyst.rs"
+            path.write_text(
+                'async fn run_agent() {\n'
+                '  let _policy_seen = NetworkPolicy::Isolated;\n'
+                '  let _allowlist_seen = NetworkPolicy::AllowList(vec![]);\n'
+                '  if provider_id == "invalid" { return Err(error); }\n'
+                '  if provider_id == "mock" { return self.run_mock_agent(worktree_path).await; }\n'
+                '  match provider_id { _ => self.run_claude(model_id, prompt, worktree_path).await }\n'
+                '}\n'
+                'async fn run_claude() { Command::new("claude"); }\n'
+                'async fn run_codex() { Command::new("codex"); }\n'
+                'async fn run_gemini() { Command::new("gemini"); }\n'
+                'async fn run_opencode() { Command::new("opencode"); }\n'
+                'async fn run_pi() { Command::new("pi"); }\n',
+                encoding="utf-8",
+            )
+            result = audit_a2_worktree_catalyst_launch_gate(path)
+
+        self.assertTrue(result["run_agent_found"])
+        self.assertFalse(result["restricted_policy_check_present"])
+        self.assertFalse(result["fail_closed_before_provider_launch"])
+
+    def test_a2_worktree_launch_gate_rejects_return_err_only_inside_nested_closure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "worktree_catalyst.rs"
+            path.write_text(
+                'async fn run_agent() {\n'
+                '  if matches!(network_policy, Some(NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) {\n'
+                '    let _not_called = || { return Err(error); };\n'
+                '  }\n'
+                '  if provider_id == "mock" { return self.run_mock_agent(worktree_path).await; }\n'
+                '  match provider_id { _ => self.run_claude(model_id, prompt, worktree_path).await }\n'
+                '}\n'
+                'async fn run_claude() { Command::new("claude"); }\n'
+                'async fn run_codex() { Command::new("codex"); }\n'
+                'async fn run_gemini() { Command::new("gemini"); }\n'
+                'async fn run_opencode() { Command::new("opencode"); }\n'
+                'async fn run_pi() { Command::new("pi"); }\n',
+                encoding="utf-8",
+            )
+            result = audit_a2_worktree_catalyst_launch_gate(path)
+
+        self.assertTrue(result["run_agent_found"])
+        self.assertFalse(result["restricted_policy_check_present"])
+        self.assertFalse(result["fail_closed_before_provider_launch"])
+
+    def test_a2_broker_launch_gate_rejects_allowlist_helper_marker_without_return_path(self) -> None:
+        provider_impls = "\n".join(
+            f'''impl ModelProvider for {impl_name} {{
+    async fn generate(&self) {{
+        fail_if_provider_network_restricted("{provider}")?;
+        Command::new("{provider}");
+    }}
+}}'''
+            for provider, impl_name in [
+                ("claude", "ClaudeProvider"),
+                ("gemini", "GeminiProvider"),
+                ("codex", "CodexProvider"),
+                ("pi", "PiProvider"),
+                ("opencode", "OpenCodeProvider"),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "broker.rs"
+            path.write_text(
+                'fn fail_if_provider_network_restricted_for_policy() {\n'
+                '  let inert = "allowlist";\n'
+                '  if normalized == "isolated" { return Err(error); }\n'
+                '  Ok(())\n'
+                '}\n'
+                + provider_impls,
+                encoding="utf-8",
+            )
+            result = audit_a2_broker_launch_gate(path)
+
+        self.assertTrue(result["policy_helper_rejects_isolated"])
+        self.assertFalse(result["policy_helper_rejects_allowlist"])
+        self.assertFalse(result["fail_closed_before_provider_launch"])
+
+    def test_a2_broker_launch_gate_rejects_allowlist_predicate_assignment_before_unrelated_error(self) -> None:
+        provider_impls = "\n".join(
+            f'''impl ModelProvider for {impl_name} {{
+    async fn generate(&self) {{
+        fail_if_provider_network_restricted("{provider}")?;
+        Command::new("{provider}");
+    }}
+}}'''
+            for provider, impl_name in [
+                ("claude", "ClaudeProvider"),
+                ("gemini", "GeminiProvider"),
+                ("codex", "CodexProvider"),
+                ("pi", "PiProvider"),
+                ("opencode", "OpenCodeProvider"),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "broker.rs"
+            path.write_text(
+                'fn fail_if_provider_network_restricted_for_policy() {\n'
+                '  let shift = normalized.starts_with("allowlist");\n'
+                '  if normalized == "isolated" { return Err(error); }\n'
+                '  Ok(())\n'
+                '}\n'
+                + provider_impls,
+                encoding="utf-8",
+            )
+            result = audit_a2_broker_launch_gate(path)
+
+        self.assertTrue(result["policy_helper_rejects_isolated"])
+        self.assertFalse(result["policy_helper_rejects_allowlist"])
+        self.assertFalse(result["fail_closed_before_provider_launch"])
+
+    def test_a2_broker_launch_gate_rejects_guards_only_in_rust_comments_or_raw_strings(self) -> None:
+        provider_impls = "\n".join(
+            f'''impl ModelProvider for {impl_name} {{
+    async fn generate(&self) {{
+        let inert = r##"fail_if_provider_network_restricted(\"{provider}\")?;"##;
+        // fail_if_provider_network_restricted("{provider}")?;
+        Command::new("{provider}");
+    }}
+}}'''
+            for provider, impl_name in [
+                ("claude", "ClaudeProvider"),
+                ("gemini", "GeminiProvider"),
+                ("codex", "CodexProvider"),
+                ("pi", "PiProvider"),
+                ("opencode", "OpenCodeProvider"),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "broker.rs"
+            path.write_text(
+                'fn fail_if_provider_network_restricted_for_policy() {\n'
+                '  if normalized == "isolated" || normalized.starts_with("allowlist") { return Err(error); }\n'
+                '}\n'
+                + provider_impls,
+                encoding="utf-8",
+            )
+            result = audit_a2_broker_launch_gate(path)
+
+        self.assertTrue(result["policy_helper_rejects_isolated"])
+        self.assertTrue(result["policy_helper_rejects_allowlist"])
+        self.assertFalse(result["fail_closed_before_provider_launch"])
+        self.assertTrue(all(not item["guard_before_command_new"] for item in result["provider_generate_guards"]))
+
+    def test_a2_worktree_launch_gate_detects_fail_closed_before_provider_dispatch(self) -> None:
+        result = audit_a2_worktree_catalyst_launch_gate()
+
+        self.assertTrue(result["run_agent_found"])
+        self.assertTrue(result["restricted_policy_check_present"])
+        self.assertTrue(result["restricted_policy_error_before_mock"])
+        self.assertTrue(result["restricted_policy_error_before_provider_dispatch"])
+        self.assertTrue(result["fail_closed_before_provider_launch"])
+        self.assertFalse(result["sandbox_exec_launch_wrapper_present"])
+        self.assertEqual(
+            [item["function"] for item in result["provider_command_launch_functions"]],
+            ["run_claude", "run_codex", "run_gemini", "run_opencode", "run_pi"],
+        )
+
+    def test_a2_broker_launch_gate_detects_all_provider_guards(self) -> None:
+        result = audit_a2_broker_launch_gate()
+
+        self.assertTrue(result["policy_helper_found"])
+        self.assertTrue(result["policy_helper_rejects_isolated"])
+        self.assertTrue(result["policy_helper_rejects_allowlist"])
+        self.assertTrue(result["fail_closed_before_provider_launch"])
+        self.assertFalse(result["sandbox_exec_launch_wrapper_present"])
+        self.assertEqual(
+            [item["provider"] for item in result["provider_generate_guards"]],
+            ["claude", "gemini", "codex", "pi", "opencode"],
+        )
+        self.assertTrue(all(item["guard_before_command_new"] for item in result["provider_generate_guards"]))
+
+    def test_a2_owned_sandbox_enforcement_requires_all_provider_surfaces(self) -> None:
+        worktree = {"sandbox_exec_launch_wrapper_present": True}
+        broker = {"sandbox_exec_launch_wrapper_present": False}
+        self.assertFalse(a2_owned_sandbox_enforced_for_all_provider_surfaces(worktree, broker))
+        self.assertFalse(a2_owned_sandbox_enforced_for_all_provider_surfaces(broker, worktree))
+        self.assertTrue(a2_owned_sandbox_enforced_for_all_provider_surfaces(worktree, worktree))
+
+    def test_a2_owned_provider_launch_boundary_is_reported_in_full_audit(self) -> None:
+        result = audit()
+        boundary = result["a2_owned_provider_launch_boundary"]
+
+        self.assertTrue(boundary["fail_closed_restricted_policies"])
+        self.assertFalse(boundary["sandbox_enforced_for_restricted_policies"])
+        self.assertIn("fail closed", boundary["interpretation"])
+
     def test_require_sandbox_runtime_fails_when_runtime_present_but_launch_unenforced(self) -> None:
         result = {
+            "a2_owned_provider_launch_boundary": {"fail_closed_restricted_policies": True},
             "sandbox_runtime": {"available": True},
             "launch_sandbox_enforced": False,
         }
         self.assertEqual(
             require_sandbox_runtime_failures(result),
             ["actual child-agent launch functions do not show sandbox enforcement"],
+        )
+
+    def test_require_sandbox_runtime_includes_a2_owned_launch_gate_failure(self) -> None:
+        result = {
+            "a2_owned_provider_launch_boundary": {"fail_closed_restricted_policies": False},
+            "sandbox_runtime": {"available": True},
+            "launch_sandbox_enforced": True,
+        }
+        self.assertEqual(
+            require_sandbox_runtime_failures(result),
+            ["A2-owned provider launch paths do not visibly fail closed for restricted policies"],
         )
 
 

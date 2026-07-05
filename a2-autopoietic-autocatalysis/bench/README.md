@@ -274,10 +274,11 @@ python3 bench/network_policy_smoke.py --allowlist-smoke --json
 # Requires the selected provider binary on PATH; default provider is opencode.
 python3 bench/network_policy_smoke.py --a2ctl-run-smoke --self-test
 
-# External child-agent launch-boundary audit: locates Pi subagent/foundry_team
-# child pi spawn points and reports sandbox-runtime availability. This is not
-# enforcement proof; --require-sandbox-runtime is expected to fail closed until
-# the runtime is installed/wired.
+# External/A² launch-boundary audit: locates Pi subagent/foundry_team child pi
+# spawn points, checks A²-owned restricted-policy provider launch gates, and
+# reports sandbox-runtime availability. This is not enforcement proof;
+# --require-sandbox-runtime is expected to fail closed until the runtime is
+# installed/wired.
 python3 bench/agent_network_boundary_check.py --self-test
 python3 bench/agent_network_boundary_check.py --require-sandbox-runtime
 ```
