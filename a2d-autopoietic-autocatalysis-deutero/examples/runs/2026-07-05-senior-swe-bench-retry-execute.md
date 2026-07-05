@@ -140,3 +140,24 @@ target/debug/a2d fitness-evidence-inspect \
 Source-patch gate: `runs/20260705-retry-execute-next-cycle-command-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: 781675eec3e4e261c7b5ab08f114a06f78d9e603`.
 
 Post-commit clean-HEAD evidence: `runs/20260705-postcommit-fitness-evidence-d4557a1/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_revision: d2a2c87`, `source_tree_dirty: false`, `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`.
+
+## Retry resume attempt-plan addendum
+
+Follow-up command: `a2d senior-swe-bench-retry-resume-attempt-plan --retry-execution <retry-execution.json> --retry-plan <retry-plan.json> --cycle-output-manifest <manifest.json> [--apply-candidate-patch] [--official-evaluator-manifest <json>] -- <evaluator> [args...]`.
+
+This consumes a persisted failed non-final retry execution after the recorded `next_cycle_command` has produced the next manifest. It validates the saved command boundary, expected manifest path, no-provider/no-pre-evidence-fitness flags, task input, checkout, attempt count/index consistency, last-attempt metadata, and expected attempt directory before emitting the existing retry-attempt plan for the new manifest. It does not run providers, evaluators, retry-step, or evidence inspection.
+
+Validation/evidence:
+
+```bash
+cargo fmt --check
+cargo test -p a2d --test senior_swe_bench_retry_execute -- --nocapture
+cargo test
+target/debug/a2d fitness-evidence-inspect \
+  runs/20260705-retry-resume-attempt-plan-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
+```
+
+Source-patch gate: `runs/20260705-retry-resume-attempt-plan-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: f927a382b84f1280994776f4285b1adf4b8a723d`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`.
+
+This is resume orchestration planning over persisted retry artifacts. It is not an official Senior SWE-Bench success claim and does not prove top-level A²D goal completion.
