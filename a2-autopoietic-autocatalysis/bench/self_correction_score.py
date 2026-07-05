@@ -1693,7 +1693,7 @@ class SelfCorrectionScoreTests(unittest.TestCase):
             "provider_endpoint_allowlist_enforced": True,
             "allowed_provider_endpoints": ["https://api.openai.com"],
             "public_solution_egress_blocked": True,
-            "blocked_solution_hosts": ["github.com"],
+            "blocked_solution_hosts": ["github.com", "githubusercontent.com", "github.io"],
             "sandbox_profile_sha256": "a" * 64,
         }
         row = {

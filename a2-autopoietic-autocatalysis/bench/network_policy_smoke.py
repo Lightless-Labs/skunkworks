@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import shutil
 import socket
@@ -42,6 +43,63 @@ def local_allowlist_profile(allowed_port: int) -> str:
         "(deny network*)\n"
         f'(allow network-outbound (remote tcp "localhost:{allowed_port}"))\n'
     )
+
+
+def provider_allowlist_profile(allowed_hosts: list[str], *, port: int = 443) -> str:
+    """Return a deny-by-default sandbox profile with exact provider host allows.
+
+    This is profile-shape support for future provider allowlist enforcement. It
+    does not run a live provider call and does not prove benchmark isolation by
+    itself.
+    """
+    if not allowed_hosts:
+        raise ValueError("provider allowlist profile requires at least one allowed host")
+    if type(port) is not int or port <= 0 or port > 65535:
+        raise ValueError("provider allowlist profile requires a valid TCP port")
+
+    lines = ["(version 1)", "(allow default)", "(deny network*)"]
+    for host in allowed_hosts:
+        if not isinstance(host, str):
+            raise ValueError("provider allowlist hosts must be strings")
+        normalized = host.strip().lower().rstrip(".")
+        if not normalized or normalized in {"*", "0.0.0.0", "::"}:
+            raise ValueError("provider allowlist hosts must be exact host names")
+        if (
+            normalized == "github.com"
+            or normalized.endswith(".github.com")
+            or normalized == "githubusercontent.com"
+            or normalized.endswith(".githubusercontent.com")
+            or normalized == "github.io"
+            or normalized.endswith(".github.io")
+        ):
+            raise ValueError("provider allowlist profile cannot allow public solution hosts")
+        if any(character.isspace() for character in normalized) or "/" in normalized or ":" in normalized:
+            raise ValueError("provider allowlist hosts must not contain URL syntax")
+        try:
+            ipaddress.ip_address(normalized)
+            raise ValueError("provider allowlist hosts must be DNS names, not IP literals")
+        except ValueError as error:
+            if "must be DNS names" in str(error):
+                raise
+        labels = normalized.split(".")
+        if len(labels) < 2:
+            raise ValueError("provider allowlist hosts must be fully qualified provider host names")
+        if normalized == "localhost" or normalized.endswith(".localhost"):
+            raise ValueError("provider allowlist hosts must not be local hosts")
+        if normalized in {"example.com", "example.net", "example.org"} or normalized.endswith(
+            (".example", ".example.com", ".example.net", ".example.org", ".invalid", ".test")
+        ):
+            raise ValueError("provider allowlist hosts must not be synthetic/example hosts")
+        if any(
+            not label
+            or label.startswith("-")
+            or label.endswith("-")
+            or not all(character.isascii() and (character.isalnum() or character == "-") for character in label)
+            for label in labels
+        ):
+            raise ValueError("provider allowlist hosts must be valid DNS names")
+        lines.append(f'(allow network-outbound (remote tcp "{normalized}:{port}"))')
+    return "\n".join(lines) + "\n"
 
 
 def sha256_text(value: str) -> str:
@@ -525,6 +583,75 @@ class NetworkPolicySmokeTests(unittest.TestCase):
 
         self.assertIn("(deny network*)", profile)
         self.assertIn('(allow network-outbound (remote tcp "localhost:12345"))', profile)
+        self.assertNotIn("github.com", profile)
+
+    def test_provider_allowlist_profile_allows_exact_provider_hosts_after_default_deny(self) -> None:
+        profile = provider_allowlist_profile(["API.OpenAI.Com", "api.anthropic.com"])
+
+        self.assertIn("(deny network*)", profile)
+        self.assertIn('(allow network-outbound (remote tcp "api.openai.com:443"))', profile)
+        self.assertIn('(allow network-outbound (remote tcp "api.anthropic.com:443"))', profile)
+        self.assertNotIn("github.com", profile)
+        self.assertNotIn('"*:443"', profile)
+        self.assertNotIn("(allow network*)", profile)
+        self.assertNotIn("(allow network-outbound)", profile)
+
+    def test_provider_allowlist_profile_rejects_broad_or_solution_hosts(self) -> None:
+        for host in [
+            "*",
+            "github.com",
+            "raw.githubusercontent.com",
+            "gist.githubusercontent.com",
+            "github.io",
+            "user.github.io",
+            "api.openai.com/v1",
+            "https://api.openai.com",
+            "api openai com",
+            "localhost",
+            "internal",
+            "com",
+            "api.example-provider.invalid",
+            "provider.test",
+            "192.168.0.10",
+            "",
+        ]:
+            with self.subTest(host=host):
+                with self.assertRaises(ValueError):
+                    provider_allowlist_profile([host])
+
+    def test_provider_allowlist_profile_rejects_bool_or_invalid_ports(self) -> None:
+        for port in [True, False, 0, -1, 65536]:
+            with self.subTest(port=port):
+                with self.assertRaises(ValueError):
+                    provider_allowlist_profile(["api.openai.com"], port=port)  # type: ignore[arg-type]
+
+    def test_provider_allowlist_profile_matches_fresh_evidence_contract_shape(self) -> None:
+        from bench.self_correction import validate_sandbox_provider_allowlist_evidence
+        from bench.self_correction_demo import validate_fresh_sandbox_provider_allowlist_evidence
+
+        profile = provider_allowlist_profile(["api.openai.com"])
+        profile_lines = profile.splitlines()
+        evidence = {
+            "status": "enforced",
+            "enforcement_layer": "sandbox-exec-profile-shape-test",
+            "launch_boundary": "unit-test-only",
+            "benchmark_network_policy": "Isolated",
+            "provider_endpoint_allowlist_enforced": True,
+            "public_solution_egress_blocked": True,
+            "allowed_provider_endpoints": ["https://api.openai.com"],
+            "blocked_solution_hosts": ["github.com", "githubusercontent.com", "github.io"],
+            "sandbox_profile_sha256": sha256_text(profile),
+            "sandbox_profile_lines": profile_lines,
+        }
+
+        validate_sandbox_provider_allowlist_evidence(evidence)
+        validate_fresh_sandbox_provider_allowlist_evidence(
+            {"audited_sandbox_provider_allowlist_evidence": evidence},
+            index=1,
+        )
+        self.assertEqual(sha256_text(profile), sha256_text("\n".join(profile_lines) + "\n"))
+        self.assertIn("(deny network*)", profile)
+        self.assertIn("api.openai.com", profile)
         self.assertNotIn("github.com", profile)
 
     def test_smoke_result_profile_audit_accepts_custom_allowlist_probes(self) -> None:

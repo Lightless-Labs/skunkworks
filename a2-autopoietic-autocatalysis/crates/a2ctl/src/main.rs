@@ -4841,7 +4841,7 @@ mod tests {
             "provider_endpoint_allowlist_enforced": true,
             "allowed_provider_endpoints": ["https://api.openai.com"],
             "public_solution_egress_blocked": true,
-            "blocked_solution_hosts": ["github.com"],
+            "blocked_solution_hosts": ["github.com", "githubusercontent.com", "github.io"],
             "sandbox_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         });
         let mut embedded_row = normalized_demo_evidence_row_from_payload(&promotion_row);
@@ -4941,7 +4941,7 @@ mod tests {
             "provider_endpoint_allowlist_enforced": true,
             "allowed_provider_endpoints": ["https://api.openai.com"],
             "public_solution_egress_blocked": true,
-            "blocked_solution_hosts": ["github.com"],
+            "blocked_solution_hosts": ["github.com", "githubusercontent.com", "github.io"],
             "sandbox_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         });
         let artifact_text = [failed_row.clone(), promotion_row]

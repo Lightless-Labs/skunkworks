@@ -1157,11 +1157,12 @@ def validate_fresh_sandbox_provider_allowlist_evidence(
             f"fresh demo row {index} sandbox/provider allowlist evidence must record allowed_provider_endpoints"
         )
     blocked_hosts = evidence.get("blocked_solution_hosts")
-    if not isinstance(blocked_hosts, list) or "github.com" not in blocked_hosts:
+    required_blocked_hosts = {"github.com", "githubusercontent.com", "github.io"}
+    blocked_host_set = {host.lower() for host in blocked_hosts if isinstance(host, str)} if isinstance(blocked_hosts, list) else set()
+    if not isinstance(blocked_hosts, list) or not required_blocked_hosts.issubset(blocked_host_set):
         raise RuntimeError(
-            f"fresh demo row {index} sandbox/provider allowlist evidence must record github.com as blocked"
+            f"fresh demo row {index} sandbox/provider allowlist evidence must record github.com, githubusercontent.com, and github.io as blocked"
         )
-    blocked_host_set = {host.lower() for host in blocked_hosts if isinstance(host, str)}
     allowed_endpoint_hosts: list[str] = []
     for endpoint in allowed_endpoints:
         parsed = urllib.parse.urlparse(endpoint)
@@ -1183,7 +1184,13 @@ def validate_fresh_sandbox_provider_allowlist_evidence(
             raise RuntimeError(
                 f"fresh demo row {index} sandbox/provider allowlist evidence must record real provider endpoints, not synthetic/local endpoint {endpoint_host}"
             )
-        allowed_endpoint_hosts.append(endpoint_host)
+        try:
+            endpoint_port = parsed.port if parsed.port is not None else 443
+        except ValueError:
+            raise RuntimeError(
+                f"fresh demo row {index} sandbox/provider allowlist evidence must record valid provider endpoint ports"
+            ) from None
+        allowed_endpoint_hosts.append(f"{endpoint_host}:{endpoint_port}")
     sandbox_sha = evidence.get("sandbox_profile_sha256")
     sandbox_runtime = evidence.get("sandbox_runtime")
     has_profile_sha = isinstance(sandbox_sha, str) and re.fullmatch(r"[0-9a-f]{64}", sandbox_sha)
@@ -1220,6 +1227,20 @@ def sandbox_profile_active_line(line: str) -> str:
     return line.split(";", 1)[0].split("#", 1)[0].strip()
 
 
+def sandbox_profile_remote_tcp_target(target: str) -> tuple[str, int] | None:
+    lowered = target.strip().lower().rstrip(".")
+    if not lowered or lowered.startswith("[") or ":" not in lowered:
+        return None
+    host, port_text = lowered.rsplit(":", 1)
+    host = host.rstrip(".")
+    if not host or not port_text.isdigit():
+        return None
+    port = int(port_text)
+    if port <= 0 or port > 65535:
+        return None
+    return host, port
+
+
 def validate_fresh_sandbox_profile_lines(
     profile_lines: list[str], *, allowed_endpoint_hosts: list[str], blocked_host_set: set[str], index: int
 ) -> None:
@@ -1229,16 +1250,46 @@ def validate_fresh_sandbox_profile_lines(
         raise RuntimeError(
             f"fresh demo row {index} sandbox/provider allowlist evidence sandbox_profile_lines must deny network by default"
         )
-    for host in allowed_endpoint_hosts:
-        if host not in active_profile_text:
-            raise RuntimeError(
-                f"fresh demo row {index} sandbox/provider allowlist evidence sandbox_profile_lines must name allowed provider endpoint hosts"
-            )
+    exact_allowed_targets: set[str] = set()
+    allowed_endpoint_target_set = set(allowed_endpoint_hosts)
     for line in active_lines:
         lowered = line.lower()
-        if "allow" in lowered and any(blocked_host in lowered for blocked_host in blocked_host_set):
+        if "allow" not in lowered or "network" not in lowered:
+            continue
+        if any(blocked_host in lowered for blocked_host in blocked_host_set):
             raise RuntimeError(
                 f"fresh demo row {index} sandbox/provider allowlist evidence sandbox_profile_lines cannot allow blocked solution hosts"
+            )
+        if (
+            re.search(r"\(allow\s+network\*", lowered)
+            or re.search(r"\(allow\s+network\s*\)", lowered)
+            or re.search(r"\(allow\s+network-outbound\s*\)", lowered)
+        ):
+            raise RuntimeError(
+                f"fresh demo row {index} sandbox/provider allowlist evidence sandbox_profile_lines cannot allow broad network access"
+            )
+        matches = re.findall(r"\(remote\s+tcp\s+\"([^\"]+)\"\)", lowered)
+        if not matches:
+            raise RuntimeError(
+                f"fresh demo row {index} sandbox/provider allowlist evidence sandbox_profile_lines must use exact remote tcp provider host rules"
+            )
+        for target in matches:
+            parsed_target = sandbox_profile_remote_tcp_target(target)
+            if parsed_target is None:
+                raise RuntimeError(
+                    f"fresh demo row {index} sandbox/provider allowlist evidence sandbox_profile_lines must use exact remote tcp provider host:port rules"
+                )
+            host, port = parsed_target
+            target_key = f"{host}:{port}"
+            if target_key not in allowed_endpoint_target_set:
+                raise RuntimeError(
+                    f"fresh demo row {index} sandbox/provider allowlist evidence sandbox_profile_lines cannot allow non-provider endpoint hosts or ports"
+                )
+            exact_allowed_targets.add(target_key)
+    for target_key in allowed_endpoint_hosts:
+        if target_key not in exact_allowed_targets:
+            raise RuntimeError(
+                f"fresh demo row {index} sandbox/provider allowlist evidence sandbox_profile_lines must name allowed provider endpoint hosts with exact remote tcp host:port rules"
             )
 
 
@@ -1247,13 +1298,15 @@ def provider_endpoint_host_is_malformed(host: str) -> bool:
         return True
     try:
         ipaddress.ip_address(host)
-        return False
+        return True
     except ValueError:
         pass
     host = host.rstrip(".")
     if not host or len(host) > 253:
         return True
     labels = host.split(".")
+    if len(labels) < 2:
+        return True
     return any(
         not label
         or len(label) > 63
@@ -3363,7 +3416,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             "provider_endpoint_allowlist_enforced": True,
             "allowed_provider_endpoints": ["https://api.openai.com"],
             "public_solution_egress_blocked": True,
-            "blocked_solution_hosts": ["github.com", "raw.githubusercontent.com"],
+            "blocked_solution_hosts": ["github.com", "githubusercontent.com", "github.io", "raw.githubusercontent.com"],
             "sandbox_profile_sha256": TEST_SANDBOX_PROFILE_SHA256,
             "sandbox_profile_lines": TEST_SANDBOX_PROFILE_LINES,
         }
@@ -7006,8 +7059,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "provider_endpoint_allowlist_enforced=true",
             ),
             (
-                {**self.fresh_sandbox_provider_allowlist_evidence(), "blocked_solution_hosts": ["example.com"]},
-                "github.com as blocked",
+                {**self.fresh_sandbox_provider_allowlist_evidence(), "blocked_solution_hosts": ["github.com"]},
+                "github.com, githubusercontent.com, and github.io",
             ),
             (
                 {**self.fresh_sandbox_provider_allowlist_evidence(), "sandbox_profile_sha256": "not-a-sha"},
@@ -7069,6 +7122,108 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                             "(version 1)",
                             "(allow default)",
                             "(deny network*)",
+                            "(allow network*)",
+                            '(allow network-outbound (remote tcp "api.openai.com:443"))',
+                        ]).encode("utf-8") + b"\n"
+                    ).hexdigest(),
+                    "sandbox_profile_lines": [
+                        "(version 1)",
+                        "(allow default)",
+                        "(deny network*)",
+                        "(allow network*)",
+                        '(allow network-outbound (remote tcp "api.openai.com:443"))',
+                    ],
+                },
+                "broad network access",
+            ),
+            (
+                {
+                    **self.fresh_sandbox_provider_allowlist_evidence(),
+                    "sandbox_profile_sha256": hashlib.sha256(
+                        "\n".join([
+                            "(version 1)",
+                            "(allow default)",
+                            "(deny network*)",
+                            '(allow network-outbound (remote tcp "evilapi.openai.com:443"))',
+                        ]).encode("utf-8") + b"\n"
+                    ).hexdigest(),
+                    "sandbox_profile_lines": [
+                        "(version 1)",
+                        "(allow default)",
+                        "(deny network*)",
+                        '(allow network-outbound (remote tcp "evilapi.openai.com:443"))',
+                    ],
+                },
+                "non-provider endpoint hosts",
+            ),
+            (
+                {
+                    **self.fresh_sandbox_provider_allowlist_evidence(),
+                    "sandbox_profile_sha256": hashlib.sha256(
+                        "\n".join([
+                            "(version 1)",
+                            "(allow default)",
+                            "(deny network*)",
+                            '(allow network-outbound (remote tcp "api.openai.com"))',
+                        ]).encode("utf-8") + b"\n"
+                    ).hexdigest(),
+                    "sandbox_profile_lines": [
+                        "(version 1)",
+                        "(allow default)",
+                        "(deny network*)",
+                        '(allow network-outbound (remote tcp "api.openai.com"))',
+                    ],
+                },
+                "host:port",
+            ),
+            (
+                {
+                    **self.fresh_sandbox_provider_allowlist_evidence(),
+                    "sandbox_profile_sha256": hashlib.sha256(
+                        "\n".join([
+                            "(version 1)",
+                            "(allow default)",
+                            "(deny network*)",
+                            '(allow network-outbound (remote tcp "api.openai.com:22"))',
+                        ]).encode("utf-8") + b"\n"
+                    ).hexdigest(),
+                    "sandbox_profile_lines": [
+                        "(version 1)",
+                        "(allow default)",
+                        "(deny network*)",
+                        '(allow network-outbound (remote tcp "api.openai.com:22"))',
+                    ],
+                },
+                "non-provider endpoint hosts or ports",
+            ),
+            (
+                {
+                    **self.fresh_sandbox_provider_allowlist_evidence(),
+                    "sandbox_profile_sha256": hashlib.sha256(
+                        "\n".join([
+                            "(version 1)",
+                            "(allow default)",
+                            "(deny network*)",
+                            '(allow network-outbound (remote tcp "api.openai.com:https"))',
+                        ]).encode("utf-8") + b"\n"
+                    ).hexdigest(),
+                    "sandbox_profile_lines": [
+                        "(version 1)",
+                        "(allow default)",
+                        "(deny network*)",
+                        '(allow network-outbound (remote tcp "api.openai.com:https"))',
+                    ],
+                },
+                "host:port",
+            ),
+            (
+                {
+                    **self.fresh_sandbox_provider_allowlist_evidence(),
+                    "sandbox_profile_sha256": hashlib.sha256(
+                        "\n".join([
+                            "(version 1)",
+                            "(allow default)",
+                            "(deny network*)",
                             '(allow network-outbound (remote tcp "api.openai.com:443"))',
                             '(allow network-outbound (remote tcp "github.com:443"))',
                         ]).encode("utf-8") + b"\n"
@@ -7115,6 +7270,14 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 {**self.fresh_sandbox_provider_allowlist_evidence(), "allowed_provider_endpoints": ["https://not a host"]},
                 "real provider endpoints",
             ),
+            (
+                {**self.fresh_sandbox_provider_allowlist_evidence(), "allowed_provider_endpoints": ["https://com"]},
+                "real provider endpoints",
+            ),
+            (
+                {**self.fresh_sandbox_provider_allowlist_evidence(), "allowed_provider_endpoints": ["https://api.openai.com:notaport"]},
+                "valid provider endpoint ports",
+            ),
         ]
         for evidence, message in scenarios:
             with self.subTest(message=message), tempfile.TemporaryDirectory() as tmpdir:
@@ -7138,8 +7301,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
     def test_validate_fresh_results_ignores_sandbox_profile_comment_hosts(self) -> None:
         profile_lines = [
             *TEST_SANDBOX_PROFILE_LINES,
-            "; audit note: do not allow github.com or raw.githubusercontent.com",
-            "# blocked hosts include github.com",
+            "; audit note: do not allow github.com, githubusercontent.com, github.io, or raw.githubusercontent.com",
+            "# blocked hosts include github.com, githubusercontent.com, and github.io",
         ]
         evidence = {
             **self.fresh_sandbox_provider_allowlist_evidence(),
