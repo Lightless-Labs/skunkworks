@@ -2473,16 +2473,32 @@ def audit_step_summary(step: dict[str, object]) -> str:
     if requirement == "failed_first_attempt":
         selector = require_mapping(step.get("selector"), label="audit.failed_first_attempt.selector")
         field_map = require_mapping(fields, label="audit.failed_first_attempt.fields")
+        verify_returncode = strict_int(
+            field_map.get("verify_returncode"),
+            label="audit.failed_first_attempt.fields.verify_returncode",
+        )
+        if field_map.get("resolved") is not False or verify_returncode == 0:
+            raise RuntimeError("demo evidence audit failed first attempt must record resolved=false and nonzero verify_returncode")
         return (
             f"{selector_summary(selector)}; resolved={field_map.get('resolved')}; "
-            f"verify_returncode={field_map.get('verify_returncode')}"
+            f"verify_returncode={verify_returncode}"
         )
     if requirement == "archived_verifier_failure_evidence":
         selector = require_mapping(step.get("selector"), label="audit.archived_failure.selector")
         field_map = require_mapping(fields, label="audit.archived_failure.fields")
+        lineage_before = strict_int(
+            field_map.get("lineage_records_before"),
+            label="audit.archived_failure.fields.lineage_records_before",
+        )
+        lineage_after = strict_int(
+            field_map.get("lineage_records_after"),
+            label="audit.archived_failure.fields.lineage_records_after",
+        )
+        if lineage_after <= lineage_before or field_map.get("lineage_advanced") is not True:
+            raise RuntimeError("demo evidence audit archived failure must record advancing lineage evidence")
         return (
             f"{selector_summary(selector)}; lineage="
-            f"{field_map.get('lineage_records_before')}->{field_map.get('lineage_records_after')}; "
+            f"{lineage_before}->{lineage_after}; "
             f"lineage_advanced={field_map.get('lineage_advanced')}"
         )
     if requirement == "retry_context_from_failure_evidence":
@@ -2498,13 +2514,19 @@ def audit_step_summary(step: dict[str, object]) -> str:
             require_mapping(field, label="audit.retry.fields")
             for field in require_sequence(step.get("fields"), label="audit.retry.fields")
         ]
-        causal_flags = [
-            "attempt "
-            f"{field.get('attempt')}: "
-            f"derived_from_failed_lineage={field.get('derived_from_failed_lineage')}, "
-            f"retry_context_links_archived_failure={field.get('retry_context_links_archived_failure')}"
-            for field in retry_fields
-        ]
+        causal_flags = []
+        for field in retry_fields:
+            attempt = strict_int(field.get("attempt"), label="audit.retry.fields.attempt")
+            if field.get("derived_from_failed_lineage") is not True:
+                raise RuntimeError("demo evidence audit retry context must record derived_from_failed_lineage=true")
+            if field.get("retry_context_links_archived_failure") is not True:
+                raise RuntimeError("demo evidence audit retry context must record retry_context_links_archived_failure=true")
+            causal_flags.append(
+                "attempt "
+                f"{attempt}: "
+                f"derived_from_failed_lineage={field.get('derived_from_failed_lineage')}, "
+                f"retry_context_links_archived_failure={field.get('retry_context_links_archived_failure')}"
+            )
         return (
             f"archived_failure_selector={selector_summary(archived_selector)}; "
             f"retry_selectors=[{'; '.join(selectors)}]; "
@@ -2513,21 +2535,49 @@ def audit_step_summary(step: dict[str, object]) -> str:
     if requirement == "later_passing_attempt":
         selector = require_mapping(step.get("selector"), label="audit.later_pass.selector")
         field_map = require_mapping(fields, label="audit.later_pass.fields")
+        verify_returncode = strict_int(
+            field_map.get("verify_returncode"),
+            label="audit.later_pass.fields.verify_returncode",
+        )
+        if field_map.get("resolved") is not True or verify_returncode != 0:
+            raise RuntimeError("demo evidence audit later pass must record resolved=true and verify_returncode=0")
         return (
+            "later-pass verifier evidence (promotion gate audited separately): "
             f"{selector_summary(selector)}; resolved={field_map.get('resolved')}; "
             f"verify_returncode={field_map.get('verify_returncode')}"
         )
     if requirement == "lineage_trajectory_recorded":
         field_map = require_mapping(fields, label="audit.lineage.fields")
+        lineage_before = strict_int(
+            field_map.get("lineage_records_before"),
+            label="audit.lineage.fields.lineage_records_before",
+        )
+        lineage_after = strict_int(
+            field_map.get("lineage_records_after"),
+            label="audit.lineage.fields.lineage_records_after",
+        )
+        if lineage_after <= lineage_before:
+            raise RuntimeError("demo evidence audit lineage trajectory must advance lineage records")
         return (
             f"attempts={field_map.get('attempts')}; lineage="
-            f"{field_map.get('lineage_records_before')}->{field_map.get('lineage_records_after')}"
+            f"{lineage_before}->{lineage_after}"
         )
     if requirement == "verifier_gated_germline_promotion":
         selector = require_mapping(step.get("selector"), label="audit.promotion.selector")
         field_map = require_mapping(fields, label="audit.promotion.fields")
+        verify_returncode = strict_int(
+            field_map.get("verify_returncode"),
+            label="audit.promotion.fields.verify_returncode",
+        )
+        if verify_returncode != 0:
+            raise RuntimeError("demo evidence audit promotion gate must record verify_returncode=0")
+        if field_map.get("lineage_reconciled_by_core") is not True:
+            raise RuntimeError("demo evidence audit promotion gate must record lineage_reconciled_by_core=true")
+        if field_map.get("promotion_evidence_present") is not True:
+            raise RuntimeError("demo evidence audit promotion gate must record promotion_evidence_present=true")
         return (
-            f"{selector_summary(selector)}; verify_returncode={field_map.get('verify_returncode')}; "
+            f"promotion gate evidence: {selector_summary(selector)}; "
+            f"verify_returncode={field_map.get('verify_returncode')}; "
             f"lineage_reconciled_by_core={field_map.get('lineage_reconciled_by_core')}; "
             f"promotion_evidence_present={field_map.get('promotion_evidence_present')}"
         )
@@ -3776,6 +3826,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("not fresh provider-backed current-HEAD loop evidence", output)
         for requirement in EXPECTED_DEMO_REQUIREMENTS:
             self.assertIn(requirement, output)
+        self.assertIn("later-pass verifier evidence (promotion gate audited separately)", output)
+        self.assertIn("promotion gate evidence", output)
         self.assertIn("promotion_evidence_present=True", output)
         self.assertIn("lineage_reconciled_by_core=True", output)
 
@@ -3811,6 +3863,67 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "verifier_gated_germline_promotion"):
                 print_demo_evidence_audit_table(DEFAULT_ARCHIVE_EVIDENCE, DEFAULT_ARCHIVE_EVIDENCE)
+
+    def test_demo_evidence_audit_rejects_later_pass_without_passing_verifier(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        demo = require_mapping(require_sequence(evidence["demos"], label="demos")[0], label="demo")
+        steps = {
+            require_mapping(step, label="step").get("requirement"): require_mapping(step, label="step")
+            for step in require_sequence(demo["causal_chain"], label="causal_chain")
+        }
+        later_pass = require_mapping(steps["later_passing_attempt"], label="later pass")
+        fields = require_mapping(later_pass["fields"], label="later pass fields")
+        fields["verify_returncode"] = 1
+
+        with self.assertRaisesRegex(RuntimeError, "later pass must record resolved=true and verify_returncode=0"):
+            demo_evidence_audit_rows(evidence)
+
+    def test_demo_evidence_audit_rejects_bool_verify_returncode(self) -> None:
+        for requirement, expected_label in [
+            ("later_passing_attempt", "audit.later_pass.fields.verify_returncode"),
+            ("verifier_gated_germline_promotion", "audit.promotion.fields.verify_returncode"),
+        ]:
+            evidence = self.archived_demo_contract_evidence()
+            demo = require_mapping(require_sequence(evidence["demos"], label="demos")[0], label="demo")
+            steps = {
+                require_mapping(step, label="step").get("requirement"): require_mapping(step, label="step")
+                for step in require_sequence(demo["causal_chain"], label="causal_chain")
+            }
+            step = require_mapping(steps[requirement], label=requirement)
+            fields = require_mapping(step["fields"], label=f"{requirement} fields")
+            fields["verify_returncode"] = False
+
+            with self.subTest(requirement=requirement):
+                with self.assertRaisesRegex(RuntimeError, f"{expected_label} must be an integer"):
+                    demo_evidence_audit_rows(evidence)
+
+    def test_demo_evidence_audit_rejects_promotion_without_gate_evidence(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        demo = require_mapping(require_sequence(evidence["demos"], label="demos")[0], label="demo")
+        steps = {
+            require_mapping(step, label="step").get("requirement"): require_mapping(step, label="step")
+            for step in require_sequence(demo["causal_chain"], label="causal_chain")
+        }
+        promotion = require_mapping(steps["verifier_gated_germline_promotion"], label="promotion")
+        fields = require_mapping(promotion["fields"], label="promotion fields")
+        fields["promotion_evidence_present"] = False
+
+        with self.assertRaisesRegex(RuntimeError, "promotion gate must record promotion_evidence_present=true"):
+            demo_evidence_audit_rows(evidence)
+
+    def test_demo_evidence_audit_rejects_promotion_without_lineage_reconciliation(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        demo = require_mapping(require_sequence(evidence["demos"], label="demos")[0], label="demo")
+        steps = {
+            require_mapping(step, label="step").get("requirement"): require_mapping(step, label="step")
+            for step in require_sequence(demo["causal_chain"], label="causal_chain")
+        }
+        promotion = require_mapping(steps["verifier_gated_germline_promotion"], label="promotion")
+        fields = require_mapping(promotion["fields"], label="promotion fields")
+        fields["lineage_reconciled_by_core"] = False
+
+        with self.assertRaisesRegex(RuntimeError, "promotion gate must record lineage_reconciled_by_core=true"):
+            demo_evidence_audit_rows(evidence)
 
     def test_demo_evidence_audit_requires_tracked_artifacts_for_default_archive(self) -> None:
         with mock.patch(__name__ + ".require_git_tracked_path") as tracked:
