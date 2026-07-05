@@ -65,3 +65,30 @@ Fresh source-patch gate:
 After commit `ada37b2`, clean-HEAD evidence was regenerated at `runs/20260705-postcommit-fitness-evidence-ada37b2/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`; it passes `fitness-evidence-inspect --require-all-tests-pass`, records `source_revision: a9652a3` for `HEAD:a2d-autopoietic-autocatalysis-deutero/crates`, `source_tree_dirty: false`, and clean `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`.
 
 This is bounded executor plumbing and source-patch evidence only. It is not an official Senior SWE-Bench success claim and does not prove top-level A²D goal completion.
+
+## Artifact persistence addendum
+
+Follow-up slice: the executor now persists the typed intermediate artifacts it composes into the supplied work directory instead of leaving them only in memory/stdout. A successful attempt writes:
+
+- `attempt-0/retry-attempt-plan.json`
+- `attempt-0/retry-attempt-extraction.json`
+- `attempt-0/retry-attempt-evaluation.json`
+- `attempt-0/retry-attempt-step-execution.json`
+- `attempt-0/retry-attempt-step-evidence-execution.json`
+- `attempt-0/retry-run-result.json`
+- `retry-execution.json`
+
+Failure paths persist the artifacts reached before the stop decision plus the terminal `retry-execution.json`; success-only evidence/run-result artifacts are not invented for failed evaluations. JSON artifact writes fail closed if the destination already exists.
+
+Validation/evidence for this addendum lives under `runs/20260705-senior-swe-bench-retry-execute-artifacts-evidence/`:
+
+```bash
+cargo fmt --check
+cargo test -p a2d --test senior_swe_bench_retry_execute -- --nocapture
+cargo test
+target/debug/a2d fitness-evidence-inspect \
+  runs/20260705-senior-swe-bench-retry-execute-artifacts-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
+```
+
+Source-patch gate: `runs/20260705-senior-swe-bench-retry-execute-artifacts-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: 0a6c6625acac24d056b8c3dc38331c47f8c5eb5b`. A transient local retry-execute smoke confirmed the composed path, but host-local evaluator/temp paths were not committed. This remains non-official benchmark plumbing evidence.

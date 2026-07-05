@@ -5543,6 +5543,7 @@ fn build_senior_swe_bench_retry_execution(
             evaluator_command: config.evaluator_command.clone(),
         };
         let attempt_plan = build_senior_swe_bench_retry_attempt_plan(&attempt_plan_config)?;
+        write_json_artifact(&attempt_dir.join("retry-attempt-plan.json"), &attempt_plan)?;
         let decision = attempt_plan
             .get("decision")
             .and_then(Value::as_str)
@@ -5556,23 +5557,37 @@ fn build_senior_swe_bench_retry_execution(
                 "stop_reason": attempt_plan.get("stop_reason").cloned().unwrap_or_else(|| json!("candidate_patch_extraction_failed")),
             });
             attempt_records.push(record);
-            return Ok(retry_execution_terminal_result(
+            let terminal = retry_execution_terminal_result(
                 &retry_plan_value,
                 attempt_records,
                 "failed",
                 "candidate_patch_extraction_failed",
                 None,
-            ));
+            );
+            write_json_artifact(&config.work_dir.join("retry-execution.json"), &terminal)?;
+            return Ok(terminal);
         }
         let attempt_plan_text = serde_json::to_string(&attempt_plan)
             .map_err(|error| format!("failed to serialize retry attempt plan: {error}"))?;
         let extraction = build_senior_swe_bench_retry_attempt_extraction(&attempt_plan_text)?;
+        write_json_artifact(
+            &attempt_dir.join("retry-attempt-extraction.json"),
+            &extraction,
+        )?;
         let extraction_text = serde_json::to_string(&extraction)
             .map_err(|error| format!("failed to serialize retry attempt extraction: {error}"))?;
         let evaluation = build_senior_swe_bench_retry_attempt_evaluation(&extraction_text)?;
+        write_json_artifact(
+            &attempt_dir.join("retry-attempt-evaluation.json"),
+            &evaluation,
+        )?;
         let evaluation_text = serde_json::to_string(&evaluation)
             .map_err(|error| format!("failed to serialize retry attempt evaluation: {error}"))?;
         let step_execution = build_senior_swe_bench_retry_attempt_step_execution(&evaluation_text)?;
+        write_json_artifact(
+            &attempt_dir.join("retry-attempt-step-execution.json"),
+            &step_execution,
+        )?;
         let retry_step = step_execution
             .get("retry_step")
             .cloned()
@@ -5610,20 +5625,27 @@ fn build_senior_swe_bench_retry_execution(
                     serde_json::to_string(&evidence_execution).map_err(|error| {
                         format!("failed to serialize retry attempt evidence execution: {error}")
                     })?;
+                write_json_artifact(
+                    &attempt_dir.join("retry-attempt-step-evidence-execution.json"),
+                    &evidence_execution,
+                )?;
                 let run_result = build_senior_swe_bench_retry_run_result(&evidence_execution_text)?;
+                write_json_artifact(&attempt_dir.join("retry-run-result.json"), &run_result)?;
                 record["fitness_evidence_path"] = evidence_execution
                     .get("fitness_evidence_path")
                     .cloned()
                     .unwrap_or(Value::Null);
                 record["fitness_evidence_inspection_passed"] = json!(true);
                 attempt_records.push(record);
-                return Ok(retry_execution_terminal_result(
+                let terminal = retry_execution_terminal_result(
                     &retry_plan_value,
                     attempt_records,
                     "success",
                     "fitness_evidence_inspection_passed",
                     Some(run_result),
-                ));
+                );
+                write_json_artifact(&config.work_dir.join("retry-execution.json"), &terminal)?;
+                return Ok(terminal);
             }
             "build_next_cycle_input" => {
                 let next_cycle_input =
@@ -5653,13 +5675,15 @@ fn build_senior_swe_bench_retry_execution(
                     .unwrap_or("retry_step_stop");
                 record["fitness_evidence_inspection_passed"] = json!(false);
                 attempt_records.push(record);
-                return Ok(retry_execution_terminal_result(
+                let terminal = retry_execution_terminal_result(
                     &retry_plan_value,
                     attempt_records,
                     "failed",
                     stop_reason,
                     None,
-                ));
+                );
+                write_json_artifact(&config.work_dir.join("retry-execution.json"), &terminal)?;
+                return Ok(terminal);
             }
             other => {
                 return Err(format!(
@@ -5674,13 +5698,43 @@ fn build_senior_swe_bench_retry_execution(
     } else {
         "precomputed_attempt_manifests_exhausted"
     };
-    Ok(retry_execution_terminal_result(
+    let terminal = retry_execution_terminal_result(
         &retry_plan_value,
         attempt_records,
         "failed",
         stop_reason,
         None,
-    ))
+    );
+    write_json_artifact(&config.work_dir.join("retry-execution.json"), &terminal)?;
+    Ok(terminal)
+}
+
+fn write_json_artifact(path: &Path, value: &Value) -> Result<(), String> {
+    if path.exists() {
+        return Err(format!(
+            "Senior SWE-Bench retry execute artifact already exists: {}",
+            path.display()
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
+    let bytes = serde_json::to_vec_pretty(value)
+        .map_err(|error| format!("failed to serialize {}: {error}", path.display()))?;
+    let temp = path.with_extension("json.tmp");
+    if temp.exists() {
+        return Err(format!(
+            "Senior SWE-Bench retry execute temp artifact already exists: {}",
+            temp.display()
+        ));
+    }
+    fs::write(&temp, bytes)
+        .map_err(|error| format!("failed to write {}: {error}", temp.display()))?;
+    fs::rename(&temp, path).map_err(|error| {
+        let _ = fs::remove_file(&temp);
+        format!("failed to finalize {}: {error}", path.display())
+    })
 }
 
 fn retry_execution_terminal_result(

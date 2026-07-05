@@ -19,7 +19,14 @@
 **Enhanced:** 2026-07-04 — added deterministic Senior SWE-Bench retry-attempt step evidence inspection as the next single-command gate
 **Enhanced:** 2026-07-05 — added deterministic Senior SWE-Bench retry run-result summary that remains gated by the underlying inspected `a2d.fitness-evidence.v1`
 **Enhanced:** 2026-07-05 — added a bounded Senior SWE-Bench retry executor over precomputed cycle-output manifests and existing evidence gates
+**Enhanced:** 2026-07-05 — retry executor now persists attempt/run artifacts for auditability without making them fitness evidence
 **Depends on:** Stage 1 (complete)
+
+## 2026-07-05 Update: Retry Executor Artifact Persistence
+
+The bounded `a2d senior-swe-bench-retry-execute` command now writes the intermediate typed artifacts it already composes in memory into the supplied work directory. Each attempt records retry-attempt planning, extraction, evaluation, and retry-step execution artifacts; successful evidence-backed attempts also record the step-evidence execution and retry-run-result artifacts. The top-level `retry-execution.json` mirrors stdout for terminal success/failure summaries. Writes fail closed rather than overwriting existing JSON artifacts, preserving an auditable trail for later autonomous retry/resume work.
+
+Fresh source-patch evidence: `runs/20260705-senior-swe-bench-retry-execute-artifacts-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1` actual-test evidence with `source_diff_hash: 0a6c6625acac24d056b8c3dc38331c47f8c5eb5b`. A transient local retry-execute smoke confirmed the composed path, but its host-local evaluator/temp paths were not committed. The focused retry-execute unit tests cover persisted artifact semantics; the committed run evidence is the portable source-bound `a2d.fitness-evidence.v1` artifact. The persisted retry artifacts are audit/replay material only; the underlying `a2d.fitness-evidence.v1` remains the authoritative gate, and `provided_local_command` evidence is not official Senior SWE-Bench mastery.
 
 ## Problem
 

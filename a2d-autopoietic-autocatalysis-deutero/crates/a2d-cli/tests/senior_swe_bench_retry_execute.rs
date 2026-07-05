@@ -219,6 +219,50 @@ fn retry_execute_succeeds_on_first_precomputed_attempt_without_provider_invocati
     );
     assert!(value["final_evidence_path"].as_str().is_some());
 
+    let attempt_dir = fixture.work_dir.join("attempt-0");
+    let expected_artifacts = [
+        (
+            attempt_dir.join("retry-attempt-plan.json"),
+            "a2d.senior-swe-bench-retry-attempt-plan.v1",
+        ),
+        (
+            attempt_dir.join("retry-attempt-extraction.json"),
+            "a2d.senior-swe-bench-retry-attempt-extraction.v1",
+        ),
+        (
+            attempt_dir.join("retry-attempt-evaluation.json"),
+            "a2d.senior-swe-bench-retry-attempt-evaluation.v1",
+        ),
+        (
+            attempt_dir.join("retry-attempt-step-execution.json"),
+            "a2d.senior-swe-bench-retry-attempt-step-execution.v1",
+        ),
+        (
+            attempt_dir.join("retry-attempt-step-evidence-execution.json"),
+            "a2d.senior-swe-bench-retry-attempt-step-evidence-execution.v1",
+        ),
+        (
+            attempt_dir.join("retry-run-result.json"),
+            "a2d.senior-swe-bench-retry-run-result.v1",
+        ),
+        (
+            fixture.work_dir.join("retry-execution.json"),
+            "a2d.senior-swe-bench-retry-execution.v1",
+        ),
+    ];
+    for (path, schema) in expected_artifacts {
+        let artifact: serde_json::Value = serde_json::from_slice(
+            &fs::read(&path).unwrap_or_else(|error| panic!("missing {}: {error}", path.display())),
+        )
+        .unwrap();
+        assert_eq!(artifact["schema_version"].as_str(), Some(schema));
+    }
+
+    let persisted_execution: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.work_dir.join("retry-execution.json")).unwrap())
+            .unwrap();
+    assert_eq!(persisted_execution, value);
+
     let _ = fs::remove_dir_all(fixture.root);
 }
 
@@ -256,6 +300,39 @@ fn retry_execute_stops_after_attempt_exhaustion_without_evidence_claim() {
         Some(false)
     );
     assert!(value.get("terminal_run_result").is_none());
+    let persisted_execution: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.work_dir.join("retry-execution.json")).unwrap())
+            .unwrap();
+    assert_eq!(persisted_execution, value);
+    let attempt_dir = fixture.work_dir.join("attempt-0");
+    for (name, schema) in [
+        (
+            "retry-attempt-plan.json",
+            "a2d.senior-swe-bench-retry-attempt-plan.v1",
+        ),
+        (
+            "retry-attempt-extraction.json",
+            "a2d.senior-swe-bench-retry-attempt-extraction.v1",
+        ),
+        (
+            "retry-attempt-evaluation.json",
+            "a2d.senior-swe-bench-retry-attempt-evaluation.v1",
+        ),
+        (
+            "retry-attempt-step-execution.json",
+            "a2d.senior-swe-bench-retry-attempt-step-execution.v1",
+        ),
+    ] {
+        let artifact: serde_json::Value =
+            serde_json::from_slice(&fs::read(attempt_dir.join(name)).unwrap()).unwrap();
+        assert_eq!(artifact["schema_version"].as_str(), Some(schema));
+    }
+    assert!(
+        !attempt_dir
+            .join("retry-attempt-step-evidence-execution.json")
+            .exists()
+    );
+    assert!(!attempt_dir.join("retry-run-result.json").exists());
 
     let _ = fs::remove_dir_all(fixture.root);
 }
@@ -296,6 +373,10 @@ fn retry_execute_reports_precomputed_manifest_exhaustion_before_max_attempts() {
     assert_eq!(value["attempts_executed"].as_u64(), Some(1));
     assert_eq!(value["evaluator_invocations_started"].as_bool(), Some(true));
     assert_eq!(value["provider_invocations_started"].as_bool(), Some(false));
+    let persisted_execution: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.work_dir.join("retry-execution.json")).unwrap())
+            .unwrap();
+    assert_eq!(persisted_execution, value);
 
     let _ = fs::remove_dir_all(fixture.root);
 }
