@@ -238,6 +238,25 @@ fn default_timeout_secs(provider_name: &str) -> u64 {
     }
 }
 
+fn provider_no_public_solution_search_env() -> [(&'static str, &'static str); 5] {
+    // Policy-observability only: these flags make the benchmark no-public-
+    // solution-search contract visible to provider subprocesses. They do not
+    // enforce OS/network isolation.
+    [
+        ("A2D_PROVIDER_POLICY_ENV_SOURCE", "a2d-cli-provider"),
+        ("A2D_GITHUB_SOLUTION_SEARCH_ALLOWED", "false"),
+        ("A2D_PUBLIC_SOLUTION_SEARCH_FORBIDDEN", "true"),
+        (
+            "A2D_SENIOR_SWE_BENCH_GITHUB_SOLUTION_SEARCH_ALLOWED",
+            "false",
+        ),
+        (
+            "A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN",
+            "true",
+        ),
+    ]
+}
+
 fn isolated_provider_cwd(command: &str) -> Result<std::path::PathBuf, ProviderError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -305,6 +324,7 @@ impl Provider for CliProvider {
 
         let mut child = Command::new(&self.command)
             .args(&args)
+            .envs(provider_no_public_solution_search_env())
             .current_dir(&sandbox_dir)
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
@@ -409,6 +429,58 @@ mod tests {
         assert_eq!(default_timeout_secs("opencode/kimi-for-coding/k2p5"), 300);
         assert_eq!(default_timeout_secs("gemini/gemini-3-pro"), 300);
         assert_eq!(default_timeout_secs("pi/default"), 300);
+    }
+
+    #[test]
+    fn cli_providers_export_no_public_solution_search_policy_env() {
+        let env = provider_no_public_solution_search_env()
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            env.get("A2D_PROVIDER_POLICY_ENV_SOURCE"),
+            Some(&"a2d-cli-provider")
+        );
+        assert_eq!(
+            env.get("A2D_GITHUB_SOLUTION_SEARCH_ALLOWED"),
+            Some(&"false")
+        );
+        assert_eq!(
+            env.get("A2D_PUBLIC_SOLUTION_SEARCH_FORBIDDEN"),
+            Some(&"true")
+        );
+        assert_eq!(
+            env.get("A2D_SENIOR_SWE_BENCH_GITHUB_SOLUTION_SEARCH_ALLOWED"),
+            Some(&"false")
+        );
+        assert_eq!(
+            env.get("A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN"),
+            Some(&"true")
+        );
+    }
+
+    #[test]
+    fn cli_provider_subprocess_receives_no_public_solution_search_policy_env() {
+        let provider = CliProvider {
+            name: "test/env-provider".to_string(),
+            command: "sh".to_string(),
+            args_builder: Box::new(|_req| {
+                vec![
+                    "-c".to_string(),
+                    "printf '%s|%s|%s|%s|%s' \"$A2D_PROVIDER_POLICY_ENV_SOURCE\" \"$A2D_GITHUB_SOLUTION_SEARCH_ALLOWED\" \"$A2D_PUBLIC_SOLUTION_SEARCH_FORBIDDEN\" \"$A2D_SENIOR_SWE_BENCH_GITHUB_SOLUTION_SEARCH_ALLOWED\" \"$A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN\"".to_string(),
+                ]
+            }),
+            output_parser: Box::new(|output| (output.to_string(), None)),
+        };
+        let request = InvocationRequest {
+            enzyme_id: a2d_core::types::EnzymeId::from("coder"),
+            system: "system".to_string(),
+            prompt: "prompt".to_string(),
+            max_tokens: 100,
+        };
+
+        let response = provider.invoke(&request).expect("provider env probe");
+        assert_eq!(response.text, "a2d-cli-provider|false|true|false|true");
     }
 
     #[test]
