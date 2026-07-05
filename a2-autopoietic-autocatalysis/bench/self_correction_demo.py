@@ -2283,6 +2283,16 @@ def todo_demo_evidence_bullet(text: str) -> str:
     return ""
 
 
+def require_ordered_demo_chain(block_name: str, block_text: str, missing: list[str]) -> None:
+    cursor = -1
+    for requirement in EXPECTED_DEMO_REQUIREMENTS:
+        position = block_text.find(requirement, cursor + 1)
+        if position < 0:
+            missing.append(f"{block_name}: ordered loop chain missing or reorders {requirement}")
+            return
+        cursor = position
+
+
 def verify_demo_docs_texts(docs: dict[str, str]) -> None:
     common_required = [
         "python3 bench/self_correction_demo.py verify-demo-docs",
@@ -2321,6 +2331,7 @@ def verify_demo_docs_texts(docs: dict[str, str]) -> None:
         for requirement in EXPECTED_DEMO_REQUIREMENTS:
             if requirement not in block_text:
                 missing.append(f"{block_name}: {requirement}")
+        require_ordered_demo_chain(block_name, block_text, missing)
         lowered_block = block_text.lower()
         for phrase in caveat_required_lower:
             if phrase not in lowered_block:
@@ -3058,6 +3069,25 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         )
 
         verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_misordered_handoff_loop_chain(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["docs/HANDOFF.md"] = docs["docs/HANDOFF.md"].replace(
+            "\n".join(EXPECTED_DEMO_REQUIREMENTS),
+            "\n".join(
+                [
+                    "failed_first_attempt",
+                    "verifier_gated_germline_promotion",
+                    "archived_verifier_failure_evidence",
+                    "retry_context_from_failure_evidence",
+                    "later_passing_attempt",
+                    "lineage_trajectory_recorded",
+                ]
+            ),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "ordered loop chain"):
+            verify_demo_docs_texts(docs)
 
     def test_verify_demo_docs_texts_rejects_missing_retry_context_step(self) -> None:
         docs = self.demo_docs_fixture()
