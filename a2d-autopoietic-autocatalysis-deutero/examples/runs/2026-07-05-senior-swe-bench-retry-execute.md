@@ -138,3 +138,5 @@ target/debug/a2d fitness-evidence-inspect \
 ```
 
 Source-patch gate: `runs/20260705-retry-execute-next-cycle-command-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: 781675eec3e4e261c7b5ab08f114a06f78d9e603`.
+
+Post-commit clean-HEAD evidence: `runs/20260705-postcommit-fitness-evidence-d4557a1/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_revision: d2a2c87`, `source_tree_dirty: false`, `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`.
