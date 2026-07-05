@@ -1990,6 +1990,7 @@ def verify_demo_docs_texts(docs: dict[str, str]) -> None:
         "fails closed",
         "not_implemented",
         "audited_sandbox_provider_allowlist_status",
+        "audited_sandbox_provider_allowlist_evidence",
         "--require-current-head",
     ]
     missing: list[str] = []
@@ -2588,7 +2589,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "## Reproducible Demo Evidence Map",
                     "Fresh provider-backed regeneration is not proof until archived; "
                     "preflight-only is readiness; the confirmed fresh run path fails closed at "
-                    "not_implemented until audited_sandbox_provider_allowlist_status=enforced; "
+                    "not_implemented until audited_sandbox_provider_allowlist_status=enforced "
+                    "with audited_sandbox_provider_allowlist_evidence; "
                     "fresh provenance uses --require-current-head.",
                     "python3 bench/self_correction_demo.py verify-demo-docs",
                     canonical_verify_archive_command(),
@@ -2611,7 +2613,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "Fresh provider-backed regeneration remains explicitly unchecked/open; "
                     "Neither preflight/report nor print-only proves; "
                     "preflight-only is readiness; the confirmed fresh run path fails closed at "
-                    "not_implemented until audited_sandbox_provider_allowlist_status=enforced; "
+                    "not_implemented until audited_sandbox_provider_allowlist_status=enforced "
+                    "with audited_sandbox_provider_allowlist_evidence; "
                     "fresh provenance uses --require-current-head; "
                     "fresh provider-backed regeneration is not proof yet",
                 ]
@@ -2679,12 +2682,23 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         docs["docs/HANDOFF.md"] = docs["docs/HANDOFF.md"].replace(
             "Fresh provider-backed regeneration is not proof until archived; "
             "preflight-only is readiness; the confirmed fresh run path fails closed at "
-            "not_implemented until audited_sandbox_provider_allowlist_status=enforced; "
+            "not_implemented until audited_sandbox_provider_allowlist_status=enforced "
+            "with audited_sandbox_provider_allowlist_evidence; "
             "fresh provenance uses --require-current-head.",
             "Archived regeneration caveat is documented elsewhere.",
         )
 
         with self.assertRaisesRegex(RuntimeError, "fresh provider-backed"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_missing_handoff_allowlist_evidence_caveat(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["docs/HANDOFF.md"] = docs["docs/HANDOFF.md"].replace(
+            "with audited_sandbox_provider_allowlist_evidence; ",
+            "",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "audited_sandbox_provider_allowlist_evidence"):
             verify_demo_docs_texts(docs)
 
     def test_verify_demo_docs_texts_rejects_missing_handoff_fail_closed_caveat(self) -> None:
