@@ -1961,7 +1961,8 @@ def validate_demo_evidence_contract(
         ]
         if requirements != reference_requirements:
             raise RuntimeError(
-                f"demo evidence contract causal chain differs in demo {demo_index}"
+                f"demo evidence contract causal chain differs in demo {demo_index}: "
+                f"expected {reference_requirements}; observed {requirements}"
             )
         for step_index, step_value in enumerate(chain):
             step = require_mapping(
@@ -2434,6 +2435,180 @@ def contract_demo_artifact_lines(evidence: dict[str, object]) -> list[str]:
     return lines
 
 
+def markdown_table_cell(value: object) -> str:
+    return str(value).replace("\n", "<br>").replace("|", "\\|")
+
+
+def markdown_code(value: object) -> str:
+    return f"`{markdown_table_cell(value)}`"
+
+
+def demo_evidence_audit_commands(
+    evidence_json: Path,
+    reference_evidence_json: Path,
+    artifact: str,
+) -> list[str]:
+    commands = [
+        "python3 bench/self_correction_demo.py verify-evidence-contract "
+        f"--evidence-json {evidence_json} --reference-evidence-json {reference_evidence_json}"
+    ]
+    if artifact == DEFAULT_ARCHIVE.as_posix() and evidence_json == DEFAULT_ARCHIVE_EVIDENCE:
+        commands.insert(
+            0,
+            "python3 bench/self_correction_demo.py verify-archive "
+            f"--evidence-json {DEFAULT_ARCHIVE_EVIDENCE}",
+        )
+        commands.extend(
+            [
+                "cargo run -p a2ctl -- demo-evidence --workspace .",
+                "cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence",
+            ]
+        )
+    return commands
+
+
+def audit_step_summary(step: dict[str, object]) -> str:
+    requirement = step.get("requirement")
+    fields = step.get("fields")
+    if requirement == "failed_first_attempt":
+        selector = require_mapping(step.get("selector"), label="audit.failed_first_attempt.selector")
+        field_map = require_mapping(fields, label="audit.failed_first_attempt.fields")
+        return (
+            f"{selector_summary(selector)}; resolved={field_map.get('resolved')}; "
+            f"verify_returncode={field_map.get('verify_returncode')}"
+        )
+    if requirement == "archived_verifier_failure_evidence":
+        selector = require_mapping(step.get("selector"), label="audit.archived_failure.selector")
+        field_map = require_mapping(fields, label="audit.archived_failure.fields")
+        return (
+            f"{selector_summary(selector)}; lineage="
+            f"{field_map.get('lineage_records_before')}->{field_map.get('lineage_records_after')}; "
+            f"lineage_advanced={field_map.get('lineage_advanced')}"
+        )
+    if requirement == "retry_context_from_failure_evidence":
+        selectors = [
+            selector_summary(require_mapping(selector, label="audit.retry.selector"))
+            for selector in require_sequence(step.get("selectors"), label="audit.retry.selectors")
+        ]
+        archived_selector = require_mapping(
+            step.get("archived_failure_selector"),
+            label="audit.retry.archived_failure_selector",
+        )
+        retry_fields = [
+            require_mapping(field, label="audit.retry.fields")
+            for field in require_sequence(step.get("fields"), label="audit.retry.fields")
+        ]
+        causal_flags = [
+            "attempt "
+            f"{field.get('attempt')}: "
+            f"derived_from_failed_lineage={field.get('derived_from_failed_lineage')}, "
+            f"retry_context_links_archived_failure={field.get('retry_context_links_archived_failure')}"
+            for field in retry_fields
+        ]
+        return (
+            f"archived_failure_selector={selector_summary(archived_selector)}; "
+            f"retry_selectors=[{'; '.join(selectors)}]; "
+            f"causal_flags=[{'; '.join(causal_flags)}]"
+        )
+    if requirement == "later_passing_attempt":
+        selector = require_mapping(step.get("selector"), label="audit.later_pass.selector")
+        field_map = require_mapping(fields, label="audit.later_pass.fields")
+        return (
+            f"{selector_summary(selector)}; resolved={field_map.get('resolved')}; "
+            f"verify_returncode={field_map.get('verify_returncode')}"
+        )
+    if requirement == "lineage_trajectory_recorded":
+        field_map = require_mapping(fields, label="audit.lineage.fields")
+        return (
+            f"attempts={field_map.get('attempts')}; lineage="
+            f"{field_map.get('lineage_records_before')}->{field_map.get('lineage_records_after')}"
+        )
+    if requirement == "verifier_gated_germline_promotion":
+        selector = require_mapping(step.get("selector"), label="audit.promotion.selector")
+        field_map = require_mapping(fields, label="audit.promotion.fields")
+        return (
+            f"{selector_summary(selector)}; verify_returncode={field_map.get('verify_returncode')}; "
+            f"lineage_reconciled_by_core={field_map.get('lineage_reconciled_by_core')}; "
+            f"promotion_evidence_present={field_map.get('promotion_evidence_present')}"
+        )
+    raise RuntimeError(f"unknown demo evidence audit requirement: {requirement}")
+
+
+def demo_evidence_audit_rows(evidence: dict[str, object]) -> list[tuple[str, str]]:
+    demos = require_sequence(evidence.get("demos"), label="demos")
+    rows: list[tuple[str, str]] = []
+    for requirement in EXPECTED_DEMO_REQUIREMENTS:
+        summaries: list[str] = []
+        for demo_index, demo_value in enumerate(demos, start=1):
+            demo = require_mapping(demo_value, label=f"demos[{demo_index - 1}]")
+            chain = require_sequence(
+                demo.get("causal_chain"), label=f"demos[{demo_index - 1}].causal_chain"
+            )
+            steps = {
+                require_mapping(step, label=f"demos[{demo_index - 1}].step").get("requirement"): require_mapping(
+                    step, label=f"demos[{demo_index - 1}].step"
+                )
+                for step in chain
+            }
+            step = require_mapping(
+                steps.get(requirement),
+                label=f"demos[{demo_index - 1}].{requirement}",
+            )
+            if step.get("status") != "proved":
+                raise RuntimeError(f"demo evidence audit requires proved status for {requirement}")
+            summaries.append(f"demo {demo_index}: {audit_step_summary(step)}")
+        rows.append((requirement, "<br>".join(summaries)))
+    return rows
+
+
+def print_demo_evidence_audit_table(
+    evidence_json: Path,
+    reference_evidence_json: Path,
+    *,
+    require_git_tracked_artifacts: bool = False,
+) -> None:
+    require_git_tracked_artifacts = (
+        require_git_tracked_artifacts or evidence_json == DEFAULT_ARCHIVE_EVIDENCE
+    )
+    if require_git_tracked_artifacts:
+        require_git_tracked_path(evidence_json, label="demo evidence JSON")
+    evidence = load_evidence_json(evidence_json)
+    reference = load_evidence_json(reference_evidence_json)
+    validate_demo_evidence_contract(
+        evidence,
+        reference,
+        evidence_label=str(evidence_json),
+        require_git_tracked_artifact=require_git_tracked_artifacts,
+    )
+    artifact = evidence.get("artifact")
+    if not isinstance(artifact, str) or not artifact:
+        raise RuntimeError("demo evidence audit requires a source artifact path")
+    commands = demo_evidence_audit_commands(evidence_json, reference_evidence_json, artifact)
+    command_cell = "<br>".join(markdown_code(command) for command in commands)
+    print("Demo evidence audit table")
+    print(f"  evidence_json: {evidence_json}")
+    print(f"  source_artifact: {artifact}")
+    print(
+        "  note: this is command/path-backed archived proof; it is not fresh "
+        "provider-backed current-HEAD loop evidence"
+    )
+    print()
+    print("| Requirement | Artifact paths | Selected rows / audited fields | Rerun commands |")
+    print("|-------------|----------------|--------------------------------|----------------|")
+    artifact_cell = (
+        f"JSONL: {markdown_code(artifact)}<br>"
+        f"evidence: {markdown_code(evidence_json)}"
+    )
+    for requirement, summary in demo_evidence_audit_rows(evidence):
+        print(
+            "| "
+            f"{markdown_code(requirement)} | "
+            f"{artifact_cell} | "
+            f"{markdown_table_cell(summary)} | "
+            f"{command_cell} |"
+        )
+
+
 def verify_evidence_contract(
     evidence_json: Path,
     reference_evidence_json: Path,
@@ -2557,6 +2732,7 @@ def require_ordered_demo_chain(block_name: str, block_text: str, missing: list[s
 def verify_demo_docs_texts(docs: dict[str, str]) -> None:
     common_required = [
         "python3 bench/self_correction_demo.py verify-demo-docs",
+        "python3 bench/self_correction_demo.py audit-demo-evidence",
         canonical_verify_archive_command(),
         DEFAULT_ARCHIVE.as_posix(),
         DEFAULT_ARCHIVE_EVIDENCE.as_posix(),
@@ -2771,6 +2947,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
 
+    audit = subparsers.add_parser(
+        "audit-demo-evidence",
+        aliases=["demo-evidence-audit"],
+        help=(
+            "Validate demo evidence and print a command/path-backed markdown audit table "
+            "for the six archived loop proof requirements."
+        ),
+    )
+    audit.add_argument("--evidence-json", type=Path, default=DEFAULT_ARCHIVE_EVIDENCE)
+    audit.add_argument("--reference-evidence-json", type=Path, default=DEFAULT_ARCHIVE_EVIDENCE)
+    audit.add_argument(
+        "--require-git-tracked-artifacts",
+        action="store_true",
+        help="Fail unless the evidence JSON and referenced JSONL artifact are tracked by git.",
+    )
+
     preflight_report = subparsers.add_parser(
         "verify-preflight-report",
         help=(
@@ -2925,6 +3117,18 @@ def main(argv: list[str]) -> int:
     if args.mode == "verify-demo-docs":
         try:
             verify_demo_docs()
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        return 0
+
+    if args.mode in {"audit-demo-evidence", "demo-evidence-audit"}:
+        try:
+            print_demo_evidence_audit_table(
+                args.evidence_json,
+                args.reference_evidence_json,
+                require_git_tracked_artifacts=args.require_git_tracked_artifacts,
+            )
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -3345,6 +3549,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "agent_network_boundary_precondition_status=not_executed_in_preflight; "
                     "fresh provenance uses --require-current-head.",
                     "python3 bench/self_correction_demo.py verify-demo-docs",
+                    "python3 bench/self_correction_demo.py audit-demo-evidence",
                     canonical_verify_archive_command(),
                     DEFAULT_ARCHIVE.as_posix(),
                     DEFAULT_ARCHIVE_EVIDENCE.as_posix(),
@@ -3356,6 +3561,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 [
                     "- The demo-path evidence map records "
                     "python3 bench/self_correction_demo.py verify-demo-docs; "
+                    "python3 bench/self_correction_demo.py audit-demo-evidence; "
                     f"{canonical_verify_archive_command()}; "
                     f"{DEFAULT_ARCHIVE.as_posix()}; "
                     f"{DEFAULT_ARCHIVE_EVIDENCE.as_posix()}; "
@@ -3555,6 +3761,110 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertIn("PASS demo docs", stdout.getvalue())
+
+    def test_demo_evidence_audit_table_is_command_and_path_backed(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            print_demo_evidence_audit_table(DEFAULT_ARCHIVE_EVIDENCE, DEFAULT_ARCHIVE_EVIDENCE)
+
+        output = stdout.getvalue()
+        self.assertIn("Demo evidence audit table", output)
+        self.assertIn(DEFAULT_ARCHIVE.as_posix(), output)
+        self.assertIn(DEFAULT_ARCHIVE_EVIDENCE.as_posix(), output)
+        self.assertIn("python3 bench/self_correction_demo.py verify-archive", output)
+        self.assertIn("cargo run -p a2ctl -- demo-evidence --workspace .", output)
+        self.assertIn("not fresh provider-backed current-HEAD loop evidence", output)
+        for requirement in EXPECTED_DEMO_REQUIREMENTS:
+            self.assertIn(requirement, output)
+        self.assertIn("promotion_evidence_present=True", output)
+        self.assertIn("lineage_reconciled_by_core=True", output)
+
+    def test_demo_evidence_audit_cli_reports_success(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            result = main(["audit-demo-evidence"])
+
+        self.assertEqual(result, 0)
+        self.assertIn("| Requirement | Artifact paths | Selected rows / audited fields | Rerun commands |", stdout.getvalue())
+
+    def test_demo_evidence_audit_alias_reports_success(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            result = main(["demo-evidence-audit"])
+
+        self.assertEqual(result, 0)
+        self.assertIn("Demo evidence audit table", stdout.getvalue())
+
+    def test_demo_evidence_audit_rejects_missing_promotion_chain(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        demo = require_mapping(require_sequence(evidence["demos"], label="demos")[0], label="demo")
+        chain = require_sequence(demo["causal_chain"], label="causal_chain")
+        demo["causal_chain"] = [
+            step
+            for step in chain
+            if require_mapping(step, label="step").get("requirement")
+            != "verifier_gated_germline_promotion"
+        ]
+        with mock.patch(
+            __name__ + ".load_evidence_json",
+            side_effect=[evidence, self.archived_demo_contract_evidence()],
+        ):
+            with self.assertRaisesRegex(RuntimeError, "verifier_gated_germline_promotion"):
+                print_demo_evidence_audit_table(DEFAULT_ARCHIVE_EVIDENCE, DEFAULT_ARCHIVE_EVIDENCE)
+
+    def test_demo_evidence_audit_requires_tracked_artifacts_for_default_archive(self) -> None:
+        with mock.patch(__name__ + ".require_git_tracked_path") as tracked:
+            with contextlib.redirect_stdout(io.StringIO()):
+                print_demo_evidence_audit_table(DEFAULT_ARCHIVE_EVIDENCE, DEFAULT_ARCHIVE_EVIDENCE)
+
+        tracked.assert_any_call(DEFAULT_ARCHIVE_EVIDENCE, label="demo evidence JSON")
+        tracked.assert_any_call(DEFAULT_ARCHIVE, label="demo evidence contract artifact")
+
+    def test_demo_evidence_audit_rejects_untracked_default_evidence_json(self) -> None:
+        with mock.patch(
+            __name__ + ".require_git_tracked_path",
+            side_effect=RuntimeError("demo evidence JSON is not tracked by git"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "not tracked by git"):
+                print_demo_evidence_audit_table(DEFAULT_ARCHIVE_EVIDENCE, DEFAULT_ARCHIVE_EVIDENCE)
+
+    def test_demo_evidence_audit_rejects_untracked_default_source_artifact(self) -> None:
+        def tracked_side_effect(path: Path, *, label: str) -> None:
+            if label == "demo evidence contract artifact":
+                raise RuntimeError("demo evidence contract artifact is not tracked by git")
+
+        with mock.patch(__name__ + ".require_git_tracked_path", side_effect=tracked_side_effect) as tracked:
+            with self.assertRaisesRegex(RuntimeError, "demo evidence contract artifact is not tracked"):
+                print_demo_evidence_audit_table(DEFAULT_ARCHIVE_EVIDENCE, DEFAULT_ARCHIVE_EVIDENCE)
+
+        tracked.assert_any_call(DEFAULT_ARCHIVE_EVIDENCE, label="demo evidence JSON")
+        tracked.assert_any_call(DEFAULT_ARCHIVE, label="demo evidence contract artifact")
+
+    def test_demo_evidence_audit_does_not_require_tracked_artifacts_for_custom_path_by_default(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        with mock.patch(
+            __name__ + ".load_evidence_json",
+            side_effect=[evidence, self.archived_demo_contract_evidence()],
+        ), mock.patch(__name__ + ".validate_demo_evidence_contract"), mock.patch(
+            __name__ + ".require_git_tracked_path"
+        ) as tracked:
+            with contextlib.redirect_stdout(io.StringIO()):
+                print_demo_evidence_audit_table(
+                    Path("/tmp/custom.demo-evidence.json"),
+                    DEFAULT_ARCHIVE_EVIDENCE,
+                )
+
+        tracked.assert_not_called()
+
+    def test_verify_demo_docs_texts_rejects_missing_demo_evidence_audit_command(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["todos/self-correction-loop.md"] = docs["todos/self-correction-loop.md"].replace(
+            "python3 bench/self_correction_demo.py audit-demo-evidence; ",
+            "",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "audit-demo-evidence"):
+            verify_demo_docs_texts(docs)
 
     def test_generate_tasks_self_test_covers_senior_swe_bench_policy_payloads(self) -> None:
         result = subprocess.run(
