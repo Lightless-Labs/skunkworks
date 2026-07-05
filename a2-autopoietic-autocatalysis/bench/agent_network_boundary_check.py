@@ -1388,15 +1388,56 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def missing_child_agent_sandbox_surfaces(result: dict[str, Any]) -> list[str]:
+    enforcement = result.get("actual_launch_sandbox_enforcement")
+    if not isinstance(enforcement, dict):
+        return []
+    missing = []
+    for key, item in enforcement.items():
+        if key == "required_in_actual_launch_code_not_examples" or not isinstance(item, dict):
+            continue
+        if item.get("spawn_present") and not item.get("found"):
+            missing.append(key)
+    return missing
+
+
+def missing_a2_owned_sandbox_surfaces(a2_boundary: dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    worktree = a2_boundary.get("worktree_catalyst")
+    if isinstance(worktree, dict):
+        for item in worktree.get("provider_command_launch_functions", []):
+            if isinstance(item, dict) and item.get("found") and item.get("command_new_present") and not item.get("sandbox_exec_present"):
+                missing.append(f"worktree_catalyst.{item.get('function')}")
+    broker = a2_boundary.get("broker")
+    if isinstance(broker, dict):
+        for item in broker.get("provider_generate_guards", []):
+            if isinstance(item, dict) and item.get("generate_found") and item.get("command_new_after_guard") and not item.get("sandbox_exec_present"):
+                missing.append(f"broker.{item.get('provider')}")
+    return missing
+
+
 def require_sandbox_runtime_failures(result: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     a2_boundary = result.get("a2_owned_provider_launch_boundary")
     if not isinstance(a2_boundary, dict) or not a2_boundary.get("fail_closed_restricted_policies"):
         failures.append("A2-owned provider launch paths do not visibly fail closed for restricted policies")
+    if (
+        isinstance(a2_boundary, dict)
+        and a2_boundary.get("fail_closed_restricted_policies")
+        and not a2_boundary.get("sandbox_enforced_for_restricted_policies")
+    ):
+        missing = missing_a2_owned_sandbox_surfaces(a2_boundary)
+        suffix = f": {', '.join(missing)}" if missing else ""
+        failures.append(
+            "A2-owned provider launch paths do not show sandbox-exec at every provider command boundary"
+            f"{suffix}"
+        )
     if not result["sandbox_runtime"]["available"]:
         failures.append("@anthropic-ai/sandbox-runtime not installed globally")
     if not result["launch_sandbox_enforced"]:
-        failures.append("actual child-agent launch functions do not show sandbox enforcement")
+        missing = missing_child_agent_sandbox_surfaces(result)
+        suffix = f": {', '.join(missing)}" if missing else ""
+        failures.append(f"actual child-agent launch functions do not show sandbox enforcement{suffix}")
     return failures
 
 
@@ -2047,9 +2088,65 @@ impl<'a> ModelProvider for PiProvider {
         self.assertFalse(boundary["sandbox_enforced_for_restricted_policies"])
         self.assertIn("fail closed", boundary["interpretation"])
 
+    def test_missing_a2_owned_sandbox_surfaces_names_each_unwrapped_provider_boundary(self) -> None:
+        missing = missing_a2_owned_sandbox_surfaces(
+            {
+                "worktree_catalyst": {
+                    "provider_command_launch_functions": [
+                        {"function": "run_claude", "found": True, "command_new_present": True, "sandbox_exec_present": False},
+                        {"function": "run_pi", "found": True, "command_new_present": True, "sandbox_exec_present": True},
+                    ]
+                },
+                "broker": {
+                    "provider_generate_guards": [
+                        {"provider": "claude", "generate_found": True, "command_new_after_guard": True, "sandbox_exec_present": False},
+                        {"provider": "pi", "generate_found": True, "command_new_after_guard": True, "sandbox_exec_present": True},
+                    ]
+                },
+            }
+        )
+
+        self.assertEqual(missing, ["worktree_catalyst.run_claude", "broker.claude"])
+
+    def test_require_sandbox_runtime_names_missing_a2_and_child_launch_surfaces(self) -> None:
+        result = {
+            "a2_owned_provider_launch_boundary": {
+                "fail_closed_restricted_policies": True,
+                "sandbox_enforced_for_restricted_policies": False,
+                "worktree_catalyst": {
+                    "provider_command_launch_functions": [
+                        {"function": "run_pi", "found": True, "command_new_present": True, "sandbox_exec_present": False},
+                    ]
+                },
+                "broker": {
+                    "provider_generate_guards": [
+                        {"provider": "pi", "generate_found": True, "command_new_after_guard": True, "sandbox_exec_present": False},
+                    ]
+                },
+            },
+            "actual_launch_sandbox_enforcement": {
+                "subagent": {"spawn_present": True, "found": False},
+                "foundry_team": {"spawn_present": True, "found": False},
+                "required_in_actual_launch_code_not_examples": True,
+            },
+            "sandbox_runtime": {"available": True},
+            "launch_sandbox_enforced": False,
+        }
+
+        self.assertEqual(
+            require_sandbox_runtime_failures(result),
+            [
+                "A2-owned provider launch paths do not show sandbox-exec at every provider command boundary: worktree_catalyst.run_pi, broker.pi",
+                "actual child-agent launch functions do not show sandbox enforcement: subagent, foundry_team",
+            ],
+        )
+
     def test_require_sandbox_runtime_fails_when_runtime_present_but_launch_unenforced(self) -> None:
         result = {
-            "a2_owned_provider_launch_boundary": {"fail_closed_restricted_policies": True},
+            "a2_owned_provider_launch_boundary": {
+                "fail_closed_restricted_policies": True,
+                "sandbox_enforced_for_restricted_policies": True,
+            },
             "sandbox_runtime": {"available": True},
             "launch_sandbox_enforced": False,
         }
