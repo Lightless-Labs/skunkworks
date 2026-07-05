@@ -92,3 +92,5 @@ target/debug/a2d fitness-evidence-inspect \
 ```
 
 Source-patch gate: `runs/20260705-senior-swe-bench-retry-execute-artifacts-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: 0a6c6625acac24d056b8c3dc38331c47f8c5eb5b`. A transient local retry-execute smoke confirmed the composed path, but host-local evaluator/temp paths were not committed. This remains non-official benchmark plumbing evidence.
+
+Post-commit clean-HEAD evidence: `runs/20260705-postcommit-fitness-evidence-7167562/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_revision: 7b528d1`, `source_tree_dirty: false`, `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`.
