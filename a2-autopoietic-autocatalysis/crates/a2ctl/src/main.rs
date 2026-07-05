@@ -116,11 +116,41 @@ fn demo_evidence_command_args(archive: &str, evidence_json: &str) -> Vec<String>
     ]
 }
 
+fn validate_demo_evidence_cli_paths(
+    workspace: &str,
+    archive: &str,
+    evidence_json: &str,
+) -> Result<(), String> {
+    let default_archive_path =
+        canonicalize_workspace_path_if_exists(workspace, DEFAULT_ARCHIVE_RESULTS_JSONL)?;
+    let default_evidence_path =
+        canonicalize_workspace_path_if_exists(workspace, DEFAULT_ARCHIVE_EVIDENCE_JSON)?;
+    let archive_path = canonicalize_workspace_path_if_exists(workspace, archive)?;
+    let evidence_json_path = canonicalize_workspace_path_if_exists(workspace, evidence_json)?;
+    let archive_is_default = archive == DEFAULT_ARCHIVE_RESULTS_JSONL
+        || archive_path
+            .as_ref()
+            .zip(default_archive_path.as_ref())
+            .is_some_and(|(path, default)| path == default);
+    let evidence_is_default = evidence_json == DEFAULT_ARCHIVE_EVIDENCE_JSON
+        || evidence_json_path
+            .as_ref()
+            .zip(default_evidence_path.as_ref())
+            .is_some_and(|(path, default)| path == default);
+    if !archive_is_default && evidence_is_default {
+        return Err(format!(
+            "custom demo archive `{archive}` requires an explicit non-default --demo-evidence-json/--evidence-json path; refusing to rewrite the canonical archived evidence JSON `{DEFAULT_ARCHIVE_EVIDENCE_JSON}`"
+        ));
+    }
+    Ok(())
+}
+
 fn run_demo_evidence_contract(
     workspace: &str,
     archive: &str,
     evidence_json: &str,
 ) -> Result<String, String> {
+    validate_demo_evidence_cli_paths(workspace, archive, evidence_json)?;
     let output = std::process::Command::new("python3")
         .args(demo_evidence_command_args(archive, evidence_json))
         .current_dir(workspace)
@@ -136,20 +166,31 @@ fn run_demo_evidence_contract(
         ));
     }
 
-    let summary = validate_demo_evidence_contract_artifact(workspace, evidence_json)?;
-    validate_demo_evidence_contract_output(&stdout, evidence_json, &summary.artifact)?;
+    let summary =
+        validate_demo_evidence_contract_artifact_for_archive(workspace, evidence_json, archive)?;
+    validate_demo_evidence_contract_output(&stdout, evidence_json, &summary)?;
     Ok(stdout)
 }
 
 fn validate_demo_evidence_contract_output(
     output: &str,
     evidence_json: &str,
-    artifact: &str,
+    summary: &DemoEvidenceContractSummary,
 ) -> Result<(), String> {
+    let proof_chain = DEMO_EVIDENCE_PROOF_STEPS.join(" -> ");
+    let contract_pass = format!(
+        "PASS evidence JSON matches archived demo contract (requirements={}, demos={})",
+        DEMO_EVIDENCE_PROOF_STEPS.len(),
+        summary.demos
+    );
     let required_fragments = [
         "mode: archived historical provider evidence; no fresh run-id provenance check requested",
-        artifact,
+        summary.artifact.as_str(),
         evidence_json,
+        "PASS complete self-correction demo trajectory found",
+        contract_pass.as_str(),
+        proof_chain.as_str(),
+        "PASS clean-room evidence regeneration",
     ];
     for fragment in required_fragments {
         if !output.contains(fragment) {
@@ -169,9 +210,47 @@ struct DemoEvidenceContractSummary {
     demos: usize,
 }
 
+fn canonicalize_workspace_path(workspace: &str, path: &str) -> Result<PathBuf, String> {
+    let resolved = resolve_workspace_path(workspace, path);
+    fs::canonicalize(&resolved)
+        .map_err(|e| format!("failed to canonicalize `{}`: {e}", resolved.display()))
+}
+
+fn canonicalize_workspace_path_if_exists(
+    workspace: &str,
+    path: &str,
+) -> Result<Option<PathBuf>, String> {
+    let resolved = resolve_workspace_path(workspace, path);
+    match fs::canonicalize(&resolved) {
+        Ok(path) => Ok(Some(path)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "failed to canonicalize `{}`: {error}",
+            resolved.display()
+        )),
+    }
+}
+
+#[cfg(test)]
 fn validate_demo_evidence_contract_artifact(
     workspace: &str,
     evidence_json: &str,
+) -> Result<DemoEvidenceContractSummary, String> {
+    validate_demo_evidence_contract_artifact_inner(workspace, evidence_json, None)
+}
+
+fn validate_demo_evidence_contract_artifact_for_archive(
+    workspace: &str,
+    evidence_json: &str,
+    expected_archive: &str,
+) -> Result<DemoEvidenceContractSummary, String> {
+    validate_demo_evidence_contract_artifact_inner(workspace, evidence_json, Some(expected_archive))
+}
+
+fn validate_demo_evidence_contract_artifact_inner(
+    workspace: &str,
+    evidence_json: &str,
+    expected_archive: Option<&str>,
 ) -> Result<DemoEvidenceContractSummary, String> {
     let evidence_path = resolve_workspace_path(workspace, evidence_json);
     let evidence_text = std::fs::read_to_string(&evidence_path)
@@ -180,6 +259,16 @@ fn validate_demo_evidence_contract_artifact(
         .map_err(|e| format!("failed to parse `{}` as JSON: {e}", evidence_path.display()))?;
     let summary = validate_demo_evidence_value(&evidence)?;
     let artifact_path = resolve_workspace_path(workspace, &summary.artifact);
+    if let Some(expected_archive) = expected_archive {
+        let evidence_artifact = canonicalize_workspace_path(workspace, &summary.artifact)?;
+        let requested_archive = canonicalize_workspace_path(workspace, expected_archive)?;
+        if evidence_artifact != requested_archive {
+            return Err(format!(
+                "demo evidence artifact `{}` does not match requested archive `{}` after canonicalization",
+                summary.artifact, expected_archive
+            ));
+        }
+    }
     let artifact_bytes = std::fs::read(&artifact_path).map_err(|e| {
         format!(
             "failed to read referenced JSONL artifact `{}`: {e}",
@@ -460,7 +549,11 @@ fn normalized_demo_evidence_row_from_payload(payload: &serde_json::Value) -> ser
         payload.get("no_external_solution_search"),
     );
     insert_valid_optional_string(&mut row, "network_policy", payload.get("network_policy"));
-    insert_valid_optional_string(&mut row, "benchmark_source", payload.get("benchmark_source"));
+    insert_valid_optional_string(
+        &mut row,
+        "benchmark_source",
+        payload.get("benchmark_source"),
+    );
     insert_valid_optional_string(
         &mut row,
         "senior_swe_bench_export_sha256",
@@ -547,7 +640,10 @@ fn insert_valid_optional_string(
     field: &str,
     value: Option<&serde_json::Value>,
 ) {
-    if let Some(value) = value.and_then(serde_json::Value::as_str).filter(|value| !value.is_empty()) {
+    if let Some(value) = value
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
         row.insert(field.into(), serde_json::Value::from(value));
     }
 }
@@ -557,7 +653,10 @@ fn insert_valid_optional_positive_i64(
     field: &str,
     value: Option<&serde_json::Value>,
 ) {
-    if let Some(value) = value.and_then(serde_json::Value::as_i64).filter(|value| *value > 0) {
+    if let Some(value) = value
+        .and_then(serde_json::Value::as_i64)
+        .filter(|value| *value > 0)
+    {
         row.insert(field.into(), serde_json::Value::from(value));
     }
 }
@@ -568,7 +667,10 @@ fn insert_valid_optional_object(
     value: Option<&serde_json::Value>,
 ) {
     if value.and_then(serde_json::Value::as_object).is_some() {
-        row.insert(field.into(), value.cloned().unwrap_or(serde_json::Value::Null));
+        row.insert(
+            field.into(),
+            value.cloned().unwrap_or(serde_json::Value::Null),
+        );
     }
 }
 
@@ -664,7 +766,25 @@ fn validate_demo_evidence_demo(
 ) -> Result<(), String> {
     let context = format!("demos[{demo_index}]");
     let chain = require_array(demo, "causal_chain", &context)?;
-    for requirement in DEMO_EVIDENCE_PROOF_STEPS {
+    if chain.len() != DEMO_EVIDENCE_PROOF_STEPS.len() {
+        return Err(format!(
+            "{context}: causal_chain must contain exactly {} ordered proof steps",
+            DEMO_EVIDENCE_PROOF_STEPS.len()
+        ));
+    }
+    for (index, requirement) in DEMO_EVIDENCE_PROOF_STEPS.iter().enumerate() {
+        let step = chain.get(index).ok_or_else(|| {
+            format!("{context}: causal_chain missing proof step {requirement} at index {index}")
+        })?;
+        let actual = step
+            .get("requirement")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("<missing>");
+        if actual != *requirement {
+            return Err(format!(
+                "{context}: causal_chain proof steps must be ordered; expected {requirement} at index {index}, found {actual}"
+            ));
+        }
         let _ = require_step(chain, requirement, &context)?;
     }
     let failed = require_step(chain, "failed_first_attempt", &context)?;
@@ -772,11 +892,7 @@ fn validate_demo_evidence_demo(
         "evidence_rows",
         "retry_context_from_failure_evidence",
     )?;
-    let retry_selectors = require_array(
-        retry,
-        "selectors",
-        "retry_context_from_failure_evidence",
-    )?;
+    let retry_selectors = require_array(retry, "selectors", "retry_context_from_failure_evidence")?;
     if retry_rows.len() != retry_fields.len() || retry_selectors.len() != retry_fields.len() {
         return Err(format!(
             "{context}: retry context selectors/evidence_rows must pair with causal field records"
@@ -4751,7 +4867,10 @@ mod tests {
             + "\n";
         let mut evidence = complete_demo_evidence_value();
         let artifact_sha256 = format!("{:x}", Sha256::digest(artifact_text.as_bytes()));
-        let promotion_row = rows.first().cloned().unwrap_or_else(|| promotion_artifact_payload(true));
+        let promotion_row = rows
+            .first()
+            .cloned()
+            .unwrap_or_else(|| promotion_artifact_payload(true));
         let normalized_failed_row = normalized_demo_evidence_row_from_payload(&failed_row);
         let normalized_promotion_row = normalized_demo_evidence_row_from_payload(&promotion_row);
         evidence["artifact"] = serde_json::Value::String(artifact.to_string());
@@ -4784,11 +4903,174 @@ mod tests {
         );
     }
 
+    fn project_workspace_root() -> String {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn demo_evidence_cli_paths_allow_default_archive_and_evidence() {
+        validate_demo_evidence_cli_paths(
+            &project_workspace_root(),
+            DEFAULT_ARCHIVE_RESULTS_JSONL,
+            DEFAULT_ARCHIVE_EVIDENCE_JSON,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn demo_evidence_cli_paths_reject_custom_archive_with_default_evidence() {
+        let err = validate_demo_evidence_cli_paths(
+            &project_workspace_root(),
+            "custom/results.jsonl",
+            DEFAULT_ARCHIVE_EVIDENCE_JSON,
+        )
+        .unwrap_err();
+
+        assert!(err.contains(
+            "custom demo archive `custom/results.jsonl` requires an explicit non-default"
+        ));
+        assert!(err.contains(DEFAULT_ARCHIVE_EVIDENCE_JSON));
+    }
+
+    #[test]
+    fn demo_evidence_cli_paths_reject_custom_archive_with_default_evidence_aliases() {
+        let workspace = project_workspace_root();
+        let relative_alias = format!("./{DEFAULT_ARCHIVE_EVIDENCE_JSON}");
+        let err =
+            validate_demo_evidence_cli_paths(&workspace, "custom/results.jsonl", &relative_alias)
+                .unwrap_err();
+        assert!(err.contains("custom demo archive `custom/results.jsonl` requires"));
+
+        let absolute_default = fs::canonicalize(resolve_workspace_path(
+            &workspace,
+            DEFAULT_ARCHIVE_EVIDENCE_JSON,
+        ))
+        .unwrap();
+        let err = validate_demo_evidence_cli_paths(
+            &workspace,
+            "custom/results.jsonl",
+            absolute_default.to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert!(err.contains("refusing to rewrite the canonical archived evidence JSON"));
+    }
+
+    #[test]
+    fn demo_evidence_cli_paths_allow_custom_archive_with_custom_evidence() {
+        validate_demo_evidence_cli_paths(
+            &project_workspace_root(),
+            "custom/results.jsonl",
+            "custom/evidence.json",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn demo_evidence_cli_paths_allow_custom_only_workspace_without_default_artifacts() {
+        let workspace = std::env::temp_dir().join(format!(
+            "a2-custom-demo-evidence-paths-{}",
+            std::process::id()
+        ));
+        let custom_dir = workspace.join("custom");
+        fs::create_dir_all(&custom_dir).unwrap();
+        fs::write(custom_dir.join("results.jsonl"), b"{}\n").unwrap();
+        fs::write(custom_dir.join("evidence.json"), b"{}\n").unwrap();
+
+        validate_demo_evidence_cli_paths(
+            workspace.to_str().unwrap(),
+            "custom/results.jsonl",
+            "custom/evidence.json",
+        )
+        .unwrap();
+
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    fn complete_demo_evidence_verifier_output(
+        summary: &DemoEvidenceContractSummary,
+        evidence_json: &str,
+    ) -> String {
+        format!(
+            "Self-Correction Benchmark\n  artifact: {artifact}\n  PASS complete self-correction demo trajectory found\nDemo evidence contract check\n  evidence: {evidence_json}\n  mode: archived historical provider evidence; no fresh run-id provenance check requested\n  PASS evidence JSON matches archived demo contract (requirements=6, demos={demos})\n  proved: {proof_chain}\nPASS clean-room evidence regeneration: temp output was absent before scoring; normalized SHA-256 matches checked-in evidence\n",
+            artifact = summary.artifact,
+            demos = summary.demos,
+            proof_chain = DEMO_EVIDENCE_PROOF_STEPS.join(" -> "),
+        )
+    }
+
+    #[test]
+    fn demo_evidence_contract_output_requires_clean_room_and_proof_chain() {
+        let summary = DemoEvidenceContractSummary {
+            artifact: DEFAULT_ARCHIVE_RESULTS_JSONL.to_string(),
+            artifact_sha256: "33a83345adac350b9a79bdd7842ac0c0cad1b698f7fc636a8a12f0c32fe7cee3"
+                .to_string(),
+            demos: 2,
+        };
+        let evidence_json = DEFAULT_ARCHIVE_EVIDENCE_JSON;
+        let output = complete_demo_evidence_verifier_output(&summary, evidence_json);
+
+        validate_demo_evidence_contract_output(&output, evidence_json, &summary).unwrap();
+
+        let missing_clean_room = output.replace(
+            "PASS clean-room evidence regeneration",
+            "SKIP clean-room evidence regeneration",
+        );
+        let err =
+            validate_demo_evidence_contract_output(&missing_clean_room, evidence_json, &summary)
+                .unwrap_err();
+        assert!(err.contains("PASS clean-room evidence regeneration"));
+
+        let missing_proof_chain = output.replace(
+            &DEMO_EVIDENCE_PROOF_STEPS.join(" -> "),
+            "failed_first_attempt -> later_passing_attempt",
+        );
+        let err =
+            validate_demo_evidence_contract_output(&missing_proof_chain, evidence_json, &summary)
+                .unwrap_err();
+        assert!(err.contains("retry_context_from_failure_evidence"));
+    }
+
+    #[test]
+    fn demo_evidence_contract_output_requires_demo_count_from_artifact_summary() {
+        let summary = DemoEvidenceContractSummary {
+            artifact: DEFAULT_ARCHIVE_RESULTS_JSONL.to_string(),
+            artifact_sha256: "33a83345adac350b9a79bdd7842ac0c0cad1b698f7fc636a8a12f0c32fe7cee3"
+                .to_string(),
+            demos: 2,
+        };
+        let evidence_json = DEFAULT_ARCHIVE_EVIDENCE_JSON;
+        let output = complete_demo_evidence_verifier_output(&summary, evidence_json)
+            .replace("requirements=6, demos=2", "requirements=6, demos=1");
+
+        let err =
+            validate_demo_evidence_contract_output(&output, evidence_json, &summary).unwrap_err();
+        assert!(err.contains("requirements=6, demos=2"));
+    }
+
     #[test]
     fn demo_evidence_contract_accepts_complete_structural_chain() {
         let summary = validate_demo_evidence_value(&complete_demo_evidence_value()).unwrap();
         assert_eq!(summary.artifact, DEFAULT_ARCHIVE_RESULTS_JSONL);
         assert_eq!(summary.demos, 1);
+    }
+
+    #[test]
+    fn demo_evidence_contract_rejects_reordered_causal_chain() {
+        let mut evidence = complete_demo_evidence_value();
+        evidence["demos"][0]["causal_chain"]
+            .as_array_mut()
+            .unwrap()
+            .swap(1, 2);
+
+        let err = validate_demo_evidence_value(&evidence).unwrap_err();
+        assert!(err.contains("causal_chain proof steps must be ordered"));
+        assert!(err.contains("archived_verifier_failure_evidence"));
     }
 
     #[test]
@@ -4830,7 +5112,8 @@ mod tests {
         let artifact_path = workspace.join(artifact);
         std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
         let mut promotion_row = promotion_artifact_payload(true);
-        promotion_row["audited_sandbox_provider_allowlist_enforced"] = serde_json::Value::Bool(true);
+        promotion_row["audited_sandbox_provider_allowlist_enforced"] =
+            serde_json::Value::Bool(true);
         promotion_row["audited_sandbox_provider_allowlist_status"] =
             serde_json::Value::String("enforced".to_string());
         promotion_row["audited_sandbox_provider_allowlist_evidence"] = serde_json::json!({
@@ -4892,14 +5175,20 @@ mod tests {
 
         let normalized = normalized_demo_evidence_row_from_payload(&row);
         let object = normalized.as_object().unwrap();
-        assert_eq!(object.get("resolved").and_then(serde_json::Value::as_bool), Some(false));
+        assert_eq!(
+            object.get("resolved").and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
         assert_eq!(
             object
                 .get("prior_lineage_present")
                 .and_then(serde_json::Value::as_bool),
             Some(false)
         );
-        assert_eq!(object.get("lineage_reconciled_by_core"), Some(&serde_json::Value::Null));
+        assert_eq!(
+            object.get("lineage_reconciled_by_core"),
+            Some(&serde_json::Value::Null)
+        );
         for field in [
             "no_external_solution_search",
             "network_policy",
@@ -4910,12 +5199,91 @@ mod tests {
             "audited_sandbox_provider_allowlist_status",
             "audited_sandbox_provider_allowlist_evidence",
         ] {
-            assert!(!object.contains_key(field), "{field} should be omitted when malformed");
+            assert!(
+                !object.contains_key(field),
+                "{field} should be omitted when malformed"
+            );
         }
     }
 
+    #[cfg(unix)]
     #[test]
-    fn demo_evidence_artifact_validation_rejects_embedded_failed_row_missing_sandbox_audit_fields() {
+    fn demo_evidence_contract_accepts_requested_archive_symlink_to_evidence_artifact() {
+        let workspace = std::env::temp_dir().join(format!(
+            "a2-requested-archive-symlink-{}",
+            std::process::id()
+        ));
+        let artifact = "evidence/results.jsonl";
+        let artifact_path = workspace.join(artifact);
+        std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+        let promotion_row = promotion_artifact_payload(true);
+        let (evidence, artifact_bytes) = complete_demo_evidence_with_artifact_rows(
+            artifact,
+            std::slice::from_ref(&promotion_row),
+            normalized_demo_evidence_row_from_payload(&promotion_row),
+        );
+        std::fs::write(&artifact_path, artifact_bytes).unwrap();
+        let evidence_path = workspace.join("evidence.json");
+        std::fs::write(&evidence_path, serde_json::to_string(&evidence).unwrap()).unwrap();
+        let requested_archive = workspace.join("requested-link.jsonl");
+        std::os::unix::fs::symlink(&artifact_path, &requested_archive).unwrap();
+
+        let summary = validate_demo_evidence_contract_artifact_for_archive(
+            workspace.to_str().unwrap(),
+            evidence_path.to_str().unwrap(),
+            requested_archive.to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(summary.artifact, artifact);
+
+        std::fs::remove_file(requested_archive).unwrap();
+        std::fs::remove_file(evidence_path).unwrap();
+        std::fs::remove_file(artifact_path).unwrap();
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn demo_evidence_contract_rejects_requested_archive_that_differs_from_evidence_artifact() {
+        let workspace = std::env::temp_dir().join(format!(
+            "a2-requested-archive-mismatch-{}",
+            std::process::id()
+        ));
+        let artifact = "evidence/results.jsonl";
+        let artifact_path = workspace.join(artifact);
+        let requested_archive = workspace.join("requested/results.jsonl");
+        std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(requested_archive.parent().unwrap()).unwrap();
+        let promotion_row = promotion_artifact_payload(true);
+        let (evidence, artifact_bytes) = complete_demo_evidence_with_artifact_rows(
+            artifact,
+            std::slice::from_ref(&promotion_row),
+            normalized_demo_evidence_row_from_payload(&promotion_row),
+        );
+        std::fs::write(&artifact_path, &artifact_bytes).unwrap();
+        std::fs::write(&requested_archive, artifact_bytes).unwrap();
+        let evidence_path = workspace.join("evidence.json");
+        std::fs::write(&evidence_path, serde_json::to_string(&evidence).unwrap()).unwrap();
+
+        let err = validate_demo_evidence_contract_artifact_for_archive(
+            workspace.to_str().unwrap(),
+            evidence_path.to_str().unwrap(),
+            requested_archive.to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("does not match requested archive"),
+            "unexpected error: {err}"
+        );
+
+        std::fs::remove_file(evidence_path).unwrap();
+        std::fs::remove_file(requested_archive).unwrap();
+        std::fs::remove_file(artifact_path).unwrap();
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn demo_evidence_artifact_validation_rejects_embedded_failed_row_missing_sandbox_audit_fields()
+    {
         let workspace = std::env::temp_dir().join(format!(
             "a2-failed-row-sandbox-audit-missing-{}",
             std::process::id()
