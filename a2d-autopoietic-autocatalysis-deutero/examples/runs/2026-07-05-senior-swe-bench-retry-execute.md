@@ -278,3 +278,29 @@ git diff --binary HEAD -- crates | git hash-object --stdin
 Source-patch gate: `runs/20260705-retry-status-next-gate-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_tree_dirty: true`, `source_diff_hash: ac9fbc4682beeafa2f394a394ce49113984045ee`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`.
 
 This is read-only retry handoff plumbing and local Sudoku source-patch evidence. It is not an official Senior SWE-Bench success claim and does not prove top-level A²D goal completion.
+
+## Retry next-cycle boundary hardening addendum
+
+Follow-up hardening: generated retry `next_cycle_command` records now explicitly carry the side-effect/policy boundary for the next provider cycle:
+
+- `evaluator_invocations_started: false`
+- `fitness_evidence_inspection_started: false`
+- `github_solution_search_allowed: false`
+
+The shared boundary loader accepts older summaries where these fields are missing, but rejects any present value other than boolean `false`. This prevents a tampered status/resume handoff from claiming evaluator/evidence-inspection work or allowing public GitHub solution search before the bounded `cycle-input` provider command runs.
+
+Validation/evidence:
+
+```bash
+cargo fmt --check
+cargo test -p a2d --test senior_swe_bench_retry_execute retry_status_rejects_next_cycle_command -- --nocapture
+cargo test
+target/debug/a2d fitness-evidence-inspect \
+  runs/20260705-retry-next-cycle-boundary-hardening-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
+git diff --binary HEAD -- crates | git hash-object --stdin
+```
+
+Source-patch gate: `runs/20260705-retry-next-cycle-boundary-hardening-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_tree_dirty: true`, `source_diff_hash: acf2f0cbb24b87ccb056b1cf33a398bfe62fb121`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`.
+
+This is retry boundary validation hardening and local Sudoku source-patch evidence. It is not a provider/evaluator run, not an official Senior SWE-Bench success claim, and not top-level A²D goal completion.

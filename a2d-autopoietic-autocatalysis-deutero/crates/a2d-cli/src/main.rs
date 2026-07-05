@@ -5900,6 +5900,19 @@ fn load_senior_swe_bench_retry_next_cycle_boundary(
     {
         return Err("Senior SWE-Bench next_cycle_command must not pre-start providers".to_string());
     }
+    for field in [
+        "evaluator_invocations_started",
+        "fitness_evidence_inspection_started",
+        "github_solution_search_allowed",
+    ] {
+        if let Some(value) = next_cycle_command.get(field)
+            && value.as_bool() != Some(false)
+        {
+            return Err(format!(
+                "Senior SWE-Bench next_cycle_command {field} must be false"
+            ));
+        }
+    }
     if next_cycle_command
         .get("fitness_claim_allowed_before_evidence")
         .and_then(Value::as_bool)
@@ -7680,6 +7693,9 @@ fn retry_execute_next_cycle_command(
         ],
         "expected_manifest_path": output_artifacts_dir.join("manifest.json").to_string_lossy(),
         "provider_invocations_started": false,
+        "evaluator_invocations_started": false,
+        "fitness_evidence_inspection_started": false,
+        "github_solution_search_allowed": false,
         "fitness_claim_allowed_before_evidence": false,
     })
 }

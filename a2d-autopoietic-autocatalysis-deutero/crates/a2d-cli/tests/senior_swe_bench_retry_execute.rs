@@ -827,6 +827,101 @@ fn retry_status_reports_next_cycle_boundary_without_fitness_claim() {
     let _ = fs::remove_dir_all(fixture.root);
 }
 
+fn assert_retry_status_rejects_tampered_next_cycle_command_flag(
+    flag: &str,
+    tampered_value: serde_json::Value,
+    expected_error: &str,
+) {
+    let fixture = write_fixture(
+        &format!("status-next-cycle-tampered-{flag}"),
+        2,
+        "echo public failure >&2\nexit 1\n",
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute");
+    assert_eq!(output.status.code(), Some(2));
+
+    let retry_execution = fixture.work_dir.join("retry-execution.json");
+    let mut execution: serde_json::Value =
+        serde_json::from_slice(&fs::read(&retry_execution).unwrap()).unwrap();
+    execution["next_cycle_command"][flag] = tampered_value.clone();
+    execution["attempts"][0]["next_cycle_command"][flag] = tampered_value;
+    fs::write(
+        &retry_execution,
+        serde_json::to_vec_pretty(&execution).unwrap(),
+    )
+    .unwrap();
+
+    let status_output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-status",
+            retry_execution.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry status");
+    assert_eq!(status_output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&status_output.stderr).contains(expected_error),
+        "stderr={}",
+        String::from_utf8_lossy(&status_output.stderr)
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_status_rejects_next_cycle_command_that_prestarts_evaluator() {
+    assert_retry_status_rejects_tampered_next_cycle_command_flag(
+        "evaluator_invocations_started",
+        serde_json::json!(true),
+        "next_cycle_command evaluator_invocations_started must be false",
+    );
+}
+
+#[test]
+fn retry_status_rejects_next_cycle_command_that_prestarts_evidence_inspection() {
+    assert_retry_status_rejects_tampered_next_cycle_command_flag(
+        "fitness_evidence_inspection_started",
+        serde_json::json!(true),
+        "next_cycle_command fitness_evidence_inspection_started must be false",
+    );
+}
+
+#[test]
+fn retry_status_rejects_next_cycle_command_that_allows_github_solution_search() {
+    assert_retry_status_rejects_tampered_next_cycle_command_flag(
+        "github_solution_search_allowed",
+        serde_json::json!(true),
+        "next_cycle_command github_solution_search_allowed must be false",
+    );
+}
+
+#[test]
+fn retry_status_rejects_next_cycle_command_non_boolean_boundary_flag() {
+    assert_retry_status_rejects_tampered_next_cycle_command_flag(
+        "evaluator_invocations_started",
+        serde_json::json!("true"),
+        "next_cycle_command evaluator_invocations_started must be false",
+    );
+}
+
 #[test]
 fn retry_execute_stops_after_attempt_exhaustion_without_evidence_claim() {
     let fixture = write_fixture("exhausted", 1, "echo public failure >&2\nexit 1\n");
