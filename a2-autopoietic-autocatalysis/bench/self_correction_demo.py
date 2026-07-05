@@ -54,6 +54,11 @@ FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = "enforced"
 FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD = (
     "audited_sandbox_provider_allowlist_evidence"
 )
+SENIOR_SWE_BENCH_SOURCE = "senior-swe-bench"
+SENIOR_SWE_BENCH_PROVENANCE_FIELDS = (
+    "senior_swe_bench_export_sha256",
+    "senior_swe_bench_export_row_index",
+)
 TEST_SANDBOX_PROFILE_SHA256 = hashlib.sha256(
     b"a2-test-deny-public-solution-egress-allow-provider-endpoints"
 ).hexdigest()
@@ -881,6 +886,37 @@ def validate_fresh_sandbox_provider_allowlist_evidence(
         )
 
 
+def validate_senior_swe_bench_fresh_provenance(row: dict[str, object], *, index: int) -> None:
+    benchmark_source = row.get("benchmark_source")
+    has_senior_swe_fields = any(field in row for field in SENIOR_SWE_BENCH_PROVENANCE_FIELDS)
+    if benchmark_source != SENIOR_SWE_BENCH_SOURCE:
+        if has_senior_swe_fields:
+            raise RuntimeError(
+                f"fresh demo row {index} records Senior SWE Bench export provenance fields "
+                f"without benchmark_source={SENIOR_SWE_BENCH_SOURCE!r}"
+            )
+        return
+
+    export_sha = row.get("senior_swe_bench_export_sha256")
+    if not isinstance(export_sha, str) or len(export_sha) != 64 or not all(
+        character in "0123456789abcdef" for character in export_sha.lower()
+    ):
+        raise RuntimeError(
+            f"fresh demo row {index} records benchmark_source={SENIOR_SWE_BENCH_SOURCE!r} "
+            "without a 64-character senior_swe_bench_export_sha256"
+        )
+    export_row_index = row.get("senior_swe_bench_export_row_index")
+    if (
+        not isinstance(export_row_index, int)
+        or isinstance(export_row_index, bool)
+        or export_row_index < 1
+    ):
+        raise RuntimeError(
+            f"fresh demo row {index} records benchmark_source={SENIOR_SWE_BENCH_SOURCE!r} "
+            "without a positive integer senior_swe_bench_export_row_index"
+        )
+
+
 def validate_fresh_rows(
     rows: list[dict[str, object]],
     *,
@@ -1024,6 +1060,7 @@ def validate_fresh_rows(
                 f"must record status={FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_STATUS!r}"
             )
         validate_fresh_sandbox_provider_allowlist_evidence(row, index=index)
+        validate_senior_swe_bench_fresh_provenance(row, index=index)
         if row_has_verifier_gated_promotion(row) and not promotion_artifact_matches_row(row):
             raise RuntimeError(
                 f"fresh demo row {index} has verifier-gated promotion without a matching promotion artifact"
@@ -1050,6 +1087,7 @@ def fresh_validation_summary(args: argparse.Namespace) -> str:
         "all rows share one source revision/branch/dirty-state and source_head_short prefixes source_head; "
         "no host-specific path markers are present; "
         "no_external_solution_search=true and network_policy=Isolated are recorded for every row; "
+        "Senior SWE Bench rows, when present, include export SHA-256 and row-index provenance; "
         "audited_sandbox_provider_allowlist_enforced=true, "
         "audited_sandbox_provider_allowlist_status='enforced', and durable "
         "audited sandbox/provider allowlist evidence are recorded for every row; "
@@ -1302,6 +1340,15 @@ def normalized_artifact_row(row: dict[str, object]) -> dict[str, object]:
         ),
         "promotion_verify_returncode": optional_int_value(promotion.get("verify_returncode")),
     }
+    for key in (
+        "no_external_solution_search",
+        "network_policy",
+        "benchmark_source",
+        "senior_swe_bench_export_sha256",
+        "senior_swe_bench_export_row_index",
+    ):
+        if key in row:
+            normalized[key] = row.get(key)
     if "source_head" in row:
         normalized["source_head"] = row.get("source_head")
         normalized["source_head_short"] = row.get("source_head_short")
@@ -2510,6 +2557,33 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 normalized_artifact_row(row),
             )
         return evidence, rows
+
+    def test_normalized_artifact_row_preserves_benchmark_provenance(self) -> None:
+        normalized = normalized_artifact_row(
+            {
+                "run_id": "fresh-demo-1",
+                "task_id": "senior-task",
+                "attempt": 1,
+                "resolved": False,
+                "prior_lineage_present": False,
+                "no_external_solution_search": True,
+                "network_policy": "Isolated",
+                "benchmark_source": SENIOR_SWE_BENCH_SOURCE,
+                "senior_swe_bench_export_sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                "senior_swe_bench_export_row_index": 9,
+                "stdout": "verbose output should stay in source JSONL only",
+            }
+        )
+
+        self.assertEqual(normalized["no_external_solution_search"], True)
+        self.assertEqual(normalized["network_policy"], "Isolated")
+        self.assertEqual(normalized["benchmark_source"], SENIOR_SWE_BENCH_SOURCE)
+        self.assertEqual(
+            normalized["senior_swe_bench_export_sha256"],
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        )
+        self.assertEqual(normalized["senior_swe_bench_export_row_index"], 9)
+        self.assertNotIn("stdout", normalized)
 
     def test_default_verify_archive_command_scores_known_artifact(self) -> None:
         command = score_command(DEFAULT_ARCHIVE)
@@ -4812,6 +4886,117 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             )
 
             validate_fresh_results(args)
+
+    def test_validate_fresh_results_accepts_senior_swe_bench_export_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            row = {
+                "run_id": "fresh-demo-1",
+                "benchmark_source": SENIOR_SWE_BENCH_SOURCE,
+                "senior_swe_bench_export_sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                "senior_swe_bench_export_row_index": 7,
+                "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+                "source_head_short": "abcdef1",
+                "source_branch": "main",
+                "source_dirty": False,
+                "max_tokens": 100_000,
+                "timeout_secs": 1800,
+                "no_external_solution_search": True,
+                "network_policy": "Isolated",
+                "audited_sandbox_provider_allowlist_enforced": True,
+                "audited_sandbox_provider_allowlist_status": "enforced",
+                FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                    self.fresh_sandbox_provider_allowlist_evidence()
+                ),
+            }
+            results.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_senior_swe_bench_rows_without_export_provenance(self) -> None:
+        base_row = {
+            "run_id": "fresh-demo-1",
+            "benchmark_source": SENIOR_SWE_BENCH_SOURCE,
+            "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+            "source_head_short": "abcdef1",
+            "source_branch": "main",
+            "source_dirty": False,
+            "max_tokens": 100_000,
+            "timeout_secs": 1800,
+            "no_external_solution_search": True,
+            "network_policy": "Isolated",
+            "audited_sandbox_provider_allowlist_enforced": True,
+            "audited_sandbox_provider_allowlist_status": "enforced",
+            FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                self.fresh_sandbox_provider_allowlist_evidence()
+            ),
+        }
+        scenarios = [
+            ({**base_row}, "senior_swe_bench_export_sha256"),
+            (
+                {
+                    **base_row,
+                    "senior_swe_bench_export_sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                    "senior_swe_bench_export_row_index": 0,
+                },
+                "positive integer senior_swe_bench_export_row_index",
+            ),
+        ]
+        for row, message in scenarios:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as tmpdir:
+                results = Path(tmpdir) / "fresh.jsonl"
+                results.write_text(json.dumps(row) + "\n", encoding="utf-8")
+                args = argparse.Namespace(
+                    results=results,
+                    run_id="fresh-demo",
+                    allow_dirty_source=False,
+                    max_tokens=100_000,
+                    timeout=1800,
+                )
+
+                with self.assertRaisesRegex(RuntimeError, message):
+                    validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_orphan_senior_swe_bench_export_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            row = {
+                "run_id": "fresh-demo-1",
+                "benchmark_source": "self",
+                "senior_swe_bench_export_sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                "senior_swe_bench_export_row_index": 1,
+                "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+                "source_head_short": "abcdef1",
+                "source_branch": "main",
+                "source_dirty": False,
+                "max_tokens": 100_000,
+                "timeout_secs": 1800,
+                "no_external_solution_search": True,
+                "network_policy": "Isolated",
+                "audited_sandbox_provider_allowlist_enforced": True,
+                "audited_sandbox_provider_allowlist_status": "enforced",
+                FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                    self.fresh_sandbox_provider_allowlist_evidence()
+                ),
+            }
+            results.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "without benchmark_source"):
+                validate_fresh_results(args)
 
     def test_validate_fresh_results_rejects_unreproducible_source_metadata(self) -> None:
         full_head = "abcdef1234567890abcdef1234567890abcdef12"

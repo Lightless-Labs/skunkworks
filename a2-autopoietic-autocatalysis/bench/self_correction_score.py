@@ -54,6 +54,10 @@ class SelfCorrectionRecord:
     source_branch: str | None = None
     source_dirty: bool | None = None
     no_external_solution_search: bool | None = None
+    network_policy: str | None = None
+    benchmark_source: str | None = None
+    senior_swe_bench_export_sha256: str | None = None
+    senior_swe_bench_export_row_index: int | None = None
 
     def __init__(
         self,
@@ -87,6 +91,10 @@ class SelfCorrectionRecord:
         source_branch: str | None = None,
         source_dirty: bool | None = None,
         no_external_solution_search: bool | None = None,
+        network_policy: str | None = None,
+        benchmark_source: str | None = None,
+        senior_swe_bench_export_sha256: str | None = None,
+        senior_swe_bench_export_row_index: int | None = None,
     ) -> None:
         object.__setattr__(self, "task_id", task_id)
         object.__setattr__(self, "run_id", run_id)
@@ -143,6 +151,14 @@ class SelfCorrectionRecord:
         object.__setattr__(self, "source_branch", source_branch)
         object.__setattr__(self, "source_dirty", source_dirty)
         object.__setattr__(self, "no_external_solution_search", no_external_solution_search)
+        object.__setattr__(self, "network_policy", network_policy)
+        object.__setattr__(self, "benchmark_source", benchmark_source)
+        object.__setattr__(
+            self, "senior_swe_bench_export_sha256", senior_swe_bench_export_sha256
+        )
+        object.__setattr__(
+            self, "senior_swe_bench_export_row_index", senior_swe_bench_export_row_index
+        )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -185,6 +201,12 @@ def optional_int(value: Any) -> int | None:
 
 def optional_bool(value: Any) -> bool | None:
     if value is True or value is False:
+        return value
+    return None
+
+
+def optional_positive_int(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     return None
 
@@ -318,6 +340,25 @@ def load_records(path: Path) -> list[SelfCorrectionRecord]:
                     source_dirty=optional_bool(payload.get("source_dirty")),
                     no_external_solution_search=optional_bool(
                         payload.get("no_external_solution_search")
+                    ),
+                    network_policy=(
+                        str(payload["network_policy"])
+                        if isinstance(payload.get("network_policy"), str) and payload.get("network_policy")
+                        else None
+                    ),
+                    benchmark_source=(
+                        str(payload["benchmark_source"])
+                        if isinstance(payload.get("benchmark_source"), str) and payload.get("benchmark_source")
+                        else None
+                    ),
+                    senior_swe_bench_export_sha256=(
+                        str(payload["senior_swe_bench_export_sha256"])
+                        if isinstance(payload.get("senior_swe_bench_export_sha256"), str)
+                        and payload.get("senior_swe_bench_export_sha256")
+                        else None
+                    ),
+                    senior_swe_bench_export_row_index=optional_positive_int(
+                        payload.get("senior_swe_bench_export_row_index")
                     ),
                 )
             )
@@ -617,6 +658,14 @@ def normalized_evidence_row(record: SelfCorrectionRecord) -> dict[str, Any]:
     }
     if record.no_external_solution_search is not None:
         row["no_external_solution_search"] = record.no_external_solution_search
+    if record.network_policy is not None:
+        row["network_policy"] = record.network_policy
+    if record.benchmark_source is not None:
+        row["benchmark_source"] = record.benchmark_source
+    if record.senior_swe_bench_export_sha256 is not None:
+        row["senior_swe_bench_export_sha256"] = record.senior_swe_bench_export_sha256
+    if record.senior_swe_bench_export_row_index is not None:
+        row["senior_swe_bench_export_row_index"] = record.senior_swe_bench_export_row_index
     if record.source_head is not None:
         row["source_head"] = record.source_head
         row["source_head_short"] = record.source_head_short
@@ -1512,6 +1561,79 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertEqual(records[0].source_head_short, row["source_head_short"])
         self.assertEqual(records[0].source_branch, row["source_branch"])
         self.assertEqual(records[0].source_dirty, row["source_dirty"])
+
+    def test_load_records_preserves_benchmark_provenance(self) -> None:
+        row = {
+            "task_id": "task",
+            "run_id": "run",
+            "attempt": 1,
+            "resolved": True,
+            "prior_lineage_present": False,
+            "no_external_solution_search": True,
+            "network_policy": "Isolated",
+            "benchmark_source": "senior-swe-bench",
+            "senior_swe_bench_export_sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            "senior_swe_bench_export_row_index": 42,
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logfile = Path(tmpdir) / "records.jsonl"
+            logfile.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            records = load_records(logfile)
+
+        self.assertEqual(records[0].no_external_solution_search, True)
+        self.assertEqual(records[0].network_policy, "Isolated")
+        self.assertEqual(records[0].benchmark_source, "senior-swe-bench")
+        self.assertEqual(
+            records[0].senior_swe_bench_export_sha256,
+            row["senior_swe_bench_export_sha256"],
+        )
+        self.assertEqual(records[0].senior_swe_bench_export_row_index, 42)
+
+    def test_load_records_rejects_malformed_senior_swe_export_row_index_for_normalized_evidence(self) -> None:
+        for malformed in ("7", 7.9, True, 0, -1):
+            with self.subTest(malformed=malformed), tempfile.TemporaryDirectory() as tmpdir:
+                row = {
+                    "task_id": "task",
+                    "run_id": "run",
+                    "attempt": 1,
+                    "resolved": True,
+                    "prior_lineage_present": False,
+                    "benchmark_source": "senior-swe-bench",
+                    "senior_swe_bench_export_sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                    "senior_swe_bench_export_row_index": malformed,
+                }
+                logfile = Path(tmpdir) / "records.jsonl"
+                logfile.write_text(json.dumps(row) + "\n", encoding="utf-8")
+                records = load_records(logfile)
+
+                self.assertIsNone(records[0].senior_swe_bench_export_row_index)
+                normalized = normalized_evidence_row(records[0])
+                self.assertNotIn("senior_swe_bench_export_row_index", normalized)
+
+    def test_normalized_evidence_row_preserves_benchmark_provenance(self) -> None:
+        record = SelfCorrectionRecord(
+            task_id="task",
+            run_id="run",
+            attempt=1,
+            resolved=False,
+            prior_lineage_present=False,
+            no_external_solution_search=True,
+            network_policy="Isolated",
+            benchmark_source="senior-swe-bench",
+            senior_swe_bench_export_sha256="abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            senior_swe_bench_export_row_index=42,
+        )
+
+        row = normalized_evidence_row(record)
+
+        self.assertEqual(row["no_external_solution_search"], True)
+        self.assertEqual(row["network_policy"], "Isolated")
+        self.assertEqual(row["benchmark_source"], "senior-swe-bench")
+        self.assertEqual(
+            row["senior_swe_bench_export_sha256"],
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        )
+        self.assertEqual(row["senior_swe_bench_export_row_index"], 42)
 
     def test_demo_evidence_json_complete_requires_artifact_sha256(self) -> None:
         records = [
