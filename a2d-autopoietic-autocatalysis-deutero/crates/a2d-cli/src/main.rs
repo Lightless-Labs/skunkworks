@@ -147,6 +147,9 @@ fn main() {
         "senior-swe-bench-retry-resume-attempt-plan" => {
             run_senior_swe_bench_retry_resume_attempt_plan(&args[2..]);
         }
+        "senior-swe-bench-retry-resume-attempt-execute" => {
+            run_senior_swe_bench_retry_resume_attempt_execute(&args[2..]);
+        }
         "senior-swe-bench-retry-run-next-cycle" => {
             run_senior_swe_bench_retry_run_next_cycle(&args[2..]);
         }
@@ -5391,6 +5394,30 @@ fn run_senior_swe_bench_retry_resume_attempt_plan(args: &[String]) {
     );
 }
 
+fn run_senior_swe_bench_retry_resume_attempt_execute(args: &[String]) {
+    if args.len() != 1 {
+        eprintln!(
+            "Usage: a2d senior-swe-bench-retry-resume-attempt-execute <retry-attempt-plan.json|->"
+        );
+        std::process::exit(1);
+    }
+    let plan = read_artifact_or_exit(&args[0]);
+    let execution =
+        build_senior_swe_bench_retry_resume_attempt_execution(&plan).unwrap_or_else(|error| {
+            eprintln!("Senior SWE-Bench retry resume attempt execute error: {error}");
+            std::process::exit(1);
+        });
+    let success = execution.get("status").and_then(Value::as_str) == Some("success");
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&execution)
+            .expect("Senior SWE-Bench retry resume attempt execution must serialize")
+    );
+    if !success {
+        std::process::exit(2);
+    }
+}
+
 fn run_senior_swe_bench_retry_run_next_cycle(args: &[String]) {
     let config = parse_senior_swe_bench_retry_run_next_cycle_args(args).unwrap_or_else(|error| {
         eprintln!("Senior SWE-Bench retry run next cycle error: {error}");
@@ -6053,18 +6080,289 @@ fn build_senior_swe_bench_retry_resume_attempt_plan(
             boundary.expected_manifest.display()
         ));
     }
+    let manifest_hash = file_content_hash(&config.cycle_output_manifest)?;
     let attempt_config = SeniorSweBenchRetryAttemptPlanConfig {
         retry_plan: config.retry_plan.clone(),
         attempt_index: boundary.attempt_index,
-        task_cycle_input: boundary.task_cycle_input,
+        task_cycle_input: boundary.task_cycle_input.clone(),
         cycle_output_manifest: config.cycle_output_manifest.clone(),
-        checkout: boundary.checkout,
-        attempt_dir: boundary.attempt_dir,
+        checkout: boundary.checkout.clone(),
+        attempt_dir: boundary.attempt_dir.clone(),
         apply_candidate_patch: config.apply_candidate_patch,
         official_evaluator_manifest: config.official_evaluator_manifest.clone(),
         evaluator_command: config.evaluator_command.clone(),
     };
-    build_senior_swe_bench_retry_attempt_plan(&attempt_config)
+    let mut plan = build_senior_swe_bench_retry_attempt_plan(&attempt_config)?;
+    plan["resume_boundary"] = json!({
+        "schema_version": "a2d.senior-swe-bench-retry-resume-boundary.v1",
+        "retry_execution_path": config.retry_execution,
+        "next_cycle_execution_path": config.next_cycle_execution.as_ref().map(|path| path.display().to_string()),
+        "task_id": boundary.task_id,
+        "repo": boundary.repo,
+        "attempt_index": boundary.attempt_index,
+        "attempt_dir": boundary.attempt_dir,
+        "task_cycle_input": boundary.task_cycle_input,
+        "checkout": boundary.checkout,
+        "output_artifacts_dir": boundary.output_artifacts_dir,
+        "cycle_output_manifest": config.cycle_output_manifest,
+        "cycle_output_manifest_git_object_hash": manifest_hash,
+        "next_cycle_command": boundary.next_cycle_command,
+        "provider_invocations_started": false,
+        "evaluator_invocations_started": false,
+        "fitness_claim_allowed_before_evidence": false,
+    });
+    Ok(plan)
+}
+
+fn build_senior_swe_bench_retry_resume_attempt_execution(plan: &str) -> Result<Value, String> {
+    let attempt_plan: Value = serde_json::from_str(plan).map_err(|error| {
+        format!("invalid Senior SWE-Bench retry resume attempt plan JSON: {error}")
+    })?;
+    if attempt_plan.get("schema_version").and_then(Value::as_str)
+        != Some("a2d.senior-swe-bench-retry-attempt-plan.v1")
+    {
+        return Err(
+            "Senior SWE-Bench retry resume attempt execute expected a retry-attempt plan"
+                .to_string(),
+        );
+    }
+    if attempt_plan
+        .get("provider_invocations_started")
+        .and_then(Value::as_bool)
+        != Some(false)
+        || attempt_plan
+            .get("evaluator_invocations_started")
+            .and_then(Value::as_bool)
+            != Some(false)
+        || attempt_plan
+            .get("fitness_claim_allowed_before_evidence")
+            .and_then(Value::as_bool)
+            != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry resume attempt plan must start no providers/evaluators and forbid pre-evidence fitness claims"
+                .to_string(),
+        );
+    }
+    let attempt_index = attempt_plan
+        .get("attempt_index")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry resume attempt plan missing attempt_index".to_string()
+        })? as usize;
+    let attempt_dir = PathBuf::from(required_plan_string(&attempt_plan, "attempt_dir")?);
+    let work_dir = attempt_dir
+        .parent()
+        .ok_or_else(|| "Senior SWE-Bench retry resume attempt dir has no parent".to_string())?
+        .to_path_buf();
+    let retry_plan_path = retry_attempt_arg_value(
+        attempt_plan
+            .get("retry_step_args")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                "Senior SWE-Bench retry resume attempt plan missing retry_step_args".to_string()
+            })?
+            .iter()
+            .map(|arg| {
+                arg.as_str().map(ToString::to_string).ok_or_else(|| {
+                    "Senior SWE-Bench retry resume attempt retry_step_args contains non-string"
+                        .to_string()
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .as_slice(),
+        "--retry-plan",
+    )?;
+    let retry_plan_text = read_artifact_to_string(Path::new(&retry_plan_path))?;
+    let retry_plan: Value = serde_json::from_str(&retry_plan_text)
+        .map_err(|error| format!("invalid Senior SWE-Bench retry plan JSON: {error}"))?;
+    let prior_retry_execution_path = work_dir.join("retry-execution.json");
+    let boundary = load_senior_swe_bench_retry_next_cycle_boundary(&prior_retry_execution_path)?;
+    let plan_task_cycle_input =
+        PathBuf::from(required_plan_string(&attempt_plan, "task_cycle_input")?);
+    let plan_manifest = PathBuf::from(required_plan_string(
+        &attempt_plan,
+        "cycle_output_manifest",
+    )?);
+    if boundary.attempt_index != attempt_index
+        || !paths_equivalent(&boundary.attempt_dir, &attempt_dir)
+        || !paths_equivalent(&boundary.task_cycle_input, &plan_task_cycle_input)
+        || !paths_equivalent(&boundary.expected_manifest, &plan_manifest)
+    {
+        return Err(
+            "Senior SWE-Bench retry resume attempt plan does not match prior retry boundary"
+                .to_string(),
+        );
+    }
+    let prior_retry_execution: Value = serde_json::from_str(&read_artifact_to_string(
+        &prior_retry_execution_path,
+    )?)
+    .map_err(|error| format!("invalid prior Senior SWE-Bench retry execution JSON: {error}"))?;
+    validate_retry_resume_attempt_execution_boundary(
+        &attempt_plan,
+        &retry_plan,
+        &prior_retry_execution,
+        &prior_retry_execution_path,
+        &boundary,
+    )?;
+    preflight_retry_resume_attempt_outputs(&attempt_plan, &attempt_dir)?;
+    let mut attempts = prior_retry_execution
+        .get("attempts")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| "prior Senior SWE-Bench retry execution missing attempts".to_string())?;
+    if attempts.len() != attempt_index {
+        return Err(format!(
+            "prior Senior SWE-Bench retry execution attempts length {} does not match resumed attempt index {attempt_index}",
+            attempts.len()
+        ));
+    }
+    let extraction = build_senior_swe_bench_retry_attempt_extraction(plan)?;
+    write_json_artifact(
+        &attempt_dir.join("retry-attempt-extraction.json"),
+        &extraction,
+    )?;
+    let extraction_text = serde_json::to_string(&extraction)
+        .map_err(|error| format!("failed to serialize retry attempt extraction: {error}"))?;
+    let evaluation = build_senior_swe_bench_retry_attempt_evaluation(&extraction_text)?;
+    write_json_artifact(
+        &attempt_dir.join("retry-attempt-evaluation.json"),
+        &evaluation,
+    )?;
+    let evaluation_text = serde_json::to_string(&evaluation)
+        .map_err(|error| format!("failed to serialize retry attempt evaluation: {error}"))?;
+    let step_execution = build_senior_swe_bench_retry_attempt_step_execution(&evaluation_text)?;
+    write_json_artifact(
+        &attempt_dir.join("retry-attempt-step-execution.json"),
+        &step_execution,
+    )?;
+    let retry_step = step_execution
+        .get("retry_step")
+        .cloned()
+        .ok_or_else(|| "Senior SWE-Bench retry resume attempt missing retry_step".to_string())?;
+    let retry_decision = retry_step
+        .get("decision")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry resume attempt retry_step missing decision".to_string()
+        })?;
+    let mut record = json!({
+        "attempt_index": attempt_index,
+        "cycle_output_manifest": attempt_plan.get("cycle_output_manifest").cloned().unwrap_or(Value::Null),
+        "attempt_dir": attempt_dir,
+        "candidate_patch_path": extraction.get("candidate_patch_path").cloned().unwrap_or(Value::Null),
+        "candidate_patch_hash": extraction.get("candidate_patch_hash").cloned().unwrap_or(Value::Null),
+        "local_evaluation_path": evaluation.get("local_evaluation_path").cloned().unwrap_or(Value::Null),
+        "local_evaluation_status": evaluation.get("local_evaluation_status").cloned().unwrap_or(Value::Null),
+        "evaluate_exit_code": evaluation.get("evaluate_exit_code").cloned().unwrap_or(Value::Null),
+        "retry_step_decision": retry_decision,
+        "provider_invocations_started": false,
+    });
+    match retry_decision {
+        "inspect_fitness_evidence" => {
+            let step_execution_text = serde_json::to_string(&step_execution).map_err(|error| {
+                format!("failed to serialize retry attempt step execution: {error}")
+            })?;
+            let evidence_execution =
+                build_senior_swe_bench_retry_attempt_step_evidence_execution(&step_execution_text)?;
+            let evidence_execution_text =
+                serde_json::to_string(&evidence_execution).map_err(|error| {
+                    format!("failed to serialize retry attempt evidence execution: {error}")
+                })?;
+            write_json_artifact(
+                &attempt_dir.join("retry-attempt-step-evidence-execution.json"),
+                &evidence_execution,
+            )?;
+            let run_result = build_senior_swe_bench_retry_run_result(&evidence_execution_text)?;
+            write_json_artifact(&attempt_dir.join("retry-run-result.json"), &run_result)?;
+            record["fitness_evidence_path"] = evidence_execution
+                .get("fitness_evidence_path")
+                .cloned()
+                .unwrap_or(Value::Null);
+            record["fitness_evidence_inspection_passed"] = json!(true);
+            attempts.push(record);
+            let terminal = retry_execution_terminal_result(
+                &retry_plan,
+                attempts,
+                "success",
+                "fitness_evidence_inspection_passed",
+                Some(run_result),
+            );
+            write_json_artifact(
+                &work_dir.join("retry-resume-attempt-execution.json"),
+                &terminal,
+            )?;
+            Ok(terminal)
+        }
+        "build_next_cycle_input" => {
+            let next_cycle_input =
+                retry_step.get("next_cycle_input").cloned().ok_or_else(|| {
+                    "Senior SWE-Bench retry resume attempt retry_step missing next_cycle_input"
+                        .to_string()
+                })?;
+            let next_cycle_input_path = attempt_dir.join("next-cycle-input.json");
+            write_json_artifact(&next_cycle_input_path, &next_cycle_input)?;
+            let evaluate_args = evaluation
+                .get("evaluate_args")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    "Senior SWE-Bench retry resume attempt evaluation missing evaluate_args"
+                        .to_string()
+                })?
+                .iter()
+                .map(|arg| {
+                    arg.as_str().map(ToString::to_string).ok_or_else(|| {
+                        "Senior SWE-Bench retry resume attempt evaluate_args contains non-string"
+                            .to_string()
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let checkout = PathBuf::from(retry_attempt_arg_value(&evaluate_args, "--checkout")?);
+            let next_cycle_output_dir = work_dir.join(format!(
+                "attempt-{}/cycle-output-artifacts",
+                attempt_index + 1
+            ));
+            let next_cycle_command = retry_execute_next_cycle_command(
+                &next_cycle_input_path,
+                &checkout,
+                &next_cycle_output_dir,
+            );
+            record["next_cycle_input_path"] = json!(next_cycle_input_path);
+            record["next_cycle_command"] = next_cycle_command;
+            record["fitness_evidence_inspection_passed"] = json!(false);
+            attempts.push(record);
+            let terminal = retry_execution_terminal_result(
+                &retry_plan,
+                attempts,
+                "failed",
+                "precomputed_attempt_manifests_exhausted",
+                None,
+            );
+            write_json_artifact(
+                &work_dir.join("retry-resume-attempt-execution.json"),
+                &terminal,
+            )?;
+            Ok(terminal)
+        }
+        "stop" => {
+            let stop_reason = retry_step
+                .get("stop_reason")
+                .and_then(Value::as_str)
+                .unwrap_or("retry_step_stop");
+            record["fitness_evidence_inspection_passed"] = json!(false);
+            attempts.push(record);
+            let terminal =
+                retry_execution_terminal_result(&retry_plan, attempts, "failed", stop_reason, None);
+            write_json_artifact(
+                &work_dir.join("retry-resume-attempt-execution.json"),
+                &terminal,
+            )?;
+            Ok(terminal)
+        }
+        other => Err(format!(
+            "Senior SWE-Bench retry resume attempt execute unreviewed retry-step decision {other}"
+        )),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -6138,6 +6436,321 @@ fn run_retry_next_cycle_command(argv: &[String]) -> Result<RetryNextCycleCommand
             }
         }
     }
+}
+
+fn validate_retry_resume_attempt_execution_boundary(
+    attempt_plan: &Value,
+    retry_plan: &Value,
+    prior_retry_execution: &Value,
+    prior_retry_execution_path: &Path,
+    boundary: &SeniorSweBenchRetryNextCycleBoundary,
+) -> Result<(), String> {
+    for (field, expected) in [("task_id", &boundary.task_id), ("repo", &boundary.repo)] {
+        let retry_value = retry_plan
+            .get(field)
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                format!("Senior SWE-Bench retry resume attempt retry plan missing {field}")
+            })?;
+        let prior_value = prior_retry_execution
+            .get(field)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("prior Senior SWE-Bench retry execution missing {field}"))?;
+        if retry_value != expected || prior_value != expected {
+            return Err(format!(
+                "Senior SWE-Bench retry resume attempt {field} metadata does not match prior retry boundary"
+            ));
+        }
+    }
+    let retry_max_attempts = retry_plan
+        .get("max_attempts")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry resume attempt retry plan missing max_attempts".to_string()
+        })?;
+    let prior_max_attempts = prior_retry_execution
+        .get("max_attempts")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "prior Senior SWE-Bench retry execution missing max_attempts".to_string())?;
+    if retry_max_attempts != prior_max_attempts
+        || retry_max_attempts as usize <= boundary.attempt_index
+    {
+        return Err(
+            "Senior SWE-Bench retry resume attempt retry plan max_attempts does not match prior retry boundary"
+                .to_string(),
+        );
+    }
+    if retry_plan
+        .get("github_solution_search_allowed")
+        .and_then(Value::as_bool)
+        != Some(false)
+        || prior_retry_execution
+            .get("github_solution_search_allowed")
+            .and_then(Value::as_bool)
+            != Some(false)
+    {
+        return Err(
+            "Senior SWE-Bench retry resume attempt requires no GitHub solution search policy"
+                .to_string(),
+        );
+    }
+    let resume_boundary = attempt_plan.get("resume_boundary").ok_or_else(|| {
+        "Senior SWE-Bench retry resume attempt plan missing resume_boundary".to_string()
+    })?;
+    if resume_boundary
+        .get("schema_version")
+        .and_then(Value::as_str)
+        != Some("a2d.senior-swe-bench-retry-resume-boundary.v1")
+    {
+        return Err(
+            "Senior SWE-Bench retry resume attempt plan has invalid resume_boundary schema"
+                .to_string(),
+        );
+    }
+    let recorded_retry_execution = PathBuf::from(required_plan_string(
+        resume_boundary,
+        "retry_execution_path",
+    )?);
+    if !paths_equivalent(&recorded_retry_execution, prior_retry_execution_path) {
+        return Err(
+            "Senior SWE-Bench retry resume attempt resume_boundary retry_execution_path does not match prior retry boundary"
+                .to_string(),
+        );
+    }
+    if let Some(next_cycle_execution_path) = resume_boundary
+        .get("next_cycle_execution_path")
+        .and_then(Value::as_str)
+    {
+        let (summary_retry_execution, summary_manifest) =
+            load_senior_swe_bench_retry_next_cycle_execution_paths(Path::new(
+                next_cycle_execution_path,
+            ))?;
+        if !paths_equivalent(&summary_retry_execution, prior_retry_execution_path)
+            || !paths_equivalent(&summary_manifest, &boundary.expected_manifest)
+        {
+            return Err(
+                "Senior SWE-Bench retry resume attempt next-cycle summary does not match prior retry boundary"
+                    .to_string(),
+            );
+        }
+    }
+    for (field, expected) in [
+        ("task_id", boundary.task_id.as_str()),
+        ("repo", boundary.repo.as_str()),
+    ] {
+        if resume_boundary.get(field).and_then(Value::as_str) != Some(expected) {
+            return Err(format!(
+                "Senior SWE-Bench retry resume attempt resume_boundary {field} does not match prior retry boundary"
+            ));
+        }
+    }
+    if resume_boundary.get("attempt_index").and_then(Value::as_u64)
+        != Some(boundary.attempt_index as u64)
+    {
+        return Err(
+            "Senior SWE-Bench retry resume attempt resume_boundary attempt_index does not match prior retry boundary"
+                .to_string(),
+        );
+    }
+    for (field, expected) in [
+        ("attempt_dir", &boundary.attempt_dir),
+        ("task_cycle_input", &boundary.task_cycle_input),
+        ("checkout", &boundary.checkout),
+        ("output_artifacts_dir", &boundary.output_artifacts_dir),
+        ("cycle_output_manifest", &boundary.expected_manifest),
+    ] {
+        let recorded = PathBuf::from(required_plan_string(resume_boundary, field)?);
+        if !paths_equivalent(&recorded, expected) {
+            return Err(format!(
+                "Senior SWE-Bench retry resume attempt resume_boundary {field} does not match prior retry boundary"
+            ));
+        }
+    }
+    if resume_boundary.get("next_cycle_command") != Some(&boundary.next_cycle_command) {
+        return Err(
+            "Senior SWE-Bench retry resume attempt resume_boundary next_cycle_command does not match prior retry boundary"
+                .to_string(),
+        );
+    }
+    let recorded_manifest_hash =
+        required_plan_string(resume_boundary, "cycle_output_manifest_git_object_hash")?;
+    validate_git_object_hash(&recorded_manifest_hash).map_err(|error| {
+        format!(
+            "Senior SWE-Bench retry resume attempt resume_boundary manifest hash {error}: {recorded_manifest_hash}"
+        )
+    })?;
+    let current_manifest_hash = file_content_hash(&boundary.expected_manifest)?;
+    if current_manifest_hash != recorded_manifest_hash {
+        return Err(format!(
+            "Senior SWE-Bench retry resume attempt manifest hash {recorded_manifest_hash} does not match current manifest hash {current_manifest_hash}"
+        ));
+    }
+    let current_selection = select_senior_swe_bench_candidate_artifact(&read_artifact_to_string(
+        &boundary.expected_manifest,
+    )?)?;
+    if attempt_plan.get("selected_artifact") != current_selection.get("selected") {
+        return Err(
+            "Senior SWE-Bench retry resume attempt selected artifact does not match current manifest"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn preflight_retry_resume_attempt_outputs(
+    attempt_plan: &Value,
+    attempt_dir: &Path,
+) -> Result<(), String> {
+    let planned_outputs = attempt_plan.get("planned_outputs").ok_or_else(|| {
+        "Senior SWE-Bench retry resume attempt plan missing planned_outputs".to_string()
+    })?;
+    let selected = attempt_plan.get("selected_artifact").ok_or_else(|| {
+        "Senior SWE-Bench retry resume attempt plan missing selected_artifact".to_string()
+    })?;
+    let selected_path = required_plan_string(selected, "path")?;
+    let candidate_patch_path =
+        PathBuf::from(required_plan_string(planned_outputs, "candidate_patch")?);
+    let planned_local_evaluation_path =
+        PathBuf::from(required_plan_string(planned_outputs, "local_evaluation")?);
+    ensure_retry_resume_output_under_attempt_dir(
+        "candidate_patch",
+        &candidate_patch_path,
+        attempt_dir,
+    )?;
+    ensure_retry_resume_output_under_attempt_dir(
+        "local_evaluation",
+        &planned_local_evaluation_path,
+        attempt_dir,
+    )?;
+
+    let evaluate_args = attempt_plan
+        .get("evaluate_args")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry resume attempt plan missing evaluate_args".to_string()
+        })?
+        .iter()
+        .map(|arg| {
+            arg.as_str().map(ToString::to_string).ok_or_else(|| {
+                "Senior SWE-Bench retry resume attempt evaluate_args contains non-string"
+                    .to_string()
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let evaluate_config = validate_retry_attempt_evaluate_args(
+        &evaluate_args,
+        &selected_path,
+        &candidate_patch_path,
+    )?;
+    let actual_local_evaluation_path = evaluate_config
+        .output
+        .as_ref()
+        .expect("retry-attempt evaluate validation requires output")
+        .to_path_buf();
+    if !paths_equivalent(
+        &actual_local_evaluation_path,
+        &planned_local_evaluation_path,
+    ) {
+        return Err(
+            "Senior SWE-Bench retry resume attempt planned local_evaluation does not match evaluate_args --output"
+                .to_string(),
+        );
+    }
+    let retry_step_args = attempt_plan
+        .get("retry_step_args")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "Senior SWE-Bench retry resume attempt plan missing retry_step_args".to_string()
+        })?
+        .iter()
+        .map(|arg| {
+            arg.as_str().map(ToString::to_string).ok_or_else(|| {
+                "Senior SWE-Bench retry resume attempt retry_step_args contains non-string"
+                    .to_string()
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_retry_attempt_retry_step_args(
+        &retry_step_args,
+        attempt_plan,
+        &evaluate_config,
+        &actual_local_evaluation_path.to_string_lossy(),
+    )?;
+
+    let work_dir = attempt_dir.parent().ok_or_else(|| {
+        "Senior SWE-Bench retry resume attempt dir has no parent for summary preflight".to_string()
+    })?;
+    let mut paths = vec![
+        candidate_patch_path,
+        planned_local_evaluation_path,
+        actual_local_evaluation_path,
+        attempt_dir.join("retry-attempt-extraction.json"),
+        attempt_dir.join("retry-attempt-evaluation.json"),
+        attempt_dir.join("retry-attempt-step-execution.json"),
+        attempt_dir.join("retry-attempt-step-evidence-execution.json"),
+        attempt_dir.join("retry-run-result.json"),
+        attempt_dir.join("next-cycle-input.json"),
+        work_dir.join("retry-resume-attempt-execution.json"),
+    ];
+    paths.sort();
+    paths.dedup();
+    for path in paths {
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "Senior SWE-Bench retry resume attempt planned output must not be a symlink: {}",
+                    path.display()
+                ));
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "Senior SWE-Bench retry resume attempt planned output already exists: {}",
+                    path.display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect Senior SWE-Bench retry resume attempt planned output {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_retry_resume_output_under_attempt_dir(
+    field: &str,
+    path: &Path,
+    attempt_dir: &Path,
+) -> Result<(), String> {
+    let parent = path.parent().ok_or_else(|| {
+        format!(
+            "Senior SWE-Bench retry resume attempt planned output {field} has no parent: {}",
+            path.display()
+        )
+    })?;
+    let parent = parent.canonicalize().map_err(|error| {
+        format!(
+            "failed to canonicalize Senior SWE-Bench retry resume attempt planned output {field} parent {}: {error}",
+            parent.display()
+        )
+    })?;
+    let attempt_dir = attempt_dir.canonicalize().map_err(|error| {
+        format!(
+            "failed to canonicalize Senior SWE-Bench retry resume attempt dir {}: {error}",
+            attempt_dir.display()
+        )
+    })?;
+    if parent.starts_with(&attempt_dir) {
+        return Ok(());
+    }
+    Err(format!(
+        "Senior SWE-Bench retry resume attempt planned output {field} must be under attempt dir {}: {}",
+        attempt_dir.display(),
+        path.display()
+    ))
 }
 
 fn build_senior_swe_bench_retry_next_cycle_execution(

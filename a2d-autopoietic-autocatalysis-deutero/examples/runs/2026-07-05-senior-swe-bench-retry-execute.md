@@ -207,3 +207,25 @@ target/debug/a2d fitness-evidence-inspect \
 Source-patch gate: `runs/20260705-retry-next-cycle-summary-resume-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: 4bd31c0927ac95d9bc48bca4a8c028626f36f6a1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`.
 
 This is retry summary/resume plumbing. It is not evaluator execution, not an official Senior SWE-Bench success claim, and does not prove top-level A²D goal completion.
+
+
+## Retry resume-attempt execution addendum
+
+Follow-up command: `a2d senior-swe-bench-retry-resume-attempt-execute <retry-attempt-plan.json|->`.
+
+This consumes the retry-attempt plan emitted after a successful `retry-next-cycle-execution.json` summary and executes exactly one resumed deterministic attempt. It revalidates the embedded resume boundary, prior `retry-execution.json`, retry-plan task/repo/max-attempt metadata, current manifest hash and selected artifact, optional next-cycle summary provenance, and actual evaluator/retry-step output paths before running the evaluator. It rejects stale manifests after planning, mismatched retry plans, existing resumed outputs, tampered output paths, symlink parent escapes, and final output symlinks. Terminal resume summaries are written as the canonical `retry-resume-attempt-execution.json` in the work dir; per-attempt artifacts remain under `attempt-N/`.
+
+Validation/evidence:
+
+```bash
+cargo fmt --check
+cargo test -p a2d --test senior_swe_bench_retry_execute -- --nocapture
+cargo test
+target/debug/a2d fitness-evidence-inspect \
+  runs/20260705-retry-resume-attempt-execute-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
+```
+
+Source-patch gate: `runs/20260705-retry-resume-attempt-execute-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, `source_diff_hash: 98af7f9d686c5db8a4ab243387ebd50516905b46`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`.
+
+This is bounded resumed-attempt execution plumbing. It is not an official Senior SWE-Bench success claim and does not prove top-level A²D goal completion.
