@@ -16,7 +16,7 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-const AGENT_NETWORK_BOUNDARY_ADVISORY: &str = "  [INFO] agent_network_boundary: not part of the 6/6 sentinel gate; run `python3 bench/agent_network_boundary_check.py --self-test` and `--require-sandbox-runtime` before treating external benchmark evidence as uncontaminated";
+const AGENT_NETWORK_BOUNDARY_ADVISORY: &str = "  [INFO] agent_network_boundary: not part of the 6/6 sentinel gate; run `python3 bench/agent_network_boundary_check.py --self-test` and `--require-sandbox-runtime`, or `cargo run -p a2ctl -- sentinel --workspace . --require-agent-network-boundary` for an opt-in fail-closed precondition gate, before treating external benchmark evidence as uncontaminated";
 const DEFAULT_ARCHIVE_EVIDENCE_JSON: &str = "docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json";
 const DEFAULT_ARCHIVE_RESULTS_JSONL: &str = "docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.jsonl";
 const DEMO_EVIDENCE_ADVISORY: &str = "  [INFO] demo_evidence: not part of the 6/6 sentinel gate; run `python3 bench/self_correction_demo.py verify-demo-docs` and `python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json` to audit documented archived loop evidence, or `cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence` for an opt-in combined gate; sentinel default does not refresh or replace those checks";
@@ -75,6 +75,34 @@ fn render_sentinel_output(workspace: &str, result: &a2_eval::sentinel::SuiteResu
     }
 
     output
+}
+
+fn agent_network_boundary_command_args() -> Vec<String> {
+    vec![
+        "bench/agent_network_boundary_check.py".to_string(),
+        "--require-sandbox-runtime".to_string(),
+    ]
+}
+
+fn run_agent_network_boundary_gate(workspace: &str) -> Result<String, String> {
+    let output = std::process::Command::new("python3")
+        .args(agent_network_boundary_command_args())
+        .current_dir(workspace)
+        .output()
+        .map_err(|e| {
+            format!("failed to launch agent network boundary verifier in `{workspace}`: {e}")
+        })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if !output.status.success() {
+        return Err(format!(
+            "agent network boundary verifier failed with status {}\nstdout:\n{}\nstderr:\n{}",
+            output.status, stdout, stderr
+        ));
+    }
+
+    Ok(stdout)
 }
 
 fn demo_evidence_command_args(archive: &str, evidence_json: &str) -> Vec<String> {
@@ -1134,6 +1162,9 @@ enum Commands {
         /// Also require the archived demo-evidence contract after the 6/6 sentinel suite passes.
         #[arg(long)]
         require_demo_evidence: bool,
+        /// Also require the child-agent network boundary precondition after the 6/6 sentinel suite passes.
+        #[arg(long)]
+        require_agent_network_boundary: bool,
         /// Archived JSONL artifact used by --require-demo-evidence.
         #[arg(long, default_value = DEFAULT_ARCHIVE_RESULTS_JSONL)]
         demo_archive: String,
@@ -2377,6 +2408,7 @@ async fn main() {
         Commands::Sentinel {
             workspace,
             require_demo_evidence,
+            require_agent_network_boundary,
             demo_archive,
             demo_evidence_json,
         } => {
@@ -2398,6 +2430,24 @@ async fn main() {
                     }
                     Err(error) => {
                         eprintln!("  FAIL archived demo evidence contract rejected");
+                        eprintln!("{error}");
+                        failed = true;
+                    }
+                }
+            }
+
+            if require_agent_network_boundary && result.all_passed {
+                println!();
+                println!("Required agent network boundary gate:");
+                match run_agent_network_boundary_gate(&workspace) {
+                    Ok(_) => {
+                        println!("  PASS child-agent network boundary precondition validated");
+                        println!(
+                            "  command: python3 bench/agent_network_boundary_check.py --require-sandbox-runtime"
+                        );
+                    }
+                    Err(error) => {
+                        eprintln!("  FAIL child-agent network boundary precondition rejected");
                         eprintln!("{error}");
                         failed = true;
                     }
@@ -3994,11 +4044,13 @@ mod tests {
             Commands::Sentinel {
                 workspace,
                 require_demo_evidence,
+                require_agent_network_boundary,
                 demo_archive,
                 demo_evidence_json,
             } => {
                 assert_eq!(workspace, ".");
                 assert!(!require_demo_evidence);
+                assert!(!require_agent_network_boundary);
                 assert_eq!(demo_archive, DEFAULT_ARCHIVE_RESULTS_JSONL);
                 assert_eq!(demo_evidence_json, DEFAULT_ARCHIVE_EVIDENCE_JSON);
             }
@@ -4022,16 +4074,47 @@ mod tests {
             Commands::Sentinel {
                 workspace,
                 require_demo_evidence,
+                require_agent_network_boundary,
                 demo_archive,
                 demo_evidence_json,
             } => {
                 assert_eq!(workspace, ".");
                 assert!(require_demo_evidence);
+                assert!(!require_agent_network_boundary);
                 assert_eq!(demo_archive, "custom/results.jsonl");
                 assert_eq!(demo_evidence_json, "custom/evidence.json");
             }
             _ => panic!("expected sentinel command"),
         }
+    }
+
+    #[test]
+    fn sentinel_cli_accepts_required_agent_network_boundary_without_changing_default() {
+        let cli =
+            Cli::try_parse_from(["a2ctl", "sentinel", "--require-agent-network-boundary"]).unwrap();
+        match cli.command {
+            Commands::Sentinel {
+                workspace,
+                require_demo_evidence,
+                require_agent_network_boundary,
+                demo_archive,
+                demo_evidence_json,
+            } => {
+                assert_eq!(workspace, ".");
+                assert!(!require_demo_evidence);
+                assert!(require_agent_network_boundary);
+                assert_eq!(demo_archive, DEFAULT_ARCHIVE_RESULTS_JSONL);
+                assert_eq!(demo_evidence_json, DEFAULT_ARCHIVE_EVIDENCE_JSON);
+            }
+            _ => panic!("expected sentinel command"),
+        }
+        assert_eq!(
+            agent_network_boundary_command_args(),
+            vec![
+                "bench/agent_network_boundary_check.py".to_string(),
+                "--require-sandbox-runtime".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -4045,6 +4128,7 @@ mod tests {
         assert!(advisory.contains("not part of the 6/6 sentinel gate"));
         assert!(advisory.contains("agent_network_boundary_check.py --self-test"));
         assert!(advisory.contains("--require-sandbox-runtime"));
+        assert!(advisory.contains("--require-agent-network-boundary"));
         assert!(!advisory.contains("[PASS]"));
         assert!(!advisory.contains("Sentinel gate: PASS"));
     }
@@ -4254,6 +4338,7 @@ mod tests {
             "python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json"
         ));
         assert!(snapshot.contains("--require-demo-evidence"));
+        assert!(snapshot.contains("--require-agent-network-boundary"));
         assert!(snapshot.contains("sentinel default does not refresh or replace those checks"));
     }
 
