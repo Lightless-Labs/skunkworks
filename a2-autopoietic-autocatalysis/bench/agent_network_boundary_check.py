@@ -1500,9 +1500,26 @@ def audit() -> dict[str, Any]:
 
     a2_owned_fail_closed = a2_owned_provider_launch_boundary["fail_closed_restricted_policies"]
 
+    sandbox_launch_surfaces_detected = bool(
+        sandbox_runtime["available"]
+        and launch_sandbox_enforced
+        and a2_owned_provider_launch_boundary.get("sandbox_enforced_for_restricted_policies") is True
+    )
+    # This source-boundary audit can detect sandbox launch surfaces, but it does
+    # not execute a provider-backed benchmark under a durable provider allowlist
+    # or validate row-level sandbox/provider evidence. Keep the top-level usable
+    # enforcement claim false until those fresh-evidence prerequisites exist.
+    usable_sandbox_provider_allowlist_enforced = False
+
     return {
         "schema": "a2.agent-network-boundary-audit.v1",
         "not_benchmark_evidence": True,
+        "creates_loop_evidence": False,
+        "provider_backed_benchmark_executed": False,
+        "fresh_provider_backed_current_head_loop_evidence": False,
+        "senior_swe_bench_uncontaminated_evidence": False,
+        "usable_sandbox_provider_allowlist_enforced": usable_sandbox_provider_allowlist_enforced,
+        "sandbox_launch_surfaces_detected": sandbox_launch_surfaces_detected,
         "complete": launch_boundaries_found
         and sandbox_example_found
         and actual_launch_boundaries_found
@@ -2412,6 +2429,16 @@ impl<'a> ModelProvider for PiProvider {
         self.assertFalse(boundary["sandbox_enforced_for_restricted_policies"])
         self.assertIn("fail closed", boundary["interpretation"])
         self.assertTrue(result["boundary_docs"]["complete"])
+
+    def test_full_audit_status_cannot_be_misread_as_loop_or_senior_bench_evidence(self) -> None:
+        result = audit()
+
+        self.assertTrue(result["not_benchmark_evidence"])
+        self.assertFalse(result["creates_loop_evidence"])
+        self.assertFalse(result["provider_backed_benchmark_executed"])
+        self.assertFalse(result["fresh_provider_backed_current_head_loop_evidence"])
+        self.assertFalse(result["senior_swe_bench_uncontaminated_evidence"])
+        self.assertFalse(result["usable_sandbox_provider_allowlist_enforced"])
 
     def test_boundary_docs_allow_negative_enforcement_wording(self) -> None:
         valid_claims = [

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
 import hashlib
 import importlib.util
 import io
@@ -703,6 +704,12 @@ def run_agent_network_boundary_inventory_json(path: Path) -> dict[str, object]:
         "command": display_command(AGENT_NETWORK_BOUNDARY_INVENTORY_JSON_COMMAND),
         "status": "recorded",
         "creates_loop_evidence": False,
+        "provider_backed_benchmark_executed": False,
+        "fresh_provider_backed_current_head_loop_evidence": False,
+        "senior_swe_bench_uncontaminated_evidence": False,
+        "usable_sandbox_provider_allowlist_enforced": bool(
+            inventory.get("usable_sandbox_provider_allowlist_enforced") is True
+        ),
         "proves_runtime_sandbox_enforcement": False,
         "inventory_json": inventory_json,
         "inventory_json_sha256": inventory_json_sha256,
@@ -851,13 +858,56 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
             raise RuntimeError(f"fresh preflight report {key} must be false")
     boundary_inventory_created = report.get("boundary_inventory_created")
     boundary_inventory = report.get("boundary_inventory")
+    declared_inventory_path = report.get("boundary_inventory_json")
+    if boundary_inventory_created is None:
+        if isinstance(boundary_inventory, dict):
+            boundary_inventory_created = True
+        elif declared_inventory_path is None:
+            boundary_inventory_created = False
+        else:
+            raise RuntimeError(
+                "fresh preflight report has boundary_inventory_json but lacks embedded boundary_inventory"
+            )
+    if not isinstance(boundary_inventory_created, bool):
+        raise RuntimeError("fresh preflight report boundary_inventory_created must be boolean")
     if boundary_inventory_created is True:
         if not isinstance(boundary_inventory, dict):
             raise RuntimeError(
                 "fresh preflight report boundary_inventory_created=true but lacks boundary_inventory"
             )
+        if not isinstance(declared_inventory_path, str) or not declared_inventory_path:
+            raise RuntimeError(
+                "fresh preflight report boundary_inventory_created=true but lacks boundary_inventory_json path"
+            )
+        if boundary_inventory.get("path") != declared_inventory_path:
+            raise RuntimeError(
+                "fresh preflight boundary inventory path must match boundary_inventory_json"
+            )
+        if boundary_inventory.get("command") != display_command(AGENT_NETWORK_BOUNDARY_INVENTORY_JSON_COMMAND):
+            raise RuntimeError(
+                "fresh preflight boundary inventory command must be the agent network boundary JSON audit command"
+            )
+        if boundary_inventory.get("status") != "recorded":
+            raise RuntimeError("fresh preflight boundary inventory status must be recorded")
         if boundary_inventory.get("creates_loop_evidence") is not False:
             raise RuntimeError("fresh preflight boundary inventory must not claim loop evidence")
+        if boundary_inventory.get("provider_backed_benchmark_executed") is not False:
+            raise RuntimeError(
+                "fresh preflight boundary inventory must not claim provider-backed benchmark execution"
+            )
+        if boundary_inventory.get("fresh_provider_backed_current_head_loop_evidence") is not False:
+            raise RuntimeError(
+                "fresh preflight boundary inventory must not claim fresh current-HEAD loop evidence"
+            )
+        if boundary_inventory.get("senior_swe_bench_uncontaminated_evidence") is not False:
+            raise RuntimeError(
+                "fresh preflight boundary inventory must not claim uncontaminated Senior SWE Bench evidence"
+            )
+        usable_allowlist = boundary_inventory.get("usable_sandbox_provider_allowlist_enforced")
+        if not isinstance(usable_allowlist, bool):
+            raise RuntimeError(
+                "fresh preflight boundary inventory must record boolean usable_sandbox_provider_allowlist_enforced"
+            )
         if boundary_inventory.get("proves_runtime_sandbox_enforcement") is not False:
             raise RuntimeError(
                 "fresh preflight boundary inventory must not claim runtime sandbox enforcement"
@@ -872,6 +922,10 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
                 "fresh preflight boundary inventory must record boolean sandbox_runtime_available"
             )
         if FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS != "enforced":
+            if usable_allowlist is not False:
+                raise RuntimeError(
+                    "fresh preflight boundary inventory must not claim usable sandbox/provider allowlist enforcement while audited sandbox/provider allowlist status is not_implemented"
+                )
             if boundary_inventory.get("a2_owned_sandbox_enforced") is not False:
                 raise RuntimeError(
                     "fresh preflight boundary inventory must not claim A2-owned sandbox enforcement while audited sandbox/provider allowlist status is not_implemented"
@@ -930,6 +984,34 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
             raise RuntimeError(
                 "fresh preflight boundary inventory embedded inventory must record boolean launch_sandbox_enforced"
             )
+        for key, label in [
+            ("creates_loop_evidence", "loop evidence"),
+            ("provider_backed_benchmark_executed", "provider-backed benchmark execution"),
+            (
+                "fresh_provider_backed_current_head_loop_evidence",
+                "fresh current-HEAD loop evidence",
+            ),
+            (
+                "senior_swe_bench_uncontaminated_evidence",
+                "uncontaminated Senior SWE Bench evidence",
+            ),
+        ]:
+            if embedded_inventory.get(key) is not False:
+                raise RuntimeError(
+                    "fresh preflight boundary inventory embedded inventory must not claim "
+                    f"{label}"
+                )
+        embedded_usable_allowlist = embedded_inventory.get(
+            "usable_sandbox_provider_allowlist_enforced"
+        )
+        if not isinstance(embedded_usable_allowlist, bool):
+            raise RuntimeError(
+                "fresh preflight boundary inventory embedded inventory must record boolean usable_sandbox_provider_allowlist_enforced"
+            )
+        if FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS != "enforced" and embedded_usable_allowlist is not False:
+            raise RuntimeError(
+                "fresh preflight boundary inventory embedded inventory must not claim usable sandbox/provider allowlist enforcement while audited sandbox/provider allowlist status is not_implemented"
+            )
         embedded_summary = {
             "a2_owned_fail_closed": embedded_a2_boundary["fail_closed_restricted_policies"],
             "a2_owned_sandbox_enforced": embedded_a2_boundary[
@@ -937,6 +1019,7 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
             ],
             "sandbox_runtime_available": embedded_sandbox_runtime["available"],
             "launch_sandbox_enforced": embedded_inventory["launch_sandbox_enforced"],
+            "usable_sandbox_provider_allowlist_enforced": embedded_usable_allowlist,
         }
         for key, derived_value in embedded_summary.items():
             if boundary_inventory.get(key) is not derived_value:
@@ -960,13 +1043,26 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
                         "fresh preflight report boundary inventory artifact does not match embedded inventory_json_sha256: "
                         f"{declared_inventory_path}"
                     )
-    elif boundary_inventory_created is False and boundary_inventory is not None:
+    elif boundary_inventory is not None:
         raise RuntimeError(
             "fresh preflight report has boundary_inventory despite boundary_inventory_created=false"
         )
+    elif declared_inventory_path is not None:
+        raise RuntimeError(
+            "fresh preflight report has boundary_inventory_json despite boundary_inventory_created=false"
+        )
     checks = report.get("checks")
     current_report_shape = any(
-        key in report for key in ["checks", "results", "evidence_json", "preflight_report_json"]
+        key in report
+        for key in [
+            "checks",
+            "results",
+            "evidence_json",
+            "preflight_report_json",
+            "boundary_inventory_created",
+            "boundary_inventory_json",
+            "boundary_inventory",
+        ]
     )
     if checks is None and not current_report_shape:
         benchmark_task_network_policy = "legacy report: not recorded"
@@ -1031,7 +1127,6 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
             "agent_network_boundary_inventory_json_status",
         ]
         has_inventory_check_fields = any(key in checks for key in inventory_check_keys)
-        declared_inventory_path = report.get("boundary_inventory_json")
         inventory_path_declared = isinstance(declared_inventory_path, str) and bool(declared_inventory_path)
         if has_inventory_check_fields:
             inventory_requested = checks.get("agent_network_boundary_inventory_json_requested")
@@ -3735,6 +3830,15 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             },
             "sandbox_runtime": {"available": sandbox_runtime_available},
             "launch_sandbox_enforced": launch_sandbox_enforced,
+            "creates_loop_evidence": False,
+            "provider_backed_benchmark_executed": False,
+            "fresh_provider_backed_current_head_loop_evidence": False,
+            "senior_swe_bench_uncontaminated_evidence": False,
+            "usable_sandbox_provider_allowlist_enforced": bool(
+                sandbox_runtime_available
+                and launch_sandbox_enforced
+                and a2_sandbox_enforced
+            ),
         }
 
     def fresh_preflight_report_with_boundary_inventory(
@@ -3768,6 +3872,13 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "command": "python3 bench/agent_network_boundary_check.py --json",
                 "status": "recorded",
                 "creates_loop_evidence": False,
+                "provider_backed_benchmark_executed": False,
+                "fresh_provider_backed_current_head_loop_evidence": False,
+                "senior_swe_bench_uncontaminated_evidence": False,
+                "usable_sandbox_provider_allowlist_enforced": bool(
+                    isinstance(inventory_content, dict)
+                    and inventory_content.get("usable_sandbox_provider_allowlist_enforced") is True
+                ),
                 "proves_runtime_sandbox_enforcement": False,
                 "inventory_json": inventory_json,
                 "inventory_json_sha256": inventory_json_sha256,
@@ -6293,6 +6404,10 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "command": "python3 bench/agent_network_boundary_check.py --json",
                         "status": "recorded",
                         "creates_loop_evidence": False,
+                        "provider_backed_benchmark_executed": False,
+                        "fresh_provider_backed_current_head_loop_evidence": False,
+                        "senior_swe_bench_uncontaminated_evidence": False,
+                        "usable_sandbox_provider_allowlist_enforced": False,
                         "proves_runtime_sandbox_enforcement": False,
                         "inventory_json": inventory_json,
                         "inventory_json_sha256": inventory_sha256,
@@ -6349,6 +6464,10 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertTrue(data["boundary_inventory_created"])
         self.assertEqual(data["boundary_inventory_json"], str(inventory))
         self.assertFalse(data["boundary_inventory"]["creates_loop_evidence"])
+        self.assertFalse(data["boundary_inventory"]["provider_backed_benchmark_executed"])
+        self.assertFalse(data["boundary_inventory"]["fresh_provider_backed_current_head_loop_evidence"])
+        self.assertFalse(data["boundary_inventory"]["senior_swe_bench_uncontaminated_evidence"])
+        self.assertFalse(data["boundary_inventory"]["usable_sandbox_provider_allowlist_enforced"])
         self.assertFalse(data["boundary_inventory"]["proves_runtime_sandbox_enforcement"])
         self.assertIn("inventory_json", data["boundary_inventory"])
         self.assertIn("inventory_json_sha256", data["boundary_inventory"])
@@ -6395,6 +6514,197 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             report_path.write_text(json.dumps(report), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "must not claim child-agent launch"):
                 verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_rejects_evidence_overclaims(self) -> None:
+        overclaims = [
+            ("creates_loop_evidence", "loop evidence"),
+            (
+                "provider_backed_benchmark_executed",
+                "provider-backed benchmark execution",
+            ),
+            (
+                "fresh_provider_backed_current_head_loop_evidence",
+                "fresh current-HEAD loop evidence",
+            ),
+            (
+                "senior_swe_bench_uncontaminated_evidence",
+                "uncontaminated Senior SWE Bench evidence",
+            ),
+            (
+                "usable_sandbox_provider_allowlist_enforced",
+                "usable sandbox/provider allowlist enforcement",
+            ),
+        ]
+        for field, message in overclaims:
+            with self.subTest(field=field):
+                inventory_content = self.preflight_boundary_inventory_content()
+                inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+                inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+                report = self.fresh_preflight_report_with_boundary_inventory(
+                    inventory_json=inventory_json,
+                    inventory_json_sha256=inventory_sha256,
+                    inventory_content=inventory_content,
+                )
+                report["boundary_inventory"][field] = True
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    report_path = Path(tmpdir) / "fresh.report.json"
+                    report_path.write_text(json.dumps(report), encoding="utf-8")
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_rejects_embedded_evidence_overclaims(self) -> None:
+        overclaims = [
+            ("creates_loop_evidence", "loop evidence"),
+            (
+                "provider_backed_benchmark_executed",
+                "provider-backed benchmark execution",
+            ),
+            (
+                "fresh_provider_backed_current_head_loop_evidence",
+                "fresh current-HEAD loop evidence",
+            ),
+            (
+                "senior_swe_bench_uncontaminated_evidence",
+                "uncontaminated Senior SWE Bench evidence",
+            ),
+            (
+                "usable_sandbox_provider_allowlist_enforced",
+                "usable sandbox/provider allowlist enforcement",
+            ),
+        ]
+        for field, message in overclaims:
+            with self.subTest(field=field):
+                inventory_content = self.preflight_boundary_inventory_content()
+                inventory_content[field] = True
+                inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+                inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+                report = self.fresh_preflight_report_with_boundary_inventory(
+                    inventory_json=inventory_json,
+                    inventory_json_sha256=inventory_sha256,
+                    inventory_content=inventory_content,
+                )
+                report["boundary_inventory"][field] = False
+                if field == "usable_sandbox_provider_allowlist_enforced":
+                    report["boundary_inventory"][field] = False
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    report_path = Path(tmpdir) / "fresh.report.json"
+                    report_path.write_text(json.dumps(report), encoding="utf-8")
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_rejects_missing_usable_allowlist_boolean(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content()
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=inventory_sha256,
+            inventory_content=inventory_content,
+        )
+        del report["boundary_inventory"]["usable_sandbox_provider_allowlist_enforced"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "usable_sandbox_provider_allowlist_enforced"):
+                verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_requires_created_boolean_and_path(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content()
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=inventory_sha256,
+            inventory_content=inventory_content,
+        )
+        cases = [
+            ("missing path", lambda data: data.pop("boundary_inventory_json"), "lacks boundary_inventory_json"),
+            (
+                "path mismatch",
+                lambda data: data["boundary_inventory"].__setitem__("path", "docs/benchmark-results/self-correction/other.boundary.json"),
+                "path must match",
+            ),
+        ]
+        for name, mutate, message in cases:
+            with self.subTest(name=name):
+                candidate = copy.deepcopy(report)
+                mutate(candidate)
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    report_path = Path(tmpdir) / "fresh.report.json"
+                    report_path.write_text(json.dumps(candidate), encoding="utf-8")
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_accepts_missing_created_flag_with_embedded_inventory(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content()
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=inventory_sha256,
+            inventory_content=inventory_content,
+        )
+        del report["boundary_inventory_created"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_requires_current_checks(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content()
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=inventory_sha256,
+            inventory_content=inventory_content,
+        )
+        del report["checks"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "lacks checks"):
+                verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_rejects_recorded_status_without_inventory(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content()
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=inventory_sha256,
+            inventory_content=inventory_content,
+        )
+        report["boundary_inventory_created"] = False
+        del report["boundary_inventory"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "boundary_inventory_json despite boundary_inventory_created=false"):
+                verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_rejects_non_audit_command_or_status(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content()
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        cases = [
+            ("command", "python3 other.py --json", "command must be"),
+            ("status", "not_executed", "status must be recorded"),
+        ]
+        for field, value, message in cases:
+            with self.subTest(field=field):
+                report = self.fresh_preflight_report_with_boundary_inventory(
+                    inventory_json=inventory_json,
+                    inventory_json_sha256=inventory_sha256,
+                    inventory_content=inventory_content,
+                )
+                report["boundary_inventory"][field] = value
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    report_path = Path(tmpdir) / "fresh.report.json"
+                    report_path.write_text(json.dumps(report), encoding="utf-8")
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        verify_fresh_preflight_report(report_path)
 
     def test_verify_preflight_boundary_inventory_rejects_missing_sandbox_runtime_availability(self) -> None:
         inventory_content = self.preflight_boundary_inventory_content()
@@ -6508,7 +6818,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             report_path = Path(tmpdir) / "fresh.report.json"
             report_path.write_text(json.dumps(report), encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "claim recorded inventory without embedded inventory"):
+            with self.assertRaisesRegex(RuntimeError, "boundary_inventory_json despite boundary_inventory_created=false"):
                 verify_fresh_preflight_report(report_path)
 
     def test_preflight_boundary_inventory_requires_preflight_only(self) -> None:
