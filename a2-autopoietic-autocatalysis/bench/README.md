@@ -273,6 +273,7 @@ python3 bench/network_policy_smoke.py --allowlist-smoke --json
 # with a nonzero exit instead of counting a no-candidate discard as success.
 # Requires the selected provider binary on PATH; default provider is opencode.
 python3 bench/network_policy_smoke.py --a2ctl-run-smoke --self-test
+python3 bench/network_policy_smoke.py --a2ctl-run-smoke --self-test --network-policy allowlist:https://api.openai.com
 
 # External/A² launch-boundary audit: locates Pi subagent/foundry_team child pi
 # spawn points, checks A²-owned restricted-policy provider launch gates, and

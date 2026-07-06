@@ -4,12 +4,12 @@
 These checks are intentionally not benchmark evidence. The default smoke proves a
 spawned child process can be run under an OS-level no-network sandbox on hosts
 that provide macOS ``sandbox-exec``. ``--a2ctl-run-smoke`` separately exercises
-the real ``a2ctl run --network-policy isolated`` path and expects the current
-fail-closed launch gate to refuse provider launch with a nonzero exit.
-``--allowlist-smoke`` exercises a synthetic localhost-only sandbox allowlist
-primitive, not real model-provider API allowlisting. A real Senior SWE Bench run
-still needs a sandbox/provider allowlist wired into the coding-agent/provider
-launch path.
+the real ``a2ctl run`` path with a configurable restricted policy (defaulting to
+``--network-policy isolated``) and expects the current fail-closed launch gate
+to refuse provider launch with a nonzero exit. ``--allowlist-smoke`` exercises a
+synthetic localhost-only sandbox allowlist primitive, not real model-provider API
+allowlisting. A real Senior SWE Bench run still needs a sandbox/provider
+allowlist wired into the coding-agent/provider launch path.
 """
 
 from __future__ import annotations
@@ -432,9 +432,31 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def run_a2ctl_launch_gate_smoke(provider: str) -> dict[str, Any]:
+def parse_restricted_network_policy_arg(network_policy: str) -> tuple[bool, str]:
+    trimmed = network_policy.strip()
+    normalized = trimmed.lower()
+    if normalized == "isolated":
+        return True, "Isolated"
+    for prefix in ("allowlist:", "allow-list:"):
+        if normalized.startswith(prefix):
+            endpoints = [endpoint.strip() for endpoint in trimmed[len(prefix) :].split(",")]
+            if any(endpoints):
+                return True, "AllowList"
+            return False, "invalid empty allowlist network policy"
+    return False, "non-restricted network policy"
+
+
+def is_restricted_network_policy_arg(network_policy: str) -> bool:
+    return parse_restricted_network_policy_arg(network_policy)[0]
+
+
+def expected_catalyst_network_policy_label(network_policy: str) -> str:
+    restricted, label = parse_restricted_network_policy_arg(network_policy)
+    return label if restricted else network_policy
+
+
+def run_a2ctl_launch_gate_smoke(provider: str, network_policy: str) -> dict[str, Any]:
     binary_name = provider.split("/", 1)[0]
-    provider_binary = shutil.which(binary_name)
     command = [
         "cargo",
         "run",
@@ -446,17 +468,33 @@ def run_a2ctl_launch_gate_smoke(provider: str) -> dict[str, Any]:
         "--provider",
         provider,
         "--network-policy",
-        "isolated",
+        network_policy,
         "--max-tokens",
         "10",
         "--timeout",
-        "5",
+        "30",
     ]
+    restricted, policy_label = parse_restricted_network_policy_arg(network_policy)
+    if not restricted:
+        return {
+            "complete": False,
+            "description": "a2ctl run restricted-policy launch-gate smoke",
+            "command": command,
+            "network_policy": network_policy,
+            "provider_binary": None,
+            "returncode": None,
+            "stdout": "",
+            "stderr": f"refusing to run launch-gate smoke with {policy_label} `{network_policy}`",
+            "passed": False,
+        }
+
+    provider_binary = shutil.which(binary_name)
     if provider_binary is None:
         return {
             "complete": False,
             "description": "a2ctl run restricted-policy launch-gate smoke",
             "command": command,
+            "network_policy": network_policy,
             "provider_binary": None,
             "returncode": None,
             "stdout": "",
@@ -472,7 +510,8 @@ def run_a2ctl_launch_gate_smoke(provider: str) -> dict[str, Any]:
         capture_output=True,
         timeout=180,
     )
-    expected_catalyst_message = f"network_policy=Isolated prevents launching provider `{binary_name}`"
+    expected_policy_label = expected_catalyst_network_policy_label(network_policy)
+    expected_catalyst_message = f"network_policy={expected_policy_label} prevents launching provider `{binary_name}`"
     expected_cli_message = "restricted network policy blocked provider launch"
     combined_output = process.stdout + "\n" + process.stderr
     passed = (
@@ -485,10 +524,12 @@ def run_a2ctl_launch_gate_smoke(provider: str) -> dict[str, Any]:
         "complete": passed,
         "description": "a2ctl run restricted-policy launch-gate smoke",
         "command": command,
+        "network_policy": network_policy,
         "provider_binary": provider_binary,
         "returncode": process.returncode,
         "stdout": process.stdout,
         "stderr": process.stderr,
+        "expected_policy_label": expected_policy_label,
         "expected_catalyst_message": expected_catalyst_message,
         "expected_cli_stderr_substring": expected_cli_message,
         "passed": passed,
@@ -498,9 +539,18 @@ def run_a2ctl_launch_gate_smoke(provider: str) -> dict[str, Any]:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true", help="run the selected smoke and print PASS/FAIL")
-    parser.add_argument("--a2ctl-run-smoke", action="store_true", help="exercise a2ctl run --network-policy isolated and require fail-closed nonzero exit")
+    parser.add_argument(
+        "--a2ctl-run-smoke",
+        action="store_true",
+        help="exercise a2ctl run with a restricted --network-policy and require fail-closed nonzero exit",
+    )
     parser.add_argument("--allowlist-smoke", action="store_true", help="exercise sandbox-exec synthetic localhost allowlist primitive with positive and negative TCP probes")
     parser.add_argument("--provider", default="opencode", help="provider/model for --a2ctl-run-smoke (default: opencode)")
+    parser.add_argument(
+        "--network-policy",
+        default="isolated",
+        help="restricted network policy for --a2ctl-run-smoke (default: isolated; example: allowlist:https://api.openai.com); non-restricted values are refused before provider launch",
+    )
     parser.add_argument("--json", action="store_true", help="print the full smoke result as JSON")
     return parser.parse_args(argv)
 
@@ -625,6 +675,82 @@ class NetworkPolicySmokeTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     provider_allowlist_profile(["api.openai.com"], port=port)  # type: ignore[arg-type]
 
+    def test_network_policy_arg_classification_matches_cli_rendering(self) -> None:
+        self.assertTrue(is_restricted_network_policy_arg("isolated"))
+        self.assertTrue(is_restricted_network_policy_arg("IsoLaTeD"))
+        self.assertTrue(is_restricted_network_policy_arg("allowlist:https://api.openai.com"))
+        self.assertTrue(is_restricted_network_policy_arg("allow-list:https://api.openai.com"))
+        self.assertTrue(is_restricted_network_policy_arg("  allowlist:https://api.openai.com  "))
+        self.assertFalse(is_restricted_network_policy_arg("open"))
+        self.assertFalse(is_restricted_network_policy_arg("allowlist:"))
+        self.assertEqual(
+            parse_restricted_network_policy_arg("allowlist:"),
+            (False, "invalid empty allowlist network policy"),
+        )
+        self.assertEqual(expected_catalyst_network_policy_label("isolated"), "Isolated")
+        self.assertEqual(expected_catalyst_network_policy_label("IsoLaTeD"), "Isolated")
+        self.assertEqual(
+            expected_catalyst_network_policy_label("allowlist:https://api.openai.com"),
+            "AllowList",
+        )
+        self.assertEqual(
+            expected_catalyst_network_policy_label("allow-list:https://api.openai.com"),
+            "AllowList",
+        )
+
+    def test_a2ctl_launch_gate_smoke_command_preserves_allowlist_policy(self) -> None:
+        import unittest.mock
+
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="network_policy=AllowList prevents launching provider `opencode`\n",
+            stderr="restricted network policy blocked provider launch: no candidate patch produced\n",
+        )
+        with unittest.mock.patch("shutil.which", return_value="/usr/bin/opencode"), unittest.mock.patch(
+            "subprocess.run", return_value=completed
+        ) as run:
+            result = run_a2ctl_launch_gate_smoke(
+                "opencode",
+                "allowlist:https://api.openai.com",
+            )
+
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["network_policy"], "allowlist:https://api.openai.com")
+        self.assertEqual(result["expected_policy_label"], "AllowList")
+        command = run.call_args.args[0]
+        self.assertIn("--network-policy", command)
+        self.assertEqual(
+            command[command.index("--network-policy") + 1],
+            "allowlist:https://api.openai.com",
+        )
+
+    def test_a2ctl_launch_gate_smoke_reports_missing_provider_binary_without_launch(self) -> None:
+        import unittest.mock
+
+        with unittest.mock.patch("shutil.which", return_value=None), unittest.mock.patch(
+            "subprocess.run"
+        ) as run:
+            result = run_a2ctl_launch_gate_smoke("opencode", "isolated")
+
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["network_policy"], "isolated")
+        run.assert_not_called()
+
+    def test_a2ctl_launch_gate_smoke_refuses_open_policy_without_launch(self) -> None:
+        import unittest.mock
+
+        with unittest.mock.patch("shutil.which") as which, unittest.mock.patch(
+            "subprocess.run"
+        ) as run:
+            result = run_a2ctl_launch_gate_smoke("opencode", "open")
+
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["network_policy"], "open")
+        self.assertIn("non-restricted network policy", result["stderr"])
+        which.assert_not_called()
+        run.assert_not_called()
+
     def test_provider_allowlist_profile_matches_fresh_evidence_contract_shape(self) -> None:
         from bench.self_correction import validate_sandbox_provider_allowlist_evidence
         from bench.self_correction_demo import validate_fresh_sandbox_provider_allowlist_evidence
@@ -693,7 +819,7 @@ def main(argv: list[str]) -> int:
     if args.a2ctl_run_smoke and args.allowlist_smoke:
         raise SystemExit("--a2ctl-run-smoke and --allowlist-smoke are mutually exclusive")
     if args.a2ctl_run_smoke:
-        result = run_a2ctl_launch_gate_smoke(args.provider)
+        result = run_a2ctl_launch_gate_smoke(args.provider, args.network_policy)
         pass_message = "PASS a2ctl run launch-gate smoke: restricted policy blocked provider launch with nonzero exit"
         fail_message = "FAIL a2ctl run launch-gate smoke"
     elif args.allowlist_smoke:
