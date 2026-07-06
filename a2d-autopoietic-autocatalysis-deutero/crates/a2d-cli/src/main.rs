@@ -7016,7 +7016,7 @@ where
                 "next_cycle_execution_path": resume_config
                     .next_cycle_execution
                     .as_ref()
-                    .map(|path| path.display().to_string()),
+                    .map(|path| retry_artifact_path_string(path)),
                 "provider_invocations_started": false,
                 "evaluator_invocations_started": false,
                 "fitness_evidence_inspection_started": false,

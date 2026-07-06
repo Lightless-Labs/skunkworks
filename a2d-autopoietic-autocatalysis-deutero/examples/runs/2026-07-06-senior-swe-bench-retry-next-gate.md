@@ -114,3 +114,30 @@ cargo run -q -p a2d -- fitness-evidence-inspect \
 ```
 
 Evidence summary: `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`, `source_diff_hash: 5b72e098273f7afdc747bf821ba46590ef4f4e55`, matching the scoped crates diff. This remains retry status/next-cycle handoff portability source-patch evidence, not official Senior SWE-Bench mastery or a no-egress proof.
+
+## Follow-up: next-gate CWD-stability regression
+
+A second follow-up covered the controller's successful-next-cycle-summary branch from a non-root CWD. The regression now invokes `senior-swe-bench-retry-run-next-gate --next-cycle-execution <repo-relative> --retry-plan <repo-relative> ...` from `crates/a2d-cli`, asserts `before_status.next_cycle_execution_path` remains repo-relative, and checks the child `resume_boundary` has no embedded project/fixture absolute path prefixes.
+
+Validation:
+
+```bash
+cargo fmt --check
+cargo test -p a2d --test senior_swe_bench_retry_execute retry_run_next_gate_plans_from_successful_next_cycle_summary_without_evaluator -- --nocapture
+cargo test -p a2d --test senior_swe_bench_retry_execute -- --nocapture
+cargo test -p a2d retry_run_next_gate -- --nocapture
+cargo test
+```
+
+Fresh source-patch evidence:
+
+```bash
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260706-retry-next-gate-cwd-stability-evidence/actual-test-score-artifact \
+  cargo run -q -p a2d -- score-artifact sudoku runs/20260701-score-artifact-fitness-evidence/good-sudoku-artifact.rs
+
+cargo run -q -p a2d -- fitness-evidence-inspect \
+  runs/20260706-retry-next-gate-cwd-stability-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
+```
+
+Evidence summary: `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`, `source_diff_hash: 4c09ac3db7c7553e131c4d76000ac329b4608643`, matching the scoped crates diff. `hidden_acceptance` is `not_present` for this Sudoku source-patch gate. This remains retry controller portability/source-patch evidence, not official Senior SWE-Bench mastery or a no-egress proof.

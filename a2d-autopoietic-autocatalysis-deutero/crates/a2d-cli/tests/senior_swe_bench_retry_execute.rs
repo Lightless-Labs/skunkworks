@@ -1733,7 +1733,8 @@ fn retry_resume_attempt_plan_consumes_successful_next_cycle_execution_summary() 
 
 #[test]
 fn retry_run_next_gate_plans_from_successful_next_cycle_summary_without_evaluator() {
-    let fixture = write_fixture("next-gate-resume-plan", 2, "exit 99\n");
+    let fixture_parent = project_root().join("target/a2d-retry-next-gate-cwd-stability");
+    let fixture = write_fixture_in(fixture_parent, "next-gate-resume-plan", 2, "exit 99\n");
     let evaluator_counter = fixture.root.join("evaluator-count");
     write_executable_script(
         &fixture.evaluator,
@@ -1784,19 +1785,22 @@ fn retry_run_next_gate_plans_from_successful_next_cycle_summary_without_evaluato
         &next_manifest,
     );
 
+    let next_cycle_execution_rel = project_relative(&next_cycle_execution);
+    let retry_plan_rel = project_relative(&fixture.retry_plan);
     let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .current_dir(project_root().join("crates/a2d-cli"))
         .args([
             "senior-swe-bench-retry-run-next-gate",
             "--next-cycle-execution",
-            next_cycle_execution.to_str().unwrap(),
+            &next_cycle_execution_rel,
             "--retry-plan",
-            fixture.retry_plan.to_str().unwrap(),
+            &retry_plan_rel,
             "--apply-candidate-patch",
             "--",
             fixture.evaluator.to_str().unwrap(),
         ])
         .output()
-        .expect("run retry next-gate from next-cycle summary");
+        .expect("run retry next-gate from subdir with repo-relative next-cycle summary");
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -1831,6 +1835,25 @@ fn retry_run_next_gate_plans_from_successful_next_cycle_summary_without_evaluato
         Some(false)
     );
     assert_eq!(value["child"]["attempt_index"].as_u64(), Some(1));
+    assert_eq!(
+        value["before_status"]["next_cycle_execution_path"].as_str(),
+        Some(next_cycle_execution_rel.as_str())
+    );
+    assert_json_contains_no_host_absolute_paths(
+        &value["child"]["resume_boundary"],
+        &[
+            project_root().to_string_lossy().to_string(),
+            fixture.root.to_string_lossy().to_string(),
+        ],
+    );
+    assert_eq!(
+        value["child"]["resume_boundary"]["retry_execution_path"].as_str(),
+        Some(project_relative(&fixture.work_dir.join("retry-execution.json")).as_str())
+    );
+    assert_eq!(
+        value["child"]["resume_boundary"]["next_cycle_execution_path"].as_str(),
+        Some(next_cycle_execution_rel.as_str())
+    );
     assert!(
         fixture
             .work_dir
