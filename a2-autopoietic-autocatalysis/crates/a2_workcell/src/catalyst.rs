@@ -4,6 +4,9 @@
 //! the response into a PatchBundle. This is the seed catalyst that
 //! bootstraps A² — it will be differentiated into specialists later.
 
+use crate::sandbox_profile::{
+    sandbox_exec_supported_on_this_platform, sandbox_profile_for_network_policy,
+};
 use a2_core::error::{A2Error, A2Result};
 use a2_core::id::*;
 use a2_core::protocol::*;
@@ -110,6 +113,20 @@ impl GeneralistCatalyst {
          Be concise."
     }
 
+    fn restricted_network_policy_audit(policy: &NetworkPolicy) -> String {
+        sandbox_profile_for_network_policy(policy)
+            .map(|profile| {
+                let profile_lines = profile.text().replace('\n', "\\n");
+                format!(
+                    "sandbox_profile_engine={}, sandbox_profile_sha256={}, sandbox_profile_lines={profile_lines}, sandbox_exec_supported={}",
+                    profile.engine,
+                    profile.profile_sha256,
+                    sandbox_exec_supported_on_this_platform()
+                )
+            })
+            .unwrap_or_else(|error| format!("sandbox_profile_error={error}"))
+    }
+
     async fn relevant_files_section(&self, context: &ContextPack) -> String {
         if context.relevant_files.is_empty() {
             return String::new();
@@ -192,16 +209,15 @@ impl Catalyst for GeneralistCatalyst {
         context: &ContextPack,
         model: &dyn ModelProvider,
     ) -> A2Result<PatchBundle> {
-        if matches!(
-            &task.network_policy,
-            Some(NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))
-        ) {
+        if let Some(policy @ (NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) =
+            &task.network_policy
+        {
             return Err(A2Error::CatalystFailure(
                 self.id.clone(),
                 format!(
-                    "network_policy={:?} prevents launching provider `{}` from the generalist catalyst until an audited network sandbox/provider allowlist is implemented",
-                    task.network_policy.as_ref().unwrap(),
-                    model.provider_id()
+                    "network_policy={policy:?} prevents launching provider `{}` from the generalist catalyst until an audited network sandbox/provider allowlist is implemented; {}; run with network_policy=Open only when unrestricted network access is intentional",
+                    model.provider_id(),
+                    Self::restricted_network_policy_audit(policy)
                 ),
             ));
         }
@@ -393,6 +409,45 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("network_policy=Isolated prevents launching provider `panic`"));
         assert!(message.contains("audited network sandbox/provider allowlist"));
+        assert!(message.contains("sandbox_profile_engine=sandbox-exec"));
+        assert!(message.contains("sandbox_profile_sha256="));
+        assert!(
+            message.contains(
+                "sandbox_profile_lines=(version 1)\\n(allow default)\\n(deny network*)\\n"
+            )
+        );
+        assert!(message.contains("sandbox_exec_supported="));
+        assert!(message.contains(
+            "run with network_policy=Open only when unrestricted network access is intentional"
+        ));
+    }
+
+    #[tokio::test]
+    async fn generalist_refusal_includes_allowlist_profile_audit() {
+        let catalyst = GeneralistCatalyst::new();
+        let context = ContextPack {
+            germline_version: GermlineVersion::new(),
+            relevant_files: vec![],
+            prior_attempts: vec![],
+            retrieved_motifs: vec![],
+        };
+        let mut task = make_task();
+        task.network_policy = Some(NetworkPolicy::AllowList(vec![
+            "https://api.openai.com".into(),
+        ]));
+
+        let error = catalyst
+            .execute(&task, &context, &PanicProvider)
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("network_policy=AllowList"));
+        assert!(message.contains("sandbox_profile_engine=sandbox-exec"));
+        assert!(message.contains("sandbox_profile_sha256="));
+        assert!(message.contains(
+            r##"sandbox_profile_lines=(version 1)\n(allow default)\n(deny network*)\n(allow network-outbound (remote tcp "api.openai.com:443"))\n"##
+        ));
+        assert!(message.contains("sandbox_exec_supported="));
     }
 
     #[tokio::test]
