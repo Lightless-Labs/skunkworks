@@ -387,16 +387,17 @@ mod tests {
     }
 }
 "#;
-        let start = Instant::now();
         let result = evaluate_rust_code(code, Duration::from_secs(1));
-        let elapsed = start.elapsed();
+        let test_elapsed = result
+            .test_elapsed
+            .expect("timed-out test run should record test binary elapsed time");
 
         assert!(result.compiled, "should compile");
         assert!(result.timed_out, "should have timed out");
         assert!(!result.is_green(), "timed-out runs are never green");
         assert!(
-            elapsed < Duration::from_secs(10),
-            "timeout should kill promptly, took {elapsed:?}"
+            test_elapsed < Duration::from_secs(10),
+            "timeout should kill test binary promptly, took {test_elapsed:?}"
         );
         assert!(
             result.test_output.contains("TEST TIMEOUT"),

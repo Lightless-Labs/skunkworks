@@ -312,7 +312,12 @@ struct Fixture {
 }
 
 fn write_fixture(name: &str, max_attempts: usize, evaluator_body: &str) -> Fixture {
-    write_fixture_in(std::env::temp_dir(), name, max_attempts, evaluator_body)
+    write_fixture_in(
+        project_root().join("target"),
+        name,
+        max_attempts,
+        evaluator_body,
+    )
 }
 
 fn write_fixture_in(
@@ -1136,7 +1141,7 @@ fn retry_status_reports_next_cycle_boundary_without_fitness_claim() {
             "argv": [
                 "senior-swe-bench-retry-run-next-cycle",
                 "--retry-execution",
-                retry_execution.to_string_lossy(),
+                project_relative(&retry_execution),
             ],
             "provider_invocations_started": false,
             "evaluator_invocations_started": false,
@@ -1373,21 +1378,19 @@ fn retry_execute_reports_precomputed_manifest_exhaustion_before_max_attempts() {
         value["attempts"][0]["next_cycle_command"]["argv"],
         serde_json::json!([
             "cycle-input",
-            next_cycle_input_path.to_string_lossy(),
+            project_relative(&next_cycle_input_path),
             "1",
             "--checkout",
-            fixture.checkout.to_string_lossy(),
+            project_relative(&fixture.checkout),
             "--output-artifacts",
-            next_cycle_output_dir.to_string_lossy(),
+            project_relative(&next_cycle_output_dir),
         ])
     );
     assert_eq!(
         value["attempts"][0]["next_cycle_command"]["expected_manifest_path"],
-        serde_json::json!(
-            next_cycle_output_dir
-                .join("manifest.json")
-                .to_string_lossy()
-        )
+        serde_json::json!(project_relative(
+            &next_cycle_output_dir.join("manifest.json")
+        ))
     );
     assert_eq!(
         value["attempts"][0]["next_cycle_command"]["provider_invocations_started"].as_bool(),
@@ -2176,12 +2179,12 @@ fn retry_resume_attempt_execute_builds_next_cycle_input_without_fitness_claim() 
         value["next_cycle_command"]["argv"],
         serde_json::json!([
             "cycle-input",
-            next_cycle_input_path.to_string_lossy(),
+            project_relative(&next_cycle_input_path),
             "1",
             "--checkout",
-            fixture.checkout.to_string_lossy(),
+            project_relative(&fixture.checkout),
             "--output-artifacts",
-            next_cycle_output_dir.to_string_lossy(),
+            project_relative(&next_cycle_output_dir),
         ])
     );
     assert_eq!(

@@ -11271,11 +11271,7 @@ fn export_standalone_fitness_evidence(
         })?;
         object.insert(
             "official_evaluator_manifest_path".to_string(),
-            Value::String(
-                official_evaluator_manifest_path
-                    .to_string_lossy()
-                    .to_string(),
-            ),
+            Value::String(retry_artifact_path_string(official_evaluator_manifest_path)),
         );
         object.insert(
             "official_evaluator_manifest_hash".to_string(),
@@ -11283,11 +11279,9 @@ fn export_standalone_fitness_evidence(
         );
         object.insert(
             "official_evaluator_manifest_inspection_path".to_string(),
-            Value::String(
-                official_evaluator_manifest_inspection_path
-                    .to_string_lossy()
-                    .to_string(),
-            ),
+            Value::String(retry_artifact_path_string(
+                official_evaluator_manifest_inspection_path,
+            )),
         );
         object.insert(
             "official_evaluator_manifest_inspection_hash".to_string(),
@@ -13495,18 +13489,158 @@ fn validate_official_evaluator_manifest_provenance(value: &Value) -> Result<(), 
                 .to_string(),
         );
     }
-    for part in command {
-        let part = part.as_str().ok_or_else(|| {
-            "official Senior SWE-Bench evidence official_benchmark_provided_command contains non-string entry"
+    let command = command
+        .iter()
+        .map(|part| {
+            let part = part.as_str().ok_or_else(|| {
+                "official Senior SWE-Bench evidence official_benchmark_provided_command contains non-string entry"
+                    .to_string()
+            })?;
+            if part.trim().is_empty() {
+                return Err(
+                    "official Senior SWE-Bench evidence official_benchmark_provided_command contains empty entry"
+                        .to_string(),
+                );
+            }
+            Ok(part.to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    validate_official_evaluator_manifest_files_from_evidence(
+        value,
+        manifest_hash,
+        inspection_hash,
+        &command,
+    )?;
+    Ok(())
+}
+
+fn resolve_evidence_referenced_path(path_text: &str) -> Result<PathBuf, String> {
+    let path = Path::new(path_text);
+    let project_root = normalize_retry_path(a2d_project_root());
+    let candidate = if path.is_absolute() {
+        normalize_retry_path(path.to_path_buf())
+    } else {
+        let project_candidate = normalize_retry_path(project_root.join(path));
+        if !project_candidate.starts_with(&project_root) {
+            return Err(format!(
+                "official Senior SWE-Bench evidence relative path {path_text} escapes the A²D project root"
+            ));
+        }
+        if !project_candidate.exists() {
+            return Err(format!(
+                "official Senior SWE-Bench evidence relative path {path_text} does not resolve under the A²D project root"
+            ));
+        }
+        project_candidate
+    };
+    let canonical_root = fs::canonicalize(&project_root).map_err(|error| {
+        format!(
+            "failed to canonicalize A²D project root {}: {error}",
+            project_root.display()
+        )
+    })?;
+    let canonical_candidate = fs::canonicalize(&candidate).map_err(|error| {
+        format!(
+            "failed to canonicalize official Senior SWE-Bench evidence path {}: {error}",
+            candidate.display()
+        )
+    })?;
+    if !canonical_candidate.starts_with(&canonical_root) {
+        if path.is_absolute() {
+            return Err(format!(
+                "official Senior SWE-Bench evidence path {path_text} resolves outside the A²D project root"
+            ));
+        }
+        return Err(format!(
+            "official Senior SWE-Bench evidence relative path {path_text} resolves outside the A²D project root"
+        ));
+    }
+    Ok(candidate)
+}
+
+fn validate_official_evaluator_manifest_files_from_evidence(
+    value: &Value,
+    expected_manifest_hash: &str,
+    expected_inspection_hash: &str,
+    command: &[String],
+) -> Result<(), String> {
+    let manifest_path_text = value
+        .get("official_evaluator_manifest_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "official Senior SWE-Bench evidence official_evaluator_manifest_path is not a string"
                 .to_string()
         })?;
-        if part.trim().is_empty() {
-            return Err(
-                "official Senior SWE-Bench evidence official_benchmark_provided_command contains empty entry"
-                    .to_string(),
-            );
-        }
+    let inspection_path_text = value
+        .get("official_evaluator_manifest_inspection_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "official Senior SWE-Bench evidence official_evaluator_manifest_inspection_path is not a string"
+                .to_string()
+        })?;
+    let manifest_path = resolve_evidence_referenced_path(manifest_path_text)?;
+    let inspection_path = resolve_evidence_referenced_path(inspection_path_text)?;
+    let actual_manifest_hash = file_content_hash(&manifest_path).map_err(|error| {
+        format!(
+            "official Senior SWE-Bench evidence manifest file hash error for {}: {error}",
+            manifest_path.display()
+        )
+    })?;
+    if actual_manifest_hash != expected_manifest_hash {
+        return Err(format!(
+            "official Senior SWE-Bench evidence manifest hash {expected_manifest_hash} does not match current manifest hash {actual_manifest_hash}"
+        ));
     }
+    let actual_inspection_hash = file_content_hash(&inspection_path).map_err(|error| {
+        format!(
+            "official Senior SWE-Bench evidence inspection file hash error for {}: {error}",
+            inspection_path.display()
+        )
+    })?;
+    if actual_inspection_hash != expected_inspection_hash {
+        return Err(format!(
+            "official Senior SWE-Bench evidence inspection hash {expected_inspection_hash} does not match current inspection hash {actual_inspection_hash}"
+        ));
+    }
+
+    let package = SeniorSweBenchTaskPackageSummary {
+        task_id: value
+            .get("official_task_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                "official Senior SWE-Bench evidence official_task_id is not a string".to_string()
+            })?
+            .to_string(),
+        repo: value
+            .get("official_repo")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                "official Senior SWE-Bench evidence official_repo is not a string".to_string()
+            })?
+            .to_string(),
+        github_solution_search_allowed: false,
+    };
+    let manifest_text = read_artifact_to_string(&manifest_path)?;
+    let manifest =
+        parse_senior_swe_bench_official_evaluator_manifest(&manifest_text, &package, command)?;
+    if value.get("official_benchmark_url").and_then(Value::as_str)
+        != Some(manifest.benchmark_url.as_str())
+    {
+        return Err(
+            "official Senior SWE-Bench evidence benchmark URL does not match manifest".to_string(),
+        );
+    }
+    let inspection_text = read_artifact_to_string(&inspection_path)?;
+    let inspection: Value = serde_json::from_str(&inspection_text).map_err(|error| {
+        format!("invalid Senior SWE-Bench official evaluator manifest inspection JSON: {error}")
+    })?;
+    validate_retry_execute_official_manifest_inspection(
+        &inspection,
+        &package,
+        &manifest_path,
+        command,
+    )?;
     Ok(())
 }
 
@@ -14233,7 +14367,7 @@ mod tests {
 
     #[test]
     fn senior_swe_bench_official_manifest_is_serialized_into_fitness_evidence() {
-        let export_dir = env::temp_dir().join(format!(
+        let export_dir = a2d_project_root().join("target").join(format!(
             "a2d-senior-swe-bench-official-evidence-{}",
             unique_suffix()
         ));
@@ -14242,20 +14376,49 @@ mod tests {
         let candidate_patch = export_dir.join("candidate.diff");
         fs::create_dir_all(&evaluator_checkout).unwrap();
         fs::write(&candidate_patch, "diff --git a/lib.rs b/lib.rs\n").unwrap();
-        fs::write(&manifest_path, "manifest bytes\n").unwrap();
+        let command = vec!["./official-evaluator".to_string()];
+        let package = SeniorSweBenchTaskPackageSummary {
+            task_id: "task-hard".to_string(),
+            repo: "owner/repo".to_string(),
+            github_solution_search_allowed: false,
+        };
+        let manifest = SeniorSweBenchOfficialEvaluatorManifestSummary {
+            benchmark_url: "https://senior-swe-bench.snorkel.ai/tasks".to_string(),
+            task_id: package.task_id.clone(),
+            repo: package.repo.clone(),
+            hidden_holdouts: true,
+            github_solution_search_allowed: false,
+            benchmark_provided_command: command.clone(),
+        };
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&json!({
+                "schema_version": "a2d.senior-swe-bench-official-evaluator-manifest.v1",
+                "benchmark_url": manifest.benchmark_url,
+                "task_id": manifest.task_id,
+                "repo": manifest.repo,
+                "hidden_holdouts": manifest.hidden_holdouts,
+                "github_solution_search_allowed": manifest.github_solution_search_allowed,
+                "benchmark_provided_command": manifest.benchmark_provided_command,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let inspection_path = export_dir.join("official-manifest-inspection.json");
-        fs::write(&inspection_path, "inspection bytes\n").unwrap();
+        let inspection = build_senior_swe_bench_official_evaluator_manifest_inspection_value(
+            &package,
+            &manifest_path,
+            &command,
+        )
+        .unwrap();
+        fs::write(
+            &inspection_path,
+            serde_json::to_vec_pretty(&inspection).unwrap(),
+        )
+        .unwrap();
         let manifest_hash = file_content_hash(&manifest_path).unwrap();
         let inspection_hash = file_content_hash(&inspection_path).unwrap();
         let candidate_patch_hash = file_content_hash(&candidate_patch).unwrap();
-        let manifest = SeniorSweBenchOfficialEvaluatorManifestSummary {
-            benchmark_url: "https://senior-swe-bench.snorkel.ai/tasks".to_string(),
-            task_id: "task-hard".to_string(),
-            repo: "owner/repo".to_string(),
-            hidden_holdouts: true,
-            github_solution_search_allowed: false,
-            benchmark_provided_command: vec!["./official-evaluator".to_string()],
-        };
         let report = senior_swe_bench_local_fitness_report(&SeniorSweBenchLocalOutcome {
             status_success: true,
             exit_code: Some(0),
@@ -14333,6 +14496,134 @@ mod tests {
         )
         .expect("official evidence binding validates manifest-backed evidence");
         let _ = fs::remove_dir_all(export_dir);
+    }
+
+    #[test]
+    fn official_evidence_validation_resolves_repo_relative_manifest_files() {
+        let relative_dir = PathBuf::from("target").join(format!(
+            "a2d-official-evidence-relative-{}",
+            unique_suffix()
+        ));
+        let absolute_dir = a2d_project_root().join(&relative_dir);
+        fs::create_dir_all(&absolute_dir).unwrap();
+        let manifest_path = absolute_dir.join("manifest.json");
+        let inspection_path = absolute_dir.join("inspection.json");
+        let command = vec!["./official-evaluator".to_string(), "--task".to_string()];
+        let package = SeniorSweBenchTaskPackageSummary {
+            task_id: "task-hard".to_string(),
+            repo: "owner/repo".to_string(),
+            github_solution_search_allowed: false,
+        };
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&json!({
+                "schema_version": "a2d.senior-swe-bench-official-evaluator-manifest.v1",
+                "benchmark_url": "https://senior-swe-bench.snorkel.ai/tasks/task-hard",
+                "task_id": package.task_id,
+                "repo": package.repo,
+                "hidden_holdouts": true,
+                "github_solution_search_allowed": false,
+                "benchmark_provided_command": command,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let package = SeniorSweBenchTaskPackageSummary {
+            task_id: "task-hard".to_string(),
+            repo: "owner/repo".to_string(),
+            github_solution_search_allowed: false,
+        };
+        let command = vec!["./official-evaluator".to_string(), "--task".to_string()];
+        let inspection = build_senior_swe_bench_official_evaluator_manifest_inspection_value(
+            &package,
+            &manifest_path,
+            &command,
+        )
+        .unwrap();
+        fs::write(
+            &inspection_path,
+            serde_json::to_vec_pretty(&inspection).unwrap(),
+        )
+        .unwrap();
+
+        let report = senior_swe_bench_local_fitness_report(&SeniorSweBenchLocalOutcome {
+            status_success: true,
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+        let mut evidence: Value = serde_json::from_slice(&fitness_evidence_artifact(
+            0,
+            &report,
+            standalone_fitness_evidence_delta(&report),
+        ))
+        .unwrap();
+        evidence = add_export_source_provenance(evidence).unwrap();
+        evidence["evaluator_kind"] = json!("official_senior_swe_bench");
+        evidence["official_evaluator_manifest_path"] = json!(
+            relative_dir
+                .join("manifest.json")
+                .to_string_lossy()
+                .to_string()
+        );
+        evidence["official_evaluator_manifest_hash"] =
+            json!(file_content_hash(&manifest_path).unwrap());
+        evidence["official_evaluator_manifest_inspection_path"] = json!(
+            relative_dir
+                .join("inspection.json")
+                .to_string_lossy()
+                .to_string()
+        );
+        evidence["official_evaluator_manifest_inspection_hash"] =
+            json!(file_content_hash(&inspection_path).unwrap());
+        evidence["official_evaluator_manifest_inspection_validated"] = json!(true);
+        evidence["official_benchmark_url"] =
+            json!("https://senior-swe-bench.snorkel.ai/tasks/task-hard");
+        evidence["official_task_id"] = json!("task-hard");
+        evidence["official_repo"] = json!("owner/repo");
+        evidence["official_hidden_holdouts"] = json!(true);
+        evidence["official_github_solution_search_allowed"] = json!(false);
+        evidence["official_benchmark_provided_command"] = json!(["./official-evaluator", "--task"]);
+
+        validate_exported_fitness_evidence_value(&evidence)
+            .expect("repo-relative manifest and inspection paths validate");
+
+        let mut escaping_relative = evidence.clone();
+        escaping_relative["official_evaluator_manifest_path"] = json!("../AGENTS.md");
+        assert!(
+            validate_exported_fitness_evidence_value(&escaping_relative)
+                .expect_err("escaping relative official manifest path is rejected")
+                .contains("escapes the A²D project root")
+        );
+
+        let mut missing_relative = evidence.clone();
+        missing_relative["official_evaluator_manifest_path"] = json!(
+            relative_dir
+                .join("missing-manifest.json")
+                .to_string_lossy()
+                .to_string()
+        );
+        assert!(
+            validate_exported_fitness_evidence_value(&missing_relative)
+                .expect_err("missing relative official manifest is rejected")
+                .contains("does not resolve under the A²D project root")
+        );
+
+        let outside_dir =
+            env::temp_dir().join(format!("a2d-official-evidence-outside-{}", unique_suffix()));
+        fs::create_dir_all(&outside_dir).unwrap();
+        let outside_manifest = outside_dir.join("manifest.json");
+        fs::write(&outside_manifest, fs::read(&manifest_path).unwrap()).unwrap();
+        let mut outside_absolute = evidence.clone();
+        outside_absolute["official_evaluator_manifest_path"] =
+            json!(outside_manifest.to_string_lossy().to_string());
+        assert!(
+            validate_exported_fitness_evidence_value(&outside_absolute)
+                .expect_err("absolute official manifest path outside project root is rejected")
+                .contains("resolves outside the A²D project root")
+        );
+        let _ = fs::remove_dir_all(outside_dir);
+        let _ = fs::remove_dir_all(absolute_dir);
     }
 
     #[test]
@@ -14450,13 +14741,61 @@ mod tests {
                 .contains("official Senior SWE-Bench evidence missing")
         );
 
+        let official_dir = a2d_project_root().join("target").join(format!(
+            "a2d-senior-swe-bench-official-binding-{}",
+            unique_suffix()
+        ));
+        fs::create_dir_all(&official_dir).unwrap();
+        let official_manifest_path = official_dir.join("manifest.json");
+        let official_inspection_path = official_dir.join("inspection.json");
+        let official_package = SeniorSweBenchTaskPackageSummary {
+            task_id: "task-hard".to_string(),
+            repo: "owner/repo".to_string(),
+            github_solution_search_allowed: false,
+        };
+        let official_command = vec!["./official-evaluator".to_string()];
+        fs::write(
+            &official_manifest_path,
+            serde_json::to_vec_pretty(&json!({
+                "schema_version": "a2d.senior-swe-bench-official-evaluator-manifest.v1",
+                "benchmark_url": "https://senior-swe-bench.snorkel.ai/tasks",
+                "task_id": official_package.task_id,
+                "repo": official_package.repo,
+                "hidden_holdouts": true,
+                "github_solution_search_allowed": false,
+                "benchmark_provided_command": official_command,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let official_package = SeniorSweBenchTaskPackageSummary {
+            task_id: "task-hard".to_string(),
+            repo: "owner/repo".to_string(),
+            github_solution_search_allowed: false,
+        };
+        let official_command = vec!["./official-evaluator".to_string()];
+        let official_inspection =
+            build_senior_swe_bench_official_evaluator_manifest_inspection_value(
+                &official_package,
+                &official_manifest_path,
+                &official_command,
+            )
+            .unwrap();
+        fs::write(
+            &official_inspection_path,
+            serde_json::to_vec_pretty(&official_inspection).unwrap(),
+        )
+        .unwrap();
+        let official_manifest_hash = file_content_hash(&official_manifest_path).unwrap();
+        let official_inspection_hash = file_content_hash(&official_inspection_path).unwrap();
+
         let mut official = incomplete_official;
-        official["official_evaluator_manifest_path"] = json!("manifest.json");
-        official["official_evaluator_manifest_hash"] =
-            json!("1111111111111111111111111111111111111111");
-        official["official_evaluator_manifest_inspection_path"] = json!("inspection.json");
-        official["official_evaluator_manifest_inspection_hash"] =
-            json!("2222222222222222222222222222222222222222");
+        official["official_evaluator_manifest_path"] =
+            json!(official_manifest_path.to_string_lossy().to_string());
+        official["official_evaluator_manifest_hash"] = json!(official_manifest_hash);
+        official["official_evaluator_manifest_inspection_path"] =
+            json!(official_inspection_path.to_string_lossy().to_string());
+        official["official_evaluator_manifest_inspection_hash"] = json!(official_inspection_hash);
         official["official_evaluator_manifest_inspection_validated"] = json!(true);
         official["official_benchmark_url"] = json!("https://senior-swe-bench.snorkel.ai/tasks");
         official["official_task_id"] = json!("task-hard");
