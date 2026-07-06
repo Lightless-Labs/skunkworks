@@ -10428,6 +10428,9 @@ fn read_and_remove_capture(path: &Path) -> String {
 }
 
 fn senior_swe_bench_local_fitness_report(outcome: &SeniorSweBenchLocalOutcome) -> FitnessReport {
+    // The no-search case is deliberately named as policy-declared evidence:
+    // A²D validated task/manifest policy and propagated env flags, but this is
+    // not OS/network forensics proving the evaluator or provider had no egress.
     FitnessReport::compute(vec![
         CaseResult {
             name: "all_tests_pass".to_string(),
@@ -10438,7 +10441,7 @@ fn senior_swe_bench_local_fitness_report(outcome: &SeniorSweBenchLocalOutcome) -
             passed: outcome.status_success,
         },
         CaseResult {
-            name: "has_no_solution_search".to_string(),
+            name: "has_no_solution_search_policy_declared".to_string(),
             passed: true,
         },
     ])
@@ -13509,7 +13512,8 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(names.contains(&"all_tests_pass"));
         assert!(names.contains(&"hidden_acceptance"));
-        assert!(names.contains(&"has_no_solution_search"));
+        assert!(names.contains(&"has_no_solution_search_policy_declared"));
+        assert!(!names.contains(&"has_no_solution_search"));
         assert_eq!(report.fitness, 1.0);
         assert_eq!(standalone_fitness_evidence_delta(&report), 1.0);
     }
@@ -14101,8 +14105,27 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
         assert_eq!(names.get("all_tests_pass"), Some(&false));
         assert_eq!(names.get("hidden_acceptance"), Some(&false));
-        assert_eq!(names.get("has_no_solution_search"), Some(&true));
-        assert!(standalone_fitness_evidence_delta(&report) < 0.0);
+        assert_eq!(
+            names.get("has_no_solution_search_policy_declared"),
+            Some(&true)
+        );
+        assert!(!names.contains_key("has_no_solution_search"));
+        let delta = standalone_fitness_evidence_delta(&report);
+        assert!(delta < 0.0);
+
+        let evidence: Value = serde_json::from_slice(&fitness_evidence_artifact(0, &report, delta))
+            .expect("failed report evidence serializes");
+        assert_eq!(evidence["schema_version"], "a2d.fitness-evidence.v1");
+        assert_eq!(evidence["actual_tests_evaluated"], true);
+        assert_eq!(evidence["non_regressing"], false);
+        assert_eq!(
+            evidence["failed_cases"],
+            json!(["all_tests_pass", "hidden_acceptance"])
+        );
+        assert_eq!(
+            fitness_evidence_result_passed(&evidence, "has_no_solution_search_policy_declared"),
+            true
+        );
     }
 
     #[test]
