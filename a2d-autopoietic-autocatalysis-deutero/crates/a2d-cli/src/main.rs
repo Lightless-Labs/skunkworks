@@ -147,6 +147,9 @@ fn main() {
         "senior-swe-bench-retry-status" => {
             run_senior_swe_bench_retry_status(&args[2..]);
         }
+        "senior-swe-bench-retry-run-next-gate" => {
+            run_senior_swe_bench_retry_run_next_gate(&args[2..]);
+        }
         "senior-swe-bench-retry-execute" => {
             run_senior_swe_bench_retry_execute(&args[2..]);
         }
@@ -181,7 +184,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-official-evaluator-manifest-inspect|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|senior-swe-bench-retry-attempt-evaluate|senior-swe-bench-retry-attempt-step|senior-swe-bench-retry-attempt-step-evidence|senior-swe-bench-retry-run-result|senior-swe-bench-retry-status|senior-swe-bench-retry-execute|senior-swe-bench-retry-resume-attempt-plan|senior-swe-bench-retry-run-next-cycle|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-official-evaluator-manifest-inspect|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|senior-swe-bench-retry-attempt-evaluate|senior-swe-bench-retry-attempt-step|senior-swe-bench-retry-attempt-step-evidence|senior-swe-bench-retry-run-result|senior-swe-bench-retry-status|senior-swe-bench-retry-run-next-gate|senior-swe-bench-retry-execute|senior-swe-bench-retry-resume-attempt-plan|senior-swe-bench-retry-run-next-cycle|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -5383,6 +5386,13 @@ struct SeniorSweBenchRetryRunNextCycleConfig {
     retry_execution: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+enum SeniorSweBenchRetryRunNextGateConfig {
+    FromRetryExecution(SeniorSweBenchRetryRunNextCycleConfig),
+    FromNextCycleExecution(SeniorSweBenchRetryResumeAttemptPlanConfig),
+    FromResumeAttemptPlan { retry_attempt_plan: PathBuf },
+}
+
 fn run_senior_swe_bench_retry_resume_attempt_plan(args: &[String]) {
     let config = parse_senior_swe_bench_retry_resume_attempt_plan_args(args).unwrap_or_else(|error| {
         eprintln!("Senior SWE-Bench retry resume attempt plan error: {error}");
@@ -5446,6 +5456,28 @@ fn run_senior_swe_bench_retry_run_next_cycle(args: &[String]) {
     }
 }
 
+fn run_senior_swe_bench_retry_run_next_gate(args: &[String]) {
+    let config = parse_senior_swe_bench_retry_run_next_gate_args(args).unwrap_or_else(|error| {
+        eprintln!("Senior SWE-Bench retry run next gate error: {error}");
+        eprintln!("Usage: a2d senior-swe-bench-retry-run-next-gate (--retry-execution <retry-execution.json> | --next-cycle-execution <retry-next-cycle-execution.json> --retry-plan <retry-plan.json> [--apply-candidate-patch] [--official-evaluator-manifest <json>] -- <evaluator> [args...] | --retry-attempt-plan <retry-attempt-plan.json>)");
+        std::process::exit(1);
+    });
+    let execution =
+        build_senior_swe_bench_retry_next_gate_execution(&config).unwrap_or_else(|error| {
+            eprintln!("Senior SWE-Bench retry run next gate error: {error}");
+            std::process::exit(1);
+        });
+    let success = execution.get("status").and_then(Value::as_str) == Some("success");
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&execution)
+            .expect("Senior SWE-Bench retry next-gate execution must serialize")
+    );
+    if !success {
+        std::process::exit(2);
+    }
+}
+
 fn parse_senior_swe_bench_retry_run_next_cycle_args(
     args: &[String],
 ) -> Result<SeniorSweBenchRetryRunNextCycleConfig, String> {
@@ -5468,9 +5500,14 @@ fn parse_senior_swe_bench_retry_run_next_cycle_args(
         }
         index += 1;
     }
-    let config = SeniorSweBenchRetryRunNextCycleConfig {
+    validate_retry_run_next_cycle_config(SeniorSweBenchRetryRunNextCycleConfig {
         retry_execution: retry_execution.ok_or_else(|| "missing --retry-execution".to_string())?,
-    };
+    })
+}
+
+fn validate_retry_run_next_cycle_config(
+    config: SeniorSweBenchRetryRunNextCycleConfig,
+) -> Result<SeniorSweBenchRetryRunNextCycleConfig, String> {
     if config.retry_execution == Path::new("-") {
         return Err(
             "Senior SWE-Bench retry run next cycle requires retry-execution file path".to_string(),
@@ -5483,6 +5520,64 @@ fn parse_senior_swe_bench_retry_run_next_cycle_args(
         ));
     }
     Ok(config)
+}
+
+fn parse_senior_swe_bench_retry_run_next_gate_args(
+    args: &[String],
+) -> Result<SeniorSweBenchRetryRunNextGateConfig, String> {
+    if args.is_empty() {
+        return Err("missing Senior SWE-Bench retry next-gate selector".to_string());
+    }
+    match args[0].as_str() {
+        "--retry-execution" => {
+            if args.len() != 2 {
+                return Err("--retry-execution next-gate mode accepts exactly one path".to_string());
+            }
+            let config =
+                validate_retry_run_next_cycle_config(SeniorSweBenchRetryRunNextCycleConfig {
+                    retry_execution: PathBuf::from(&args[1]),
+                })?;
+            Ok(SeniorSweBenchRetryRunNextGateConfig::FromRetryExecution(
+                config,
+            ))
+        }
+        "--next-cycle-execution" => {
+            let next_cycle_execution = args
+                .get(1)
+                .ok_or_else(|| "--next-cycle-execution requires a path".to_string())?;
+            let mut resume_args = vec![
+                "--next-cycle-execution".to_string(),
+                next_cycle_execution.clone(),
+            ];
+            resume_args.extend_from_slice(&args[2..]);
+            let config = parse_senior_swe_bench_retry_resume_attempt_plan_args(&resume_args)?;
+            Ok(SeniorSweBenchRetryRunNextGateConfig::FromNextCycleExecution(config))
+        }
+        "--retry-attempt-plan" => {
+            if args.len() != 2 {
+                return Err(
+                    "--retry-attempt-plan next-gate mode accepts exactly one path".to_string(),
+                );
+            }
+            let retry_attempt_plan = PathBuf::from(&args[1]);
+            if retry_attempt_plan == Path::new("-") {
+                return Err(
+                    "Senior SWE-Bench retry next gate requires retry-attempt-plan file path"
+                        .to_string(),
+                );
+            }
+            if !retry_attempt_plan.is_file() {
+                return Err(format!(
+                    "Senior SWE-Bench retry attempt plan not found: {}",
+                    retry_attempt_plan.display()
+                ));
+            }
+            Ok(SeniorSweBenchRetryRunNextGateConfig::FromResumeAttemptPlan { retry_attempt_plan })
+        }
+        other => Err(format!(
+            "unknown senior-swe-bench-retry-run-next-gate argument: {other}"
+        )),
+    }
 }
 
 fn parse_senior_swe_bench_retry_resume_attempt_plan_args(
@@ -6779,6 +6874,253 @@ fn build_senior_swe_bench_retry_next_cycle_execution(
         config,
         run_retry_next_cycle_command,
     )
+}
+
+fn build_senior_swe_bench_retry_next_gate_execution(
+    config: &SeniorSweBenchRetryRunNextGateConfig,
+) -> Result<Value, String> {
+    build_senior_swe_bench_retry_next_gate_execution_with_runner(
+        config,
+        run_retry_next_cycle_command,
+    )
+}
+
+fn build_senior_swe_bench_retry_next_gate_execution_with_runner<F>(
+    config: &SeniorSweBenchRetryRunNextGateConfig,
+    mut next_cycle_runner: F,
+) -> Result<Value, String>
+where
+    F: FnMut(&[String]) -> Result<RetryNextCycleCommandOutput, String>,
+{
+    match config {
+        SeniorSweBenchRetryRunNextGateConfig::FromRetryExecution(next_cycle_config) => {
+            let status_config = SeniorSweBenchRetryStatusConfig {
+                retry_execution: next_cycle_config.retry_execution.clone(),
+            };
+            let before_status = build_senior_swe_bench_retry_status(&status_config)?;
+            match before_status.get("next_action").and_then(Value::as_str) {
+                Some("run_next_cycle") => {
+                    let boundary = load_senior_swe_bench_retry_next_cycle_boundary(
+                        &next_cycle_config.retry_execution,
+                    )?;
+                    let output_path = boundary
+                        .attempt_dir
+                        .join("retry-next-gate-run-next-cycle.json");
+                    preflight_retry_next_gate_output(&output_path)?;
+                    let child = build_senior_swe_bench_retry_next_cycle_execution_with_runner(
+                        next_cycle_config,
+                        &mut next_cycle_runner,
+                    )?;
+                    let attempt_dir = PathBuf::from(
+                        child
+                            .get("output_artifacts_dir")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                "Senior SWE-Bench retry next-cycle child missing output_artifacts_dir"
+                                    .to_string()
+                            })?,
+                    )
+                    .parent()
+                    .ok_or_else(|| {
+                        "Senior SWE-Bench retry next-cycle child output path has no attempt dir"
+                            .to_string()
+                    })?
+                    .to_path_buf();
+                    if !paths_equivalent(&attempt_dir, &boundary.attempt_dir) {
+                        return Err(
+                            "Senior SWE-Bench retry next-gate child attempt dir changed during execution"
+                                .to_string(),
+                        );
+                    }
+                    let child_artifact = attempt_dir.join("retry-next-cycle-execution.json");
+                    let controller = retry_next_gate_execution_value(
+                        "retry_run_next_cycle",
+                        &before_status,
+                        &child,
+                        &child_artifact,
+                        &output_path,
+                    );
+                    write_json_artifact(&output_path, &controller)?;
+                    Ok(controller)
+                }
+                Some("completed_success") | Some("stopped") => {
+                    let retry_execution_path = &next_cycle_config.retry_execution;
+                    let retry_execution_dir = retry_execution_path.parent().ok_or_else(|| {
+                        "Senior SWE-Bench retry execution path has no parent".to_string()
+                    })?;
+                    let output_path =
+                        retry_execution_dir.join("retry-next-gate-terminal-status.json");
+                    let controller = json!({
+                        "schema_version": "a2d.senior-swe-bench-retry-next-gate-execution.v1",
+                        "status": "success",
+                        "stop_reason": "terminal_retry_status_no_gate_executed",
+                        "executed_gate": "none_terminal_status",
+                        "before_status": before_status,
+                        "child_schema": Value::Null,
+                        "child_artifact_path": Value::Null,
+                        "controller_artifact_path": output_path.display().to_string(),
+                        "provider_invocations_started_by_this_command": false,
+                        "evaluator_invocations_started_by_this_command": false,
+                        "fitness_evidence_inspection_started_by_this_command": false,
+                        "github_solution_search_allowed": false,
+                        "fitness_claim_allowed_before_evidence": false,
+                        "fitness_claim_allowed_after_gate": false,
+                        "official_senior_swe_bench_mastery": false,
+                        "note": "terminal retry status observed; no provider, evaluator, evidence, or retry gate was executed by this command",
+                    });
+                    write_json_artifact(&output_path, &controller)?;
+                    Ok(controller)
+                }
+                other => Err(format!(
+                    "Senior SWE-Bench retry next gate cannot execute unreviewed next_action {other:?}"
+                )),
+            }
+        }
+        SeniorSweBenchRetryRunNextGateConfig::FromNextCycleExecution(resume_config) => {
+            let plan = build_senior_swe_bench_retry_resume_attempt_plan(resume_config)?;
+            let attempt_dir = PathBuf::from(required_plan_string(&plan, "attempt_dir")?);
+            let plan_path = attempt_dir.join("retry-attempt-plan.json");
+            let output_path = attempt_dir.join("retry-next-gate-resume-plan.json");
+            preflight_retry_next_gate_output(&output_path)?;
+            write_json_artifact(&plan_path, &plan)?;
+            let before_status = json!({
+                "next_action": "plan_resume_attempt_from_next_cycle_execution",
+                "next_cycle_execution_path": resume_config
+                    .next_cycle_execution
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                "provider_invocations_started": false,
+                "evaluator_invocations_started": false,
+                "fitness_evidence_inspection_started": false,
+                "github_solution_search_allowed": false,
+                "fitness_claim_allowed_before_evidence": false,
+            });
+            let controller = retry_next_gate_execution_value(
+                "retry_resume_attempt_plan",
+                &before_status,
+                &plan,
+                &plan_path,
+                &output_path,
+            );
+            write_json_artifact(&output_path, &controller)?;
+            Ok(controller)
+        }
+        SeniorSweBenchRetryRunNextGateConfig::FromResumeAttemptPlan { retry_attempt_plan } => {
+            let plan_text = read_artifact_to_string(retry_attempt_plan)?;
+            let plan: Value = serde_json::from_str(&plan_text).map_err(|error| {
+                format!("invalid Senior SWE-Bench retry attempt plan JSON: {error}")
+            })?;
+            let attempt_dir = PathBuf::from(required_plan_string(&plan, "attempt_dir")?);
+            let work_dir = attempt_dir.parent().ok_or_else(|| {
+                "Senior SWE-Bench retry attempt plan attempt_dir has no parent".to_string()
+            })?;
+            let child_artifact = work_dir.join("retry-resume-attempt-execution.json");
+            let output_path = attempt_dir.join("retry-next-gate-resume-execute.json");
+            preflight_retry_next_gate_output(&output_path)?;
+            let child = build_senior_swe_bench_retry_resume_attempt_execution(&plan_text)?;
+            let before_status = json!({
+                "next_action": "execute_resume_attempt_plan",
+                "retry_attempt_plan": retry_attempt_plan.display().to_string(),
+                "provider_invocations_started": false,
+                "evaluator_invocations_started": false,
+                "fitness_evidence_inspection_started": false,
+                "github_solution_search_allowed": false,
+                "fitness_claim_allowed_before_evidence": false,
+            });
+            let controller = retry_next_gate_execution_value(
+                "retry_resume_attempt_execute",
+                &before_status,
+                &child,
+                &child_artifact,
+                &output_path,
+            );
+            write_json_artifact(&output_path, &controller)?;
+            Ok(controller)
+        }
+    }
+}
+
+fn preflight_retry_next_gate_output(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(format!(
+                "Senior SWE-Bench retry next-gate artifact must not be a symlink before child side effects: {}",
+                path.display()
+            ));
+        }
+        Ok(_) => {
+            return Err(format!(
+                "Senior SWE-Bench retry next-gate artifact already exists before child side effects: {}",
+                path.display()
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect Senior SWE-Bench retry next-gate artifact {} before child side effects: {error}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn retry_next_gate_execution_value(
+    executed_gate: &str,
+    before_status: &Value,
+    child: &Value,
+    child_artifact_path: &Path,
+    controller_artifact_path: &Path,
+) -> Value {
+    let child_status = child
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("success");
+    let stop_reason =
+        child
+            .get("stop_reason")
+            .and_then(Value::as_str)
+            .unwrap_or(match executed_gate {
+                "retry_resume_attempt_plan" => "resume_attempt_plan_ready",
+                _ => "gate_executed",
+            });
+    let fitness_claim_allowed_after_gate = child
+        .get("fitness_claim_allowed_after_evidence_inspection")
+        .and_then(Value::as_bool)
+        == Some(true);
+    let official_mastery = child
+        .get("official_senior_swe_bench_mastery")
+        .and_then(Value::as_bool)
+        == Some(true)
+        && fitness_claim_allowed_after_gate;
+    json!({
+        "schema_version": "a2d.senior-swe-bench-retry-next-gate-execution.v1",
+        "status": child_status,
+        "stop_reason": stop_reason,
+        "executed_gate": executed_gate,
+        "before_status": before_status,
+        "child_schema": child.get("schema_version").cloned().unwrap_or(Value::Null),
+        "child_artifact_path": child_artifact_path.display().to_string(),
+        "controller_artifact_path": controller_artifact_path.display().to_string(),
+        "child": child,
+        "provider_invocations_started_by_this_command": child
+            .get("provider_invocations_started_by_this_command")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "evaluator_invocations_started_by_this_command": child
+            .get("evaluator_invocations_started")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "fitness_evidence_inspection_started_by_this_command": child
+            .get("fitness_evidence_inspection_started")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| fitness_claim_allowed_after_gate),
+        "github_solution_search_allowed": false,
+        "fitness_claim_allowed_before_evidence": false,
+        "fitness_claim_allowed_after_gate": fitness_claim_allowed_after_gate,
+        "official_senior_swe_bench_mastery": official_mastery,
+        "note": "single Senior SWE-Bench retry controller gate only; this command does not loop or execute the next emitted gate",
+    })
 }
 
 fn build_senior_swe_bench_retry_next_cycle_execution_with_runner<F>(
@@ -16608,6 +16950,7 @@ mod tests {
             "provider_invocations_started": false,
             "evaluator_invocations_started": true,
             "fitness_evidence_inspection_passed": false,
+            "fitness_claim_allowed_before_evidence": false,
             "fitness_claim_allowed_after_evidence_inspection": false,
             "github_solution_search_allowed": false,
             "next_cycle_command": next_cycle_command,
@@ -16690,6 +17033,142 @@ mod tests {
         assert!(
             root.join("work/attempt-1/retry-next-cycle-execution.json")
                 .is_file()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retry_run_next_gate_runs_only_next_cycle_boundary_without_chaining() {
+        let (root, retry_execution, expected_manifest, expected_argv) =
+            write_retry_next_cycle_fixture("next-gate-cycle", false);
+        let config = SeniorSweBenchRetryRunNextGateConfig::FromRetryExecution(
+            SeniorSweBenchRetryRunNextCycleConfig { retry_execution },
+        );
+        let mut calls = Vec::new();
+        let execution =
+            build_senior_swe_bench_retry_next_gate_execution_with_runner(&config, |argv| {
+                calls.push(argv.to_vec());
+                fs::create_dir_all(expected_manifest.parent().unwrap()).unwrap();
+                let artifact_path = expected_manifest
+                    .parent()
+                    .unwrap()
+                    .join("candidate.artifact");
+                let artifact_bytes = b"candidate patch";
+                fs::write(&artifact_path, artifact_bytes).unwrap();
+                fs::write(
+                    &expected_manifest,
+                    serde_json::to_vec_pretty(&json!({
+                        "schema_version": "a2d.cycle-output-artifacts.v1",
+                        "artifacts": [{
+                            "path": artifact_path.to_string_lossy(),
+                            "git_object_hash": git_hash_object_bytes(artifact_bytes).unwrap(),
+                            "bytes": artifact_bytes.len()
+                        }]
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+                Ok(RetryNextCycleCommandOutput {
+                    exit_code: Some(0),
+                    stdout: b"cycle ok".to_vec(),
+                    stderr: Vec::new(),
+                    spawn_error: None,
+                    timed_out: false,
+                })
+            })
+            .unwrap();
+
+        assert_eq!(calls, vec![expected_argv]);
+        assert_eq!(
+            execution["schema_version"].as_str(),
+            Some("a2d.senior-swe-bench-retry-next-gate-execution.v1")
+        );
+        assert_eq!(
+            execution["executed_gate"].as_str(),
+            Some("retry_run_next_cycle")
+        );
+        assert_eq!(execution["status"].as_str(), Some("success"));
+        assert_eq!(
+            execution["child_schema"].as_str(),
+            Some("a2d.senior-swe-bench-retry-next-cycle-execution.v1")
+        );
+        assert_eq!(
+            execution["provider_invocations_started_by_this_command"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            execution["evaluator_invocations_started_by_this_command"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            execution["fitness_evidence_inspection_started_by_this_command"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            execution["fitness_claim_allowed_after_gate"].as_bool(),
+            Some(false)
+        );
+        assert!(
+            root.join("work/attempt-1/retry-next-cycle-execution.json")
+                .is_file()
+        );
+        assert!(
+            root.join("work/attempt-1/retry-next-gate-run-next-cycle.json")
+                .is_file()
+        );
+        assert!(
+            !root.join("work/attempt-1/retry-attempt-plan.json").exists(),
+            "next-gate controller must not chain into resume planning in the same invocation"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retry_run_next_gate_rejects_legacy_retry_execution_without_pre_evidence_flag() {
+        let (root, retry_execution, _, _) =
+            write_retry_next_cycle_fixture("legacy-next-gate", false);
+        let mut value: Value =
+            serde_json::from_slice(&fs::read(&retry_execution).unwrap()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("fitness_claim_allowed_before_evidence");
+        fs::write(&retry_execution, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+        let config = SeniorSweBenchRetryRunNextGateConfig::FromRetryExecution(
+            SeniorSweBenchRetryRunNextCycleConfig { retry_execution },
+        );
+        let mut called = false;
+        let error = build_senior_swe_bench_retry_next_gate_execution_with_runner(&config, |_| {
+            called = true;
+            unreachable!("next-gate runner must not be called for legacy pre-evidence shape")
+        })
+        .expect_err("legacy retry execution rejected");
+        assert!(error.contains("must forbid pre-evidence fitness claims"));
+        assert!(!called);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retry_run_next_gate_rejects_existing_controller_artifact_before_child_side_effects() {
+        let (root, retry_execution, _, _) =
+            write_retry_next_cycle_fixture("next-gate-existing-controller", false);
+        let controller_artifact = root.join("work/attempt-1/retry-next-gate-run-next-cycle.json");
+        fs::create_dir_all(controller_artifact.parent().unwrap()).unwrap();
+        fs::write(&controller_artifact, "{\"stale\":true}\n").unwrap();
+        let config = SeniorSweBenchRetryRunNextGateConfig::FromRetryExecution(
+            SeniorSweBenchRetryRunNextCycleConfig { retry_execution },
+        );
+        let mut called = false;
+        let error = build_senior_swe_bench_retry_next_gate_execution_with_runner(&config, |_| {
+            called = true;
+            unreachable!("next-gate runner must not be called when controller artifact exists")
+        })
+        .expect_err("pre-existing controller artifact rejected");
+        assert!(error.contains("already exists before child side effects"));
+        assert!(!called);
+        assert_eq!(
+            fs::read_to_string(&controller_artifact).unwrap(),
+            "{\"stale\":true}\n"
         );
         let _ = fs::remove_dir_all(root);
     }
