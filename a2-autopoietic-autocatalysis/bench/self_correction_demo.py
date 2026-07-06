@@ -78,6 +78,18 @@ SENIOR_SWE_BENCH_PROVENANCE_FIELDS = (
     "senior_swe_bench_export_sha256",
     "senior_swe_bench_export_row_index",
 )
+RUST_TEST_LIST_TIMEOUT_SECS = 300
+RUST_TEST_LIST_COMMAND = [
+    "cargo",
+    "test",
+    "--locked",
+    "--workspace",
+    "--lib",
+    "--bins",
+    "--tests",
+    "--",
+    "--list",
+]
 TEST_SANDBOX_PROFILE_LINES = [
     "(version 1)",
     "(allow default)",
@@ -184,14 +196,21 @@ def rust_test_count_from_cargo_test_list_output(output: str) -> int:
 
 
 def cargo_rust_test_count() -> int:
-    result = subprocess.run(
-        ["cargo", "test", "--", "--list"],
-        cwd=repo_root(),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=True,
-    )
+    try:
+        result = subprocess.run(
+            RUST_TEST_LIST_COMMAND,
+            cwd=repo_root(),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=RUST_TEST_LIST_TIMEOUT_SECS,
+            check=True,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "timed out while listing Rust tests with "
+            f"{' '.join(RUST_TEST_LIST_COMMAND)} after {RUST_TEST_LIST_TIMEOUT_SECS}s"
+        ) from exc
     return rust_test_count_from_cargo_test_list_output(result.stdout)
 
 
@@ -1698,6 +1717,12 @@ def require_sequence(value: object, *, label: str) -> list[object]:
     return value
 
 
+def require_str(value: object, *, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise RuntimeError(f"demo evidence contract expected non-empty string at {label}")
+    return value
+
+
 NORMALIZED_EVIDENCE_FIELDS = [
     "run_id",
     "task_id",
@@ -2551,6 +2576,12 @@ def markdown_code(value: object) -> str:
     return f"`{markdown_table_cell(value)}`"
 
 
+def is_canonical_archive_audit(evidence_json: Path, artifact: str) -> bool:
+    return paths_alias(evidence_json, DEFAULT_ARCHIVE_EVIDENCE) and paths_alias(
+        Path(artifact), DEFAULT_ARCHIVE
+    )
+
+
 def demo_evidence_audit_commands(
     evidence_json: Path,
     reference_evidence_json: Path,
@@ -2560,7 +2591,7 @@ def demo_evidence_audit_commands(
         "python3 bench/self_correction_demo.py verify-evidence-contract "
         f"--evidence-json {evidence_json} --reference-evidence-json {reference_evidence_json}"
     ]
-    if artifact == DEFAULT_ARCHIVE.as_posix() and evidence_json == DEFAULT_ARCHIVE_EVIDENCE:
+    if is_canonical_archive_audit(evidence_json, artifact):
         commands.insert(
             0,
             "python3 bench/self_correction_demo.py verify-archive "
@@ -2692,11 +2723,17 @@ def audit_step_summary(step: dict[str, object]) -> str:
     raise RuntimeError(f"unknown demo evidence audit requirement: {requirement}")
 
 
-def demo_evidence_audit_rows(evidence: dict[str, object]) -> list[tuple[str, str]]:
+def demo_evidence_audit_requirement_payloads(
+    evidence: dict[str, object],
+    *,
+    artifact: str,
+    evidence_json: Path,
+) -> list[dict[str, object]]:
     demos = require_sequence(evidence.get("demos"), label="demos")
-    rows: list[tuple[str, str]] = []
+    requirements: list[dict[str, object]] = []
     for requirement in EXPECTED_DEMO_REQUIREMENTS:
         summaries: list[str] = []
+        demo_payloads: list[dict[str, object]] = []
         for demo_index, demo_value in enumerate(demos, start=1):
             demo = require_mapping(demo_value, label=f"demos[{demo_index - 1}]")
             chain = require_sequence(
@@ -2714,19 +2751,93 @@ def demo_evidence_audit_rows(evidence: dict[str, object]) -> list[tuple[str, str
             )
             if step.get("status") != "proved":
                 raise RuntimeError(f"demo evidence audit requires proved status for {requirement}")
-            summaries.append(f"demo {demo_index}: {audit_step_summary(step)}")
-        rows.append((requirement, "<br>".join(summaries)))
-    return rows
+            summary = audit_step_summary(step)
+            summaries.append(f"demo {demo_index}: {summary}")
+            fields = step.get("fields")
+            selector = step.get("selector")
+            selectors = step.get("selectors")
+            if selector is None and requirement == "lineage_trajectory_recorded":
+                field_map = require_mapping(fields, label=f"demos[{demo_index - 1}].{requirement}.fields")
+                lineage_rows = require_sequence(
+                    step.get("evidence_rows"),
+                    label=f"demos[{demo_index - 1}].{requirement}.evidence_rows",
+                )
+                selectors = [
+                    {
+                        "run_id": require_mapping(row, label=f"demos[{demo_index - 1}].{requirement}.evidence_rows[]").get("run_id"),
+                        "task_id": require_mapping(row, label=f"demos[{demo_index - 1}].{requirement}.evidence_rows[]").get("task_id"),
+                        "attempt": require_mapping(row, label=f"demos[{demo_index - 1}].{requirement}.evidence_rows[]").get("attempt"),
+                    }
+                    for row in lineage_rows
+                ]
+                selector = {
+                    "run_id": demo.get("run_id"),
+                    "task_id": demo.get("task_id"),
+                    "attempts": field_map.get("attempts"),
+                    "artifact_row_selectors": selectors,
+                }
+            demo_payload = {
+                "demo_index": demo_index,
+                "run_id": demo.get("run_id"),
+                "task_id": demo.get("task_id"),
+                "requirement": requirement,
+                "status": step.get("status"),
+                "selector": selector,
+                "selectors": selectors,
+                "fields": fields,
+                "archived_failure_selector": step.get("archived_failure_selector"),
+                "archived_failure_artifact_sha256": step.get(
+                    "archived_failure_artifact_sha256"
+                ),
+                "artifact_paths": {
+                    "jsonl": artifact,
+                    "evidence_json": str(evidence_json),
+                },
+                "summary": summary,
+            }
+            demo_payloads.append(
+                {key: value for key, value in demo_payload.items() if value is not None}
+            )
+        requirements.append(
+            {
+                "requirement": requirement,
+                "artifact_paths": {
+                    "jsonl": artifact,
+                    "evidence_json": str(evidence_json),
+                },
+                "selected_rows_and_audited_fields": "<br>".join(summaries),
+                "demos": demo_payloads,
+            }
+        )
+    return requirements
 
 
-def print_demo_evidence_audit_table(
+def demo_evidence_audit_rows(evidence: dict[str, object]) -> list[tuple[str, str]]:
+    artifact = require_str(evidence.get("artifact"), label="audit.artifact")
+    return [
+        (
+            require_str(payload.get("requirement"), label="audit.requirement"),
+            require_str(
+                payload.get("selected_rows_and_audited_fields"),
+                label="audit.selected_rows_and_audited_fields",
+            ),
+        )
+        for payload in demo_evidence_audit_requirement_payloads(
+            evidence,
+            artifact=artifact,
+            evidence_json=Path("<evidence-json>"),
+        )
+    ]
+
+
+def demo_evidence_audit_payload(
     evidence_json: Path,
     reference_evidence_json: Path,
     *,
     require_git_tracked_artifacts: bool = False,
-) -> None:
-    require_git_tracked_artifacts = (
-        require_git_tracked_artifacts or evidence_json == DEFAULT_ARCHIVE_EVIDENCE
+) -> dict[str, object]:
+    require_git_tracked_artifacts = require_git_tracked_artifacts or paths_alias(
+        evidence_json, DEFAULT_ARCHIVE_EVIDENCE
     )
     if require_git_tracked_artifacts:
         require_git_tracked_path(evidence_json, label="demo evidence JSON")
@@ -2741,7 +2852,42 @@ def print_demo_evidence_audit_table(
     artifact = evidence.get("artifact")
     if not isinstance(artifact, str) or not artifact:
         raise RuntimeError("demo evidence audit requires a source artifact path")
-    commands = demo_evidence_audit_commands(evidence_json, reference_evidence_json, artifact)
+    return {
+        "mode": "archived_demo_evidence_audit",
+        "creates_loop_evidence": False,
+        "provider_backed_benchmark_executed": False,
+        "fresh_provider_backed_current_head_loop_evidence": False,
+        "evidence_json": str(evidence_json),
+        "source_artifact": artifact,
+        "proof_chain": list(EXPECTED_DEMO_REQUIREMENTS),
+        "requirements": demo_evidence_audit_requirement_payloads(
+            evidence,
+            artifact=artifact,
+            evidence_json=evidence_json,
+        ),
+        "rerun_commands": demo_evidence_audit_commands(
+            evidence_json, reference_evidence_json, artifact
+        ),
+        "note": (
+            "Command/path-backed archived proof audit only; not fresh provider-backed "
+            "current-HEAD loop evidence."
+        ),
+    }
+
+
+def print_demo_evidence_audit_table(
+    evidence_json: Path,
+    reference_evidence_json: Path,
+    *,
+    require_git_tracked_artifacts: bool = False,
+) -> None:
+    payload = demo_evidence_audit_payload(
+        evidence_json,
+        reference_evidence_json,
+        require_git_tracked_artifacts=require_git_tracked_artifacts,
+    )
+    artifact = require_str(payload.get("source_artifact"), label="audit.source_artifact")
+    commands = require_sequence(payload.get("rerun_commands"), label="audit.rerun_commands")
     command_cell = "<br>".join(markdown_code(command) for command in commands)
     print("Demo evidence audit table")
     print(f"  evidence_json: {evidence_json}")
@@ -2757,7 +2903,13 @@ def print_demo_evidence_audit_table(
         f"JSONL: {markdown_code(artifact)}<br>"
         f"evidence: {markdown_code(evidence_json)}"
     )
-    for requirement, summary in demo_evidence_audit_rows(evidence):
+    for row in require_sequence(payload.get("requirements"), label="audit.requirements"):
+        row_map = require_mapping(row, label="audit.requirements[]")
+        requirement = require_str(row_map.get("requirement"), label="audit.requirement")
+        summary = require_str(
+            row_map.get("selected_rows_and_audited_fields"),
+            label="audit.selected_rows_and_audited_fields",
+        )
         print(
             "| "
             f"{markdown_code(requirement)} | "
@@ -2765,6 +2917,20 @@ def print_demo_evidence_audit_table(
             f"{markdown_table_cell(summary)} | "
             f"{command_cell} |"
         )
+
+
+def print_demo_evidence_audit_json(
+    evidence_json: Path,
+    reference_evidence_json: Path,
+    *,
+    require_git_tracked_artifacts: bool = False,
+) -> None:
+    payload = demo_evidence_audit_payload(
+        evidence_json,
+        reference_evidence_json,
+        require_git_tracked_artifacts=require_git_tracked_artifacts,
+    )
+    print(json.dumps(payload, indent=2, sort_keys=True))
 
 
 def verify_evidence_contract(
@@ -3064,7 +3230,7 @@ def verify_documented_counts(*, update: bool = False) -> None:
     if handoff_current_rust_test_count() != rust_count:
         raise RuntimeError(
             "docs/HANDOFF.md Current Numbers Rust test count does not match "
-            f"cargo test -- --list: documented={handoff_current_rust_test_count()} actual={rust_count}"
+            f"{' '.join(RUST_TEST_LIST_COMMAND)}: documented={handoff_current_rust_test_count()} actual={rust_count}"
         )
     for path in (repo_root() / "docs/HANDOFF.md", repo_root() / "todos/self-correction-loop.md"):
         observed = latest_verification_python_test_counts(path)
@@ -3157,8 +3323,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     documented_counts = subparsers.add_parser(
         "verify-documented-counts",
         help=(
-            "Check documented Rust/Python test counts. This intentionally runs "
-            "cargo test -- --list only when invoked directly, not during --self-test."
+            "Check documented Rust/Python test counts. This intentionally runs a bounded "
+            "cargo test --locked --workspace --lib --bins --tests -- --list only when invoked "
+            "directly, not during --self-test."
         ),
     )
     documented_counts.add_argument(
@@ -3166,8 +3333,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help=(
             "Rewrite the documented Rust/Python test-count markers before checking them. "
-            "This still invokes cargo test -- --list and should be run explicitly, never "
-            "from cargo/self-test paths."
+            "This still invokes the bounded Rust test-list command and should be run "
+            "explicitly, never from cargo/self-test paths."
         ),
     )
 
@@ -3193,6 +3360,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--require-git-tracked-artifacts",
         action="store_true",
         help="Fail unless the evidence JSON and referenced JSONL artifact are tracked by git.",
+    )
+    audit.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "Emit the same six-step archived proof audit as machine-readable JSON "
+            "instead of the human-readable Markdown table."
+        ),
     )
 
     preflight_report = subparsers.add_parser(
@@ -3356,11 +3531,18 @@ def main(argv: list[str]) -> int:
 
     if args.mode in {"audit-demo-evidence", "demo-evidence-audit"}:
         try:
-            print_demo_evidence_audit_table(
-                args.evidence_json,
-                args.reference_evidence_json,
-                require_git_tracked_artifacts=args.require_git_tracked_artifacts,
-            )
+            if args.json:
+                print_demo_evidence_audit_json(
+                    args.evidence_json,
+                    args.reference_evidence_json,
+                    require_git_tracked_artifacts=args.require_git_tracked_artifacts,
+                )
+            else:
+                print_demo_evidence_audit_table(
+                    args.evidence_json,
+                    args.reference_evidence_json,
+                    require_git_tracked_artifacts=args.require_git_tracked_artifacts,
+                )
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -4131,6 +4313,55 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("| Requirement | Artifact paths | Selected rows / audited fields | Rerun commands |", stdout.getvalue())
 
+    def test_demo_evidence_audit_json_payload_is_machine_readable_and_caveated(self) -> None:
+        payload = demo_evidence_audit_payload(DEFAULT_ARCHIVE_EVIDENCE, DEFAULT_ARCHIVE_EVIDENCE)
+
+        self.assertEqual(payload["mode"], "archived_demo_evidence_audit")
+        self.assertFalse(payload["creates_loop_evidence"])
+        self.assertFalse(payload["provider_backed_benchmark_executed"])
+        self.assertFalse(payload["fresh_provider_backed_current_head_loop_evidence"])
+        self.assertEqual(payload["source_artifact"], DEFAULT_ARCHIVE.as_posix())
+        self.assertEqual(payload["proof_chain"], EXPECTED_DEMO_REQUIREMENTS)
+        requirements = payload["requirements"]
+        self.assertIsInstance(requirements, list)
+        self.assertEqual(
+            [entry["requirement"] for entry in requirements],
+            EXPECTED_DEMO_REQUIREMENTS,
+        )
+        lineage = requirements[-2]
+        promotion = requirements[-1]
+        for entry in lineage["demos"]:
+            self.assertIn("selector", entry)
+            self.assertIn("selectors", entry)
+            self.assertIn("fields", entry)
+            self.assertIn("attempts", entry["selector"])
+            self.assertEqual(entry["selector"]["artifact_row_selectors"], entry["selectors"])
+            self.assertEqual(
+                [selector["attempt"] for selector in entry["selectors"]],
+                entry["fields"]["attempts"],
+            )
+        for entry in promotion["demos"]:
+            self.assertIn("selector", entry)
+            self.assertIn("fields", entry)
+            self.assertTrue(entry["fields"]["promotion_evidence_present"])
+        self.assertIn("promotion_evidence_present=True", promotion["selected_rows_and_audited_fields"])
+        self.assertIn("not fresh provider-backed", payload["note"])
+        self.assertIn(
+            "python3 bench/self_correction_demo.py verify-archive",
+            "\n".join(payload["rerun_commands"]),
+        )
+
+    def test_demo_evidence_audit_json_cli_reports_valid_json(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            result = main(["audit-demo-evidence", "--json"])
+
+        self.assertEqual(result, 0)
+        data = json.loads(stdout.getvalue())
+        self.assertEqual(data["mode"], "archived_demo_evidence_audit")
+        self.assertEqual(data["proof_chain"], EXPECTED_DEMO_REQUIREMENTS)
+        self.assertEqual(len(data["requirements"]), len(EXPECTED_DEMO_REQUIREMENTS))
+
     def test_demo_evidence_audit_alias_reports_success(self) -> None:
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
@@ -4224,6 +4455,22 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
         tracked.assert_any_call(DEFAULT_ARCHIVE_EVIDENCE, label="demo evidence JSON")
         tracked.assert_any_call(DEFAULT_ARCHIVE, label="demo evidence contract artifact")
+
+    def test_demo_evidence_audit_treats_absolute_canonical_path_as_default_archive(self) -> None:
+        absolute_evidence = DEFAULT_ARCHIVE_EVIDENCE.resolve()
+        with mock.patch(__name__ + ".require_git_tracked_path") as tracked:
+            payload = demo_evidence_audit_payload(absolute_evidence, DEFAULT_ARCHIVE_EVIDENCE)
+
+        tracked.assert_any_call(absolute_evidence, label="demo evidence JSON")
+        tracked.assert_any_call(DEFAULT_ARCHIVE, label="demo evidence contract artifact")
+        self.assertIn(
+            "python3 bench/self_correction_demo.py verify-archive",
+            "\n".join(payload["rerun_commands"]),
+        )
+        self.assertIn(
+            "cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence",
+            payload["rerun_commands"],
+        )
 
     def test_demo_evidence_audit_rejects_untracked_default_evidence_json(self) -> None:
         with mock.patch(
@@ -4379,6 +4626,34 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         )
 
         self.assertEqual(rust_test_count_from_cargo_test_list_output(cargo_list_output), 2)
+
+    def test_cargo_rust_test_count_uses_bounded_non_doc_test_listing(self) -> None:
+        completed = subprocess.CompletedProcess(
+            RUST_TEST_LIST_COMMAND,
+            0,
+            stdout="a2_eval::sentinel::tests::suite_reports_score_fraction: test\n",
+            stderr="",
+        )
+        with mock.patch(__name__ + ".subprocess.run", return_value=completed) as run:
+            self.assertEqual(cargo_rust_test_count(), 1)
+
+        run.assert_called_once_with(
+            RUST_TEST_LIST_COMMAND,
+            cwd=repo_root(),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=RUST_TEST_LIST_TIMEOUT_SECS,
+            check=True,
+        )
+
+    def test_cargo_rust_test_count_reports_timeout_as_runtime_error(self) -> None:
+        with mock.patch(
+            __name__ + ".subprocess.run",
+            side_effect=subprocess.TimeoutExpired(RUST_TEST_LIST_COMMAND, RUST_TEST_LIST_TIMEOUT_SECS),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "timed out while listing Rust tests"):
+                cargo_rust_test_count()
 
     def test_opencode_provider_config_requires_configured_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
