@@ -1584,6 +1584,127 @@ fn retry_resume_attempt_plan_consumes_successful_next_cycle_execution_summary() 
 }
 
 #[test]
+fn retry_run_next_gate_plans_from_successful_next_cycle_summary_without_evaluator() {
+    let fixture = write_fixture("next-gate-resume-plan", 2, "exit 99\n");
+    let evaluator_counter = fixture.root.join("evaluator-count");
+    write_executable_script(
+        &fixture.evaluator,
+        &format!(
+            "count=0\nif test -f {counter}; then count=$(cat {counter}); fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > {counter}\nexit 1\n",
+            counter = evaluator_counter.to_string_lossy()
+        ),
+    );
+    let first = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run first retry execute");
+    assert_eq!(first.status.code(), Some(2));
+    assert_eq!(
+        fs::read_to_string(&evaluator_counter).unwrap(),
+        "1",
+        "setup should run the first-attempt evaluator exactly once"
+    );
+
+    let next_manifest_dir = fixture.work_dir.join("attempt-1/cycle-output-artifacts");
+    fs::create_dir_all(&next_manifest_dir).unwrap();
+    let generated_manifest = write_manifest(
+        &next_manifest_dir,
+        "candidate",
+        b"diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
+    );
+    let next_manifest = next_manifest_dir.join("manifest.json");
+    fs::rename(&generated_manifest, &next_manifest).unwrap();
+    let next_cycle_execution = write_retry_next_cycle_execution(
+        &fixture,
+        "success",
+        "cycle_output_manifest_ready",
+        &next_manifest,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-run-next-gate",
+            "--next-cycle-execution",
+            next_cycle_execution.to_str().unwrap(),
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry next-gate from next-cycle summary");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["schema_version"].as_str(),
+        Some("a2d.senior-swe-bench-retry-next-gate-execution.v1")
+    );
+    assert_eq!(
+        value["executed_gate"].as_str(),
+        Some("retry_resume_attempt_plan")
+    );
+    assert_eq!(value["status"].as_str(), Some("success"));
+    assert_eq!(
+        value["child_schema"].as_str(),
+        Some("a2d.senior-swe-bench-retry-attempt-plan.v1")
+    );
+    assert_eq!(
+        value["evaluator_invocations_started_by_this_command"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        value["fitness_evidence_inspection_started_by_this_command"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        value["fitness_claim_allowed_after_gate"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(value["child"]["attempt_index"].as_u64(), Some(1));
+    assert!(
+        fixture
+            .work_dir
+            .join("attempt-1/retry-attempt-plan.json")
+            .is_file()
+    );
+    assert!(
+        fixture
+            .work_dir
+            .join("attempt-1/retry-next-gate-resume-plan.json")
+            .is_file()
+    );
+    assert_eq!(
+        fs::read_to_string(&evaluator_counter).unwrap(),
+        "1",
+        "next-gate resume planning must not run evaluator side effects"
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
 fn retry_resume_attempt_execute_runs_planned_attempt_and_persists_success_summary() {
     let fixture = write_fixture(
         "resume-attempt-execute-success",

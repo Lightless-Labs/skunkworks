@@ -19,6 +19,33 @@ Modes:
 
 The controller emits `a2d.senior-swe-bench-retry-next-gate-execution.v1`, records child schema/path, preserves no-search/no-pre-evidence-fitness metadata, and preflights controller artifacts before child side effects. It does not loop or execute the next emitted gate.
 
+## Follow-up test hardening
+
+A follow-up integration test now covers the controller's `--next-cycle-execution ... --retry-plan ...` mode from `crates/a2d-cli/tests/senior_swe_bench_retry_execute.rs`. The test drives a failed first retry attempt, fabricates a successful next-cycle summary/manifest, runs `senior-swe-bench-retry-run-next-gate`, and asserts it produces exactly a resume-attempt plan plus controller artifact without evaluator/evidence-inspection side effects. A root-scoped evaluator counter proves the next-gate planning invocation did not run the evaluator after the setup attempt.
+
+Follow-up validation:
+
+```bash
+cargo fmt --check
+cargo test -p a2d --test senior_swe_bench_retry_execute retry_run_next_gate_plans_from_successful_next_cycle_summary_without_evaluator -- --nocapture
+cargo test -p a2d --test senior_swe_bench_retry_execute -- --nocapture
+cargo test -p a2d retry_run_next_gate -- --nocapture
+cargo test
+```
+
+Follow-up source-patch evidence:
+
+```bash
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260706-retry-next-gate-resume-plan-test-evidence/actual-test-score-artifact \
+  cargo run -q -p a2d -- score-artifact sudoku runs/20260701-score-artifact-fitness-evidence/good-sudoku-artifact.rs
+
+target/debug/a2d fitness-evidence-inspect \
+  runs/20260706-retry-next-gate-resume-plan-test-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
+```
+
+Evidence summary: full-passing `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `failed_cases: []`, `source_diff_scope: crates`, `source_diff_hash: 435fb525c24c4f0d0fa5d9e60318f9de9de2a0c6`, matching the scoped crates diff. This remains source-patch/test coverage evidence only; no official Senior SWE-Bench mastery is claimed.
+
 ## Validation
 
 Focused:
