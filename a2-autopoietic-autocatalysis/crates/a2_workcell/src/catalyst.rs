@@ -5,7 +5,7 @@
 //! bootstraps A² — it will be differentiated into specialists later.
 
 use crate::sandbox_profile::{
-    sandbox_exec_supported_on_this_platform, sandbox_profile_for_network_policy,
+    sandbox_exec_available_on_this_platform, sandbox_profile_for_network_policy,
 };
 use a2_core::error::{A2Error, A2Result};
 use a2_core::id::*;
@@ -118,10 +118,10 @@ impl GeneralistCatalyst {
             .map(|profile| {
                 let profile_lines = profile.text().replace('\n', "\\n");
                 format!(
-                    "sandbox_profile_engine={}, sandbox_profile_sha256={}, sandbox_profile_lines={profile_lines}, sandbox_exec_supported={}",
+                    "sandbox_profile_engine={}, sandbox_profile_sha256={}, sandbox_profile_lines={profile_lines}, sandbox_exec_available={}",
                     profile.engine,
                     profile.profile_sha256,
-                    sandbox_exec_supported_on_this_platform()
+                    sandbox_exec_available_on_this_platform()
                 )
             })
             .unwrap_or_else(|error| format!("sandbox_profile_error={error}"))
@@ -416,7 +416,7 @@ mod tests {
                 "sandbox_profile_lines=(version 1)\\n(allow default)\\n(deny network*)\\n"
             )
         );
-        assert!(message.contains("sandbox_exec_supported="));
+        assert!(message.contains("sandbox_exec_available="));
         assert!(message.contains(
             "run with network_policy=Open only when unrestricted network access is intentional"
         ));
@@ -447,7 +447,7 @@ mod tests {
         assert!(message.contains(
             r##"sandbox_profile_lines=(version 1)\n(allow default)\n(deny network*)\n(allow network-outbound (remote tcp "api.openai.com:443"))\n"##
         ));
-        assert!(message.contains("sandbox_exec_supported="));
+        assert!(message.contains("sandbox_exec_available="));
     }
 
     #[tokio::test]

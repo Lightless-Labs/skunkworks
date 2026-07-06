@@ -1,7 +1,9 @@
 use a2_core::protocol::NetworkPolicy;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::net::IpAddr;
+use std::path::Path;
 
 const BLOCKED_PUBLIC_SOLUTION_HOSTS: [&str; 3] =
     ["github.com", "githubusercontent.com", "github.io"];
@@ -38,8 +40,39 @@ pub fn sandbox_profile_for_network_policy(
     }
 }
 
-pub fn sandbox_exec_supported_on_this_platform() -> bool {
-    cfg!(target_os = "macos")
+pub fn sandbox_exec_available_on_this_platform() -> bool {
+    sandbox_exec_available_for_os_and_path(
+        std::env::consts::OS,
+        std::env::var_os("PATH").as_deref(),
+    )
+}
+
+fn sandbox_exec_available_for_os_and_path(os: &str, path: Option<&OsStr>) -> bool {
+    if os != "macos" {
+        return false;
+    }
+    let Some(path) = path else {
+        return false;
+    };
+    std::env::split_paths(path)
+        .any(|dir| sandbox_exec_path_is_executable(&dir.join("sandbox-exec")))
+}
+
+fn sandbox_exec_path_is_executable(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn provider_allowlist_profile(endpoints: &[String]) -> Result<SandboxProfile, String> {
@@ -276,10 +309,59 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_exec_support_is_explicitly_platform_gated() {
-        assert_eq!(
-            sandbox_exec_supported_on_this_platform(),
-            cfg!(target_os = "macos")
+    fn sandbox_exec_availability_requires_macos_and_binary_on_path() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "a2-sandbox-exec-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let fake_sandbox_exec = temp_dir.join("sandbox-exec");
+        let execution_marker = temp_dir.join("should-not-be-created-by-availability-check");
+        std::fs::write(
+            &fake_sandbox_exec,
+            format!(
+                "#!/bin/sh\ntouch '{}'\nexit 0\n",
+                execution_marker.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&fake_sandbox_exec).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&fake_sandbox_exec, permissions).unwrap();
+        }
+        let path = std::env::join_paths([temp_dir.as_os_str()]).unwrap();
+
+        assert!(sandbox_exec_available_for_os_and_path("macos", Some(&path)));
+        assert!(
+            !execution_marker.exists(),
+            "availability check must not execute a PATH-sourced sandbox-exec binary"
         );
+        assert!(!sandbox_exec_available_for_os_and_path(
+            "linux",
+            Some(&path)
+        ));
+        assert!(!sandbox_exec_available_for_os_and_path("macos", None));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&fake_sandbox_exec).unwrap().permissions();
+            permissions.set_mode(0o644);
+            std::fs::set_permissions(&fake_sandbox_exec, permissions).unwrap();
+            assert!(!sandbox_exec_available_for_os_and_path(
+                "macos",
+                Some(&path)
+            ));
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

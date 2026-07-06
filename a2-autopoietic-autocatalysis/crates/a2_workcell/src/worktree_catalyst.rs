@@ -13,7 +13,7 @@
 //! at (computing diffs). The diff quality problem disappears.
 
 use crate::sandbox_profile::{
-    sandbox_exec_supported_on_this_platform, sandbox_profile_for_network_policy,
+    sandbox_exec_available_on_this_platform, sandbox_profile_for_network_policy,
 };
 use a2_core::error::{A2Error, A2Result};
 use a2_core::id::*;
@@ -319,10 +319,10 @@ impl WorktreeCatalyst {
                 .map(|profile| {
                     let profile_lines = profile.text().replace('\n', "\\n");
                     format!(
-                        "sandbox_profile_engine={}, sandbox_profile_sha256={}, sandbox_profile_lines={profile_lines}, sandbox_exec_supported={}",
+                        "sandbox_profile_engine={}, sandbox_profile_sha256={}, sandbox_profile_lines={profile_lines}, sandbox_exec_available={}",
                         profile.engine,
                         profile.profile_sha256,
-                        sandbox_exec_supported_on_this_platform()
+                        sandbox_exec_available_on_this_platform()
                     )
                 })
                 .unwrap_or_else(|error| format!("sandbox_profile_error={error}"));
@@ -1157,7 +1157,7 @@ mod tests {
             )
         );
         assert!(!message.contains("sandbox_profile_lines=(version 1)\n(allow default)"));
-        assert!(message.contains("sandbox_exec_supported="));
+        assert!(message.contains("sandbox_exec_available="));
     }
 
     #[tokio::test]
