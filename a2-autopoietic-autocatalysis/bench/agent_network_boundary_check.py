@@ -32,6 +32,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 A2_WORKTREE_CATALYST = REPO_ROOT / "crates/a2_workcell/src/worktree_catalyst.rs"
 A2_GENERALIST_CATALYST = REPO_ROOT / "crates/a2_workcell/src/catalyst.rs"
 A2_BROKER = REPO_ROOT / "crates/a2_broker/src/broker.rs"
+HANDOFF_DOC = REPO_ROOT / "docs/HANDOFF.md"
+SELF_CORRECTION_TODO = REPO_ROOT / "todos/self-correction-loop.md"
 SANDBOX_RUNTIME_PACKAGE = "@anthropic-ai/sandbox-runtime"
 
 
@@ -1365,6 +1367,94 @@ def npm_global_package_path(package: str) -> dict[str, Any]:
     }
 
 
+def _claim_is_negated(text: str, start: int, end: int) -> bool:
+    clause_start = max(text.rfind(separator, 0, start) for separator in "\n.;:") + 1
+    match_text = text[start:end].lower()
+    prefix = text[clause_start:start].lower()
+    explicit_match_negation_patterns = [
+        r"\bnot\s+sandbox[- ]enforced\b",
+        r"\bnot\s+(?:usable|implemented)\b",
+        r"\bdoes\s+not\s+(?:enforce|protect|cover)\b",
+        r"\bdo\s+not\s+(?:enforce|protect|cover)\b",
+        r"\b(?:cannot|can't|can\s+not)\s+(?:enforce|protect|cover)\b",
+    ]
+    if any(re.search(pattern, match_text) for pattern in explicit_match_negation_patterns):
+        return True
+    prefix_negates_claim_patterns = [
+        r"\b(?:cannot|can't|can\s+not|do\s+not|don't|does\s+not|doesn't)\s+[^\n.;:]{0,40}\bclaim\s+(?:that\s+)?$",
+        r"\bnot\s+(?:proof|evidence)\s+that\s+$",
+        r"\bwithout\s+claiming\s+(?:that\s+)?$",
+    ]
+    return any(re.search(pattern, prefix) for pattern in prefix_negates_claim_patterns)
+
+
+def audit_boundary_docs(
+    handoff_path: Path = HANDOFF_DOC,
+    todo_path: Path = SELF_CORRECTION_TODO,
+) -> dict[str, Any]:
+    required_snippet_groups = [
+        ["sandbox_enforced_for_restricted_policies=false"],
+        ["fail-closed"],
+        [
+            "not usable runtime sandbox enforcement",
+            "not proof that runtime sandbox enforcement is usable",
+            "not sandbox enforcement",
+        ],
+        ["not fresh provider-backed loop evidence"],
+    ]
+    forbidden_unconditional_patterns = [r"sandbox_enforced_for_restricted_policies\s*=\s*true"]
+    forbidden_positive_claim_patterns = [
+        r"\brestricted policies\b[^.\n]{0,120}\bsandbox[- ]enforced\b",
+        r"\bsandbox[- ]enforced\b[^.\n]{0,120}\brestricted policies\b",
+        r"\brestricted policies\b[^.\n]{0,120}\benforced\b[^.\n]{0,80}\bsandbox\b",
+        r"\bsandbox enforcement\b[^.\n]{0,120}\b(?:protects|enforces)\b[^.\n]{0,80}\brestricted policies\b",
+        r"\bruntime sandbox\b[^.\n]{0,120}\benforces\b[^.\n]{0,80}\brestricted policies\b",
+        r"\bruntime sandbox enforcement\b[^.\n]{0,120}\brestricted policies\b",
+        r"\bruntime sandbox enforcement is\s+(?:now\s+)?(?:not\s+only\s+|not\s+just\s+)?usable\b",
+        r"\bruntime sandbox enforcement (?:is|was)\s+(?:now\s+)?implemented\b",
+        r"\busable runtime sandbox enforcement is implemented\b",
+    ]
+    documents: list[dict[str, Any]] = []
+    missing: list[str] = []
+    forbidden: list[dict[str, str]] = []
+    for path in [handoff_path, todo_path]:
+        if not path.exists():
+            missing.append(f"{path}: file missing")
+            documents.append({"path": str(path), "exists": False})
+            continue
+        text = path.read_text(encoding="utf-8")
+        doc_missing_groups = [
+            group for group in required_snippet_groups if not any(snippet in text for snippet in group)
+        ]
+        for group in doc_missing_groups:
+            missing.append(f"{path}: missing one of {group!r}")
+        for pattern in forbidden_unconditional_patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                forbidden.append({"path": str(path), "pattern": pattern, "match": match.group(0)})
+        for pattern in forbidden_positive_claim_patterns:
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                if not _claim_is_negated(text, match.start(), match.end()):
+                    forbidden.append({"path": str(path), "pattern": pattern, "match": match.group(0)})
+                    break
+        documents.append(
+            {
+                "path": str(path),
+                "exists": True,
+                "required_snippet_groups_present": not doc_missing_groups,
+                "missing_required_snippet_groups": doc_missing_groups,
+            }
+        )
+    return {
+        "complete": not missing and not forbidden,
+        "documents": documents,
+        "required_snippet_groups": required_snippet_groups,
+        "missing": missing,
+        "forbidden": forbidden,
+        "interpretation": "docs preserve fail-closed-vs-enforced distinction and do not claim sandbox enforcement while boundary JSON reports sandbox_enforced_for_restricted_policies=false",
+    }
+
+
 def audit() -> dict[str, Any]:
     pi_package_json = PI_PACKAGE / "package.json"
     pi_version = read_json(pi_package_json).get("version") if pi_package_json.exists() else None
@@ -1406,6 +1496,7 @@ def audit() -> dict[str, Any]:
         if key != "required_in_actual_launch_code_not_examples"
     )
     a2_owned_provider_launch_boundary = audit_a2_owned_provider_launch_boundaries()
+    boundary_docs = audit_boundary_docs()
 
     a2_owned_fail_closed = a2_owned_provider_launch_boundary["fail_closed_restricted_policies"]
 
@@ -1415,7 +1506,8 @@ def audit() -> dict[str, Any]:
         "complete": launch_boundaries_found
         and sandbox_example_found
         and actual_launch_boundaries_found
-        and a2_owned_fail_closed,
+        and a2_owned_fail_closed
+        and boundary_docs["complete"],
         "actual_launch_boundaries_found": actual_launch_boundaries_found,
         "launch_sandbox_enforced": launch_sandbox_enforced,
         "pi_package": {
@@ -1436,6 +1528,7 @@ def audit() -> dict[str, Any]:
         "sandbox_runtime": sandbox_runtime,
         "actual_launch_sandbox_enforcement": actual_launch_sandbox_enforcement,
         "a2_owned_provider_launch_boundary": a2_owned_provider_launch_boundary,
+        "boundary_docs": boundary_docs,
         "conclusion": (
             "A2-owned provider launch paths visibly fail closed for restricted policies, and child pi launch boundaries are identifiable, but sandbox runtime is not available globally and actual child-agent launch functions do not show sandbox enforcement; "
             "benchmark child-agent network isolation remains unenforced until a sandbox/provider allowlist is wired at these spawn points."
@@ -2318,6 +2411,67 @@ impl<'a> ModelProvider for PiProvider {
         self.assertTrue(boundary["fail_closed_restricted_policies"])
         self.assertFalse(boundary["sandbox_enforced_for_restricted_policies"])
         self.assertIn("fail closed", boundary["interpretation"])
+        self.assertTrue(result["boundary_docs"]["complete"])
+
+    def test_boundary_docs_allow_negative_enforcement_wording(self) -> None:
+        valid_claims = [
+            "These checks cannot claim restricted policies are sandbox-enforced.\n",
+            "restricted policies are not sandbox-enforced by this audit.\n",
+            "runtime sandbox enforcement does not enforce restricted policies yet.\n",
+            "sandbox enforcement does not protect restricted policies yet.\n",
+        ]
+        for valid_claim in valid_claims:
+            with self.subTest(valid_claim=valid_claim):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    handoff = Path(tmpdir) / "HANDOFF.md"
+                    todo = Path(tmpdir) / "self-correction-loop.md"
+                    valid = (
+                        "sandbox_enforced_for_restricted_policies=false\n"
+                        "fail-closed\n"
+                        "This is not proof that runtime sandbox enforcement is usable.\n"
+                        f"{valid_claim}"
+                        "not fresh provider-backed loop evidence\n"
+                    )
+                    handoff.write_text(valid, encoding="utf-8")
+                    todo.write_text(valid, encoding="utf-8")
+
+                    result = audit_boundary_docs(handoff, todo)
+
+                self.assertTrue(result["complete"])
+                self.assertFalse(result["forbidden"])
+
+    def test_boundary_docs_reject_enforcement_claim_when_boundary_is_not_enforced(self) -> None:
+        positive_claims = [
+            "restricted policies are sandbox-enforced now\n",
+            "restricted policies are now sandbox-enforced.\n",
+            "restricted policies are sandbox-enforced by the worktree runtime.\n",
+            "restricted policies are enforced by the sandbox.\n",
+            "sandbox enforcement now protects restricted policies.\n",
+            "the runtime sandbox enforces restricted policies.\n",
+            "runtime sandbox enforcement covers restricted policies.\n",
+            "runtime sandbox enforcement is usable now.\n",
+            "runtime sandbox enforcement is not only usable but required.\n",
+            "This is not proof. Restricted policies are sandbox-enforced by the runtime.\n",
+            "It is not safe to proceed because restricted policies are enforced by the sandbox.\n",
+        ]
+        valid = (
+            "sandbox_enforced_for_restricted_policies=false\n"
+            "fail-closed\n"
+            "not usable runtime sandbox enforcement\n"
+            "not fresh provider-backed loop evidence\n"
+        )
+        for claim in positive_claims:
+            with self.subTest(claim=claim):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    handoff = Path(tmpdir) / "HANDOFF.md"
+                    todo = Path(tmpdir) / "self-correction-loop.md"
+                    handoff.write_text(valid, encoding="utf-8")
+                    todo.write_text(valid + claim, encoding="utf-8")
+
+                    result = audit_boundary_docs(handoff, todo)
+
+                self.assertFalse(result["complete"])
+                self.assertTrue(result["forbidden"])
 
     def test_missing_a2_owned_sandbox_surfaces_names_each_unwrapped_provider_boundary(self) -> None:
         missing = missing_a2_owned_sandbox_surfaces(
