@@ -843,6 +843,24 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
             raise RuntimeError(
                 "fresh preflight boundary inventory must not claim runtime sandbox enforcement"
             )
+        if boundary_inventory.get("a2_owned_fail_closed") is not True:
+            raise RuntimeError(
+                "fresh preflight boundary inventory must prove A2-owned restricted-policy launch paths fail closed"
+            )
+        sandbox_runtime_available = boundary_inventory.get("sandbox_runtime_available")
+        if not isinstance(sandbox_runtime_available, bool):
+            raise RuntimeError(
+                "fresh preflight boundary inventory must record boolean sandbox_runtime_available"
+            )
+        if FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS != "enforced":
+            if boundary_inventory.get("a2_owned_sandbox_enforced") is not False:
+                raise RuntimeError(
+                    "fresh preflight boundary inventory must not claim A2-owned sandbox enforcement while audited sandbox/provider allowlist status is not_implemented"
+                )
+            if boundary_inventory.get("launch_sandbox_enforced") is not False:
+                raise RuntimeError(
+                    "fresh preflight boundary inventory must not claim child-agent launch sandbox enforcement while audited sandbox/provider allowlist status is not_implemented"
+                )
         inventory_json = boundary_inventory.get("inventory_json")
         inventory_json_sha256 = boundary_inventory.get("inventory_json_sha256")
         inventory_content = boundary_inventory.get("inventory_content")
@@ -871,6 +889,42 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
             raise RuntimeError(
                 "fresh preflight boundary inventory embedded inventory_json does not match inventory_content"
             )
+        embedded_a2_boundary = embedded_inventory.get("a2_owned_provider_launch_boundary")
+        if not isinstance(embedded_a2_boundary, dict):
+            raise RuntimeError(
+                "fresh preflight boundary inventory embedded inventory lacks a2_owned_provider_launch_boundary"
+            )
+        for key in ("fail_closed_restricted_policies", "sandbox_enforced_for_restricted_policies"):
+            if not isinstance(embedded_a2_boundary.get(key), bool):
+                raise RuntimeError(
+                    "fresh preflight boundary inventory embedded A2-owned provider launch boundary "
+                    f"must record boolean {key}"
+                )
+        embedded_sandbox_runtime = embedded_inventory.get("sandbox_runtime")
+        if not isinstance(embedded_sandbox_runtime, dict) or not isinstance(
+            embedded_sandbox_runtime.get("available"), bool
+        ):
+            raise RuntimeError(
+                "fresh preflight boundary inventory embedded inventory must record boolean sandbox_runtime.available"
+            )
+        if not isinstance(embedded_inventory.get("launch_sandbox_enforced"), bool):
+            raise RuntimeError(
+                "fresh preflight boundary inventory embedded inventory must record boolean launch_sandbox_enforced"
+            )
+        embedded_summary = {
+            "a2_owned_fail_closed": embedded_a2_boundary["fail_closed_restricted_policies"],
+            "a2_owned_sandbox_enforced": embedded_a2_boundary[
+                "sandbox_enforced_for_restricted_policies"
+            ],
+            "sandbox_runtime_available": embedded_sandbox_runtime["available"],
+            "launch_sandbox_enforced": embedded_inventory["launch_sandbox_enforced"],
+        }
+        for key, derived_value in embedded_summary.items():
+            if boundary_inventory.get(key) is not derived_value:
+                raise RuntimeError(
+                    "fresh preflight boundary inventory summary field "
+                    f"{key} does not match embedded inventory_json"
+                )
         declared_inventory_path = report.get("boundary_inventory_json")
         if isinstance(declared_inventory_path, str) and declared_inventory_path:
             resolved_inventory = repo_path(Path(declared_inventory_path))
@@ -3442,6 +3496,23 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             "agent_network_boundary_precondition_status": FRESH_PREFLIGHT_AGENT_NETWORK_BOUNDARY_PRECONDITION_STATUS,
         }
 
+    def preflight_boundary_inventory_content(
+        self,
+        *,
+        fail_closed: bool = True,
+        a2_sandbox_enforced: bool = False,
+        sandbox_runtime_available: bool = False,
+        launch_sandbox_enforced: bool = False,
+    ) -> dict[str, object]:
+        return {
+            "a2_owned_provider_launch_boundary": {
+                "fail_closed_restricted_policies": fail_closed,
+                "sandbox_enforced_for_restricted_policies": a2_sandbox_enforced,
+            },
+            "sandbox_runtime": {"available": sandbox_runtime_available},
+            "launch_sandbox_enforced": launch_sandbox_enforced,
+        }
+
     def fresh_preflight_report_with_boundary_inventory(
         self,
         *,
@@ -3450,6 +3521,14 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         inventory_content: object,
         inventory_path: str = "docs/benchmark-results/self-correction/fresh.boundary.json",
     ) -> dict[str, object]:
+        a2_boundary = (
+            inventory_content.get("a2_owned_provider_launch_boundary")
+            if isinstance(inventory_content, dict)
+            else None
+        )
+        sandbox_runtime = (
+            inventory_content.get("sandbox_runtime") if isinstance(inventory_content, dict) else None
+        )
         return {
             "mode": "fresh_preflight",
             "creates_loop_evidence": False,
@@ -3469,6 +3548,21 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "inventory_json": inventory_json,
                 "inventory_json_sha256": inventory_json_sha256,
                 "inventory_content": inventory_content,
+                "a2_owned_fail_closed": bool(
+                    isinstance(a2_boundary, dict)
+                    and a2_boundary.get("fail_closed_restricted_policies") is True
+                ),
+                "a2_owned_sandbox_enforced": bool(
+                    isinstance(a2_boundary, dict)
+                    and a2_boundary.get("sandbox_enforced_for_restricted_policies") is True
+                ),
+                "sandbox_runtime_available": bool(
+                    isinstance(sandbox_runtime, dict) and sandbox_runtime.get("available") is True
+                ),
+                "launch_sandbox_enforced": bool(
+                    isinstance(inventory_content, dict)
+                    and inventory_content.get("launch_sandbox_enforced") is True
+                ),
             },
             "checks": {
                 **self.required_preflight_network_checks(),
@@ -5822,7 +5916,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 inventory = Path(tmpdir) / "fresh-preflight.boundary.json"
 
                 def write_inventory(path: Path) -> dict[str, object]:
-                    inventory_content = {"launch_sandbox_enforced": False}
+                    inventory_content = self.preflight_boundary_inventory_content()
                     inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
                     inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
                     path.write_text(inventory_json, encoding="utf-8")
@@ -5902,8 +5996,95 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertTrue(data["checks"]["agent_network_boundary_inventory_json_executed"])
         self.assertEqual(data["checks"]["agent_network_boundary_inventory_json_status"], "recorded")
 
+    def test_verify_preflight_boundary_inventory_rejects_missing_a2_fail_closed_evidence(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content()
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=inventory_sha256,
+            inventory_content=inventory_content,
+        )
+        report["boundary_inventory"]["a2_owned_fail_closed"] = False
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "A2-owned restricted-policy"):
+                verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_rejects_sandbox_overclaim(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content()
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=inventory_sha256,
+            inventory_content=inventory_content,
+        )
+        report["boundary_inventory"]["launch_sandbox_enforced"] = True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "must not claim child-agent launch"):
+                verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_rejects_missing_sandbox_runtime_availability(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content()
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=inventory_sha256,
+            inventory_content=inventory_content,
+        )
+        del report["boundary_inventory"]["sandbox_runtime_available"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "sandbox_runtime_available"):
+                verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_rejects_summary_not_derived_from_embedded_inventory(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content(fail_closed=False)
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=inventory_sha256,
+            inventory_content=inventory_content,
+        )
+        report["boundary_inventory"]["a2_owned_fail_closed"] = True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "does not match embedded inventory_json"):
+                verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_rejects_malformed_embedded_inventory_shape(self) -> None:
+        inventory_content = {
+            "a2_owned_provider_launch_boundary": {
+                "fail_closed_restricted_policies": "true",
+                "sandbox_enforced_for_restricted_policies": False,
+            },
+            "sandbox_runtime": {"available": False},
+            "launch_sandbox_enforced": False,
+        }
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=inventory_sha256,
+            inventory_content=inventory_content,
+        )
+        report["boundary_inventory"]["a2_owned_fail_closed"] = True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "boolean fail_closed_restricted_policies"):
+                verify_fresh_preflight_report(report_path)
+
     def test_verify_preflight_boundary_inventory_rejects_bad_embedded_checksum(self) -> None:
-        inventory_content = {"launch_sandbox_enforced": False}
+        inventory_content = self.preflight_boundary_inventory_content()
         inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
         report = self.fresh_preflight_report_with_boundary_inventory(
             inventory_json=inventory_json,
@@ -5917,7 +6098,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 verify_fresh_preflight_report(report_path)
 
     def test_verify_preflight_boundary_inventory_rejects_artifact_bytes_that_do_not_match_embedded_hash(self) -> None:
-        inventory_content = {"launch_sandbox_enforced": False}
+        inventory_content = self.preflight_boundary_inventory_content()
         inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
         inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
         with tempfile.TemporaryDirectory() as tmpdir:
