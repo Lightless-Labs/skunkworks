@@ -2830,6 +2830,47 @@ def demo_evidence_audit_rows(evidence: dict[str, object]) -> list[tuple[str, str
     ]
 
 
+def demo_evidence_current_head_provenance(evidence: dict[str, object]) -> dict[str, object]:
+    current = current_source_metadata()
+    metadata = evidence.get("source_metadata")
+    evidence_source_head = None
+    evidence_source_head_short = None
+    evidence_source_dirty = None
+    if isinstance(metadata, dict):
+        evidence_source_head = metadata.get("source_head")
+        evidence_source_head_short = metadata.get("source_head_short")
+        evidence_source_dirty = metadata.get("source_dirty")
+    matches_current_head = (
+        isinstance(evidence_source_head, str)
+        and evidence_source_head == current["source_head"]
+    )
+    if matches_current_head:
+        status = "matches_current_head_but_archived_audit_only"
+        reason = (
+            "Evidence source metadata matches the current checkout, but this audit command "
+            "does not execute a provider-backed fresh run or prove current-HEAD loop evidence."
+        )
+    else:
+        status = "not_fresh_current_head_provenance"
+        reason = (
+            "Evidence lacks source metadata for the current checkout or records a different "
+            "source revision; use verify-evidence-contract --fresh-run-id ... "
+            "--require-current-head on newly generated provider-backed artifacts for fresh proof."
+        )
+    return {
+        "current_head": current["source_head"],
+        "current_head_short": current["source_head_short"],
+        "current_source_dirty": current["source_dirty"],
+        "evidence_source_head": evidence_source_head,
+        "evidence_source_head_short": evidence_source_head_short,
+        "evidence_source_dirty": evidence_source_dirty,
+        "matches_current_head": matches_current_head,
+        "fresh_provider_backed_current_head_loop_evidence": False,
+        "status": status,
+        "reason": reason,
+    }
+
+
 def demo_evidence_audit_payload(
     evidence_json: Path,
     reference_evidence_json: Path,
@@ -2857,6 +2898,7 @@ def demo_evidence_audit_payload(
         "creates_loop_evidence": False,
         "provider_backed_benchmark_executed": False,
         "fresh_provider_backed_current_head_loop_evidence": False,
+        "current_head_provenance": demo_evidence_current_head_provenance(evidence),
         "evidence_json": str(evidence_json),
         "source_artifact": artifact,
         "proof_chain": list(EXPECTED_DEMO_REQUIREMENTS),
@@ -4314,12 +4356,27 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("| Requirement | Artifact paths | Selected rows / audited fields | Rerun commands |", stdout.getvalue())
 
     def test_demo_evidence_audit_json_payload_is_machine_readable_and_caveated(self) -> None:
-        payload = demo_evidence_audit_payload(DEFAULT_ARCHIVE_EVIDENCE, DEFAULT_ARCHIVE_EVIDENCE)
+        current = {
+            "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+            "source_head_short": "abcdef1",
+            "source_branch": "main",
+            "source_dirty": False,
+        }
+        with mock.patch(__name__ + ".current_source_metadata", return_value=current):
+            payload = demo_evidence_audit_payload(DEFAULT_ARCHIVE_EVIDENCE, DEFAULT_ARCHIVE_EVIDENCE)
 
         self.assertEqual(payload["mode"], "archived_demo_evidence_audit")
         self.assertFalse(payload["creates_loop_evidence"])
         self.assertFalse(payload["provider_backed_benchmark_executed"])
         self.assertFalse(payload["fresh_provider_backed_current_head_loop_evidence"])
+        current_head_provenance = payload["current_head_provenance"]
+        self.assertEqual(current_head_provenance["current_head"], current["source_head"])
+        self.assertIsNone(current_head_provenance["evidence_source_head"])
+        self.assertFalse(current_head_provenance["matches_current_head"])
+        self.assertFalse(
+            current_head_provenance["fresh_provider_backed_current_head_loop_evidence"]
+        )
+        self.assertEqual(current_head_provenance["status"], "not_fresh_current_head_provenance")
         self.assertEqual(payload["source_artifact"], DEFAULT_ARCHIVE.as_posix())
         self.assertEqual(payload["proof_chain"], EXPECTED_DEMO_REQUIREMENTS)
         requirements = payload["requirements"]
@@ -4352,8 +4409,16 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         )
 
     def test_demo_evidence_audit_json_cli_reports_valid_json(self) -> None:
+        current = {
+            "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+            "source_head_short": "abcdef1",
+            "source_branch": "main",
+            "source_dirty": False,
+        }
         stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
+        with mock.patch(
+            __name__ + ".current_source_metadata", return_value=current
+        ), contextlib.redirect_stdout(stdout):
             result = main(["audit-demo-evidence", "--json"])
 
         self.assertEqual(result, 0)
@@ -4361,6 +4426,34 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(data["mode"], "archived_demo_evidence_audit")
         self.assertEqual(data["proof_chain"], EXPECTED_DEMO_REQUIREMENTS)
         self.assertEqual(len(data["requirements"]), len(EXPECTED_DEMO_REQUIREMENTS))
+        self.assertEqual(data["current_head_provenance"]["current_head"], current["source_head"])
+        self.assertFalse(data["current_head_provenance"]["matches_current_head"])
+
+    def test_demo_evidence_current_head_match_is_still_not_fresh_loop_evidence(self) -> None:
+        source_head = "abcdef1234567890abcdef1234567890abcdef12"
+        current = {
+            "source_head": source_head,
+            "source_head_short": "abcdef1",
+            "source_branch": "main",
+            "source_dirty": False,
+        }
+        evidence = {
+            "source_metadata": {
+                "source_head": source_head,
+                "source_head_short": "abcdef1",
+                "source_dirty": False,
+            }
+        }
+
+        with mock.patch(__name__ + ".current_source_metadata", return_value=current):
+            provenance = demo_evidence_current_head_provenance(evidence)
+
+        self.assertTrue(provenance["matches_current_head"])
+        self.assertEqual(provenance["evidence_source_head"], source_head)
+        self.assertFalse(provenance["fresh_provider_backed_current_head_loop_evidence"])
+        self.assertEqual(
+            provenance["status"], "matches_current_head_but_archived_audit_only"
+        )
 
     def test_demo_evidence_audit_alias_reports_success(self) -> None:
         stdout = io.StringIO()
