@@ -3,8 +3,8 @@
 //! Each workcell has a token budget, call budget, and wall-clock budget.
 //! The BudgetTracker monitors usage and signals when limits are approached or exceeded.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use a2_core::protocol::Budget;
@@ -107,7 +107,11 @@ pub enum BudgetExceeded {
 }
 #[test]
 fn test_budget_percentage() {
-    let tracker = BudgetTracker::new(Budget { max_tokens: 1000, max_duration_secs: 60, max_calls: 10 });
+    let tracker = BudgetTracker::new(Budget {
+        max_tokens: 1000,
+        max_duration_secs: 60,
+        max_calls: 10,
+    });
     assert!((tracker.percentage_used() - 0.0).abs() < f64::EPSILON);
     tracker.record_usage(250, 250).unwrap();
     assert!((tracker.percentage_used() - 50.0).abs() < f64::EPSILON);

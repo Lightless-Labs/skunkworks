@@ -995,19 +995,29 @@ def has_top_level_return_err(block: str) -> bool:
 
 
 def find_restricted_policy_return_err_span(executable: str) -> tuple[int, int] | None:
-    pattern = re.compile(
-        r"\bif\s+matches!\s*\(\s*(?:&\s*)?(?:network_policy|task\.network_policy)\s*,\s*"
-        r"Some\s*\(\s*NetworkPolicy::Isolated\s*\|\s*NetworkPolicy::AllowList\s*\(\s*_\s*\)\s*\)\s*\)",
-        re.MULTILINE | re.DOTALL,
+    policy_pattern = (
+        r"NetworkPolicy::Isolated\s*\|\s*NetworkPolicy::AllowList\s*\(\s*_\s*\)"
     )
-    for match in pattern.finditer(executable):
-        span = extract_rust_braced_body_span(executable, match.start())
-        if span is None:
-            continue
-        block, block_start, block_end = span
-        return_offsets = top_level_rust_code_regex_match_offsets(block, r"\breturn\s+Err\b")
-        if return_offsets:
-            return (block_start + 1 + return_offsets[0], block_end)
+    patterns = [
+        re.compile(
+            r"\bif\s+matches!\s*\(\s*(?:&\s*)?(?:network_policy|task\.network_policy)\s*,\s*"
+            rf"Some\s*\(\s*{policy_pattern}\s*\)\s*\)",
+            re.MULTILINE | re.DOTALL,
+        ),
+        re.compile(
+            rf"\bif\s+let\s+Some\s*\(\s*(?:\w+\s*@\s*)?\(\s*{policy_pattern}\s*\)\s*\)\s*=\s*(?:&\s*)?(?:network_policy|task\.network_policy)\b",
+            re.MULTILINE | re.DOTALL,
+        ),
+    ]
+    for pattern in patterns:
+        for match in pattern.finditer(executable):
+            span = extract_rust_braced_body_span(executable, match.start())
+            if span is None:
+                continue
+            block, block_start, block_end = span
+            return_offsets = top_level_rust_code_regex_match_offsets(block, r"\breturn\s+Err\b")
+            if return_offsets:
+                return (block_start + 1 + return_offsets[0], block_end)
     return None
 
 
@@ -1249,7 +1259,9 @@ def a2_owned_sandbox_enforced_for_all_provider_surfaces(
     broker: dict[str, Any],
 ) -> bool:
     return bool(
-        generalist["fail_closed_before_provider_launch"]
+        worktree["fail_closed_before_provider_launch"]
+        and generalist["fail_closed_before_provider_launch"]
+        and broker["fail_closed_before_provider_launch"]
         and worktree["sandbox_exec_launch_wrapper_present"]
         and broker["sandbox_exec_launch_wrapper_present"]
     )
@@ -2108,6 +2120,44 @@ impl<'a> ModelProvider for PiProvider {
         self.assertFalse(result["sandbox_exec_launch_wrapper_present"])
         self.assertTrue(all(not item["sandbox_exec_present"] for item in result["provider_generate_guards"]))
 
+    def test_a2_worktree_launch_gate_detects_legacy_matches_and_if_let_policy_forms(self) -> None:
+        run_agent_forms = [
+            (
+                "legacy_matches",
+                '  if matches!(network_policy, Some(NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) {\n'
+                '    return Err(error);\n'
+                '  }\n',
+            ),
+            (
+                "if_let_policy_binding",
+                '  if let Some(policy @ (NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) = network_policy {\n'
+                '    return Err(error);\n'
+                '  }\n',
+            ),
+        ]
+        for name, policy_guard in run_agent_forms:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                path = Path(tmpdir) / "worktree_catalyst.rs"
+                path.write_text(
+                    'async fn run_agent() {\n'
+                    + policy_guard
+                    + '  if provider_id == "mock" { return self.run_mock_agent(worktree_path).await; }\n'
+                    + '  match provider_id { _ => self.run_claude(model_id, prompt, worktree_path).await }\n'
+                    + '}\n'
+                    + 'async fn run_claude() { Command::new("claude"); }\n'
+                    + 'async fn run_codex() { Command::new("codex"); }\n'
+                    + 'async fn run_gemini() { Command::new("gemini"); }\n'
+                    + 'async fn run_opencode() { Command::new("opencode"); }\n'
+                    + 'async fn run_pi() { Command::new("pi"); }\n',
+                    encoding="utf-8",
+                )
+                result = audit_a2_worktree_catalyst_launch_gate(path)
+
+            self.assertTrue(result["restricted_policy_check_present"])
+            self.assertTrue(result["restricted_policy_error_before_mock"])
+            self.assertTrue(result["restricted_policy_error_before_provider_dispatch"])
+            self.assertTrue(result["fail_closed_before_provider_launch"])
+
     def test_a2_worktree_launch_gate_detects_fail_closed_before_provider_dispatch(self) -> None:
         result = audit_a2_worktree_catalyst_launch_gate()
 
@@ -2204,8 +2254,18 @@ impl<'a> ModelProvider for PiProvider {
         self.assertFalse(result["fail_closed_before_provider_launch"])
 
     def test_a2_owned_sandbox_enforcement_requires_all_provider_surfaces(self) -> None:
-        wrapped_surface = {"sandbox_exec_launch_wrapper_present": True}
-        unwrapped_surface = {"sandbox_exec_launch_wrapper_present": False}
+        wrapped_surface = {
+            "fail_closed_before_provider_launch": True,
+            "sandbox_exec_launch_wrapper_present": True,
+        }
+        unwrapped_surface = {
+            "fail_closed_before_provider_launch": True,
+            "sandbox_exec_launch_wrapper_present": False,
+        }
+        wrapped_but_open_surface = {
+            "fail_closed_before_provider_launch": False,
+            "sandbox_exec_launch_wrapper_present": True,
+        }
         closed_generalist = {"fail_closed_before_provider_launch": True}
         open_generalist = {"fail_closed_before_provider_launch": False}
         self.assertFalse(
@@ -2227,6 +2287,20 @@ impl<'a> ModelProvider for PiProvider {
                 wrapped_surface,
                 open_generalist,
                 wrapped_surface,
+            )
+        )
+        self.assertFalse(
+            a2_owned_sandbox_enforced_for_all_provider_surfaces(
+                wrapped_but_open_surface,
+                closed_generalist,
+                wrapped_surface,
+            )
+        )
+        self.assertFalse(
+            a2_owned_sandbox_enforced_for_all_provider_surfaces(
+                wrapped_surface,
+                closed_generalist,
+                wrapped_but_open_surface,
             )
         )
         self.assertTrue(

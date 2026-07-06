@@ -12,6 +12,9 @@
 //! The model does what it's good at (editing code). Git does what it's good
 //! at (computing diffs). The diff quality problem disappears.
 
+use crate::sandbox_profile::{
+    sandbox_exec_supported_on_this_platform, sandbox_profile_for_network_policy,
+};
 use a2_core::error::{A2Error, A2Result};
 use a2_core::id::*;
 use a2_core::protocol::*;
@@ -304,19 +307,29 @@ impl WorktreeCatalyst {
         worktree_path: &Path,
         network_policy: Option<&NetworkPolicy>,
     ) -> A2Result<(String, String, String, u64, u64)> {
-        if matches!(
-            network_policy,
-            Some(NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))
-        ) {
-            let policy_name = match network_policy {
-                Some(NetworkPolicy::Isolated) => "Isolated",
-                Some(NetworkPolicy::AllowList(_)) => "AllowList",
-                _ => unreachable!(),
+        if let Some(policy @ (NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) =
+            network_policy
+        {
+            let policy_name = match policy {
+                NetworkPolicy::Isolated => "Isolated",
+                NetworkPolicy::AllowList(_) => "AllowList",
+                NetworkPolicy::Open => unreachable!(),
             };
+            let profile_audit = sandbox_profile_for_network_policy(policy)
+                .map(|profile| {
+                    let profile_lines = profile.text().replace('\n', "\\n");
+                    format!(
+                        "sandbox_profile_engine={}, sandbox_profile_sha256={}, sandbox_profile_lines={profile_lines}, sandbox_exec_supported={}",
+                        profile.engine,
+                        profile.profile_sha256,
+                        sandbox_exec_supported_on_this_platform()
+                    )
+                })
+                .unwrap_or_else(|error| format!("sandbox_profile_error={error}"));
             return Err(A2Error::CatalystFailure(
                 self.id.clone(),
                 format!(
-                    "network_policy={policy_name} prevents launching provider `{provider_id}` from the worktree catalyst until an audited network sandbox/provider allowlist is implemented; run with network_policy=Open only when unrestricted network access is intentional"
+                    "network_policy={policy_name} prevents launching provider `{provider_id}` from the worktree catalyst until an audited network sandbox/provider allowlist is implemented; {profile_audit}; run with network_policy=Open only when unrestricted network access is intentional"
                 ),
             ));
         }
@@ -1136,6 +1149,15 @@ mod tests {
         let message = format!("{error}");
         assert!(message.contains("network_policy=Isolated prevents launching provider `opencode`"));
         assert!(message.contains("audited network sandbox/provider allowlist"));
+        assert!(message.contains("sandbox_profile_engine=sandbox-exec"));
+        assert!(message.contains("sandbox_profile_sha256="));
+        assert!(
+            message.contains(
+                "sandbox_profile_lines=(version 1)\\n(allow default)\\n(deny network*)\\n"
+            )
+        );
+        assert!(!message.contains("sandbox_profile_lines=(version 1)\n(allow default)"));
+        assert!(message.contains("sandbox_exec_supported="));
     }
 
     #[tokio::test]
@@ -1156,6 +1178,13 @@ mod tests {
         let message = format!("{error}");
         assert!(message.contains("network_policy=Isolated prevents launching provider `mock`"));
         assert!(message.contains("audited network sandbox/provider allowlist"));
+        assert!(message.contains("sandbox_profile_engine=sandbox-exec"));
+        assert!(message.contains("sandbox_profile_sha256="));
+        assert!(
+            message.contains(
+                "sandbox_profile_lines=(version 1)\\n(allow default)\\n(deny network*)\\n"
+            )
+        );
     }
 
     #[tokio::test]
@@ -1178,6 +1207,9 @@ mod tests {
         let message = format!("{error}");
         assert!(message.contains("network_policy=AllowList prevents launching provider `mock`"));
         assert!(message.contains("audited network sandbox/provider allowlist"));
+        assert!(message.contains("sandbox_profile_engine=sandbox-exec"));
+        assert!(message.contains("sandbox_profile_sha256="));
+        assert!(message.contains("remote tcp \"api.openai.com:443\""));
     }
 
     #[tokio::test]
@@ -1222,6 +1254,13 @@ mod tests {
         let message = format!("{error}");
         assert!(message.contains("network_policy=Isolated prevents launching provider `mock`"));
         assert!(message.contains("audited network sandbox/provider allowlist"));
+        assert!(message.contains("sandbox_profile_engine=sandbox-exec"));
+        assert!(message.contains("sandbox_profile_sha256="));
+        assert!(
+            message.contains(
+                "sandbox_profile_lines=(version 1)\\n(allow default)\\n(deny network*)\\n"
+            )
+        );
     }
 
     #[tokio::test]
@@ -1244,6 +1283,9 @@ mod tests {
         let message = format!("{error}");
         assert!(message.contains("network_policy=AllowList prevents launching provider `pi`"));
         assert!(message.contains("network_policy=Open"));
+        assert!(message.contains("sandbox_profile_engine=sandbox-exec"));
+        assert!(message.contains("sandbox_profile_sha256="));
+        assert!(message.contains("remote tcp \"api.openai.com:443\""));
     }
 
     #[test]
