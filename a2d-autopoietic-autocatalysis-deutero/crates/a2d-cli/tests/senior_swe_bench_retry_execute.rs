@@ -1785,6 +1785,8 @@ fn retry_run_next_gate_plans_from_successful_next_cycle_summary_without_evaluato
         &next_manifest,
     );
 
+    let official_manifest = write_official_manifest(&fixture.root, &fixture.evaluator);
+    let official_inspection = write_official_manifest_inspection(&fixture, &official_manifest);
     let next_cycle_execution_rel = project_relative(&next_cycle_execution);
     let retry_plan_rel = project_relative(&fixture.retry_plan);
     let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
@@ -1796,6 +1798,10 @@ fn retry_run_next_gate_plans_from_successful_next_cycle_summary_without_evaluato
             "--retry-plan",
             &retry_plan_rel,
             "--apply-candidate-patch",
+            "--official-evaluator-manifest",
+            official_manifest.to_str().unwrap(),
+            "--official-evaluator-manifest-inspection",
+            official_inspection.to_str().unwrap(),
             "--",
             fixture.evaluator.to_str().unwrap(),
         ])
@@ -1835,6 +1841,26 @@ fn retry_run_next_gate_plans_from_successful_next_cycle_summary_without_evaluato
         Some(false)
     );
     assert_eq!(value["child"]["attempt_index"].as_u64(), Some(1));
+    let evaluate_args = value["child"]["evaluate_args"].as_array().unwrap();
+    assert!(
+        evaluate_args
+            .iter()
+            .any(|arg| arg.as_str() == Some("--official-evaluator-manifest"))
+    );
+    assert!(
+        evaluate_args
+            .iter()
+            .any(|arg| arg.as_str() == Some("--official-evaluator-manifest-inspection"))
+    );
+    assert!(
+        evaluate_args
+            .iter()
+            .any(|arg| arg.as_str() == Some(official_inspection.to_str().unwrap()))
+    );
+    assert_eq!(
+        value["child"]["official_evaluator_manifest_inspection"].as_str(),
+        Some(official_inspection.to_str().unwrap())
+    );
     assert_eq!(
         value["before_status"]["next_cycle_execution_path"].as_str(),
         Some(next_cycle_execution_rel.as_str())

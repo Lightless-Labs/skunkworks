@@ -3969,7 +3969,7 @@ fn run_senior_swe_bench_retry_plan(cycle_input_path: &str, max_attempts: usize) 
 fn run_senior_swe_bench_retry_attempt_plan(args: &[String]) {
     let config = parse_senior_swe_bench_retry_attempt_plan_args(args).unwrap_or_else(|error| {
         eprintln!("Senior SWE-Bench retry attempt plan error: {error}");
-        eprintln!("Usage: a2d senior-swe-bench-retry-attempt-plan --retry-plan <json|-> --attempt-index <n> --task-cycle-input <json|-> --cycle-output-manifest <json|-> --checkout <dir> --attempt-dir <dir> [--apply-candidate-patch] [--official-evaluator-manifest <json>] -- <evaluator> [args...]");
+        eprintln!("Usage: a2d senior-swe-bench-retry-attempt-plan --retry-plan <json|-> --attempt-index <n> --task-cycle-input <json|-> --cycle-output-manifest <json|-> --checkout <dir> --attempt-dir <dir> [--apply-candidate-patch] [--official-evaluator-manifest <json> --official-evaluator-manifest-inspection <json>] -- <evaluator> [args...]");
         std::process::exit(1);
     });
     let plan = build_senior_swe_bench_retry_attempt_plan(&config).unwrap_or_else(|error| {
@@ -3993,6 +3993,7 @@ struct SeniorSweBenchRetryAttemptPlanConfig {
     attempt_dir: PathBuf,
     apply_candidate_patch: bool,
     official_evaluator_manifest: Option<PathBuf>,
+    official_evaluator_manifest_inspection: Option<PathBuf>,
     evaluator_command: Vec<String>,
 }
 
@@ -4007,6 +4008,7 @@ fn parse_senior_swe_bench_retry_attempt_plan_args(
     let mut attempt_dir = None;
     let mut apply_candidate_patch = false;
     let mut official_evaluator_manifest = None;
+    let mut official_evaluator_manifest_inspection = None;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -4029,6 +4031,7 @@ fn parse_senior_swe_bench_retry_attempt_plan_args(
                     attempt_dir: attempt_dir.ok_or_else(|| "missing --attempt-dir".to_string())?,
                     apply_candidate_patch,
                     official_evaluator_manifest,
+                    official_evaluator_manifest_inspection,
                     evaluator_command,
                 };
                 validate_retry_attempt_plan_stdin_inputs(&config)?;
@@ -4086,6 +4089,13 @@ fn parse_senior_swe_bench_retry_attempt_plan_args(
                         "--official-evaluator-manifest requires a path".to_string()
                     })?));
             }
+            "--official-evaluator-manifest-inspection" => {
+                index += 1;
+                official_evaluator_manifest_inspection =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        "--official-evaluator-manifest-inspection requires a path".to_string()
+                    })?));
+            }
             other => {
                 return Err(format!(
                     "unknown senior-swe-bench-retry-attempt-plan argument: {other}"
@@ -4118,6 +4128,25 @@ fn validate_retry_attempt_plan_stdin_inputs(
     Ok(())
 }
 
+fn validate_official_manifest_inspection_for_retry_plan(
+    package: &SeniorSweBenchTaskPackageSummary,
+    manifest_path: &Path,
+    inspection_path: &Path,
+    evaluator_command: &[String],
+) -> Result<(), String> {
+    let inspection_text = read_artifact_to_string(inspection_path)?;
+    let inspection: Value = serde_json::from_str(&inspection_text).map_err(|error| {
+        format!("invalid Senior SWE-Bench official evaluator manifest inspection JSON: {error}")
+    })?;
+    validate_retry_execute_official_manifest_inspection(
+        &inspection,
+        package,
+        manifest_path,
+        evaluator_command,
+    )?;
+    Ok(())
+}
+
 fn build_senior_swe_bench_retry_attempt_plan(
     config: &SeniorSweBenchRetryAttemptPlanConfig,
 ) -> Result<Value, String> {
@@ -4135,19 +4164,49 @@ fn build_senior_swe_bench_retry_attempt_plan(
             config.checkout.display()
         ));
     }
-    if let Some(manifest) = &config.official_evaluator_manifest {
-        if manifest == Path::new("-") {
-            return Err(
-                "Senior SWE-Bench official evaluator manifest must be a file path, not stdin"
-                    .to_string(),
-            );
+    match (
+        &config.official_evaluator_manifest,
+        &config.official_evaluator_manifest_inspection,
+    ) {
+        (Some(manifest), Some(inspection)) => {
+            if manifest == Path::new("-") {
+                return Err(
+                    "Senior SWE-Bench official evaluator manifest must be a file path, not stdin"
+                        .to_string(),
+                );
+            }
+            if inspection == Path::new("-") {
+                return Err(
+                    "Senior SWE-Bench official evaluator manifest inspection must be a file path, not stdin"
+                        .to_string(),
+                );
+            }
+            if !manifest.is_file() {
+                return Err(format!(
+                    "Senior SWE-Bench official evaluator manifest not found: {}",
+                    manifest.display()
+                ));
+            }
+            if !inspection.is_file() {
+                return Err(format!(
+                    "Senior SWE-Bench official evaluator manifest inspection not found: {}",
+                    inspection.display()
+                ));
+            }
+            validate_official_manifest_inspection_for_retry_plan(
+                &package,
+                manifest,
+                inspection,
+                &config.evaluator_command,
+            )?;
         }
-        if !manifest.is_file() {
-            return Err(format!(
-                "Senior SWE-Bench official evaluator manifest not found: {}",
-                manifest.display()
-            ));
+        (Some(_), None) => {
+            return Err("Senior SWE-Bench retry attempt plan requires --official-evaluator-manifest-inspection when --official-evaluator-manifest is supplied; run senior-swe-bench-official-evaluator-manifest-inspect first".to_string());
         }
+        (None, Some(_)) => {
+            return Err("Senior SWE-Bench retry attempt plan --official-evaluator-manifest-inspection requires --official-evaluator-manifest".to_string());
+        }
+        (None, None) => {}
     }
     let manifest = read_artifact_to_string(&config.cycle_output_manifest)?;
     let selection = select_senior_swe_bench_candidate_artifact(&manifest)?;
@@ -4205,6 +4264,10 @@ fn build_senior_swe_bench_retry_attempt_plan(
         evaluate_args.push("--official-evaluator-manifest".to_string());
         evaluate_args.push(manifest.display().to_string());
     }
+    if let Some(inspection) = &config.official_evaluator_manifest_inspection {
+        evaluate_args.push("--official-evaluator-manifest-inspection".to_string());
+        evaluate_args.push(inspection.display().to_string());
+    }
     evaluate_args.push("--output".to_string());
     evaluate_args.push(local_evaluation_path.display().to_string());
     evaluate_args.push("--".to_string());
@@ -4246,6 +4309,7 @@ fn build_senior_swe_bench_retry_attempt_plan(
         ],
         "apply_candidate_patch": config.apply_candidate_patch,
         "official_evaluator_manifest": config.official_evaluator_manifest.as_ref().map(|path| path.display().to_string()),
+        "official_evaluator_manifest_inspection": config.official_evaluator_manifest_inspection.as_ref().map(|path| path.display().to_string()),
         "provider_invocations_started": false,
         "evaluator_invocations_started": false,
         "fitness_claim_allowed_before_evidence": false,
@@ -5364,6 +5428,7 @@ struct SeniorSweBenchRetryResumeAttemptPlanConfig {
     next_cycle_execution: Option<PathBuf>,
     apply_candidate_patch: bool,
     official_evaluator_manifest: Option<PathBuf>,
+    official_evaluator_manifest_inspection: Option<PathBuf>,
     evaluator_command: Vec<String>,
 }
 
@@ -5396,7 +5461,7 @@ enum SeniorSweBenchRetryRunNextGateConfig {
 fn run_senior_swe_bench_retry_resume_attempt_plan(args: &[String]) {
     let config = parse_senior_swe_bench_retry_resume_attempt_plan_args(args).unwrap_or_else(|error| {
         eprintln!("Senior SWE-Bench retry resume attempt plan error: {error}");
-        eprintln!("Usage: a2d senior-swe-bench-retry-resume-attempt-plan (--retry-execution <retry-execution.json> --cycle-output-manifest <manifest.json> | --next-cycle-execution <retry-next-cycle-execution.json>) --retry-plan <retry-plan.json> [--apply-candidate-patch] [--official-evaluator-manifest <json>] -- <evaluator> [args...]");
+        eprintln!("Usage: a2d senior-swe-bench-retry-resume-attempt-plan (--retry-execution <retry-execution.json> --cycle-output-manifest <manifest.json> | --next-cycle-execution <retry-next-cycle-execution.json>) --retry-plan <retry-plan.json> [--apply-candidate-patch] [--official-evaluator-manifest <json> --official-evaluator-manifest-inspection <json>] -- <evaluator> [args...]");
         std::process::exit(1);
     });
     let plan = build_senior_swe_bench_retry_resume_attempt_plan(&config).unwrap_or_else(|error| {
@@ -5459,7 +5524,7 @@ fn run_senior_swe_bench_retry_run_next_cycle(args: &[String]) {
 fn run_senior_swe_bench_retry_run_next_gate(args: &[String]) {
     let config = parse_senior_swe_bench_retry_run_next_gate_args(args).unwrap_or_else(|error| {
         eprintln!("Senior SWE-Bench retry run next gate error: {error}");
-        eprintln!("Usage: a2d senior-swe-bench-retry-run-next-gate (--retry-execution <retry-execution.json> | --next-cycle-execution <retry-next-cycle-execution.json> --retry-plan <retry-plan.json> [--apply-candidate-patch] [--official-evaluator-manifest <json>] -- <evaluator> [args...] | --retry-attempt-plan <retry-attempt-plan.json>)");
+        eprintln!("Usage: a2d senior-swe-bench-retry-run-next-gate (--retry-execution <retry-execution.json> | --next-cycle-execution <retry-next-cycle-execution.json> --retry-plan <retry-plan.json> [--apply-candidate-patch] [--official-evaluator-manifest <json> --official-evaluator-manifest-inspection <json>] -- <evaluator> [args...] | --retry-attempt-plan <retry-attempt-plan.json>)");
         std::process::exit(1);
     });
     let execution =
@@ -5591,6 +5656,7 @@ fn parse_senior_swe_bench_retry_resume_attempt_plan_args(
     let mut next_cycle_execution: Option<PathBuf> = None;
     let mut apply_candidate_patch = false;
     let mut official_evaluator_manifest: Option<PathBuf> = None;
+    let mut official_evaluator_manifest_inspection: Option<PathBuf> = None;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -5620,6 +5686,9 @@ fn parse_senior_swe_bench_retry_resume_attempt_plan_args(
                         .map(|path| resolve_retry_artifact_path(path)),
                     apply_candidate_patch,
                     official_evaluator_manifest: official_evaluator_manifest
+                        .as_ref()
+                        .map(|path| resolve_retry_artifact_path(path)),
+                    official_evaluator_manifest_inspection: official_evaluator_manifest_inspection
                         .as_ref()
                         .map(|path| resolve_retry_artifact_path(path)),
                     evaluator_command,
@@ -5661,6 +5730,13 @@ fn parse_senior_swe_bench_retry_resume_attempt_plan_args(
                 official_evaluator_manifest =
                     Some(PathBuf::from(args.get(index).ok_or_else(|| {
                         "--official-evaluator-manifest requires a path".to_string()
+                    })?));
+            }
+            "--official-evaluator-manifest-inspection" => {
+                index += 1;
+                official_evaluator_manifest_inspection =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        "--official-evaluator-manifest-inspection requires a path".to_string()
                     })?));
             }
             other => {
@@ -5726,13 +5802,31 @@ fn validate_retry_resume_attempt_plan_config(
             next_cycle_execution.display()
         ));
     }
-    if let Some(manifest) = &config.official_evaluator_manifest
-        && !manifest.is_file()
-    {
-        return Err(format!(
-            "Senior SWE-Bench official evaluator manifest not found: {}",
-            manifest.display()
-        ));
+    match (
+        &config.official_evaluator_manifest,
+        &config.official_evaluator_manifest_inspection,
+    ) {
+        (Some(manifest), Some(inspection)) => {
+            if !manifest.is_file() {
+                return Err(format!(
+                    "Senior SWE-Bench official evaluator manifest not found: {}",
+                    manifest.display()
+                ));
+            }
+            if !inspection.is_file() {
+                return Err(format!(
+                    "Senior SWE-Bench official evaluator manifest inspection not found: {}",
+                    inspection.display()
+                ));
+            }
+        }
+        (Some(_), None) => {
+            return Err("Senior SWE-Bench retry resume attempt plan requires --official-evaluator-manifest-inspection when --official-evaluator-manifest is supplied; run senior-swe-bench-official-evaluator-manifest-inspect first".to_string());
+        }
+        (None, Some(_)) => {
+            return Err("Senior SWE-Bench retry resume attempt plan --official-evaluator-manifest-inspection requires --official-evaluator-manifest".to_string());
+        }
+        (None, None) => {}
     }
     Ok(())
 }
@@ -6221,6 +6315,9 @@ fn build_senior_swe_bench_retry_resume_attempt_plan(
         attempt_dir: boundary.attempt_dir.clone(),
         apply_candidate_patch: config.apply_candidate_patch,
         official_evaluator_manifest: config.official_evaluator_manifest.clone(),
+        official_evaluator_manifest_inspection: config
+            .official_evaluator_manifest_inspection
+            .clone(),
         evaluator_command: config.evaluator_command.clone(),
     };
     let mut plan = build_senior_swe_bench_retry_attempt_plan(&attempt_config)?;
@@ -7913,6 +8010,7 @@ fn build_senior_swe_bench_retry_execution(
             attempt_dir: attempt_dir.clone(),
             apply_candidate_patch: config.apply_candidate_patch,
             official_evaluator_manifest: config.official_evaluator_manifest.clone(),
+            official_evaluator_manifest_inspection: official_manifest_inspection_path.clone(),
             evaluator_command: config.evaluator_command.clone(),
         };
         let attempt_plan = build_senior_swe_bench_retry_attempt_plan(&attempt_plan_config)?;
@@ -8203,7 +8301,6 @@ fn validate_retry_execute_official_manifest_inspection(
         "schema_version",
         "task_id",
         "repo",
-        "official_evaluator_manifest_path",
         "official_evaluator_manifest_hash",
         "official_benchmark_url",
         "official_benchmark_provided_command",
@@ -8823,6 +8920,7 @@ fn validate_retry_attempt_evaluate_args(
             "--output",
             "--apply-candidate-patch",
             "--official-evaluator-manifest",
+            "--official-evaluator-manifest-inspection",
         ],
     )?;
     if !evaluate_args.iter().any(|arg| arg == "--") {
@@ -9164,6 +9262,9 @@ fn validate_retry_attempt_local_official_provenance(
     let official_fields = [
         "official_evaluator_manifest_path",
         "official_evaluator_manifest_hash",
+        "official_evaluator_manifest_inspection_path",
+        "official_evaluator_manifest_inspection_hash",
+        "official_evaluator_manifest_inspection_validated",
         "official_benchmark_url",
         "official_task_id",
         "official_repo",
@@ -9208,6 +9309,41 @@ fn validate_retry_attempt_local_official_provenance(
         return Err(
             "official Senior SWE-Bench local evaluation manifest hash does not match manifest file"
                 .to_string(),
+        );
+    }
+    let inspection_path = evaluate_config
+        .official_evaluator_manifest_inspection
+        .as_ref()
+        .ok_or_else(|| {
+            "official Senior SWE-Bench local evaluation evaluate_args missing inspection path"
+                .to_string()
+        })?;
+    let local_inspection_path =
+        required_non_empty_json_string(value, "official_evaluator_manifest_inspection_path")?;
+    if !paths_equivalent(Path::new(&local_inspection_path), inspection_path) {
+        return Err(
+            "official Senior SWE-Bench local evaluation inspection path does not match evaluate_args"
+                .to_string(),
+        );
+    }
+    let expected_inspection_hash = file_content_hash(inspection_path)?;
+    if value
+        .get("official_evaluator_manifest_inspection_hash")
+        .and_then(Value::as_str)
+        != Some(expected_inspection_hash.as_str())
+    {
+        return Err(
+            "official Senior SWE-Bench local evaluation inspection hash does not match inspection file"
+                .to_string(),
+        );
+    }
+    if value
+        .get("official_evaluator_manifest_inspection_validated")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(
+            "official Senior SWE-Bench local evaluation inspection was not validated".to_string(),
         );
     }
     let official_task_id = required_non_empty_json_string(value, "official_task_id")?;
@@ -9895,7 +10031,7 @@ fn build_senior_swe_bench_official_evaluator_manifest_inspection_value(
 fn run_senior_swe_bench_evaluate(args: &[String]) {
     let mut config = parse_senior_swe_bench_evaluate_args(args).unwrap_or_else(|error| {
         eprintln!("{error}");
-        eprintln!("Usage: a2d senior-swe-bench-evaluate (--task-package <json>|--task-cycle-input <json>) (--candidate-patch <diff>|--candidate-patch-artifact <artifact> --extracted-candidate-patch <diff>) --checkout <dir> [--apply-candidate-patch] [--official-evaluator-manifest <json>] [--output <json>] -- <local-evaluator> [args...]");
+        eprintln!("Usage: a2d senior-swe-bench-evaluate (--task-package <json>|--task-cycle-input <json>) (--candidate-patch <diff>|--candidate-patch-artifact <artifact> --extracted-candidate-patch <diff>) --checkout <dir> [--apply-candidate-patch] [--official-evaluator-manifest <json> --official-evaluator-manifest-inspection <json>] [--output <json>] -- <local-evaluator> [args...]");
         std::process::exit(1);
     });
     let package = load_senior_swe_bench_evaluation_task(&config).unwrap_or_else(|error| {
@@ -9919,6 +10055,17 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
         .transpose()
         .unwrap_or_else(|error| {
             eprintln!("Senior SWE-Bench official evaluator manifest hash error: {error}");
+            std::process::exit(1);
+        });
+    let official_manifest_inspection_hash = config
+        .official_evaluator_manifest_inspection
+        .as_ref()
+        .map(|path| file_content_hash(path))
+        .transpose()
+        .unwrap_or_else(|error| {
+            eprintln!(
+                "Senior SWE-Bench official evaluator manifest inspection hash error: {error}"
+            );
             std::process::exit(1);
         });
     let candidate_patch_artifact_hash = materialize_senior_swe_bench_candidate_patch_artifact(
@@ -10001,6 +10148,8 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
                     Some(&candidate_patch_preflight_command),
                     config.official_evaluator_manifest.as_deref(),
                     official_manifest_hash.as_deref(),
+                    config.official_evaluator_manifest_inspection.as_deref(),
+                    official_manifest_inspection_hash.as_deref(),
                     official_manifest.as_ref(),
                 )
                 .unwrap_or_else(|error| {
@@ -10060,6 +10209,12 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
             .as_ref()
             .map(|path| path.to_string_lossy().to_string()),
         official_manifest_hash,
+        config
+            .official_evaluator_manifest_inspection
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
+        official_manifest_inspection_hash,
+        official_manifest.as_ref().map(|_| true),
         official_manifest.as_ref(),
         &outcome.stdout,
         &outcome.stderr,
@@ -10109,6 +10264,7 @@ struct SeniorSweBenchEvaluateConfig {
     output: Option<PathBuf>,
     apply_candidate_patch: bool,
     official_evaluator_manifest: Option<PathBuf>,
+    official_evaluator_manifest_inspection: Option<PathBuf>,
     command: Vec<String>,
 }
 
@@ -10132,6 +10288,7 @@ fn parse_senior_swe_bench_evaluate_args(
     let mut output = None;
     let mut apply_candidate_patch = false;
     let mut official_evaluator_manifest = None;
+    let mut official_evaluator_manifest_inspection = None;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -10158,6 +10315,7 @@ fn parse_senior_swe_bench_evaluate_args(
                     output,
                     apply_candidate_patch,
                     official_evaluator_manifest,
+                    official_evaluator_manifest_inspection,
                     command,
                 });
             }
@@ -10218,6 +10376,13 @@ fn parse_senior_swe_bench_evaluate_args(
                 official_evaluator_manifest =
                     Some(PathBuf::from(args.get(index).ok_or_else(|| {
                         "--official-evaluator-manifest requires a path".to_string()
+                    })?));
+            }
+            "--official-evaluator-manifest-inspection" => {
+                index += 1;
+                official_evaluator_manifest_inspection =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        "--official-evaluator-manifest-inspection requires a path".to_string()
                     })?));
             }
             other => {
@@ -10350,12 +10515,35 @@ fn load_senior_swe_bench_official_evaluator_manifest(
     config: &SeniorSweBenchEvaluateConfig,
     package: &SeniorSweBenchTaskPackageSummary,
 ) -> Result<Option<SeniorSweBenchOfficialEvaluatorManifestSummary>, String> {
-    let Some(manifest_path) = &config.official_evaluator_manifest else {
-        return Ok(None);
-    };
-    let manifest_json = read_artifact_or_exit(manifest_path.to_string_lossy().as_ref());
-    parse_senior_swe_bench_official_evaluator_manifest(&manifest_json, package, &config.command)
-        .map(Some)
+    match (
+        &config.official_evaluator_manifest,
+        &config.official_evaluator_manifest_inspection,
+    ) {
+        (None, None) => Ok(None),
+        (Some(_), None) => Err("Senior SWE-Bench evaluate requires --official-evaluator-manifest-inspection when --official-evaluator-manifest is supplied; run senior-swe-bench-official-evaluator-manifest-inspect first".to_string()),
+        (None, Some(_)) => Err("Senior SWE-Bench evaluate --official-evaluator-manifest-inspection requires --official-evaluator-manifest".to_string()),
+        (Some(manifest_path), Some(inspection_path)) => {
+            let manifest_json = read_artifact_or_exit(manifest_path.to_string_lossy().as_ref());
+            let manifest = parse_senior_swe_bench_official_evaluator_manifest(
+                &manifest_json,
+                package,
+                &config.command,
+            )?;
+            let inspection_text = read_artifact_to_string(inspection_path)?;
+            let inspection: Value = serde_json::from_str(&inspection_text).map_err(|error| {
+                format!(
+                    "invalid Senior SWE-Bench official evaluator manifest inspection JSON: {error}"
+                )
+            })?;
+            validate_retry_execute_official_manifest_inspection(
+                &inspection,
+                package,
+                manifest_path,
+                &config.command,
+            )?;
+            Ok(Some(manifest))
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -10900,6 +11088,8 @@ fn export_standalone_fitness_evidence(
     candidate_patch_preflight_command: Option<&str>,
     official_evaluator_manifest_path: Option<&Path>,
     official_evaluator_manifest_hash: Option<&str>,
+    official_evaluator_manifest_inspection_path: Option<&Path>,
+    official_evaluator_manifest_inspection_hash: Option<&str>,
     official_manifest: Option<&SeniorSweBenchOfficialEvaluatorManifestSummary>,
 ) -> Result<PathBuf, String> {
     fs::create_dir_all(export_dir).map_err(|error| {
@@ -11067,6 +11257,14 @@ fn export_standalone_fitness_evidence(
             official_evaluator_manifest_hash.ok_or_else(|| {
                 "fitness evidence official manifest provenance missing manifest hash".to_string()
             })?;
+        let official_evaluator_manifest_inspection_path =
+            official_evaluator_manifest_inspection_path.ok_or_else(|| {
+                "fitness evidence official manifest provenance missing inspection path".to_string()
+            })?;
+        let official_evaluator_manifest_inspection_hash =
+            official_evaluator_manifest_inspection_hash.ok_or_else(|| {
+                "fitness evidence official manifest provenance missing inspection hash".to_string()
+            })?;
         let object = value.as_object_mut().ok_or_else(|| {
             "fitness evidence must be a JSON object before official evaluator provenance"
                 .to_string()
@@ -11082,6 +11280,22 @@ fn export_standalone_fitness_evidence(
         object.insert(
             "official_evaluator_manifest_hash".to_string(),
             Value::String(official_evaluator_manifest_hash.to_string()),
+        );
+        object.insert(
+            "official_evaluator_manifest_inspection_path".to_string(),
+            Value::String(
+                official_evaluator_manifest_inspection_path
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+        );
+        object.insert(
+            "official_evaluator_manifest_inspection_hash".to_string(),
+            Value::String(official_evaluator_manifest_inspection_hash.to_string()),
+        );
+        object.insert(
+            "official_evaluator_manifest_inspection_validated".to_string(),
+            Value::Bool(true),
         );
         object.insert(
             "official_benchmark_url".to_string(),
@@ -12863,6 +13077,9 @@ fn validate_exportable_fitness_evidence_shape(bytes: &[u8]) -> Result<Value, Str
         "candidate_patch_preflight_command",
         "official_evaluator_manifest_path",
         "official_evaluator_manifest_hash",
+        "official_evaluator_manifest_inspection_path",
+        "official_evaluator_manifest_inspection_hash",
+        "official_evaluator_manifest_inspection_validated",
         "official_benchmark_url",
         "official_task_id",
         "official_repo",
@@ -13166,6 +13383,9 @@ fn validate_official_evaluator_manifest_provenance(value: &Value) -> Result<(), 
     let official_fields = [
         "official_evaluator_manifest_path",
         "official_evaluator_manifest_hash",
+        "official_evaluator_manifest_inspection_path",
+        "official_evaluator_manifest_inspection_hash",
+        "official_evaluator_manifest_inspection_validated",
         "official_benchmark_url",
         "official_task_id",
         "official_repo",
@@ -13195,6 +13415,7 @@ fn validate_official_evaluator_manifest_provenance(value: &Value) -> Result<(), 
     }
     for field in [
         "official_evaluator_manifest_path",
+        "official_evaluator_manifest_inspection_path",
         "official_benchmark_url",
         "official_task_id",
         "official_repo",
@@ -13219,6 +13440,29 @@ fn validate_official_evaluator_manifest_provenance(value: &Value) -> Result<(), 
     if manifest_hash.len() != 40 || !manifest_hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
         return Err(
             "official Senior SWE-Bench evidence official_evaluator_manifest_hash is not a git object id"
+                .to_string(),
+        );
+    }
+    let inspection_hash = value
+        .get("official_evaluator_manifest_inspection_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "official Senior SWE-Bench evidence official_evaluator_manifest_inspection_hash is not a string"
+                .to_string()
+        })?;
+    if inspection_hash.len() != 40 || !inspection_hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(
+            "official Senior SWE-Bench evidence official_evaluator_manifest_inspection_hash is not a git object id"
+                .to_string(),
+        );
+    }
+    if value
+        .get("official_evaluator_manifest_inspection_validated")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(
+            "official Senior SWE-Bench evidence official_evaluator_manifest_inspection_validated is not true"
                 .to_string(),
         );
     }
@@ -13639,6 +13883,36 @@ mod tests {
     }
 
     #[test]
+    fn senior_swe_bench_evaluate_requires_official_manifest_inspection_sidecar() {
+        let config = SeniorSweBenchEvaluateConfig {
+            task_package: Some(PathBuf::from("task.json")),
+            task_cycle_input: None,
+            candidate_patch: PathBuf::from("candidate.diff"),
+            candidate_patch_artifact: None,
+            extracted_candidate_patch: None,
+            checkout: PathBuf::from("checkout"),
+            output: None,
+            apply_candidate_patch: false,
+            official_evaluator_manifest: Some(PathBuf::from("official-manifest.json")),
+            official_evaluator_manifest_inspection: None,
+            command: vec!["./official-evaluator".to_string()],
+        };
+        let package = SeniorSweBenchTaskPackageSummary {
+            task_id: "task-hard".to_string(),
+            repo: "owner/repo".to_string(),
+            github_solution_search_allowed: false,
+        };
+
+        let error = load_senior_swe_bench_official_evaluator_manifest(&config, &package)
+            .expect_err("official evaluator manifest requires prior inspection sidecar");
+
+        assert!(
+            error.contains("official-evaluator-manifest-inspection"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn senior_swe_bench_candidate_patch_preflight_checks_applicability_without_applying() {
         let root = env::temp_dir().join(format!(
             "a2d-senior-swe-bench-preflight-{}",
@@ -13697,6 +13971,7 @@ mod tests {
             output: None,
             apply_candidate_patch: true,
             official_evaluator_manifest: None,
+            official_evaluator_manifest_inspection: None,
             command: vec!["sh".to_string(), "evaluator.sh".to_string()],
         };
 
@@ -13748,6 +14023,7 @@ mod tests {
             output: None,
             apply_candidate_patch: true,
             official_evaluator_manifest: None,
+            official_evaluator_manifest_inspection: None,
             command: vec!["sh".to_string(), evaluator.to_string_lossy().to_string()],
         };
         let package = SeniorSweBenchTaskPackageSummary {
@@ -13875,6 +14151,7 @@ mod tests {
             output: None,
             apply_candidate_patch: true,
             official_evaluator_manifest: None,
+            official_evaluator_manifest_inspection: None,
             command: vec!["sh".to_string(), evaluator.to_string_lossy().to_string()],
         };
         let package = SeniorSweBenchTaskPackageSummary {
@@ -13919,6 +14196,7 @@ mod tests {
             output: None,
             apply_candidate_patch: true,
             official_evaluator_manifest: None,
+            official_evaluator_manifest_inspection: None,
             command: vec!["sh".to_string(), "evaluator.sh".to_string()],
         };
 
@@ -13965,7 +14243,10 @@ mod tests {
         fs::create_dir_all(&evaluator_checkout).unwrap();
         fs::write(&candidate_patch, "diff --git a/lib.rs b/lib.rs\n").unwrap();
         fs::write(&manifest_path, "manifest bytes\n").unwrap();
+        let inspection_path = export_dir.join("official-manifest-inspection.json");
+        fs::write(&inspection_path, "inspection bytes\n").unwrap();
         let manifest_hash = file_content_hash(&manifest_path).unwrap();
+        let inspection_hash = file_content_hash(&inspection_path).unwrap();
         let candidate_patch_hash = file_content_hash(&candidate_patch).unwrap();
         let manifest = SeniorSweBenchOfficialEvaluatorManifestSummary {
             benchmark_url: "https://senior-swe-bench.snorkel.ai/tasks".to_string(),
@@ -14000,6 +14281,8 @@ mod tests {
             Some("git apply --check --whitespace=nowarn -- candidate.diff"),
             Some(&manifest_path),
             Some(&manifest_hash),
+            Some(&inspection_path),
+            Some(&inspection_hash),
             Some(&manifest),
         )
         .expect("official Senior SWE-Bench evidence exports with manifest provenance");
@@ -14012,6 +14295,14 @@ mod tests {
         assert_eq!(
             evidence["official_evaluator_manifest_hash"].as_str(),
             Some(manifest_hash.as_str())
+        );
+        assert_eq!(
+            evidence["official_evaluator_manifest_inspection_hash"].as_str(),
+            Some(inspection_hash.as_str())
+        );
+        assert_eq!(
+            evidence["official_evaluator_manifest_inspection_validated"].as_bool(),
+            Some(true)
         );
         assert_eq!(
             evidence["official_benchmark_url"].as_str(),
@@ -14163,6 +14454,10 @@ mod tests {
         official["official_evaluator_manifest_path"] = json!("manifest.json");
         official["official_evaluator_manifest_hash"] =
             json!("1111111111111111111111111111111111111111");
+        official["official_evaluator_manifest_inspection_path"] = json!("inspection.json");
+        official["official_evaluator_manifest_inspection_hash"] =
+            json!("2222222222222222222222222222222222222222");
+        official["official_evaluator_manifest_inspection_validated"] = json!(true);
         official["official_benchmark_url"] = json!("https://senior-swe-bench.snorkel.ai/tasks");
         official["official_task_id"] = json!("task-hard");
         official["official_repo"] = json!("owner/repo");
@@ -16475,6 +16770,7 @@ mod tests {
             output: None,
             apply_candidate_patch: true,
             official_evaluator_manifest: None,
+            official_evaluator_manifest_inspection: None,
             command: vec!["sh".to_string(), "evaluator.sh".to_string()],
         };
 

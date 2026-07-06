@@ -191,6 +191,12 @@ pub struct SeniorSweBenchLocalEvaluation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub official_evaluator_manifest_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub official_evaluator_manifest_inspection_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub official_evaluator_manifest_inspection_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub official_evaluator_manifest_inspection_validated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub official_benchmark_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub official_task_id: Option<String>,
@@ -457,6 +463,9 @@ pub fn build_senior_swe_bench_local_evaluation(
     evaluator_command: Vec<String>,
     official_evaluator_manifest_path: Option<String>,
     official_evaluator_manifest_hash: Option<String>,
+    official_evaluator_manifest_inspection_path: Option<String>,
+    official_evaluator_manifest_inspection_hash: Option<String>,
+    official_evaluator_manifest_inspection_validated: Option<bool>,
     official_manifest: Option<&SeniorSweBenchOfficialEvaluatorManifestSummary>,
     stdout: &str,
     stderr: &str,
@@ -488,6 +497,9 @@ pub fn build_senior_swe_bench_local_evaluation(
         github_solution_search_allowed: package.github_solution_search_allowed,
         official_evaluator_manifest_path,
         official_evaluator_manifest_hash,
+        official_evaluator_manifest_inspection_path,
+        official_evaluator_manifest_inspection_hash,
+        official_evaluator_manifest_inspection_validated,
         official_benchmark_url: official_manifest.map(|manifest| manifest.benchmark_url.clone()),
         official_task_id: official_manifest.map(|manifest| manifest.task_id.clone()),
         official_repo: official_manifest.map(|manifest| manifest.repo.clone()),
@@ -2312,6 +2324,9 @@ mod tests {
             "0123456789abcdef0123456789abcdef01234567",
             "senior-swe-bench-evaluate --task-package task.json",
             vec!["./test.sh".to_string()],
+            None,
+            None,
+            None,
             None,
             None,
             None,

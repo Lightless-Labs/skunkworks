@@ -88,6 +88,46 @@ fn sample_retry_plan() -> &'static str {
 "#
 }
 
+fn sample_official_manifest(command: &[&str]) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "schema_version": "a2d.senior-swe-bench-official-evaluator-manifest.v1",
+        "benchmark_url": "https://senior-swe-bench.snorkel.ai/tasks/task-hard",
+        "task_id": "task-hard",
+        "repo": "owner/repo",
+        "hidden_holdouts": true,
+        "github_solution_search_allowed": false,
+        "benchmark_provided_command": command
+    }))
+    .unwrap()
+}
+
+fn write_official_manifest_inspection(
+    cycle_input: &std::path::Path,
+    official_manifest: &std::path::Path,
+    command: &[&str],
+    output_path: &std::path::Path,
+) {
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-official-evaluator-manifest-inspect",
+            "--task-cycle-input",
+            cycle_input.to_str().unwrap(),
+            "--official-evaluator-manifest",
+            official_manifest.to_str().unwrap(),
+            "--",
+        ])
+        .args(command)
+        .output()
+        .expect("run official manifest inspect");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::write(output_path, output.stdout).unwrap();
+}
+
 fn write_manifest(
     root: &std::path::Path,
     artifact: &std::path::Path,
@@ -125,10 +165,21 @@ fn retry_attempt_plan_composes_selection_extraction_evaluation_and_retry_step_ar
     let checkout = root.join("checkout");
     let attempt_dir = root.join("attempt-0");
     let official_manifest = root.join("official-manifest.json");
+    let official_inspection = root.join("official-manifest-inspection.json");
     fs::create_dir_all(&checkout).unwrap();
     fs::write(&retry_plan, sample_retry_plan()).unwrap();
     fs::write(&cycle_input, sample_cycle_input()).unwrap();
-    fs::write(&official_manifest, "{}\n").unwrap();
+    fs::write(
+        &official_manifest,
+        sample_official_manifest(&["bin/custom-evaluator", "--flag"]),
+    )
+    .unwrap();
+    write_official_manifest_inspection(
+        &cycle_input,
+        &official_manifest,
+        &["bin/custom-evaluator", "--flag"],
+        &official_inspection,
+    );
     let artifact = root.join("candidate.artifact");
     let diff = b"diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n";
     fs::write(&artifact, diff).unwrap();
@@ -152,8 +203,10 @@ fn retry_attempt_plan_composes_selection_extraction_evaluation_and_retry_step_ar
             "--apply-candidate-patch",
             "--official-evaluator-manifest",
             official_manifest.to_str().unwrap(),
+            "--official-evaluator-manifest-inspection",
+            official_inspection.to_str().unwrap(),
             "--",
-            "./evaluate.sh",
+            "bin/custom-evaluator",
             "--flag",
         ])
         .output()
@@ -193,12 +246,21 @@ fn retry_attempt_plan_composes_selection_extraction_evaluation_and_retry_step_ar
             .iter()
             .any(|arg| arg.as_str() == Some("--apply-candidate-patch"))
     );
+    let evaluate_args = value["evaluate_args"].as_array().unwrap();
     assert!(
-        value["evaluate_args"]
-            .as_array()
-            .unwrap()
+        evaluate_args
             .iter()
             .any(|arg| arg.as_str() == Some("--official-evaluator-manifest"))
+    );
+    assert!(
+        evaluate_args
+            .iter()
+            .any(|arg| arg.as_str() == Some("--official-evaluator-manifest-inspection"))
+    );
+    assert!(
+        evaluate_args
+            .iter()
+            .any(|arg| arg.as_str() == Some(official_inspection.to_str().unwrap()))
     );
     assert_eq!(
         value["retry_step_args"].as_array().unwrap()[0].as_str(),
@@ -304,6 +366,41 @@ fn retry_attempt_plan_stops_on_non_extractable_artifact_and_rejects_unsafe_input
     assert_eq!(multi_stdin_rejected.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&multi_stdin_rejected.stderr).contains("at most one"));
 
+    let missing_official_inspection = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-attempt-plan",
+            "--retry-plan",
+            retry_plan.to_str().unwrap(),
+            "--attempt-index",
+            "0",
+            "--task-cycle-input",
+            cycle_input.to_str().unwrap(),
+            "--cycle-output-manifest",
+            manifest.to_str().unwrap(),
+            "--checkout",
+            checkout.to_str().unwrap(),
+            "--attempt-dir",
+            attempt_dir.to_str().unwrap(),
+            "--official-evaluator-manifest",
+            root.join("official.json").to_str().unwrap(),
+            "--",
+            "./evaluate.sh",
+        ])
+        .output()
+        .expect("run retry attempt plan command");
+    assert_eq!(missing_official_inspection.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&missing_official_inspection.stderr)
+            .contains("official-evaluator-manifest-inspection")
+    );
+
+    let inspection = root.join("official-inspection.json");
+    fs::write(
+        &inspection,
+        "{}
+",
+    )
+    .unwrap();
     let missing_official_manifest = Command::new(env!("CARGO_BIN_EXE_a2d"))
         .args([
             "senior-swe-bench-retry-attempt-plan",
@@ -321,6 +418,8 @@ fn retry_attempt_plan_stops_on_non_extractable_artifact_and_rejects_unsafe_input
             attempt_dir.to_str().unwrap(),
             "--official-evaluator-manifest",
             root.join("missing-official.json").to_str().unwrap(),
+            "--official-evaluator-manifest-inspection",
+            inspection.to_str().unwrap(),
             "--",
             "./evaluate.sh",
         ])
