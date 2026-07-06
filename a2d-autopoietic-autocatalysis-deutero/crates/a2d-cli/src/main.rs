@@ -5513,13 +5513,14 @@ fn validate_retry_run_next_cycle_config(
             "Senior SWE-Bench retry run next cycle requires retry-execution file path".to_string(),
         );
     }
-    if !config.retry_execution.is_file() {
+    let retry_execution = resolve_retry_artifact_path(&config.retry_execution);
+    if !retry_execution.is_file() {
         return Err(format!(
             "Senior SWE-Bench retry execution not found: {}",
             config.retry_execution.display()
         ));
     }
-    Ok(config)
+    Ok(SeniorSweBenchRetryRunNextCycleConfig { retry_execution })
 }
 
 fn parse_senior_swe_bench_retry_run_next_gate_args(
@@ -5559,17 +5560,18 @@ fn parse_senior_swe_bench_retry_run_next_gate_args(
                     "--retry-attempt-plan next-gate mode accepts exactly one path".to_string(),
                 );
             }
-            let retry_attempt_plan = PathBuf::from(&args[1]);
-            if retry_attempt_plan == Path::new("-") {
+            let supplied_retry_attempt_plan = PathBuf::from(&args[1]);
+            if supplied_retry_attempt_plan == Path::new("-") {
                 return Err(
                     "Senior SWE-Bench retry next gate requires retry-attempt-plan file path"
                         .to_string(),
                 );
             }
+            let retry_attempt_plan = resolve_retry_artifact_path(&supplied_retry_attempt_plan);
             if !retry_attempt_plan.is_file() {
                 return Err(format!(
                     "Senior SWE-Bench retry attempt plan not found: {}",
-                    retry_attempt_plan.display()
+                    supplied_retry_attempt_plan.display()
                 ));
             }
             Ok(SeniorSweBenchRetryRunNextGateConfig::FromResumeAttemptPlan { retry_attempt_plan })
@@ -5584,11 +5586,11 @@ fn parse_senior_swe_bench_retry_resume_attempt_plan_args(
     args: &[String],
 ) -> Result<SeniorSweBenchRetryResumeAttemptPlanConfig, String> {
     let mut retry_execution = None;
-    let mut retry_plan = None;
-    let mut cycle_output_manifest = None;
-    let mut next_cycle_execution = None;
+    let mut retry_plan: Option<PathBuf> = None;
+    let mut cycle_output_manifest: Option<PathBuf> = None;
+    let mut next_cycle_execution: Option<PathBuf> = None;
     let mut apply_candidate_patch = false;
-    let mut official_evaluator_manifest = None;
+    let mut official_evaluator_manifest: Option<PathBuf> = None;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -5600,7 +5602,9 @@ fn parse_senior_swe_bench_retry_resume_attempt_plan_args(
                             .to_string(),
                     );
                 }
-                let retry_plan = retry_plan.ok_or_else(|| "missing --retry-plan".to_string())?;
+                let retry_plan = resolve_retry_artifact_path(
+                    &retry_plan.ok_or_else(|| "missing --retry-plan".to_string())?,
+                );
                 let (retry_execution, cycle_output_manifest) =
                     resolve_retry_resume_attempt_boundary_paths(
                         retry_execution,
@@ -5611,9 +5615,13 @@ fn parse_senior_swe_bench_retry_resume_attempt_plan_args(
                     retry_execution,
                     retry_plan,
                     cycle_output_manifest,
-                    next_cycle_execution,
+                    next_cycle_execution: next_cycle_execution
+                        .as_ref()
+                        .map(|path| resolve_retry_artifact_path(path)),
                     apply_candidate_patch,
-                    official_evaluator_manifest,
+                    official_evaluator_manifest: official_evaluator_manifest
+                        .as_ref()
+                        .map(|path| resolve_retry_artifact_path(path)),
                     evaluator_command,
                 };
                 validate_retry_resume_attempt_plan_config(&config)?;
@@ -5681,8 +5689,12 @@ fn resolve_retry_resume_attempt_boundary_paths(
         return load_senior_swe_bench_retry_next_cycle_execution_paths(&next_cycle_execution);
     }
     Ok((
-        retry_execution.ok_or_else(|| "missing --retry-execution".to_string())?,
-        cycle_output_manifest.ok_or_else(|| "missing --cycle-output-manifest".to_string())?,
+        resolve_retry_artifact_path(
+            &retry_execution.ok_or_else(|| "missing --retry-execution".to_string())?,
+        ),
+        resolve_retry_artifact_path(
+            &cycle_output_manifest.ok_or_else(|| "missing --cycle-output-manifest".to_string())?,
+        ),
     ))
 }
 
@@ -5734,13 +5746,14 @@ fn load_senior_swe_bench_retry_next_cycle_execution_paths(
                 .to_string(),
         );
     }
+    let next_cycle_execution_path = resolve_retry_artifact_path(next_cycle_execution_path);
     if !next_cycle_execution_path.is_file() {
         return Err(format!(
             "Senior SWE-Bench retry next-cycle execution not found: {}",
             next_cycle_execution_path.display()
         ));
     }
-    let text = read_artifact_to_string(next_cycle_execution_path)?;
+    let text = read_artifact_to_string(&next_cycle_execution_path)?;
     let execution: Value = serde_json::from_str(&text).map_err(|error| {
         format!("invalid Senior SWE-Bench retry next-cycle execution JSON: {error}")
     })?;
@@ -5841,12 +5854,12 @@ fn load_senior_swe_bench_retry_next_cycle_execution_paths(
                 .to_string(),
         );
     }
-    let retry_execution = PathBuf::from(
+    let retry_execution = resolve_retry_artifact_path(Path::new(
         execution
             .get("retry_execution_path")
             .and_then(Value::as_str)
             .expect("validated retry_execution_path"),
-    );
+    ));
     if !retry_execution.is_file() {
         return Err(format!(
             "Senior SWE-Bench prior retry execution not found: {}",
@@ -5877,19 +5890,19 @@ fn load_senior_swe_bench_retry_next_cycle_execution_paths(
         );
     }
     let expected_summary_path = boundary.attempt_dir.join("retry-next-cycle-execution.json");
-    if !paths_equivalent(next_cycle_execution_path, &expected_summary_path) {
+    if !paths_equivalent(&next_cycle_execution_path, &expected_summary_path) {
         return Err(format!(
             "Senior SWE-Bench retry next-cycle execution path {} does not match expected boundary summary {}",
             next_cycle_execution_path.display(),
             expected_summary_path.display()
         ));
     }
-    let cycle_output_manifest = PathBuf::from(
+    let cycle_output_manifest = resolve_retry_artifact_path(Path::new(
         execution
             .get("cycle_output_manifest")
             .and_then(Value::as_str)
             .expect("validated cycle_output_manifest"),
-    );
+    ));
     if !paths_equivalent(&cycle_output_manifest, &boundary.expected_manifest) {
         return Err(format!(
             "Senior SWE-Bench retry next-cycle execution manifest {} does not match expected boundary manifest {}",
@@ -5908,7 +5921,7 @@ fn load_senior_swe_bench_retry_next_cycle_execution_paths(
             .ok_or_else(|| {
                 format!("Senior SWE-Bench retry next-cycle execution missing {field}")
             })?;
-        if !paths_equivalent(Path::new(recorded), path) {
+        if !paths_equivalent(&resolve_retry_artifact_path(Path::new(recorded)), path) {
             return Err(format!(
                 "Senior SWE-Bench retry next-cycle execution {field} {recorded} does not match boundary {}",
                 path.display()
@@ -5945,7 +5958,8 @@ fn load_senior_swe_bench_retry_next_cycle_execution_paths(
 fn load_senior_swe_bench_retry_next_cycle_boundary(
     retry_execution_path: &Path,
 ) -> Result<SeniorSweBenchRetryNextCycleBoundary, String> {
-    let retry_execution_text = read_artifact_to_string(retry_execution_path)?;
+    let retry_execution_path = resolve_retry_artifact_path(retry_execution_path);
+    let retry_execution_text = read_artifact_to_string(&retry_execution_path)?;
     let retry_execution: Value = serde_json::from_str(&retry_execution_text)
         .map_err(|error| format!("invalid Senior SWE-Bench retry execution JSON: {error}"))?;
     let schema = retry_execution
@@ -6046,9 +6060,9 @@ fn load_senior_swe_bench_retry_next_cycle_boundary(
             "Senior SWE-Bench next_cycle_command has invalid cycle-input argv order".to_string(),
         );
     }
-    let task_cycle_input = PathBuf::from(&argv[1]);
-    let checkout = PathBuf::from(&argv[4]);
-    let output_artifacts_dir = PathBuf::from(&argv[6]);
+    let task_cycle_input = resolve_retry_artifact_path(Path::new(&argv[1]));
+    let checkout = resolve_retry_artifact_path(Path::new(&argv[4]));
+    let output_artifacts_dir = resolve_retry_artifact_path(Path::new(&argv[6]));
     if !task_cycle_input.is_file() {
         return Err(format!(
             "Senior SWE-Bench next cycle input not found: {}",
@@ -6061,14 +6075,14 @@ fn load_senior_swe_bench_retry_next_cycle_boundary(
             checkout.display()
         ));
     }
-    let expected_manifest = PathBuf::from(
+    let expected_manifest = resolve_retry_artifact_path(Path::new(
         next_cycle_command
             .get("expected_manifest_path")
             .and_then(Value::as_str)
             .ok_or_else(|| {
                 "Senior SWE-Bench next_cycle_command missing expected_manifest_path".to_string()
             })?,
-    );
+    ));
     let command_manifest = output_artifacts_dir.join("manifest.json");
     if !paths_equivalent(&expected_manifest, &command_manifest) {
         return Err(format!(
@@ -6146,7 +6160,10 @@ fn load_senior_swe_bench_retry_next_cycle_boundary(
     if let Some(recorded_next_input) = last_attempt
         .get("next_cycle_input_path")
         .and_then(Value::as_str)
-        && !paths_equivalent(Path::new(recorded_next_input), &task_cycle_input)
+        && !paths_equivalent(
+            &resolve_retry_artifact_path(Path::new(recorded_next_input)),
+            &task_cycle_input,
+        )
     {
         return Err(
             "Senior SWE-Bench retry execution next_cycle_input_path does not match next command"
@@ -6209,16 +6226,16 @@ fn build_senior_swe_bench_retry_resume_attempt_plan(
     let mut plan = build_senior_swe_bench_retry_attempt_plan(&attempt_config)?;
     plan["resume_boundary"] = json!({
         "schema_version": "a2d.senior-swe-bench-retry-resume-boundary.v1",
-        "retry_execution_path": config.retry_execution,
-        "next_cycle_execution_path": config.next_cycle_execution.as_ref().map(|path| path.display().to_string()),
+        "retry_execution_path": retry_artifact_path_string(&config.retry_execution),
+        "next_cycle_execution_path": config.next_cycle_execution.as_ref().map(|path| retry_artifact_path_string(path)),
         "task_id": boundary.task_id,
         "repo": boundary.repo,
         "attempt_index": boundary.attempt_index,
-        "attempt_dir": boundary.attempt_dir,
-        "task_cycle_input": boundary.task_cycle_input,
-        "checkout": boundary.checkout,
-        "output_artifacts_dir": boundary.output_artifacts_dir,
-        "cycle_output_manifest": config.cycle_output_manifest,
+        "attempt_dir": retry_artifact_path_string(&boundary.attempt_dir),
+        "task_cycle_input": retry_artifact_path_string(&boundary.task_cycle_input),
+        "checkout": retry_artifact_path_string(&boundary.checkout),
+        "output_artifacts_dir": retry_artifact_path_string(&boundary.output_artifacts_dir),
+        "cycle_output_manifest": retry_artifact_path_string(&config.cycle_output_manifest),
         "cycle_output_manifest_git_object_hash": manifest_hash,
         "next_cycle_command": boundary.next_cycle_command,
         "provider_invocations_started": false,
@@ -6264,7 +6281,10 @@ fn build_senior_swe_bench_retry_resume_attempt_execution(plan: &str) -> Result<V
         .ok_or_else(|| {
             "Senior SWE-Bench retry resume attempt plan missing attempt_index".to_string()
         })? as usize;
-    let attempt_dir = PathBuf::from(required_plan_string(&attempt_plan, "attempt_dir")?);
+    let attempt_dir = resolve_retry_artifact_path(Path::new(&required_plan_string(
+        &attempt_plan,
+        "attempt_dir",
+    )?));
     let work_dir = attempt_dir
         .parent()
         .ok_or_else(|| "Senior SWE-Bench retry resume attempt dir has no parent".to_string())?
@@ -6287,17 +6307,20 @@ fn build_senior_swe_bench_retry_resume_attempt_execution(plan: &str) -> Result<V
             .as_slice(),
         "--retry-plan",
     )?;
-    let retry_plan_text = read_artifact_to_string(Path::new(&retry_plan_path))?;
+    let retry_plan_text =
+        read_artifact_to_string(&resolve_retry_artifact_path(Path::new(&retry_plan_path)))?;
     let retry_plan: Value = serde_json::from_str(&retry_plan_text)
         .map_err(|error| format!("invalid Senior SWE-Bench retry plan JSON: {error}"))?;
     let prior_retry_execution_path = work_dir.join("retry-execution.json");
     let boundary = load_senior_swe_bench_retry_next_cycle_boundary(&prior_retry_execution_path)?;
-    let plan_task_cycle_input =
-        PathBuf::from(required_plan_string(&attempt_plan, "task_cycle_input")?);
-    let plan_manifest = PathBuf::from(required_plan_string(
+    let plan_task_cycle_input = resolve_retry_artifact_path(Path::new(&required_plan_string(
+        &attempt_plan,
+        "task_cycle_input",
+    )?));
+    let plan_manifest = resolve_retry_artifact_path(Path::new(&required_plan_string(
         &attempt_plan,
         "cycle_output_manifest",
-    )?);
+    )?));
     if boundary.attempt_index != attempt_index
         || !paths_equivalent(&boundary.attempt_dir, &attempt_dir)
         || !paths_equivalent(&boundary.task_cycle_input, &plan_task_cycle_input)
@@ -6499,6 +6522,7 @@ fn run_retry_next_cycle_command(argv: &[String]) -> Result<RetryNextCycleCommand
         .map_err(|error| format!("failed to create next-cycle stderr capture: {error}"))?;
     let mut child = Command::new(current_exe)
         .args(argv)
+        .current_dir(a2d_project_root())
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file))
         .spawn()
@@ -6621,10 +6645,10 @@ fn validate_retry_resume_attempt_execution_boundary(
                 .to_string(),
         );
     }
-    let recorded_retry_execution = PathBuf::from(required_plan_string(
+    let recorded_retry_execution = resolve_retry_artifact_path(Path::new(&required_plan_string(
         resume_boundary,
         "retry_execution_path",
-    )?);
+    )?));
     if !paths_equivalent(&recorded_retry_execution, prior_retry_execution_path) {
         return Err(
             "Senior SWE-Bench retry resume attempt resume_boundary retry_execution_path does not match prior retry boundary"
@@ -6673,7 +6697,8 @@ fn validate_retry_resume_attempt_execution_boundary(
         ("output_artifacts_dir", &boundary.output_artifacts_dir),
         ("cycle_output_manifest", &boundary.expected_manifest),
     ] {
-        let recorded = PathBuf::from(required_plan_string(resume_boundary, field)?);
+        let recorded =
+            resolve_retry_artifact_path(Path::new(&required_plan_string(resume_boundary, field)?));
         if !paths_equivalent(&recorded, expected) {
             return Err(format!(
                 "Senior SWE-Bench retry resume attempt resume_boundary {field} does not match prior retry boundary"
@@ -6911,7 +6936,7 @@ where
                         next_cycle_config,
                         &mut next_cycle_runner,
                     )?;
-                    let attempt_dir = PathBuf::from(
+                    let attempt_dir = resolve_retry_artifact_path(Path::new(
                         child
                             .get("output_artifacts_dir")
                             .and_then(Value::as_str)
@@ -6919,7 +6944,7 @@ where
                                 "Senior SWE-Bench retry next-cycle child missing output_artifacts_dir"
                                     .to_string()
                             })?,
-                    )
+                    ))
                     .parent()
                     .ok_or_else(|| {
                         "Senior SWE-Bench retry next-cycle child output path has no attempt dir"
@@ -6978,7 +7003,10 @@ where
         }
         SeniorSweBenchRetryRunNextGateConfig::FromNextCycleExecution(resume_config) => {
             let plan = build_senior_swe_bench_retry_resume_attempt_plan(resume_config)?;
-            let attempt_dir = PathBuf::from(required_plan_string(&plan, "attempt_dir")?);
+            let attempt_dir = resolve_retry_artifact_path(Path::new(&required_plan_string(
+                &plan,
+                "attempt_dir",
+            )?));
             let plan_path = attempt_dir.join("retry-attempt-plan.json");
             let output_path = attempt_dir.join("retry-next-gate-resume-plan.json");
             preflight_retry_next_gate_output(&output_path)?;
@@ -7010,7 +7038,10 @@ where
             let plan: Value = serde_json::from_str(&plan_text).map_err(|error| {
                 format!("invalid Senior SWE-Bench retry attempt plan JSON: {error}")
             })?;
-            let attempt_dir = PathBuf::from(required_plan_string(&plan, "attempt_dir")?);
+            let attempt_dir = resolve_retry_artifact_path(Path::new(&required_plan_string(
+                &plan,
+                "attempt_dir",
+            )?));
             let work_dir = attempt_dir.parent().ok_or_else(|| {
                 "Senior SWE-Bench retry attempt plan attempt_dir has no parent".to_string()
             })?;
@@ -7196,12 +7227,12 @@ where
         "task_id": package.task_id,
         "repo": package.repo,
         "attempt_index": boundary.attempt_index,
-        "retry_execution_path": config.retry_execution.display().to_string(),
+        "retry_execution_path": retry_artifact_path_string(&config.retry_execution),
         "next_cycle_command": boundary.next_cycle_command,
-        "task_cycle_input": boundary.task_cycle_input.display().to_string(),
-        "checkout": boundary.checkout.display().to_string(),
-        "output_artifacts_dir": boundary.output_artifacts_dir.display().to_string(),
-        "cycle_output_manifest": boundary.expected_manifest.display().to_string(),
+        "task_cycle_input": retry_artifact_path_string(&boundary.task_cycle_input),
+        "checkout": retry_artifact_path_string(&boundary.checkout),
+        "output_artifacts_dir": retry_artifact_path_string(&boundary.output_artifacts_dir),
+        "cycle_output_manifest": retry_artifact_path_string(&boundary.expected_manifest),
         "cycle_output_manifest_git_object_hash": cycle_output_manifest_git_object_hash,
         "cycle_output_artifact_count": artifact_count,
         "cycle_input_command_started": command_spawned,
@@ -7327,16 +7358,17 @@ fn parse_senior_swe_bench_retry_status_args(
             "Senior SWE-Bench retry status requires exactly one retry execution path".to_string(),
         );
     }
-    let retry_execution = PathBuf::from(&args[0]);
-    if retry_execution == Path::new("-") {
+    let supplied_retry_execution = PathBuf::from(&args[0]);
+    if supplied_retry_execution == Path::new("-") {
         return Err(
             "Senior SWE-Bench retry status requires a retry execution file path".to_string(),
         );
     }
+    let retry_execution = resolve_retry_artifact_path(&supplied_retry_execution);
     if !retry_execution.is_file() {
         return Err(format!(
             "Senior SWE-Bench retry execution not found: {}",
-            retry_execution.display()
+            supplied_retry_execution.display()
         ));
     }
     Ok(SeniorSweBenchRetryStatusConfig { retry_execution })
@@ -7407,7 +7439,7 @@ fn build_senior_swe_bench_retry_status(
 
     let mut result = json!({
         "schema_version": "a2d.senior-swe-bench-retry-status.v1",
-        "retry_execution_path": config.retry_execution.display().to_string(),
+        "retry_execution_path": retry_artifact_path_string(&config.retry_execution),
         "retry_execution_schema": schema,
         "status": status,
         "stop_reason": stop_reason,
@@ -7572,22 +7604,24 @@ fn build_senior_swe_bench_retry_status(
                     "argv": [
                         "senior-swe-bench-retry-run-next-cycle",
                         "--retry-execution",
-                        config.retry_execution.to_string_lossy(),
+                        retry_artifact_path_string(&config.retry_execution),
                     ],
                     "provider_invocations_started": false,
                     "evaluator_invocations_started": false,
                     "fitness_evidence_inspection_started": false,
                     "fitness_claim_allowed_before_evidence": false,
                     "github_solution_search_allowed": false,
-                    "retry_execution_path_binding": "as_supplied_to_status; rerun from the same working directory if relative",
+                    "retry_execution_path_binding": "repo_relative_paths_resolve_against_a2d_project_root",
                     "note": "status handoff only; running this command may start exactly one bounded cycle-input provider boundary, but this status command has not started it",
                 });
                 result["next_action"] = json!("run_next_cycle");
                 result["next_gate_command"] = next_gate_command;
                 result["next_cycle_command"] = boundary.next_cycle_command;
                 result["next_cycle_attempt_index"] = json!(boundary.attempt_index);
-                result["next_cycle_task_input"] = json!(boundary.task_cycle_input);
-                result["next_cycle_expected_manifest"] = json!(boundary.expected_manifest);
+                result["next_cycle_task_input"] =
+                    json!(retry_artifact_path_string(&boundary.task_cycle_input));
+                result["next_cycle_expected_manifest"] =
+                    json!(retry_artifact_path_string(&boundary.expected_manifest));
             } else {
                 result["next_action"] = json!("stopped");
             }
@@ -8259,20 +8293,79 @@ fn retry_execute_next_cycle_command(
         "command": "a2d",
         "argv": [
             "cycle-input",
-            next_cycle_input_path.to_string_lossy(),
+            retry_artifact_path_string(next_cycle_input_path),
             "1",
             "--checkout",
-            checkout.to_string_lossy(),
+            retry_artifact_path_string(checkout),
             "--output-artifacts",
-            output_artifacts_dir.to_string_lossy(),
+            retry_artifact_path_string(output_artifacts_dir),
         ],
-        "expected_manifest_path": output_artifacts_dir.join("manifest.json").to_string_lossy(),
+        "expected_manifest_path": retry_artifact_path_string(&output_artifacts_dir.join("manifest.json")),
         "provider_invocations_started": false,
         "evaluator_invocations_started": false,
         "fitness_evidence_inspection_started": false,
         "github_solution_search_allowed": false,
         "fitness_claim_allowed_before_evidence": false,
     })
+}
+
+fn a2d_project_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+fn normalize_retry_path(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn retry_absolute_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        normalize_retry_path(path.to_path_buf())
+    } else {
+        normalize_retry_path(
+            env::current_dir()
+                .unwrap_or_else(|_| a2d_project_root())
+                .join(path),
+        )
+    }
+}
+
+fn retry_artifact_path_string(path: &Path) -> String {
+    let absolute = retry_absolute_path(path);
+    let project_root = a2d_project_root();
+    if let Ok(relative) = absolute.strip_prefix(&project_root) {
+        relative.to_string_lossy().replace('\\', "/")
+    } else {
+        path.to_string_lossy().replace('\\', "/")
+    }
+}
+
+fn resolve_retry_artifact_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return normalize_retry_path(path.to_path_buf());
+    }
+    let project_candidate = normalize_retry_path(a2d_project_root().join(path));
+    if project_candidate.exists() {
+        return project_candidate;
+    }
+    let cwd_candidate = retry_absolute_path(path);
+    if cwd_candidate.exists() {
+        return cwd_candidate;
+    }
+    project_candidate
 }
 
 fn write_json_artifact(path: &Path, value: &Value) -> Result<(), String> {

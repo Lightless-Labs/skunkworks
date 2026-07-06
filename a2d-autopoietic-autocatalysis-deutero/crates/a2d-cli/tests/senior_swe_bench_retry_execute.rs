@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -9,6 +10,45 @@ fn unique_suffix() -> String {
         .expect("clock after epoch")
         .as_nanos();
     format!("{}-{nanos}", std::process::id())
+}
+
+fn project_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("a2d-cli is under project crates directory")
+        .to_path_buf()
+}
+
+fn project_relative(path: &Path) -> String {
+    path.strip_prefix(project_root())
+        .expect("path under project root")
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn assert_json_contains_no_host_absolute_paths(value: &serde_json::Value, forbidden: &[String]) {
+    match value {
+        serde_json::Value::String(text) => {
+            for prefix in forbidden {
+                assert!(
+                    !text.contains(prefix),
+                    "JSON string contains host-local absolute path {prefix}: {text}"
+                );
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                assert_json_contains_no_host_absolute_paths(item, forbidden);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            for item in object.values() {
+                assert_json_contains_no_host_absolute_paths(item, forbidden);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn git_hash_object_bytes(bytes: &[u8]) -> String {
@@ -272,7 +312,16 @@ struct Fixture {
 }
 
 fn write_fixture(name: &str, max_attempts: usize, evaluator_body: &str) -> Fixture {
-    let root = std::env::temp_dir().join(format!("a2d-retry-execute-{name}-{}", unique_suffix()));
+    write_fixture_in(std::env::temp_dir(), name, max_attempts, evaluator_body)
+}
+
+fn write_fixture_in(
+    parent: PathBuf,
+    name: &str,
+    max_attempts: usize,
+    evaluator_body: &str,
+) -> Fixture {
+    let root = parent.join(format!("a2d-retry-execute-{name}-{}", unique_suffix()));
     let checkout = root.join("checkout");
     let src = checkout.join("src");
     let work_dir = root.join("work");
@@ -1094,7 +1143,7 @@ fn retry_status_reports_next_cycle_boundary_without_fitness_claim() {
             "fitness_evidence_inspection_started": false,
             "fitness_claim_allowed_before_evidence": false,
             "github_solution_search_allowed": false,
-            "retry_execution_path_binding": "as_supplied_to_status; rerun from the same working directory if relative",
+            "retry_execution_path_binding": "repo_relative_paths_resolve_against_a2d_project_root",
             "note": "status handoff only; running this command may start exactly one bounded cycle-input provider boundary, but this status command has not started it",
         })
     );
@@ -1362,6 +1411,105 @@ fn retry_execute_reports_precomputed_manifest_exhaustion_before_max_attempts() {
     assert_eq!(
         next_cycle_input["evaluation"]["status"].as_str(),
         Some("not_evaluated")
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_status_next_gate_paths_are_repo_relative_and_cwd_stable() {
+    let fixture_parent = project_root().join("target/a2d-retry-cwd-stability");
+    let fixture = write_fixture_in(
+        fixture_parent,
+        "repo-relative-next-gate",
+        2,
+        "echo public failure >&2\nexit 1\n",
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .current_dir(project_root())
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute from project root");
+    assert_eq!(output.status.code(), Some(2));
+
+    let retry_execution = fixture.work_dir.join("retry-execution.json");
+    let retry_execution_rel = project_relative(&retry_execution);
+    let status_from_root = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .current_dir(project_root())
+        .args(["senior-swe-bench-retry-status", &retry_execution_rel])
+        .output()
+        .expect("run retry status from project root");
+    assert_eq!(
+        status_from_root.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&status_from_root.stderr)
+    );
+    let status_from_subdir = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .current_dir(project_root().join("crates/a2d-cli"))
+        .args(["senior-swe-bench-retry-status", &retry_execution_rel])
+        .output()
+        .expect("run retry status from project subdir");
+    assert_eq!(
+        status_from_subdir.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&status_from_subdir.stderr)
+    );
+
+    let status_root: serde_json::Value = serde_json::from_slice(&status_from_root.stdout).unwrap();
+    let status_subdir: serde_json::Value =
+        serde_json::from_slice(&status_from_subdir.stdout).unwrap();
+    assert_eq!(status_root, status_subdir);
+    assert_json_contains_no_host_absolute_paths(
+        &status_root,
+        &[
+            project_root().to_string_lossy().to_string(),
+            fixture.root.to_string_lossy().to_string(),
+        ],
+    );
+    assert_eq!(
+        status_root["next_gate_command"]["argv"],
+        serde_json::json!([
+            "senior-swe-bench-retry-run-next-cycle",
+            "--retry-execution",
+            retry_execution_rel,
+        ])
+    );
+    assert_eq!(
+        status_root["next_cycle_command"]["argv"],
+        serde_json::json!([
+            "cycle-input",
+            project_relative(&fixture.work_dir.join("attempt-0/next-cycle-input.json")),
+            "1",
+            "--checkout",
+            project_relative(&fixture.checkout),
+            "--output-artifacts",
+            project_relative(&fixture.work_dir.join("attempt-1/cycle-output-artifacts")),
+        ])
+    );
+    assert_eq!(
+        status_root["next_cycle_command"]["expected_manifest_path"],
+        serde_json::json!(project_relative(
+            &fixture
+                .work_dir
+                .join("attempt-1/cycle-output-artifacts/manifest.json")
+        ))
     );
 
     let _ = fs::remove_dir_all(fixture.root);

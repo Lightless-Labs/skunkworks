@@ -88,3 +88,29 @@ Evidence summary:
 ## Interpretation
 
 This is a controller/readiness slice toward autonomous Senior SWE-Bench retry orchestration. It is not a public solution-search enforcement proof, not an OS/network isolation proof, and not official Senior SWE-Bench task mastery.
+
+## Follow-up: path-normalization hardening
+
+A follow-up slice made retry status/next-cycle handoff paths CWD-stable for in-project artifacts. Retry status, next-cycle-command/summary, and resume-boundary paths now serialize repo-relative strings where possible, resolve repo-relative retry artifacts against the A²D project root, and launch the next-cycle child from the project root so the persisted command text is stable from subdirectories.
+
+Validation:
+
+```bash
+cargo fmt --check
+cargo test -p a2d --test senior_swe_bench_retry_execute -- --nocapture
+cargo test -p a2d retry_run_next_gate -- --nocapture
+cargo test
+```
+
+Fresh source-patch evidence:
+
+```bash
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260706-retry-path-normalization-evidence/actual-test-score-artifact \
+  cargo run -q -p a2d -- score-artifact sudoku runs/20260701-score-artifact-fitness-evidence/good-sudoku-artifact.rs
+
+cargo run -q -p a2d -- fitness-evidence-inspect \
+  runs/20260706-retry-path-normalization-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
+```
+
+Evidence summary: `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`, `source_diff_hash: 5b72e098273f7afdc747bf821ba46590ef4f4e55`, matching the scoped crates diff. This remains retry status/next-cycle handoff portability source-patch evidence, not official Senior SWE-Bench mastery or a no-egress proof.
