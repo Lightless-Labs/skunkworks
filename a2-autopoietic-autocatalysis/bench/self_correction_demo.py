@@ -31,6 +31,7 @@ import tempfile
 import unittest
 import urllib.parse
 from pathlib import Path
+from typing import Callable
 from unittest import mock
 
 
@@ -2796,7 +2797,7 @@ def run_command(command: list[str], *, print_only: bool) -> int:
 
 
 def canonical_verify_archive_command() -> str:
-    return f"bench/self_correction_demo.py verify-archive --evidence-json {DEFAULT_ARCHIVE_EVIDENCE}"
+    return f"python3 bench/self_correction_demo.py verify-archive --evidence-json {DEFAULT_ARCHIVE_EVIDENCE}"
 
 
 def handoff_demo_evidence_section(text: str) -> str:
@@ -2832,11 +2833,35 @@ def require_ordered_demo_chain(block_name: str, block_text: str, missing: list[s
         cursor = position
 
 
+def markdown_logical_shell_lines(text: str) -> list[str]:
+    """Return copy/paste shell command lines with backslash continuations normalized."""
+    logical_lines: list[str] = []
+    current = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("```") or stripped.startswith("#"):
+            continue
+        if current:
+            current = f"{current} {stripped}"
+        else:
+            current = stripped
+        if current.endswith("\\"):
+            current = current[:-1].rstrip()
+            continue
+        logical_lines.append(" ".join(current.split()))
+        current = ""
+    if current:
+        logical_lines.append(" ".join(current.split()))
+    return logical_lines
+
+
 def verify_demo_docs_texts(docs: dict[str, str]) -> None:
     common_required = [
         "python3 bench/self_correction_demo.py verify-demo-docs",
         "python3 bench/self_correction_demo.py audit-demo-evidence",
         canonical_verify_archive_command(),
+        "cargo run -p a2ctl -- demo-evidence --workspace .",
+        "cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence",
         DEFAULT_ARCHIVE.as_posix(),
         DEFAULT_ARCHIVE_EVIDENCE.as_posix(),
     ]
@@ -2886,6 +2911,55 @@ def verify_demo_docs_texts(docs: dict[str, str]) -> None:
     ]:
         if phrase not in todo_text:
             missing.append(f"todos/self-correction-loop.md: {phrase}")
+    bench_readme_text = docs["bench/README.md"]
+    readme_shell_lines = markdown_logical_shell_lines(bench_readme_text)
+    readme_required_commands: list[tuple[str, Callable[[str], bool]]] = [
+        (
+            "python3 bench/self_correction_score.py --trajectories",
+            lambda line: line.startswith("python3 bench/self_correction_score.py --trajectories "),
+        ),
+        (
+            "python3 bench/self_correction_score.py --require-demo --trajectories",
+            lambda line: line.startswith(
+                "python3 bench/self_correction_score.py --require-demo --trajectories "
+            )
+            and " --demo-evidence-json " in line
+            and DEFAULT_ARCHIVE_EVIDENCE.as_posix() in line
+            and DEFAULT_ARCHIVE.as_posix() in line,
+        ),
+        (
+            canonical_verify_archive_command(),
+            lambda line: line == canonical_verify_archive_command(),
+        ),
+        (
+            "python3 bench/self_correction_demo.py fresh ... --confirm-provider-run",
+            lambda line: line.startswith("python3 bench/self_correction_demo.py fresh ")
+            and " --fixture " in line
+            and " --provider " in line
+            and " --run-id " in line
+            and " --results " in line
+            and " --confirm-provider-run" in line,
+        ),
+        (
+            "python3 bench/self_correction_demo.py verify-evidence-contract ... --fresh-run-id ... --max-tokens ... --timeout",
+            lambda line: line.startswith(
+                "python3 bench/self_correction_demo.py verify-evidence-contract "
+            )
+            and " --evidence-json " in line
+            and " --reference-evidence-json " in line
+            and DEFAULT_ARCHIVE_EVIDENCE.as_posix() in line
+            and " --fresh-run-id " in line
+            and " --max-tokens " in line
+            and " --timeout " in line,
+        ),
+        (
+            "python3 bench/self_correction_demo.py verify-documented-counts",
+            lambda line: line == "python3 bench/self_correction_demo.py verify-documented-counts",
+        ),
+    ]
+    for description, predicate in readme_required_commands:
+        if not any(predicate(line) for line in readme_shell_lines):
+            missing.append(f"bench/README.md: {description}")
     if missing:
         raise RuntimeError("demo documentation audit missing required text: " + "; ".join(missing))
 
@@ -2896,6 +2970,7 @@ def verify_demo_docs() -> None:
         "todos/self-correction-loop.md": (repo_root() / "todos/self-correction-loop.md").read_text(
             encoding="utf-8"
         ),
+        "bench/README.md": (repo_root() / "bench/README.md").read_text(encoding="utf-8"),
     }
     verify_demo_docs_texts(docs)
     print(
@@ -3654,6 +3729,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "python3 bench/self_correction_demo.py verify-demo-docs",
                     "python3 bench/self_correction_demo.py audit-demo-evidence",
                     canonical_verify_archive_command(),
+                    "cargo run -p a2ctl -- demo-evidence --workspace .",
+                    "cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence",
                     DEFAULT_ARCHIVE.as_posix(),
                     DEFAULT_ARCHIVE_EVIDENCE.as_posix(),
                     *EXPECTED_DEMO_REQUIREMENTS,
@@ -3666,6 +3743,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "python3 bench/self_correction_demo.py verify-demo-docs; "
                     "python3 bench/self_correction_demo.py audit-demo-evidence; "
                     f"{canonical_verify_archive_command()}; "
+                    "cargo run -p a2ctl -- demo-evidence --workspace .; "
+                    "cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence; "
                     f"{DEFAULT_ARCHIVE.as_posix()}; "
                     f"{DEFAULT_ARCHIVE_EVIDENCE.as_posix()}; "
                     f"{'; '.join(EXPECTED_DEMO_REQUIREMENTS)}; "
@@ -3680,6 +3759,16 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "agent_network_boundary_precondition_status=not_executed_in_preflight; "
                     "fresh provenance uses --require-current-head; "
                     "fresh provider-backed regeneration is not proof yet",
+                ]
+            ),
+            "bench/README.md": "\n".join(
+                [
+                    "python3 bench/self_correction_score.py --trajectories bench/self-correction-results.jsonl",
+                    f"python3 bench/self_correction_score.py --require-demo --trajectories --demo-evidence-json {DEFAULT_ARCHIVE_EVIDENCE.as_posix()} {DEFAULT_ARCHIVE.as_posix()}",
+                    canonical_verify_archive_command(),
+                    "python3 bench/self_correction_demo.py fresh --fixture compound-archive-same-crate-hidden --provider opencode/minimax-coding-plan/MiniMax-M3 --runs 3 --attempts 3 --run-id \"$RUN_ID\" --results \"docs/benchmark-results/self-correction/a2-${RUN_ID}.jsonl\" --confirm-provider-run",
+                    "python3 bench/self_correction_demo.py verify-evidence-contract --evidence-json \"docs/benchmark-results/self-correction/a2-${RUN_ID}.demo-evidence.json\" --reference-evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json --fresh-run-id \"${RUN_ID}\" --max-tokens 100000 --timeout 1800",
+                    "python3 bench/self_correction_demo.py verify-documented-counts",
                 ]
             ),
         }
@@ -3757,6 +3846,62 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(RuntimeError, re.escape(DEFAULT_ARCHIVE_EVIDENCE.as_posix())):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_missing_bench_readme_canonical_archive_command(
+        self,
+    ) -> None:
+        docs = self.demo_docs_fixture()
+        docs["bench/README.md"] = docs["bench/README.md"].replace(
+            canonical_verify_archive_command(),
+            "python3 bench/self_correction_demo.py verify-archive",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "bench/README.md"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_readme_fresh_command_without_confirm_gate(
+        self,
+    ) -> None:
+        docs = self.demo_docs_fixture()
+        docs["bench/README.md"] = docs["bench/README.md"].replace(
+            " --confirm-provider-run",
+            "",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "--confirm-provider-run"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_readme_fresh_contract_without_budget(
+        self,
+    ) -> None:
+        docs = self.demo_docs_fixture()
+        docs["bench/README.md"] = docs["bench/README.md"].replace(
+            " --max-tokens 100000 --timeout 1800",
+            "",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "--max-tokens"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_missing_handoff_a2ctl_demo_gate(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["docs/HANDOFF.md"] = docs["docs/HANDOFF.md"].replace(
+            "cargo run -p a2ctl -- demo-evidence --workspace .",
+            "cargo run -p a2ctl -- status",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "cargo run -p a2ctl -- demo-evidence --workspace"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_missing_todo_required_demo_sentinel_gate(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["todos/self-correction-loop.md"] = docs["todos/self-correction-loop.md"].replace(
+            "cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence",
+            "cargo run -p a2ctl -- sentinel --workspace .",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "--require-demo-evidence"):
             verify_demo_docs_texts(docs)
 
     def test_verify_demo_docs_texts_rejects_missing_handoff_fresh_caveat(self) -> None:

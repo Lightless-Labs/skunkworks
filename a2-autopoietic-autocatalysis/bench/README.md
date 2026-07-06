@@ -89,19 +89,19 @@ Each JSONL result includes:
 Score self-correction specifically:
 
 ```bash
-bench/self_correction_score.py bench/self-correction-results.jsonl
+python3 bench/self_correction_score.py bench/self-correction-results.jsonl
 ```
 
 Add per-run attempt trajectories when investigating retry shape or verifier failures:
 
 ```bash
-bench/self_correction_score.py --trajectories bench/self-correction-results.jsonl
+python3 bench/self_correction_score.py --trajectories bench/self-correction-results.jsonl
 ```
 
 Machine-check that a log contains at least one complete reproducible demo trajectory and optionally refresh the machine-readable causal-chain evidence map:
 
 ```bash
-bench/self_correction_score.py --require-demo --trajectories \
+python3 bench/self_correction_score.py --require-demo --trajectories \
   --demo-evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json \
   docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.jsonl
 ```
@@ -110,11 +110,11 @@ Or use the demo wrapper, which separates archived-proof verification from fresh 
 
 ```bash
 # Fast, deterministic: re-score the durable archived demo artifact and refresh the evidence map.
-bench/self_correction_demo.py verify-archive
+python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json
 
 # Slow/provider-backed: regenerate a fresh artifact, then run the same --require-demo gate.
 RUN_ID=fresh-demo-$(date -u +%Y%m%dT%H%M%SZ)
-bench/self_correction_demo.py fresh \
+python3 bench/self_correction_demo.py fresh \
   --fixture compound-archive-same-crate-hidden \
   --provider opencode/minimax-coding-plan/MiniMax-M3 \
   --runs 3 \
@@ -124,12 +124,12 @@ bench/self_correction_demo.py fresh \
   --confirm-provider-run
 ```
 
-Fresh mode requires `--run-id` and, for the non-preflight/non-print execution path that can spend provider quota, `--confirm-provider-run`; it refuses to write to a non-empty results file or non-empty evidence JSON file, so the post-run `--require-demo` gate cannot pass because of older rows already present in the target JSONL or because an old proof was left at the target evidence path. Use a unique `RUN_ID`/`--results` path for auditable fresh regeneration. Unless `--evidence-json` is supplied, fresh mode writes the scorer proof next to the results as `<results-stem>.demo-evidence.json`, so a successful fresh regeneration has both JSONL rows and a durable causal-chain evidence map to archive. Clean-source readiness is checked before those fresh output files are created, and the harness records that pre-run source state in each row; if the outputs live under tracked `docs/benchmark-results/`, they will make the checkout dirty after the run and must be reviewed/committed deliberately rather than mistaken for pre-run dirtiness. Confirmed fresh execution now runs `python3 bench/agent_network_boundary_check.py --require-sandbox-runtime` after empty output/evidence path checks and before provider/source preflight or harness launch; on hosts without audited child-agent sandbox/runtime enforcement this fail-closed precondition rejects before any provider-backed benchmark begins. After a successful fresh score, the wrapper first confirms the new evidence map points at the requested results path with a matching `artifact_sha256`, then runs `verify-evidence-contract --fresh-run-id "$RUN_ID" --max-tokens <budget> --timeout <seconds>` against that map, so stale/mismatched rows, substituted evidence maps, post-score JSONL mutations, and JSONL rows containing host-specific path markers are rejected before the artifact is treated as fresh loop proof. `fresh --preflight-only` checks empty output/evidence paths, provider CLI presence, local provider config where supported, and clean source before output creation unless `--allow-dirty-source`, then prints the harness/validation/scorer/fresh-provenance-contract commands without running the provider-backed benchmark. Add `--preflight-report-json <tmp-or-unique-path>` to write the same no-network readiness result as machine-readable JSON; the report path must be empty/nonexistent, distinct from the results/evidence paths, and should not be committed as loop proof. The report records that benchmark task payloads request `network_policy=Isolated`, that current restricted provider-backed runs fail closed until an audited sandbox/provider allowlist exists, and the exact agent-network-boundary inventory/precondition commands (`python3 bench/agent_network_boundary_check.py --self-test` and `python3 bench/agent_network_boundary_check.py --require-sandbox-runtime`). It also records the no-network preflight outcome fields `agent_network_boundary_precondition_executed=false` and `agent_network_boundary_precondition_status=not_executed_in_preflight`, meaning the host-dependent boundary precondition was not run by preflight; the confirmed fresh wrapper runs it later before provider launch. It is a readiness check only: live auth, quota, model availability, sandbox/provider-allowlist execution, agent-network-boundary precondition execution, and failed-attempt/retry/promotion loop evidence remain unverified until an allowed fresh run executes. Fresh row-level sandbox/provider allowlist evidence must list real HTTPS model-provider endpoints; synthetic/local/example/test/private endpoints are rejected, while the intended usable policy remains provider API allowlisting plus public-solution-host blocking rather than all-egress blocking. `fresh --print-only` is a lighter command preview that also prints the post-score provenance-contract command. That preview includes the underlying `bench/self_correction.py` harness command, but the wrapper-only `--confirm-provider-run` safety gate and the boundary precondition are not part of that printed harness line; use the wrapper `bench/self_correction_demo.py fresh ... --confirm-provider-run` command for real provider-backed regeneration instead of copy/pasting only the printed harness line. Neither preflight nor print-only creates verifier/failure/lineage artifacts or counts as loop evidence.
+Fresh mode requires `--run-id` and, for the non-preflight/non-print execution path that can spend provider quota, `--confirm-provider-run`; it refuses to write to a non-empty results file or non-empty evidence JSON file, so the post-run `--require-demo` gate cannot pass because of older rows already present in the target JSONL or because an old proof was left at the target evidence path. Use a unique `RUN_ID`/`--results` path for auditable fresh regeneration. Unless `--evidence-json` is supplied, fresh mode writes the scorer proof next to the results as `<results-stem>.demo-evidence.json`, so a successful fresh regeneration has both JSONL rows and a durable causal-chain evidence map to archive. Clean-source readiness is checked before those fresh output files are created, and the harness records that pre-run source state in each row; if the outputs live under tracked `docs/benchmark-results/`, they will make the checkout dirty after the run and must be reviewed/committed deliberately rather than mistaken for pre-run dirtiness. Confirmed fresh execution now runs `python3 bench/agent_network_boundary_check.py --require-sandbox-runtime` after empty output/evidence path checks and before provider/source preflight or harness launch; on hosts without audited child-agent sandbox/runtime enforcement this fail-closed precondition rejects before any provider-backed benchmark begins. After a successful fresh score, the wrapper first confirms the new evidence map points at the requested results path with a matching `artifact_sha256`, then runs `verify-evidence-contract --fresh-run-id "$RUN_ID" --max-tokens <budget> --timeout <seconds>` against that map, so stale/mismatched rows, substituted evidence maps, post-score JSONL mutations, and JSONL rows containing host-specific path markers are rejected before the artifact is treated as fresh loop proof. `fresh --preflight-only` checks empty output/evidence paths, provider CLI presence, local provider config where supported, and clean source before output creation unless `--allow-dirty-source`, then prints the harness/validation/scorer/fresh-provenance-contract commands without running the provider-backed benchmark. Add `--preflight-report-json <tmp-or-unique-path>` to write the same no-network readiness result as machine-readable JSON; the report path must be empty/nonexistent, distinct from the results/evidence paths, and should not be committed as loop proof. The report records that benchmark task payloads request `network_policy=Isolated`, that current restricted provider-backed runs fail closed until an audited sandbox/provider allowlist exists, and the exact agent-network-boundary inventory/precondition commands (`python3 bench/agent_network_boundary_check.py --self-test` and `python3 bench/agent_network_boundary_check.py --require-sandbox-runtime`). It also records the no-network preflight outcome fields `agent_network_boundary_precondition_executed=false` and `agent_network_boundary_precondition_status=not_executed_in_preflight`, meaning the host-dependent boundary precondition was not run by preflight; the confirmed fresh wrapper runs it later before provider launch. It is a readiness check only: live auth, quota, model availability, sandbox/provider-allowlist execution, agent-network-boundary precondition execution, and failed-attempt/retry/promotion loop evidence remain unverified until an allowed fresh run executes. Fresh row-level sandbox/provider allowlist evidence must list real HTTPS model-provider endpoints; synthetic/local/example/test/private endpoints are rejected, while the intended usable policy remains provider API allowlisting plus public-solution-host blocking rather than all-egress blocking. `fresh --print-only` is a lighter command preview that also prints the post-score provenance-contract command. That preview includes the underlying `bench/self_correction.py` harness command, but the wrapper-only `--confirm-provider-run` safety gate and the boundary precondition are not part of that printed harness line; use the wrapper `python3 bench/self_correction_demo.py fresh ... --confirm-provider-run` command for real provider-backed regeneration instead of copy/pasting only the printed harness line. Neither preflight nor print-only creates verifier/failure/lineage artifacts or counts as loop evidence.
 
 After any archived or fresh run writes a `.demo-evidence.json`, validate that JSON against the archived six-step contract before treating it as a rerunnable demo artifact:
 
 ```bash
-bench/self_correction_demo.py verify-evidence-contract \
+python3 bench/self_correction_demo.py verify-evidence-contract \
   --evidence-json "docs/benchmark-results/self-correction/a2-${RUN_ID}.demo-evidence.json" \
   --reference-evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json \
   --fresh-run-id "${RUN_ID}" \
@@ -142,13 +142,13 @@ Omit `--fresh-run-id` for deterministic archived contract verification. Include 
 Audit that documented test-count claims still match the local Rust and Python test inventory:
 
 ```bash
-bench/self_correction_demo.py verify-documented-counts
+python3 bench/self_correction_demo.py verify-documented-counts
 ```
 
 Run the updater only after intentionally adding or removing tests, then review the documentation diff it produces:
 
 ```bash
-bench/self_correction_demo.py verify-documented-counts --update
+python3 bench/self_correction_demo.py verify-documented-counts --update
 ```
 
 This count audit shells out to `cargo test -- --list`; run it as an explicit operator check, not from `cargo test`, sentinel, or Python self-test paths.
