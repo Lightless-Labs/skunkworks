@@ -222,6 +222,9 @@ fn write_fixture(name: &str, status: &str) -> Fixture {
     } else {
         local["feedback_visibility"] =
             serde_json::Value::String("public_local_test_output".to_string());
+        local["stdout_preview"] = serde_json::Value::String(
+            "public local regression: expected /settings route to return 200".to_string(),
+        );
         local["stderr_preview"] = serde_json::Value::String("missing route assertion".to_string());
     }
     fs::write(
@@ -359,11 +362,58 @@ fn retry_attempt_step_builds_next_cycle_input_for_failed_attempt() {
         value["retry_step"]["decision"].as_str(),
         Some("build_next_cycle_input")
     );
+    let next_cycle_input = &value["retry_step"]["next_cycle_input"];
     assert_eq!(
-        value["retry_step"]["next_cycle_input"]["evaluation"]["status"].as_str(),
+        next_cycle_input["evaluation"]["status"].as_str(),
         Some("not_evaluated")
     );
-    assert!(value["retry_step"]["next_cycle_input"]["evaluation"]["fitness"].is_null());
+    assert!(next_cycle_input["evaluation"]["fitness"].is_null());
+    assert_eq!(
+        next_cycle_input["benchmark_context"]["github_solution_search_allowed"].as_bool(),
+        Some(false)
+    );
+    assert!(next_cycle_input.get("fitness_report").is_none());
+    assert!(next_cycle_input.get("failure_report").is_none());
+    let feedback_design = next_cycle_input["design"].as_str().unwrap();
+    assert!(feedback_design.contains("SENIOR SWE-BENCH EVALUATOR FEEDBACK"));
+    assert!(feedback_design.contains("public local regression: expected /settings route"));
+    assert!(feedback_design.contains("missing route assertion"));
+    assert!(feedback_design.contains("not a seeded fitness_report or failure_report"));
+    assert!(feedback_design.contains("no-GitHub/public-solution-search"));
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_attempt_step_rejects_public_solution_reference_in_visible_feedback() {
+    let fixture = write_fixture("solution-reference", "failed");
+    let value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fixture.evaluation).unwrap()).unwrap();
+    let local_path = std::path::PathBuf::from(
+        value["local_evaluation_path"]
+            .as_str()
+            .expect("local evaluation path"),
+    );
+    let mut local: serde_json::Value =
+        serde_json::from_slice(&fs::read(&local_path).unwrap()).unwrap();
+    local["stderr_preview"] = serde_json::Value::String(
+        "see https://github.com/owner/repo/pull/123 for the fix".to_string(),
+    );
+    fs::write(&local_path, serde_json::to_vec_pretty(&local).unwrap()).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-attempt-step",
+            fixture.evaluation.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry attempt step");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("public solution reference"),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let _ = fs::remove_dir_all(fixture.root);
 }
