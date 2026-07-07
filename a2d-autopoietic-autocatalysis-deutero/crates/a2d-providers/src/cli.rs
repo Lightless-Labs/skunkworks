@@ -48,9 +48,12 @@ impl CliProvider {
                     args.push(format!("model_reasoning_effort=\"{effort}\""));
                 }
                 args.extend([
-                    "--full-auto".to_string(),
+                    "--sandbox".to_string(),
+                    "read-only".to_string(),
                     "--skip-git-repo-check".to_string(),
                     "--ephemeral".to_string(),
+                    "--ignore-user-config".to_string(),
+                    "--ignore-rules".to_string(),
                 ]);
                 args
             }),
@@ -411,6 +414,46 @@ impl Provider for CliProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn provider_args(provider: &CliProvider) -> Vec<String> {
+        let request = InvocationRequest {
+            enzyme_id: a2d_core::types::EnzymeId::from("coder"),
+            system: "system".to_string(),
+            prompt: "prompt".to_string(),
+            max_tokens: 100,
+        };
+        (provider.args_builder)(&request)
+    }
+
+    #[test]
+    fn codex_provider_uses_read_only_ephemeral_artifact_sandbox() {
+        let provider = CliProvider::codex("gpt-5.4", Some("low"));
+        let args = provider_args(&provider);
+
+        let sandbox_arg = args
+            .iter()
+            .position(|arg| arg == "--sandbox")
+            .expect("codex args should set an explicit sandbox");
+        assert_eq!(
+            args.get(sandbox_arg + 1).map(String::as_str),
+            Some("read-only")
+        );
+        assert!(args.contains(&"--ephemeral".to_string()));
+        assert!(args.contains(&"--skip-git-repo-check".to_string()));
+        assert!(args.contains(&"--ignore-user-config".to_string()));
+        assert!(args.contains(&"--ignore-rules".to_string()));
+    }
+
+    #[test]
+    fn codex_provider_does_not_request_full_auto_or_bypass_sandbox() {
+        let provider = CliProvider::codex("gpt-5.4", Some("low"));
+        let args = provider_args(&provider);
+
+        assert!(!args.contains(&"--full-auto".to_string()));
+        assert!(!args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(!args.contains(&"--dangerously-bypass-hook-trust".to_string()));
+        assert!(!args.iter().any(|arg| arg == "--add-dir"));
+    }
 
     #[test]
     fn glm_gets_longer_default_timeout() {
