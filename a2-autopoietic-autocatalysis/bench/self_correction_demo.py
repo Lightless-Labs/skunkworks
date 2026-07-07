@@ -5536,6 +5536,52 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         provider_preflight.assert_not_called()
         run.assert_not_called()
 
+    def test_fresh_real_boundary_precondition_fails_closed_before_provider_launch(self) -> None:
+        precondition = subprocess.run(
+            AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND,
+            cwd=repo_root(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if precondition.returncode == 0:
+            self.skipTest("real boundary precondition already passes on this host")
+
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            evidence = Path(tmpdir) / "fresh.demo-evidence.json"
+            with mock.patch(
+                __name__ + ".ensure_fresh_sandbox_provider_allowlist_ready"
+            ) as sandbox_ready, mock.patch(
+                __name__ + ".fresh_provider_preflight_after_output_paths"
+            ) as provider_preflight, mock.patch(
+                __name__ + ".run_command"
+            ) as run, contextlib.redirect_stderr(stderr):
+                result = main(
+                    [
+                        "fresh",
+                        "--results",
+                        str(results),
+                        "--evidence-json",
+                        str(evidence),
+                        "--run-id",
+                        "fresh-demo",
+                        "--confirm-provider-run",
+                    ]
+                )
+
+            self.assertEqual(result, 2)
+            self.assertIn("agent network boundary precondition failed closed", stderr.getvalue())
+            self.assertIn("bench/agent_network_boundary_check.py --require-sandbox-runtime", stderr.getvalue())
+            self.assertIn("sandbox runtime/enforcement", stderr.getvalue())
+            self.assertFalse(results.exists())
+            self.assertFalse(evidence.exists())
+            sandbox_ready.assert_not_called()
+            provider_preflight.assert_not_called()
+            run.assert_not_called()
+
     def test_fresh_refuses_confirmed_provider_run_without_enforced_sandbox_allowlist_after_boundary_passes(self) -> None:
         stderr = io.StringIO()
         with tempfile.TemporaryDirectory() as tmpdir:
