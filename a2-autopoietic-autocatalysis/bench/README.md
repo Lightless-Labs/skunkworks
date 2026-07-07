@@ -81,7 +81,7 @@ Each JSONL result includes:
 - `prior_lineage_present`
 - `lineage_records_before` / `lineage_records_after`
 - `lineage_reconciled_by_core`
-- `verifier_failure_evidence_present`, `promotion_evidence_present`, and nested `promotion` fields (`verifier_gated`, `evidence_present`, `lineage_reconciled_by_core`, `verify_returncode`) on newly generated rows. For structured rows, `--require-demo` treats the nested `promotion` object as authoritative and requires explicit `verifier_failure_evidence_present=true` on the failed first attempt plus `verifier_gated=true`, `evidence_present=true`, `lineage_reconciled_by_core=true`, and `verify_returncode=0` on the lineage-tied passing attempt; older archived rows without nested `promotion` remain scoreable through legacy stdout/stderr promotion markers
+- `verifier_failure_evidence_present`, `promotion_evidence_present`, and nested `promotion` fields (`verifier_gated`, `evidence_present`, `lineage_reconciled_by_core`, `verify_returncode`, `artifact`) on newly generated rows. For structured rows, `--require-demo` treats the nested `promotion` object as authoritative and requires explicit `verifier_failure_evidence_present=true` on the failed first attempt plus `verifier_gated=true`, `evidence_present=true`, `lineage_reconciled_by_core=true`, `verify_returncode=0`, and a matching repo-relative `promotion.artifact` selector on the lineage-tied passing attempt; older archived rows without nested `promotion` remain scoreable through legacy stdout/stderr apply markers
 - `anti_repeat_retry_enabled` / `ablation`
 - `touched_files`, `touched_file_count`, `diff_added_lines`, `diff_removed_lines`
 - verification command, return code, duration, stdout, stderr

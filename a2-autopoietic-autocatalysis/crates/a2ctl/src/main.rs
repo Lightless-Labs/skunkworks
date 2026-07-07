@@ -231,6 +231,7 @@ fn validate_demo_evidence_contract_output(
         "PASS complete self-correction demo trajectory found",
         contract_pass.as_str(),
         proof_chain.as_str(),
+        "promotion_evidence_source=",
         "PASS clean-room evidence regeneration",
     ];
     for fragment in required_fragments {
@@ -376,13 +377,16 @@ fn validate_demo_evidence_rows_against_artifact(
                 .unwrap_or("<unknown>");
             if let Some(embedded_row) = step.get("evidence_row") {
                 let selector = require_object_field(step, "selector", requirement)?;
-                validate_embedded_demo_row_against_artifact(
+                let source_row = validate_embedded_demo_row_against_artifact(
                     artifact_rows,
                     selector,
                     embedded_row,
                     &context,
                     requirement,
                 )?;
+                if requirement == "verifier_gated_germline_promotion" {
+                    validate_promotion_evidence_audit(step, source_row, &context)?;
+                }
             }
             if let Some(rows) = step.get("evidence_rows") {
                 let rows = rows.as_array().ok_or_else(|| {
@@ -403,18 +407,37 @@ fn validate_demo_evidence_rows_against_artifact(
     Ok(())
 }
 
-fn validate_embedded_demo_row_against_artifact(
-    artifact_rows: &[serde_json::Value],
+fn validate_embedded_demo_row_against_artifact<'a>(
+    artifact_rows: &'a [serde_json::Value],
     selector: &serde_json::Value,
     embedded_row: &serde_json::Value,
     context: &str,
     label: &str,
-) -> Result<(), String> {
+) -> Result<&'a serde_json::Value, String> {
     let source_row = unique_artifact_row_for_selector(artifact_rows, selector, label)?;
     let normalized_source_row = normalized_demo_evidence_row_from_payload(source_row);
     if normalized_source_row != *embedded_row {
         return Err(format!(
             "{context}: {label} evidence_row does not match the selected JSONL artifact row"
+        ));
+    }
+    Ok(source_row)
+}
+
+fn validate_promotion_evidence_audit(
+    step: &serde_json::Value,
+    source_row: &serde_json::Value,
+    context: &str,
+) -> Result<(), String> {
+    let expected = promotion_evidence_audit_details(source_row).ok_or_else(|| {
+        format!("{context}: verifier-gated promotion lacks concrete artifact or legacy apply marker evidence")
+    })?;
+    let observed = step.get("promotion_evidence_audit").ok_or_else(|| {
+        format!("{context}: verifier-gated promotion missing promotion_evidence_audit")
+    })?;
+    if *observed != expected {
+        return Err(format!(
+            "{context}: verifier-gated promotion audit differs from selected JSONL artifact row"
         ));
     }
     Ok(())
@@ -579,7 +602,7 @@ fn normalized_demo_evidence_row_from_payload(payload: &serde_json::Value) -> ser
         "promotion_lineage_reconciled_by_core",
         promotion.and_then(|promotion| promotion.get("lineage_reconciled_by_core")),
     );
-    insert_optional_i64(
+    insert_strict_optional_i64(
         &mut row,
         "promotion_verify_returncode",
         promotion.and_then(|promotion| promotion.get("verify_returncode")),
@@ -647,6 +670,19 @@ fn insert_optional_i64(
     row.insert(
         field.into(),
         optional_i64(value)
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null),
+    );
+}
+
+fn insert_strict_optional_i64(
+    row: &mut serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    value: Option<&serde_json::Value>,
+) {
+    row.insert(
+        field.into(),
+        strict_i64(value)
             .map(serde_json::Value::from)
             .unwrap_or(serde_json::Value::Null),
     );
@@ -723,6 +759,24 @@ fn optional_i64(value: Option<&serde_json::Value>) -> Option<i64> {
     }
 }
 
+fn strict_i64(value: Option<&serde_json::Value>) -> Option<i64> {
+    value?.as_i64()
+}
+
+fn is_repo_relative_artifact_path(path: &str) -> bool {
+    let path_value = path.trim();
+    if path_value.is_empty()
+        || path_value.contains('\\')
+        || (path_value.len() >= 2
+            && path_value.as_bytes()[1] == b':'
+            && path_value.as_bytes()[0].is_ascii_alphabetic())
+    {
+        return false;
+    }
+    let path = Path::new(path_value);
+    !path.is_absolute() && !path.components().any(|component| matches!(component, std::path::Component::ParentDir))
+}
+
 fn string_or_default(payload: &serde_json::Value, field: &str) -> serde_json::Value {
     serde_json::Value::from(
         payload
@@ -740,30 +794,101 @@ fn string_or_null(payload: &serde_json::Value, field: &str) -> serde_json::Value
         .unwrap_or(serde_json::Value::Null)
 }
 
-fn payload_has_promotion_evidence(payload: &serde_json::Value) -> bool {
-    if let Some(promotion) = payload
+const PROMOTION_LEGACY_APPLY_MARKER: &str = "[applied and rebuilt:";
+
+fn promotion_legacy_marker_source(payload: &serde_json::Value) -> Option<serde_json::Value> {
+    for stream in ["stderr", "stdout"] {
+        let Some(output) = payload.get(stream).and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if output
+            .to_lowercase()
+            .contains(PROMOTION_LEGACY_APPLY_MARKER)
+        {
+            return Some(serde_json::json!({
+                "promotion_evidence_source": format!("legacy_apply_marker_in_{stream}"),
+                "promotion_marker": PROMOTION_LEGACY_APPLY_MARKER,
+                "promotion_marker_stream": stream,
+            }));
+        }
+    }
+    None
+}
+
+fn promotion_artifact_matches_payload(payload: &serde_json::Value) -> bool {
+    let Some(promotion) = payload
         .get("promotion")
         .and_then(serde_json::Value::as_object)
-    {
-        return promotion
-            .get("verifier_gated")
+    else {
+        return false;
+    };
+    let Some(artifact) = promotion
+        .get("artifact")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    let Some(selector) = artifact
+        .get("selector")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    artifact.get("kind").and_then(serde_json::Value::as_str) == Some("self_correction_jsonl_row")
+        && artifact
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|path| !path.trim().is_empty() && is_repo_relative_artifact_path(path))
+        && selector.get("run_id") == payload.get("run_id")
+        && selector.get("task_id") == payload.get("task_id")
+        && optional_i64(selector.get("attempt")) == optional_i64(payload.get("attempt"))
+        && artifact.get("lineage_records_after") == payload.get("lineage_records_after")
+        && artifact.get("verify_returncode") == payload.get("verify_returncode")
+        && artifact.get("verify_command") == payload.get("verify_command")
+}
+
+fn promotion_structured_gate(payload: &serde_json::Value) -> bool {
+    let Some(promotion) = payload
+        .get("promotion")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    promotion
+        .get("verifier_gated")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+        && promotion
+            .get("evidence_present")
             .and_then(serde_json::Value::as_bool)
             == Some(true)
-            && promotion
-                .get("evidence_present")
-                .and_then(serde_json::Value::as_bool)
-                == Some(true);
+        && promotion
+            .get("lineage_reconciled_by_core")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        && strict_i64(promotion.get("verify_returncode")) == Some(0)
+}
+
+fn promotion_evidence_audit_details(payload: &serde_json::Value) -> Option<serde_json::Value> {
+    if promotion_structured_gate(payload) && promotion_artifact_matches_payload(payload) {
+        let artifact = payload
+            .get("promotion")
+            .and_then(|promotion| promotion.get("artifact"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        return Some(serde_json::json!({
+            "promotion_evidence_source": "structured_promotion_artifact",
+            "promotion_artifact": artifact,
+        }));
     }
-    if let Some(value) = payload.get("promotion_evidence_present") {
-        return value.as_bool() == Some(true);
+    promotion_legacy_marker_source(payload)
+}
+
+fn payload_has_promotion_evidence(payload: &serde_json::Value) -> bool {
+    if payload.get("promotion").and_then(serde_json::Value::as_object).is_some() {
+        return promotion_structured_gate(payload) && promotion_artifact_matches_payload(payload);
     }
-    let output = ["stdout", "stderr"]
-        .iter()
-        .filter_map(|field| payload.get(*field).and_then(serde_json::Value::as_str))
-        .collect::<Vec<_>>()
-        .join("\n")
-        .to_lowercase();
-    output.contains("promote_germline") || output.contains("[applied and rebuilt:")
+    promotion_legacy_marker_source(payload).is_some()
 }
 
 fn resolve_workspace_path(workspace: &str, path: &str) -> PathBuf {
@@ -1180,6 +1305,10 @@ fn validate_demo_evidence_demo(
         true,
         "verifier_gated_germline_promotion.evidence_row",
     )?;
+    let promotion_audit_source = promotion
+        .get("promotion_evidence_audit")
+        .and_then(|audit| audit.get("promotion_evidence_source"))
+        .and_then(serde_json::Value::as_str);
     let legacy_promotion_evidence = promotion_fields
         .get("promotion_evidence_present")
         .and_then(serde_json::Value::as_bool)
@@ -1187,7 +1316,11 @@ fn validate_demo_evidence_demo(
         && promotion_row
             .get("promotion_evidence_present")
             .and_then(serde_json::Value::as_bool)
-            == Some(true);
+            == Some(true)
+        && matches!(
+            promotion_audit_source,
+            Some("legacy_apply_marker_in_stderr" | "legacy_apply_marker_in_stdout")
+        );
     let structured_promotion_evidence = promotion_fields
         .get("promotion_verifier_gated")
         .and_then(serde_json::Value::as_bool)
@@ -1219,7 +1352,8 @@ fn validate_demo_evidence_demo(
         && promotion_row
             .get("promotion_verify_returncode")
             .and_then(serde_json::Value::as_i64)
-            == Some(0);
+            == Some(0)
+        && promotion_audit_source == Some("structured_promotion_artifact");
     if !(legacy_promotion_evidence || structured_promotion_evidence) {
         return Err(format!(
             "{context}: verifier-gated promotion lacks gated apply evidence in evidence_row"
@@ -5061,6 +5195,11 @@ mod tests {
                                 "verify_returncode": 0,
                                 "lineage_reconciled_by_core": true,
                                 "promotion_evidence_present": true
+                            },
+                            "promotion_evidence_audit": {
+                                "promotion_evidence_source": "legacy_apply_marker_in_stderr",
+                                "promotion_marker": "[applied and rebuilt:",
+                                "promotion_marker_stream": "stderr"
                             }
                         }
                     ]
@@ -5090,7 +5229,7 @@ mod tests {
     }
 
     fn promotion_artifact_payload(promotion_evidence_present: bool) -> serde_json::Value {
-        serde_json::json!({
+        let mut row = serde_json::json!({
             "run_id": "run-a",
             "task_id": "task-a",
             "attempt": 2,
@@ -5106,7 +5245,13 @@ mod tests {
             "lineage_records_after": 2,
             "lineage_reconciled_by_core": true,
             "promotion_evidence_present": promotion_evidence_present
-        })
+        });
+        if promotion_evidence_present {
+            row["stderr"] = serde_json::Value::String(
+                "[applied and rebuilt: self-correction test]".to_string(),
+            );
+        }
+        row
     }
 
     fn complete_demo_evidence_with_artifact_rows(
@@ -5143,6 +5288,9 @@ mod tests {
         evidence["demos"][0]["causal_chain"][4]["evidence_rows"] =
             serde_json::Value::Array(vec![normalized_failed_row, normalized_promotion_row]);
         evidence["demos"][0]["causal_chain"][5]["evidence_row"] = embedded_promotion_row;
+        if let Some(audit) = promotion_evidence_audit_details(&promotion_row) {
+            evidence["demos"][0]["causal_chain"][5]["promotion_evidence_audit"] = audit;
+        }
         (evidence, artifact_text.into_bytes())
     }
 
@@ -5255,7 +5403,7 @@ mod tests {
         evidence_json: &str,
     ) -> String {
         format!(
-            "Self-Correction Benchmark\n  artifact: {artifact}\n  PASS complete self-correction demo trajectory found\nDemo evidence contract check\n  evidence: {evidence_json}\n  mode: archived historical provider evidence; no fresh run-id provenance check requested\n  PASS evidence JSON matches archived demo contract (requirements=6, demos={demos})\n  proved: {proof_chain}\nPASS clean-room evidence regeneration: temp output was absent before scoring; normalized SHA-256 matches checked-in evidence\n",
+            "Self-Correction Benchmark\n  artifact: {artifact}\n  PASS complete self-correction demo trajectory found\nDemo evidence contract check\n  evidence: {evidence_json}\n  mode: archived historical provider evidence; no fresh run-id provenance check requested\n  PASS evidence JSON matches archived demo contract (requirements=6, demos={demos})\n  proved: {proof_chain}\n    verifier_gated_germline_promotion: promotion_evidence_source=legacy_apply_marker_in_stderr; promotion_marker=[applied and rebuilt:\nPASS clean-room evidence regeneration: temp output was absent before scoring; normalized SHA-256 matches checked-in evidence\n",
             artifact = summary.artifact,
             demos = summary.demos,
             proof_chain = DEMO_EVIDENCE_PROOF_STEPS.join(" -> "),
@@ -5292,6 +5440,18 @@ mod tests {
             validate_demo_evidence_contract_output(&missing_proof_chain, evidence_json, &summary)
                 .unwrap_err();
         assert!(err.contains("retry_context_from_failure_evidence"));
+
+        let missing_promotion_source = output.replace(
+            "promotion_evidence_source=legacy_apply_marker_in_stderr",
+            "promotion_evidence=legacy_apply_marker_in_stderr",
+        );
+        let err = validate_demo_evidence_contract_output(
+            &missing_promotion_source,
+            evidence_json,
+            &summary,
+        )
+        .unwrap_err();
+        assert!(err.contains("promotion_evidence_source="));
     }
 
     #[test]
@@ -5668,6 +5828,205 @@ mod tests {
         assert!(
             err.contains("promotion evidence_row does not match the selected JSONL artifact row")
         );
+
+        std::fs::remove_file(evidence_path).unwrap();
+        std::fs::remove_file(artifact_path).unwrap();
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn demo_evidence_artifact_validation_rejects_boolean_only_promotion_without_marker_or_artifact()
+    {
+        let workspace =
+            std::env::temp_dir().join(format!("a2-promotion-boolean-only-{}", std::process::id()));
+        let artifact = "evidence/results.jsonl";
+        let artifact_path = workspace.join(artifact);
+        std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+        let mut promotion_row = promotion_artifact_payload(false);
+        promotion_row["promotion_evidence_present"] = serde_json::Value::Bool(true);
+        let embedded_row = normalized_demo_evidence_row_from_payload(&promotion_row);
+        let (evidence, artifact_bytes) =
+            complete_demo_evidence_with_artifact_rows(artifact, &[promotion_row], embedded_row);
+        std::fs::write(&artifact_path, artifact_bytes).unwrap();
+        let evidence_path = workspace.join("evidence.json");
+        std::fs::write(&evidence_path, serde_json::to_string(&evidence).unwrap()).unwrap();
+
+        let err = validate_demo_evidence_contract_artifact(
+            workspace.to_str().unwrap(),
+            evidence_path.to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert!(err.contains("verifier-gated promotion lacks gated apply evidence"));
+
+        std::fs::remove_file(evidence_path).unwrap();
+        std::fs::remove_file(artifact_path).unwrap();
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn demo_evidence_artifact_validation_rejects_weak_promote_germline_marker() {
+        let workspace =
+            std::env::temp_dir().join(format!("a2-promotion-weak-marker-{}", std::process::id()));
+        let artifact = "evidence/results.jsonl";
+        let artifact_path = workspace.join(artifact);
+        std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+        let mut promotion_row = promotion_artifact_payload(false);
+        promotion_row["stderr"] = serde_json::Value::String("promote_germline::Prompt".to_string());
+        let embedded_row = normalized_demo_evidence_row_from_payload(&promotion_row);
+        let (evidence, artifact_bytes) =
+            complete_demo_evidence_with_artifact_rows(artifact, &[promotion_row], embedded_row);
+        std::fs::write(&artifact_path, artifact_bytes).unwrap();
+        let evidence_path = workspace.join("evidence.json");
+        std::fs::write(&evidence_path, serde_json::to_string(&evidence).unwrap()).unwrap();
+
+        let err = validate_demo_evidence_contract_artifact(
+            workspace.to_str().unwrap(),
+            evidence_path.to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert!(err.contains("verifier-gated promotion lacks gated apply evidence"));
+
+        std::fs::remove_file(evidence_path).unwrap();
+        std::fs::remove_file(artifact_path).unwrap();
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn demo_evidence_artifact_validation_rejects_ungated_matching_promotion_artifact() {
+        let workspace = std::env::temp_dir().join(format!(
+            "a2-promotion-ungated-artifact-{}",
+            std::process::id()
+        ));
+        let artifact = "evidence/results.jsonl";
+        let artifact_path = workspace.join(artifact);
+        std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+        let mut promotion_row = promotion_artifact_payload(false);
+        promotion_row["promotion"] = serde_json::json!({
+            "verifier_gated": false,
+            "evidence_present": true,
+            "lineage_reconciled_by_core": true,
+            "verify_returncode": 0,
+            "artifact": {
+                "kind": "self_correction_jsonl_row",
+                "path": artifact,
+                "selector": {"run_id": "run-a", "task_id": "task-a", "attempt": 2},
+                "lineage_records_after": 2,
+                "verify_command": "cargo test -p a2_archive",
+                "verify_returncode": 0
+            }
+        });
+        assert!(promotion_artifact_matches_payload(&promotion_row));
+        assert!(promotion_evidence_audit_details(&promotion_row).is_none());
+        let embedded_row = normalized_demo_evidence_row_from_payload(&promotion_row);
+        let (evidence, artifact_bytes) =
+            complete_demo_evidence_with_artifact_rows(artifact, &[promotion_row], embedded_row);
+        std::fs::write(&artifact_path, artifact_bytes).unwrap();
+        let evidence_path = workspace.join("evidence.json");
+        std::fs::write(&evidence_path, serde_json::to_string(&evidence).unwrap()).unwrap();
+
+        let err = validate_demo_evidence_contract_artifact(
+            workspace.to_str().unwrap(),
+            evidence_path.to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert!(err.contains("verifier-gated promotion lacks gated apply evidence"));
+
+        std::fs::remove_file(evidence_path).unwrap();
+        std::fs::remove_file(artifact_path).unwrap();
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn demo_evidence_artifact_validation_rejects_non_repo_relative_promotion_artifact_path() {
+        for artifact_path_value in [
+            "/tmp/results.jsonl",
+            "../results.jsonl",
+            "evidence/../results.jsonl",
+            "C:\\workspace\\results.jsonl",
+        ] {
+            let workspace = std::env::temp_dir().join(format!(
+                "a2-promotion-bad-artifact-path-{}-{}",
+                std::process::id(),
+                artifact_path_value.replace(['/', '.'], "_")
+            ));
+            let artifact = "evidence/results.jsonl";
+            let artifact_path = workspace.join(artifact);
+            std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+            let mut promotion_row = promotion_artifact_payload(false);
+            promotion_row["promotion"] = serde_json::json!({
+                "verifier_gated": true,
+                "evidence_present": true,
+                "lineage_reconciled_by_core": true,
+                "verify_returncode": 0,
+                "artifact": {
+                    "kind": "self_correction_jsonl_row",
+                    "path": artifact_path_value,
+                    "selector": {"run_id": "run-a", "task_id": "task-a", "attempt": 2},
+                    "lineage_records_after": 2,
+                    "verify_command": "cargo test -p a2_archive",
+                    "verify_returncode": 0
+                }
+            });
+            assert!(!promotion_artifact_matches_payload(&promotion_row));
+            let embedded_row = normalized_demo_evidence_row_from_payload(&promotion_row);
+            let (evidence, artifact_bytes) =
+                complete_demo_evidence_with_artifact_rows(artifact, &[promotion_row], embedded_row);
+            std::fs::write(&artifact_path, artifact_bytes).unwrap();
+            let evidence_path = workspace.join("evidence.json");
+            std::fs::write(&evidence_path, serde_json::to_string(&evidence).unwrap()).unwrap();
+
+            let err = validate_demo_evidence_contract_artifact(
+                workspace.to_str().unwrap(),
+                evidence_path.to_str().unwrap(),
+            )
+            .unwrap_err();
+            assert!(err.contains("verifier-gated promotion lacks gated apply evidence"));
+
+            std::fs::remove_file(evidence_path).unwrap();
+            std::fs::remove_file(artifact_path).unwrap();
+            std::fs::remove_dir_all(workspace).unwrap();
+        }
+    }
+
+    #[test]
+    fn demo_evidence_artifact_validation_rejects_string_promotion_verify_returncode() {
+        let workspace = std::env::temp_dir().join(format!(
+            "a2-promotion-string-verify-{}",
+            std::process::id()
+        ));
+        let artifact = "evidence/results.jsonl";
+        let artifact_path = workspace.join(artifact);
+        std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+        let mut promotion_row = promotion_artifact_payload(false);
+        promotion_row["promotion"] = serde_json::json!({
+            "verifier_gated": true,
+            "evidence_present": true,
+            "lineage_reconciled_by_core": true,
+            "verify_returncode": "0",
+            "artifact": {
+                "kind": "self_correction_jsonl_row",
+                "path": artifact,
+                "selector": {"run_id": "run-a", "task_id": "task-a", "attempt": 2},
+                "lineage_records_after": 2,
+                "verify_command": "cargo test -p a2_archive",
+                "verify_returncode": 0
+            }
+        });
+        assert!(promotion_artifact_matches_payload(&promotion_row));
+        assert!(promotion_evidence_audit_details(&promotion_row).is_none());
+        let embedded_row = normalized_demo_evidence_row_from_payload(&promotion_row);
+        let (evidence, artifact_bytes) =
+            complete_demo_evidence_with_artifact_rows(artifact, &[promotion_row], embedded_row);
+        std::fs::write(&artifact_path, artifact_bytes).unwrap();
+        let evidence_path = workspace.join("evidence.json");
+        std::fs::write(&evidence_path, serde_json::to_string(&evidence).unwrap()).unwrap();
+
+        let err = validate_demo_evidence_contract_artifact(
+            workspace.to_str().unwrap(),
+            evidence_path.to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert!(err.contains("verifier-gated promotion lacks gated apply evidence"));
 
         std::fs::remove_file(evidence_path).unwrap();
         std::fs::remove_file(artifact_path).unwrap();

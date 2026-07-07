@@ -1681,10 +1681,21 @@ def validate_fresh_rows(
             )
         validate_fresh_sandbox_provider_allowlist_evidence(row, index=index)
         validate_senior_swe_bench_fresh_provenance(row, index=index)
-        if row_has_verifier_gated_promotion(row) and not promotion_artifact_matches_row(row):
-            raise RuntimeError(
-                f"fresh demo row {index} has verifier-gated promotion without a matching promotion artifact"
-            )
+        promotion = artifact_promotion(row)
+        claims_structured_promotion = (
+            promotion.get("verifier_gated") is True
+            or promotion.get("evidence_present") is True
+            or isinstance(promotion.get("artifact"), dict)
+        )
+        if claims_structured_promotion:
+            if not promotion_structured_gate(row):
+                raise RuntimeError(
+                    f"fresh demo row {index} has malformed verifier-gated promotion fields"
+                )
+            if not promotion_artifact_matches_row(row):
+                raise RuntimeError(
+                    f"fresh demo row {index} has verifier-gated promotion without a matching promotion artifact"
+                )
 
 
 def validate_fresh_results(args: argparse.Namespace) -> None:
@@ -1884,6 +1895,21 @@ def optional_bool_value(value: object) -> bool | None:
     return None
 
 
+def strict_int_value(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def is_repo_relative_artifact_path(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    if "\\" in value or (len(value) >= 2 and value[1] == ":" and value[0].isalpha()):
+        return False
+    path = Path(value)
+    return not path.is_absolute() and ".." not in path.parts
+
+
 def optional_string_value(value: object) -> str | None:
     if isinstance(value, str) and value:
         return value
@@ -1901,14 +1927,30 @@ def artifact_promotion(row: dict[str, object]) -> dict[str, object]:
     return promotion if isinstance(promotion, dict) else {}
 
 
+PROMOTION_LEGACY_MARKERS = ("[applied and rebuilt:",)
+
+
+def promotion_legacy_marker_source(row: dict[str, object]) -> dict[str, object] | None:
+    for stream in ("stderr", "stdout"):
+        value = str(row.get(stream) or "")
+        lowered = value.lower()
+        for marker in PROMOTION_LEGACY_MARKERS:
+            offset = lowered.find(marker)
+            if offset >= 0:
+                return {
+                    "promotion_evidence_source": f"legacy_apply_marker_in_{stream}",
+                    "promotion_marker": marker,
+                    "promotion_marker_stream": stream,
+                }
+    return None
+
+
 def artifact_has_promotion_evidence(row: dict[str, object]) -> bool:
-    promotion = artifact_promotion(row)
     if isinstance(row.get("promotion"), dict):
-        return promotion.get("verifier_gated") is True and promotion.get("evidence_present") is True
+        return promotion_structured_gate(row) and promotion_artifact_matches_row(row)
     if "promotion_evidence_present" in row:
-        return row["promotion_evidence_present"] is True
-    output = "\n".join(str(row.get(key) or "") for key in ("stdout", "stderr")).lower()
-    return "promote_germline" in output or "[applied and rebuilt:" in output
+        return row["promotion_evidence_present"] is True and promotion_legacy_marker_source(row) is not None
+    return promotion_legacy_marker_source(row) is not None
 
 
 def artifact_promotion_artifact(row: dict[str, object]) -> dict[str, object] | None:
@@ -1923,8 +1965,7 @@ def promotion_artifact_matches_row(row: dict[str, object]) -> bool:
     selector = artifact.get("selector")
     return (
         artifact.get("kind") == "self_correction_jsonl_row"
-        and isinstance(artifact.get("path"), str)
-        and bool(str(artifact.get("path")).strip())
+        and is_repo_relative_artifact_path(artifact.get("path"))
         and isinstance(selector, dict)
         and selector.get("run_id") == row.get("run_id")
         and selector.get("task_id") == row.get("task_id")
@@ -1935,12 +1976,42 @@ def promotion_artifact_matches_row(row: dict[str, object]) -> bool:
     )
 
 
+def promotion_structured_gate(row: dict[str, object]) -> bool:
+    promotion = artifact_promotion(row)
+    return (
+        isinstance(row.get("promotion"), dict)
+        and promotion.get("verifier_gated") is True
+        and promotion.get("evidence_present") is True
+        and promotion.get("lineage_reconciled_by_core") is True
+        and strict_int_value(promotion.get("verify_returncode")) == 0
+    )
+
+
+def promotion_evidence_audit_details(row: dict[str, object]) -> dict[str, object]:
+    promotion = artifact_promotion(row)
+    if promotion_structured_gate(row) and promotion_artifact_matches_row(row):
+        return {
+            "promotion_evidence_source": "structured_promotion_artifact",
+            "promotion_artifact": artifact_promotion_artifact(row),
+        }
+    legacy_marker = promotion_legacy_marker_source(row)
+    if legacy_marker is not None:
+        return legacy_marker
+    if isinstance(row.get("promotion"), dict) and promotion.get("verifier_gated") is True and promotion.get("evidence_present") is True:
+        return {"promotion_evidence_source": "structured_promotion_fields_without_artifact"}
+    if row.get("promotion_evidence_present") is True:
+        return {"promotion_evidence_source": "row_promotion_evidence_boolean_without_marker"}
+    return {"promotion_evidence_source": "missing"}
+
+
 def row_has_verifier_gated_promotion(row: dict[str, object]) -> bool:
     return (
         row.get("resolved") is True
         and row.get("verify_returncode") == 0
         and row.get("lineage_reconciled_by_core") is True
         and artifact_has_promotion_evidence(row)
+        and promotion_evidence_audit_details(row).get("promotion_evidence_source")
+        in {"structured_promotion_artifact", "legacy_apply_marker_in_stderr", "legacy_apply_marker_in_stdout"}
     )
 
 
@@ -1974,7 +2045,7 @@ def normalized_artifact_row(row: dict[str, object]) -> dict[str, object]:
         "promotion_lineage_reconciled_by_core": optional_bool_value(
             promotion.get("lineage_reconciled_by_core")
         ),
-        "promotion_verify_returncode": optional_int_value(promotion.get("verify_returncode")),
+        "promotion_verify_returncode": strict_int_value(promotion.get("verify_returncode")),
     }
     for key in (
         "no_external_solution_search",
@@ -2513,9 +2584,10 @@ def validate_demo_evidence_contract(
         )
         if promotion_selector != later_selector:
             raise RuntimeError("demo evidence contract promotion selector differs from later passing attempt")
+        promotion_step_artifact_row = later_row
         promotion_embedded_row = require_embedded_row_matches_artifact(
             promotion_step,
-            later_row,
+            promotion_step_artifact_row,
             label=f"demos[{demo_index}].verifier_gated_germline_promotion",
         )
         promotion_fields = require_mapping(
@@ -2543,6 +2615,7 @@ def validate_demo_evidence_contract(
         legacy_promotion_evidence = (
             promotion_fields.get("promotion_evidence_present") is True
             and promotion_embedded_row.get("promotion_evidence_present") is True
+            and promotion_legacy_marker_source(promotion_step_artifact_row) is not None
         )
         structured_promotion_evidence = (
             promotion_fields.get("promotion_verifier_gated") is True
@@ -2555,9 +2628,17 @@ def validate_demo_evidence_contract(
             and type(promotion_fields.get("promotion_verify_returncode")) is int
             and promotion_embedded_row.get("promotion_verify_returncode") == 0
             and type(promotion_embedded_row.get("promotion_verify_returncode")) is int
+            and promotion_artifact_matches_row(promotion_step_artifact_row)
         )
         if not (legacy_promotion_evidence or structured_promotion_evidence):
             raise RuntimeError("demo evidence contract promotion lacks gated apply evidence")
+        expected_promotion_audit = promotion_evidence_audit_details(promotion_step_artifact_row)
+        persisted_promotion_audit = require_mapping(
+            promotion_step.get("promotion_evidence_audit"),
+            label=f"demos[{demo_index}].verifier_gated_germline_promotion.promotion_evidence_audit",
+        )
+        if not strict_json_equal(persisted_promotion_audit, expected_promotion_audit):
+            raise RuntimeError("demo evidence contract promotion audit differs from selected artifact row")
 
 
 def selector_summary(selector: dict[str, object]) -> str:
@@ -2639,10 +2720,26 @@ def contract_demo_artifact_lines(evidence: dict[str, object]) -> list[str]:
             steps["verifier_gated_germline_promotion"].get("selector"),
             label=f"demos[{demo_index - 1}].verifier_gated_germline_promotion.selector",
         )
+        promotion_step = require_mapping(
+            steps["verifier_gated_germline_promotion"],
+            label=f"demos[{demo_index - 1}].verifier_gated_germline_promotion",
+        )
         promotion_fields = require_mapping(
-            steps["verifier_gated_germline_promotion"].get("fields"),
+            promotion_step.get("fields"),
             label=f"demos[{demo_index - 1}].verifier_gated_germline_promotion.fields",
         )
+        promotion_audit = require_mapping(
+            promotion_step.get("promotion_evidence_audit"),
+            label=f"demos[{demo_index - 1}].verifier_gated_germline_promotion.promotion_evidence_audit",
+        )
+        promotion_source = require_str(
+            promotion_audit.get("promotion_evidence_source"),
+            label=f"demos[{demo_index - 1}].verifier_gated_germline_promotion.promotion_evidence_source",
+        )
+        promotion_marker = promotion_audit.get("promotion_marker")
+        promotion_audit_summary = f"promotion_evidence_source={promotion_source}"
+        if promotion_marker is not None:
+            promotion_audit_summary += f"; promotion_marker={promotion_marker}"
         lines.extend(
             [
                 f"  demo {demo_index}: {failed.get('run_id')} / {failed.get('task_id')}",
@@ -2657,7 +2754,7 @@ def contract_demo_artifact_lines(evidence: dict[str, object]) -> list[str]:
                 + "]",
                 f"    later_passing_attempt: source={artifact}; {selector_summary(later)}",
                 f"    lineage_trajectory_recorded: source={artifact}; attempts={lineage_fields.get('attempts')}; lineage={lineage_fields.get('lineage_records_before')}->{lineage_fields.get('lineage_records_after')}",
-                f"    verifier_gated_germline_promotion: source={artifact}; {selector_summary(promotion)}; verify_returncode={promotion_fields.get('verify_returncode')}; lineage_reconciled_by_core={promotion_fields.get('lineage_reconciled_by_core')}",
+                f"    verifier_gated_germline_promotion: source={artifact}; {selector_summary(promotion)}; verify_returncode={promotion_fields.get('verify_returncode')}; lineage_reconciled_by_core={promotion_fields.get('lineage_reconciled_by_core')}; {promotion_audit_summary}",
             ]
         )
     return lines
@@ -2809,11 +2906,31 @@ def audit_step_summary(step: dict[str, object]) -> str:
             raise RuntimeError("demo evidence audit promotion gate must record lineage_reconciled_by_core=true")
         if field_map.get("promotion_evidence_present") is not True:
             raise RuntimeError("demo evidence audit promotion gate must record promotion_evidence_present=true")
+        promotion_audit = require_mapping(
+            step.get("promotion_evidence_audit"),
+            label="audit.promotion.promotion_evidence_audit",
+        )
+        promotion_source = require_str(
+            promotion_audit.get("promotion_evidence_source"),
+            label="audit.promotion.promotion_evidence_source",
+        )
+        if promotion_source not in {
+            "structured_promotion_artifact",
+            "legacy_apply_marker_in_stderr",
+            "legacy_apply_marker_in_stdout",
+        }:
+            raise RuntimeError(
+                "demo evidence audit promotion gate must record concrete promotion artifact or legacy apply marker evidence"
+            )
+        audit_details = f"promotion_evidence_source={promotion_source}"
+        if "promotion_marker" in promotion_audit:
+            audit_details += f"; promotion_marker={promotion_audit.get('promotion_marker')}"
         return (
             f"promotion gate evidence: {selector_summary(selector)}; "
             f"verify_returncode={field_map.get('verify_returncode')}; "
             f"lineage_reconciled_by_core={field_map.get('lineage_reconciled_by_core')}; "
-            f"promotion_evidence_present={field_map.get('promotion_evidence_present')}"
+            f"promotion_evidence_present={field_map.get('promotion_evidence_present')}; "
+            f"{audit_details}"
         )
     raise RuntimeError(f"unknown demo evidence audit requirement: {requirement}")
 
@@ -2880,6 +2997,7 @@ def demo_evidence_audit_requirement_payloads(
                 "selector": selector,
                 "selectors": selectors,
                 "fields": fields,
+                "promotion_evidence_audit": step.get("promotion_evidence_audit"),
                 "archived_failure_selector": step.get("archived_failure_selector"),
                 "archived_failure_artifact_sha256": step.get(
                     "archived_failure_artifact_sha256"
@@ -3810,7 +3928,13 @@ def main(argv: list[str]) -> int:
 
 class SelfCorrectionDemoTests(unittest.TestCase):
     def archived_demo_contract_evidence(self) -> dict[str, object]:
-        return load_evidence_json(DEFAULT_ARCHIVE_EVIDENCE)
+        evidence = load_evidence_json(DEFAULT_ARCHIVE_EVIDENCE)
+        validate_demo_evidence_contract(
+            evidence,
+            self.evidence_reference(evidence),
+            evidence_label="test archived demo evidence",
+        )
+        return evidence
 
     def evidence_reference(self, evidence: dict[str, object]) -> dict[str, object]:
         return {"requirements": evidence["requirements"]}
@@ -4527,8 +4651,14 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         for entry in promotion["demos"]:
             self.assertIn("selector", entry)
             self.assertIn("fields", entry)
+            self.assertIn("promotion_evidence_audit", entry)
             self.assertTrue(entry["fields"]["promotion_evidence_present"])
+            self.assertEqual(
+                entry["promotion_evidence_audit"]["promotion_evidence_source"],
+                "legacy_apply_marker_in_stderr",
+            )
         self.assertIn("promotion_evidence_present=True", promotion["selected_rows_and_audited_fields"])
+        self.assertIn("promotion_evidence_source=legacy_apply_marker_in_stderr", promotion["selected_rows_and_audited_fields"])
         self.assertIn("not fresh provider-backed", payload["note"])
         self.assertIn(
             "python3 bench/self_correction_demo.py verify-archive",
@@ -4653,6 +4783,19 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         fields["promotion_evidence_present"] = False
 
         with self.assertRaisesRegex(RuntimeError, "promotion gate must record promotion_evidence_present=true"):
+            demo_evidence_audit_rows(evidence)
+
+    def test_demo_evidence_audit_rejects_missing_promotion_evidence_audit(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        demo = require_mapping(require_sequence(evidence["demos"], label="demos")[0], label="demo")
+        steps = {
+            require_mapping(step, label="step").get("requirement"): require_mapping(step, label="step")
+            for step in require_sequence(demo["causal_chain"], label="causal_chain")
+        }
+        promotion = require_mapping(steps["verifier_gated_germline_promotion"], label="promotion")
+        promotion.pop("promotion_evidence_audit", None)
+
+        with self.assertRaisesRegex(RuntimeError, "audit.promotion.promotion_evidence_audit"):
             demo_evidence_audit_rows(evidence)
 
     def test_demo_evidence_audit_rejects_promotion_without_lineage_reconciliation(self) -> None:
@@ -6036,6 +6179,30 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     evidence,
                     self.evidence_reference(evidence),
                     evidence_label="promotion-field-spoof.demo-evidence.json",
+                )
+
+    def test_verify_evidence_contract_rejects_promotion_boolean_without_artifact_marker(self) -> None:
+        evidence = self.archived_demo_contract_evidence()
+        promotion_step = evidence["demos"][0]["causal_chain"][5]
+        promotion_selector = promotion_step["selector"]
+        rows = load_jsonl_rows(repo_path(DEFAULT_ARCHIVE))
+        promotion_row = require_artifact_row(
+            artifact_rows_by_selector(rows), promotion_selector, label="test promotion selector"
+        )
+        promotion_row["stdout"] = ""
+        promotion_row["stderr"] = ""
+        promotion_row["promotion_evidence_present"] = True
+        promotion_step["fields"]["promotion_evidence_present"] = True
+        self.sync_embedded_rows_for_selector(
+            evidence, promotion_selector, normalized_artifact_row(promotion_row)
+        )
+
+        with mock.patch(__name__ + ".load_jsonl_rows", return_value=rows):
+            with self.assertRaisesRegex(RuntimeError, "promotion lacks gated apply evidence"):
+                validate_demo_evidence_contract(
+                    evidence,
+                    self.evidence_reference(evidence),
+                    evidence_label="boolean-only-promotion.demo-evidence.json",
                 )
 
     def test_verify_evidence_contract_rejects_stringly_legacy_promotion_booleans(self) -> None:
@@ -7781,6 +7948,189 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(RuntimeError, "without a matching promotion artifact"):
+                validate_fresh_results(args)
+
+    def test_validate_fresh_results_allows_non_promoting_structured_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            common = {
+                "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+                "source_head_short": "abcdef1",
+                "source_branch": "main",
+                "source_dirty": False,
+                "max_tokens": 100_000,
+                "timeout_secs": 1800,
+                "no_external_solution_search": True,
+                "network_policy": "Isolated",
+                "audited_sandbox_provider_allowlist_enforced": True,
+                "audited_sandbox_provider_allowlist_status": "enforced",
+                FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                    self.fresh_sandbox_provider_allowlist_evidence()
+                ),
+            }
+            rows = [
+                {
+                    **common,
+                    "run_id": "fresh-demo-1",
+                    "task_id": "task",
+                    "attempt": 1,
+                    "resolved": False,
+                    "verify_returncode": 1,
+                    "verify_command": "cargo test -p demo hidden",
+                    "lineage_records_after": 1,
+                    "promotion": {
+                        "verifier_gated": False,
+                        "evidence_present": False,
+                        "lineage_reconciled_by_core": False,
+                        "verify_returncode": None,
+                        "artifact": None,
+                    },
+                },
+                {
+                    **common,
+                    "run_id": "fresh-demo-1",
+                    "task_id": "task",
+                    "attempt": 2,
+                    "resolved": True,
+                    "verify_returncode": 0,
+                    "verify_command": "cargo test -p demo hidden",
+                    "lineage_records_after": 2,
+                    "lineage_reconciled_by_core": True,
+                    "promotion": {
+                        "verifier_gated": True,
+                        "evidence_present": True,
+                        "lineage_reconciled_by_core": True,
+                        "verify_returncode": 0,
+                        "artifact": {
+                            "kind": "self_correction_jsonl_row",
+                            "path": "docs/benchmark-results/self-correction/a2-fresh-demo.jsonl",
+                            "selector": {"run_id": "fresh-demo-1", "task_id": "task", "attempt": 2},
+                            "lineage_records_after": 2,
+                            "verify_command": "cargo test -p demo hidden",
+                            "verify_returncode": 0,
+                        },
+                    },
+                },
+            ]
+            results.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_non_repo_relative_promotion_artifact(self) -> None:
+        for artifact_path in (
+            "/workspace/fresh.jsonl",
+            "../fresh.jsonl",
+            "docs/../fresh.jsonl",
+            "C:\\workspace\\fresh.jsonl",
+        ):
+            with self.subTest(artifact_path=artifact_path), tempfile.TemporaryDirectory() as tmpdir:
+                results = Path(tmpdir) / "fresh.jsonl"
+                row = {
+                    "run_id": "fresh-demo-1",
+                    "task_id": "task",
+                    "attempt": 2,
+                    "resolved": True,
+                    "verify_returncode": 0,
+                    "verify_command": "cargo test -p demo hidden",
+                    "lineage_records_after": 2,
+                    "lineage_reconciled_by_core": True,
+                    "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+                    "source_head_short": "abcdef1",
+                    "source_branch": "main",
+                    "source_dirty": False,
+                    "max_tokens": 100_000,
+                    "timeout_secs": 1800,
+                    "no_external_solution_search": True,
+                    "network_policy": "Isolated",
+                    "audited_sandbox_provider_allowlist_enforced": True,
+                    "audited_sandbox_provider_allowlist_status": "enforced",
+                    FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                        self.fresh_sandbox_provider_allowlist_evidence()
+                    ),
+                    "promotion": {
+                        "verifier_gated": True,
+                        "evidence_present": True,
+                        "lineage_reconciled_by_core": True,
+                        "verify_returncode": 0,
+                        "artifact": {
+                            "kind": "self_correction_jsonl_row",
+                            "path": artifact_path,
+                            "selector": {"run_id": "fresh-demo-1", "task_id": "task", "attempt": 2},
+                            "lineage_records_after": 2,
+                            "verify_command": "cargo test -p demo hidden",
+                            "verify_returncode": 0,
+                        },
+                    },
+                }
+                results.write_text(json.dumps(row) + "\n", encoding="utf-8")
+                args = argparse.Namespace(
+                    results=results,
+                    run_id="fresh-demo",
+                    allow_dirty_source=False,
+                    max_tokens=100_000,
+                    timeout=1800,
+                )
+
+                with self.assertRaisesRegex(RuntimeError, "without a matching promotion artifact"):
+                    validate_fresh_results(args)
+
+    def test_validate_fresh_results_rejects_string_promotion_verify_returncode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            row = {
+                "run_id": "fresh-demo-1",
+                "task_id": "task",
+                "attempt": 2,
+                "resolved": True,
+                "verify_returncode": 0,
+                "verify_command": "cargo test -p demo hidden",
+                "lineage_records_after": 2,
+                "lineage_reconciled_by_core": True,
+                "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+                "source_head_short": "abcdef1",
+                "source_branch": "main",
+                "source_dirty": False,
+                "max_tokens": 100_000,
+                "timeout_secs": 1800,
+                "no_external_solution_search": True,
+                "network_policy": "Isolated",
+                "audited_sandbox_provider_allowlist_enforced": True,
+                "audited_sandbox_provider_allowlist_status": "enforced",
+                FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE_FIELD: (
+                    self.fresh_sandbox_provider_allowlist_evidence()
+                ),
+                "promotion": {
+                    "verifier_gated": True,
+                    "evidence_present": True,
+                    "lineage_reconciled_by_core": True,
+                    "verify_returncode": "0",
+                    "artifact": {
+                        "kind": "self_correction_jsonl_row",
+                        "path": "docs/benchmark-results/self-correction/a2-fresh-demo.jsonl",
+                        "selector": {"run_id": "fresh-demo-1", "task_id": "task", "attempt": 2},
+                        "lineage_records_after": 2,
+                        "verify_command": "cargo test -p demo hidden",
+                        "verify_returncode": 0,
+                    },
+                },
+            }
+            results.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "malformed verifier-gated promotion fields"):
                 validate_fresh_results(args)
 
     def test_validate_fresh_results_rejects_stale_or_mismatched_rows(self) -> None:
