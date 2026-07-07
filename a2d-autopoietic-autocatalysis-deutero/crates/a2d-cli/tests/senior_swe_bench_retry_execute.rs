@@ -2439,6 +2439,91 @@ fn retry_run_next_gate_advances_fixture_chain_one_gate_at_a_time_to_inspected_ru
         Some(false)
     );
 
+    let terminal_retry_execution = fixture.work_dir.join("retry-resume-attempt-execution.json");
+    let terminal_gate = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .current_dir(project_root().join("crates/a2d-cli"))
+        .args([
+            "senior-swe-bench-retry-run-next-gate",
+            "--retry-execution",
+            project_relative(&terminal_retry_execution).as_str(),
+        ])
+        .output()
+        .expect("run next-gate over terminal retry execution");
+    assert_eq!(
+        terminal_gate.status.code(),
+        Some(0),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&terminal_gate.stderr),
+        String::from_utf8_lossy(&terminal_gate.stdout)
+    );
+    let terminal_gate_value: serde_json::Value =
+        serde_json::from_slice(&terminal_gate.stdout).unwrap();
+    assert_eq!(
+        terminal_gate_value["schema_version"].as_str(),
+        Some("a2d.senior-swe-bench-retry-next-gate-execution.v1")
+    );
+    assert_eq!(
+        terminal_gate_value["executed_gate"].as_str(),
+        Some("none_terminal_status")
+    );
+    assert_eq!(terminal_gate_value["status"].as_str(), Some("success"));
+    assert_eq!(
+        terminal_gate_value["stop_reason"].as_str(),
+        Some("terminal_retry_status_no_gate_executed")
+    );
+    assert!(terminal_gate_value["child_schema"].is_null());
+    assert!(terminal_gate_value["child_artifact_path"].is_null());
+    assert_eq!(
+        terminal_gate_value["before_status"]["next_action"].as_str(),
+        Some("completed_success")
+    );
+    assert_eq!(
+        terminal_gate_value["provider_invocations_started_by_this_command"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        terminal_gate_value["cycle_input_command_started_by_this_command"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        terminal_gate_value["evaluator_invocations_started_by_this_command"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        terminal_gate_value["fitness_evidence_inspection_started_by_this_command"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        terminal_gate_value["fitness_claim_allowed_after_gate"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        terminal_gate_value["official_senior_swe_bench_mastery"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        terminal_gate_value["github_solution_search_allowed"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        terminal_gate_value["provider_invocation_observation"].as_str(),
+        Some(
+            "terminal retry status observed; no cycle-input subprocess boundary is started by this controller gate"
+        )
+    );
+    assert_eq!(
+        fs::read_to_string(&counter).unwrap(),
+        "2",
+        "terminal next-gate observation must not run another evaluator"
+    );
+    let terminal_controller_path = fixture
+        .work_dir
+        .join("retry-next-gate-terminal-status.json");
+    assert!(terminal_controller_path.is_file());
+    let persisted_terminal_gate: serde_json::Value =
+        serde_json::from_slice(&fs::read(terminal_controller_path).unwrap()).unwrap();
+    assert_eq!(persisted_terminal_gate, terminal_gate_value);
+
     let _ = fs::remove_dir_all(fixture.root);
 }
 
