@@ -2528,6 +2528,90 @@ fn retry_run_next_gate_advances_fixture_chain_one_gate_at_a_time_to_inspected_ru
 }
 
 #[test]
+fn retry_run_next_gate_rejects_existing_terminal_controller_artifact_before_overwrite() {
+    let fixture = write_fixture(
+        "next-gate-terminal-existing-controller",
+        2,
+        "echo overwritten by invocation-count evaluator >&2\nexit 99\n",
+    );
+    let counter = fixture.root.join("evaluator-count");
+    write_executable_script(
+        &fixture.evaluator,
+        &format!(
+            "count=0\nif test -f {counter}; then count=$(cat {counter}); fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > {counter}\ngrep -q new src/lib.rs\n",
+            counter = counter.to_string_lossy()
+        ),
+    );
+    let evidence_dir = fixture.root.join("fitness-terminal-existing-controller");
+    let success = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .env("A2D_FITNESS_EVIDENCE_EXPORT_DIR", &evidence_dir)
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run successful retry execute");
+    assert_eq!(
+        success.status.code(),
+        Some(0),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&success.stderr),
+        String::from_utf8_lossy(&success.stdout)
+    );
+    assert_eq!(fs::read_to_string(&counter).unwrap(), "1");
+
+    let retry_execution = fixture.work_dir.join("retry-execution.json");
+    let terminal_controller = fixture
+        .work_dir
+        .join("retry-next-gate-terminal-status.json");
+    fs::write(&terminal_controller, "{\"stale\":true}\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-run-next-gate",
+            "--retry-execution",
+            retry_execution.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run next-gate over terminal retry execution with stale controller artifact");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("already exists before child side effects"),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&terminal_controller).unwrap(),
+        "{\"stale\":true}\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&counter).unwrap(),
+        "1",
+        "terminal next-gate preflight must not rerun evaluator side effects"
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
 fn retry_run_next_gate_from_retry_execution_spawns_current_exe_cycle_input_and_fails_closed_before_provider_on_invalid_checkout()
  {
     let fixture = write_fixture(
@@ -3336,6 +3420,98 @@ fn retry_resume_attempt_execute_rejects_existing_resumed_outputs_before_evaluato
     assert!(String::from_utf8_lossy(&output.stderr).contains("planned output already exists"));
     assert_eq!(fs::read(&existing).unwrap(), b"stale local evaluation\n");
     assert!(!fixture.root.join("evaluator-ran").exists());
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_resume_attempt_execute_rejects_existing_run_result_before_evaluator() {
+    let fixture = write_fixture(
+        "resume-execute-existing-run-result",
+        2,
+        "echo overwritten by counter evaluator >&2\nexit 99\n",
+    );
+    let counter = fixture.root.join("evaluator-count");
+    write_executable_script(
+        &fixture.evaluator,
+        &format!(
+            "count=0\nif test -f {counter}; then count=$(cat {counter}); fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > {counter}\necho public failure >&2\nexit 1\n",
+            counter = counter.to_string_lossy()
+        ),
+    );
+    let first = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run first retry execute");
+    assert_eq!(first.status.code(), Some(2));
+    assert_eq!(fs::read_to_string(&counter).unwrap(), "1");
+
+    let next_manifest_dir = fixture.work_dir.join("attempt-1/cycle-output-artifacts");
+    fs::create_dir_all(&next_manifest_dir).unwrap();
+    let generated_manifest = write_manifest(
+        &next_manifest_dir,
+        "candidate",
+        b"diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
+    );
+    let next_manifest = next_manifest_dir.join("manifest.json");
+    fs::rename(&generated_manifest, &next_manifest).unwrap();
+    let next_cycle_execution = write_retry_next_cycle_execution(
+        &fixture,
+        "success",
+        "cycle_output_manifest_ready",
+        &next_manifest,
+    );
+    let plan = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-resume-attempt-plan",
+            "--next-cycle-execution",
+            next_cycle_execution.to_str().unwrap(),
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry resume attempt plan");
+    assert_eq!(plan.status.code(), Some(0));
+
+    let existing = fixture.work_dir.join("attempt-1/retry-run-result.json");
+    fs::write(&existing, b"stale run result\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args(["senior-swe-bench-retry-resume-attempt-execute", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.take().expect("stdin").write_all(&plan.stdout)?;
+            child.wait_with_output()
+        })
+        .expect("run retry resume attempt execute");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("planned output already exists"));
+    assert_eq!(fs::read(&existing).unwrap(), b"stale run result\n");
+    assert_eq!(
+        fs::read_to_string(&counter).unwrap(),
+        "1",
+        "run-result preflight must stop before resumed evaluator side effects"
+    );
 
     let _ = fs::remove_dir_all(fixture.root);
 }

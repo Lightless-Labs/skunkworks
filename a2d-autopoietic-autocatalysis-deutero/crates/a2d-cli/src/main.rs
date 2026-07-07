@@ -7070,6 +7070,7 @@ where
                     })?;
                     let output_path =
                         retry_execution_dir.join("retry-next-gate-terminal-status.json");
+                    preflight_retry_next_gate_output(&output_path)?;
                     let controller = json!({
                         "schema_version": "a2d.senior-swe-bench-retry-next-gate-execution.v1",
                         "status": "success",
