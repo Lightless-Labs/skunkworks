@@ -699,6 +699,12 @@ def run_agent_network_boundary_inventory_json(path: Path) -> dict[str, object]:
     resolved.write_text(inventory_json, encoding="utf-8")
     a2_boundary = inventory.get("a2_owned_provider_launch_boundary")
     sandbox_runtime = inventory.get("sandbox_runtime")
+    required_gate = inventory.get("required_sandbox_runtime_gate")
+    required_gate_failures = (
+        required_gate.get("failures")
+        if isinstance(required_gate, dict) and isinstance(required_gate.get("failures"), list)
+        else []
+    )
     return {
         "path": str(path),
         "command": display_command(AGENT_NETWORK_BOUNDARY_INVENTORY_JSON_COMMAND),
@@ -731,6 +737,10 @@ def run_agent_network_boundary_inventory_json(path: Path) -> dict[str, object]:
             isinstance(sandbox_runtime, dict) and sandbox_runtime.get("available") is True
         ),
         "launch_sandbox_enforced": bool(inventory.get("launch_sandbox_enforced") is True),
+        "required_sandbox_runtime_gate_passed": bool(
+            isinstance(required_gate, dict) and required_gate.get("passed") is True
+        ),
+        "required_sandbox_runtime_gate_failures": required_gate_failures,
     }
 
 
@@ -828,7 +838,24 @@ def write_fresh_preflight_report(
     ensure_preflight_report_path(path, results=results, evidence_json=evidence_json)
     resolved = repo_path(path)
     resolved.parent.mkdir(parents=True, exist_ok=True)
-    resolved.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    content = json.dumps(report, indent=2, sort_keys=True) + "\n"
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=resolved.parent,
+        prefix=f".{resolved.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as tmp:
+        tmp_path = Path(tmp.name)
+        tmp.write(content)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            verify_fresh_preflight_report(tmp_path)
+        tmp_path.replace(resolved)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def load_preflight_report(path: Path) -> dict[str, object]:
@@ -984,6 +1011,36 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
             raise RuntimeError(
                 "fresh preflight boundary inventory embedded inventory must record boolean launch_sandbox_enforced"
             )
+        embedded_required_gate = embedded_inventory.get("required_sandbox_runtime_gate")
+        if not isinstance(embedded_required_gate, dict):
+            raise RuntimeError(
+                "fresh preflight boundary inventory embedded inventory must record required_sandbox_runtime_gate"
+            )
+        embedded_required_gate_passed = embedded_required_gate.get("passed")
+        if not isinstance(embedded_required_gate_passed, bool):
+            raise RuntimeError(
+                "fresh preflight boundary inventory embedded required_sandbox_runtime_gate.passed must be boolean"
+            )
+        embedded_required_gate_failures = embedded_required_gate.get("failures")
+        if not isinstance(embedded_required_gate_failures, list) or not all(
+            isinstance(item, str) for item in embedded_required_gate_failures
+        ):
+            raise RuntimeError(
+                "fresh preflight boundary inventory embedded required_sandbox_runtime_gate.failures must be a list of strings"
+            )
+        if embedded_required_gate.get("command") != display_command(AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND):
+            raise RuntimeError(
+                "fresh preflight boundary inventory embedded required_sandbox_runtime_gate.command must be the sandbox runtime precondition command"
+            )
+        if FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS != "enforced":
+            if embedded_required_gate_passed is not False:
+                raise RuntimeError(
+                    "fresh preflight boundary inventory embedded required_sandbox_runtime_gate.passed must remain false while audited sandbox/provider allowlist status is not_implemented"
+                )
+            if not embedded_required_gate_failures:
+                raise RuntimeError(
+                    "fresh preflight boundary inventory embedded required_sandbox_runtime_gate.failures must name missing prerequisites while audited sandbox/provider allowlist status is not_implemented"
+                )
         for key, label in [
             ("creates_loop_evidence", "loop evidence"),
             ("provider_backed_benchmark_executed", "provider-backed benchmark execution"),
@@ -1020,6 +1077,7 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
             "sandbox_runtime_available": embedded_sandbox_runtime["available"],
             "launch_sandbox_enforced": embedded_inventory["launch_sandbox_enforced"],
             "usable_sandbox_provider_allowlist_enforced": embedded_usable_allowlist,
+            "required_sandbox_runtime_gate_passed": embedded_required_gate_passed,
         }
         for key, derived_value in embedded_summary.items():
             if boundary_inventory.get(key) is not derived_value:
@@ -1027,6 +1085,10 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
                     "fresh preflight boundary inventory summary field "
                     f"{key} does not match embedded inventory_json"
                 )
+        if boundary_inventory.get("required_sandbox_runtime_gate_failures") != embedded_required_gate_failures:
+            raise RuntimeError(
+                "fresh preflight boundary inventory summary field required_sandbox_runtime_gate_failures does not match embedded inventory_json"
+            )
         declared_inventory_path = report.get("boundary_inventory_json")
         if isinstance(declared_inventory_path, str) and declared_inventory_path:
             resolved_inventory = repo_path(Path(declared_inventory_path))
@@ -3957,7 +4019,11 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         a2_sandbox_enforced: bool = False,
         sandbox_runtime_available: bool = False,
         launch_sandbox_enforced: bool = False,
+        required_gate_passed: bool = False,
+        required_gate_failures: list[str] | None = None,
     ) -> dict[str, object]:
+        if required_gate_failures is None:
+            required_gate_failures = [] if required_gate_passed else ["sandbox runtime/enforcement prerequisites missing"]
         return {
             "a2_owned_provider_launch_boundary": {
                 "fail_closed_restricted_policies": fail_closed,
@@ -3965,6 +4031,12 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             },
             "sandbox_runtime": {"available": sandbox_runtime_available},
             "launch_sandbox_enforced": launch_sandbox_enforced,
+            "required_sandbox_runtime_gate": {
+                "passed": required_gate_passed,
+                "failures": required_gate_failures,
+                "command": "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime",
+                "interpretation": "fresh provider-backed evidence remains blocked until this gate passes",
+            },
             "creates_loop_evidence": False,
             "provider_backed_benchmark_executed": False,
             "fresh_provider_backed_current_head_loop_evidence": False,
@@ -3991,6 +4063,16 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         )
         sandbox_runtime = (
             inventory_content.get("sandbox_runtime") if isinstance(inventory_content, dict) else None
+        )
+        required_gate = (
+            inventory_content.get("required_sandbox_runtime_gate")
+            if isinstance(inventory_content, dict)
+            else None
+        )
+        required_gate_failures = (
+            required_gate.get("failures")
+            if isinstance(required_gate, dict) and isinstance(required_gate.get("failures"), list)
+            else []
         )
         return {
             "mode": "fresh_preflight",
@@ -4033,6 +4115,10 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     isinstance(inventory_content, dict)
                     and inventory_content.get("launch_sandbox_enforced") is True
                 ),
+                "required_sandbox_runtime_gate_passed": bool(
+                    isinstance(required_gate, dict) and required_gate.get("passed") is True
+                ),
+                "required_sandbox_runtime_gate_failures": required_gate_failures,
             },
             "checks": {
                 **self.required_preflight_network_checks(),
@@ -6605,6 +6691,10 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "a2_owned_sandbox_enforced": False,
                         "sandbox_runtime_available": False,
                         "launch_sandbox_enforced": False,
+                        "required_sandbox_runtime_gate_passed": False,
+                        "required_sandbox_runtime_gate_failures": [
+                            "sandbox runtime/enforcement prerequisites missing"
+                        ],
                     }
 
                 with mock.patch(
@@ -6662,6 +6752,11 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(
             hashlib.sha256(data["boundary_inventory"]["inventory_json"].encode("utf-8")).hexdigest(),
             data["boundary_inventory"]["inventory_json_sha256"],
+        )
+        self.assertFalse(data["boundary_inventory"]["required_sandbox_runtime_gate_passed"])
+        self.assertEqual(
+            data["boundary_inventory"]["required_sandbox_runtime_gate_failures"],
+            ["sandbox runtime/enforcement prerequisites missing"],
         )
         self.assertTrue(data["checks"]["agent_network_boundary_inventory_json_requested"])
         self.assertTrue(data["checks"]["agent_network_boundary_inventory_json_executed"])
@@ -6904,6 +6999,58 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             report_path = Path(tmpdir) / "fresh.report.json"
             report_path.write_text(json.dumps(report), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "sandbox_runtime_available"):
+                verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_rejects_missing_required_runtime_gate(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content()
+        inventory_content.pop("required_sandbox_runtime_gate")
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=inventory_sha256,
+            inventory_content=inventory_content,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "required_sandbox_runtime_gate"):
+                verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_rejects_required_runtime_gate_overclaim(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content(
+            required_gate_passed=True,
+            required_gate_failures=[],
+        )
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=inventory_sha256,
+            inventory_content=inventory_content,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "required_sandbox_runtime_gate.passed"):
+                verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_rejects_required_runtime_gate_summary_mismatch(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content(
+            required_gate_failures=["missing runtime", "missing launch wrapper"],
+        )
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=inventory_sha256,
+            inventory_content=inventory_content,
+        )
+        report["boundary_inventory"]["required_sandbox_runtime_gate_failures"] = ["missing runtime"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "required_sandbox_runtime_gate_failures"):
                 verify_fresh_preflight_report(report_path)
 
     def test_verify_preflight_boundary_inventory_rejects_summary_not_derived_from_embedded_inventory(self) -> None:
@@ -7447,6 +7594,31 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "source_head differs from current HEAD",
             ):
                 verify_fresh_preflight_report(report_path, require_current_head=True)
+
+    def test_write_fresh_preflight_report_rejects_invalid_boundary_gate_without_success_artifact(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content()
+        inventory_content.pop("required_sandbox_runtime_gate")
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=hashlib.sha256(inventory_json.encode("utf-8")).hexdigest(),
+            inventory_content=inventory_content,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            report_path = tmp_path / "fresh.report.json"
+            results = tmp_path / "fresh.jsonl"
+            evidence = tmp_path / "fresh.demo-evidence.json"
+            with self.assertRaisesRegex(RuntimeError, "required_sandbox_runtime_gate"):
+                write_fresh_preflight_report(
+                    report_path,
+                    report,
+                    results=results,
+                    evidence_json=evidence,
+                )
+
+            self.assertFalse(report_path.exists())
+            self.assertEqual(list(tmp_path.glob(f".{report_path.name}.*.tmp")), [])
 
     def test_fresh_preflight_report_refuses_non_empty_file(self) -> None:
         original_which = shutil.which
