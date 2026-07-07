@@ -363,6 +363,47 @@ fn retry_attempt_step_builds_next_cycle_input_for_failed_attempt() {
         Some("build_next_cycle_input")
     );
     let next_cycle_input = &value["retry_step"]["next_cycle_input"];
+    let next_cycle_object = next_cycle_input
+        .as_object()
+        .expect("next_cycle_input must remain a structured JSON object, not a string blob");
+    for field in [
+        "requirements",
+        "design",
+        "plan",
+        "benchmark_context",
+        "evaluation",
+    ] {
+        assert!(
+            next_cycle_object.contains_key(field),
+            "next_cycle_input missing structured field {field}: {next_cycle_input}"
+        );
+    }
+    assert_eq!(
+        next_cycle_input["requirements"].as_str(),
+        Some("Do not search GitHub. Return a unified diff candidate patch.")
+    );
+    assert_eq!(
+        next_cycle_input["benchmark_context"]["schema_version"].as_str(),
+        Some("a2d.senior-swe-bench-task-package.v1")
+    );
+    assert_eq!(
+        next_cycle_input["benchmark_context"]["task_id"].as_str(),
+        Some("task-hard")
+    );
+    assert_eq!(
+        next_cycle_input["benchmark_context"]["repo"].as_str(),
+        Some("owner/repo")
+    );
+    assert!(
+        next_cycle_input["plan"].as_str().is_some_and(
+            |plan| plan.contains("Previous plan:") && plan.contains("Return only a diff.")
+        ),
+        "next_cycle_input plan should remain structured retry context: {next_cycle_input}"
+    );
+    assert_eq!(
+        next_cycle_input["evaluation"]["evaluator"].as_str(),
+        Some("official_senior_swe_bench")
+    );
     assert_eq!(
         next_cycle_input["evaluation"]["status"].as_str(),
         Some("not_evaluated")
