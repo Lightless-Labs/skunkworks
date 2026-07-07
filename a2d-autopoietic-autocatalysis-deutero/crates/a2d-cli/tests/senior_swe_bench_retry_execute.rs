@@ -864,6 +864,92 @@ fn retry_status_rejects_tampered_official_mastery_claim() {
     let _ = fs::remove_dir_all(fixture.root);
 }
 
+fn assert_retry_status_rejects_tampered_terminal_run_result_flag(
+    flag: &str,
+    tampered_value: serde_json::Value,
+    expected_error: &str,
+) {
+    let fixture = write_fixture(
+        &format!("status-terminal-run-result-tampered-{flag}"),
+        2,
+        "test \"${A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN}\" = true\ngrep -q new src/lib.rs\n",
+    );
+    let evidence_dir = fixture.root.join("fitness");
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .env("A2D_FITNESS_EVIDENCE_EXPORT_DIR", &evidence_dir)
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute");
+    assert_eq!(output.status.code(), Some(0));
+    let retry_execution = fixture.work_dir.join("retry-execution.json");
+    let mut execution: serde_json::Value =
+        serde_json::from_slice(&fs::read(&retry_execution).unwrap()).unwrap();
+    execution["terminal_run_result"][flag] = tampered_value;
+    fs::write(
+        &retry_execution,
+        serde_json::to_vec_pretty(&execution).unwrap(),
+    )
+    .unwrap();
+
+    let status_output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-status",
+            retry_execution.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry status");
+    assert_eq!(status_output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&status_output.stderr).contains(expected_error),
+        "stderr={}",
+        String::from_utf8_lossy(&status_output.stderr)
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_status_rejects_terminal_run_result_that_allows_github_solution_search() {
+    assert_retry_status_rejects_tampered_terminal_run_result_flag(
+        "github_solution_search_allowed",
+        serde_json::json!(true),
+        "terminal_run_result.github_solution_search_allowed must be false",
+    );
+}
+
+#[test]
+fn retry_status_rejects_terminal_run_result_that_claims_provider_invocation() {
+    assert_retry_status_rejects_tampered_terminal_run_result_flag(
+        "provider_invocations_started",
+        serde_json::json!(true),
+        "terminal_run_result.provider_invocations_started must be false",
+    );
+}
+
+#[test]
+fn retry_status_rejects_terminal_run_result_with_non_boolean_evidence_passed_flag() {
+    assert_retry_status_rejects_tampered_terminal_run_result_flag(
+        "fitness_evidence_inspection_passed",
+        serde_json::json!("true"),
+        "terminal_run_result.fitness_evidence_inspection_passed must be true",
+    );
+}
+
 #[test]
 fn retry_status_rejects_stale_terminal_evidence_summary() {
     let fixture = write_fixture(

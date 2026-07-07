@@ -7670,6 +7670,21 @@ fn build_senior_swe_bench_retry_status(
                         .to_string(),
                 );
             }
+            for (field, expected) in [
+                ("github_solution_search_allowed", false),
+                ("fitness_claim_allowed_before_evidence", false),
+                ("provider_invocations_started", false),
+                ("evaluator_invocations_started", false),
+                ("fitness_evidence_inspection_started", true),
+                ("fitness_evidence_inspection_passed", true),
+                ("fitness_claim_allowed_after_evidence_inspection", true),
+            ] {
+                if terminal_run_result.get(field).and_then(Value::as_bool) != Some(expected) {
+                    return Err(format!(
+                        "Senior SWE-Bench retry terminal_run_result.{field} must be {expected}"
+                    ));
+                }
+            }
             let final_evidence_resolved =
                 resolve_retry_artifact_path(Path::new(final_evidence_path));
             let evidence_bytes = fs::read(&final_evidence_resolved).map_err(|error| {
