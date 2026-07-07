@@ -21,7 +21,7 @@ After URL/raw/obfuscated-host and GitHub CLI command hardening, the shared artif
 - `CARGO_BUILD_JOBS=2 cargo test`
 - `cargo run -q -p a2d -- fitness-evidence-inspect runs/20260707-senior-swe-bench-percent-encoded-github-reference-detection-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json --require-all-tests-pass`
 
-The evidence is full-passing `a2d.fitness-evidence.v1` actual-test evidence with `source_diff_hash: 2eb9a3e509b8442569b4fab43c56603bb7b363dd`, matching the scoped crates diff. `hidden_acceptance: not_present` is expected for this local score-artifact source-patch gate.
+The pre-commit evidence is full-passing `a2d.fitness-evidence.v1` actual-test evidence with `source_diff_hash: 2eb9a3e509b8442569b4fab43c56603bb7b363dd`, matching the scoped crates diff for implementation commit `90e6ffe`. Post-commit clean-HEAD evidence was regenerated at `runs/20260707-postcommit-fitness-evidence-90e6ffe/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json` and passes inspection with clean crates diff hash `e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`. `hidden_acceptance: not_present` is expected for this local score-artifact source-patch gate.
 
 ## Non-claims
 
