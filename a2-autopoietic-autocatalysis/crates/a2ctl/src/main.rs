@@ -42,6 +42,47 @@ fn render_sentinel_non_gating_advisory_block() -> String {
     output
 }
 
+#[derive(Serialize)]
+struct SentinelJsonOutput<'a> {
+    workspace: &'a str,
+    suite: &'a a2_eval::sentinel::SuiteResult,
+    sentinel_gate: &'a str,
+    overall_gate: &'a str,
+    overall_passed: bool,
+    non_gating_advisories: Vec<&'static str>,
+    required_gates: Vec<RequiredSentinelGateJson>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct RequiredSentinelGateJson {
+    name: &'static str,
+    required: bool,
+    passed: bool,
+    command: Vec<String>,
+    archive: Option<String>,
+    evidence: Option<String>,
+    error: Option<String>,
+}
+
+fn render_sentinel_json_output(
+    workspace: &str,
+    result: &a2_eval::sentinel::SuiteResult,
+    required_gates: Vec<RequiredSentinelGateJson>,
+) -> Result<String, serde_json::Error> {
+    let required_gates_passed = required_gates.iter().all(|gate| gate.passed);
+    let overall_passed = result.all_passed && required_gates_passed;
+    let output = SentinelJsonOutput {
+        workspace,
+        suite: result,
+        sentinel_gate: if result.all_passed { "PASS" } else { "FAIL" },
+        overall_gate: if overall_passed { "PASS" } else { "FAIL" },
+        overall_passed,
+        non_gating_advisories: sentinel_non_gating_advisories().to_vec(),
+        required_gates,
+    };
+    serde_json::to_string_pretty(&output).map(|json| format!("{json}\n"))
+}
+
 fn render_sentinel_output(workspace: &str, result: &a2_eval::sentinel::SuiteResult) -> String {
     use std::fmt::Write as _;
 
@@ -1496,6 +1537,9 @@ enum Commands {
         /// Workspace root path (defaults to current directory).
         #[arg(long, default_value = ".")]
         workspace: String,
+        /// Emit machine-readable JSON instead of the human sentinel report.
+        #[arg(long)]
+        json: bool,
         /// Also require the archived demo-evidence contract after the 6/6 sentinel suite passes.
         #[arg(long)]
         require_demo_evidence: bool,
@@ -2744,6 +2788,7 @@ async fn main() {
         }
         Commands::Sentinel {
             workspace,
+            json,
             require_demo_evidence,
             require_agent_network_boundary,
             demo_archive,
@@ -2753,40 +2798,107 @@ async fn main() {
                 a2_eval::sentinel::SentinelSuite::seed_suite(std::path::PathBuf::from(&workspace));
             let result = suite.run_all();
 
-            print!("{}", render_sentinel_output(&workspace, &result));
-
             let mut failed = !result.all_passed;
+            let mut required_gates = Vec::new();
+
+            if !json {
+                print!("{}", render_sentinel_output(&workspace, &result));
+            }
+
             if require_demo_evidence && result.all_passed {
-                println!();
-                println!("Required demo evidence gate:");
-                match run_demo_evidence_contract(&workspace, &demo_archive, &demo_evidence_json) {
-                    Ok(_) => {
+                let gate_result = match run_demo_evidence_contract(
+                    &workspace,
+                    &demo_archive,
+                    &demo_evidence_json,
+                ) {
+                    Ok(_) => RequiredSentinelGateJson {
+                        name: "demo_evidence",
+                        required: true,
+                        passed: true,
+                        command: demo_evidence_command_args(&demo_archive, &demo_evidence_json),
+                        archive: Some(demo_archive.clone()),
+                        evidence: Some(demo_evidence_json.clone()),
+                        error: None,
+                    },
+                    Err(error) => {
+                        failed = true;
+                        RequiredSentinelGateJson {
+                            name: "demo_evidence",
+                            required: true,
+                            passed: false,
+                            command: demo_evidence_command_args(&demo_archive, &demo_evidence_json),
+                            archive: Some(demo_archive.clone()),
+                            evidence: Some(demo_evidence_json.clone()),
+                            error: Some(error),
+                        }
+                    }
+                };
+                if !json {
+                    println!();
+                    println!("Required demo evidence gate:");
+                    if gate_result.passed {
                         println!("  PASS archived demo evidence contract validated");
                         println!("  archive: {demo_archive}");
                         println!("  evidence: {demo_evidence_json}");
-                    }
-                    Err(error) => {
+                    } else {
                         eprintln!("  FAIL archived demo evidence contract rejected");
-                        eprintln!("{error}");
-                        failed = true;
+                        if let Some(error) = &gate_result.error {
+                            eprintln!("{error}");
+                        }
                     }
                 }
+                required_gates.push(gate_result);
             }
 
             if require_agent_network_boundary && result.all_passed {
-                println!();
-                println!("Required agent network boundary gate:");
-                match run_agent_network_boundary_gate(&workspace) {
-                    Ok(_) => {
+                let command = agent_network_boundary_command_args();
+                let gate_result = match run_agent_network_boundary_gate(&workspace) {
+                    Ok(_) => RequiredSentinelGateJson {
+                        name: "agent_network_boundary",
+                        required: true,
+                        passed: true,
+                        command,
+                        archive: None,
+                        evidence: None,
+                        error: None,
+                    },
+                    Err(error) => {
+                        failed = true;
+                        RequiredSentinelGateJson {
+                            name: "agent_network_boundary",
+                            required: true,
+                            passed: false,
+                            command,
+                            archive: None,
+                            evidence: None,
+                            error: Some(error),
+                        }
+                    }
+                };
+                if !json {
+                    println!();
+                    println!("Required agent network boundary gate:");
+                    if gate_result.passed {
                         println!("  PASS child-agent network boundary precondition validated");
                         println!(
                             "  command: python3 bench/agent_network_boundary_check.py --require-sandbox-runtime"
                         );
-                    }
-                    Err(error) => {
+                    } else {
                         eprintln!("  FAIL child-agent network boundary precondition rejected");
-                        eprintln!("{error}");
-                        failed = true;
+                        if let Some(error) = &gate_result.error {
+                            eprintln!("{error}");
+                        }
+                    }
+                }
+                required_gates.push(gate_result);
+            }
+
+            if json {
+                match render_sentinel_json_output(&workspace, &result, required_gates) {
+                    Ok(output) => print!("{output}"),
+                    Err(error) => {
+                        eprintln!("failed to serialize sentinel JSON output: {error}");
+                        std::process::exit(1);
                     }
                 }
             }
@@ -4380,12 +4492,37 @@ mod tests {
         match cli.command {
             Commands::Sentinel {
                 workspace,
+                json,
                 require_demo_evidence,
                 require_agent_network_boundary,
                 demo_archive,
                 demo_evidence_json,
             } => {
                 assert_eq!(workspace, ".");
+                assert!(!json);
+                assert!(!require_demo_evidence);
+                assert!(!require_agent_network_boundary);
+                assert_eq!(demo_archive, DEFAULT_ARCHIVE_RESULTS_JSONL);
+                assert_eq!(demo_evidence_json, DEFAULT_ARCHIVE_EVIDENCE_JSON);
+            }
+            _ => panic!("expected sentinel command"),
+        }
+    }
+
+    #[test]
+    fn sentinel_cli_accepts_json_without_changing_default_gates() {
+        let cli = Cli::try_parse_from(["a2ctl", "sentinel", "--json", "--workspace", "."]).unwrap();
+        match cli.command {
+            Commands::Sentinel {
+                workspace,
+                json,
+                require_demo_evidence,
+                require_agent_network_boundary,
+                demo_archive,
+                demo_evidence_json,
+            } => {
+                assert_eq!(workspace, ".");
+                assert!(json);
                 assert!(!require_demo_evidence);
                 assert!(!require_agent_network_boundary);
                 assert_eq!(demo_archive, DEFAULT_ARCHIVE_RESULTS_JSONL);
@@ -4410,12 +4547,14 @@ mod tests {
         match cli.command {
             Commands::Sentinel {
                 workspace,
+                json,
                 require_demo_evidence,
                 require_agent_network_boundary,
                 demo_archive,
                 demo_evidence_json,
             } => {
                 assert_eq!(workspace, ".");
+                assert!(!json);
                 assert!(require_demo_evidence);
                 assert!(!require_agent_network_boundary);
                 assert_eq!(demo_archive, "custom/results.jsonl");
@@ -4432,12 +4571,14 @@ mod tests {
         match cli.command {
             Commands::Sentinel {
                 workspace,
+                json,
                 require_demo_evidence,
                 require_agent_network_boundary,
                 demo_archive,
                 demo_evidence_json,
             } => {
                 assert_eq!(workspace, ".");
+                assert!(!json);
                 assert!(!require_demo_evidence);
                 assert!(require_agent_network_boundary);
                 assert_eq!(demo_archive, DEFAULT_ARCHIVE_RESULTS_JSONL);
@@ -4451,6 +4592,116 @@ mod tests {
                 "bench/agent_network_boundary_check.py".to_string(),
                 "--require-sandbox-runtime".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn sentinel_json_output_is_machine_readable_and_not_pass_shaped_text() {
+        let result = a2_eval::sentinel::SuiteResult {
+            results: vec![a2_eval::sentinel::SentinelResult {
+                name: "compile_check".into(),
+                passed: true,
+                detail: "compiled".into(),
+            }],
+            all_passed: true,
+            score: 1.0,
+        };
+        let output = render_sentinel_json_output(
+            ".",
+            &result,
+            vec![RequiredSentinelGateJson {
+                name: "demo_evidence",
+                required: true,
+                passed: true,
+                command: demo_evidence_command_args(
+                    DEFAULT_ARCHIVE_RESULTS_JSONL,
+                    DEFAULT_ARCHIVE_EVIDENCE_JSON,
+                ),
+                archive: Some(DEFAULT_ARCHIVE_RESULTS_JSONL.to_string()),
+                evidence: Some(DEFAULT_ARCHIVE_EVIDENCE_JSON.to_string()),
+                error: None,
+            }],
+        )
+        .unwrap();
+
+        assert!(!output.contains("[PASS]"));
+        assert!(!output.contains("Sentinel gate: PASS"));
+        assert!(!output.contains("A² Seed Sentinel Suite"));
+        let data: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(data["workspace"], ".");
+        assert_eq!(data["sentinel_gate"], "PASS");
+        assert_eq!(data["overall_gate"], "PASS");
+        assert_eq!(data["overall_passed"], true);
+        assert_eq!(data["suite"]["all_passed"], true);
+        assert_eq!(data["suite"]["results"][0]["name"], "compile_check");
+        assert_eq!(data["suite"]["results"].as_array().unwrap().len(), 1);
+        assert!(
+            data["non_gating_advisories"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|line| line
+                    .as_str()
+                    .unwrap()
+                    .contains("python3 bench/self_correction_demo.py audit-demo-evidence --json"))
+        );
+        assert_eq!(data["required_gates"][0]["name"], "demo_evidence");
+        assert_eq!(data["required_gates"][0]["required"], true);
+        assert_eq!(data["required_gates"][0]["passed"], true);
+        assert_eq!(
+            data["required_gates"][0]["archive"],
+            DEFAULT_ARCHIVE_RESULTS_JSONL
+        );
+        assert_eq!(
+            data["required_gates"][0]["evidence"],
+            DEFAULT_ARCHIVE_EVIDENCE_JSON
+        );
+        assert!(
+            data["required_gates"][0]["command"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|arg| arg.as_str().unwrap() == "verify-archive")
+        );
+    }
+
+    #[test]
+    fn sentinel_json_overall_gate_includes_required_gate_failures() {
+        let result = a2_eval::sentinel::SuiteResult {
+            results: vec![a2_eval::sentinel::SentinelResult {
+                name: "compile_check".into(),
+                passed: true,
+                detail: "compiled".into(),
+            }],
+            all_passed: true,
+            score: 1.0,
+        };
+        let output = render_sentinel_json_output(
+            ".",
+            &result,
+            vec![RequiredSentinelGateJson {
+                name: "demo_evidence",
+                required: true,
+                passed: false,
+                command: demo_evidence_command_args(
+                    DEFAULT_ARCHIVE_RESULTS_JSONL,
+                    DEFAULT_ARCHIVE_EVIDENCE_JSON,
+                ),
+                archive: Some(DEFAULT_ARCHIVE_RESULTS_JSONL.to_string()),
+                evidence: Some(DEFAULT_ARCHIVE_EVIDENCE_JSON.to_string()),
+                error: Some("demo evidence verifier failed".to_string()),
+            }],
+        )
+        .unwrap();
+
+        let data: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(data["sentinel_gate"], "PASS");
+        assert_eq!(data["overall_gate"], "FAIL");
+        assert_eq!(data["overall_passed"], false);
+        assert_eq!(data["required_gates"][0]["passed"], false);
+        assert_eq!(
+            data["required_gates"][0]["error"],
+            "demo evidence verifier failed"
         );
     }
 
@@ -4481,7 +4732,9 @@ mod tests {
         assert!(advisory.contains("not part of the 6/6 sentinel gate"));
         assert!(advisory.contains("python3 bench/self_correction_demo.py verify-demo-docs"));
         assert!(advisory.contains("python3 bench/self_correction_demo.py audit-demo-evidence"));
-        assert!(advisory.contains("python3 bench/self_correction_demo.py audit-demo-evidence --json"));
+        assert!(
+            advisory.contains("python3 bench/self_correction_demo.py audit-demo-evidence --json")
+        );
         assert!(advisory.contains(
             "python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json"
         ));
@@ -4676,7 +4929,9 @@ mod tests {
         assert!(snapshot.contains("[INFO] demo_evidence"));
         assert!(snapshot.contains("python3 bench/self_correction_demo.py verify-demo-docs"));
         assert!(snapshot.contains("python3 bench/self_correction_demo.py audit-demo-evidence"));
-        assert!(snapshot.contains("python3 bench/self_correction_demo.py audit-demo-evidence --json"));
+        assert!(
+            snapshot.contains("python3 bench/self_correction_demo.py audit-demo-evidence --json")
+        );
         assert!(snapshot.contains(
             "python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json"
         ));

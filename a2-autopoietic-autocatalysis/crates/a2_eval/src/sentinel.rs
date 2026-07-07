@@ -4,6 +4,8 @@
 //! the primary anti-Goodharting mechanism: if visible benchmark scores
 //! diverge from sentinel scores, the system is gaming its evaluator.
 
+use serde::Serialize;
+
 fn command_spawn_error(
     command: &str,
     workspace_root: &std::path::Path,
@@ -39,7 +41,7 @@ fn command_failure(
 }
 
 /// Result of running the full sentinel suite.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct SuiteResult {
     pub results: Vec<SentinelResult>,
     pub all_passed: bool,
@@ -77,7 +79,7 @@ impl Sentinel {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct SentinelResult {
     pub name: String,
     pub passed: bool,
