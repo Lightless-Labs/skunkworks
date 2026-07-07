@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 const AGENT_NETWORK_BOUNDARY_ADVISORY: &str = "  [INFO] agent_network_boundary: not part of the 6/6 sentinel gate; run `python3 bench/agent_network_boundary_check.py --self-test` and `--require-sandbox-runtime`, or `cargo run -p a2ctl -- sentinel --workspace . --require-agent-network-boundary` for an opt-in fail-closed precondition gate, before treating external benchmark evidence as uncontaminated";
 const DEFAULT_ARCHIVE_EVIDENCE_JSON: &str = "docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json";
 const DEFAULT_ARCHIVE_RESULTS_JSONL: &str = "docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.jsonl";
-const DEMO_EVIDENCE_ADVISORY: &str = "  [INFO] demo_evidence: not part of the 6/6 sentinel gate; run `python3 bench/self_correction_demo.py verify-demo-docs`, `python3 bench/self_correction_demo.py audit-demo-evidence`, and `python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json` to audit documented archived loop evidence, or `cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence` for an opt-in combined gate; sentinel default does not refresh or replace those checks";
+const DEMO_EVIDENCE_ADVISORY: &str = "  [INFO] demo_evidence: not part of the 6/6 sentinel gate; run `python3 bench/self_correction_demo.py verify-demo-docs`, `python3 bench/self_correction_demo.py audit-demo-evidence`, `python3 bench/self_correction_demo.py audit-demo-evidence --json`, and `python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json` to audit documented archived loop evidence, or `cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence` for an opt-in combined gate; sentinel default does not refresh or replace those checks";
 const DEMO_EVIDENCE_PROOF_STEPS: [&str; 6] = [
     "failed_first_attempt",
     "archived_verifier_failure_evidence",
@@ -4481,6 +4481,7 @@ mod tests {
         assert!(advisory.contains("not part of the 6/6 sentinel gate"));
         assert!(advisory.contains("python3 bench/self_correction_demo.py verify-demo-docs"));
         assert!(advisory.contains("python3 bench/self_correction_demo.py audit-demo-evidence"));
+        assert!(advisory.contains("python3 bench/self_correction_demo.py audit-demo-evidence --json"));
         assert!(advisory.contains(
             "python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json"
         ));
@@ -4501,6 +4502,7 @@ mod tests {
         assert!(lines[2].contains("[INFO] demo_evidence"));
         assert!(block.contains("python3 bench/self_correction_demo.py verify-demo-docs"));
         assert!(block.contains("python3 bench/self_correction_demo.py audit-demo-evidence"));
+        assert!(block.contains("python3 bench/self_correction_demo.py audit-demo-evidence --json"));
         assert!(block.contains(
             "python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json"
         ));
@@ -4674,6 +4676,7 @@ mod tests {
         assert!(snapshot.contains("[INFO] demo_evidence"));
         assert!(snapshot.contains("python3 bench/self_correction_demo.py verify-demo-docs"));
         assert!(snapshot.contains("python3 bench/self_correction_demo.py audit-demo-evidence"));
+        assert!(snapshot.contains("python3 bench/self_correction_demo.py audit-demo-evidence --json"));
         assert!(snapshot.contains(
             "python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json"
         ));

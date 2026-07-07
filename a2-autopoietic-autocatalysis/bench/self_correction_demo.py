@@ -2993,6 +2993,7 @@ def demo_evidence_audit_payload(
         "creates_loop_evidence": False,
         "provider_backed_benchmark_executed": False,
         "fresh_provider_backed_current_head_loop_evidence": False,
+        "senior_swe_bench_uncontaminated_evidence": False,
         "current_head_provenance": demo_evidence_current_head_provenance(evidence),
         "evidence_json": str(evidence_json),
         "source_artifact": artifact,
@@ -3212,10 +3213,16 @@ def markdown_logical_shell_lines(text: str) -> list[str]:
     return logical_lines
 
 
+def contains_standalone_shell_command(text: str, command: str) -> bool:
+    return re.search(rf"{re.escape(command)}(?!\s+--)", text) is not None
+
+
 def verify_demo_docs_texts(docs: dict[str, str]) -> None:
     common_required = [
         "python3 bench/self_correction_demo.py verify-demo-docs",
         "python3 bench/self_correction_demo.py audit-demo-evidence",
+        "python3 bench/self_correction_demo.py audit-demo-evidence --json",
+        "senior_swe_bench_uncontaminated_evidence=false",
         canonical_verify_archive_command(),
         "cargo run -p a2ctl -- demo-evidence --workspace .",
         "cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence",
@@ -3248,6 +3255,10 @@ def verify_demo_docs_texts(docs: dict[str, str]) -> None:
     }
     for block_name, block_text in linked_blocks.items():
         for phrase in common_required:
+            if phrase == "python3 bench/self_correction_demo.py audit-demo-evidence":
+                if not contains_standalone_shell_command(block_text, phrase):
+                    missing.append(f"{block_name}: {phrase}")
+                continue
             if phrase not in block_text:
                 missing.append(f"{block_name}: {phrase}")
         for requirement in EXPECTED_DEMO_REQUIREMENTS:
@@ -4157,6 +4168,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "fresh provenance uses --require-current-head.",
                     "python3 bench/self_correction_demo.py verify-demo-docs",
                     "python3 bench/self_correction_demo.py audit-demo-evidence",
+                    "python3 bench/self_correction_demo.py audit-demo-evidence --json",
+                    "senior_swe_bench_uncontaminated_evidence=false",
                     canonical_verify_archive_command(),
                     "cargo run -p a2ctl -- demo-evidence --workspace .",
                     "cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence",
@@ -4171,6 +4184,8 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "- The demo-path evidence map records "
                     "python3 bench/self_correction_demo.py verify-demo-docs; "
                     "python3 bench/self_correction_demo.py audit-demo-evidence; "
+                    "python3 bench/self_correction_demo.py audit-demo-evidence --json; "
+                    "senior_swe_bench_uncontaminated_evidence=false; "
                     f"{canonical_verify_archive_command()}; "
                     "cargo run -p a2ctl -- demo-evidence --workspace .; "
                     "cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence; "
@@ -4480,6 +4495,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertFalse(payload["creates_loop_evidence"])
         self.assertFalse(payload["provider_backed_benchmark_executed"])
         self.assertFalse(payload["fresh_provider_backed_current_head_loop_evidence"])
+        self.assertFalse(payload["senior_swe_bench_uncontaminated_evidence"])
         current_head_provenance = payload["current_head_provenance"]
         self.assertEqual(current_head_provenance["current_head"], current["source_head"])
         self.assertIsNone(current_head_provenance["evidence_source_head"])
@@ -4539,6 +4555,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(len(data["requirements"]), len(EXPECTED_DEMO_REQUIREMENTS))
         self.assertEqual(data["current_head_provenance"]["current_head"], current["source_head"])
         self.assertFalse(data["current_head_provenance"]["matches_current_head"])
+        self.assertFalse(data["senior_swe_bench_uncontaminated_evidence"])
 
     def test_demo_evidence_current_head_match_is_still_not_fresh_loop_evidence(self) -> None:
         source_head = "abcdef1234567890abcdef1234567890abcdef12"
