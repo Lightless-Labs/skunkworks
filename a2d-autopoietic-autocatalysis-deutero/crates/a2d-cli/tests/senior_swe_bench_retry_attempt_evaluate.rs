@@ -253,11 +253,45 @@ fn retry_attempt_evaluate_serializes_in_project_fitness_evidence_path_repo_relat
     );
     assert!(project_root().join(fitness_path).is_file());
 
-    let local_evaluation: serde_json::Value =
-        serde_json::from_slice(&fs::read(&fixture.local_evaluation).unwrap()).unwrap();
+    let local_evaluation_text = fs::read_to_string(&fixture.local_evaluation).unwrap();
+    assert!(
+        !local_evaluation_text.contains(project_root().to_str().unwrap()),
+        "in-project local evaluation should not leak project-root host paths: {local_evaluation_text}"
+    );
+    assert!(
+        !local_evaluation_text.contains(std::env::temp_dir().to_str().unwrap()),
+        "isolated evaluator temp checkout should be represented by a portable marker: {local_evaluation_text}"
+    );
+    let local_evaluation: serde_json::Value = serde_json::from_str(&local_evaluation_text).unwrap();
     assert_eq!(
         local_evaluation["fitness_evidence_path"].as_str(),
         Some(fitness_path)
+    );
+    assert_eq!(
+        local_evaluation["evaluator_checkout"].as_str(),
+        Some("isolated_temp_checkout")
+    );
+    assert!(
+        local_evaluation["candidate_patch_preflight_command"]
+            .as_str()
+            .unwrap()
+            .contains("target/a2d-retry-attempt-evaluate-repo-relative-"),
+        "preflight command should use a repo-relative candidate patch path: {local_evaluation_text}"
+    );
+
+    let evidence_text = fs::read_to_string(project_root().join(fitness_path)).unwrap();
+    assert!(
+        !evidence_text.contains(project_root().to_str().unwrap()),
+        "in-project fitness evidence should not leak project-root host paths: {evidence_text}"
+    );
+    assert!(
+        !evidence_text.contains(std::env::temp_dir().to_str().unwrap()),
+        "isolated evaluator temp checkout should not leak into fitness evidence: {evidence_text}"
+    );
+    let evidence: serde_json::Value = serde_json::from_str(&evidence_text).unwrap();
+    assert_eq!(
+        evidence["evaluator_checkout"].as_str(),
+        Some("isolated_temp_checkout")
     );
 
     let _ = fs::remove_dir_all(fixture.root);

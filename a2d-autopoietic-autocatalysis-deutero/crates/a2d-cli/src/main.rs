@@ -5308,9 +5308,12 @@ fn build_senior_swe_bench_retry_attempt_step_evidence_execution(
         .ok_or_else(|| {
             "inspected Senior SWE-Bench fitness evidence missing candidate_patch_path".to_string()
         })?;
-    if evidence_candidate_patch_path != candidate_patch_path.to_string_lossy() {
+    let evidence_candidate_patch_path =
+        resolve_retry_artifact_path(Path::new(evidence_candidate_patch_path));
+    if !paths_equivalent(&evidence_candidate_patch_path, &candidate_patch_path) {
         return Err(format!(
-            "inspected Senior SWE-Bench fitness evidence candidate_patch_path {evidence_candidate_patch_path} does not match retry-attempt candidate patch path {}",
+            "inspected Senior SWE-Bench fitness evidence candidate_patch_path {} does not match retry-attempt candidate patch path {}",
+            evidence_candidate_patch_path.display(),
             candidate_patch_path.display()
         ));
     }
@@ -5321,9 +5324,13 @@ fn build_senior_swe_bench_retry_attempt_step_evidence_execution(
             "inspected Senior SWE-Bench fitness evidence missing candidate_patch_artifact_path"
                 .to_string()
         })?;
-    if evidence_artifact_path != selected_path {
+    let evidence_artifact_path = resolve_retry_artifact_path(Path::new(evidence_artifact_path));
+    let selected_artifact_path = resolve_retry_artifact_path(Path::new(&selected_path));
+    if !paths_equivalent(&evidence_artifact_path, &selected_artifact_path) {
         return Err(format!(
-            "inspected Senior SWE-Bench fitness evidence candidate_patch_artifact_path {evidence_artifact_path} does not match selected artifact {selected_path}"
+            "inspected Senior SWE-Bench fitness evidence candidate_patch_artifact_path {} does not match selected artifact {}",
+            evidence_artifact_path.display(),
+            selected_artifact_path.display()
         ));
     }
     let evidence_artifact_hash = evidence
@@ -8553,6 +8560,48 @@ fn retry_artifact_path_string(path: &Path) -> String {
     }
 }
 
+const ISOLATED_TEMP_CHECKOUT_ARTIFACT: &str = "isolated_temp_checkout";
+
+fn evaluator_checkout_artifact_string(path: &Path, mode: &str) -> String {
+    let serialized = retry_artifact_path_string(path);
+    if mode == "isolated_copy" && Path::new(&serialized).is_absolute() {
+        ISOLATED_TEMP_CHECKOUT_ARTIFACT.to_string()
+    } else {
+        serialized
+    }
+}
+
+fn command_path_arg_artifact_string(value: &str) -> String {
+    let path = Path::new(value);
+    let has_path_separator = value.contains('/') || value.contains('\\');
+    let has_existing_path_parent = path
+        .parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty() && parent.exists());
+    if path.is_absolute()
+        || value.starts_with("./")
+        || value.starts_with("../")
+        || (has_path_separator && (path.exists() || has_existing_path_parent))
+    {
+        retry_artifact_path_string(path)
+    } else {
+        value.to_string()
+    }
+}
+
+fn evaluator_command_artifact_strings(command: &[String]) -> Vec<String> {
+    command
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            if index == 0 {
+                command_path_arg_artifact_string(value)
+            } else {
+                value.clone()
+            }
+        })
+        .collect()
+}
+
 fn resolve_retry_artifact_path(path: &Path) -> PathBuf {
     if path.is_absolute() {
         return normalize_retry_path(path.to_path_buf());
@@ -9240,9 +9289,9 @@ fn validate_retry_attempt_local_evaluation(
                 .to_string(),
         );
     }
-    if value.get("candidate_patch").and_then(Value::as_str)
-        != Some(candidate_patch_path.to_string_lossy().as_ref())
-    {
+    let local_candidate_patch = required_non_empty_json_string(&value, "candidate_patch")?;
+    let local_candidate_patch = resolve_retry_artifact_path(Path::new(&local_candidate_patch));
+    if !paths_equivalent(&local_candidate_patch, candidate_patch_path) {
         return Err(
             "Senior SWE-Bench local evaluation candidate_patch does not match extraction"
                 .to_string(),
@@ -9320,9 +9369,9 @@ fn validate_retry_attempt_local_evaluation(
                 .to_string(),
         );
     }
-    if value.get("checkout").and_then(Value::as_str)
-        != Some(evaluate_config.checkout.to_string_lossy().as_ref())
-    {
+    let local_checkout = required_non_empty_json_string(&value, "checkout")?;
+    let local_checkout = resolve_retry_artifact_path(Path::new(&local_checkout));
+    if !paths_equivalent(&local_checkout, &evaluate_config.checkout) {
         return Err(
             "Senior SWE-Bench local evaluation checkout does not match evaluate_args".to_string(),
         );
@@ -9339,7 +9388,7 @@ fn validate_retry_attempt_local_evaluation(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if evaluator_command != evaluate_config.command {
+    if evaluator_command != evaluator_command_artifact_strings(&evaluate_config.command) {
         return Err(
             "Senior SWE-Bench local evaluation evaluator_command does not match evaluate_args"
                 .to_string(),
@@ -9399,7 +9448,8 @@ fn validate_retry_attempt_local_official_provenance(
     }
     let local_manifest_path =
         required_non_empty_json_string(value, "official_evaluator_manifest_path")?;
-    if !paths_equivalent(Path::new(&local_manifest_path), manifest_path) {
+    let local_manifest_path = resolve_retry_artifact_path(Path::new(&local_manifest_path));
+    if !paths_equivalent(&local_manifest_path, manifest_path) {
         return Err(
             "official Senior SWE-Bench local evaluation manifest path does not match evaluate_args"
                 .to_string(),
@@ -9425,7 +9475,8 @@ fn validate_retry_attempt_local_official_provenance(
         })?;
     let local_inspection_path =
         required_non_empty_json_string(value, "official_evaluator_manifest_inspection_path")?;
-    if !paths_equivalent(Path::new(&local_inspection_path), inspection_path) {
+    let local_inspection_path = resolve_retry_artifact_path(Path::new(&local_inspection_path));
+    if !paths_equivalent(&local_inspection_path, inspection_path) {
         return Err(
             "official Senior SWE-Bench local evaluation inspection path does not match evaluate_args"
                 .to_string(),
@@ -10382,10 +10433,13 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
             "failed"
         },
         outcome.exit_code,
-        config.candidate_patch.to_string_lossy(),
+        retry_artifact_path_string(&config.candidate_patch),
         candidate_patch_hash,
-        config.checkout.to_string_lossy(),
-        prepared_checkout.evaluator_checkout.to_string_lossy(),
+        retry_artifact_path_string(&config.checkout),
+        evaluator_checkout_artifact_string(
+            &prepared_checkout.evaluator_checkout,
+            prepared_checkout.evaluator_checkout_mode,
+        ),
         prepared_checkout.candidate_patch_applied,
         prepared_checkout.evaluator_checkout_mode,
         original_checkout_mutated,
@@ -10397,16 +10451,16 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
         source_provenance.source_diff_scope,
         source_provenance.source_diff_hash,
         source_provenance.evidence_command,
-        config.command.clone(),
+        evaluator_command_artifact_strings(&config.command),
         config
             .official_evaluator_manifest
             .as_ref()
-            .map(|path| path.to_string_lossy().to_string()),
+            .map(|path| retry_artifact_path_string(path)),
         official_manifest_hash,
         config
             .official_evaluator_manifest_inspection
             .as_ref()
-            .map(|path| path.to_string_lossy().to_string()),
+            .map(|path| retry_artifact_path_string(path)),
         official_manifest_inspection_hash,
         official_manifest.as_ref().map(|_| true),
         official_manifest.as_ref(),
@@ -11019,7 +11073,7 @@ fn validate_senior_swe_bench_candidate_patch_applicable(
         .map_err(|error| format!("failed to canonicalize candidate patch: {error}"))?;
     let command_text = format!(
         "git apply --check --whitespace=nowarn -- {}",
-        patch_path.display()
+        retry_artifact_path_string(&patch_path)
     );
     let output = Command::new("git")
         .arg("apply")
@@ -11320,7 +11374,7 @@ fn export_standalone_fitness_evidence(
             })?
             .insert(
                 "candidate_patch_path".to_string(),
-                Value::String(candidate_patch_path.to_string_lossy().to_string()),
+                Value::String(retry_artifact_path_string(candidate_patch_path)),
             );
     }
     if let Some(candidate_patch_artifact_path) = candidate_patch_artifact_path {
@@ -11332,7 +11386,7 @@ fn export_standalone_fitness_evidence(
             })?
             .insert(
                 "candidate_patch_artifact_path".to_string(),
-                Value::String(candidate_patch_artifact_path.to_string_lossy().to_string()),
+                Value::String(retry_artifact_path_string(candidate_patch_artifact_path)),
             );
     }
     if let Some(candidate_patch_artifact_hash) = candidate_patch_artifact_hash {
@@ -11367,7 +11421,10 @@ fn export_standalone_fitness_evidence(
             })?
             .insert(
                 "evaluator_checkout".to_string(),
-                Value::String(evaluator_checkout_path.to_string_lossy().to_string()),
+                Value::String(evaluator_checkout_artifact_string(
+                    evaluator_checkout_path,
+                    evaluator_checkout_mode.unwrap_or_default(),
+                )),
             );
     }
     if let Some(candidate_patch_applied) = candidate_patch_applied {
@@ -11566,9 +11623,11 @@ fn validate_fitness_evidence_candidate_patch_binding(
         .get("candidate_patch_path")
         .and_then(Value::as_str)
         .ok_or_else(|| "fitness evidence missing candidate_patch_path".to_string())?;
-    if !paths_equivalent(Path::new(evidence_patch_path), candidate_patch_path) {
+    let evidence_patch_path = resolve_retry_artifact_path(Path::new(evidence_patch_path));
+    if !paths_equivalent(&evidence_patch_path, candidate_patch_path) {
         return Err(format!(
-            "fitness evidence candidate_patch_path {evidence_patch_path} does not match current candidate patch path {}",
+            "fitness evidence candidate_patch_path {} does not match current candidate patch path {}",
+            evidence_patch_path.display(),
             candidate_patch_path.display()
         ));
     }
@@ -11577,9 +11636,11 @@ fn validate_fitness_evidence_candidate_patch_binding(
             .get("candidate_patch_artifact_path")
             .and_then(Value::as_str)
             .ok_or_else(|| "fitness evidence missing candidate_patch_artifact_path".to_string())?;
-        if !paths_equivalent(Path::new(evidence_artifact_path), expected_artifact_path) {
+        let evidence_artifact_path = resolve_retry_artifact_path(Path::new(evidence_artifact_path));
+        if !paths_equivalent(&evidence_artifact_path, expected_artifact_path) {
             return Err(format!(
-                "fitness evidence candidate_patch_artifact_path {evidence_artifact_path} does not match current candidate patch artifact path {}",
+                "fitness evidence candidate_patch_artifact_path {} does not match current candidate patch artifact path {}",
+                evidence_artifact_path.display(),
                 expected_artifact_path.display()
             ));
         }
@@ -11640,11 +11701,22 @@ fn validate_fitness_evidence_candidate_patch_binding(
             .get("evaluator_checkout")
             .and_then(Value::as_str)
             .ok_or_else(|| "fitness evidence missing evaluator_checkout".to_string())?;
-        if !paths_equivalent(Path::new(actual), expected) {
-            return Err(format!(
-                "fitness evidence evaluator_checkout {actual} does not match current evaluator checkout {}",
-                expected.display()
-            ));
+        if actual == ISOLATED_TEMP_CHECKOUT_ARTIFACT {
+            if expected_evaluator_checkout_mode != Some("isolated_copy") {
+                return Err(
+                    "fitness evidence evaluator_checkout isolated temp marker is only valid for isolated_copy"
+                        .to_string(),
+                );
+            }
+        } else {
+            let actual = resolve_retry_artifact_path(Path::new(actual));
+            if !paths_equivalent(&actual, expected) {
+                return Err(format!(
+                    "fitness evidence evaluator_checkout {} does not match current evaluator checkout {}",
+                    actual.display(),
+                    expected.display()
+                ));
+            }
         }
     }
     let preflight_checked = value
@@ -13031,7 +13103,11 @@ fn collect_source_provenance() -> Result<SourceProvenance, String> {
     reject_untracked_source_files(&source_diff_scope, &source_status)?;
     let source_tree_dirty = !source_status.is_empty();
     let source_diff_hash = git_diff_hash_for_scope(&source_diff_scope)?;
-    let command = env::args().skip(1).collect::<Vec<_>>().join(" ");
+    let command = env::args()
+        .skip(1)
+        .map(|arg| command_path_arg_artifact_string(&arg))
+        .collect::<Vec<_>>()
+        .join(" ");
     Ok(SourceProvenance {
         source_revision,
         source_tree_dirty,
