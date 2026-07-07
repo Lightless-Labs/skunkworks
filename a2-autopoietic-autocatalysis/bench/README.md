@@ -277,11 +277,13 @@ python3 bench/network_policy_smoke.py --a2ctl-run-smoke --self-test --network-po
 
 # External/A² launch-boundary audit: locates Pi subagent/foundry_team child pi
 # spawn points, checks A²-owned restricted-policy provider launch gates, and
-# reports sandbox-runtime availability. This is not enforcement proof;
-# --require-sandbox-runtime is expected to fail closed until the runtime is
-# installed/wired.
+# reports sandbox-runtime availability. --json also exposes
+# required_sandbox_runtime_gate.{passed,failures,command}. This is not
+# enforcement proof; --require-sandbox-runtime is expected to fail closed until
+# the runtime is installed/wired.
 python3 bench/agent_network_boundary_check.py --self-test
-python3 bench/agent_network_boundary_check.py --require-sandbox-runtime
+python3 bench/agent_network_boundary_check.py --json
+python3 bench/agent_network_boundary_check.py --require-sandbox-runtime --json
 ```
 
 The generated prompts target per-task workspaces under `bench/workspaces/`.

@@ -14,6 +14,8 @@ launch-path enforcement are visible.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import re
 import subprocess
@@ -22,6 +24,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 PI_PACKAGE = Path("/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent")
 PI_SUBAGENT = PI_PACKAGE / "examples/extensions/subagent/index.ts"
@@ -1626,22 +1629,39 @@ def require_sandbox_runtime_failures(result: dict[str, Any]) -> list[str]:
     return failures
 
 
+def attach_required_sandbox_runtime_gate(result: dict[str, Any]) -> dict[str, Any]:
+    """Add machine-readable status for the fail-closed sandbox/runtime gate."""
+    failures = require_sandbox_runtime_failures(result)
+    result_with_gate = dict(result)
+    result_with_gate["required_sandbox_runtime_gate"] = {
+        "passed": not failures,
+        "failures": failures,
+        "command": "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime",
+        "interpretation": (
+            "fresh provider-backed or uncontaminated Senior SWE Bench evidence remains blocked until this gate passes"
+            if failures
+            else "sandbox runtime and launch-boundary enforcement prerequisites are visible"
+        ),
+    }
+    return result_with_gate
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     if args.unit_test:
         return 0 if unittest.main(argv=[sys.argv[0]], exit=False).result.wasSuccessful() else 1
 
     result = audit()
-    if args.require_sandbox_runtime:
-        failures = require_sandbox_runtime_failures(result)
-        if failures:
-            if args.json:
-                print(json.dumps(result, indent=2, sort_keys=True))
-            else:
-                print(f"FAIL sandbox runtime/enforcement: {'; '.join(failures)}")
-            return 1
+    result_with_gate = attach_required_sandbox_runtime_gate(result)
+    failures = result_with_gate["required_sandbox_runtime_gate"]["failures"]
+    if args.require_sandbox_runtime and failures:
+        if args.json:
+            print(json.dumps(result_with_gate, indent=2, sort_keys=True))
+        else:
+            print(f"FAIL sandbox runtime/enforcement: {'; '.join(failures)}")
+        return 1
     if args.json:
-        print(json.dumps(result, indent=2, sort_keys=True))
+        print(json.dumps(result_with_gate, indent=2, sort_keys=True))
     elif args.self_test:
         if result["complete"]:
             runtime = "available" if result["sandbox_runtime"]["available"] else "missing"
@@ -2551,6 +2571,124 @@ impl<'a> ModelProvider for PiProvider {
                 "A2-owned provider launch paths do not show sandbox-exec at every provider command boundary: worktree_catalyst.run_pi, broker.pi",
                 "actual child-agent launch functions do not show sandbox enforcement: subagent, foundry_team",
             ],
+        )
+
+    def test_required_sandbox_runtime_gate_is_json_visible_and_blocks_evidence_claims(self) -> None:
+        result = {
+            "a2_owned_provider_launch_boundary": {
+                "fail_closed_restricted_policies": True,
+                "sandbox_enforced_for_restricted_policies": False,
+                "worktree_catalyst": {
+                    "provider_command_launch_functions": [
+                        {"function": "run_pi", "found": True, "command_new_present": True, "sandbox_exec_present": False},
+                    ]
+                },
+                "broker": {"provider_generate_guards": []},
+            },
+            "actual_launch_sandbox_enforcement": {
+                "subagent": {"spawn_present": True, "found": False},
+                "foundry_team": {"spawn_present": True, "found": True},
+                "required_in_actual_launch_code_not_examples": True,
+            },
+            "sandbox_runtime": {"available": False},
+            "launch_sandbox_enforced": False,
+            "fresh_provider_backed_current_head_loop_evidence": False,
+            "senior_swe_bench_uncontaminated_evidence": False,
+        }
+
+        payload = attach_required_sandbox_runtime_gate(result)
+        gate = payload["required_sandbox_runtime_gate"]
+
+        self.assertFalse(gate["passed"])
+        self.assertEqual(
+            gate["command"],
+            "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime",
+        )
+        self.assertIn("@anthropic-ai/sandbox-runtime not installed globally", gate["failures"])
+        self.assertTrue(any("worktree_catalyst.run_pi" in failure for failure in gate["failures"]))
+        self.assertTrue(any("subagent" in failure for failure in gate["failures"]))
+        self.assertIn("fresh provider-backed", gate["interpretation"])
+        self.assertFalse(payload["fresh_provider_backed_current_head_loop_evidence"])
+        self.assertFalse(payload["senior_swe_bench_uncontaminated_evidence"])
+
+    def test_required_sandbox_runtime_gate_passes_when_all_requirements_are_visible(self) -> None:
+        result = {
+            "a2_owned_provider_launch_boundary": {
+                "fail_closed_restricted_policies": True,
+                "sandbox_enforced_for_restricted_policies": True,
+            },
+            "actual_launch_sandbox_enforcement": {
+                "subagent": {"spawn_present": True, "found": True},
+                "foundry_team": {"spawn_present": True, "found": True},
+                "required_in_actual_launch_code_not_examples": True,
+            },
+            "sandbox_runtime": {"available": True},
+            "launch_sandbox_enforced": True,
+        }
+
+        gate = attach_required_sandbox_runtime_gate(result)["required_sandbox_runtime_gate"]
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["failures"], [])
+        self.assertIn("prerequisites are visible", gate["interpretation"])
+
+    def test_json_cli_emits_required_sandbox_runtime_gate(self) -> None:
+        audit_result = {
+            "complete": True,
+            "a2_owned_provider_launch_boundary": {
+                "fail_closed_restricted_policies": True,
+                "sandbox_enforced_for_restricted_policies": False,
+                "worktree_catalyst": {
+                    "provider_command_launch_functions": [
+                        {"function": "run_pi", "found": True, "command_new_present": True, "sandbox_exec_present": False},
+                    ]
+                },
+                "broker": {"provider_generate_guards": []},
+            },
+            "actual_launch_sandbox_enforcement": {
+                "subagent": {"spawn_present": True, "found": False},
+                "foundry_team": {"spawn_present": True, "found": True},
+                "required_in_actual_launch_code_not_examples": True,
+            },
+            "sandbox_runtime": {"available": False},
+            "launch_sandbox_enforced": False,
+        }
+        stdout = io.StringIO()
+
+        with mock.patch(__name__ + ".audit", return_value=audit_result), contextlib.redirect_stdout(stdout):
+            result = main(["--json"])
+
+        payload = json.loads(stdout.getvalue())
+        gate = payload["required_sandbox_runtime_gate"]
+        self.assertEqual(result, 0)
+        self.assertFalse(gate["passed"])
+        self.assertEqual(
+            gate["command"],
+            "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime",
+        )
+        self.assertIn("@anthropic-ai/sandbox-runtime not installed globally", gate["failures"])
+        self.assertTrue(any("worktree_catalyst.run_pi" in failure for failure in gate["failures"]))
+        self.assertTrue(any("subagent" in failure for failure in gate["failures"]))
+
+    def test_require_sandbox_runtime_json_cli_exits_nonzero_with_gate_payload(self) -> None:
+        audit_result = {
+            "complete": True,
+            "a2_owned_provider_launch_boundary": {"fail_closed_restricted_policies": False},
+            "actual_launch_sandbox_enforcement": {},
+            "sandbox_runtime": {"available": True},
+            "launch_sandbox_enforced": True,
+        }
+        stdout = io.StringIO()
+
+        with mock.patch(__name__ + ".audit", return_value=audit_result), contextlib.redirect_stdout(stdout):
+            result = main(["--require-sandbox-runtime", "--json"])
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(result, 1)
+        self.assertFalse(payload["required_sandbox_runtime_gate"]["passed"])
+        self.assertEqual(
+            payload["required_sandbox_runtime_gate"]["failures"],
+            ["A2-owned provider launch paths do not visibly fail closed for restricted policies"],
         )
 
     def test_require_sandbox_runtime_fails_when_runtime_present_but_launch_unenforced(self) -> None:
