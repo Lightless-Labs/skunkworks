@@ -34,3 +34,9 @@ The evidence is full-passing `a2d.fitness-evidence.v1` actual-test evidence with
 ## Non-claims
 
 This is feedback/artifact safety hardening only. It is not official Senior SWE-Bench mastery, not Senior SWE-Bench hidden-holdout evidence, not network no-egress enforcement, and not live provider-loop success evidence.
+
+Postcommit clean-HEAD reconciliation after implementation commit `8a5a7c7`:
+
+- `runs/20260707-postcommit-fitness-evidence-8a5a7c7-feedback/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`
+- `runs/20260707-postcommit-fitness-evidence-8a5a7c7-feedback/fitness-evidence-inspect.txt`
+- clean crates diff hash `e69de29bb2d1d6434b8b29ae775ad8c2e48c5391` with `source_tree_dirty: false`
