@@ -17997,6 +17997,49 @@ mod tests {
     }
 
     #[test]
+    fn retry_next_cycle_pre_provider_classifier_covers_all_validation_prefixes() {
+        let pre_provider_cases = [
+            "cycle-input --checkout found no bounded UTF-8 source/context files under checkout",
+            "cycle-input --checkout must not be a symlink: checkout",
+            "cycle-input --checkout must be a directory: checkout",
+            "failed to read checkout src/lib.rs: No such file or directory",
+            "failed to canonicalize checkout checkout: No such file or directory",
+            "cycle-input cannot seed reserved runtime artifact: fitness_report",
+            "cycle-input requires a JSON object artifact bundle",
+        ];
+        for stderr in pre_provider_cases {
+            assert!(
+                cycle_input_failure_happened_before_provider("", stderr),
+                "expected pre-provider classifier to accept validation prefix: {stderr}"
+            );
+            assert!(
+                cycle_input_failure_happened_before_provider("\n", &format!("  {stderr}")),
+                "expected classifier to ignore leading stderr whitespace: {stderr}"
+            );
+        }
+
+        for stderr in [
+            "provider emitted text resembling failed to read checkout after invocation",
+            "failed to read checkoutafter missing delimiter",
+            "failed to canonicalize checkoutafter missing delimiter",
+            "some other cycle-input failure",
+        ] {
+            assert!(
+                !cycle_input_failure_happened_before_provider("", stderr),
+                "unexpected pre-provider classification for stderr: {stderr}"
+            );
+        }
+
+        assert!(
+            !cycle_input_failure_happened_before_provider(
+                "A²D Catalytic Cycle (1 cycle(s))\nRunning cycle 1/1...",
+                "failed to read checkout src/lib.rs: provider stderr after invocation"
+            ),
+            "catalytic-cycle phase marker must make provider activity possible"
+        );
+    }
+
+    #[test]
     fn retry_run_next_cycle_nonzero_exit_does_not_claim_fitness() {
         let (root, retry_execution, _, _) = write_retry_next_cycle_fixture("nonzero", false);
         let config = SeniorSweBenchRetryRunNextCycleConfig { retry_execution };
