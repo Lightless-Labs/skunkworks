@@ -3409,6 +3409,15 @@ def verify_demo_docs_texts(docs: dict[str, str]) -> None:
         "cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence",
         DEFAULT_ARCHIVE.as_posix(),
         DEFAULT_ARCHIVE_EVIDENCE.as_posix(),
+        "archived_failure_selector",
+        "promotion_evidence_source=legacy_apply_marker_in_stderr",
+    ]
+    selector_required_patterns = [
+        re.compile(
+            r"selected row selectors use typed `?run_id`?, `?task_id`?, and `?attempt`? values"
+            r".*selector\.artifact_row_selectors",
+            re.DOTALL,
+        ),
     ]
     caveat_required_lower = [
         "fresh provider-backed",
@@ -3445,6 +3454,11 @@ def verify_demo_docs_texts(docs: dict[str, str]) -> None:
         for requirement in EXPECTED_DEMO_REQUIREMENTS:
             if requirement not in block_text:
                 missing.append(f"{block_name}: {requirement}")
+        for pattern in selector_required_patterns:
+            if pattern.search(block_text) is None:
+                missing.append(
+                    f"{block_name}: selected row selectors tied to typed run_id/task_id/attempt and selector.artifact_row_selectors"
+                )
         require_ordered_demo_chain(block_name, block_text, missing)
         lowered_block = block_text.lower()
         for phrase in caveat_required_lower:
@@ -4387,6 +4401,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence",
                     DEFAULT_ARCHIVE.as_posix(),
                     DEFAULT_ARCHIVE_EVIDENCE.as_posix(),
+                    "selected row selectors use typed `run_id`, `task_id`, and `attempt` values, the lineage aggregate exposes `selector.artifact_row_selectors`, retry uses archived_failure_selector, and promotion uses promotion_evidence_source=legacy_apply_marker_in_stderr.",
                     *EXPECTED_DEMO_REQUIREMENTS,
                     "## Fresh Provider-Backed Demo Status",
                 ]
@@ -4407,6 +4422,10 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     f"{'; '.join(EXPECTED_DEMO_REQUIREMENTS)}; "
                     "rerunnable archived-proof command; durable artifact; "
                     "machine-readable causal-chain map; "
+                    "selected row selectors use typed `run_id`, `task_id`, and `attempt` values, "
+                    "the lineage aggregate exposes `selector.artifact_row_selectors`, "
+                    "retry uses archived_failure_selector, and "
+                    "promotion uses promotion_evidence_source=legacy_apply_marker_in_stderr; "
                     "Fresh provider-backed regeneration remains explicitly unchecked/open; "
                     "Neither preflight/report nor print-only proves; "
                     "preflight-only is readiness; the confirmed fresh run path fails closed at "
@@ -4585,6 +4604,26 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(RuntimeError, "fresh_provider_backed_current_head_loop_evidence"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_missing_selector_schema_terms(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["docs/HANDOFF.md"] = docs["docs/HANDOFF.md"].replace(
+            "the lineage aggregate exposes `selector.artifact_row_selectors`",
+            "the selected evidence rows",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "artifact_row_selectors"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_missing_promotion_evidence_source(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["todos/self-correction-loop.md"] = docs["todos/self-correction-loop.md"].replace(
+            "promotion_evidence_source=legacy_apply_marker_in_stderr; ",
+            "legacy promotion evidence; ",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "promotion_evidence_source"):
             verify_demo_docs_texts(docs)
 
     def test_verify_demo_docs_texts_rejects_missing_handoff_allowlist_evidence_caveat(self) -> None:
