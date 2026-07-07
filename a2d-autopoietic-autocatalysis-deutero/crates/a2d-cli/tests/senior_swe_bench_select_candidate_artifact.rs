@@ -241,6 +241,22 @@ fn senior_swe_bench_select_candidate_artifact_fails_closed_on_unsafe_manifests()
             "public-ref",
             b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nrefs/pull/123/head\n".as_slice(),
         ),
+        (
+            "public-raw-content",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nhttps://raw.githubusercontent.com/example/repo/main/fix.diff\n".as_slice(),
+        ),
+        (
+            "public-obfuscated-url",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\ngithub[.]com/example/repo/issues/1\n".as_slice(),
+        ),
+        (
+            "public-dot-word-url",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\ngithub dot com/example/repo/pull/1\n".as_slice(),
+        ),
+        (
+            "public-spaced-dot-word-url",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\ngithub . com/example/repo/commit/deadbeef\n".as_slice(),
+        ),
     ] {
         let public_artifact = root.join(format!("{name}.artifact"));
         fs::write(&public_artifact, public).unwrap();

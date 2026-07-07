@@ -149,6 +149,10 @@ fn diagnose_artifact_redacts_mixed_case_public_github_references() {
         b"Copied from HTTPS://GitHub.com/org/repo/PuLl/1\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n".as_slice(),
         b"Patch came from git@github.com:org/repo.git".as_slice(),
         b"Patch came from refs/pull/123/head".as_slice(),
+        b"Patch copied from https://raw.githubusercontent.com/org/repo/main/fix.diff".as_slice(),
+        b"Patch copied from github[.]com/org/repo/issues/123".as_slice(),
+        b"Patch copied from github dot com/org/repo/pull/123".as_slice(),
+        b"Patch copied from github . com/org/repo/commit/deadbeef".as_slice(),
     ] {
         let mut child = Command::new(env!("CARGO_BIN_EXE_a2d"))
             .args(["senior-swe-bench-diagnose-artifact", "-"])

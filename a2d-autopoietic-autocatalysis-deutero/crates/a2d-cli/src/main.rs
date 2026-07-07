@@ -9900,6 +9900,10 @@ fn artifact_defers_to_checkout_inspection(artifact: &str) -> bool {
 fn contains_public_github_solution_reference(artifact: &str) -> bool {
     let normalized = artifact.to_ascii_lowercase();
     normalized.contains("github.com")
+        || normalized.contains("githubusercontent.com")
+        || normalized.contains("github[.]com")
+        || normalized.contains("github dot com")
+        || normalized.contains("github . com")
         || normalized.contains("/pull/")
         || normalized.contains("/commit/")
         || normalized.contains("/issues/")
@@ -17174,6 +17178,34 @@ mod tests {
         assert!(
             extract_senior_swe_bench_candidate_patch(
                 "```text\nsee /commit/deadbeef\n```\n```diff\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n```"
+            )
+            .unwrap_err()
+            .contains("GitHub solution")
+        );
+        assert!(
+            extract_senior_swe_bench_candidate_patch(
+                "Copied from https://raw.githubusercontent.com/org/repo/main/fix.diff\n```diff\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n```"
+            )
+            .unwrap_err()
+            .contains("GitHub solution")
+        );
+        assert!(
+            extract_senior_swe_bench_candidate_patch(
+                "Copied from github[.]com/org/repo/issues/1\n```diff\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n```"
+            )
+            .unwrap_err()
+            .contains("GitHub solution")
+        );
+        assert!(
+            extract_senior_swe_bench_candidate_patch(
+                "Copied from github dot com/org/repo/pull/1\n```diff\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n```"
+            )
+            .unwrap_err()
+            .contains("GitHub solution")
+        );
+        assert!(
+            extract_senior_swe_bench_candidate_patch(
+                "Copied from github . com/org/repo/commit/deadbeef\n```diff\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n```"
             )
             .unwrap_err()
             .contains("GitHub solution")

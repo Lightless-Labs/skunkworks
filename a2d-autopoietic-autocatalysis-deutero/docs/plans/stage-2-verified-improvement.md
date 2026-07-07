@@ -40,6 +40,7 @@
 **Hardened:** 2026-07-07 — Senior SWE-Bench retry attempt-step integration coverage now proves failed evaluator feedback enters next-cycle input without seeding runtime evidence or public solution references
 **Hardened:** 2026-07-07 — Senior SWE-Bench retry attempt-step coverage now pins `next_cycle_input` as a structured JSON object rather than a string blob
 **Hardened:** 2026-07-07 — Senior SWE-Bench artifact diagnosis/selection now rejects SSH GitHub remotes and raw pull refs as public solution references
+**Hardened:** 2026-07-07 — Senior SWE-Bench artifact diagnosis/selection now rejects raw GitHub content hosts and common obfuscated GitHub host spellings as public solution references
 **Hardened:** 2026-07-05 — CLI provider subprocesses now receive explicit no-public-solution-search policy env flags (observability only, not network isolation)
 **Hardened:** 2026-07-05 — Senior SWE-Bench no-search fitness labels now distinguish policy-declared evidence from network-isolation proof
 **Depends on:** Stage 1 (complete)
