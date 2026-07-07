@@ -9908,6 +9908,26 @@ fn contains_public_github_solution_reference(artifact: &str) -> bool {
         || normalized.contains("/commit/")
         || normalized.contains("/issues/")
         || normalized.contains("refs/pull")
+        || contains_github_cli_solution_search_command(&normalized)
+}
+
+fn contains_github_cli_solution_search_command(normalized: &str) -> bool {
+    let words: Vec<&str> = normalized
+        .split_whitespace()
+        .map(|word| word.trim_matches(|c: char| !c.is_ascii_alphanumeric()))
+        .filter(|word| !word.is_empty())
+        .collect();
+    words.windows(2).any(|pair| match pair {
+        ["gh", subcommand] => matches!(
+            *subcommand,
+            "api" | "pr" | "issue" | "repo" | "search" | "browse" | "clone"
+        ),
+        ["hub", subcommand] => matches!(
+            *subcommand,
+            "api" | "pr" | "issue" | "repo" | "search" | "browse" | "clone"
+        ),
+        _ => false,
+    })
 }
 
 fn extract_fenced_unified_diff(input: &str) -> Option<String> {

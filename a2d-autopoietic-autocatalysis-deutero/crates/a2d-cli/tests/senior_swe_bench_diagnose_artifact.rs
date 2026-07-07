@@ -144,6 +144,42 @@ fn diagnose_artifact_redacts_public_github_reference_without_diff() {
 }
 
 #[test]
+fn diagnose_artifact_does_not_flag_non_command_gh_pr_fragments() {
+    let artifact = b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nNotes: high priority fix through PR review for this GH project; gh_pr_number metadata is local.\n";
+    let mut child = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args(["senior-swe-bench-diagnose-artifact", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn diagnose command");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(artifact)
+        .expect("write artifact");
+
+    let output = child.wait_with_output().expect("wait for diagnose command");
+
+    assert_eq!(output.status.code(), Some(0));
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("diagnosis is JSON");
+    assert_eq!(
+        value
+            .get("contains_public_github_solution_reference")
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        value
+            .get("failure_kind")
+            .and_then(serde_json::Value::as_str),
+        Some("candidate_patch_extractable")
+    );
+}
+
+#[test]
 fn diagnose_artifact_redacts_mixed_case_public_github_references() {
     for artifact in [
         b"Copied from HTTPS://GitHub.com/org/repo/PuLl/1\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n".as_slice(),
@@ -153,6 +189,10 @@ fn diagnose_artifact_redacts_mixed_case_public_github_references() {
         b"Patch copied from github[.]com/org/repo/issues/123".as_slice(),
         b"Patch copied from github dot com/org/repo/pull/123".as_slice(),
         b"Patch copied from github . com/org/repo/commit/deadbeef".as_slice(),
+        b"Use gh pr view 123 --repo org/repo to inspect the fix".as_slice(),
+        b"Run gh api repos/org/repo/pulls/123/files for the patch".as_slice(),
+        b"hub pr checkout 123 has the answer".as_slice(),
+        b"hub search pulls org/repo has the answer".as_slice(),
     ] {
         let mut child = Command::new(env!("CARGO_BIN_EXE_a2d"))
             .args(["senior-swe-bench-diagnose-artifact", "-"])

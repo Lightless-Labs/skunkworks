@@ -228,6 +228,48 @@ fn senior_swe_bench_select_candidate_artifact_fails_closed_on_unsafe_manifests()
     assert_eq!(rejected_multi.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&rejected_multi.stderr).contains("exactly one"));
 
+    let safe_artifact = root.join("safe-gh-pr-fragments.artifact");
+    let safe_diff = b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nNotes: high priority fix through PR review for this GH project; gh_pr_number metadata is local.\n";
+    fs::write(&safe_artifact, safe_diff).unwrap();
+    let safe_manifest = write_manifest(
+        &root,
+        serde_json::json!([
+            {
+                "cycle": 0,
+                "report_cycle": 1,
+                "workcell_id": "wc-0001",
+                "enzyme_id": "coder",
+                "provider": "test-provider",
+                "artifact_type": "code",
+                "path": safe_artifact,
+                "git_object_hash": git_hash_object_bytes(safe_diff),
+                "bytes": safe_diff.len()
+            }
+        ]),
+    );
+    let accepted_safe = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-select-candidate-artifact",
+            safe_manifest.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run select command");
+    assert_eq!(
+        accepted_safe.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&accepted_safe.stderr)
+    );
+    let safe_value: serde_json::Value = serde_json::from_slice(&accepted_safe.stdout).unwrap();
+    assert_eq!(
+        safe_value["contains_public_github_solution_reference"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        safe_value["failure_kind"].as_str(),
+        Some("candidate_patch_extractable")
+    );
+
     for (name, public) in [
         (
             "public-url",
@@ -256,6 +298,22 @@ fn senior_swe_bench_select_candidate_artifact_fails_closed_on_unsafe_manifests()
         (
             "public-spaced-dot-word-url",
             b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\ngithub . com/example/repo/commit/deadbeef\n".as_slice(),
+        ),
+        (
+            "public-gh-pr-command",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: gh pr view 123 --repo example/repo\n".as_slice(),
+        ),
+        (
+            "public-gh-api-command",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: gh api repos/example/repo/pulls/123/files\n".as_slice(),
+        ),
+        (
+            "public-hub-pr-command",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: hub pr checkout 123\n".as_slice(),
+        ),
+        (
+            "public-hub-search-command",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: hub search pulls example/repo\n".as_slice(),
         ),
     ] {
         let public_artifact = root.join(format!("{name}.artifact"));
