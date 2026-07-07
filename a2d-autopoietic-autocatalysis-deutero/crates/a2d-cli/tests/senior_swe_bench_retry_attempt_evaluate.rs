@@ -57,11 +57,23 @@ struct Fixture {
     marker: std::path::PathBuf,
 }
 
+fn project_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("crate lives under project crates directory")
+        .to_path_buf()
+}
+
 fn write_fixture(name: &str, evaluator_body: &str) -> Fixture {
     let root = std::env::temp_dir().join(format!(
         "a2d-retry-attempt-evaluate-{name}-{}",
         unique_suffix()
     ));
+    write_fixture_at(root, evaluator_body)
+}
+
+fn write_fixture_at(root: std::path::PathBuf, evaluator_body: &str) -> Fixture {
     let checkout = root.join("checkout");
     let src = checkout.join("src");
     let attempt = root.join("attempt-0");
@@ -200,6 +212,101 @@ fn retry_attempt_evaluate_runs_planned_evaluator_once_and_emits_next_args() {
         Some("senior-swe-bench-retry-step")
     );
     assert!(value["fitness_evidence_path"].as_str().is_some());
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_attempt_evaluate_serializes_in_project_fitness_evidence_path_repo_relative() {
+    let root = project_root().join("target").join(format!(
+        "a2d-retry-attempt-evaluate-repo-relative-{}",
+        unique_suffix()
+    ));
+    let fixture = write_fixture_at(
+        root,
+        "test \"${A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN}\" = true\ngrep -q new src/lib.rs\n",
+    );
+    let evidence_dir = fixture.root.join("fitness");
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .env("A2D_FITNESS_EVIDENCE_EXPORT_DIR", &evidence_dir)
+        .args([
+            "senior-swe-bench-retry-attempt-evaluate",
+            fixture.extraction.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry attempt evaluate");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let fitness_path = value["fitness_evidence_path"].as_str().unwrap();
+    assert!(
+        !fitness_path.starts_with('/'),
+        "in-project fitness evidence path should be repo-relative: {fitness_path}"
+    );
+    assert!(
+        fitness_path.starts_with("target/a2d-retry-attempt-evaluate-repo-relative-"),
+        "unexpected repo-relative fitness evidence path: {fitness_path}"
+    );
+    assert!(project_root().join(fitness_path).is_file());
+
+    let local_evaluation: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fixture.local_evaluation).unwrap()).unwrap();
+    assert_eq!(
+        local_evaluation["fitness_evidence_path"].as_str(),
+        Some(fitness_path)
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_attempt_evaluate_serializes_external_relative_fitness_evidence_path_as_absolute() {
+    let fixture = write_fixture(
+        "external-relative-fitness",
+        "test \"${A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN}\" = true\ngrep -q new src/lib.rs\n",
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .current_dir(&fixture.root)
+        .env("A2D_FITNESS_EVIDENCE_EXPORT_DIR", "fitness")
+        .args([
+            "senior-swe-bench-retry-attempt-evaluate",
+            fixture.extraction.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry attempt evaluate from external cwd");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let fitness_path = value["fitness_evidence_path"].as_str().unwrap();
+    let fitness_path = std::path::Path::new(fitness_path);
+    assert!(
+        fitness_path.is_absolute(),
+        "external relative export dir should serialize as an absolute CWD-stable path: {}",
+        fitness_path.display()
+    );
+    let canonical_fitness_path = fs::canonicalize(fitness_path).unwrap();
+    let canonical_expected_dir = fs::canonicalize(fixture.root.join("fitness")).unwrap();
+    assert!(
+        canonical_fitness_path.starts_with(&canonical_expected_dir),
+        "fitness evidence should resolve under the external retry work dir {}, got {}",
+        canonical_expected_dir.display(),
+        canonical_fitness_path.display()
+    );
+    assert!(canonical_fitness_path.is_file());
+
+    let local_evaluation_text = fs::read_to_string(&fixture.local_evaluation).unwrap();
+    assert!(
+        !local_evaluation_text.contains(project_root().to_str().unwrap()),
+        "external retry artifacts should not leak the project-root host path: {local_evaluation_text}"
+    );
 
     let _ = fs::remove_dir_all(fixture.root);
 }

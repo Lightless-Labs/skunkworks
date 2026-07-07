@@ -778,11 +778,12 @@ fn retry_status_rejects_regressing_success_evidence() {
     let execution: serde_json::Value =
         serde_json::from_slice(&fs::read(&retry_execution).unwrap()).unwrap();
     let final_evidence_path = execution["final_evidence_path"].as_str().unwrap();
+    let resolved_final_evidence_path = resolve_project_relative_path(final_evidence_path);
     let mut evidence: serde_json::Value =
-        serde_json::from_slice(&fs::read(final_evidence_path).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(&resolved_final_evidence_path).unwrap()).unwrap();
     evidence["non_regressing"] = serde_json::json!(false);
     fs::write(
-        final_evidence_path,
+        &resolved_final_evidence_path,
         serde_json::to_vec_pretty(&evidence).unwrap(),
     )
     .unwrap();
@@ -1040,8 +1041,9 @@ fn retry_status_rejects_success_evidence_without_all_tests_pass() {
     let execution: serde_json::Value =
         serde_json::from_slice(&fs::read(&retry_execution).unwrap()).unwrap();
     let final_evidence_path = execution["final_evidence_path"].as_str().unwrap();
+    let resolved_final_evidence_path = resolve_project_relative_path(final_evidence_path);
     let mut evidence: serde_json::Value =
-        serde_json::from_slice(&fs::read(final_evidence_path).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(&resolved_final_evidence_path).unwrap()).unwrap();
     let results = evidence["results"].as_array_mut().unwrap();
     let all_tests_pass = results
         .iter_mut()
@@ -1049,7 +1051,7 @@ fn retry_status_rejects_success_evidence_without_all_tests_pass() {
         .expect("all_tests_pass result");
     all_tests_pass["passed"] = serde_json::json!(false);
     fs::write(
-        final_evidence_path,
+        &resolved_final_evidence_path,
         serde_json::to_vec_pretty(&evidence).unwrap(),
     )
     .unwrap();

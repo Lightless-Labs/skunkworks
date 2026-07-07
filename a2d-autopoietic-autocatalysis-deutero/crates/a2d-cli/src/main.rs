@@ -5258,10 +5258,15 @@ fn build_senior_swe_bench_retry_attempt_step_evidence_execution(
         return Err("Senior SWE-Bench retry attempt step evidence has invalid planned fitness-evidence-inspect args".to_string());
     }
 
+    let resolved_fitness_evidence_path =
+        resolve_retry_artifact_path(Path::new(fitness_evidence_path));
+    let mut resolved_fitness_evidence_inspect_args = fitness_evidence_inspect_args.clone();
+    resolved_fitness_evidence_inspect_args[1] =
+        resolved_fitness_evidence_path.to_string_lossy().to_string();
     let current_exe = env::current_exe()
         .map_err(|error| format!("failed to resolve current a2d executable: {error}"))?;
     let output = Command::new(current_exe)
-        .args(&fitness_evidence_inspect_args)
+        .args(&resolved_fitness_evidence_inspect_args)
         .output()
         .map_err(|error| {
             format!("failed to run planned fitness-evidence-inspect command: {error}")
@@ -5275,7 +5280,7 @@ fn build_senior_swe_bench_retry_attempt_step_evidence_execution(
         ));
     }
 
-    let evidence_bytes = fs::read(fitness_evidence_path).map_err(|error| {
+    let evidence_bytes = fs::read(&resolved_fitness_evidence_path).map_err(|error| {
         format!("failed to read inspected fitness evidence {fitness_evidence_path}: {error}")
     })?;
     let evidence: Value = serde_json::from_slice(&evidence_bytes).map_err(|error| {
@@ -8544,7 +8549,7 @@ fn retry_artifact_path_string(path: &Path) -> String {
     if let Ok(relative) = absolute.strip_prefix(&project_root) {
         relative.to_string_lossy().replace('\\', "/")
     } else {
-        path.to_string_lossy().replace('\\', "/")
+        absolute.to_string_lossy().replace('\\', "/")
     }
 }
 
@@ -8735,7 +8740,9 @@ fn build_senior_swe_bench_retry_run_result(step_evidence_execution: &str) -> Res
     }
 
     let fitness_evidence_path = required_plan_string(&value, "fitness_evidence_path")?;
-    let evidence_bytes = fs::read(&fitness_evidence_path).map_err(|error| {
+    let resolved_fitness_evidence_path =
+        resolve_retry_artifact_path(Path::new(&fitness_evidence_path));
+    let evidence_bytes = fs::read(&resolved_fitness_evidence_path).map_err(|error| {
         format!("failed to read inspected fitness evidence {fitness_evidence_path}: {error}")
     })?;
     let evidence: Value = serde_json::from_slice(&evidence_bytes).map_err(|error| {
@@ -10358,7 +10365,7 @@ fn run_senior_swe_bench_evaluate(args: &[String]) {
                 });
                 path
             })
-            .map(|path| path.to_string_lossy().to_string())
+            .map(|path| retry_artifact_path_string(&path))
     } else {
         None
     };

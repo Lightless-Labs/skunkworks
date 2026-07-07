@@ -45,6 +45,7 @@
 **Hardened:** 2026-07-07 — Senior SWE-Bench artifact diagnosis/selection now rejects percent-encoded GitHub host/ref forms as public solution references
 **Hardened:** 2026-07-07 — Senior SWE-Bench detector now rejects nested/over-depth percent-encoded GitHub host/ref forms with bounded decoding
 **Hardened:** 2026-07-07 — Senior SWE-Bench cycle-input feedback now reuses shared public GitHub solution-reference normalization before coder-visible feedback
+**Hardened:** 2026-07-07 — Senior SWE-Bench retry/local-evaluation `fitness_evidence_path` handoffs now serialize in-project artifacts repo-relative and outside-project relative exports as absolute CWD-stable paths
 **Hardened:** 2026-07-05 — CLI provider subprocesses now receive explicit no-public-solution-search policy env flags (observability only, not network isolation)
 **Hardened:** 2026-07-05 — Senior SWE-Bench no-search fitness labels now distinguish policy-declared evidence from network-isolation proof
 **Depends on:** Stage 1 (complete)
