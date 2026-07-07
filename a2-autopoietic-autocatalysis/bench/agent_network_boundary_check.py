@@ -1041,12 +1041,32 @@ def helper_rejects_policy_with_return(helper: str, condition_pattern: str) -> bo
     return False
 
 
+def worktree_mock_guard_refuses_restricted_policy_before_mock(body: str) -> bool:
+    comments_masked = mask_rust_comments_preserving_offsets(body)
+    for match in re.finditer(r'\bif\s+provider_id\s*==\s*"mock"', comments_masked):
+        span = extract_rust_braced_body_span(comments_masked, match.start())
+        if span is None:
+            continue
+        block, _block_start, _block_end = span
+        executable = rust_executable_body_without_strings(block)
+        mock_index = executable.find("run_mock_agent")
+        restricted_return_span = find_restricted_policy_return_err_span(executable)
+        if restricted_return_span is not None and mock_index >= 0 and restricted_return_span[0] < mock_index:
+            return True
+    return False
+
+
+def restricted_policy_return_applies_to_mock(body: str, return_offset: int) -> bool:
+    prefix = body[max(0, return_offset - 240) : return_offset]
+    return not re.search(r'\bprovider_id\s*!=\s*"mock"', prefix)
+
+
 def rust_materialized_sandbox_exec_bindings(body: str, before_offset: int) -> list[str]:
     comments_masked = mask_rust_comments_preserving_offsets(body)
     ranges = rust_string_literal_ranges(comments_masked)
     bindings: list[str] = []
     for match in re.finditer(
-        r"\blet\s+(?:mut\s+)?([A-Za-z_][\w]*)\s*=\s*materialize_sandbox_exec_command\s*\(",
+        r"\blet\s+(?:mut\s+)?([A-Za-z_][\w]*)\s*=\s*(materialize_sandbox_exec_command|materialize_provider_command_for_network_policy)\s*\(",
         comments_masked,
     ):
         if match.start() >= before_offset:
@@ -1054,6 +1074,13 @@ def rust_materialized_sandbox_exec_bindings(body: str, before_offset: int) -> li
         if offset_inside_ranges(match.start(), ranges):
             continue
         if rust_brace_depth_at(body, match.start()) != 0:
+            continue
+        helper = match.group(2)
+        statement = rust_statement_span_from_offset(comments_masked, match.start())
+        if helper == "materialize_provider_command_for_network_policy" and not re.search(
+            r"\bmaterialize_provider_command_for_network_policy\s*\(\s*(?:&\s*)?network_policy\b",
+            statement,
+        ):
             continue
         bindings.append(match.group(1))
     return bindings
@@ -1145,8 +1172,14 @@ def audit_a2_worktree_catalyst_launch_gate(path: Path = A2_WORKTREE_CATALYST) ->
     mock_index = executable.find("run_mock_agent")
     dispatch_index = executable.find("match provider_id")
     result["restricted_policy_check_present"] = restricted_return_span is not None
+    outer_policy_guard_covers_mock = (
+        result["restricted_policy_check_present"]
+        and mock_index >= 0
+        and error_index < mock_index
+        and restricted_policy_return_applies_to_mock(body, error_index)
+    )
     result["restricted_policy_error_before_mock"] = (
-        result["restricted_policy_check_present"] and mock_index >= 0 and error_index < mock_index
+        outer_policy_guard_covers_mock or worktree_mock_guard_refuses_restricted_policy_before_mock(body)
     )
     result["restricted_policy_error_before_provider_dispatch"] = (
         result["restricted_policy_check_present"] and dispatch_index >= 0 and error_index < dispatch_index
@@ -1175,9 +1208,12 @@ def audit_a2_worktree_catalyst_launch_gate(path: Path = A2_WORKTREE_CATALYST) ->
         item.get("sandbox_exec_present") for item in launches
     )
     result["fail_closed_before_provider_launch"] = (
-        result["restricted_policy_error_before_mock"]
-        and result["restricted_policy_error_before_provider_dispatch"]
-        and provider_launches_present
+        provider_launches_present
+        and result["restricted_policy_error_before_mock"]
+        and (
+            result["restricted_policy_error_before_provider_dispatch"]
+            or result["sandbox_exec_launch_wrapper_present"]
+        )
     )
     if not result["fail_closed_before_provider_launch"]:
         result["reason"] = "restricted policies are not visibly refused before every provider launch path"
@@ -2266,6 +2302,26 @@ let output = Command::new(&materialized.program)
 '''
         self.assertTrue(rust_provider_command_uses_sandbox_exec(body))
 
+    def test_rust_provider_command_accepts_provider_policy_materialization_helper(self) -> None:
+        body = '''
+let materialized = materialize_provider_command_for_network_policy(network_policy, profile_dir, "pi", ["--print"])?;
+let output = Command::new(&materialized.program)
+    .args(&materialized.args)
+    .output()
+    .await?;
+'''
+        self.assertTrue(rust_provider_command_uses_sandbox_exec(body))
+
+    def test_rust_provider_command_rejects_provider_materialization_without_network_policy(self) -> None:
+        body = '''
+let materialized = materialize_provider_command_for_network_policy(None, profile_dir, "pi", ["--print"])?;
+let output = Command::new(&materialized.program)
+    .args(&materialized.args)
+    .output()
+    .await?;
+'''
+        self.assertFalse(rust_provider_command_uses_sandbox_exec(body))
+
     def test_rust_provider_command_rejects_direct_sandbox_exec_without_materialized_argv(self) -> None:
         for body in [
             'let output = Command::new("sandbox-exec").output().await?;',
@@ -2486,6 +2542,40 @@ let unsandboxed = Command::new("pi")
             self.assertTrue(result["restricted_policy_error_before_provider_dispatch"])
             self.assertTrue(result["fail_closed_before_provider_launch"])
 
+    def test_a2_worktree_launch_gate_rejects_provider_only_guard_without_mock_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "worktree_catalyst.rs"
+            provider_functions = "\n".join(
+                f'''async fn {function_name}() {{
+    let materialized = materialize_provider_command_for_network_policy(network_policy, profile_dir, "{provider}", ["--arg"])?;
+    Command::new(&materialized.program).args(&materialized.args);
+}}'''
+                for function_name, provider in [
+                    ("run_claude", "claude"),
+                    ("run_codex", "codex"),
+                    ("run_gemini", "gemini"),
+                    ("run_opencode", "opencode"),
+                    ("run_pi", "pi"),
+                ]
+            )
+            path.write_text(
+                'async fn run_agent() {\n'
+                '  if provider_id != "mock"\n'
+                '    && let Some(policy @ (NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) = network_policy {\n'
+                '    return Err(error);\n'
+                '  }\n'
+                '  if provider_id == "mock" { return self.run_mock_agent(worktree_path).await; }\n'
+                '  match provider_id { _ => self.run_claude(model_id, prompt, worktree_path).await }\n'
+                '}\n'
+                + provider_functions,
+                encoding="utf-8",
+            )
+            result = audit_a2_worktree_catalyst_launch_gate(path)
+
+        self.assertFalse(result["restricted_policy_error_before_mock"])
+        self.assertTrue(result["sandbox_exec_launch_wrapper_present"])
+        self.assertFalse(result["fail_closed_before_provider_launch"])
+
     def test_a2_worktree_launch_gate_detects_fail_closed_before_provider_dispatch(self) -> None:
         result = audit_a2_worktree_catalyst_launch_gate()
 
@@ -2494,11 +2584,12 @@ let unsandboxed = Command::new("pi")
         self.assertTrue(result["restricted_policy_error_before_mock"])
         self.assertTrue(result["restricted_policy_error_before_provider_dispatch"])
         self.assertTrue(result["fail_closed_before_provider_launch"])
-        self.assertFalse(result["sandbox_exec_launch_wrapper_present"])
+        self.assertTrue(result["sandbox_exec_launch_wrapper_present"])
         self.assertEqual(
             [item["function"] for item in result["provider_command_launch_functions"]],
             ["run_claude", "run_codex", "run_gemini", "run_opencode", "run_pi"],
         )
+        self.assertTrue(all(item["sandbox_exec_present"] for item in result["provider_command_launch_functions"]))
 
     def test_a2_broker_launch_gate_detects_all_provider_guards(self) -> None:
         result = audit_a2_broker_launch_gate()

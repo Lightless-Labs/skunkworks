@@ -1,7 +1,7 @@
 use a2_core::protocol::NetworkPolicy;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -48,6 +48,51 @@ pub struct SandboxExecCommandMaterialization {
     pub profile_path: PathBuf,
     pub program: OsString,
     pub args: Vec<OsString>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderCommandMaterialization {
+    pub profile: Option<SandboxProfile>,
+    pub profile_path: Option<PathBuf>,
+    pub program: OsString,
+    pub args: Vec<OsString>,
+    pub sandboxed: bool,
+}
+
+pub fn materialize_provider_command_for_network_policy<I, S>(
+    policy: Option<&NetworkPolicy>,
+    profile_dir: &Path,
+    child_program: impl Into<OsString>,
+    child_args: I,
+) -> Result<ProviderCommandMaterialization, String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    match policy {
+        Some(restricted @ (NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) => {
+            let materialized = materialize_sandbox_exec_command(
+                restricted,
+                profile_dir,
+                child_program,
+                child_args,
+            )?;
+            Ok(ProviderCommandMaterialization {
+                profile: Some(materialized.profile),
+                profile_path: Some(materialized.profile_path),
+                program: materialized.program,
+                args: materialized.args,
+                sandboxed: true,
+            })
+        }
+        Some(NetworkPolicy::Open) | None => Ok(ProviderCommandMaterialization {
+            profile: None,
+            profile_path: None,
+            program: child_program.into(),
+            args: child_args.into_iter().map(Into::into).collect(),
+            sandboxed: false,
+        }),
+    }
 }
 
 pub fn materialize_sandbox_exec_command<I, S>(
@@ -225,21 +270,14 @@ fn create_new_profile_no_follow(path: &Path) -> Result<std::fs::File, String> {
 }
 
 pub fn sandbox_exec_available_on_this_platform() -> bool {
-    sandbox_exec_available_for_os_and_path(
-        std::env::consts::OS,
-        std::env::var_os("PATH").as_deref(),
-    )
+    sandbox_exec_available_for_os_and_program(std::env::consts::OS, Path::new(SANDBOX_EXEC_PROGRAM))
 }
 
-fn sandbox_exec_available_for_os_and_path(os: &str, path: Option<&OsStr>) -> bool {
+fn sandbox_exec_available_for_os_and_program(os: &str, program: &Path) -> bool {
     if os != "macos" {
         return false;
     }
-    let Some(path) = path else {
-        return false;
-    };
-    std::env::split_paths(path)
-        .any(|dir| sandbox_exec_path_is_executable(&dir.join("sandbox-exec")))
+    sandbox_exec_path_is_executable(program)
 }
 
 fn sandbox_exec_path_is_executable(path: &Path) -> bool {
@@ -403,6 +441,7 @@ fn validate_provider_host(host: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
 
     fn sha256_text(value: &str) -> String {
         format!("{:x}", Sha256::digest(value.as_bytes()))
@@ -434,12 +473,16 @@ mod tests {
 
         assert_eq!(profile.engine, "sandbox-exec");
         assert!(profile.profile_lines.contains(&"(deny network*)".into()));
-        assert!(profile
-            .profile_lines
-            .contains(&"(allow network-outbound (remote tcp \"api.openai.com:443\"))".into()));
-        assert!(profile
-            .profile_lines
-            .contains(&"(allow network-outbound (remote tcp \"api.anthropic.com:8443\"))".into()));
+        assert!(
+            profile
+                .profile_lines
+                .contains(&"(allow network-outbound (remote tcp \"api.openai.com:443\"))".into())
+        );
+        assert!(
+            profile.profile_lines.contains(
+                &"(allow network-outbound (remote tcp \"api.anthropic.com:8443\"))".into()
+            )
+        );
         assert_eq!(profile.profile_sha256, sha256_text(&profile.text()));
     }
 
@@ -451,11 +494,10 @@ mod tests {
             "raw.githubusercontent.com",
             "docs.github.io",
         ] {
-            let err =
-                sandbox_profile_for_network_policy(&NetworkPolicy::AllowList(
-                    vec![endpoint.into()],
-                ))
-                .unwrap_err();
+            let err = sandbox_profile_for_network_policy(&NetworkPolicy::AllowList(vec![
+                endpoint.into(),
+            ]))
+            .unwrap_err();
             assert!(
                 err.contains("public solution hosts"),
                 "unexpected error for {endpoint}: {err}"
@@ -474,9 +516,9 @@ mod tests {
             "singlelabel",
         ] {
             assert!(
-                sandbox_profile_for_network_policy(&NetworkPolicy::AllowList(
-                    vec![endpoint.into()]
-                ))
+                sandbox_profile_for_network_policy(&NetworkPolicy::AllowList(vec![
+                    endpoint.into()
+                ]))
                 .is_err(),
                 "endpoint should be rejected: {endpoint}"
             );
@@ -723,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_exec_availability_requires_macos_and_binary_on_path() {
+    fn sandbox_exec_availability_requires_macos_and_exact_program_path() {
         let temp_dir = std::env::temp_dir().join(format!(
             "a2-sandbox-exec-test-{}-{}",
             std::process::id(),
@@ -735,6 +777,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
         let fake_sandbox_exec = temp_dir.join("sandbox-exec");
+        let missing_sandbox_exec = temp_dir.join("missing-sandbox-exec");
         let execution_marker = temp_dir.join("should-not-be-created-by-availability-check");
         std::fs::write(
             &fake_sandbox_exec,
@@ -751,18 +794,22 @@ mod tests {
             permissions.set_mode(0o755);
             std::fs::set_permissions(&fake_sandbox_exec, permissions).unwrap();
         }
-        let path = std::env::join_paths([temp_dir.as_os_str()]).unwrap();
-
-        assert!(sandbox_exec_available_for_os_and_path("macos", Some(&path)));
+        assert!(sandbox_exec_available_for_os_and_program(
+            "macos",
+            &fake_sandbox_exec
+        ));
         assert!(
             !execution_marker.exists(),
             "availability check must not execute a PATH-sourced sandbox-exec binary"
         );
-        assert!(!sandbox_exec_available_for_os_and_path(
+        assert!(!sandbox_exec_available_for_os_and_program(
             "linux",
-            Some(&path)
+            &fake_sandbox_exec
         ));
-        assert!(!sandbox_exec_available_for_os_and_path("macos", None));
+        assert!(!sandbox_exec_available_for_os_and_program(
+            "macos",
+            &missing_sandbox_exec
+        ));
 
         #[cfg(unix)]
         {
@@ -770,9 +817,9 @@ mod tests {
             let mut permissions = std::fs::metadata(&fake_sandbox_exec).unwrap().permissions();
             permissions.set_mode(0o644);
             std::fs::set_permissions(&fake_sandbox_exec, permissions).unwrap();
-            assert!(!sandbox_exec_available_for_os_and_path(
+            assert!(!sandbox_exec_available_for_os_and_program(
                 "macos",
-                Some(&path)
+                &fake_sandbox_exec
             ));
         }
 

@@ -13,13 +13,14 @@
 //! at (computing diffs). The diff quality problem disappears.
 
 use crate::sandbox_profile::{
-    sandbox_exec_available_on_this_platform, sandbox_profile_for_network_policy,
+    materialize_provider_command_for_network_policy, sandbox_exec_available_on_this_platform,
 };
 use a2_core::error::{A2Error, A2Result};
 use a2_core::id::*;
 use a2_core::protocol::*;
 use a2_core::traits::*;
 use chrono::Utc;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
@@ -307,46 +308,85 @@ impl WorktreeCatalyst {
         worktree_path: &Path,
         network_policy: Option<&NetworkPolicy>,
     ) -> A2Result<(String, String, String, u64, u64)> {
-        if let Some(policy @ (NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) =
-            network_policy
+        if provider_id != "mock"
+            && let Some(policy @ (NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) =
+                network_policy
+            && !sandbox_exec_available_on_this_platform()
         {
             let policy_name = match policy {
                 NetworkPolicy::Isolated => "Isolated",
                 NetworkPolicy::AllowList(_) => "AllowList",
                 NetworkPolicy::Open => unreachable!(),
             };
-            let profile_audit = sandbox_profile_for_network_policy(policy)
-                .map(|profile| {
-                    let profile_lines = profile.text().replace('\n', "\\n");
-                    format!(
-                        "sandbox_profile_engine={}, sandbox_profile_sha256={}, sandbox_profile_lines={profile_lines}, sandbox_exec_available={}",
-                        profile.engine,
-                        profile.profile_sha256,
-                        sandbox_exec_available_on_this_platform()
-                    )
-                })
-                .unwrap_or_else(|error| format!("sandbox_profile_error={error}"));
             return Err(A2Error::CatalystFailure(
                 self.id.clone(),
                 format!(
-                    "network_policy={policy_name} prevents launching provider `{provider_id}` from the worktree catalyst until an audited network sandbox/provider allowlist is implemented; {profile_audit}; run with network_policy=Open only when unrestricted network access is intentional"
+                    "network_policy={policy_name} prevents launching provider `{provider_id}` because /usr/bin/sandbox-exec is unavailable or not executable on this platform; restricted provider launches must fail closed instead of falling back to an unsandboxed command"
                 ),
             ));
         }
         #[cfg(test)]
         if provider_id == "mock" {
+            if let Some(policy @ (NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) =
+                network_policy
+            {
+                let policy_name = match policy {
+                    NetworkPolicy::Isolated => "Isolated",
+                    NetworkPolicy::AllowList(_) => "AllowList",
+                    NetworkPolicy::Open => unreachable!(),
+                };
+                return Err(A2Error::CatalystFailure(
+                    self.id.clone(),
+                    format!(
+                        "network_policy={policy_name} prevents launching provider `mock`; test mock agents have no audited sandbox/provider allowlist boundary"
+                    ),
+                ));
+            }
             return self.run_mock_agent(worktree_path).await;
         }
         match provider_id {
-            "claude" => self.run_claude(model_id, prompt, worktree_path).await,
-            "codex" => self.run_codex(model_id, prompt, worktree_path).await,
-            "gemini" => self.run_gemini(model_id, prompt, worktree_path).await,
-            "opencode" => self.run_opencode(model_id, prompt, worktree_path).await,
-            "pi" => self.run_pi(model_id, prompt, worktree_path).await,
+            "claude" => {
+                self.run_claude(model_id, prompt, worktree_path, network_policy)
+                    .await
+            }
+            "codex" => {
+                self.run_codex(model_id, prompt, worktree_path, network_policy)
+                    .await
+            }
+            "gemini" => {
+                self.run_gemini(model_id, prompt, worktree_path, network_policy)
+                    .await
+            }
+            "opencode" => {
+                self.run_opencode(model_id, prompt, worktree_path, network_policy)
+                    .await
+            }
+            "pi" => {
+                self.run_pi(model_id, prompt, worktree_path, network_policy)
+                    .await
+            }
             other => Err(A2Error::CatalystFailure(
                 self.id.clone(),
                 format!("worktree catalyst doesn't support provider: {other}"),
             )),
+        }
+    }
+
+    fn provider_exit_error(
+        provider: &str,
+        model_id: &str,
+        status: std::process::ExitStatus,
+        stderr: &str,
+    ) -> A2Error {
+        let stderr = stderr.trim();
+        if stderr.is_empty() {
+            A2Error::ProviderError(format!(
+                "{provider} provider model `{model_id}` exited with status {status} and produced no stderr"
+            ))
+        } else {
+            A2Error::ProviderError(format!(
+                "{provider} provider model `{model_id}` exited with status {status}: {stderr}"
+            ))
         }
     }
 
@@ -373,20 +413,32 @@ impl WorktreeCatalyst {
         model_id: &str,
         prompt: &str,
         worktree_path: &Path,
+        network_policy: Option<&NetworkPolicy>,
     ) -> A2Result<(String, String, String, u64, u64)> {
-        let output = Command::new("claude")
-            .args([
-                "-p",
-                prompt,
-                "--model",
-                model_id,
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--max-turns",
-                "30",
-                "--dangerously-skip-permissions",
-            ])
+        let provider_args = vec![
+            OsString::from("-p"),
+            OsString::from(prompt),
+            OsString::from("--model"),
+            OsString::from(model_id),
+            OsString::from("--output-format"),
+            OsString::from("stream-json"),
+            OsString::from("--verbose"),
+            OsString::from("--max-turns"),
+            OsString::from("30"),
+            OsString::from("--dangerously-skip-permissions"),
+        ];
+        let profile_dir = self.workspace_root.join(".a2").join("sandbox-profiles");
+        let materialized = materialize_provider_command_for_network_policy(
+            network_policy,
+            &profile_dir,
+            "claude",
+            provider_args,
+        )
+        .map_err(|error| {
+            A2Error::ProviderError(format!("claude sandbox command materialization: {error}"))
+        })?;
+        let output = Command::new(&materialized.program)
+            .args(&materialized.args)
             .current_dir(worktree_path)
             .env("PWD", worktree_path)
             .stdin(std::process::Stdio::null())
@@ -396,6 +448,14 @@ impl WorktreeCatalyst {
 
         let raw_stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if !output.status.success() {
+            return Err(Self::provider_exit_error(
+                "claude",
+                model_id,
+                output.status,
+                &stderr,
+            ));
+        }
         let mut text = String::new();
         let mut tokens_in = 0u64;
         let mut tokens_out = 0u64;
@@ -434,18 +494,30 @@ impl WorktreeCatalyst {
         model_id: &str,
         prompt: &str,
         worktree_path: &Path,
+        network_policy: Option<&NetworkPolicy>,
     ) -> A2Result<(String, String, String, u64, u64)> {
-        let output = Command::new("codex")
-            .args([
-                "exec",
-                prompt,
-                "-m",
-                model_id,
-                "-c",
-                "model_reasoning_effort=\"high\"",
-                "--full-auto",
-            ])
-            .arg("--json")
+        let provider_args = vec![
+            OsString::from("exec"),
+            OsString::from(prompt),
+            OsString::from("-m"),
+            OsString::from(model_id),
+            OsString::from("-c"),
+            OsString::from("model_reasoning_effort=\"high\""),
+            OsString::from("--full-auto"),
+            OsString::from("--json"),
+        ];
+        let profile_dir = self.workspace_root.join(".a2").join("sandbox-profiles");
+        let materialized = materialize_provider_command_for_network_policy(
+            network_policy,
+            &profile_dir,
+            "codex",
+            provider_args,
+        )
+        .map_err(|error| {
+            A2Error::ProviderError(format!("codex sandbox command materialization: {error}"))
+        })?;
+        let output = Command::new(&materialized.program)
+            .args(&materialized.args)
             .current_dir(worktree_path)
             .env("PWD", worktree_path)
             .stdin(std::process::Stdio::null())
@@ -455,6 +527,14 @@ impl WorktreeCatalyst {
 
         let raw_stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if !output.status.success() {
+            return Err(Self::provider_exit_error(
+                "codex",
+                model_id,
+                output.status,
+                &stderr,
+            ));
+        }
         let mut text = String::new();
         let mut tokens_in = 0u64;
         let mut tokens_out = 0u64;
@@ -491,11 +571,31 @@ impl WorktreeCatalyst {
         model_id: &str,
         prompt: &str,
         worktree_path: &Path,
+        network_policy: Option<&NetworkPolicy>,
     ) -> A2Result<(String, String, String, u64, u64)> {
-        let output = Command::new("gemini")
-            .args([
-                "-p", prompt, "--model", model_id, "-s", "false", "-y", "-o", "text",
-            ])
+        let provider_args = vec![
+            OsString::from("-p"),
+            OsString::from(prompt),
+            OsString::from("--model"),
+            OsString::from(model_id),
+            OsString::from("-s"),
+            OsString::from("false"),
+            OsString::from("-y"),
+            OsString::from("-o"),
+            OsString::from("text"),
+        ];
+        let profile_dir = self.workspace_root.join(".a2").join("sandbox-profiles");
+        let materialized = materialize_provider_command_for_network_policy(
+            network_policy,
+            &profile_dir,
+            "gemini",
+            provider_args,
+        )
+        .map_err(|error| {
+            A2Error::ProviderError(format!("gemini sandbox command materialization: {error}"))
+        })?;
+        let output = Command::new(&materialized.program)
+            .args(&materialized.args)
             .current_dir(worktree_path)
             .env("PWD", worktree_path)
             .stdin(std::process::Stdio::null())
@@ -505,6 +605,14 @@ impl WorktreeCatalyst {
 
         let text = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if !output.status.success() {
+            return Err(Self::provider_exit_error(
+                "gemini",
+                model_id,
+                output.status,
+                &stderr,
+            ));
+        }
         // Gemini text mode doesn't expose token counts; raw_stdout == text
         Ok((text.clone(), text, stderr, 0, 0))
     }
@@ -514,11 +622,30 @@ impl WorktreeCatalyst {
         model_id: &str,
         prompt: &str,
         worktree_path: &Path,
+        network_policy: Option<&NetworkPolicy>,
     ) -> A2Result<(String, String, String, u64, u64)> {
-        let output = Command::new("opencode")
-            .args(["run", "--format", "json", "--model", model_id, "--dir"])
-            .arg(worktree_path)
-            .arg(prompt)
+        let provider_args = vec![
+            OsString::from("run"),
+            OsString::from("--format"),
+            OsString::from("json"),
+            OsString::from("--model"),
+            OsString::from(model_id),
+            OsString::from("--dir"),
+            worktree_path.as_os_str().to_os_string(),
+            OsString::from(prompt),
+        ];
+        let profile_dir = self.workspace_root.join(".a2").join("sandbox-profiles");
+        let materialized = materialize_provider_command_for_network_policy(
+            network_policy,
+            &profile_dir,
+            "opencode",
+            provider_args,
+        )
+        .map_err(|error| {
+            A2Error::ProviderError(format!("opencode sandbox command materialization: {error}"))
+        })?;
+        let output = Command::new(&materialized.program)
+            .args(&materialized.args)
             .current_dir(worktree_path)
             .env("PWD", worktree_path)
             .stdin(std::process::Stdio::null())
@@ -528,6 +655,14 @@ impl WorktreeCatalyst {
 
         let raw_stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if !output.status.success() {
+            return Err(Self::provider_exit_error(
+                "opencode",
+                model_id,
+                output.status,
+                &stderr,
+            ));
+        }
         let mut text = String::new();
         let mut tokens_in = 0u64;
         let mut tokens_out = 0u64;
@@ -558,17 +693,29 @@ impl WorktreeCatalyst {
         model_id: &str,
         prompt: &str,
         worktree_path: &Path,
+        network_policy: Option<&NetworkPolicy>,
     ) -> A2Result<(String, String, String, u64, u64)> {
-        let output = Command::new("pi")
-            .args([
-                "--model",
-                model_id,
-                "--no-session",
-                "--mode",
-                "json",
-                "--print",
-            ])
-            .arg(prompt)
+        let provider_args = vec![
+            OsString::from("--model"),
+            OsString::from(model_id),
+            OsString::from("--no-session"),
+            OsString::from("--mode"),
+            OsString::from("json"),
+            OsString::from("--print"),
+            OsString::from(prompt),
+        ];
+        let profile_dir = self.workspace_root.join(".a2").join("sandbox-profiles");
+        let materialized = materialize_provider_command_for_network_policy(
+            network_policy,
+            &profile_dir,
+            "pi",
+            provider_args,
+        )
+        .map_err(|error| {
+            A2Error::ProviderError(format!("pi sandbox command materialization: {error}"))
+        })?;
+        let output = Command::new(&materialized.program)
+            .args(&materialized.args)
             .current_dir(worktree_path)
             .env("PWD", worktree_path)
             .stdin(std::process::Stdio::null())
@@ -580,15 +727,12 @@ impl WorktreeCatalyst {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         if !output.status.success() {
-            let mut message = format!(
-                "pi provider model `{model_id}` exited with status {}",
-                output.status
-            );
-            if !stderr.trim().is_empty() {
-                message.push_str(": ");
-                message.push_str(stderr.trim());
-            }
-            return Err(A2Error::ProviderError(message));
+            return Err(Self::provider_exit_error(
+                "pi",
+                model_id,
+                output.status,
+                &stderr,
+            ));
         }
 
         let (text, tokens_in, tokens_out) = Self::parse_pi_jsonl(&raw_stdout);
@@ -1131,33 +1275,62 @@ mod tests {
         assert!(!prompt_without_guard.contains("Do not search GitHub"));
     }
 
-    #[tokio::test]
-    async fn isolated_network_policy_refuses_external_agent_launch_before_spawn() {
-        let repo_dir = std::env::temp_dir().join(format!("a2-prompt-{}", uuid::Uuid::now_v7()));
-        let catalyst = WorktreeCatalyst::new(repo_dir.clone());
+    #[test]
+    fn provider_exit_error_rejects_non_success_even_with_plausible_stdout() {
+        let output = std::process::Command::new("sh")
+            .args([
+                "-c",
+                "printf '{\"type\":\"result\",\"text\":\"looks ok\"}\n'; echo sandbox denied >&2; exit 42",
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("looks ok"));
 
-        let error = catalyst
-            .run_agent(
-                "opencode",
-                "model",
-                "prompt",
-                &repo_dir,
-                Some(&NetworkPolicy::Isolated),
-            )
-            .await
-            .unwrap_err();
-        let message = format!("{error}");
-        assert!(message.contains("network_policy=Isolated prevents launching provider `opencode`"));
-        assert!(message.contains("audited network sandbox/provider allowlist"));
-        assert!(message.contains("sandbox_profile_engine=sandbox-exec"));
-        assert!(message.contains("sandbox_profile_sha256="));
-        assert!(
-            message.contains(
-                "sandbox_profile_lines=(version 1)\\n(allow default)\\n(deny network*)\\n"
-            )
+        let error = WorktreeCatalyst::provider_exit_error(
+            "opencode",
+            "model",
+            output.status,
+            &String::from_utf8_lossy(&output.stderr),
         );
-        assert!(!message.contains("sandbox_profile_lines=(version 1)\n(allow default)"));
-        assert!(message.contains("sandbox_exec_available="));
+        let message = format!("{error}");
+        assert!(message.contains("opencode provider model `model` exited with status"));
+        assert!(message.contains("sandbox denied"));
+    }
+
+    #[test]
+    fn isolated_provider_command_materializes_sandbox_exec_before_spawn() {
+        let repo_dir = std::env::temp_dir().join(format!("a2-prompt-{}", uuid::Uuid::now_v7()));
+        let profile_dir = repo_dir.join(".a2").join("sandbox-profiles");
+
+        let materialized = materialize_provider_command_for_network_policy(
+            Some(&NetworkPolicy::Isolated),
+            &profile_dir,
+            "opencode",
+            [
+                OsString::from("run"),
+                OsString::from("--format"),
+                OsString::from("json"),
+            ],
+        )
+        .unwrap();
+
+        assert!(materialized.sandboxed);
+        assert_eq!(
+            materialized.program,
+            OsString::from("/usr/bin/sandbox-exec")
+        );
+        assert_eq!(materialized.args[0], OsString::from("-f"));
+        assert_eq!(materialized.args[2], OsString::from("opencode"));
+        assert_eq!(materialized.args[3], OsString::from("run"));
+        let profile = materialized.profile.unwrap();
+        assert_eq!(profile.engine, "sandbox-exec");
+        assert_eq!(
+            profile.profile_lines,
+            vec!["(version 1)", "(allow default)", "(deny network*)"]
+        );
+
+        let _ = std::fs::remove_dir_all(repo_dir);
     }
 
     #[tokio::test]
@@ -1177,13 +1350,9 @@ mod tests {
             .unwrap_err();
         let message = format!("{error}");
         assert!(message.contains("network_policy=Isolated prevents launching provider `mock`"));
-        assert!(message.contains("audited network sandbox/provider allowlist"));
-        assert!(message.contains("sandbox_profile_engine=sandbox-exec"));
-        assert!(message.contains("sandbox_profile_sha256="));
         assert!(
-            message.contains(
-                "sandbox_profile_lines=(version 1)\\n(allow default)\\n(deny network*)\\n"
-            )
+            message
+                .contains("test mock agents have no audited sandbox/provider allowlist boundary")
         );
     }
 
@@ -1206,10 +1375,10 @@ mod tests {
             .unwrap_err();
         let message = format!("{error}");
         assert!(message.contains("network_policy=AllowList prevents launching provider `mock`"));
-        assert!(message.contains("audited network sandbox/provider allowlist"));
-        assert!(message.contains("sandbox_profile_engine=sandbox-exec"));
-        assert!(message.contains("sandbox_profile_sha256="));
-        assert!(message.contains("remote tcp \"api.openai.com:443\""));
+        assert!(
+            message
+                .contains("test mock agents have no audited sandbox/provider allowlist boundary")
+        );
     }
 
     #[tokio::test]
@@ -1253,39 +1422,45 @@ mod tests {
         let error = catalyst.execute(&task, &context, &model).await.unwrap_err();
         let message = format!("{error}");
         assert!(message.contains("network_policy=Isolated prevents launching provider `mock`"));
-        assert!(message.contains("audited network sandbox/provider allowlist"));
-        assert!(message.contains("sandbox_profile_engine=sandbox-exec"));
-        assert!(message.contains("sandbox_profile_sha256="));
         assert!(
-            message.contains(
-                "sandbox_profile_lines=(version 1)\\n(allow default)\\n(deny network*)\\n"
-            )
+            message
+                .contains("test mock agents have no audited sandbox/provider allowlist boundary")
         );
     }
 
-    #[tokio::test]
-    async fn allowlist_network_policy_refuses_external_agent_launch_before_spawn() {
+    #[test]
+    fn allowlist_provider_command_materializes_provider_endpoint_profile_before_spawn() {
         let repo_dir = std::env::temp_dir().join(format!("a2-prompt-{}", uuid::Uuid::now_v7()));
-        let catalyst = WorktreeCatalyst::new(repo_dir.clone());
+        let profile_dir = repo_dir.join(".a2").join("sandbox-profiles");
 
-        let error = catalyst
-            .run_agent(
-                "pi",
-                "provider/model",
-                "prompt",
-                &repo_dir,
-                Some(&NetworkPolicy::AllowList(vec![
-                    "https://api.openai.com".to_string(),
-                ])),
-            )
-            .await
-            .unwrap_err();
-        let message = format!("{error}");
-        assert!(message.contains("network_policy=AllowList prevents launching provider `pi`"));
-        assert!(message.contains("network_policy=Open"));
-        assert!(message.contains("sandbox_profile_engine=sandbox-exec"));
-        assert!(message.contains("sandbox_profile_sha256="));
-        assert!(message.contains("remote tcp \"api.openai.com:443\""));
+        let materialized = materialize_provider_command_for_network_policy(
+            Some(&NetworkPolicy::AllowList(vec![
+                "https://api.openai.com".to_string(),
+            ])),
+            &profile_dir,
+            "pi",
+            [OsString::from("--model"), OsString::from("provider/model")],
+        )
+        .unwrap();
+
+        assert!(materialized.sandboxed);
+        assert_eq!(
+            materialized.program,
+            OsString::from("/usr/bin/sandbox-exec")
+        );
+        assert_eq!(materialized.args[0], OsString::from("-f"));
+        assert_eq!(materialized.args[2], OsString::from("pi"));
+        assert_eq!(materialized.args[3], OsString::from("--model"));
+        let profile = materialized.profile.unwrap();
+        assert_eq!(profile.engine, "sandbox-exec");
+        assert!(profile.profile_lines.contains(&"(deny network*)".into()));
+        assert!(
+            profile
+                .profile_lines
+                .contains(&"(allow network-outbound (remote tcp \"api.openai.com:443\"))".into())
+        );
+
+        let _ = std::fs::remove_dir_all(repo_dir);
     }
 
     #[test]

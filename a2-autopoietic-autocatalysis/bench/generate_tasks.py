@@ -9,8 +9,9 @@ Modes:
 
 Default output remains one task description per line. For benchmark evidence,
 prefer --jsonl: every emitted task carries no_external_solution_search=true and
-network_policy=Isolated so a2ctl run reaches the fail-closed launch gate instead
-of relying on prompt text or operator memory.
+network_policy=Isolated so a2ctl run requests the restricted network boundary
+instead of relying on prompt text or operator memory. Full benchmark evidence
+still requires audited sandbox/provider allowlist coverage on every launch path.
 
 Usage:
     python3 bench/generate_tasks.py --source self

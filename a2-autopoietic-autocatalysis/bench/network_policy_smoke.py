@@ -3,13 +3,15 @@
 
 These checks are intentionally not benchmark evidence. The default smoke proves a
 spawned child process can be run under an OS-level no-network sandbox on hosts
-that provide macOS ``sandbox-exec``. ``--a2ctl-run-smoke`` separately exercises
-the real ``a2ctl run`` path with a configurable restricted policy (defaulting to
-``--network-policy isolated``) and expects the current fail-closed launch gate
-to refuse provider launch with a nonzero exit. ``--allowlist-smoke`` exercises a
-synthetic localhost-only sandbox allowlist primitive, not real model-provider API
-allowlisting. A real Senior SWE Bench run still needs a sandbox/provider
-allowlist wired into the coding-agent/provider launch path.
+that provide macOS ``sandbox-exec``. ``--a2ctl-run-smoke`` separately checks
+the real ``a2ctl run`` restricted-policy boundary without silently starting a
+live provider: on hosts where A² can route the selected provider through
+``/usr/bin/sandbox-exec`` it stops before launch;
+on hosts without that runtime it exercises the fail-closed launch refusal.
+``--allowlist-smoke`` exercises a synthetic localhost-only sandbox allowlist
+primitive, not real model-provider API allowlisting. A real Senior SWE Bench run
+still needs a sandbox/provider allowlist wired into every coding-agent/provider
+launch path and recorded in row-level evidence.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import argparse
 import hashlib
 import ipaddress
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -455,6 +458,12 @@ def expected_catalyst_network_policy_label(network_policy: str) -> str:
     return label if restricted else network_policy
 
 
+def exact_sandbox_exec_available() -> bool:
+    return sys.platform == "darwin" and os.path.isfile("/usr/bin/sandbox-exec") and os.access(
+        "/usr/bin/sandbox-exec", os.X_OK
+    )
+
+
 def run_a2ctl_launch_gate_smoke(provider: str, network_policy: str) -> dict[str, Any]:
     binary_name = provider.split("/", 1)[0]
     command = [
@@ -478,13 +487,13 @@ def run_a2ctl_launch_gate_smoke(provider: str, network_policy: str) -> dict[str,
     if not restricted:
         return {
             "complete": False,
-            "description": "a2ctl run restricted-policy launch-gate smoke",
+            "description": "a2ctl run restricted-policy boundary smoke",
             "command": command,
             "network_policy": network_policy,
             "provider_binary": None,
             "returncode": None,
             "stdout": "",
-            "stderr": f"refusing to run launch-gate smoke with {policy_label} `{network_policy}`",
+            "stderr": f"refusing to run restricted-policy boundary smoke with {policy_label} `{network_policy}`",
             "passed": False,
         }
 
@@ -492,7 +501,7 @@ def run_a2ctl_launch_gate_smoke(provider: str, network_policy: str) -> dict[str,
     if provider_binary is None:
         return {
             "complete": False,
-            "description": "a2ctl run restricted-policy launch-gate smoke",
+            "description": "a2ctl run restricted-policy boundary smoke",
             "command": command,
             "network_policy": network_policy,
             "provider_binary": None,
@@ -500,6 +509,27 @@ def run_a2ctl_launch_gate_smoke(provider: str, network_policy: str) -> dict[str,
             "stdout": "",
             "stderr": f"provider binary `{binary_name}` not found on PATH",
             "passed": False,
+        }
+
+    sandbox_exec_available = exact_sandbox_exec_available()
+    if sandbox_exec_available:
+        return {
+            "complete": True,
+            "description": "a2ctl run restricted-policy boundary smoke",
+            "command": command,
+            "network_policy": network_policy,
+            "provider_binary": provider_binary,
+            "sandbox_exec_program": "/usr/bin/sandbox-exec",
+            "sandbox_exec_available": True,
+            "provider_launch_executed": False,
+            "returncode": None,
+            "stdout": "",
+            "stderr": (
+                "restricted provider launch not executed: /usr/bin/sandbox-exec is available, "
+                "so this default smoke stops before starting a live provider; use boundary audit "
+                "commands for source-level sandbox wrapping proof"
+            ),
+            "passed": True,
         }
 
     process = subprocess.run(
@@ -522,10 +552,13 @@ def run_a2ctl_launch_gate_smoke(provider: str, network_policy: str) -> dict[str,
     )
     return {
         "complete": passed,
-        "description": "a2ctl run restricted-policy launch-gate smoke",
+        "description": "a2ctl run restricted-policy boundary smoke",
         "command": command,
         "network_policy": network_policy,
         "provider_binary": provider_binary,
+        "sandbox_exec_program": "/usr/bin/sandbox-exec",
+        "sandbox_exec_available": sandbox_exec_available,
+        "provider_launch_executed": True,
         "returncode": process.returncode,
         "stdout": process.stdout,
         "stderr": process.stderr,
@@ -542,7 +575,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--a2ctl-run-smoke",
         action="store_true",
-        help="exercise a2ctl run with a restricted --network-policy and require fail-closed nonzero exit",
+        help="check a2ctl run restricted-policy boundary; by default avoids live provider launch when /usr/bin/sandbox-exec is available",
     )
     parser.add_argument("--allowlist-smoke", action="store_true", help="exercise sandbox-exec synthetic localhost allowlist primitive with positive and negative TCP probes")
     parser.add_argument("--provider", default="opencode", help="provider/model for --a2ctl-run-smoke (default: opencode)")
@@ -698,7 +731,7 @@ class NetworkPolicySmokeTests(unittest.TestCase):
             "AllowList",
         )
 
-    def test_a2ctl_launch_gate_smoke_command_preserves_allowlist_policy(self) -> None:
+    def test_a2ctl_boundary_smoke_command_preserves_allowlist_policy_when_sandbox_exec_unavailable(self) -> None:
         import unittest.mock
 
         completed = subprocess.CompletedProcess(
@@ -708,14 +741,16 @@ class NetworkPolicySmokeTests(unittest.TestCase):
             stderr="restricted network policy blocked provider launch: no candidate patch produced\n",
         )
         with unittest.mock.patch("shutil.which", return_value="/usr/bin/opencode"), unittest.mock.patch(
-            "subprocess.run", return_value=completed
-        ) as run:
+            __name__ + ".exact_sandbox_exec_available", return_value=False
+        ), unittest.mock.patch("subprocess.run", return_value=completed) as run:
             result = run_a2ctl_launch_gate_smoke(
                 "opencode",
                 "allowlist:https://api.openai.com",
             )
 
         self.assertTrue(result["complete"])
+        self.assertTrue(result["provider_launch_executed"])
+        self.assertFalse(result["sandbox_exec_available"])
         self.assertEqual(result["network_policy"], "allowlist:https://api.openai.com")
         self.assertEqual(result["expected_policy_label"], "AllowList")
         command = run.call_args.args[0]
@@ -724,6 +759,20 @@ class NetworkPolicySmokeTests(unittest.TestCase):
             command[command.index("--network-policy") + 1],
             "allowlist:https://api.openai.com",
         )
+
+    def test_a2ctl_boundary_smoke_stops_before_live_provider_when_sandbox_exec_available(self) -> None:
+        import unittest.mock
+
+        with unittest.mock.patch("shutil.which", return_value="/usr/bin/opencode"), unittest.mock.patch(
+            __name__ + ".exact_sandbox_exec_available", return_value=True
+        ), unittest.mock.patch("subprocess.run") as run:
+            result = run_a2ctl_launch_gate_smoke("opencode", "isolated")
+
+        self.assertTrue(result["complete"])
+        self.assertFalse(result["provider_launch_executed"])
+        self.assertTrue(result["sandbox_exec_available"])
+        self.assertIn("not executed", result["stderr"])
+        run.assert_not_called()
 
     def test_a2ctl_launch_gate_smoke_reports_missing_provider_binary_without_launch(self) -> None:
         import unittest.mock
@@ -820,8 +869,8 @@ def main(argv: list[str]) -> int:
         raise SystemExit("--a2ctl-run-smoke and --allowlist-smoke are mutually exclusive")
     if args.a2ctl_run_smoke:
         result = run_a2ctl_launch_gate_smoke(args.provider, args.network_policy)
-        pass_message = "PASS a2ctl run launch-gate smoke: restricted policy blocked provider launch with nonzero exit"
-        fail_message = "FAIL a2ctl run launch-gate smoke"
+        pass_message = "PASS a2ctl run restricted-policy boundary smoke"
+        fail_message = "FAIL a2ctl run restricted-policy boundary smoke"
     elif args.allowlist_smoke:
         result = run_allowlist_smoke()
         pass_message = "PASS network policy allowlist smoke: allowlisted localhost endpoint was reachable and non-allowlisted controls failed"

@@ -229,7 +229,7 @@ Each line includes:
 
 ## Run A² Against Generated Tasks
 
-`a2ctl run` now accepts JSONL task input and will use `problem_statement` when present. For external benchmarks such as Senior SWE Bench (`https://senior-swe-bench.snorkel.ai/tasks`) or generated BigCodeBench/SWE-bench-style tasks, include `"no_external_solution_search": true` and `"network_policy": "Isolated"` (or pass `--network-policy isolated` for plain-text task streams). A² currently treats restricted network policies as a fail-closed launch gate: coding-agent runs are blocked unless/until an audited sandbox/provider allowlist can enforce the requested policy at the process boundary. Do not count Senior SWE Bench evidence from prompt-only/no-policy runs.
+`a2ctl run` now accepts JSONL task input and will use `problem_statement` when present. For external benchmarks such as Senior SWE Bench (`https://senior-swe-bench.snorkel.ai/tasks`) or generated BigCodeBench/SWE-bench-style tasks, include `"no_external_solution_search": true` and `"network_policy": "Isolated"` (or pass `--network-policy isolated` for plain-text task streams). A² currently has partial restricted-policy handling: the worktree provider path materializes `/usr/bin/sandbox-exec` command wrappers when that runtime is available and fails closed otherwise, while broker/generalist/external child-agent surfaces are still incomplete. Do not count Senior SWE Bench evidence from prompt-only/no-policy runs or from paths without audited sandbox/provider allowlist evidence.
 
 ```bash
 python3 bench/bigcodebench_runner.py \
@@ -269,9 +269,11 @@ python3 bench/network_policy_smoke.py --json
 python3 bench/network_policy_smoke.py --allowlist-smoke --self-test
 python3 bench/network_policy_smoke.py --allowlist-smoke --json
 
-# Real a2ctl launch-gate path: proves restricted policy currently blocks provider launch
-# with a nonzero exit instead of counting a no-candidate discard as success.
-# Requires the selected provider binary on PATH; default provider is opencode.
+# Real a2ctl restricted-policy boundary check. By default it avoids starting a
+# live provider on hosts where /usr/bin/sandbox-exec is available (because the
+# worktree path can now sandbox-wrap that provider); on hosts without that exact
+# runtime it still observes the fail-closed launch refusal. Requires the selected
+# provider binary on PATH; default provider is opencode.
 python3 bench/network_policy_smoke.py --a2ctl-run-smoke --self-test
 python3 bench/network_policy_smoke.py --a2ctl-run-smoke --self-test --network-policy allowlist:https://api.openai.com
 
