@@ -2357,6 +2357,180 @@ fn retry_run_next_gate_advances_fixture_chain_one_gate_at_a_time_to_inspected_ru
 }
 
 #[test]
+fn retry_run_next_gate_from_retry_execution_spawns_current_exe_cycle_input_and_fails_closed_before_provider_on_invalid_checkout()
+ {
+    let fixture = write_fixture(
+        "next-gate-real-spawn-invalid-checkout",
+        2,
+        "echo public failure before retry boundary >&2\nexit 1\n",
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run first retry execute");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let retry_execution = fixture.work_dir.join("retry-execution.json");
+    assert!(retry_execution.is_file());
+    fs::remove_file(fixture.checkout.join("src/lib.rs")).unwrap();
+
+    let next_gate = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .env("A2D_SENIOR_SWE_BENCH_RETRY_NEXT_CYCLE_TIMEOUT_SECS", "5")
+        .args([
+            "senior-swe-bench-retry-run-next-gate",
+            "--retry-execution",
+            retry_execution.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run next-gate from retry execution with real current-exe child");
+    assert_eq!(
+        next_gate.status.code(),
+        Some(2),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&next_gate.stderr),
+        String::from_utf8_lossy(&next_gate.stdout)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&next_gate.stdout).unwrap();
+    assert_eq!(
+        value["schema_version"].as_str(),
+        Some("a2d.senior-swe-bench-retry-next-gate-execution.v1")
+    );
+    assert_eq!(
+        value["executed_gate"].as_str(),
+        Some("retry_run_next_cycle")
+    );
+    assert_eq!(value["status"].as_str(), Some("failed"));
+    assert_eq!(
+        value["stop_reason"].as_str(),
+        Some("cycle_input_command_failed")
+    );
+    assert_eq!(
+        value["child_schema"].as_str(),
+        Some("a2d.senior-swe-bench-retry-next-cycle-execution.v1")
+    );
+    assert_eq!(
+        value["cycle_input_command_started_by_this_command"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        value["cycle_input_command_spawned_by_this_command"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        value["cycle_input_failed_before_provider"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        value["provider_invocations_started_by_this_command"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        value["provider_invocation_observation"].as_str(),
+        Some("cycle-input subprocess failed during pre-provider validation")
+    );
+    assert_eq!(
+        value["github_solution_search_allowed"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        value["evaluator_invocations_started_by_this_command"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        value["fitness_evidence_inspection_started_by_this_command"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        value["fitness_claim_allowed_after_gate"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        value["official_senior_swe_bench_mastery"].as_bool(),
+        Some(false)
+    );
+    let child = &value["child"];
+    assert_eq!(child["status"].as_str(), Some("failed"));
+    assert_eq!(
+        child["stop_reason"].as_str(),
+        Some("cycle_input_command_failed")
+    );
+    assert_eq!(child["cycle_input_command_spawned"].as_bool(), Some(true));
+    assert_eq!(
+        child["cycle_input_failed_before_provider"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        child["provider_invocations_started_by_this_command"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        child["provider_invocation_observation"].as_str(),
+        Some("cycle-input subprocess failed during pre-provider validation")
+    );
+    assert_eq!(
+        child["github_solution_search_allowed"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(child["cycle_input_exit_code"].as_i64(), Some(1));
+    assert!(
+        child["cycle_input_stderr_preview"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cycle-input --checkout found no bounded UTF-8 source/context files"),
+        "stderr preview should show checkout validation failure before providers: {}",
+        child["cycle_input_stderr_preview"]
+    );
+    assert!(
+        fixture
+            .work_dir
+            .join("attempt-1/retry-next-cycle-execution.json")
+            .is_file()
+    );
+    assert!(
+        fixture
+            .work_dir
+            .join("attempt-1/retry-next-gate-run-next-cycle.json")
+            .is_file()
+    );
+    assert!(
+        !fixture
+            .work_dir
+            .join("attempt-1/cycle-output-artifacts/manifest.json")
+            .exists(),
+        "failed child cycle-input must not produce a manifest"
+    );
+    assert!(
+        !fixture
+            .work_dir
+            .join("attempt-1/retry-attempt-plan.json")
+            .exists(),
+        "next-gate controller must not chain into resume planning after failed child"
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
 fn retry_resume_attempt_execute_builds_next_cycle_input_without_fitness_claim() {
     let fixture = write_fixture(
         "resume-attempt-execute-next-input",

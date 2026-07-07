@@ -7082,6 +7082,10 @@ where
                         "child_artifact_path": Value::Null,
                         "controller_artifact_path": output_path.display().to_string(),
                         "provider_invocations_started_by_this_command": false,
+                        "cycle_input_command_started_by_this_command": false,
+                        "cycle_input_command_spawned_by_this_command": false,
+                        "cycle_input_failed_before_provider": false,
+                        "provider_invocation_observation": "terminal retry status observed; no cycle-input subprocess boundary is started by this controller gate",
                         "evaluator_invocations_started_by_this_command": false,
                         "fitness_evidence_inspection_started_by_this_command": false,
                         "github_solution_search_allowed": false,
@@ -7235,6 +7239,25 @@ fn retry_next_gate_execution_value(
             .get("provider_invocations_started_by_this_command")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        "cycle_input_command_started_by_this_command": child
+            .get("cycle_input_command_started")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "cycle_input_command_spawned_by_this_command": child
+            .get("cycle_input_command_spawned")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "cycle_input_failed_before_provider": child
+            .get("cycle_input_failed_before_provider")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "provider_invocation_observation": child
+            .get("provider_invocation_observation")
+            .and_then(Value::as_str)
+            .unwrap_or(match executed_gate {
+                "retry_run_next_cycle" => "cycle-input subprocess boundary executed; provider activity inside that child is not separately instrumented by the controller",
+                _ => "no cycle-input subprocess boundary is started by this controller gate",
+            }),
         "evaluator_invocations_started_by_this_command": child
             .get("evaluator_invocations_started")
             .and_then(Value::as_bool)
@@ -7293,6 +7316,20 @@ where
         },
     };
     let command_spawned = command_output.spawn_error.is_none();
+    let stdout_preview = preview_text_lossy(&command_output.stdout);
+    let stderr_preview = preview_text_lossy(&command_output.stderr);
+    let cycle_input_failed_before_provider = command_spawned
+        && command_output.exit_code != Some(0)
+        && cycle_input_failure_happened_before_provider(&stdout_preview, &stderr_preview);
+    let provider_invocations_started_by_this_command =
+        command_spawned && !cycle_input_failed_before_provider;
+    let provider_invocation_observation = if cycle_input_failed_before_provider {
+        "cycle-input subprocess failed during pre-provider validation"
+    } else if !command_spawned {
+        "cycle-input subprocess did not spawn"
+    } else {
+        "cycle-input subprocess spawned; provider activity inside that child is possible and not separately instrumented by the controller"
+    };
     let manifest_validation = if command_output.exit_code == Some(0) {
         validate_retry_next_cycle_manifest(&boundary.expected_manifest)
     } else {
@@ -7337,9 +7374,11 @@ where
         "cycle_input_command_timed_out": command_output.timed_out,
         "cycle_input_spawn_error": command_output.spawn_error,
         "cycle_input_exit_code": command_output.exit_code,
-        "cycle_input_stdout_preview": preview_text_lossy(&command_output.stdout),
-        "cycle_input_stderr_preview": preview_text_lossy(&command_output.stderr),
-        "provider_invocations_started_by_this_command": command_spawned,
+        "cycle_input_stdout_preview": stdout_preview,
+        "cycle_input_stderr_preview": stderr_preview,
+        "cycle_input_failed_before_provider": cycle_input_failed_before_provider,
+        "provider_invocations_started_by_this_command": provider_invocations_started_by_this_command,
+        "provider_invocation_observation": provider_invocation_observation,
         "evaluator_invocations_started": false,
         "fitness_evidence_inspection_started": false,
         "fitness_claim_allowed_before_evidence": false,
@@ -7349,6 +7388,27 @@ where
     });
     write_json_artifact(&summary_path, &execution)?;
     Ok(execution)
+}
+
+fn cycle_input_failure_happened_before_provider(
+    stdout_preview: &str,
+    stderr_preview: &str,
+) -> bool {
+    if stdout_preview.contains("A²D Catalytic Cycle") {
+        return false;
+    }
+    let stderr = stderr_preview.trim_start();
+    [
+        "cycle-input --checkout found no bounded UTF-8 source/context files",
+        "cycle-input --checkout must not be a symlink",
+        "cycle-input --checkout must be a directory",
+        "failed to read checkout ",
+        "failed to canonicalize checkout ",
+        "cycle-input cannot seed reserved runtime artifact",
+        "cycle-input requires a JSON object artifact bundle",
+    ]
+    .iter()
+    .any(|pattern| stderr.starts_with(pattern))
 }
 
 fn validate_retry_next_cycle_manifest(manifest_path: &Path) -> Result<usize, String> {
@@ -17944,8 +18004,12 @@ mod tests {
             build_senior_swe_bench_retry_next_cycle_execution_with_runner(&config, |_| {
                 Ok(RetryNextCycleCommandOutput {
                     exit_code: Some(2),
-                    stdout: Vec::new(),
-                    stderr: b"provider failed".to_vec(),
+                    stdout: "A²D Catalytic Cycle (1 cycle(s))\nRunning cycle 1/1..."
+                        .as_bytes()
+                        .to_vec(),
+                    stderr:
+                        b"provider emitted text resembling failed to read checkout after invocation"
+                            .to_vec(),
                     spawn_error: None,
                     timed_out: false,
                 })
@@ -17955,6 +18019,20 @@ mod tests {
         assert_eq!(
             execution["stop_reason"].as_str(),
             Some("cycle_input_command_failed")
+        );
+        assert_eq!(
+            execution["cycle_input_failed_before_provider"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            execution["provider_invocations_started_by_this_command"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            execution["provider_invocation_observation"].as_str(),
+            Some(
+                "cycle-input subprocess spawned; provider activity inside that child is possible and not separately instrumented by the controller"
+            )
         );
         assert_eq!(
             execution["fitness_claim_allowed_after_cycle"].as_bool(),
@@ -17987,8 +18065,16 @@ mod tests {
             Some(false)
         );
         assert_eq!(
+            execution["cycle_input_failed_before_provider"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
             execution["provider_invocations_started_by_this_command"].as_bool(),
             Some(false)
+        );
+        assert_eq!(
+            execution["provider_invocation_observation"].as_str(),
+            Some("cycle-input subprocess did not spawn")
         );
         assert_eq!(
             execution["fitness_claim_allowed_after_cycle"].as_bool(),
