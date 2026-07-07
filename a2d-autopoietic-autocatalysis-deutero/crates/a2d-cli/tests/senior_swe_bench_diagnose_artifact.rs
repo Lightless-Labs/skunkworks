@@ -189,6 +189,7 @@ fn diagnose_artifact_redacts_mixed_case_public_github_references() {
         b"Patch copied from github[.]com/org/repo/issues/123".as_slice(),
         b"Patch copied from github dot com/org/repo/pull/123".as_slice(),
         b"Patch copied from github . com/org/repo/commit/deadbeef".as_slice(),
+        b"Patch copied from https://gist.github.com/org/abcdef123456".as_slice(),
         b"Patch copied from https://github%2ecom/org/repo/pull/123".as_slice(),
         b"Patch copied from refs%2fpull%2f123%2fhead".as_slice(),
         b"Use gh pr view 123 --repo org/repo to inspect the fix".as_slice(),

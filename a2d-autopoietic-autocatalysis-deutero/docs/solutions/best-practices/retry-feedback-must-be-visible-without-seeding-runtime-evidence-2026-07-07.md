@@ -27,3 +27,9 @@ The retry-step command should be deterministic plumbing only: it starts no provi
 Regression coverage in `crates/a2d-cli/tests/senior_swe_bench_retry_attempt_step.rs` proves `senior-swe-bench-retry-attempt-step` wires failed public local evaluator output into `next_cycle_input` while preserving no-search and no-runtime-evidence boundaries, and rejects visible feedback containing a GitHub PR URL.
 
 Fresh source-patch evidence: `runs/20260707-retry-attempt-step-feedback-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1` with `source_diff_hash: 0c4de0c856af01ea268842d12b6a89d58187bfaf` matching the scoped crates diff.
+
+## 2026-07-07 feedback solution-reference normalization follow-up
+
+Visible local evaluator feedback now delegates to the same public GitHub solution-reference detector used for provider artifact diagnosis/selection. This keeps the feedback loop from becoming a weaker ingress for obfuscated hosts, percent-encoded GitHub hosts, or GitHub CLI solution-search commands after artifact hardening. Regression coverage rejects `github[.]com`, `github dot com`, `github%2ecom`, `gh pr`, and `hub search` before feedback is formatted into the next coder-visible cycle input.
+
+Fresh source-patch evidence: `runs/20260707-senior-swe-bench-feedback-solution-reference-normalization-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1` with `source_diff_hash: b8d552350c3a5d24f46e3ba7b6a0e299f80c120e`. This is feedback safety evidence only, not official benchmark mastery or network no-egress proof.

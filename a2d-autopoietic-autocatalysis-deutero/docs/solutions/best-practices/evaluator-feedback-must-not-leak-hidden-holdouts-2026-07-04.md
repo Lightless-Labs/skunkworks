@@ -29,3 +29,9 @@ Implemented by `a2d senior-swe-bench-cycle-input-feedback` in `crates/a2d-cli/sr
 Fresh source-patch gate evidence: `runs/20260704-senior-swe-bench-cycle-input-feedback-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_diff_hash: dd390ea40414bb9c16a7aded24adae854c094d09`.
 
 Run doc: `examples/runs/2026-07-04-senior-swe-bench-cycle-input-feedback.md`.
+
+## 2026-07-07 public-solution-reference parity follow-up
+
+The same feedback barrier that redacts hidden/official output must also reject public solution-reference variants consistently. `senior-swe-bench-cycle-input-feedback` now uses the shared artifact public GitHub detector before preserving cycle-input text or making public local-test output visible to the next coder, covering obfuscated hosts, percent encoding, and GitHub CLI command references.
+
+Fresh source-patch evidence: `runs/20260707-senior-swe-bench-feedback-solution-reference-normalization-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1` with `source_diff_hash: b8d552350c3a5d24f46e3ba7b6a0e299f80c120e`.

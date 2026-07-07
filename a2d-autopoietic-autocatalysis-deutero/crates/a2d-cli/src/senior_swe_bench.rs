@@ -1556,13 +1556,7 @@ fn reject_public_solution_refs_in_cycle_feedback_content_at(
 }
 
 fn contains_public_solution_reference_in_feedback(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    lower.contains("github.com")
-        || lower.contains("githubusercontent.com")
-        || lower.contains("/pull/")
-        || lower.contains("/commit/")
-        || lower.contains("/issues/")
-        || lower.contains("refs/pull")
+    super::contains_public_github_solution_reference(text)
 }
 
 pub fn render_senior_swe_bench_task_context(
@@ -1978,27 +1972,37 @@ mod tests {
             .unwrap()
             .remove(0);
         let input = build_senior_swe_bench_cycle_input(&task, "hard", task.hard.as_ref().unwrap());
-        let local_evaluation = serde_json::json!({
-            "schema_version": SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA,
-            "task_id": "firezone-fix-connlib-align-device-hard",
-            "repo": "firezone/firezone",
-            "evaluator": "provided_local_command",
-            "status": "failed",
-            "exit_code": 2,
-            "candidate_patch_hash": "abc12300",
-            "github_solution_search_allowed": false,
-            "feedback_visibility": "public_local_test_output",
-            "stdout_preview": "see https://github.com/firezone/firezone/pull/123",
-            "stderr_preview": ""
-        });
 
-        let err = build_senior_swe_bench_cycle_input_feedback(
-            &input.to_string(),
-            &local_evaluation.to_string(),
-        )
-        .expect_err("public solution references must not enter coder feedback");
+        for preview in [
+            "see https://github.com/firezone/firezone/pull/123",
+            "see github[.]com/firezone/firezone",
+            "see github dot com/firezone/firezone",
+            "see https://github%2ecom/firezone/firezone",
+            "run gh pr view 123 --repo firezone/firezone",
+            "run hub search pulls firezone/firezone",
+        ] {
+            let local_evaluation = serde_json::json!({
+                "schema_version": SENIOR_SWE_BENCH_LOCAL_EVALUATION_SCHEMA,
+                "task_id": "firezone-fix-connlib-align-device-hard",
+                "repo": "firezone/firezone",
+                "evaluator": "provided_local_command",
+                "status": "failed",
+                "exit_code": 2,
+                "candidate_patch_hash": "abc12300",
+                "github_solution_search_allowed": false,
+                "feedback_visibility": "public_local_test_output",
+                "stdout_preview": preview,
+                "stderr_preview": ""
+            });
 
-        assert!(err.contains("public solution reference"), "{err}");
+            let err = build_senior_swe_bench_cycle_input_feedback(
+                &input.to_string(),
+                &local_evaluation.to_string(),
+            )
+            .expect_err("public solution references must not enter coder feedback");
+
+            assert!(err.contains("public solution reference"), "{err}");
+        }
     }
 
     #[test]
