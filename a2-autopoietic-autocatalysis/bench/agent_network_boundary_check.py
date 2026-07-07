@@ -1041,6 +1041,83 @@ def helper_rejects_policy_with_return(helper: str, condition_pattern: str) -> bo
     return False
 
 
+def rust_materialized_sandbox_exec_bindings(body: str, before_offset: int) -> list[str]:
+    comments_masked = mask_rust_comments_preserving_offsets(body)
+    ranges = rust_string_literal_ranges(comments_masked)
+    bindings: list[str] = []
+    for match in re.finditer(
+        r"\blet\s+(?:mut\s+)?([A-Za-z_][\w]*)\s*=\s*materialize_sandbox_exec_command\s*\(",
+        comments_masked,
+    ):
+        if match.start() >= before_offset:
+            continue
+        if offset_inside_ranges(match.start(), ranges):
+            continue
+        if rust_brace_depth_at(body, match.start()) != 0:
+            continue
+        bindings.append(match.group(1))
+    return bindings
+
+
+def rust_statement_span_from_offset(text: str, start: int) -> str:
+    masked = mask_rust_non_code_preserving_offsets(text)
+    paren_depth = 0
+    bracket_depth = 0
+    brace_depth = 0
+    for index in range(start, len(masked)):
+        char = masked[index]
+        if char == "(":
+            paren_depth += 1
+        elif char == ")":
+            paren_depth = max(0, paren_depth - 1)
+        elif char == "[":
+            bracket_depth += 1
+        elif char == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}":
+            if paren_depth == 0 and bracket_depth == 0 and brace_depth == 0:
+                return text[start:index]
+            brace_depth = max(0, brace_depth - 1)
+        elif char == ";" and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0:
+            return text[start : index + 1]
+    return text[start:]
+
+
+def rust_command_at_offset_uses_materialized_sandbox_exec(body: str, command_index: int) -> bool:
+    command_statement = rust_statement_span_from_offset(body, command_index)
+    direct_sandbox_index = first_top_level_rust_code_regex_match_offset(
+        body,
+        r'\bCommand::new\s*\(\s*(?:"sandbox-exec"|"/usr/bin/sandbox-exec"|SANDBOX_EXEC_PROGRAM)\s*\)',
+    )
+    if direct_sandbox_index == command_index:
+        return False
+
+    for binding in rust_materialized_sandbox_exec_bindings(body, command_index):
+        escaped = re.escape(binding)
+        materialized_command_index = first_top_level_rust_code_regex_match_offset(
+            body,
+            rf"\bCommand::new\s*\(\s*(?:&\s*)?{escaped}\.program\s*\)",
+        )
+        if materialized_command_index != command_index:
+            continue
+        args_index = first_top_level_rust_code_regex_match_offset(
+            command_statement,
+            rf"\.args\s*\(\s*(?:&\s*)?{escaped}\.args\s*\)",
+        )
+        if args_index >= 0:
+            return True
+    return False
+
+
+def rust_provider_command_uses_sandbox_exec(body: str) -> bool:
+    command_offsets = top_level_rust_code_regex_match_offsets(body, r"\bCommand::new\s*\(")
+    if not command_offsets:
+        return False
+    return all(rust_command_at_offset_uses_materialized_sandbox_exec(body, offset) for offset in command_offsets)
+
+
 def audit_a2_worktree_catalyst_launch_gate(path: Path = A2_WORKTREE_CATALYST) -> dict[str, Any]:
     result: dict[str, Any] = {
         "path": str(path),
@@ -1084,17 +1161,12 @@ def audit_a2_worktree_catalyst_launch_gate(path: Path = A2_WORKTREE_CATALYST) ->
             continue
         provider_executable = rust_executable_body_without_strings(provider_body)
         command_new_present = bool(rust_command_new_offsets(provider_executable))
-        first_command_index = first_top_level_rust_code_regex_match_offset(provider_body, r"\bCommand::new\s*\(")
-        sandbox_command_index = first_top_level_rust_code_regex_match_offset(
-            provider_body,
-            r"\bCommand::new\s*\(\s*\"sandbox-exec\"",
-        )
         launches.append(
             {
                 "function": function_name,
                 "found": True,
                 "command_new_present": command_new_present,
-                "sandbox_exec_present": sandbox_command_index >= 0 and sandbox_command_index == first_command_index,
+                "sandbox_exec_present": rust_provider_command_uses_sandbox_exec(provider_body),
             }
         )
     result["provider_command_launch_functions"] = launches
@@ -1228,11 +1300,6 @@ def audit_a2_broker_launch_gate(path: Path = A2_BROKER) -> dict[str, Any]:
         guard_pattern = rf"^\s*{guard_statement}"
         guard_index = first_top_level_rust_code_regex_match_offset(generate_body, guard_pattern, re.MULTILINE)
         command_index = first_top_level_rust_code_regex_match_offset(generate_body, r"\bCommand::new\s*\(")
-        sandbox_command_index = first_top_level_rust_code_regex_match_offset(
-            generate_body,
-            r"\bCommand::new\s*\(\s*\"sandbox-exec\"",
-        )
-        sandbox_exec_present = sandbox_command_index >= 0 and sandbox_command_index == command_index
         guards.append(
             {
                 "provider": provider,
@@ -1241,7 +1308,7 @@ def audit_a2_broker_launch_gate(path: Path = A2_BROKER) -> dict[str, Any]:
                 "guard_found": guard_index >= 0,
                 "command_new_after_guard": command_index >= 0,
                 "guard_before_command_new": guard_index >= 0 and command_index >= 0 and guard_index < command_index,
-                "sandbox_exec_present": sandbox_exec_present,
+                "sandbox_exec_present": rust_provider_command_uses_sandbox_exec(generate_body),
             }
         )
     result["provider_generate_guards"] = guards
@@ -2187,6 +2254,137 @@ impl<'a> ModelProvider for PiProvider {
         self.assertTrue(result["policy_helper_rejects_allowlist"])
         self.assertFalse(result["fail_closed_before_provider_launch"])
         self.assertTrue(all(not item["guard_before_command_new"] for item in result["provider_generate_guards"]))
+
+    def test_rust_provider_command_accepts_materialized_sandbox_exec_command(self) -> None:
+        body = '''
+let materialized = materialize_sandbox_exec_command(policy, profile_dir, "pi", ["--print"])?;
+let output = Command::new(&materialized.program)
+    .args(&materialized.args)
+    .current_dir(worktree_path)
+    .output()
+    .await?;
+'''
+        self.assertTrue(rust_provider_command_uses_sandbox_exec(body))
+
+    def test_rust_provider_command_rejects_direct_sandbox_exec_without_materialized_argv(self) -> None:
+        for body in [
+            'let output = Command::new("sandbox-exec").output().await?;',
+            'let output = Command::new("/usr/bin/sandbox-exec").output().await?;',
+            'let output = Command::new(SANDBOX_EXEC_PROGRAM).output().await?;',
+            'let output = Command::new(SANDBOX_EXEC_PROGRAM).args(["-f", profile_path]).output().await?;',
+        ]:
+            with self.subTest(body=body):
+                self.assertFalse(rust_provider_command_uses_sandbox_exec(body))
+
+    def test_rust_provider_command_rejects_materialized_command_without_args(self) -> None:
+        body = '''
+let materialized = materialize_sandbox_exec_command(policy, profile_dir, "pi", ["--print"])?;
+let output = Command::new(&materialized.program)
+    .current_dir(worktree_path)
+    .output()
+    .await?;
+'''
+        self.assertFalse(rust_provider_command_uses_sandbox_exec(body))
+
+    def test_rust_provider_command_rejects_mismatched_materialized_program_and_args(self) -> None:
+        body = '''
+let first = materialize_sandbox_exec_command(policy, profile_dir, "pi", ["--print"])?;
+let second = materialize_sandbox_exec_command(policy, profile_dir, "opencode", ["run"])?;
+let output = Command::new(&first.program)
+    .args(&second.args)
+    .output()
+    .await?;
+'''
+        self.assertFalse(rust_provider_command_uses_sandbox_exec(body))
+
+    def test_rust_provider_command_rejects_args_on_unrelated_later_builder(self) -> None:
+        body = '''
+let materialized = materialize_sandbox_exec_command(policy, profile_dir, "pi", ["--print"])?;
+let output = Command::new(&materialized.program)
+    .output()
+    .await?;
+other_builder.args(&materialized.args);
+'''
+        self.assertFalse(rust_provider_command_uses_sandbox_exec(body))
+
+    def test_rust_provider_command_rejects_later_unwrapped_provider_command(self) -> None:
+        body = '''
+let materialized = materialize_sandbox_exec_command(policy, profile_dir, "pi", ["--print"])?;
+let sandboxed = Command::new(&materialized.program)
+    .args(&materialized.args)
+    .output()
+    .await?;
+let unsandboxed = Command::new("pi")
+    .arg("--print")
+    .output()
+    .await?;
+'''
+        self.assertFalse(rust_provider_command_uses_sandbox_exec(body))
+
+    def test_a2_worktree_launch_gate_detects_materialized_sandbox_exec_wrappers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "worktree_catalyst.rs"
+            provider_functions = "\n".join(
+                f'''async fn {function_name}() {{
+    let materialized = materialize_sandbox_exec_command(policy, profile_dir, "{provider}", ["--arg"])?;
+    Command::new(&materialized.program).args(&materialized.args);
+}}'''
+                for function_name, provider in [
+                    ("run_claude", "claude"),
+                    ("run_codex", "codex"),
+                    ("run_gemini", "gemini"),
+                    ("run_opencode", "opencode"),
+                    ("run_pi", "pi"),
+                ]
+            )
+            path.write_text(
+                'async fn run_agent() {\n'
+                '  if matches!(network_policy, Some(NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) {\n'
+                '    return Err(error);\n'
+                '  }\n'
+                '  if provider_id == "mock" { return self.run_mock_agent(worktree_path).await; }\n'
+                '  match provider_id { _ => self.run_claude(model_id, prompt, worktree_path).await }\n'
+                '}\n'
+                + provider_functions,
+                encoding="utf-8",
+            )
+            result = audit_a2_worktree_catalyst_launch_gate(path)
+
+        self.assertTrue(result["fail_closed_before_provider_launch"])
+        self.assertTrue(result["sandbox_exec_launch_wrapper_present"])
+        self.assertTrue(all(item["sandbox_exec_present"] for item in result["provider_command_launch_functions"]))
+
+    def test_a2_broker_launch_gate_detects_materialized_sandbox_exec_wrappers(self) -> None:
+        provider_impls = "\n".join(
+            f'''impl ModelProvider for {impl_name} {{
+    async fn generate(&self) {{
+        fail_if_provider_network_restricted("{provider}")?;
+        let materialized = materialize_sandbox_exec_command(policy, profile_dir, "{provider}", ["--arg"])?;
+        Command::new(&materialized.program).args(&materialized.args);
+    }}
+}}'''
+            for provider, impl_name in [
+                ("claude", "ClaudeProvider"),
+                ("gemini", "GeminiProvider"),
+                ("codex", "CodexProvider"),
+                ("pi", "PiProvider"),
+                ("opencode", "OpenCodeProvider"),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "broker.rs"
+            path.write_text(
+                'fn fail_if_provider_network_restricted_for_policy() {\n'
+                '  if normalized == "isolated" || normalized.starts_with("allowlist") { return Err(error); }\n'
+                '}\n'
+                + provider_impls,
+                encoding="utf-8",
+            )
+            result = audit_a2_broker_launch_gate(path)
+
+        self.assertTrue(result["fail_closed_before_provider_launch"])
+        self.assertTrue(result["sandbox_exec_launch_wrapper_present"])
+        self.assertTrue(all(item["sandbox_exec_present"] for item in result["provider_generate_guards"]))
 
     def test_a2_worktree_launch_gate_rejects_sandbox_exec_after_direct_provider_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
