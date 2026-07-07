@@ -141,3 +141,29 @@ cargo run -q -p a2d -- fitness-evidence-inspect \
 ```
 
 Evidence summary: `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`, `source_diff_hash: 4c09ac3db7c7553e131c4d76000ac329b4608643`, matching the scoped crates diff. `hidden_acceptance` is `not_present` for this Sudoku source-patch gate. This remains retry controller portability/source-patch evidence, not official Senior SWE-Bench mastery or a no-egress proof.
+
+## Follow-up: complete fixture-chain smoke to inspected evidence
+
+A later slice added `retry_run_next_gate_advances_fixture_chain_one_gate_at_a_time_to_inspected_run_result`, which drives the persisted retry chain from failed precomputed attempt through fixture next-cycle manifest, resume-plan next-gate, resumed-execute next-gate, final inspected evidence, and retry-status validation from `crates/a2d-cli`. The slice also fixes retry status to resolve `final_evidence_path` with retry artifact semantics before reading, keeping project-relative final evidence paths CWD-stable.
+
+Validation:
+
+```bash
+cargo fmt --check
+CARGO_BUILD_JOBS=2 cargo test -p a2d --test senior_swe_bench_retry_execute retry_run_next_gate_advances_fixture_chain_one_gate_at_a_time_to_inspected_run_result -- --nocapture
+CARGO_BUILD_JOBS=2 cargo test -p a2d --test senior_swe_bench_retry_execute -- --nocapture
+CARGO_BUILD_JOBS=2 cargo test
+```
+
+Fresh source-patch evidence:
+
+```bash
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260706-retry-chain-smoke-evidence/actual-test-score-artifact \
+  cargo run -q -p a2d -- score-artifact sudoku runs/20260701-score-artifact-fitness-evidence/good-sudoku-artifact.rs
+
+cargo run -q -p a2d -- fitness-evidence-inspect \
+  runs/20260706-retry-chain-smoke-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
+```
+
+Evidence summary: `a2d.fitness-evidence.v1`, `actual_tests_evaluated: true`, `non_regressing: true`, `fitness: 1.0`, `failed_cases: []`, `source_diff_hash: a53e71d5418002600df0cd8c44e92ae7028f5b76`, matching the scoped crates diff. This remains retry-chain/status path hardening; the next-cycle provider step is fixture-represented, and no official Senior SWE-Bench mastery is claimed.

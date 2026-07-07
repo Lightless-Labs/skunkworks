@@ -27,6 +27,15 @@ fn project_relative(path: &Path) -> String {
         .replace('\\', "/")
 }
 
+fn resolve_project_relative_path(path: &str) -> PathBuf {
+    let candidate = PathBuf::from(path);
+    assert!(
+        candidate.is_relative(),
+        "expected project-relative path, got {path}"
+    );
+    project_root().join(candidate)
+}
+
 fn assert_json_contains_no_host_absolute_paths(value: &serde_json::Value, forbidden: &[String]) {
     match value {
         serde_json::Value::String(text) => {
@@ -2085,6 +2094,263 @@ fn retry_resume_attempt_execute_runs_planned_attempt_and_persists_success_summar
             .as_str()
             .unwrap()
             .contains("attempt-1/local-evaluation.json")
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_run_next_gate_advances_fixture_chain_one_gate_at_a_time_to_inspected_run_result() {
+    let fixture = write_fixture(
+        "next-gate-full-chain",
+        2,
+        "echo overwritten by invocation-count evaluator >&2\nexit 99\n",
+    );
+    let counter = fixture.root.join("evaluator-count");
+    write_executable_script(
+        &fixture.evaluator,
+        &format!(
+            "count=0\nif test -f {counter}; then count=$(cat {counter}); fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > {counter}\nif test \"$count\" = 1; then echo public first-attempt failure >&2; exit 1; fi\ngrep -q new src/lib.rs\n",
+            counter = counter.to_string_lossy()
+        ),
+    );
+
+    let first = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run first retry execute");
+    assert_eq!(
+        first.status.code(),
+        Some(2),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&first.stderr),
+        String::from_utf8_lossy(&first.stdout)
+    );
+    assert_eq!(
+        fs::read_to_string(&counter).unwrap(),
+        "1",
+        "first setup gate should run the evaluator exactly once"
+    );
+    let first_execution: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(first_execution["status"].as_str(), Some("failed"));
+    assert_eq!(
+        first_execution["stop_reason"].as_str(),
+        Some("precomputed_attempt_manifests_exhausted")
+    );
+    assert_eq!(
+        first_execution["provider_invocations_started"].as_bool(),
+        Some(false)
+    );
+
+    let next_manifest_dir = fixture.work_dir.join("attempt-1/cycle-output-artifacts");
+    fs::create_dir_all(&next_manifest_dir).unwrap();
+    let generated_manifest = write_manifest(
+        &next_manifest_dir,
+        "candidate",
+        b"diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
+    );
+    let next_manifest = next_manifest_dir.join("manifest.json");
+    fs::rename(&generated_manifest, &next_manifest).unwrap();
+    let next_cycle_execution = write_retry_next_cycle_execution(
+        &fixture,
+        "success",
+        "cycle_output_manifest_ready",
+        &next_manifest,
+    );
+
+    let plan_gate = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-run-next-gate",
+            "--next-cycle-execution",
+            next_cycle_execution.to_str().unwrap(),
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run next-gate resume planning");
+    assert_eq!(
+        plan_gate.status.code(),
+        Some(0),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&plan_gate.stderr),
+        String::from_utf8_lossy(&plan_gate.stdout)
+    );
+    let plan_gate_value: serde_json::Value = serde_json::from_slice(&plan_gate.stdout).unwrap();
+    assert_eq!(
+        plan_gate_value["schema_version"].as_str(),
+        Some("a2d.senior-swe-bench-retry-next-gate-execution.v1")
+    );
+    assert_eq!(
+        plan_gate_value["executed_gate"].as_str(),
+        Some("retry_resume_attempt_plan")
+    );
+    assert_eq!(plan_gate_value["status"].as_str(), Some("success"));
+    assert_eq!(
+        plan_gate_value["child_schema"].as_str(),
+        Some("a2d.senior-swe-bench-retry-attempt-plan.v1")
+    );
+    assert_eq!(
+        plan_gate_value["provider_invocations_started_by_this_command"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        plan_gate_value["evaluator_invocations_started_by_this_command"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        plan_gate_value["fitness_evidence_inspection_started_by_this_command"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        plan_gate_value["fitness_claim_allowed_after_gate"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        fs::read_to_string(&counter).unwrap(),
+        "1",
+        "resume-planning next gate must not run evaluator side effects"
+    );
+    let plan_path = fixture.work_dir.join("attempt-1/retry-attempt-plan.json");
+    assert!(plan_path.is_file());
+    assert!(
+        !fixture
+            .work_dir
+            .join("retry-resume-attempt-execution.json")
+            .exists(),
+        "resume-planning next gate must not chain into resumed execution"
+    );
+
+    let evidence_dir = fixture.root.join("fitness-next-gate-chain");
+    let execute_gate = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .current_dir(project_root())
+        .env(
+            "A2D_FITNESS_EVIDENCE_EXPORT_DIR",
+            project_relative(&evidence_dir),
+        )
+        .args([
+            "senior-swe-bench-retry-run-next-gate",
+            "--retry-attempt-plan",
+            plan_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run next-gate resumed execution");
+    assert_eq!(
+        execute_gate.status.code(),
+        Some(0),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&execute_gate.stderr),
+        String::from_utf8_lossy(&execute_gate.stdout)
+    );
+    let execute_gate_value: serde_json::Value =
+        serde_json::from_slice(&execute_gate.stdout).unwrap();
+    assert_eq!(
+        execute_gate_value["schema_version"].as_str(),
+        Some("a2d.senior-swe-bench-retry-next-gate-execution.v1")
+    );
+    assert_eq!(
+        execute_gate_value["executed_gate"].as_str(),
+        Some("retry_resume_attempt_execute")
+    );
+    assert_eq!(execute_gate_value["status"].as_str(), Some("success"));
+    assert_eq!(
+        execute_gate_value["child_schema"].as_str(),
+        Some("a2d.senior-swe-bench-retry-execution.v1")
+    );
+    assert_eq!(
+        execute_gate_value["provider_invocations_started_by_this_command"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        execute_gate_value["evaluator_invocations_started_by_this_command"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        execute_gate_value["fitness_evidence_inspection_started_by_this_command"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        execute_gate_value["fitness_claim_allowed_after_gate"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        execute_gate_value["official_senior_swe_bench_mastery"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(fs::read_to_string(&counter).unwrap(), "2");
+    let child = &execute_gate_value["child"];
+    assert_eq!(child["status"].as_str(), Some("success"));
+    assert_eq!(child["attempts_executed"].as_u64(), Some(2));
+    assert_eq!(child["provider_invocations_started"].as_bool(), Some(false));
+    let final_evidence = child["final_evidence_path"]
+        .as_str()
+        .expect("successful resumed execution records final evidence path");
+    assert!(
+        resolve_project_relative_path(final_evidence).is_file(),
+        "final evidence path should be project-relative and resolve to an existing file: {final_evidence}"
+    );
+    assert!(
+        fixture
+            .work_dir
+            .join("attempt-1/retry-run-result.json")
+            .is_file()
+    );
+    assert!(
+        fixture
+            .work_dir
+            .join("attempt-1/retry-next-gate-resume-execute.json")
+            .is_file()
+    );
+
+    let status_output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "senior-swe-bench-retry-status",
+            fixture
+                .work_dir
+                .join("retry-resume-attempt-execution.json")
+                .to_str()
+                .unwrap(),
+        ])
+        .output()
+        .expect("run retry status over resumed execution");
+    assert_eq!(
+        status_output.status.code(),
+        Some(0),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&status_output.stderr),
+        String::from_utf8_lossy(&status_output.stdout)
+    );
+    let status: serde_json::Value = serde_json::from_slice(&status_output.stdout).unwrap();
+    assert_eq!(status["next_action"].as_str(), Some("completed_success"));
+    assert_eq!(
+        status["fitness_evidence_validated_by_status"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        status["authoritative_evidence_gate"].as_str(),
+        Some("fitness-evidence-inspect --require-all-tests-pass")
+    );
+    assert_eq!(
+        status["official_senior_swe_bench_mastery"].as_bool(),
+        Some(false)
     );
 
     let _ = fs::remove_dir_all(fixture.root);

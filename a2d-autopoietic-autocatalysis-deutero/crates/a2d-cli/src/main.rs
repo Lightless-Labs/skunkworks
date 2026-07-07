@@ -7590,7 +7590,9 @@ fn build_senior_swe_bench_retry_status(
                         .to_string(),
                 );
             }
-            let evidence_bytes = fs::read(final_evidence_path).map_err(|error| {
+            let final_evidence_resolved =
+                resolve_retry_artifact_path(Path::new(final_evidence_path));
+            let evidence_bytes = fs::read(&final_evidence_resolved).map_err(|error| {
                 format!(
                     "failed to read Senior SWE-Bench retry final evidence {final_evidence_path}: {error}"
                 )
