@@ -1,10 +1,15 @@
 use a2_core::error::{A2Error, A2Result};
+use a2_core::protocol::NetworkPolicy;
+use a2_workcell::sandbox_profile::{
+    materialize_provider_command_for_network_policy, sandbox_exec_available_on_this_platform,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -50,25 +55,103 @@ async fn resolve_binary(binary: &str) -> A2Result<String> {
 
 const A2_PROVIDER_NETWORK_POLICY_ENV: &str = "A2_PROVIDER_NETWORK_POLICY";
 
-fn fail_if_provider_network_restricted_for_policy(
-    provider: &str,
-    policy: Option<&str>,
-) -> A2Result<()> {
+fn parse_provider_network_policy(policy: Option<&str>) -> A2Result<Option<NetworkPolicy>> {
     let Some(policy) = policy else {
-        return Ok(());
+        return Ok(None);
     };
-    let normalized = policy.trim().to_ascii_lowercase();
-    if normalized == "isolated" || normalized.starts_with("allowlist") {
-        return Err(A2Error::ProviderError(format!(
-            "{provider} provider launch refused because {A2_PROVIDER_NETWORK_POLICY_ENV}={policy}; a2_broker has no audited provider network sandbox/allowlist yet"
-        )));
+    let trimmed = policy.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("open") {
+        return Ok(None);
     }
-    Ok(())
+    if trimmed.eq_ignore_ascii_case("isolated") {
+        return Ok(Some(NetworkPolicy::Isolated));
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if let Some(rest) = lower
+        .strip_prefix("allowlist:")
+        .or_else(|| lower.strip_prefix("allow-list:"))
+    {
+        let prefix_len = trimmed.len() - rest.len();
+        let endpoints: Vec<String> = trimmed[prefix_len..]
+            .split(',')
+            .map(str::trim)
+            .filter(|endpoint| !endpoint.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
+        if endpoints.is_empty() {
+            return Err(A2Error::ProviderError(format!(
+                "{A2_PROVIDER_NETWORK_POLICY_ENV}={policy} is invalid: allowlist requires at least one endpoint"
+            )));
+        }
+        return Ok(Some(NetworkPolicy::AllowList(endpoints)));
+    }
+
+    Err(A2Error::ProviderError(format!(
+        "{A2_PROVIDER_NETWORK_POLICY_ENV}={policy} is invalid: expected open, isolated, or allowlist:<endpoint>[,<endpoint>...]"
+    )))
 }
 
-fn fail_if_provider_network_restricted(provider: &str) -> A2Result<()> {
-    let policy = env::var(A2_PROVIDER_NETWORK_POLICY_ENV).ok();
-    fail_if_provider_network_restricted_for_policy(provider, policy.as_deref())
+fn broker_sandbox_profile_dir() -> PathBuf {
+    env::temp_dir().join("a2-broker-sandbox-profiles")
+}
+
+fn materialize_broker_provider_command_for_policy(
+    provider: &str,
+    binary_path: &str,
+    provider_args: Vec<OsString>,
+    policy_value: Option<&str>,
+    sandbox_exec_available: bool,
+    profile_dir: &Path,
+) -> A2Result<(OsString, Vec<OsString>)> {
+    let policy = parse_provider_network_policy(policy_value)?;
+    if policy.is_some() && !sandbox_exec_available {
+        return Err(A2Error::ProviderError(format!(
+            "{provider} provider launch refused because {A2_PROVIDER_NETWORK_POLICY_ENV}={}; /usr/bin/sandbox-exec is unavailable or not executable on this platform",
+            policy_value.unwrap_or("")
+        )));
+    }
+    let materialized = materialize_provider_command_for_network_policy(
+        policy.as_ref(),
+        profile_dir,
+        OsString::from(binary_path),
+        provider_args,
+    )
+    .map_err(|error| {
+        A2Error::ProviderError(format!(
+            "{provider} sandbox command materialization: {error}"
+        ))
+    })?;
+    Ok((materialized.program, materialized.args))
+}
+
+fn materialize_broker_provider_command(
+    provider: &str,
+    binary_path: &str,
+    provider_args: Vec<OsString>,
+) -> A2Result<(OsString, Vec<OsString>)> {
+    let policy_value = env::var(A2_PROVIDER_NETWORK_POLICY_ENV).ok();
+    materialize_broker_provider_command_for_policy(
+        provider,
+        binary_path,
+        provider_args,
+        policy_value.as_deref(),
+        sandbox_exec_available_on_this_platform(),
+        &broker_sandbox_profile_dir(),
+    )
+}
+
+fn broker_provider_command(
+    provider: &str,
+    binary_path: &str,
+    provider_args: Vec<OsString>,
+) -> A2Result<Command> {
+    let (program, args) =
+        materialize_broker_provider_command(provider, binary_path, provider_args)?;
+    let mut cmd = Command::new(program);
+    clear_env(&mut cmd);
+    cmd.args(args);
+    Ok(cmd)
 }
 
 fn provider_launch_error(provider: &str, binary_path: &str, error: &std::io::Error) -> A2Error {
@@ -339,21 +422,22 @@ impl ClaudeProvider {
 #[async_trait]
 impl ModelProvider for ClaudeProvider {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
-        fail_if_provider_network_restricted("claude")?;
-        let mut cmd = Command::new(&self.binary_path);
-        clear_env(&mut cmd);
-
-        cmd.arg("-p")
-            .arg(prompt)
-            .arg("--model")
-            .arg(&self.model_id)
-            .arg("--output-format")
-            .arg("stream-json")
-            .arg("--verbose");
+        let mut provider_args = vec![
+            OsString::from("-p"),
+            OsString::from(prompt),
+            OsString::from("--model"),
+            OsString::from(&self.model_id),
+            OsString::from("--output-format"),
+            OsString::from("stream-json"),
+            OsString::from("--verbose"),
+        ];
 
         if let Some(sys) = system {
-            cmd.arg("--append-system-prompt").arg(sys);
+            provider_args.push(OsString::from("--append-system-prompt"));
+            provider_args.push(OsString::from(sys));
         }
+
+        let mut cmd = broker_provider_command("claude", &self.binary_path, provider_args)?;
 
         let output = cmd
             .output()
@@ -423,13 +507,14 @@ impl GeminiProvider {
 #[async_trait]
 impl ModelProvider for GeminiProvider {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
-        fail_if_provider_network_restricted("gemini")?;
-        let mut cmd = Command::new(&self.binary_path);
-        clear_env(&mut cmd);
-
-        cmd.arg("-p").arg(prompt);
-        cmd.arg("--sandbox");
-        cmd.arg("-o").arg("json");
+        let provider_args = vec![
+            OsString::from("-p"),
+            OsString::from(prompt),
+            OsString::from("--sandbox"),
+            OsString::from("-o"),
+            OsString::from("json"),
+        ];
+        let mut cmd = broker_provider_command("gemini", &self.binary_path, provider_args)?;
         cmd.stdin(Stdio::null());
 
         let mut temp_sys_file = None;
@@ -508,10 +593,6 @@ impl CodexProvider {
 #[async_trait]
 impl ModelProvider for CodexProvider {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
-        fail_if_provider_network_restricted("codex")?;
-        let mut cmd = Command::new(&self.binary_path);
-        clear_env(&mut cmd);
-
         let combined_prompt = if let Some(sys) = system {
             format!("{}\n\n{}", sys, prompt)
         } else {
@@ -527,14 +608,20 @@ impl ModelProvider for CodexProvider {
                 .as_micros()
         ));
 
-        cmd.arg("exec");
-        cmd.arg(&combined_prompt);
-        cmd.arg("-m").arg(&self.model_id);
-        cmd.arg("-c").arg("model_reasoning_effort=\"high\"");
-        cmd.arg("--full-auto");
-        cmd.arg("--skip-git-repo-check");
-        cmd.arg("--json");
-        cmd.arg("-o").arg(&out_path);
+        let provider_args = vec![
+            OsString::from("exec"),
+            OsString::from(&combined_prompt),
+            OsString::from("-m"),
+            OsString::from(&self.model_id),
+            OsString::from("-c"),
+            OsString::from("model_reasoning_effort=\"high\""),
+            OsString::from("--full-auto"),
+            OsString::from("--skip-git-repo-check"),
+            OsString::from("--json"),
+            OsString::from("-o"),
+            out_path.clone().into_os_string(),
+        ];
+        let mut cmd = broker_provider_command("codex", &self.binary_path, provider_args)?;
 
         let output = cmd
             .output()
@@ -596,18 +683,20 @@ impl PiProvider {
 #[async_trait]
 impl ModelProvider for PiProvider {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
-        fail_if_provider_network_restricted("pi")?;
-        let mut cmd = Command::new(&self.binary_path);
-        clear_env(&mut cmd);
-
-        cmd.arg("--model").arg(&self.model_id);
-        cmd.arg("--no-session");
-        cmd.arg("--mode").arg("json");
-        cmd.arg("--print");
+        let mut provider_args = vec![
+            OsString::from("--model"),
+            OsString::from(&self.model_id),
+            OsString::from("--no-session"),
+            OsString::from("--mode"),
+            OsString::from("json"),
+            OsString::from("--print"),
+        ];
         if let Some(sys) = system {
-            cmd.arg("--append-system-prompt").arg(sys);
+            provider_args.push(OsString::from("--append-system-prompt"));
+            provider_args.push(OsString::from(sys));
         }
-        cmd.arg(prompt);
+        provider_args.push(OsString::from(prompt));
+        let mut cmd = broker_provider_command("pi", &self.binary_path, provider_args)?;
         cmd.stdin(Stdio::null());
 
         let output = cmd
@@ -663,20 +752,21 @@ impl OpenCodeProvider {
 #[async_trait]
 impl ModelProvider for OpenCodeProvider {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
-        fail_if_provider_network_restricted("opencode")?;
-        let mut cmd = Command::new(&self.binary_path);
-        clear_env(&mut cmd);
-
         let combined_prompt = if let Some(sys) = system {
             format!("{}\n\n{}", sys, prompt)
         } else {
             prompt.to_string()
         };
 
-        cmd.arg("run");
-        cmd.arg("--model").arg(&self.model_id);
-        cmd.arg("--format").arg("json");
-        cmd.arg(&combined_prompt);
+        let provider_args = vec![
+            OsString::from("run"),
+            OsString::from("--model"),
+            OsString::from(&self.model_id),
+            OsString::from("--format"),
+            OsString::from("json"),
+            OsString::from(&combined_prompt),
+        ];
+        let mut cmd = broker_provider_command("opencode", &self.binary_path, provider_args)?;
         cmd.stdin(Stdio::null());
 
         let output = cmd
@@ -801,7 +891,7 @@ mod tests {
     }
 
     #[test]
-    fn restricted_provider_network_policy_fails_closed_before_launch() {
+    fn restricted_provider_network_policy_materializes_or_fails_closed_before_launch() {
         let providers = ["claude", "gemini", "codex", "pi", "opencode"];
         let open_policies = [None, Some("Open"), Some(" open ")];
         let restricted_policies = [
@@ -810,29 +900,72 @@ mod tests {
             "AllowList:https://api.openai.com",
             " ALLOWLIST:https://api.anthropic.com ",
         ];
+        let profile_dir = std::env::temp_dir().join(format!(
+            "a2-broker-policy-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&profile_dir);
 
         for provider in providers {
             for policy in open_policies {
-                assert!(
-                    fail_if_provider_network_restricted_for_policy(provider, policy).is_ok(),
-                    "{provider} should allow unrestricted policy {policy:?}"
-                );
+                let (program, args) = materialize_broker_provider_command_for_policy(
+                    provider,
+                    provider,
+                    vec![OsString::from("--arg")],
+                    policy,
+                    false,
+                    &profile_dir,
+                )
+                .unwrap_or_else(|error| {
+                    panic!("{provider} should allow unrestricted policy {policy:?}: {error}")
+                });
+                assert_eq!(program, OsString::from(provider));
+                assert_eq!(args, vec![OsString::from("--arg")]);
             }
 
             for policy in restricted_policies {
-                let error = fail_if_provider_network_restricted_for_policy(provider, Some(policy))
-                    .unwrap_err();
-                let message = error.to_string();
+                let unavailable = materialize_broker_provider_command_for_policy(
+                    provider,
+                    provider,
+                    vec![OsString::from("--arg")],
+                    Some(policy),
+                    false,
+                    &profile_dir,
+                )
+                .unwrap_err();
+                let unavailable_message = unavailable.to_string();
                 assert!(
-                    message.contains(&format!("{provider} provider launch refused")),
-                    "unexpected error for {provider}/{policy}: {message}"
+                    unavailable_message.contains(&format!("{provider} provider launch refused")),
+                    "unexpected unavailable-runtime error for {provider}/{policy}: {unavailable_message}"
                 );
                 assert!(
-                    message.contains("no audited provider network sandbox/allowlist yet"),
-                    "restricted-policy error must explain this is a launch gate, not a sandbox: {message}"
+                    unavailable_message.contains("/usr/bin/sandbox-exec is unavailable"),
+                    "restricted-policy error must fail closed before unsandboxed launch: {unavailable_message}"
                 );
+
+                let (program, args) = materialize_broker_provider_command_for_policy(
+                    provider,
+                    provider,
+                    vec![OsString::from("--arg")],
+                    Some(policy),
+                    true,
+                    &profile_dir,
+                )
+                .unwrap_or_else(|error| {
+                    panic!("{provider}/{policy} should materialize sandbox argv: {error}")
+                });
+                assert_eq!(program, OsString::from("/usr/bin/sandbox-exec"));
+                assert_eq!(args[0], OsString::from("-f"));
+                assert_eq!(args[2], OsString::from(provider));
+                assert_eq!(args[3], OsString::from("--arg"));
             }
         }
+
+        let _ = std::fs::remove_dir_all(&profile_dir);
     }
 
     #[tokio::test]

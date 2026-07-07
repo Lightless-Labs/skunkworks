@@ -229,7 +229,7 @@ Each line includes:
 
 ## Run A² Against Generated Tasks
 
-`a2ctl run` now accepts JSONL task input and will use `problem_statement` when present. For external benchmarks such as Senior SWE Bench (`https://senior-swe-bench.snorkel.ai/tasks`) or generated BigCodeBench/SWE-bench-style tasks, include `"no_external_solution_search": true` and `"network_policy": "Isolated"` (or pass `--network-policy isolated` for plain-text task streams). A² currently has partial restricted-policy handling: the worktree provider path materializes `/usr/bin/sandbox-exec` command wrappers when that runtime is available and fails closed otherwise, while broker/generalist/external child-agent surfaces are still incomplete. Do not count Senior SWE Bench evidence from prompt-only/no-policy runs or from paths without audited sandbox/provider allowlist evidence.
+`a2ctl run` now accepts JSONL task input and will use `problem_statement` when present. For external benchmarks such as Senior SWE Bench (`https://senior-swe-bench.snorkel.ai/tasks`) or generated BigCodeBench/SWE-bench-style tasks, include `"no_external_solution_search": true` and `"network_policy": "Isolated"` (or pass `--network-policy isolated` for plain-text task streams). A² currently has partial restricted-policy handling: the worktree and broker provider paths materialize `/usr/bin/sandbox-exec` command wrappers when that runtime is available and fail closed otherwise, while the generalist trait-provider and external child-agent surfaces are still incomplete. Do not count Senior SWE Bench evidence from prompt-only/no-policy runs or from paths without audited sandbox/provider allowlist evidence.
 
 ```bash
 python3 bench/bigcodebench_runner.py \

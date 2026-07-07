@@ -1280,6 +1280,105 @@ def audit_a2_generalist_catalyst_launch_gate(path: Path = A2_GENERALIST_CATALYST
     return result
 
 
+def broker_materializer_policy_support(text: str) -> dict[str, bool]:
+    parser = extract_rust_function_body(text, "parse_provider_network_policy")
+    materializer = extract_rust_function_body(text, "materialize_broker_provider_command_for_policy")
+    if parser is None or materializer is None:
+        return {
+            "found": False,
+            "isolated": False,
+            "allowlist": False,
+            "unavailable_runtime_refuses_restricted_policy": False,
+            "provider_command_materialized": False,
+        }
+    parser_code = rust_executable_body_without_strings(parser)
+    materializer_code = rust_executable_body_without_strings(materializer)
+    unavailable_runtime_refuses = helper_rejects_policy_with_return(
+        materializer,
+        r"\bpolicy\s*\.\s*is_some\s*\(\s*\)\s*&&\s*!\s*sandbox_exec_available\b",
+    )
+    provider_command_materialized = False
+    for match in re.finditer(
+        r"\blet\s+(?:mut\s+)?([A-Za-z_][\w]*)\s*=\s*materialize_provider_command_for_network_policy\s*\(\s*policy\s*\.\s*as_ref\s*\(\s*\)",
+        materializer_code,
+        flags=re.MULTILINE | re.DOTALL,
+    ):
+        if rust_brace_depth_at(materializer, match.start()) != 0:
+            continue
+        binding = re.escape(match.group(1))
+        if re.search(
+            rf"\bOk\s*\(\s*\(\s*{binding}\.program\s*,\s*{binding}\.args\s*\)\s*\)",
+            materializer_code,
+            flags=re.MULTILINE | re.DOTALL,
+        ):
+            provider_command_materialized = True
+            break
+    return {
+        "found": True,
+        "isolated": bool(re.search(r"\bNetworkPolicy::Isolated\b", parser_code)),
+        "allowlist": bool(re.search(r"\bNetworkPolicy::AllowList\b", parser_code)),
+        "unavailable_runtime_refuses_restricted_policy": unavailable_runtime_refuses,
+        "provider_command_materialized": provider_command_materialized,
+    }
+
+
+def broker_provider_command_helper_uses_materialized_argv(text: str) -> bool:
+    body = extract_rust_function_body(text, "broker_provider_command")
+    if body is None:
+        return False
+    masked = mask_rust_non_code_preserving_offsets(body)
+    tuple_match = re.search(
+        r"\blet\s*\(\s*([A-Za-z_][\w]*)\s*,\s*([A-Za-z_][\w]*)\s*\)\s*=\s*materialize_broker_provider_command\s*\(",
+        masked,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if tuple_match is None or rust_brace_depth_at(body, tuple_match.start()) != 0:
+        return False
+    program_binding = re.escape(tuple_match.group(1))
+    args_binding = re.escape(tuple_match.group(2))
+    command_match = re.search(
+        rf"\blet\s+mut\s+([A-Za-z_][\w]*)\s*=\s*Command::new\s*\(\s*(?:&\s*)?{program_binding}\s*\)",
+        masked,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if command_match is None or rust_brace_depth_at(body, command_match.start()) != 0:
+        return False
+    if tuple_match.start() > command_match.start():
+        return False
+    command_binding = re.escape(command_match.group(1))
+    return bool(
+        re.search(rf"\b{command_binding}\s*\.\s*args\s*\(\s*(?:&\s*)?{args_binding}\s*\)", masked)
+        and re.search(rf"\bOk\s*\(\s*{command_binding}\s*\)", masked)
+    )
+
+
+def broker_generate_routes_through_provider_command(generate_body: str, provider: str) -> dict[str, Any]:
+    raw_command_index = first_top_level_rust_code_regex_match_offset(generate_body, r"\bCommand::new\s*\(")
+    comments_masked = mask_rust_comments_preserving_offsets(generate_body)
+    string_ranges = rust_string_literal_ranges(comments_masked)
+    route_pattern = rf"\blet\s+(?:mut\s+)?([A-Za-z_][\w]*)\s*=\s*broker_provider_command\s*\(\s*\"{re.escape(provider)}\"\s*,"
+    route_match = re.search(route_pattern, comments_masked, flags=re.MULTILINE | re.DOTALL)
+    route_found = False
+    command_binding = None
+    if (
+        route_match is not None
+        and rust_brace_depth_at(generate_body, route_match.start()) == 0
+        and not offset_inside_ranges(route_match.start(), string_ranges)
+    ):
+        command_binding = route_match.group(1)
+        output_index = first_top_level_rust_code_regex_match_offset(
+            generate_body,
+            rf"\b{re.escape(command_binding)}\s*\.\s*output\s*\(",
+            re.MULTILINE | re.DOTALL,
+        )
+        route_found = output_index >= 0 and raw_command_index < 0
+    return {
+        "route_found": route_found,
+        "command_binding": command_binding,
+        "raw_command_new_present": raw_command_index >= 0,
+    }
+
+
 def audit_a2_broker_launch_gate(path: Path = A2_BROKER) -> dict[str, Any]:
     result: dict[str, Any] = {
         "path": str(path),
@@ -1295,19 +1394,12 @@ def audit_a2_broker_launch_gate(path: Path = A2_BROKER) -> dict[str, Any]:
         result["reason"] = "file_not_found"
         return result
     text = path.read_text(encoding="utf-8")
-    helper = extract_rust_function_body(text, "fail_if_provider_network_restricted_for_policy")
-    if helper is None:
+    legacy_helper = extract_rust_function_body(text, "fail_if_provider_network_restricted_for_policy")
+    materializer_support = broker_materializer_policy_support(text)
+    result["policy_helper_found"] = legacy_helper is not None or materializer_support["found"]
+    if not result["policy_helper_found"]:
         result["reason"] = "policy_helper_not_found"
         return result
-    result["policy_helper_found"] = True
-    result["policy_helper_rejects_isolated"] = helper_rejects_policy_with_return(
-        helper,
-        r"\b[a-zA-Z_][\w]*\s*==\s*\"isolated\"",
-    )
-    result["policy_helper_rejects_allowlist"] = helper_rejects_policy_with_return(
-        helper,
-        r"\b[a-zA-Z_][\w]*\.starts_with\s*\(\s*\"allowlist\"\s*\)",
-    )
 
     providers = [
         ("claude", "ClaudeProvider"),
@@ -1317,47 +1409,103 @@ def audit_a2_broker_launch_gate(path: Path = A2_BROKER) -> dict[str, Any]:
         ("opencode", "OpenCodeProvider"),
     ]
     guards: list[dict[str, Any]] = []
-    for provider, impl_name in providers:
-        impl_body = extract_rust_impl_body(text, impl_name)
-        generate_body = extract_rust_function_body(impl_body, "generate") if impl_body is not None else None
-        if generate_body is None:
+    if legacy_helper is not None:
+        result["policy_helper_rejects_isolated"] = helper_rejects_policy_with_return(
+            legacy_helper,
+            r"\b[a-zA-Z_][\w]*\s*==\s*\"isolated\"",
+        )
+        result["policy_helper_rejects_allowlist"] = helper_rejects_policy_with_return(
+            legacy_helper,
+            r"\b[a-zA-Z_][\w]*\.starts_with\s*\(\s*\"allowlist\"\s*\)",
+        )
+        for provider, impl_name in providers:
+            impl_body = extract_rust_impl_body(text, impl_name)
+            generate_body = extract_rust_function_body(impl_body, "generate") if impl_body is not None else None
+            if generate_body is None:
+                guards.append(
+                    {
+                        "provider": provider,
+                        "impl": impl_name,
+                        "generate_found": False,
+                        "guard_found": False,
+                        "command_new_after_guard": False,
+                        "guard_before_command_new": False,
+                    }
+                )
+                continue
+            guard_statement = re.escape(f'fail_if_provider_network_restricted("{provider}")?;')
+            guard_pattern = rf"^\s*{guard_statement}"
+            guard_index = first_top_level_rust_code_regex_match_offset(generate_body, guard_pattern, re.MULTILINE)
+            command_index = first_top_level_rust_code_regex_match_offset(generate_body, r"\bCommand::new\s*\(")
             guards.append(
                 {
                     "provider": provider,
                     "impl": impl_name,
-                    "generate_found": False,
-                    "guard_found": False,
-                    "command_new_after_guard": False,
-                    "guard_before_command_new": False,
+                    "generate_found": True,
+                    "guard_found": guard_index >= 0,
+                    "command_new_after_guard": command_index >= 0,
+                    "guard_before_command_new": guard_index >= 0 and command_index >= 0 and guard_index < command_index,
+                    "sandbox_exec_present": rust_provider_command_uses_sandbox_exec(generate_body),
                 }
             )
-            continue
-        guard_statement = re.escape(f'fail_if_provider_network_restricted("{provider}")?;')
-        guard_pattern = rf"^\s*{guard_statement}"
-        guard_index = first_top_level_rust_code_regex_match_offset(generate_body, guard_pattern, re.MULTILINE)
-        command_index = first_top_level_rust_code_regex_match_offset(generate_body, r"\bCommand::new\s*\(")
-        guards.append(
-            {
-                "provider": provider,
-                "impl": impl_name,
-                "generate_found": True,
-                "guard_found": guard_index >= 0,
-                "command_new_after_guard": command_index >= 0,
-                "guard_before_command_new": guard_index >= 0 and command_index >= 0 and guard_index < command_index,
-                "sandbox_exec_present": rust_provider_command_uses_sandbox_exec(generate_body),
-            }
+        result["provider_generate_guards"] = guards
+        result["sandbox_exec_launch_wrapper_present"] = bool(guards) and all(
+            item.get("sandbox_exec_present") for item in guards
         )
-    result["provider_generate_guards"] = guards
-    result["sandbox_exec_launch_wrapper_present"] = bool(guards) and all(
-        item.get("sandbox_exec_present") for item in guards
-    )
-    result["fail_closed_before_provider_launch"] = (
-        result["policy_helper_rejects_isolated"]
-        and result["policy_helper_rejects_allowlist"]
-        and all(item["guard_before_command_new"] for item in guards)
-    )
+        result["fail_closed_before_provider_launch"] = (
+            result["policy_helper_rejects_isolated"]
+            and result["policy_helper_rejects_allowlist"]
+            and all(item["guard_before_command_new"] for item in guards)
+        )
+    else:
+        helper_wraps_or_refuses = bool(
+            materializer_support["unavailable_runtime_refuses_restricted_policy"]
+            and materializer_support["provider_command_materialized"]
+            and broker_provider_command_helper_uses_materialized_argv(text)
+        )
+        result["policy_helper_rejects_isolated"] = bool(materializer_support["isolated"] and helper_wraps_or_refuses)
+        result["policy_helper_rejects_allowlist"] = bool(materializer_support["allowlist"] and helper_wraps_or_refuses)
+        for provider, impl_name in providers:
+            impl_body = extract_rust_impl_body(text, impl_name)
+            generate_body = extract_rust_function_body(impl_body, "generate") if impl_body is not None else None
+            if generate_body is None:
+                guards.append(
+                    {
+                        "provider": provider,
+                        "impl": impl_name,
+                        "generate_found": False,
+                        "guard_found": False,
+                        "command_new_after_guard": False,
+                        "guard_before_command_new": False,
+                        "sandbox_exec_present": False,
+                    }
+                )
+                continue
+            routed = broker_generate_routes_through_provider_command(generate_body, provider)
+            guards.append(
+                {
+                    "provider": provider,
+                    "impl": impl_name,
+                    "generate_found": True,
+                    "guard_found": routed["route_found"],
+                    "command_new_after_guard": routed["raw_command_new_present"],
+                    "guard_before_command_new": routed["route_found"] and not routed["raw_command_new_present"],
+                    "broker_provider_command_route_found": routed["route_found"],
+                    "command_binding": routed["command_binding"],
+                    "sandbox_exec_present": routed["route_found"] and helper_wraps_or_refuses,
+                }
+            )
+        result["provider_generate_guards"] = guards
+        result["sandbox_exec_launch_wrapper_present"] = bool(guards) and all(
+            item.get("sandbox_exec_present") for item in guards
+        )
+        result["fail_closed_before_provider_launch"] = (
+            result["policy_helper_rejects_isolated"]
+            and result["policy_helper_rejects_allowlist"]
+            and all(item.get("broker_provider_command_route_found") for item in guards)
+        )
     if not result["fail_closed_before_provider_launch"]:
-        result["reason"] = "provider wrappers do not visibly reject restricted network policy before Command::new"
+        result["reason"] = "provider wrappers do not visibly route restricted network policy through sandbox materialization before Command::new"
     return result
 
 
@@ -1366,12 +1514,15 @@ def a2_owned_sandbox_enforced_for_all_provider_surfaces(
     generalist: dict[str, Any],
     broker: dict[str, Any],
 ) -> bool:
+    if not all(isinstance(surface, dict) for surface in (worktree, generalist, broker)):
+        return False
     return bool(
-        worktree["fail_closed_before_provider_launch"]
-        and generalist["fail_closed_before_provider_launch"]
-        and broker["fail_closed_before_provider_launch"]
-        and worktree["sandbox_exec_launch_wrapper_present"]
-        and broker["sandbox_exec_launch_wrapper_present"]
+        worktree.get("fail_closed_before_provider_launch")
+        and generalist.get("fail_closed_before_provider_launch")
+        and broker.get("fail_closed_before_provider_launch")
+        and worktree.get("sandbox_exec_launch_wrapper_present")
+        and generalist.get("sandbox_exec_launch_wrapper_present")
+        and broker.get("sandbox_exec_launch_wrapper_present")
     )
 
 
@@ -1699,6 +1850,13 @@ def missing_a2_owned_sandbox_surfaces(a2_boundary: dict[str, Any]) -> list[str]:
         for item in worktree.get("provider_command_launch_functions", []):
             if isinstance(item, dict) and item.get("found") and item.get("command_new_present") and not item.get("sandbox_exec_present"):
                 missing.append(f"worktree_catalyst.{item.get('function')}")
+    generalist = a2_boundary.get("generalist_catalyst")
+    if (
+        isinstance(generalist, dict)
+        and generalist.get("provider_generate_call_present")
+        and not generalist.get("sandbox_exec_launch_wrapper_present")
+    ):
+        missing.append("generalist_catalyst.model.generate")
     broker = a2_boundary.get("broker")
     if isinstance(broker, dict):
         for item in broker.get("provider_generate_guards", []):
@@ -2504,6 +2662,135 @@ let unsandboxed = Command::new("pi")
         self.assertFalse(result["sandbox_exec_launch_wrapper_present"])
         self.assertTrue(all(not item["sandbox_exec_present"] for item in result["provider_generate_guards"]))
 
+    def test_a2_broker_launch_gate_rejects_materializer_without_sandbox_command_plan(self) -> None:
+        provider_impls = "\n".join(
+            f'''impl ModelProvider for {impl_name} {{
+    async fn generate(&self) {{
+        let mut cmd = broker_provider_command("{provider}", &self.binary_path, provider_args)?;
+        cmd.output().await?;
+    }}
+}}'''
+            for provider, impl_name in [
+                ("claude", "ClaudeProvider"),
+                ("gemini", "GeminiProvider"),
+                ("codex", "CodexProvider"),
+                ("pi", "PiProvider"),
+                ("opencode", "OpenCodeProvider"),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "broker.rs"
+            path.write_text(
+                'fn parse_provider_network_policy() { NetworkPolicy::Isolated; NetworkPolicy::AllowList(vec![]); }\n'
+                'fn materialize_broker_provider_command_for_policy() {\n'
+                '  if policy.is_some() && !sandbox_exec_available { return Err(error); }\n'
+                '  let _ignored = materialize_provider_command_for_network_policy(policy.as_ref(), profile_dir, binary_path, provider_args)?;\n'
+                '  Ok((OsString::from(binary_path), provider_args))\n'
+                '}\n'
+                'fn broker_provider_command() {\n'
+                '  let (program, args) = materialize_broker_provider_command(provider, binary_path, provider_args)?;\n'
+                '  let mut cmd = Command::new(program);\n'
+                '  cmd.args(args);\n'
+                '  Ok(cmd)\n'
+                '}\n'
+                + provider_impls,
+                encoding="utf-8",
+            )
+            result = audit_a2_broker_launch_gate(path)
+
+        self.assertTrue(result["policy_helper_found"])
+        self.assertFalse(result["policy_helper_rejects_isolated"])
+        self.assertFalse(result["policy_helper_rejects_allowlist"])
+        self.assertFalse(result["fail_closed_before_provider_launch"])
+        self.assertFalse(result["sandbox_exec_launch_wrapper_present"])
+
+    def test_a2_broker_launch_gate_rejects_raw_provider_command_without_route_or_guard(self) -> None:
+        provider_impls = "\n".join(
+            f'''impl ModelProvider for {impl_name} {{
+    async fn generate(&self) {{
+        let mut cmd = Command::new("{provider}");
+        cmd.output().await?;
+    }}
+}}'''
+            for provider, impl_name in [
+                ("claude", "ClaudeProvider"),
+                ("gemini", "GeminiProvider"),
+                ("codex", "CodexProvider"),
+                ("pi", "PiProvider"),
+                ("opencode", "OpenCodeProvider"),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "broker.rs"
+            path.write_text(
+                'fn parse_provider_network_policy() { NetworkPolicy::Isolated; NetworkPolicy::AllowList(vec![]); }\n'
+                'fn materialize_broker_provider_command_for_policy() {\n'
+                '  if policy.is_some() && !sandbox_exec_available { return Err(error); }\n'
+                '  let materialized = materialize_provider_command_for_network_policy(policy.as_ref(), profile_dir, binary_path, provider_args)?;\n'
+                '  Ok((materialized.program, materialized.args))\n'
+                '}\n'
+                'fn broker_provider_command() {\n'
+                '  let (program, args) = materialize_broker_provider_command(provider, binary_path, provider_args)?;\n'
+                '  let mut cmd = Command::new(program);\n'
+                '  cmd.args(args);\n'
+                '  Ok(cmd)\n'
+                '}\n'
+                + provider_impls,
+                encoding="utf-8",
+            )
+            result = audit_a2_broker_launch_gate(path)
+
+        self.assertTrue(result["policy_helper_rejects_isolated"])
+        self.assertTrue(result["policy_helper_rejects_allowlist"])
+        self.assertFalse(result["fail_closed_before_provider_launch"])
+        self.assertFalse(result["sandbox_exec_launch_wrapper_present"])
+        self.assertTrue(all(not item.get("broker_provider_command_route_found") for item in result["provider_generate_guards"]))
+
+    def test_a2_broker_launch_gate_rejects_later_raw_provider_command_after_route(self) -> None:
+        provider_impls = "\n".join(
+            f'''impl ModelProvider for {impl_name} {{
+    async fn generate(&self) {{
+        let mut cmd = broker_provider_command("{provider}", &self.binary_path, provider_args)?;
+        cmd.output().await?;
+        let mut bypass = Command::new("{provider}");
+        bypass.output().await?;
+    }}
+}}'''
+            for provider, impl_name in [
+                ("claude", "ClaudeProvider"),
+                ("gemini", "GeminiProvider"),
+                ("codex", "CodexProvider"),
+                ("pi", "PiProvider"),
+                ("opencode", "OpenCodeProvider"),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "broker.rs"
+            path.write_text(
+                'fn parse_provider_network_policy() { NetworkPolicy::Isolated; NetworkPolicy::AllowList(vec![]); }\n'
+                'fn materialize_broker_provider_command_for_policy() {\n'
+                '  if policy.is_some() && !sandbox_exec_available { return Err(error); }\n'
+                '  let materialized = materialize_provider_command_for_network_policy(policy.as_ref(), profile_dir, binary_path, provider_args)?;\n'
+                '  Ok((materialized.program, materialized.args))\n'
+                '}\n'
+                'fn broker_provider_command() {\n'
+                '  let (program, args) = materialize_broker_provider_command(provider, binary_path, provider_args)?;\n'
+                '  let mut cmd = Command::new(program);\n'
+                '  cmd.args(args);\n'
+                '  Ok(cmd)\n'
+                '}\n'
+                + provider_impls,
+                encoding="utf-8",
+            )
+            result = audit_a2_broker_launch_gate(path)
+
+        self.assertTrue(result["policy_helper_rejects_isolated"])
+        self.assertTrue(result["policy_helper_rejects_allowlist"])
+        self.assertFalse(result["fail_closed_before_provider_launch"])
+        self.assertFalse(result["sandbox_exec_launch_wrapper_present"])
+        self.assertTrue(all(item.get("command_new_after_guard") for item in result["provider_generate_guards"]))
+        self.assertTrue(all(not item.get("broker_provider_command_route_found") for item in result["provider_generate_guards"]))
+
     def test_a2_worktree_launch_gate_detects_legacy_matches_and_if_let_policy_forms(self) -> None:
         run_agent_forms = [
             (
@@ -2598,12 +2885,13 @@ let unsandboxed = Command::new("pi")
         self.assertTrue(result["policy_helper_rejects_isolated"])
         self.assertTrue(result["policy_helper_rejects_allowlist"])
         self.assertTrue(result["fail_closed_before_provider_launch"])
-        self.assertFalse(result["sandbox_exec_launch_wrapper_present"])
+        self.assertTrue(result["sandbox_exec_launch_wrapper_present"])
         self.assertEqual(
             [item["provider"] for item in result["provider_generate_guards"]],
             ["claude", "gemini", "codex", "pi", "opencode"],
         )
         self.assertTrue(all(item["guard_before_command_new"] for item in result["provider_generate_guards"]))
+        self.assertTrue(all(item.get("broker_provider_command_route_found") for item in result["provider_generate_guards"]))
 
     def test_a2_generalist_launch_gate_detects_fail_closed_before_model_generate(self) -> None:
         result = audit_a2_generalist_catalyst_launch_gate()
@@ -2686,6 +2974,10 @@ let unsandboxed = Command::new("pi")
             "sandbox_exec_launch_wrapper_present": True,
         }
         closed_generalist = {"fail_closed_before_provider_launch": True}
+        wrapped_generalist = {
+            "fail_closed_before_provider_launch": True,
+            "sandbox_exec_launch_wrapper_present": True,
+        }
         open_generalist = {"fail_closed_before_provider_launch": False}
         self.assertFalse(
             a2_owned_sandbox_enforced_for_all_provider_surfaces(
@@ -2722,10 +3014,24 @@ let unsandboxed = Command::new("pi")
                 wrapped_but_open_surface,
             )
         )
-        self.assertTrue(
+        self.assertFalse(
             a2_owned_sandbox_enforced_for_all_provider_surfaces(
                 wrapped_surface,
                 closed_generalist,
+                wrapped_surface,
+            )
+        )
+        self.assertFalse(
+            a2_owned_sandbox_enforced_for_all_provider_surfaces(
+                wrapped_surface,
+                {},
+                wrapped_surface,
+            )
+        )
+        self.assertTrue(
+            a2_owned_sandbox_enforced_for_all_provider_surfaces(
+                wrapped_surface,
+                wrapped_generalist,
                 wrapped_surface,
             )
         )
