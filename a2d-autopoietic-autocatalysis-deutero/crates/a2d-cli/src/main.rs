@@ -9899,9 +9899,11 @@ fn artifact_defers_to_checkout_inspection(artifact: &str) -> bool {
 
 fn contains_public_github_solution_reference(artifact: &str) -> bool {
     let normalized = artifact.to_ascii_lowercase();
-    normalized.contains("github.com/")
+    normalized.contains("github.com")
         || normalized.contains("/pull/")
         || normalized.contains("/commit/")
+        || normalized.contains("/issues/")
+        || normalized.contains("refs/pull")
 }
 
 fn extract_fenced_unified_diff(input: &str) -> Option<String> {

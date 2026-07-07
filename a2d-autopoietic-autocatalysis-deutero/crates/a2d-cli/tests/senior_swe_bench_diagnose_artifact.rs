@@ -145,52 +145,57 @@ fn diagnose_artifact_redacts_public_github_reference_without_diff() {
 
 #[test]
 fn diagnose_artifact_redacts_mixed_case_public_github_references() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_a2d"))
-        .args(["senior-swe-bench-diagnose-artifact", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn diagnose command");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin")
-        .write_all(
-            b"Copied from HTTPS://GitHub.com/org/repo/PuLl/1\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
-        )
-        .expect("write artifact");
+    for artifact in [
+        b"Copied from HTTPS://GitHub.com/org/repo/PuLl/1\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n".as_slice(),
+        b"Patch came from git@github.com:org/repo.git".as_slice(),
+        b"Patch came from refs/pull/123/head".as_slice(),
+    ] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_a2d"))
+            .args(["senior-swe-bench-diagnose-artifact", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn diagnose command");
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin")
+            .write_all(artifact)
+            .expect("write artifact");
 
-    let output = child.wait_with_output().expect("wait for diagnose command");
+        let output = child.wait_with_output().expect("wait for diagnose command");
 
-    assert_eq!(output.status.code(), Some(0));
-    let value: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("diagnosis is JSON");
-    assert_eq!(
-        value
-            .get("contains_public_github_solution_reference")
-            .and_then(serde_json::Value::as_bool),
-        Some(true)
-    );
-    assert_eq!(
-        value
-            .get("failure_kind")
-            .and_then(serde_json::Value::as_str),
-        Some("public_solution_reference")
-    );
-    assert_eq!(
-        value
-            .get("contains_unified_diff_candidate_patch")
-            .and_then(serde_json::Value::as_bool),
-        Some(false)
-    );
-    let preview = value
-        .get("artifact_preview")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    assert!(preview.contains("redacted"), "{preview}");
-    assert!(
-        !preview.to_ascii_lowercase().contains("github.com"),
-        "{preview}"
-    );
+        assert_eq!(output.status.code(), Some(0));
+        let value: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("diagnosis is JSON");
+        assert_eq!(
+            value
+                .get("contains_public_github_solution_reference")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            value
+                .get("failure_kind")
+                .and_then(serde_json::Value::as_str),
+            Some("public_solution_reference")
+        );
+        assert_eq!(
+            value
+                .get("contains_unified_diff_candidate_patch")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        let preview = value
+            .get("artifact_preview")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        assert!(preview.contains("redacted"), "{preview}");
+        assert!(
+            !preview.to_ascii_lowercase().contains("github.com"),
+            "{preview}"
+        );
+        assert!(!preview.contains("refs/pull"), "{preview}");
+    }
 }

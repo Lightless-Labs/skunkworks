@@ -48,3 +48,9 @@ The extractor/evaluator gates remain authoritative. Diagnosis is not fitness evi
 ## Follow-up
 
 The current classified failure is `checkout_context_not_exercised`, so the next Senior SWE-Bench integration slice should verify/provide usable local checkout context without weakening the no-public-solution-search policy or the artifact-only provider boundary.
+
+## 2026-07-07 public GitHub reference detector follow-up
+
+Do not restrict solution-reference detection to browser-style `github.com/` URLs. Provider artifacts can cite public GitHub in SSH remote or ref notation, such as `git@github.com:org/repo.git` or `refs/pull/123/head`, without containing the original URL substrings. The shared detector now treats any `github.com`, `/pull/`, `/commit/`, `/issues/`, or `refs/pull` occurrence as a public solution-reference indicator. Diagnosis redacts previews for these forms, and candidate-artifact selection rejects them even when the artifact otherwise contains a valid unified diff.
+
+TDD baseline checks with only the tests changed failed against the old detector, then passed after widening the detector. Fresh source-patch evidence: `runs/20260707-senior-swe-bench-public-github-reference-detection-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing `a2d.fitness-evidence.v1` with `source_diff_hash: 195c9ca41f615e64a8a8fedbe486183b8a48ddca`. `hidden_acceptance: not_present` is expected for this local source-patch gate and must not be cited as official Senior SWE-Bench hidden-holdout evidence.

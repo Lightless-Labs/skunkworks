@@ -228,34 +228,48 @@ fn senior_swe_bench_select_candidate_artifact_fails_closed_on_unsafe_manifests()
     assert_eq!(rejected_multi.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&rejected_multi.stderr).contains("exactly one"));
 
-    let public_artifact = root.join("public.artifact");
-    let public = b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nhttps://github.com/example/repo/pull/1\n";
-    fs::write(&public_artifact, public).unwrap();
-    let public_manifest = write_manifest(
-        &root,
-        serde_json::json!([
-            {
-                "cycle": 0,
-                "report_cycle": 1,
-                "workcell_id": "wc-0001",
-                "enzyme_id": "coder",
-                "provider": "test-provider",
-                "artifact_type": "code",
-                "path": public_artifact,
-                "git_object_hash": git_hash_object_bytes(public),
-                "bytes": public.len()
-            }
-        ]),
-    );
-    let rejected_public = Command::new(env!("CARGO_BIN_EXE_a2d"))
-        .args([
-            "senior-swe-bench-select-candidate-artifact",
-            public_manifest.to_str().unwrap(),
-        ])
-        .output()
-        .expect("run select command");
-    assert_eq!(rejected_public.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&rejected_public.stderr).contains("public GitHub"));
+    for (name, public) in [
+        (
+            "public-url",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nhttps://github.com/example/repo/pull/1\n".as_slice(),
+        ),
+        (
+            "public-git-remote",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nfrom git@github.com:example/repo.git\n".as_slice(),
+        ),
+        (
+            "public-ref",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nrefs/pull/123/head\n".as_slice(),
+        ),
+    ] {
+        let public_artifact = root.join(format!("{name}.artifact"));
+        fs::write(&public_artifact, public).unwrap();
+        let public_manifest = write_manifest(
+            &root,
+            serde_json::json!([
+                {
+                    "cycle": 0,
+                    "report_cycle": 1,
+                    "workcell_id": "wc-0001",
+                    "enzyme_id": "coder",
+                    "provider": "test-provider",
+                    "artifact_type": "code",
+                    "path": public_artifact,
+                    "git_object_hash": git_hash_object_bytes(public),
+                    "bytes": public.len()
+                }
+            ]),
+        );
+        let rejected_public = Command::new(env!("CARGO_BIN_EXE_a2d"))
+            .args([
+                "senior-swe-bench-select-candidate-artifact",
+                public_manifest.to_str().unwrap(),
+            ])
+            .output()
+            .expect("run select command");
+        assert_eq!(rejected_public.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&rejected_public.stderr).contains("public GitHub"));
+    }
 
     let _ = fs::remove_dir_all(root);
 }
