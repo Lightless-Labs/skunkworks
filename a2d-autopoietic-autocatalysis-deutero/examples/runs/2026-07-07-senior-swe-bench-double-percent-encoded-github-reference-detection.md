@@ -30,7 +30,7 @@ The shared CLI/evaluation-layer detector now applies bounded iterative ASCII per
 - full `CARGO_BUILD_JOBS=2 cargo test`
 - `cargo run -q -p a2d -- fitness-evidence-inspect runs/20260707-senior-swe-bench-double-percent-encoded-reference-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json --require-all-tests-pass`
 
-The evidence is full-passing `a2d.fitness-evidence.v1` actual-test source-patch evidence with `source_diff_hash: d68df156ee6531f78c71fe7eb78db107f77c1249` matching the scoped crates diff. `hidden_acceptance: not_present` is expected for this local score-artifact source-patch gate.
+The source-patch evidence is full-passing `a2d.fitness-evidence.v1` actual-test evidence with `source_diff_hash: d68df156ee6531f78c71fe7eb78db107f77c1249` matching the implementation scoped crates diff. Postcommit clean-HEAD evidence is `runs/20260707-postcommit-fitness-evidence-d88d0e2-nested-percent/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, passes `fitness-evidence-inspect --require-all-tests-pass`, records `source_tree_dirty: false`, and carries clean crates diff hash `e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`. `hidden_acceptance: not_present` is expected for this local score-artifact source-patch gate.
 
 ## Non-claims
 
