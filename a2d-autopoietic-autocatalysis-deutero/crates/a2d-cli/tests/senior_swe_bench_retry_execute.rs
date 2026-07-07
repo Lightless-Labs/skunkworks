@@ -2528,6 +2528,89 @@ fn retry_run_next_gate_advances_fixture_chain_one_gate_at_a_time_to_inspected_ru
 }
 
 #[test]
+fn retry_run_next_gate_rejects_existing_run_next_cycle_controller_artifact_before_cycle_input() {
+    let fixture = write_fixture(
+        "next-gate-run-next-cycle-existing-controller",
+        2,
+        "echo public failure before retry boundary >&2\nexit 1\n",
+    );
+    let first = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            fixture.manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run first retry execute");
+    assert_eq!(
+        first.status.code(),
+        Some(2),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&first.stderr),
+        String::from_utf8_lossy(&first.stdout)
+    );
+
+    let retry_execution = fixture.work_dir.join("retry-execution.json");
+    let controller = fixture
+        .work_dir
+        .join("attempt-1/retry-next-gate-run-next-cycle.json");
+    fs::create_dir_all(controller.parent().unwrap()).unwrap();
+    fs::write(&controller, "{\"stale\":true}\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-run-next-gate",
+            "--retry-execution",
+            retry_execution.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run next-gate over retry execution with stale run-next-cycle controller artifact");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("already exists before child side effects"),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&controller).unwrap(),
+        "{\"stale\":true}\n"
+    );
+    assert!(
+        !fixture
+            .work_dir
+            .join("attempt-1/retry-next-cycle-execution.json")
+            .exists(),
+        "run-next-cycle next-gate preflight must stop before child summary persistence"
+    );
+    assert!(
+        !fixture
+            .work_dir
+            .join("attempt-1/cycle-output-artifacts/manifest.json")
+            .exists(),
+        "run-next-cycle next-gate preflight must stop before cycle-input output artifacts"
+    );
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
 fn retry_run_next_gate_rejects_existing_terminal_controller_artifact_before_overwrite() {
     let fixture = write_fixture(
         "next-gate-terminal-existing-controller",
