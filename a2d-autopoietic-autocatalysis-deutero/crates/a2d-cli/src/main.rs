@@ -9899,6 +9899,15 @@ fn artifact_defers_to_checkout_inspection(artifact: &str) -> bool {
 
 fn contains_public_github_solution_reference(artifact: &str) -> bool {
     let normalized = artifact.to_ascii_lowercase();
+    if contains_public_github_solution_reference_normalized(&normalized) {
+        return true;
+    }
+    let percent_decoded = percent_decode_ascii_sequences(&normalized);
+    percent_decoded != normalized
+        && contains_public_github_solution_reference_normalized(&percent_decoded)
+}
+
+fn contains_public_github_solution_reference_normalized(normalized: &str) -> bool {
     normalized.contains("github.com")
         || normalized.contains("githubusercontent.com")
         || normalized.contains("github[.]com")
@@ -9908,7 +9917,34 @@ fn contains_public_github_solution_reference(artifact: &str) -> bool {
         || normalized.contains("/commit/")
         || normalized.contains("/issues/")
         || normalized.contains("refs/pull")
-        || contains_github_cli_solution_search_command(&normalized)
+        || contains_github_cli_solution_search_command(normalized)
+}
+
+fn percent_decode_ascii_sequences(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut decoded = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '%' && i + 2 < chars.len() {
+            if let (Some(high), Some(low)) = (hex_value(chars[i + 1]), hex_value(chars[i + 2])) {
+                decoded.push(((high << 4) | low) as char);
+                i += 3;
+                continue;
+            }
+        }
+        decoded.push(chars[i]);
+        i += 1;
+    }
+    decoded
+}
+
+fn hex_value(c: char) -> Option<u8> {
+    match c {
+        '0'..='9' => Some(c as u8 - b'0'),
+        'a'..='f' => Some(c as u8 - b'a' + 10),
+        'A'..='F' => Some(c as u8 - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn contains_github_cli_solution_search_command(normalized: &str) -> bool {

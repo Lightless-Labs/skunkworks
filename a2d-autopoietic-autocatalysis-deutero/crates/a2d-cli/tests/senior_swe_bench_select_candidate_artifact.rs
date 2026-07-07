@@ -300,6 +300,14 @@ fn senior_swe_bench_select_candidate_artifact_fails_closed_on_unsafe_manifests()
             b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\ngithub . com/example/repo/commit/deadbeef\n".as_slice(),
         ),
         (
+            "public-percent-encoded-github-host",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: https://github%2ecom/example/repo/pull/1\n".as_slice(),
+        ),
+        (
+            "public-percent-encoded-pull-ref",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: refs%2fpull%2f123%2fhead\n".as_slice(),
+        ),
+        (
             "public-gh-pr-command",
             b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: gh pr view 123 --repo example/repo\n".as_slice(),
         ),
