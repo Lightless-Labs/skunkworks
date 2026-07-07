@@ -63,7 +63,7 @@ fn diagnose_artifact_classifies_valid_diff_as_candidate_patch_only() {
         .stdin
         .as_mut()
         .expect("stdin")
-        .write_all(b"--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n")
+        .write_all(b"--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nNotes: issue id data %2541 and deep issue data %25252525252525252541 are local metadata, not public sources.\n")
         .expect("write artifact");
 
     let output = child.wait_with_output().expect("wait for diagnose command");
@@ -82,6 +82,12 @@ fn diagnose_artifact_classifies_valid_diff_as_candidate_patch_only() {
             .get("contains_unified_diff_candidate_patch")
             .and_then(serde_json::Value::as_bool),
         Some(true)
+    );
+    assert_eq!(
+        value
+            .get("contains_public_github_solution_reference")
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
     );
     assert!(
         value
@@ -191,7 +197,14 @@ fn diagnose_artifact_redacts_mixed_case_public_github_references() {
         b"Patch copied from github . com/org/repo/commit/deadbeef".as_slice(),
         b"Patch copied from https://gist.github.com/org/abcdef123456".as_slice(),
         b"Patch copied from https://github%2ecom/org/repo/pull/123".as_slice(),
+        b"Patch copied from https://github%252ecom/org/repo/pull/123".as_slice(),
+        b"Patch copied from https://github%25252ecom/org/repo/pull/123".as_slice(),
+        b"Patch copied from https://github%2525252525252525252ecom/org/repo/pull/123".as_slice(),
+        b"Patch copied from https%253a%252f%252f%2547%2569%2574%2548%2575%2562%252e%2563%256f%256d%252forg%252frepo%252fpull%252f123".as_slice(),
         b"Patch copied from refs%2fpull%2f123%2fhead".as_slice(),
+        b"Patch copied from refs%252fpull%252f123%252fhead".as_slice(),
+        b"Patch copied from refs%25252fpull%25252f123%25252fhead".as_slice(),
+        b"Patch copied from refs%2525252525252525252fpull%2525252525252525252f123%2525252525252525252fhead".as_slice(),
         b"Use gh pr view 123 --repo org/repo to inspect the fix".as_slice(),
         b"Run gh api repos/org/repo/pulls/123/files for the patch".as_slice(),
         b"hub pr checkout 123 has the answer".as_slice(),

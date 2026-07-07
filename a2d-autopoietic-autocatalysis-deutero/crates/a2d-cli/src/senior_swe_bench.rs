@@ -1978,6 +1978,9 @@ mod tests {
             "see github[.]com/firezone/firezone",
             "see github dot com/firezone/firezone",
             "see https://github%2ecom/firezone/firezone",
+            "see https://github%252ecom/firezone/firezone",
+            "see https://github%25252ecom/firezone/firezone",
+            "see https://github%2525252525252525252ecom/firezone/firezone",
             "run gh pr view 123 --repo firezone/firezone",
             "run hub search pulls firezone/firezone",
         ] {

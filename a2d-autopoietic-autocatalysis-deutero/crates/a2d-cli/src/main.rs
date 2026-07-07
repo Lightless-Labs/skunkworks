@@ -9897,14 +9897,33 @@ fn artifact_defers_to_checkout_inspection(artifact: &str) -> bool {
     .any(|needle| normalized.contains(needle))
 }
 
+const MAX_PUBLIC_GITHUB_REFERENCE_PERCENT_DECODE_PASSES: usize = 8;
+
 fn contains_public_github_solution_reference(artifact: &str) -> bool {
     let normalized = artifact.to_ascii_lowercase();
     if contains_public_github_solution_reference_normalized(&normalized) {
         return true;
     }
-    let percent_decoded = percent_decode_ascii_sequences(&normalized);
-    percent_decoded != normalized
-        && contains_public_github_solution_reference_normalized(&percent_decoded)
+
+    let mut current = normalized;
+    for _ in 0..MAX_PUBLIC_GITHUB_REFERENCE_PERCENT_DECODE_PASSES {
+        let percent_decoded = percent_decode_ascii_sequences(&current).to_ascii_lowercase();
+        if percent_decoded == current {
+            return false;
+        }
+        if contains_public_github_solution_reference_normalized(&percent_decoded) {
+            return true;
+        }
+        current = percent_decoded;
+    }
+
+    let next = percent_decode_ascii_sequences(&current).to_ascii_lowercase();
+    next != current
+        && (contains_public_github_solution_reference_normalized(&next)
+            || current.contains("github")
+            || current.contains("refs")
+            || next.contains("github")
+            || next.contains("refs"))
 }
 
 fn contains_public_github_solution_reference_normalized(normalized: &str) -> bool {

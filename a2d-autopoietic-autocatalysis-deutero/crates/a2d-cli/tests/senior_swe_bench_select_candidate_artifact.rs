@@ -229,7 +229,7 @@ fn senior_swe_bench_select_candidate_artifact_fails_closed_on_unsafe_manifests()
     assert!(String::from_utf8_lossy(&rejected_multi.stderr).contains("exactly one"));
 
     let safe_artifact = root.join("safe-gh-pr-fragments.artifact");
-    let safe_diff = b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nNotes: high priority fix through PR review for this GH project; gh_pr_number metadata is local.\n";
+    let safe_diff = b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nNotes: high priority fix through PR review for this GH project; gh_pr_number metadata is local; issue id data %2541 and deep issue data %25252525252525252541 are local metadata.\n";
     fs::write(&safe_artifact, safe_diff).unwrap();
     let safe_manifest = write_manifest(
         &root,
@@ -308,8 +308,32 @@ fn senior_swe_bench_select_candidate_artifact_fails_closed_on_unsafe_manifests()
             b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: https://github%2ecom/example/repo/pull/1\n".as_slice(),
         ),
         (
+            "public-double-percent-encoded-github-host",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: https://github%252ecom/example/repo/pull/1\n".as_slice(),
+        ),
+        (
+            "public-triple-percent-encoded-github-host",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: https://github%25252ecom/example/repo/pull/1\n".as_slice(),
+        ),
+        (
+            "public-over-depth-percent-encoded-github-host",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: https://github%2525252525252525252ecom/example/repo/pull/1\n".as_slice(),
+        ),
+        (
             "public-percent-encoded-pull-ref",
             b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: refs%2fpull%2f123%2fhead\n".as_slice(),
+        ),
+        (
+            "public-double-percent-encoded-pull-ref",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: refs%252fpull%252f123%252fhead\n".as_slice(),
+        ),
+        (
+            "public-triple-percent-encoded-pull-ref",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: refs%25252fpull%25252f123%25252fhead\n".as_slice(),
+        ),
+        (
+            "public-over-depth-percent-encoded-pull-ref",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: refs%2525252525252525252fpull%2525252525252525252f123%2525252525252525252fhead\n".as_slice(),
         ),
         (
             "public-gh-pr-command",
@@ -355,6 +379,135 @@ fn senior_swe_bench_select_candidate_artifact_fails_closed_on_unsafe_manifests()
             .expect("run select command");
         assert_eq!(rejected_public.status.code(), Some(1));
         assert!(String::from_utf8_lossy(&rejected_public.stderr).contains("public GitHub"));
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn senior_swe_bench_select_candidate_artifact_rejects_percent_decode_depth_boundary() {
+    fn artifact_with_source(source: &str) -> Vec<u8> {
+        format!(
+            "diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: {source}\n"
+        )
+        .into_bytes()
+    }
+
+    fn fully_percent_encode(input: &str, depth: usize) -> String {
+        let mut encoded = input.to_string();
+        for _ in 0..depth {
+            encoded = encoded
+                .bytes()
+                .map(|byte| format!("%{byte:02x}"))
+                .collect::<String>();
+        }
+        encoded
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "a2d-select-candidate-depth-boundary-{}",
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+
+    let cases: Vec<(&str, Vec<u8>, bool)> = vec![
+        (
+            "github-host-at-eight-pass-cap",
+            artifact_with_source("https://github%252525252525252ecom/example/repo"),
+            true,
+        ),
+        (
+            "github-host-over-eight-pass-cap",
+            artifact_with_source("https://github%25252525252525252ecom/example/repo"),
+            true,
+        ),
+        (
+            "fully-encoded-github-host-over-eight-pass-cap",
+            artifact_with_source(&fully_percent_encode(
+                "https://GitHub.com/example/repo/pull/1",
+                9,
+            )),
+            true,
+        ),
+        (
+            "pull-ref-at-eight-pass-cap",
+            artifact_with_source(
+                "refs%252525252525252fpull%252525252525252f123%252525252525252fhead",
+            ),
+            true,
+        ),
+        (
+            "pull-ref-over-eight-pass-cap",
+            artifact_with_source(
+                "refs%25252525252525252fpull%25252525252525252f123%25252525252525252fhead",
+            ),
+            true,
+        ),
+        (
+            "fully-encoded-pull-ref-over-eight-pass-cap",
+            artifact_with_source(&fully_percent_encode("refs/pull/123/head", 9)),
+            true,
+        ),
+        (
+            "safe-local-metadata-over-eight-pass-cap",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nNotes: local issue metadata %252525252525252541 is not a public solution reference.\n"
+                .to_vec(),
+            false,
+        ),
+    ];
+
+    for (name, artifact_bytes, should_reject) in cases {
+        let artifact = root.join(format!("{name}.artifact"));
+        fs::write(&artifact, &artifact_bytes).unwrap();
+        let manifest = write_manifest(
+            &root,
+            serde_json::json!([
+                {
+                    "cycle": 0,
+                    "report_cycle": 1,
+                    "workcell_id": "wc-0001",
+                    "enzyme_id": "coder",
+                    "provider": "test-provider",
+                    "artifact_type": "code",
+                    "path": artifact,
+                    "git_object_hash": git_hash_object_bytes(&artifact_bytes),
+                    "bytes": artifact_bytes.len()
+                }
+            ]),
+        );
+        let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+            .args([
+                "senior-swe-bench-select-candidate-artifact",
+                manifest.to_str().unwrap(),
+            ])
+            .output()
+            .expect("run select command");
+
+        if should_reject {
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{name} should reject public GitHub references at or beyond the decode cap"
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("public GitHub"),
+                "{name} stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        } else {
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{name} should remain accepted as harmless local metadata: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(
+                value["contains_public_github_solution_reference"].as_bool(),
+                Some(false),
+                "{name} should not be treated as public GitHub leakage"
+            );
+        }
     }
 
     let _ = fs::remove_dir_all(root);
