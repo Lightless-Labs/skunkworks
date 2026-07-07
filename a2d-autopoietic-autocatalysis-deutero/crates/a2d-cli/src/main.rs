@@ -7055,15 +7055,13 @@ where
                         );
                     }
                     let child_artifact = attempt_dir.join("retry-next-cycle-execution.json");
-                    let controller = retry_next_gate_execution_value(
+                    write_retry_next_gate_execution_artifact(
                         "retry_run_next_cycle",
                         &before_status,
                         &child,
                         &child_artifact,
                         &output_path,
-                    );
-                    write_json_artifact(&output_path, &controller)?;
-                    Ok(controller)
+                    )
                 }
                 Some("completed_success") | Some("stopped") => {
                     let retry_execution_path = &next_cycle_config.retry_execution;
@@ -7124,15 +7122,13 @@ where
                 "github_solution_search_allowed": false,
                 "fitness_claim_allowed_before_evidence": false,
             });
-            let controller = retry_next_gate_execution_value(
+            write_retry_next_gate_execution_artifact(
                 "retry_resume_attempt_plan",
                 &before_status,
                 &plan,
                 &plan_path,
                 &output_path,
-            );
-            write_json_artifact(&output_path, &controller)?;
-            Ok(controller)
+            )
         }
         SeniorSweBenchRetryRunNextGateConfig::FromResumeAttemptPlan { retry_attempt_plan } => {
             let plan_text = read_artifact_to_string(retry_attempt_plan)?;
@@ -7159,15 +7155,13 @@ where
                 "github_solution_search_allowed": false,
                 "fitness_claim_allowed_before_evidence": false,
             });
-            let controller = retry_next_gate_execution_value(
+            write_retry_next_gate_execution_artifact(
                 "retry_resume_attempt_execute",
                 &before_status,
                 &child,
                 &child_artifact,
                 &output_path,
-            );
-            write_json_artifact(&output_path, &controller)?;
-            Ok(controller)
+            )
         }
     }
 }
@@ -7195,6 +7189,24 @@ fn preflight_retry_next_gate_output(path: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn write_retry_next_gate_execution_artifact(
+    executed_gate: &str,
+    before_status: &Value,
+    child: &Value,
+    child_artifact_path: &Path,
+    controller_artifact_path: &Path,
+) -> Result<Value, String> {
+    let controller = retry_next_gate_execution_value(
+        executed_gate,
+        before_status,
+        child,
+        child_artifact_path,
+        controller_artifact_path,
+    );
+    write_json_artifact(controller_artifact_path, &controller)?;
+    Ok(controller)
 }
 
 fn retry_next_gate_execution_value(
@@ -7225,6 +7237,14 @@ fn retry_next_gate_execution_value(
         .and_then(Value::as_bool)
         == Some(true)
         && fitness_claim_allowed_after_gate;
+    let github_solution_search_allowed = before_status
+        .get("github_solution_search_allowed")
+        .and_then(Value::as_bool)
+        == Some(true)
+        || child
+            .get("github_solution_search_allowed")
+            .and_then(Value::as_bool)
+            == Some(true);
     json!({
         "schema_version": "a2d.senior-swe-bench-retry-next-gate-execution.v1",
         "status": child_status,
@@ -7266,7 +7286,7 @@ fn retry_next_gate_execution_value(
             .get("fitness_evidence_inspection_started")
             .and_then(Value::as_bool)
             .unwrap_or_else(|| fitness_claim_allowed_after_gate),
-        "github_solution_search_allowed": false,
+        "github_solution_search_allowed": github_solution_search_allowed,
         "fitness_claim_allowed_before_evidence": false,
         "fitness_claim_allowed_after_gate": fitness_claim_allowed_after_gate,
         "official_senior_swe_bench_mastery": official_mastery,
@@ -17825,6 +17845,86 @@ mod tests {
                 .is_file()
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retry_next_gate_execution_surfaces_github_solution_search_policy_from_inputs() {
+        let before_status_safe = json!({
+            "github_solution_search_allowed": false,
+        });
+        let child_safe = json!({
+            "schema_version": "a2d.test-child.v1",
+            "status": "success",
+            "github_solution_search_allowed": false,
+        });
+        let safe = retry_next_gate_execution_value(
+            "retry_resume_attempt_plan",
+            &before_status_safe,
+            &child_safe,
+            Path::new("child.json"),
+            Path::new("controller.json"),
+        );
+        assert_eq!(
+            safe["github_solution_search_allowed"].as_bool(),
+            Some(false)
+        );
+
+        let before_status_unsafe = json!({
+            "github_solution_search_allowed": true,
+        });
+        let unsafe_before = retry_next_gate_execution_value(
+            "retry_resume_attempt_plan",
+            &before_status_unsafe,
+            &child_safe,
+            Path::new("child.json"),
+            Path::new("controller.json"),
+        );
+        assert_eq!(
+            unsafe_before["github_solution_search_allowed"].as_bool(),
+            Some(true),
+            "controller metadata must not launder unsafe before_status policy to false"
+        );
+
+        let child_unsafe = json!({
+            "schema_version": "a2d.test-child.v1",
+            "status": "success",
+            "github_solution_search_allowed": true,
+        });
+        let unsafe_child = retry_next_gate_execution_value(
+            "retry_resume_attempt_plan",
+            &before_status_safe,
+            &child_unsafe,
+            Path::new("child.json"),
+            Path::new("controller.json"),
+        );
+        assert_eq!(
+            unsafe_child["github_solution_search_allowed"].as_bool(),
+            Some(true),
+            "controller metadata must not launder unsafe child policy to false"
+        );
+
+        let controller_artifact = unique_temp_path("a2d-next-gate-policy-surfacing", "json");
+        let persisted_from_controller_path = write_retry_next_gate_execution_artifact(
+            "retry_resume_attempt_plan",
+            &before_status_unsafe,
+            &child_safe,
+            Path::new("child.json"),
+            &controller_artifact,
+        )
+        .unwrap();
+        assert_eq!(
+            persisted_from_controller_path["github_solution_search_allowed"].as_bool(),
+            Some(true),
+            "production controller artifact writer must preserve unsafe policy metadata"
+        );
+        let persisted: Value =
+            serde_json::from_slice(&fs::read(&controller_artifact).unwrap()).unwrap();
+        assert_eq!(
+            persisted["github_solution_search_allowed"].as_bool(),
+            Some(true),
+            "persisted controller artifact must preserve unsafe policy metadata"
+        );
+        let _ = fs::remove_file(controller_artifact);
     }
 
     #[test]
