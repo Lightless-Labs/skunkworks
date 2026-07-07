@@ -3402,6 +3402,7 @@ def verify_demo_docs_texts(docs: dict[str, str]) -> None:
         "python3 bench/self_correction_demo.py verify-demo-docs",
         "python3 bench/self_correction_demo.py audit-demo-evidence",
         "python3 bench/self_correction_demo.py audit-demo-evidence --json",
+        "fresh_provider_backed_current_head_loop_evidence=false",
         "senior_swe_bench_uncontaminated_evidence=false",
         canonical_verify_archive_command(),
         "cargo run -p a2ctl -- demo-evidence --workspace .",
@@ -4379,6 +4380,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "python3 bench/self_correction_demo.py verify-demo-docs",
                     "python3 bench/self_correction_demo.py audit-demo-evidence",
                     "python3 bench/self_correction_demo.py audit-demo-evidence --json",
+                    "fresh_provider_backed_current_head_loop_evidence=false",
                     "senior_swe_bench_uncontaminated_evidence=false",
                     canonical_verify_archive_command(),
                     "cargo run -p a2ctl -- demo-evidence --workspace .",
@@ -4395,6 +4397,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     "python3 bench/self_correction_demo.py verify-demo-docs; "
                     "python3 bench/self_correction_demo.py audit-demo-evidence; "
                     "python3 bench/self_correction_demo.py audit-demo-evidence --json; "
+                    "fresh_provider_backed_current_head_loop_evidence=false; "
                     "senior_swe_bench_uncontaminated_evidence=false; "
                     f"{canonical_verify_archive_command()}; "
                     "cargo run -p a2ctl -- demo-evidence --workspace .; "
@@ -4572,6 +4575,16 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(RuntimeError, "fresh provider-backed"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_missing_current_head_false_caveat(self) -> None:
+        docs = self.demo_docs_fixture()
+        docs["todos/self-correction-loop.md"] = docs["todos/self-correction-loop.md"].replace(
+            "fresh_provider_backed_current_head_loop_evidence=false; ",
+            "",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "fresh_provider_backed_current_head_loop_evidence"):
             verify_demo_docs_texts(docs)
 
     def test_verify_demo_docs_texts_rejects_missing_handoff_allowlist_evidence_caveat(self) -> None:
