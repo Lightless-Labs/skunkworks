@@ -10008,6 +10008,14 @@ fn extract_fenced_unified_diff(input: &str) -> Option<String> {
             buffer.push('\n');
         }
     }
+
+    if in_fence {
+        let candidate = buffer.trim();
+        if looks_like_unified_diff(candidate) {
+            return Some(candidate.to_string());
+        }
+    }
+
     None
 }
 
@@ -17224,6 +17232,17 @@ mod tests {
             "--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n"
         );
 
+        let unterminated_fenced = "```diff\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new";
+        assert_eq!(
+            extract_senior_swe_bench_candidate_patch(unterminated_fenced).unwrap(),
+            "--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\n"
+        );
+
+        assert!(
+            extract_senior_swe_bench_candidate_patch("```text\nunterminated prose without a diff")
+                .unwrap_err()
+                .contains("unified diff")
+        );
         assert!(
             extract_senior_swe_bench_candidate_patch("explanation without a diff")
                 .unwrap_err()
