@@ -828,6 +828,10 @@ def run_agent_network_boundary_inventory_json(path: Path) -> dict[str, object]:
             isinstance(a2_boundary, dict)
             and a2_boundary.get("fail_closed_restricted_policies") is True
         ),
+        "a2_owned_restricted_policy_boundaries_covered": bool(
+            isinstance(a2_boundary, dict)
+            and a2_boundary.get("a2_owned_restricted_policy_boundaries_covered") is True
+        ),
         "a2_owned_sandbox_enforced": bool(
             isinstance(a2_boundary, dict)
             and a2_boundary.get("sandbox_enforced_for_restricted_policies") is True
@@ -836,6 +840,9 @@ def run_agent_network_boundary_inventory_json(path: Path) -> dict[str, object]:
             isinstance(sandbox_runtime, dict) and sandbox_runtime.get("available") is True
         ),
         "launch_sandbox_enforced": bool(inventory.get("launch_sandbox_enforced") is True),
+        "sandbox_launch_surfaces_detected": bool(
+            inventory.get("sandbox_launch_surfaces_detected") is True
+        ),
         "required_sandbox_runtime_gate_passed": bool(
             isinstance(required_gate, dict) and required_gate.get("passed") is True
         ),
@@ -1083,6 +1090,14 @@ def verify_fresh_preflight_report(
             raise RuntimeError(
                 "fresh preflight boundary inventory must prove A2-owned restricted-policy launch paths fail closed"
             )
+        for key in (
+            "a2_owned_restricted_policy_boundaries_covered",
+            "sandbox_launch_surfaces_detected",
+        ):
+            if not isinstance(boundary_inventory.get(key), bool):
+                raise RuntimeError(
+                    "fresh preflight boundary inventory must record boolean " f"{key}"
+                )
         sandbox_runtime_available = boundary_inventory.get("sandbox_runtime_available")
         if not isinstance(sandbox_runtime_available, bool):
             raise RuntimeError(
@@ -1134,7 +1149,11 @@ def verify_fresh_preflight_report(
             raise RuntimeError(
                 "fresh preflight boundary inventory embedded inventory lacks a2_owned_provider_launch_boundary"
             )
-        for key in ("fail_closed_restricted_policies", "sandbox_enforced_for_restricted_policies"):
+        for key in (
+            "fail_closed_restricted_policies",
+            "a2_owned_restricted_policy_boundaries_covered",
+            "sandbox_enforced_for_restricted_policies",
+        ):
             if not isinstance(embedded_a2_boundary.get(key), bool):
                 raise RuntimeError(
                     "fresh preflight boundary inventory embedded A2-owned provider launch boundary "
@@ -1147,10 +1166,12 @@ def verify_fresh_preflight_report(
             raise RuntimeError(
                 "fresh preflight boundary inventory embedded inventory must record boolean sandbox_runtime.available"
             )
-        if not isinstance(embedded_inventory.get("launch_sandbox_enforced"), bool):
-            raise RuntimeError(
-                "fresh preflight boundary inventory embedded inventory must record boolean launch_sandbox_enforced"
-            )
+        for key in ("launch_sandbox_enforced", "sandbox_launch_surfaces_detected"):
+            if not isinstance(embedded_inventory.get(key), bool):
+                raise RuntimeError(
+                    "fresh preflight boundary inventory embedded inventory must record boolean "
+                    f"{key}"
+                )
         embedded_required_gate = embedded_inventory.get("required_sandbox_runtime_gate")
         if not isinstance(embedded_required_gate, dict):
             raise RuntimeError(
@@ -1224,11 +1245,17 @@ def verify_fresh_preflight_report(
             )
         embedded_summary = {
             "a2_owned_fail_closed": embedded_a2_boundary["fail_closed_restricted_policies"],
+            "a2_owned_restricted_policy_boundaries_covered": embedded_a2_boundary[
+                "a2_owned_restricted_policy_boundaries_covered"
+            ],
             "a2_owned_sandbox_enforced": embedded_a2_boundary[
                 "sandbox_enforced_for_restricted_policies"
             ],
             "sandbox_runtime_available": embedded_sandbox_runtime["available"],
             "launch_sandbox_enforced": embedded_inventory["launch_sandbox_enforced"],
+            "sandbox_launch_surfaces_detected": embedded_inventory[
+                "sandbox_launch_surfaces_detected"
+            ],
             "usable_sandbox_provider_allowlist_enforced": embedded_usable_allowlist,
             "required_sandbox_runtime_gate_passed": embedded_required_gate_passed,
         }
@@ -4272,21 +4299,29 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self,
         *,
         fail_closed: bool = True,
+        a2_boundaries_covered: bool = True,
         a2_sandbox_enforced: bool = False,
         sandbox_runtime_available: bool = False,
         launch_sandbox_enforced: bool = False,
+        sandbox_launch_surfaces_detected: bool | None = None,
         required_gate_passed: bool = False,
         required_gate_failures: list[str] | None = None,
     ) -> dict[str, object]:
         if required_gate_failures is None:
             required_gate_failures = [] if required_gate_passed else ["sandbox runtime/enforcement prerequisites missing"]
+        if sandbox_launch_surfaces_detected is None:
+            sandbox_launch_surfaces_detected = bool(
+                sandbox_runtime_available and launch_sandbox_enforced and a2_boundaries_covered
+            )
         return {
             "a2_owned_provider_launch_boundary": {
                 "fail_closed_restricted_policies": fail_closed,
+                "a2_owned_restricted_policy_boundaries_covered": a2_boundaries_covered,
                 "sandbox_enforced_for_restricted_policies": a2_sandbox_enforced,
             },
             "sandbox_runtime": {"available": sandbox_runtime_available},
             "launch_sandbox_enforced": launch_sandbox_enforced,
+            "sandbox_launch_surfaces_detected": sandbox_launch_surfaces_detected,
             "required_sandbox_runtime_gate": {
                 "passed": required_gate_passed,
                 "failures": required_gate_failures,
@@ -4371,6 +4406,10 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     isinstance(a2_boundary, dict)
                     and a2_boundary.get("fail_closed_restricted_policies") is True
                 ),
+                "a2_owned_restricted_policy_boundaries_covered": bool(
+                    isinstance(a2_boundary, dict)
+                    and a2_boundary.get("a2_owned_restricted_policy_boundaries_covered") is True
+                ),
                 "a2_owned_sandbox_enforced": bool(
                     isinstance(a2_boundary, dict)
                     and a2_boundary.get("sandbox_enforced_for_restricted_policies") is True
@@ -4381,6 +4420,10 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 "launch_sandbox_enforced": bool(
                     isinstance(inventory_content, dict)
                     and inventory_content.get("launch_sandbox_enforced") is True
+                ),
+                "sandbox_launch_surfaces_detected": bool(
+                    isinstance(inventory_content, dict)
+                    and inventory_content.get("sandbox_launch_surfaces_detected") is True
                 ),
                 "required_sandbox_runtime_gate_passed": bool(
                     isinstance(required_gate, dict) and required_gate.get("passed") is True
@@ -7465,9 +7508,11 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                             "inventory_content",
                         ],
                         "a2_owned_fail_closed": True,
+                        "a2_owned_restricted_policy_boundaries_covered": True,
                         "a2_owned_sandbox_enforced": False,
                         "sandbox_runtime_available": False,
                         "launch_sandbox_enforced": False,
+                        "sandbox_launch_surfaces_detected": False,
                         "required_sandbox_runtime_gate_passed": False,
                         "required_sandbox_runtime_gate_failures": [
                             "sandbox runtime/enforcement prerequisites missing"
@@ -7560,6 +7605,38 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             report_path = Path(tmpdir) / "fresh.report.json"
             report_path.write_text(json.dumps(report), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "A2-owned restricted-policy"):
+                verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_requires_a2_boundary_coverage_boolean(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content()
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=inventory_sha256,
+            inventory_content=inventory_content,
+        )
+        del report["boundary_inventory"]["a2_owned_restricted_policy_boundaries_covered"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "a2_owned_restricted_policy_boundaries_covered"):
+                verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_requires_sandbox_launch_surfaces_boolean(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content()
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=inventory_sha256,
+            inventory_content=inventory_content,
+        )
+        del report["boundary_inventory"]["sandbox_launch_surfaces_detected"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "sandbox_launch_surfaces_detected"):
                 verify_fresh_preflight_report(report_path)
 
     def test_verify_preflight_boundary_inventory_rejects_sandbox_overclaim(self) -> None:
