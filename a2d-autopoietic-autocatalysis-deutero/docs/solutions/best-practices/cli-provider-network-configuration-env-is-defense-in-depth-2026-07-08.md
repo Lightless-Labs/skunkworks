@@ -1,0 +1,36 @@
+---
+module: a2d-providers
+tags: [provider-boundary, senior-swe-bench, no-search-policy, defense-in-depth]
+problem_type: best-practice
+---
+
+# CLI Provider Network Configuration Env Is Defense-in-Depth
+
+## Problem
+
+A²D already passes no-public-solution-search policy flags to CLI provider subprocesses, but provider CLIs still inherited parent proxy/package-manager network configuration such as `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `GIT_PROXY_COMMAND`, `CARGO_HTTP_PROXY`, and Rustup mirror variables.
+
+That inheritance is not itself a public-solution-search permission, but it weakens the provider boundary by allowing ambient host network/proxy configuration to shape artifact-generation subprocesses.
+
+## Practice
+
+Before spawning CLI providers, remove common network/proxy/package-manager configuration variables from the child `Command` environment while still passing explicit A²D no-public-solution-search policy flags.
+
+This is **defense-in-depth only**. It reduces ambient network configuration inheritance; it does **not** prove OS/network no-egress, syscall filtering, or benchmark-official isolation.
+
+## Regression
+
+`remove_network_configuration_env_drops_explicit_network_env` constructs a child command with explicit network configuration variables, applies the scrubber, and verifies the child no longer sees any scrubbed variable while unrelated sentinel env survives. The test avoids mutating process-global parent environment.
+
+## Evidence
+
+Fresh source-patch gate:
+
+- `runs/20260708-provider-network-env-scrub-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`
+- `schema_version: a2d.fitness-evidence.v1`
+- `actual_tests_evaluated: true`
+- `non_regressing: true`
+- `fitness: 1.0`
+- `source_diff_hash: 5e0c1967b4edc6cbf67b44edb2d8bc2cf49227d7`
+
+Validation included `cargo fmt --check`, focused and full `a2d-providers` tests, full `CARGO_BUILD_JOBS=2 cargo test`, reviewer re-review, and `fitness-evidence-inspect --require-all-tests-pass`.

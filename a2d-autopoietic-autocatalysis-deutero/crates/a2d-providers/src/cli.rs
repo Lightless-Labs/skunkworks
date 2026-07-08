@@ -260,6 +260,36 @@ fn provider_no_public_solution_search_env() -> [(&'static str, &'static str); 5]
     ]
 }
 
+fn network_configuration_env_vars() -> [&'static str; 16] {
+    // Environment scrubbing is defense-in-depth only. It removes common proxy
+    // and package-manager network configuration inherited from the parent
+    // process, but it is not OS/network namespace isolation.
+    [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "FTP_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "ftp_proxy",
+        "no_proxy",
+        "GIT_PROXY_COMMAND",
+        "CARGO_HTTP_PROXY",
+        "CARGO_HTTP_CAINFO",
+        "CARGO_HTTP_CHECK_REVOKE",
+        "RUSTUP_DIST_SERVER",
+        "RUSTUP_UPDATE_ROOT",
+    ]
+}
+
+fn remove_network_configuration_env(command: &mut Command) {
+    for key in network_configuration_env_vars() {
+        command.env_remove(key);
+    }
+}
+
 fn isolated_provider_cwd(command: &str) -> Result<std::path::PathBuf, ProviderError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -325,21 +355,23 @@ impl Provider for CliProvider {
             })?;
         }
 
-        let mut child = Command::new(&self.command)
+        let mut command = Command::new(&self.command);
+        command
             .args(&args)
             .envs(provider_no_public_solution_search_env())
             .current_dir(&sandbox_dir)
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                let _ = std::fs::remove_dir_all(&sandbox_dir);
-                ProviderError::InvocationFailed(format!(
-                    "{} not found or failed to start: {e}",
-                    self.command
-                ))
-            })?;
+            .stdout(std::process::Stdio::piped());
+        remove_network_configuration_env(&mut command);
+
+        let mut child = command.spawn().map_err(|e| {
+            let _ = std::fs::remove_dir_all(&sandbox_dir);
+            ProviderError::InvocationFailed(format!(
+                "{} not found or failed to start: {e}",
+                self.command
+            ))
+        })?;
 
         // Provider timeout — no invocation should silently hang.
         // GLM is often slow-but-productive; give it a longer default window.
@@ -524,6 +556,34 @@ mod tests {
 
         let response = provider.invoke(&request).expect("provider env probe");
         assert_eq!(response.text, "a2d-cli-provider|false|true|false|true");
+    }
+
+    #[test]
+    fn remove_network_configuration_env_drops_explicit_network_env() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("env");
+        for key in network_configuration_env_vars() {
+            command.env(key, "http://example.invalid:9");
+        }
+        command.env("A2D_ENV_SCRUB_SENTINEL", "present");
+        remove_network_configuration_env(&mut command);
+
+        let output = command.output().expect("env scrub probe should run");
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for key in network_configuration_env_vars() {
+            assert!(
+                !stdout
+                    .lines()
+                    .any(|line| line.starts_with(&format!("{key}="))),
+                "network configuration env var {key} leaked to subprocess: {stdout}"
+            );
+        }
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line == "A2D_ENV_SCRUB_SENTINEL=present")
+        );
     }
 
     #[test]
