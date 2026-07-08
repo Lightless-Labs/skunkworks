@@ -1851,6 +1851,38 @@ def audit_boundary_docs(
     }
 
 
+def fresh_provider_backed_evidence_blockers(result: dict[str, Any]) -> list[str]:
+    """Return machine-readable reasons this audit is not fresh loop evidence."""
+    blockers: list[str] = []
+    a2_boundary = result.get("a2_owned_provider_launch_boundary")
+    if not isinstance(a2_boundary, dict) or not a2_boundary.get("fail_closed_restricted_policies"):
+        blockers.append("A2-owned restricted-policy provider launch paths are not visibly fail-closed")
+    elif not a2_boundary.get("a2_owned_restricted_policy_boundaries_covered"):
+        missing = missing_a2_owned_sandbox_surfaces(a2_boundary)
+        suffix = f": {', '.join(missing)}" if missing else ""
+        blockers.append(
+            "A2-owned restricted-policy provider boundaries are not fully covered by sandbox command wrapping or policy-aware model APIs"
+            f"{suffix}"
+        )
+    if not result.get("sandbox_runtime", {}).get("available"):
+        blockers.append("@anthropic-ai/sandbox-runtime is not installed globally")
+    if not result.get("launch_sandbox_enforced"):
+        missing = missing_child_agent_sandbox_surfaces(result)
+        suffix = f": {', '.join(missing)}" if missing else ""
+        blockers.append(f"actual child-agent launch functions do not show sandbox enforcement{suffix}")
+    if not result.get("usable_sandbox_provider_allowlist_enforced"):
+        blockers.append(
+            "usable audited sandbox/provider allowlist enforcement is not implemented or recorded in fresh rows"
+        )
+    if not result.get("provider_backed_benchmark_executed"):
+        blockers.append("this audit did not execute a fresh provider-backed benchmark")
+    if not result.get("fresh_provider_backed_current_head_loop_evidence"):
+        blockers.append("no fresh current-HEAD loop evidence artifact was produced and validated")
+    if not result.get("senior_swe_bench_uncontaminated_evidence"):
+        blockers.append("no uncontaminated Senior SWE Bench evidence was produced")
+    return blockers
+
+
 def audit() -> dict[str, Any]:
     pi_package_json = PI_PACKAGE / "package.json"
     pi_version = read_json(pi_package_json).get("version") if pi_package_json.exists() else None
@@ -1907,7 +1939,7 @@ def audit() -> dict[str, Any]:
     # enforcement claim false until those fresh-evidence prerequisites exist.
     usable_sandbox_provider_allowlist_enforced = False
 
-    return {
+    result = {
         "schema": "a2.agent-network-boundary-audit.v1",
         "not_benchmark_evidence": True,
         "creates_loop_evidence": False,
@@ -1951,6 +1983,8 @@ def audit() -> dict[str, Any]:
             else "A2-owned provider launch paths do not visibly fail closed before provider launch; fix the A2 launch gate before treating restricted-policy benchmark evidence as uncontaminated."
         ),
     }
+    result["fresh_provider_backed_evidence_blockers"] = fresh_provider_backed_evidence_blockers(result)
+    return result
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -3330,6 +3364,42 @@ let unsandboxed = Command::new("pi")
         self.assertFalse(result["fresh_provider_backed_current_head_loop_evidence"])
         self.assertFalse(result["senior_swe_bench_uncontaminated_evidence"])
         self.assertFalse(result["usable_sandbox_provider_allowlist_enforced"])
+        blockers = result["fresh_provider_backed_evidence_blockers"]
+        self.assertIn("this audit did not execute a fresh provider-backed benchmark", blockers)
+        self.assertIn("no fresh current-HEAD loop evidence artifact was produced and validated", blockers)
+        self.assertIn("no uncontaminated Senior SWE Bench evidence was produced", blockers)
+        self.assertTrue(
+            any("usable audited sandbox/provider allowlist enforcement" in blocker for blocker in blockers)
+        )
+
+    def test_fresh_provider_backed_evidence_blockers_name_runtime_launch_and_row_gaps(self) -> None:
+        blockers = fresh_provider_backed_evidence_blockers(
+            {
+                "a2_owned_provider_launch_boundary": {
+                    "fail_closed_restricted_policies": True,
+                    "a2_owned_restricted_policy_boundaries_covered": True,
+                },
+                "sandbox_runtime": {"available": False},
+                "launch_sandbox_enforced": False,
+                "actual_launch_sandbox_enforcement": {
+                    "subagent": {"spawn_present": True, "found": False},
+                    "foundry_team": {"spawn_present": True, "found": False},
+                    "required_in_actual_launch_code_not_examples": True,
+                },
+                "usable_sandbox_provider_allowlist_enforced": False,
+                "provider_backed_benchmark_executed": False,
+                "fresh_provider_backed_current_head_loop_evidence": False,
+                "senior_swe_bench_uncontaminated_evidence": False,
+            }
+        )
+
+        self.assertIn("@anthropic-ai/sandbox-runtime is not installed globally", blockers)
+        self.assertTrue(
+            any("actual child-agent launch functions do not show sandbox enforcement" in blocker for blocker in blockers)
+        )
+        self.assertTrue(
+            any("usable audited sandbox/provider allowlist enforcement" in blocker for blocker in blockers)
+        )
 
     def test_boundary_docs_allow_negative_enforcement_wording(self) -> None:
         valid_claims = [
