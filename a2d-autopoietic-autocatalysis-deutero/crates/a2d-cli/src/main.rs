@@ -16615,6 +16615,44 @@ mod tests {
     }
 
     #[test]
+    fn provider_policy_gate_rejects_material_invocation_cost_increase() {
+        let current = policy_summary(TopologyMode::CurrentPolicy, 1.0, 4, 20.0);
+        let proposed = policy_summary(TopologyMode::ProposedPolicy, 1.0, 7, 20.0);
+
+        let decision = decide_provider_policy_gate(&current, &proposed);
+
+        assert!(!decision.accepted);
+        assert_eq!(decision.fitness_delta, 0.0);
+        assert_eq!(decision.invocation_delta, 3);
+        assert!(
+            decision
+                .reason
+                .contains("materially increases invocations by 3 (slack 1)"),
+            "{}",
+            decision.reason
+        );
+    }
+
+    #[test]
+    fn provider_policy_gate_rejects_material_wall_clock_cost_increase() {
+        let current = policy_summary(TopologyMode::CurrentPolicy, 1.0, 4, 20.0);
+        let proposed = policy_summary(TopologyMode::ProposedPolicy, 1.0, 4, 31.0);
+
+        let decision = decide_provider_policy_gate(&current, &proposed);
+
+        assert!(!decision.accepted);
+        assert_eq!(decision.fitness_delta, 0.0);
+        assert_eq!(decision.wall_delta_secs, 11.0);
+        assert!(
+            decision
+                .reason
+                .contains("materially increases wall-clock by 11.0s (slack 10.0s)"),
+            "{}",
+            decision.reason
+        );
+    }
+
+    #[test]
     fn provider_policy_deltas_name_current_and_proposed_assignments() {
         let current = ProviderPolicy {
             assignments: BTreeMap::from([("coder".to_string(), "old".to_string())]),

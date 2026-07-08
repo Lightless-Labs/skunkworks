@@ -3,6 +3,7 @@
 **Created:** 2026-05-23
 **Started:** 2026-05-26 — bounded current-vs-proposed comparison gate implemented
 **Completed:** 2026-05-28 — live runtime provider_policy proposal rejected for missing comparison evidence; no durable lineage policy written
+**Hardened:** 2026-07-08 — direct unit coverage now pins material invocation and wall-clock cost rejection branches
 **Plan:** `docs/plans/provider-policy-topology-gate.md`
 **Depends on:** `provider_policy` typed artifact and lineage persistence (implemented 2026-05-23).
 
@@ -47,6 +48,10 @@ Minimal acceptance rule:
 ## Notes
 
 This is the next safety step after `provider-policy-lineage-persistence-2026-05-23.md`. Provider routing is now an evolvable mechanism; durable evolution needs outcome evidence, not just schema validity.
+
+## Coverage hardening
+
+2026-07-08: Added direct regression coverage for the existing cost rejection branches. `provider_policy_gate_rejects_material_invocation_cost_increase` and `provider_policy_gate_rejects_material_wall_clock_cost_increase` keep best fitness equal and assert `fitness_delta == 0.0`, then exceed invocation or wall-clock slack so durable provider-policy changes still fail closed on cost. Fresh source-patch evidence: `runs/20260708-provider-policy-cost-gate-coverage-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json` (`source_diff_hash: f41c4653f0fecd35ec3a5eac4a6647796664df65`). This is coverage only; no provider default or durable policy changed.
 
 ## Live validation
 
