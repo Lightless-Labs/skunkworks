@@ -227,10 +227,10 @@ pub fn validate_patches(project_root: &Path, patches: &[SystemPatch]) -> SelfSan
         }
     }
 
-    let test_result = Command::new("cargo")
-        .arg("test")
-        .current_dir(temp_dir.path())
-        .output();
+    let mut command = Command::new("cargo");
+    command.arg("test").current_dir(temp_dir.path());
+    harden_self_sandbox_child_command(&mut command);
+    let test_result = command.output();
 
     match test_result {
         Ok(output) => {
@@ -263,6 +263,11 @@ pub fn validate_patches(project_root: &Path, patches: &[SystemPatch]) -> SelfSan
             rejection_reason: Some(format!("Failed to run cargo test: {e}")),
         },
     }
+}
+
+fn harden_self_sandbox_child_command(command: &mut Command) {
+    crate::process_env::apply_no_public_solution_search_env(command);
+    crate::process_env::remove_network_configuration_env(command);
 }
 
 /// Read the current content of all modifiable system files.
@@ -539,6 +544,78 @@ path = "src/metabolism.rs"
         )
         .unwrap();
         temp
+    }
+
+    #[test]
+    fn self_sandbox_cargo_test_child_process_env_fixture() {
+        if std::env::var("A2D_RUN_SELF_SANDBOX_ENV_FIXTURE").as_deref() != Ok("1") {
+            return;
+        }
+
+        let temp = minimal_workspace_fixture();
+        let network_assertions = crate::process_env::network_configuration_env_vars()
+            .into_iter()
+            .map(|key| format!("    assert!(std::env::var({key:?}).is_err(), {key:?});"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let policy_assertions = crate::process_env::no_public_solution_search_env()
+            .into_iter()
+            .map(|(key, value)| {
+                format!(
+                    "    assert_eq!(std::env::var({key:?}).as_deref(), Ok({value:?}), {key:?});"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let patch = SystemPatch {
+            file_path: "crates/a2d-core/tests/bootstrap.rs".to_string(),
+            new_content: format!(
+                r#"use a2d_core::answer;
+
+#[test]
+fn answer_matches_contract() {{
+    assert_eq!(answer(), 1);
+}}
+
+#[test]
+fn cargo_test_child_observes_hardened_env() {{
+{policy_assertions}
+{network_assertions}
+}}
+"#,
+            ),
+        };
+
+        let result = validate_patch(temp.path(), &patch);
+        assert!(
+            result.accepted,
+            "self-sandbox cargo test env probe should pass; rejection: {:?}\nstderr:\n{}\nstdout:\n{}",
+            result.rejection_reason, result.compile_output, result.test_output
+        );
+    }
+
+    #[test]
+    fn self_sandbox_cargo_test_receives_policy_env_and_scrubbed_network_env() {
+        let current_exe = std::env::current_exe().expect("current test binary path");
+        let mut command = std::process::Command::new(current_exe);
+        command
+            .arg("--exact")
+            .arg("self_sandbox::tests::self_sandbox_cargo_test_child_process_env_fixture")
+            .arg("--nocapture")
+            .env("A2D_RUN_SELF_SANDBOX_ENV_FIXTURE", "1");
+        for key in crate::process_env::network_configuration_env_vars() {
+            command.env(key, format!("self-sandbox-leak-sentinel-{key}"));
+        }
+
+        let output = command
+            .output()
+            .expect("fixture test process should execute");
+        assert!(
+            output.status.success(),
+            "fixture failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
