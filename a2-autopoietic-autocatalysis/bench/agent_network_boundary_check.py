@@ -6,9 +6,9 @@ reachability. It makes the current child-agent launch boundary reproducible:
 where Pi subagent/Foundry child processes are spawned, whether the example Pi
 sandbox hook exists, whether the sandbox runtime package is available on this
 host, and whether actual child-agent launch functions pass their spawned command
-through a sandbox wrapper or sandbox-exec. Use --require-sandbox-runtime when a
-future benchmark path must fail closed unless both runtime availability and
-launch-path enforcement are visible.
+through a sandbox wrapper or sandbox-exec. Use --require-sandbox-runtime --json when a
+future benchmark path must fail closed with machine-readable failure details unless
+both runtime availability and launch-path enforcement are visible.
 """
 
 from __future__ import annotations
@@ -2036,7 +2036,7 @@ def attach_required_sandbox_runtime_gate(result: dict[str, Any]) -> dict[str, An
     result_with_gate["required_sandbox_runtime_gate"] = {
         "passed": not failures,
         "failures": failures,
-        "command": "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime",
+        "command": "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime --json",
         "interpretation": (
             "fresh provider-backed or uncontaminated Senior SWE Bench evidence remains blocked until this gate passes"
             if failures
@@ -3477,7 +3477,7 @@ let unsandboxed = Command::new("pi")
         self.assertFalse(gate["passed"])
         self.assertEqual(
             gate["command"],
-            "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime",
+            "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime --json",
         )
         self.assertIn("@anthropic-ai/sandbox-runtime not installed globally", gate["failures"])
         self.assertTrue(any("worktree_catalyst.run_pi" in failure for failure in gate["failures"]))
@@ -3541,7 +3541,7 @@ let unsandboxed = Command::new("pi")
         self.assertFalse(gate["passed"])
         self.assertEqual(
             gate["command"],
-            "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime",
+            "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime --json",
         )
         self.assertIn("@anthropic-ai/sandbox-runtime not installed globally", gate["failures"])
         self.assertTrue(any("worktree_catalyst.run_pi" in failure for failure in gate["failures"]))

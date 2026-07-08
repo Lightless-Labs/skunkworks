@@ -74,6 +74,10 @@ AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND = [
     "bench/agent_network_boundary_check.py",
     "--require-sandbox-runtime",
 ]
+AGENT_NETWORK_BOUNDARY_PRECONDITION_JSON_COMMAND = [
+    *AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND,
+    "--json",
+]
 SENIOR_SWE_BENCH_SOURCE = "senior-swe-bench"
 SENIOR_SWE_BENCH_PROVENANCE_FIELDS = (
     "senior_swe_bench_export_sha256",
@@ -573,18 +577,39 @@ def fresh_preflight(args: argparse.Namespace, evidence_json: Path) -> None:
     fresh_provider_preflight_after_output_paths(args)
 
 
+def agent_network_boundary_precondition_gate_details(stdout: str) -> list[str]:
+    if not stdout.strip():
+        return []
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    gate = payload.get("required_sandbox_runtime_gate")
+    if not isinstance(gate, dict):
+        return []
+    failures = gate.get("failures")
+    if not isinstance(failures, list):
+        return []
+    return [failure for failure in failures if isinstance(failure, str)]
+
+
 def ensure_agent_network_boundary_precondition_ready() -> None:
     result = subprocess.run(
-        AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND,
+        AGENT_NETWORK_BOUNDARY_PRECONDITION_JSON_COMMAND,
         cwd=repo_root(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         check=False,
     )
-    if result.returncode != 0:
+    gate_failures = agent_network_boundary_precondition_gate_details(result.stdout)
+    if result.returncode != 0 or gate_failures:
         detail_parts = []
-        if result.stdout.strip():
+        if gate_failures:
+            detail_parts.append(f"required_sandbox_runtime_gate.failures={gate_failures!r}")
+        if result.stdout.strip() and not gate_failures:
             detail_parts.append(f"stdout={result.stdout.strip()!r}")
         if result.stderr.strip():
             detail_parts.append(f"stderr={result.stderr.strip()!r}")
@@ -595,7 +620,7 @@ def ensure_agent_network_boundary_precondition_ready() -> None:
             "fresh provider-backed runs are blocked because the agent network boundary "
             "precondition failed closed before provider launch "
             "(sandbox runtime/enforcement unavailable or check failed); command="
-            f"{display_command(AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND)!r}{details}"
+            f"{display_command(AGENT_NETWORK_BOUNDARY_PRECONDITION_JSON_COMMAND)!r}{details}"
         )
 
 
@@ -807,7 +832,7 @@ def fresh_preflight_report(
         "commands": {
             "agent_network_boundary_inventory": display_command(AGENT_NETWORK_BOUNDARY_INVENTORY_COMMAND),
             "agent_network_boundary_inventory_json": display_command(AGENT_NETWORK_BOUNDARY_INVENTORY_JSON_COMMAND),
-            "agent_network_boundary_precondition": display_command(AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND),
+            "agent_network_boundary_precondition": display_command(AGENT_NETWORK_BOUNDARY_PRECONDITION_JSON_COMMAND),
             "harness": display_command(fresh_command(args)),
             "validation": fresh_validation_summary(args),
             "scorer": display_command(score_command(args.results, evidence_json)),
@@ -1039,9 +1064,9 @@ def verify_fresh_preflight_report(
             raise RuntimeError(
                 "fresh preflight boundary inventory embedded required_sandbox_runtime_gate.failures must be a list of strings"
             )
-        if embedded_required_gate.get("command") != display_command(AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND):
+        if embedded_required_gate.get("command") != display_command(AGENT_NETWORK_BOUNDARY_PRECONDITION_JSON_COMMAND):
             raise RuntimeError(
-                "fresh preflight boundary inventory embedded required_sandbox_runtime_gate.command must be the sandbox runtime precondition command"
+                "fresh preflight boundary inventory embedded required_sandbox_runtime_gate.command must be the JSON sandbox runtime precondition command"
             )
         if FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS != "enforced":
             if embedded_required_gate_passed is not False:
@@ -4069,7 +4094,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             "required_sandbox_runtime_gate": {
                 "passed": required_gate_passed,
                 "failures": required_gate_failures,
-                "command": "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime",
+                "command": "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime --json",
                 "interpretation": "fresh provider-backed evidence remains blocked until this gate passes",
             },
             "creates_loop_evidence": False,
@@ -5605,16 +5630,50 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         preflight.assert_not_called()
         run.assert_not_called()
 
+    def test_agent_network_boundary_precondition_gate_details_extracts_json_failures(self) -> None:
+        stdout = json.dumps(
+            {
+                "required_sandbox_runtime_gate": {
+                    "passed": False,
+                    "failures": [
+                        "@anthropic-ai/sandbox-runtime not installed globally",
+                        "actual child-agent launch functions do not show sandbox enforcement: subagent, foundry_team",
+                    ],
+                }
+            }
+        )
+
+        self.assertEqual(
+            agent_network_boundary_precondition_gate_details(stdout),
+            [
+                "@anthropic-ai/sandbox-runtime not installed globally",
+                "actual child-agent launch functions do not show sandbox enforcement: subagent, foundry_team",
+            ],
+        )
+
+    def test_agent_network_boundary_precondition_gate_details_ignores_invalid_json(self) -> None:
+        self.assertEqual(agent_network_boundary_precondition_gate_details("not json"), [])
+
     def test_fresh_refuses_confirmed_provider_run_when_agent_boundary_precondition_fails(self) -> None:
         stderr = io.StringIO()
         with tempfile.TemporaryDirectory() as tmpdir:
             results = Path(tmpdir) / "fresh.jsonl"
             evidence = Path(tmpdir) / "fresh.demo-evidence.json"
             failed = subprocess.CompletedProcess(
-                AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND,
+                AGENT_NETWORK_BOUNDARY_PRECONDITION_JSON_COMMAND,
                 1,
-                stdout="",
-                stderr="sandbox runtime missing",
+                stdout=json.dumps(
+                    {
+                        "required_sandbox_runtime_gate": {
+                            "passed": False,
+                            "failures": [
+                                "@anthropic-ai/sandbox-runtime not installed globally",
+                                "actual child-agent launch functions do not show sandbox enforcement: subagent, foundry_team",
+                            ],
+                        }
+                    }
+                ),
+                stderr="",
             )
             with mock.patch(__name__ + ".subprocess.run", return_value=failed) as run_precondition, mock.patch(
                 __name__ + ".ensure_fresh_sandbox_provider_allowlist_ready"
@@ -5638,17 +5697,20 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
         self.assertEqual(result, 2)
         self.assertIn("agent network boundary precondition failed closed", stderr.getvalue())
-        self.assertIn("sandbox runtime missing", stderr.getvalue())
+        self.assertIn("required_sandbox_runtime_gate.failures", stderr.getvalue())
+        self.assertIn("@anthropic-ai/sandbox-runtime not installed globally", stderr.getvalue())
+        self.assertIn("--require-sandbox-runtime --json", stderr.getvalue())
         self.assertFalse(results.exists())
         self.assertFalse(evidence.exists())
         run_precondition.assert_called_once()
+        self.assertEqual(run_precondition.call_args.args[0], AGENT_NETWORK_BOUNDARY_PRECONDITION_JSON_COMMAND)
         sandbox_ready.assert_not_called()
         provider_preflight.assert_not_called()
         run.assert_not_called()
 
     def test_fresh_real_boundary_precondition_fails_closed_before_provider_launch(self) -> None:
         precondition = subprocess.run(
-            AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND,
+            AGENT_NETWORK_BOUNDARY_PRECONDITION_JSON_COMMAND,
             cwd=repo_root(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -5684,8 +5746,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
             self.assertEqual(result, 2)
             self.assertIn("agent network boundary precondition failed closed", stderr.getvalue())
-            self.assertIn("bench/agent_network_boundary_check.py --require-sandbox-runtime", stderr.getvalue())
+            self.assertIn("bench/agent_network_boundary_check.py --require-sandbox-runtime --json", stderr.getvalue())
             self.assertIn("sandbox runtime/enforcement", stderr.getvalue())
+            self.assertIn("required_sandbox_runtime_gate.failures", stderr.getvalue())
             self.assertFalse(results.exists())
             self.assertFalse(evidence.exists())
             sandbox_ready.assert_not_called()
@@ -6796,7 +6859,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         )
         self.assertEqual(
             data["commands"]["agent_network_boundary_precondition"],
-            "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime",
+            "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime --json",
         )
         self.assertIn("verify-evidence-contract", data["commands"]["fresh_provenance_contract"])
         self.assertIn("--reference-evidence-json", data["commands"]["fresh_provenance_contract"])

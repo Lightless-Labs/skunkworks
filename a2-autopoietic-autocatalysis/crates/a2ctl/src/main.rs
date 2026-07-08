@@ -16,7 +16,7 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-const AGENT_NETWORK_BOUNDARY_ADVISORY: &str = "  [INFO] agent_network_boundary: not part of the 6/6 sentinel gate; run `python3 bench/agent_network_boundary_check.py --self-test` and `--require-sandbox-runtime`, or `cargo run -p a2ctl -- sentinel --workspace . --require-agent-network-boundary` for an opt-in fail-closed precondition gate, before treating external benchmark evidence as uncontaminated";
+const AGENT_NETWORK_BOUNDARY_ADVISORY: &str = "  [INFO] agent_network_boundary: not part of the 6/6 sentinel gate; run `python3 bench/agent_network_boundary_check.py --self-test` and `python3 bench/agent_network_boundary_check.py --require-sandbox-runtime --json`, or `cargo run -p a2ctl -- sentinel --workspace . --require-agent-network-boundary` for an opt-in fail-closed precondition gate, before treating external benchmark evidence as uncontaminated";
 const DEFAULT_ARCHIVE_EVIDENCE_JSON: &str = "docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json";
 const DEFAULT_ARCHIVE_RESULTS_JSONL: &str = "docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.jsonl";
 const DEMO_EVIDENCE_ADVISORY: &str = "  [INFO] demo_evidence: not part of the 6/6 sentinel gate; run `python3 bench/self_correction_demo.py verify-demo-docs`, `python3 bench/self_correction_demo.py audit-demo-evidence`, `python3 bench/self_correction_demo.py audit-demo-evidence --json`, and `python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json` to audit documented archived loop evidence, or `cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence` for an opt-in combined gate; sentinel default does not refresh or replace those checks";
@@ -122,6 +122,7 @@ fn agent_network_boundary_command_args() -> Vec<String> {
     vec![
         "bench/agent_network_boundary_check.py".to_string(),
         "--require-sandbox-runtime".to_string(),
+        "--json".to_string(),
     ]
 }
 
@@ -3015,7 +3016,7 @@ async fn main() {
                     if gate_result.passed {
                         println!("  PASS child-agent network boundary precondition validated");
                         println!(
-                            "  command: python3 bench/agent_network_boundary_check.py --require-sandbox-runtime"
+                            "  command: python3 bench/agent_network_boundary_check.py --require-sandbox-runtime --json"
                         );
                     } else {
                         eprintln!("  FAIL child-agent network boundary precondition rejected");
@@ -4725,6 +4726,7 @@ mod tests {
             vec![
                 "bench/agent_network_boundary_check.py".to_string(),
                 "--require-sandbox-runtime".to_string(),
+                "--json".to_string(),
             ]
         );
     }
@@ -4849,7 +4851,7 @@ mod tests {
         assert!(advisory.contains("[INFO] agent_network_boundary"));
         assert!(advisory.contains("not part of the 6/6 sentinel gate"));
         assert!(advisory.contains("agent_network_boundary_check.py --self-test"));
-        assert!(advisory.contains("--require-sandbox-runtime"));
+        assert!(advisory.contains("--require-sandbox-runtime --json"));
         assert!(advisory.contains("--require-agent-network-boundary"));
         assert!(!advisory.contains("[PASS]"));
         assert!(!advisory.contains("Sentinel gate: PASS"));
