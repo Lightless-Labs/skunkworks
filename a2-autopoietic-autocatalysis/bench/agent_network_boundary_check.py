@@ -1243,7 +1243,10 @@ def audit_a2_generalist_catalyst_launch_gate(path: Path = A2_GENERALIST_CATALYST
         "restricted_policy_check_present": False,
         "restricted_policy_error_before_provider_call": False,
         "provider_generate_call_present": False,
+        "policy_aware_generate_call_present": False,
+        "network_policy_forwarded_to_provider": False,
         "sandbox_exec_launch_wrapper_present": False,
+        "restricted_policy_boundary_covered": False,
         "fail_closed_before_provider_launch": False,
         "reason": None,
     }
@@ -1267,16 +1270,30 @@ def audit_a2_generalist_catalyst_launch_gate(path: Path = A2_GENERALIST_CATALYST
         body,
         r"\bmodel\s*\.\s*generate\s*\(",
     )
-    result["restricted_policy_check_present"] = restricted_return_span is not None
+    policy_aware_call_index = first_top_level_rust_code_regex_match_offset(
+        body,
+        r"\bmodel\s*\.\s*generate_with_network_policy\s*\([^;]*\btask\s*\.\s*network_policy\s*\.\s*as_ref\s*\(\s*\)[^;]*\)",
+        re.MULTILINE | re.DOTALL,
+    )
     result["provider_generate_call_present"] = provider_call_index >= 0
+    result["policy_aware_generate_call_present"] = policy_aware_call_index >= 0
+    result["network_policy_forwarded_to_provider"] = policy_aware_call_index >= 0
+    result["restricted_policy_check_present"] = (
+        restricted_return_span is not None or result["network_policy_forwarded_to_provider"]
+    )
     result["restricted_policy_error_before_provider_call"] = (
-        result["restricted_policy_check_present"]
+        restricted_return_span is not None
         and result["provider_generate_call_present"]
         and error_index < provider_call_index
     )
-    result["fail_closed_before_provider_launch"] = result["restricted_policy_error_before_provider_call"]
+    result["sandbox_exec_launch_wrapper_present"] = False
+    result["restricted_policy_boundary_covered"] = bool(
+        result["restricted_policy_error_before_provider_call"]
+        or result["network_policy_forwarded_to_provider"]
+    )
+    result["fail_closed_before_provider_launch"] = result["restricted_policy_boundary_covered"]
     if not result["fail_closed_before_provider_launch"]:
-        result["reason"] = "restricted policies are not visibly refused before model.generate"
+        result["reason"] = "restricted policies are not visibly refused before model.generate or forwarded to the policy-aware model path"
     return result
 
 
@@ -1322,13 +1339,15 @@ def broker_materializer_policy_support(text: str) -> dict[str, bool]:
     }
 
 
-def broker_provider_command_helper_uses_materialized_argv(text: str) -> bool:
-    body = extract_rust_function_body(text, "broker_provider_command")
+def broker_command_helper_uses_materialized_argv(
+    text: str, helper_name: str, materializer_name: str
+) -> bool:
+    body = extract_rust_function_body(text, helper_name)
     if body is None:
         return False
     masked = mask_rust_non_code_preserving_offsets(body)
     tuple_match = re.search(
-        r"\blet\s*\(\s*([A-Za-z_][\w]*)\s*,\s*([A-Za-z_][\w]*)\s*\)\s*=\s*materialize_broker_provider_command\s*\(",
+        rf"\blet\s*\(\s*([A-Za-z_][\w]*)\s*,\s*([A-Za-z_][\w]*)\s*\)\s*=\s*{re.escape(materializer_name)}\s*\(",
         masked,
         flags=re.MULTILINE | re.DOTALL,
     )
@@ -1352,11 +1371,61 @@ def broker_provider_command_helper_uses_materialized_argv(text: str) -> bool:
     )
 
 
-def broker_generate_routes_through_provider_command(generate_body: str, provider: str) -> dict[str, Any]:
+def broker_provider_command_helper_uses_materialized_argv(text: str) -> bool:
+    return broker_command_helper_uses_materialized_argv(
+        text, "broker_provider_command", "materialize_broker_provider_command"
+    )
+
+
+def broker_provider_command_with_policy_helper_uses_materialized_argv(text: str) -> bool:
+    return broker_command_helper_uses_materialized_argv(
+        text,
+        "broker_provider_command_with_network_policy",
+        "materialize_broker_provider_command_with_network_policy",
+    )
+
+
+def broker_explicit_policy_materializer_support(text: str) -> dict[str, bool]:
+    materializer = extract_rust_function_body(
+        text, "materialize_broker_provider_command_with_network_policy"
+    )
+    if materializer is None:
+        return {
+            "found": False,
+            "unavailable_runtime_refuses_restricted_policy": False,
+            "provider_command_materialized": False,
+        }
+    materializer_code = rust_executable_body_without_strings(materializer)
+    unavailable_runtime_refuses = helper_rejects_policy_with_return(
+        materializer,
+        r"NetworkPolicy::Isolated\s*\|\s*NetworkPolicy::AllowList\s*\(\s*_\s*\).*&&\s*!\s*sandbox_exec_available_on_this_platform",
+    )
+    provider_command_materialized = bool(
+        re.search(
+            r"\blet\s+(?:mut\s+)?([A-Za-z_][\w]*)\s*=\s*materialize_provider_command_for_network_policy\s*\(\s*Some\s*\(\s*network_policy\s*\)",
+            materializer_code,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+        and re.search(
+            r"\bOk\s*\(\s*\(\s*[A-Za-z_][\w]*\.program\s*,\s*[A-Za-z_][\w]*\.args\s*\)\s*\)",
+            materializer_code,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+    )
+    return {
+        "found": True,
+        "unavailable_runtime_refuses_restricted_policy": unavailable_runtime_refuses,
+        "provider_command_materialized": provider_command_materialized,
+    }
+
+
+def broker_generate_routes_through_provider_command(
+    generate_body: str, provider: str, helper_name: str = "broker_provider_command"
+) -> dict[str, Any]:
     raw_command_index = first_top_level_rust_code_regex_match_offset(generate_body, r"\bCommand::new\s*\(")
     comments_masked = mask_rust_comments_preserving_offsets(generate_body)
     string_ranges = rust_string_literal_ranges(comments_masked)
-    route_pattern = rf"\blet\s+(?:mut\s+)?([A-Za-z_][\w]*)\s*=\s*broker_provider_command\s*\(\s*\"{re.escape(provider)}\"\s*,"
+    route_pattern = rf"\blet\s+(?:mut\s+)?([A-Za-z_][\w]*)\s*=\s*{re.escape(helper_name)}\s*\(\s*\"{re.escape(provider)}\"\s*,"
     route_match = re.search(route_pattern, comments_masked, flags=re.MULTILINE | re.DOTALL)
     route_found = False
     command_binding = None
@@ -1458,17 +1527,29 @@ def audit_a2_broker_launch_gate(path: Path = A2_BROKER) -> dict[str, Any]:
             and all(item["guard_before_command_new"] for item in guards)
         )
     else:
-        helper_wraps_or_refuses = bool(
+        explicit_policy_support = broker_explicit_policy_materializer_support(text)
+        env_helper_wraps_or_refuses = bool(
             materializer_support["unavailable_runtime_refuses_restricted_policy"]
             and materializer_support["provider_command_materialized"]
             and broker_provider_command_helper_uses_materialized_argv(text)
         )
+        explicit_helper_wraps_or_refuses = bool(
+            explicit_policy_support["unavailable_runtime_refuses_restricted_policy"]
+            and explicit_policy_support["provider_command_materialized"]
+            and broker_provider_command_with_policy_helper_uses_materialized_argv(text)
+        )
+        helper_wraps_or_refuses = env_helper_wraps_or_refuses or explicit_helper_wraps_or_refuses
         result["policy_helper_rejects_isolated"] = bool(materializer_support["isolated"] and helper_wraps_or_refuses)
         result["policy_helper_rejects_allowlist"] = bool(materializer_support["allowlist"] and helper_wraps_or_refuses)
         for provider, impl_name in providers:
             impl_body = extract_rust_impl_body(text, impl_name)
             generate_body = extract_rust_function_body(impl_body, "generate") if impl_body is not None else None
-            if generate_body is None:
+            policy_generate_body = (
+                extract_rust_function_body(impl_body, "generate_with_network_policy")
+                if impl_body is not None
+                else None
+            )
+            if generate_body is None and policy_generate_body is None:
                 guards.append(
                     {
                         "provider": provider,
@@ -1481,18 +1562,36 @@ def audit_a2_broker_launch_gate(path: Path = A2_BROKER) -> dict[str, Any]:
                     }
                 )
                 continue
-            routed = broker_generate_routes_through_provider_command(generate_body, provider)
+            legacy_routed = (
+                broker_generate_routes_through_provider_command(generate_body, provider)
+                if generate_body is not None
+                else {"route_found": False, "raw_command_new_present": False, "command_binding": None}
+            )
+            policy_routed = (
+                broker_generate_routes_through_provider_command(
+                    policy_generate_body,
+                    provider,
+                    "broker_provider_command_with_network_policy",
+                )
+                if policy_generate_body is not None
+                else {"route_found": False, "raw_command_new_present": False, "command_binding": None}
+            )
+            route_found = bool(legacy_routed["route_found"] or policy_routed["route_found"])
+            raw_command_present = bool(
+                legacy_routed["raw_command_new_present"] or policy_routed["raw_command_new_present"]
+            )
             guards.append(
                 {
                     "provider": provider,
                     "impl": impl_name,
                     "generate_found": True,
-                    "guard_found": routed["route_found"],
-                    "command_new_after_guard": routed["raw_command_new_present"],
-                    "guard_before_command_new": routed["route_found"] and not routed["raw_command_new_present"],
-                    "broker_provider_command_route_found": routed["route_found"],
-                    "command_binding": routed["command_binding"],
-                    "sandbox_exec_present": routed["route_found"] and helper_wraps_or_refuses,
+                    "policy_generate_found": policy_generate_body is not None,
+                    "guard_found": route_found,
+                    "command_new_after_guard": raw_command_present,
+                    "guard_before_command_new": route_found and not raw_command_present,
+                    "broker_provider_command_route_found": route_found,
+                    "command_binding": policy_routed["command_binding"] or legacy_routed["command_binding"],
+                    "sandbox_exec_present": route_found and helper_wraps_or_refuses,
                 }
             )
         result["provider_generate_guards"] = guards
@@ -1509,7 +1608,7 @@ def audit_a2_broker_launch_gate(path: Path = A2_BROKER) -> dict[str, Any]:
     return result
 
 
-def a2_owned_sandbox_enforced_for_all_provider_surfaces(
+def a2_owned_restricted_policy_boundaries_covered(
     worktree: dict[str, Any],
     generalist: dict[str, Any],
     broker: dict[str, Any],
@@ -1521,7 +1620,7 @@ def a2_owned_sandbox_enforced_for_all_provider_surfaces(
         and generalist.get("fail_closed_before_provider_launch")
         and broker.get("fail_closed_before_provider_launch")
         and worktree.get("sandbox_exec_launch_wrapper_present")
-        and generalist.get("sandbox_exec_launch_wrapper_present")
+        and generalist.get("restricted_policy_boundary_covered")
         and broker.get("sandbox_exec_launch_wrapper_present")
     )
 
@@ -1535,16 +1634,25 @@ def audit_a2_owned_provider_launch_boundaries() -> dict[str, Any]:
         and generalist["fail_closed_before_provider_launch"]
         and broker["fail_closed_before_provider_launch"]
     )
-    sandbox_enforced = a2_owned_sandbox_enforced_for_all_provider_surfaces(worktree, generalist, broker)
+    restricted_policy_boundaries_covered = a2_owned_restricted_policy_boundaries_covered(
+        worktree, generalist, broker
+    )
     return {
         "worktree_catalyst": worktree,
         "generalist_catalyst": generalist,
         "broker": broker,
         "fail_closed_restricted_policies": fail_closed,
-        "sandbox_enforced_for_restricted_policies": sandbox_enforced,
+        "a2_owned_restricted_policy_boundaries_covered": restricted_policy_boundaries_covered,
+        # This source audit can prove A2-owned command-boundary wrapping, but it
+        # does not by itself prove usable runtime sandbox enforcement for fresh
+        # provider-backed benchmark evidence. Keep the legacy enforcement claim
+        # false until the full required runtime gate and row-level evidence pass.
+        "sandbox_enforced_for_restricted_policies": False,
         "interpretation": (
-            "A2-owned provider launch paths visibly fail closed before provider launch for restricted policies, but do not show a sandbox/provider allowlist wrapper at every provider command boundary yet."
-            if fail_closed and not sandbox_enforced
+            "A2-owned provider launch paths visibly cover restricted policies through sandbox-wrapped command boundaries or the policy-aware model boundary, but this is not usable runtime sandbox enforcement or fresh loop evidence."
+            if restricted_policy_boundaries_covered
+            else "A2-owned provider launch paths visibly fail closed before provider launch for restricted policies, but do not show coverage at every restricted-policy provider boundary yet."
+            if fail_closed
             else "A2-owned provider launch path policy enforcement needs review before restricted-policy benchmark evidence is trusted."
         ),
     }
@@ -1639,7 +1747,7 @@ def _claim_is_negated(text: str, start: int, end: int) -> bool:
         return True
     prefix_negates_claim_patterns = [
         r"\b(?:cannot|can't|can\s+not|do\s+not|don't|does\s+not|doesn't)\s+[^\n.;:]{0,40}\bclaim\s+(?:that\s+)?$",
-        r"\bnot\s+(?:proof|evidence)\s+that\s+$",
+        r"\bnot\s+(?:proof|evidence)\s+that\s+(?:the\s+)?(?:full\s+)?$",
         r"\bwithout\s+claiming\s+(?:that\s+)?$",
     ]
     return any(re.search(pattern, prefix) for pattern in prefix_negates_claim_patterns)
@@ -1651,6 +1759,7 @@ def audit_boundary_docs(
 ) -> dict[str, Any]:
     required_snippet_groups = [
         ["sandbox_enforced_for_restricted_policies=false"],
+        ["required_sandbox_runtime_gate.passed=false", "launch_sandbox_enforced=false"],
         ["fail-closed"],
         [
             "not usable runtime sandbox enforcement",
@@ -1708,7 +1817,7 @@ def audit_boundary_docs(
         "required_snippet_groups": required_snippet_groups,
         "missing": missing,
         "forbidden": forbidden,
-        "interpretation": "docs preserve fail-closed-vs-enforced distinction and do not claim sandbox enforcement while boundary JSON reports sandbox_enforced_for_restricted_policies=false",
+        "interpretation": "docs preserve A2-owned boundary vs full runtime distinction and do not claim usable runtime sandbox enforcement or fresh loop evidence",
     }
 
 
@@ -1760,7 +1869,7 @@ def audit() -> dict[str, Any]:
     sandbox_launch_surfaces_detected = bool(
         sandbox_runtime["available"]
         and launch_sandbox_enforced
-        and a2_owned_provider_launch_boundary.get("sandbox_enforced_for_restricted_policies") is True
+        and a2_owned_provider_launch_boundary.get("a2_owned_restricted_policy_boundaries_covered") is True
     )
     # This source-boundary audit can detect sandbox launch surfaces, but it does
     # not execute a provider-backed benchmark under a durable provider allowlist
@@ -1873,12 +1982,12 @@ def require_sandbox_runtime_failures(result: dict[str, Any]) -> list[str]:
     if (
         isinstance(a2_boundary, dict)
         and a2_boundary.get("fail_closed_restricted_policies")
-        and not a2_boundary.get("sandbox_enforced_for_restricted_policies")
+        and not a2_boundary.get("a2_owned_restricted_policy_boundaries_covered")
     ):
         missing = missing_a2_owned_sandbox_surfaces(a2_boundary)
         suffix = f": {', '.join(missing)}" if missing else ""
         failures.append(
-            "A2-owned provider launch paths do not show sandbox-exec at every provider command boundary"
+            "A2-owned provider launch paths do not cover every restricted-policy provider boundary with sandbox-exec command wrapping or a policy-aware model boundary"
             f"{suffix}"
         )
     if not result["sandbox_runtime"]["available"]:
@@ -2893,14 +3002,41 @@ let unsandboxed = Command::new("pi")
         self.assertTrue(all(item["guard_before_command_new"] for item in result["provider_generate_guards"]))
         self.assertTrue(all(item.get("broker_provider_command_route_found") for item in result["provider_generate_guards"]))
 
-    def test_a2_generalist_launch_gate_detects_fail_closed_before_model_generate(self) -> None:
+    def test_a2_generalist_launch_gate_detects_policy_aware_forwarding(self) -> None:
         result = audit_a2_generalist_catalyst_launch_gate()
 
         self.assertTrue(result["execute_found"])
         self.assertTrue(result["restricted_policy_check_present"])
+        self.assertFalse(result["provider_generate_call_present"])
+        self.assertTrue(result["policy_aware_generate_call_present"])
+        self.assertTrue(result["network_policy_forwarded_to_provider"])
+        self.assertFalse(result["restricted_policy_error_before_provider_call"])
+        self.assertTrue(result["fail_closed_before_provider_launch"])
+        self.assertTrue(result["restricted_policy_boundary_covered"])
+        self.assertFalse(result["sandbox_exec_launch_wrapper_present"])
+
+    def test_a2_generalist_launch_gate_detects_fail_closed_before_model_generate_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "catalyst.rs"
+            path.write_text(
+                'impl Catalyst for GeneralistCatalyst {\n'
+                '  async fn execute() {\n'
+                '    if matches!(&task.network_policy, Some(NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) {\n'
+                '      return Err(error);\n'
+                '    }\n'
+                '    model.generate(&prompt, Some(system)).await?;\n'
+                '  }\n'
+                '}\n',
+                encoding="utf-8",
+            )
+            result = audit_a2_generalist_catalyst_launch_gate(path)
+
+        self.assertTrue(result["restricted_policy_check_present"])
         self.assertTrue(result["provider_generate_call_present"])
         self.assertTrue(result["restricted_policy_error_before_provider_call"])
         self.assertTrue(result["fail_closed_before_provider_launch"])
+        self.assertTrue(result["restricted_policy_boundary_covered"])
+        self.assertFalse(result["sandbox_exec_launch_wrapper_present"])
 
     def test_a2_generalist_launch_gate_rejects_policy_check_after_model_generate(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2960,7 +3096,67 @@ let unsandboxed = Command::new("pi")
         self.assertFalse(result["restricted_policy_error_before_provider_call"])
         self.assertFalse(result["fail_closed_before_provider_launch"])
 
-    def test_a2_owned_sandbox_enforcement_requires_all_provider_surfaces(self) -> None:
+    def test_a2_generalist_launch_gate_accepts_policy_aware_task_policy_forwarding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "catalyst.rs"
+            path.write_text(
+                'impl Catalyst for GeneralistCatalyst {\n'
+                '  async fn execute() {\n'
+                '    model.generate_with_network_policy(&prompt, Some(system), task.network_policy.as_ref()).await?;\n'
+                '  }\n'
+                '}\n',
+                encoding="utf-8",
+            )
+            result = audit_a2_generalist_catalyst_launch_gate(path)
+
+        self.assertTrue(result["restricted_policy_check_present"])
+        self.assertTrue(result["policy_aware_generate_call_present"])
+        self.assertTrue(result["network_policy_forwarded_to_provider"])
+        self.assertTrue(result["fail_closed_before_provider_launch"])
+        self.assertTrue(result["restricted_policy_boundary_covered"])
+        self.assertFalse(result["sandbox_exec_launch_wrapper_present"])
+
+    def test_a2_generalist_launch_gate_rejects_policy_aware_call_without_task_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "catalyst.rs"
+            path.write_text(
+                'impl Catalyst for GeneralistCatalyst {\n'
+                '  async fn execute() {\n'
+                '    let policy = None;\n'
+                '    model.generate_with_network_policy(&prompt, Some(system), policy).await?;\n'
+                '  }\n'
+                '}\n',
+                encoding="utf-8",
+            )
+            result = audit_a2_generalist_catalyst_launch_gate(path)
+
+        self.assertFalse(result["network_policy_forwarded_to_provider"])
+        self.assertFalse(result["fail_closed_before_provider_launch"])
+        self.assertFalse(result["restricted_policy_boundary_covered"])
+        self.assertFalse(result["sandbox_exec_launch_wrapper_present"])
+
+    def test_a2_generalist_launch_gate_rejects_policy_aware_markers_in_comments_or_strings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "catalyst.rs"
+            path.write_text(
+                'impl Catalyst for GeneralistCatalyst {\n'
+                '  async fn execute() {\n'
+                '    let inert = "model.generate_with_network_policy(&prompt, Some(system), task.network_policy.as_ref())";\n'
+                '    // model.generate_with_network_policy(&prompt, Some(system), task.network_policy.as_ref()).await?;\n'
+                '    model.generate(&prompt, Some(system)).await?;\n'
+                '  }\n'
+                '}\n',
+                encoding="utf-8",
+            )
+            result = audit_a2_generalist_catalyst_launch_gate(path)
+
+        self.assertTrue(result["provider_generate_call_present"])
+        self.assertFalse(result["policy_aware_generate_call_present"])
+        self.assertFalse(result["network_policy_forwarded_to_provider"])
+        self.assertFalse(result["fail_closed_before_provider_launch"])
+        self.assertFalse(result["restricted_policy_boundary_covered"])
+
+    def test_a2_owned_restricted_policy_boundary_coverage_requires_all_provider_surfaces(self) -> None:
         wrapped_surface = {
             "fail_closed_before_provider_launch": True,
             "sandbox_exec_launch_wrapper_present": True,
@@ -2973,65 +3169,70 @@ let unsandboxed = Command::new("pi")
             "fail_closed_before_provider_launch": False,
             "sandbox_exec_launch_wrapper_present": True,
         }
-        closed_generalist = {"fail_closed_before_provider_launch": True}
-        wrapped_generalist = {
+        covered_generalist = {
             "fail_closed_before_provider_launch": True,
-            "sandbox_exec_launch_wrapper_present": True,
+            "restricted_policy_boundary_covered": True,
+            "sandbox_exec_launch_wrapper_present": False,
         }
-        open_generalist = {"fail_closed_before_provider_launch": False}
+        open_generalist = {"fail_closed_before_provider_launch": False, "restricted_policy_boundary_covered": False}
+        uncovered_generalist = {
+            "fail_closed_before_provider_launch": True,
+            "restricted_policy_boundary_covered": False,
+            "sandbox_exec_launch_wrapper_present": False,
+        }
         self.assertFalse(
-            a2_owned_sandbox_enforced_for_all_provider_surfaces(
+            a2_owned_restricted_policy_boundaries_covered(
                 wrapped_surface,
-                closed_generalist,
+                covered_generalist,
                 unwrapped_surface,
             )
         )
         self.assertFalse(
-            a2_owned_sandbox_enforced_for_all_provider_surfaces(
+            a2_owned_restricted_policy_boundaries_covered(
                 unwrapped_surface,
-                closed_generalist,
+                covered_generalist,
                 wrapped_surface,
             )
         )
         self.assertFalse(
-            a2_owned_sandbox_enforced_for_all_provider_surfaces(
+            a2_owned_restricted_policy_boundaries_covered(
                 wrapped_surface,
                 open_generalist,
                 wrapped_surface,
             )
         )
         self.assertFalse(
-            a2_owned_sandbox_enforced_for_all_provider_surfaces(
+            a2_owned_restricted_policy_boundaries_covered(
                 wrapped_but_open_surface,
-                closed_generalist,
+                covered_generalist,
                 wrapped_surface,
             )
         )
         self.assertFalse(
-            a2_owned_sandbox_enforced_for_all_provider_surfaces(
+            a2_owned_restricted_policy_boundaries_covered(
                 wrapped_surface,
-                closed_generalist,
+                covered_generalist,
                 wrapped_but_open_surface,
             )
         )
         self.assertFalse(
-            a2_owned_sandbox_enforced_for_all_provider_surfaces(
+            a2_owned_restricted_policy_boundaries_covered(
                 wrapped_surface,
-                closed_generalist,
+                uncovered_generalist,
                 wrapped_surface,
             )
         )
         self.assertFalse(
-            a2_owned_sandbox_enforced_for_all_provider_surfaces(
+            a2_owned_restricted_policy_boundaries_covered(
                 wrapped_surface,
                 {},
                 wrapped_surface,
             )
         )
         self.assertTrue(
-            a2_owned_sandbox_enforced_for_all_provider_surfaces(
+            a2_owned_restricted_policy_boundaries_covered(
                 wrapped_surface,
-                wrapped_generalist,
+                covered_generalist,
                 wrapped_surface,
             )
         )
@@ -3041,8 +3242,10 @@ let unsandboxed = Command::new("pi")
         boundary = result["a2_owned_provider_launch_boundary"]
 
         self.assertTrue(boundary["fail_closed_restricted_policies"])
+        self.assertTrue(boundary["a2_owned_restricted_policy_boundaries_covered"])
+        self.assertFalse(boundary["generalist_catalyst"]["sandbox_exec_launch_wrapper_present"])
         self.assertFalse(boundary["sandbox_enforced_for_restricted_policies"])
-        self.assertIn("fail closed", boundary["interpretation"])
+        self.assertIn("not usable runtime sandbox enforcement", boundary["interpretation"])
         self.assertTrue(result["boundary_docs"]["complete"])
 
     def test_full_audit_status_cannot_be_misread_as_loop_or_senior_bench_evidence(self) -> None:
@@ -3069,6 +3272,7 @@ let unsandboxed = Command::new("pi")
                     todo = Path(tmpdir) / "self-correction-loop.md"
                     valid = (
                         "sandbox_enforced_for_restricted_policies=false\n"
+                        "required_sandbox_runtime_gate.passed=false\n"
                         "fail-closed\n"
                         "This is not proof that runtime sandbox enforcement is usable.\n"
                         f"{valid_claim}"
@@ -3098,6 +3302,7 @@ let unsandboxed = Command::new("pi")
         ]
         valid = (
             "sandbox_enforced_for_restricted_policies=false\n"
+            "required_sandbox_runtime_gate.passed=false\n"
             "fail-closed\n"
             "not usable runtime sandbox enforcement\n"
             "not fresh provider-backed loop evidence\n"
@@ -3139,6 +3344,7 @@ let unsandboxed = Command::new("pi")
         result = {
             "a2_owned_provider_launch_boundary": {
                 "fail_closed_restricted_policies": True,
+                "a2_owned_restricted_policy_boundaries_covered": False,
                 "sandbox_enforced_for_restricted_policies": False,
                 "worktree_catalyst": {
                     "provider_command_launch_functions": [
@@ -3163,7 +3369,7 @@ let unsandboxed = Command::new("pi")
         self.assertEqual(
             require_sandbox_runtime_failures(result),
             [
-                "A2-owned provider launch paths do not show sandbox-exec at every provider command boundary: worktree_catalyst.run_pi, broker.pi",
+                "A2-owned provider launch paths do not cover every restricted-policy provider boundary with sandbox-exec command wrapping or a policy-aware model boundary: worktree_catalyst.run_pi, broker.pi",
                 "actual child-agent launch functions do not show sandbox enforcement: subagent, foundry_team",
             ],
         )
@@ -3172,6 +3378,7 @@ let unsandboxed = Command::new("pi")
         result = {
             "a2_owned_provider_launch_boundary": {
                 "fail_closed_restricted_policies": True,
+                "a2_owned_restricted_policy_boundaries_covered": False,
                 "sandbox_enforced_for_restricted_policies": False,
                 "worktree_catalyst": {
                     "provider_command_launch_functions": [
@@ -3210,7 +3417,8 @@ let unsandboxed = Command::new("pi")
         result = {
             "a2_owned_provider_launch_boundary": {
                 "fail_closed_restricted_policies": True,
-                "sandbox_enforced_for_restricted_policies": True,
+                "a2_owned_restricted_policy_boundaries_covered": True,
+                "sandbox_enforced_for_restricted_policies": False,
             },
             "actual_launch_sandbox_enforcement": {
                 "subagent": {"spawn_present": True, "found": True},
@@ -3232,6 +3440,7 @@ let unsandboxed = Command::new("pi")
             "complete": True,
             "a2_owned_provider_launch_boundary": {
                 "fail_closed_restricted_policies": True,
+                "a2_owned_restricted_policy_boundaries_covered": False,
                 "sandbox_enforced_for_restricted_policies": False,
                 "worktree_catalyst": {
                     "provider_command_launch_functions": [
@@ -3290,7 +3499,8 @@ let unsandboxed = Command::new("pi")
         result = {
             "a2_owned_provider_launch_boundary": {
                 "fail_closed_restricted_policies": True,
-                "sandbox_enforced_for_restricted_policies": True,
+                "a2_owned_restricted_policy_boundaries_covered": True,
+                "sandbox_enforced_for_restricted_policies": False,
             },
             "sandbox_runtime": {"available": True},
             "launch_sandbox_enforced": False,

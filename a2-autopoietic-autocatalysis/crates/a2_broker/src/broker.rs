@@ -26,6 +26,25 @@ pub struct GenerateResponse {
 #[async_trait]
 pub trait ModelProvider: Send + Sync {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse>;
+
+    async fn generate_with_network_policy(
+        &self,
+        prompt: &str,
+        system: Option<&str>,
+        network_policy: Option<&NetworkPolicy>,
+    ) -> A2Result<GenerateResponse> {
+        if matches!(
+            network_policy,
+            Some(NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))
+        ) {
+            return Err(A2Error::ProviderError(format!(
+                "{} provider launch refused because restricted network policy requires an audited sandbox/provider allowlist launch path",
+                self.provider_id()
+            )));
+        }
+        self.generate(prompt, system).await
+    }
+
     fn provider_id(&self) -> &str;
     fn model_id(&self) -> &str;
 }
@@ -125,6 +144,35 @@ fn materialize_broker_provider_command_for_policy(
     Ok((materialized.program, materialized.args))
 }
 
+fn materialize_broker_provider_command_with_network_policy(
+    provider: &str,
+    binary_path: &str,
+    provider_args: Vec<OsString>,
+    network_policy: &NetworkPolicy,
+) -> A2Result<(OsString, Vec<OsString>)> {
+    if matches!(
+        network_policy,
+        NetworkPolicy::Isolated | NetworkPolicy::AllowList(_)
+    ) && !sandbox_exec_available_on_this_platform()
+    {
+        return Err(A2Error::ProviderError(format!(
+            "{provider} provider launch refused because restricted network policy requires /usr/bin/sandbox-exec, which is unavailable or not executable on this platform"
+        )));
+    }
+    let materialized = materialize_provider_command_for_network_policy(
+        Some(network_policy),
+        &broker_sandbox_profile_dir(),
+        OsString::from(binary_path),
+        provider_args,
+    )
+    .map_err(|error| {
+        A2Error::ProviderError(format!(
+            "{provider} sandbox command materialization: {error}"
+        ))
+    })?;
+    Ok((materialized.program, materialized.args))
+}
+
 fn materialize_broker_provider_command(
     provider: &str,
     binary_path: &str,
@@ -148,6 +196,27 @@ fn broker_provider_command(
 ) -> A2Result<Command> {
     let (program, args) =
         materialize_broker_provider_command(provider, binary_path, provider_args)?;
+    let mut cmd = Command::new(program);
+    clear_env(&mut cmd);
+    cmd.args(args);
+    Ok(cmd)
+}
+
+fn broker_provider_command_with_network_policy(
+    provider: &str,
+    binary_path: &str,
+    provider_args: Vec<OsString>,
+    network_policy: Option<&NetworkPolicy>,
+) -> A2Result<Command> {
+    let Some(network_policy) = network_policy else {
+        return broker_provider_command(provider, binary_path, provider_args);
+    };
+    let (program, args) = materialize_broker_provider_command_with_network_policy(
+        provider,
+        binary_path,
+        provider_args,
+        network_policy,
+    )?;
     let mut cmd = Command::new(program);
     clear_env(&mut cmd);
     cmd.args(args);
@@ -422,6 +491,16 @@ impl ClaudeProvider {
 #[async_trait]
 impl ModelProvider for ClaudeProvider {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
+        self.generate_with_network_policy(prompt, system, None)
+            .await
+    }
+
+    async fn generate_with_network_policy(
+        &self,
+        prompt: &str,
+        system: Option<&str>,
+        network_policy: Option<&NetworkPolicy>,
+    ) -> A2Result<GenerateResponse> {
         let mut provider_args = vec![
             OsString::from("-p"),
             OsString::from(prompt),
@@ -437,7 +516,12 @@ impl ModelProvider for ClaudeProvider {
             provider_args.push(OsString::from(sys));
         }
 
-        let mut cmd = broker_provider_command("claude", &self.binary_path, provider_args)?;
+        let mut cmd = broker_provider_command_with_network_policy(
+            "claude",
+            &self.binary_path,
+            provider_args,
+            network_policy,
+        )?;
 
         let output = cmd
             .output()
@@ -507,6 +591,16 @@ impl GeminiProvider {
 #[async_trait]
 impl ModelProvider for GeminiProvider {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
+        self.generate_with_network_policy(prompt, system, None)
+            .await
+    }
+
+    async fn generate_with_network_policy(
+        &self,
+        prompt: &str,
+        system: Option<&str>,
+        network_policy: Option<&NetworkPolicy>,
+    ) -> A2Result<GenerateResponse> {
         let provider_args = vec![
             OsString::from("-p"),
             OsString::from(prompt),
@@ -514,7 +608,12 @@ impl ModelProvider for GeminiProvider {
             OsString::from("-o"),
             OsString::from("json"),
         ];
-        let mut cmd = broker_provider_command("gemini", &self.binary_path, provider_args)?;
+        let mut cmd = broker_provider_command_with_network_policy(
+            "gemini",
+            &self.binary_path,
+            provider_args,
+            network_policy,
+        )?;
         cmd.stdin(Stdio::null());
 
         let mut temp_sys_file = None;
@@ -593,6 +692,16 @@ impl CodexProvider {
 #[async_trait]
 impl ModelProvider for CodexProvider {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
+        self.generate_with_network_policy(prompt, system, None)
+            .await
+    }
+
+    async fn generate_with_network_policy(
+        &self,
+        prompt: &str,
+        system: Option<&str>,
+        network_policy: Option<&NetworkPolicy>,
+    ) -> A2Result<GenerateResponse> {
         let combined_prompt = if let Some(sys) = system {
             format!("{}\n\n{}", sys, prompt)
         } else {
@@ -621,7 +730,12 @@ impl ModelProvider for CodexProvider {
             OsString::from("-o"),
             out_path.clone().into_os_string(),
         ];
-        let mut cmd = broker_provider_command("codex", &self.binary_path, provider_args)?;
+        let mut cmd = broker_provider_command_with_network_policy(
+            "codex",
+            &self.binary_path,
+            provider_args,
+            network_policy,
+        )?;
 
         let output = cmd
             .output()
@@ -683,6 +797,16 @@ impl PiProvider {
 #[async_trait]
 impl ModelProvider for PiProvider {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
+        self.generate_with_network_policy(prompt, system, None)
+            .await
+    }
+
+    async fn generate_with_network_policy(
+        &self,
+        prompt: &str,
+        system: Option<&str>,
+        network_policy: Option<&NetworkPolicy>,
+    ) -> A2Result<GenerateResponse> {
         let mut provider_args = vec![
             OsString::from("--model"),
             OsString::from(&self.model_id),
@@ -696,7 +820,12 @@ impl ModelProvider for PiProvider {
             provider_args.push(OsString::from(sys));
         }
         provider_args.push(OsString::from(prompt));
-        let mut cmd = broker_provider_command("pi", &self.binary_path, provider_args)?;
+        let mut cmd = broker_provider_command_with_network_policy(
+            "pi",
+            &self.binary_path,
+            provider_args,
+            network_policy,
+        )?;
         cmd.stdin(Stdio::null());
 
         let output = cmd
@@ -752,6 +881,16 @@ impl OpenCodeProvider {
 #[async_trait]
 impl ModelProvider for OpenCodeProvider {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse> {
+        self.generate_with_network_policy(prompt, system, None)
+            .await
+    }
+
+    async fn generate_with_network_policy(
+        &self,
+        prompt: &str,
+        system: Option<&str>,
+        network_policy: Option<&NetworkPolicy>,
+    ) -> A2Result<GenerateResponse> {
         let combined_prompt = if let Some(sys) = system {
             format!("{}\n\n{}", sys, prompt)
         } else {
@@ -766,7 +905,12 @@ impl ModelProvider for OpenCodeProvider {
             OsString::from("json"),
             OsString::from(&combined_prompt),
         ];
-        let mut cmd = broker_provider_command("opencode", &self.binary_path, provider_args)?;
+        let mut cmd = broker_provider_command_with_network_policy(
+            "opencode",
+            &self.binary_path,
+            provider_args,
+            network_policy,
+        )?;
         cmd.stdin(Stdio::null());
 
         let output = cmd
@@ -926,6 +1070,23 @@ mod tests {
                 assert_eq!(program, OsString::from(provider));
                 assert_eq!(args, vec![OsString::from("--arg")]);
             }
+
+            let deny_error = materialize_broker_provider_command_for_policy(
+                provider,
+                provider,
+                vec![OsString::from("--arg")],
+                Some("deny"),
+                true,
+                &profile_dir,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                deny_error.contains(
+                    "A2_PROVIDER_NETWORK_POLICY=deny is invalid: expected open, isolated, or allowlist:<endpoint>[,<endpoint>...]"
+                ),
+                "invalid deny policy must fail before any provider launch: {deny_error}"
+            );
 
             for policy in restricted_policies {
                 let unavailable = materialize_broker_provider_command_for_policy(

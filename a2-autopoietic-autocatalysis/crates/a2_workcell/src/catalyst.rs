@@ -209,23 +209,25 @@ impl Catalyst for GeneralistCatalyst {
         context: &ContextPack,
         model: &dyn ModelProvider,
     ) -> A2Result<PatchBundle> {
-        if let Some(policy @ (NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) =
-            &task.network_policy
-        {
-            return Err(A2Error::CatalystFailure(
-                self.id.clone(),
-                format!(
-                    "network_policy={policy:?} prevents launching provider `{}` from the generalist catalyst until an audited network sandbox/provider allowlist is implemented; {}; run with network_policy=Open only when unrestricted network access is intentional",
-                    model.provider_id(),
-                    Self::restricted_network_policy_audit(policy)
-                ),
-            ));
-        }
-
         let prompt = self.build_prompt(task, context).await;
         let system = self.build_system_prompt();
 
-        let response = model.generate(&prompt, Some(system)).await?;
+        let response = model
+            .generate_with_network_policy(&prompt, Some(system), task.network_policy.as_ref())
+            .await
+            .map_err(|error| {
+                let detail = match &task.network_policy {
+                    Some(policy @ (NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) => {
+                        format!(
+                            "network_policy={policy:?} provider `{}` launch failed through the generalist catalyst policy-aware model path; {}; {error}",
+                            model.provider_id(),
+                            Self::restricted_network_policy_audit(policy)
+                        )
+                    }
+                    _ => error.to_string(),
+                };
+                A2Error::CatalystFailure(self.id.clone(), detail)
+            })?;
 
         // Parse: treat the whole response as the diff + rationale for now.
         // Stage 0 is intentionally simple — structured output parsing comes later.
@@ -407,8 +409,12 @@ mod tests {
             .await
             .unwrap_err();
         let message = error.to_string();
-        assert!(message.contains("network_policy=Isolated prevents launching provider `panic`"));
-        assert!(message.contains("audited network sandbox/provider allowlist"));
+        assert!(message.contains(
+            "network_policy=Isolated provider `panic` launch failed through the generalist catalyst policy-aware model path"
+        ));
+        assert!(
+            message.contains("does not expose an audited sandbox/provider allowlist launch path")
+        );
         assert!(message.contains("sandbox_profile_engine=sandbox-exec"));
         assert!(message.contains("sandbox_profile_sha256="));
         assert!(
@@ -417,9 +423,68 @@ mod tests {
             )
         );
         assert!(message.contains("sandbox_exec_available="));
-        assert!(message.contains(
-            "run with network_policy=Open only when unrestricted network access is intentional"
-        ));
+    }
+
+    struct PolicyAwareProvider;
+
+    #[async_trait::async_trait]
+    impl ModelProvider for PolicyAwareProvider {
+        async fn generate(
+            &self,
+            _prompt: &str,
+            _system: Option<&str>,
+        ) -> A2Result<GenerateResponse> {
+            panic!("generalist should call the policy-aware model path")
+        }
+
+        async fn generate_with_network_policy(
+            &self,
+            _prompt: &str,
+            _system: Option<&str>,
+            network_policy: Option<&NetworkPolicy>,
+        ) -> A2Result<GenerateResponse> {
+            assert!(matches!(network_policy, Some(NetworkPolicy::Isolated)));
+            Ok(GenerateResponse {
+                text: "## Diff\n```diff\n--- a/crates/example/src/lib.rs\n+++ b/crates/example/src/lib.rs\n+fixed\n```\n\n## Rationale\nUsed restricted policy-aware provider launch path.".into(),
+                tokens_in: 7,
+                tokens_out: 11,
+            })
+        }
+
+        fn provider_id(&self) -> &str {
+            "policy-aware"
+        }
+
+        fn model_id(&self) -> &str {
+            "test"
+        }
+    }
+
+    #[tokio::test]
+    async fn generalist_routes_restricted_network_policy_to_policy_aware_provider() {
+        let catalyst = GeneralistCatalyst::new();
+        let context = ContextPack {
+            germline_version: GermlineVersion::new(),
+            relevant_files: vec![],
+            prior_attempts: vec![],
+            retrieved_motifs: vec![],
+        };
+        let mut task = make_task();
+        task.network_policy = Some(NetworkPolicy::Isolated);
+
+        let patch = catalyst
+            .execute(&task, &context, &PolicyAwareProvider)
+            .await
+            .expect("policy-aware restricted provider path should be accepted");
+
+        assert!(patch.diff.contains("+fixed"));
+        assert!(
+            patch
+                .rationale
+                .contains("policy-aware provider launch path")
+        );
+        assert_eq!(patch.model_attribution.provider, "policy-aware");
+        assert_eq!(patch.model_attribution.model, "test");
     }
 
     #[tokio::test]

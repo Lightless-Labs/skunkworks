@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 
-use crate::error::A2Result;
+use crate::error::{A2Error, A2Result};
 use crate::id::*;
 use crate::protocol::*;
 
@@ -14,6 +14,25 @@ use crate::protocol::*;
 #[async_trait]
 pub trait ModelProvider: Send + Sync {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> A2Result<GenerateResponse>;
+
+    async fn generate_with_network_policy(
+        &self,
+        prompt: &str,
+        system: Option<&str>,
+        network_policy: Option<&NetworkPolicy>,
+    ) -> A2Result<GenerateResponse> {
+        if matches!(
+            network_policy,
+            Some(NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))
+        ) {
+            return Err(A2Error::ProviderError(format!(
+                "provider `{}` does not expose an audited sandbox/provider allowlist launch path for restricted network policy",
+                self.provider_id()
+            )));
+        }
+        self.generate(prompt, system).await
+    }
+
     fn provider_id(&self) -> &str;
     fn model_id(&self) -> &str;
 }
