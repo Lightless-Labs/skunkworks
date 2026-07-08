@@ -31,6 +31,7 @@ from typing import Any
 from uuid import UUID
 
 CATEGORY = "self_correction"
+DEFAULT_BENCHMARK_NETWORK_POLICY: str | dict[str, list[str]] = "Isolated"
 AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = False
 AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = "not_implemented"
 AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE: dict[str, Any] | None = None
@@ -719,6 +720,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--max-tokens", type=int, default=100_000, help="Per-attempt token budget.")
     parser.add_argument("--timeout", type=int, default=1800, help="Per-attempt timeout in seconds.")
+    parser.add_argument(
+        "--network-policy",
+        default="isolated",
+        help=(
+            "Benchmark agent network policy to encode in the a2ctl task payload: "
+            "isolated or allowlist:<https-endpoint>[,<https-endpoint>...]. "
+            "Provider-backed runs still require audited sandbox/provider allowlist evidence."
+        ),
+    )
     parser.add_argument("--run-id", default=None, help="Stable run ID for result records.")
     parser.add_argument(
         "--results",
@@ -761,7 +771,85 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--runs must be at least 1")
     if args.runs > 1 and args.workdir:
         parser.error("--workdir can only be used with --runs 1")
+    try:
+        args.network_policy_payload = parse_benchmark_network_policy(args.network_policy)
+    except ValueError as exc:
+        parser.error(str(exc))
     return args
+
+
+def parse_benchmark_network_policy(value: str) -> str | dict[str, list[str]]:
+    trimmed = value.strip()
+    if trimmed.lower() == "isolated":
+        return "Isolated"
+    lower = trimmed.lower()
+    if lower.startswith("allowlist:") or lower.startswith("allow-list:"):
+        prefix_len = len(trimmed.split(":", 1)[0]) + 1
+        endpoints = [endpoint.strip() for endpoint in trimmed[prefix_len:].split(",") if endpoint.strip()]
+        if not endpoints:
+            raise ValueError("--network-policy allowlist requires at least one endpoint")
+        for endpoint in endpoints:
+            parsed = urllib.parse.urlparse(endpoint)
+            if parsed.scheme != "https" or not parsed.hostname:
+                raise ValueError("--network-policy allowlist endpoints must be absolute https URLs")
+        return {"AllowList": endpoints}
+    raise ValueError("--network-policy must be isolated or allowlist:<https-endpoint>[,<https-endpoint>...]")
+
+
+def network_policy_name(policy: object) -> str | None:
+    if policy == "Isolated":
+        return "Isolated"
+    if isinstance(policy, dict) and isinstance(policy.get("AllowList"), list):
+        return "AllowList"
+    return None
+
+
+def network_policy_allowlist_endpoints(policy: object) -> list[str] | None:
+    if isinstance(policy, dict) and isinstance(policy.get("AllowList"), list):
+        endpoints = policy["AllowList"]
+        if all(isinstance(endpoint, str) and endpoint for endpoint in endpoints):
+            return list(endpoints)
+    return None
+
+
+def provider_endpoint_target_key(endpoint: str) -> str:
+    parsed = urllib.parse.urlparse(endpoint)
+    try:
+        host = (parsed.hostname or "").lower()
+        port = parsed.port if parsed.port is not None else 443
+    except ValueError:
+        host = ""
+        port = 0
+    if parsed.scheme != "https" or not host or port <= 0 or port > 65535:
+        raise RuntimeError("provider endpoint must be an absolute https URL with a valid host and port")
+    return f"{host}:{port}"
+
+
+def validate_sandbox_provider_allowlist_matches_network_policy(
+    evidence: dict[str, Any], network_policy: object
+) -> None:
+    policy_name = network_policy_name(network_policy)
+    if evidence.get("benchmark_network_policy") != policy_name:
+        raise RuntimeError(
+            "audited sandbox/provider allowlist evidence benchmark_network_policy must match the task network_policy"
+        )
+    requested_endpoints = network_policy_allowlist_endpoints(network_policy)
+    if policy_name == "AllowList":
+        if not requested_endpoints:
+            raise RuntimeError("AllowList network_policy must record at least one requested endpoint")
+        evidence_endpoints = evidence.get("allowed_provider_endpoints")
+        if not isinstance(evidence_endpoints, list) or not all(
+            isinstance(endpoint, str) and endpoint for endpoint in evidence_endpoints
+        ):
+            raise RuntimeError("audited sandbox/provider allowlist evidence must record allowed_provider_endpoints")
+        requested_targets = {provider_endpoint_target_key(endpoint) for endpoint in requested_endpoints}
+        evidence_targets = {provider_endpoint_target_key(endpoint) for endpoint in evidence_endpoints}
+        if requested_targets != evidence_targets:
+            raise RuntimeError(
+                "audited sandbox/provider allowlist evidence allowed_provider_endpoints must exactly match the task AllowList endpoints"
+            )
+    elif requested_endpoints:
+        raise RuntimeError("non-AllowList network_policy cannot record allowlist endpoints")
 
 
 def indexed_run_id(base_run_id: str, runs: int, run_index: int) -> str:
@@ -967,7 +1055,12 @@ def commit_bug(workspace: Path, fixture: Fixture) -> None:
     )
 
 
-def task_payload(fixture: Fixture, run_id: str, attempt: int) -> dict[str, Any]:
+def task_payload(
+    fixture: Fixture,
+    run_id: str,
+    attempt: int,
+    network_policy: str | dict[str, list[str]] = DEFAULT_BENCHMARK_NETWORK_POLICY,
+) -> dict[str, Any]:
     return {
         "task_id": fixture.task_id,
         "problem_statement": fixture.description,
@@ -978,7 +1071,7 @@ def task_payload(fixture: Fixture, run_id: str, attempt: int) -> dict[str, Any]:
             }
         ],
         "no_external_solution_search": True,
-        "network_policy": "Isolated",
+        "network_policy": network_policy,
         "category": CATEGORY,
         "fixture": fixture.name,
         "run_id": run_id,
@@ -1069,9 +1162,9 @@ def validate_sandbox_provider_allowlist_evidence(evidence: dict[str, Any]) -> No
             )
     if evidence.get("status") != "enforced":
         raise RuntimeError("audited sandbox/provider allowlist evidence status must be enforced")
-    if evidence.get("benchmark_network_policy") != "Isolated":
+    if evidence.get("benchmark_network_policy") not in ("Isolated", "AllowList"):
         raise RuntimeError(
-            "audited sandbox/provider allowlist evidence must record benchmark_network_policy=Isolated"
+            "audited sandbox/provider allowlist evidence must record benchmark_network_policy=Isolated or AllowList"
         )
     for key in ("provider_endpoint_allowlist_enforced", "public_solution_egress_blocked"):
         if evidence.get(key) is not True:
@@ -1266,7 +1359,7 @@ def provider_endpoint_host_is_synthetic_or_local(host: str) -> bool:
     )
 
 
-def ensure_audited_sandbox_provider_allowlist_ready() -> None:
+def ensure_audited_sandbox_provider_allowlist_ready(network_policy: object = DEFAULT_BENCHMARK_NETWORK_POLICY) -> None:
     fields = sandbox_provider_allowlist_audit_fields()
     if (
         fields.get("audited_sandbox_provider_allowlist_enforced") is not True
@@ -1278,6 +1371,10 @@ def ensure_audited_sandbox_provider_allowlist_ready() -> None:
             "sandbox/provider allowlist enforcement with status=enforced and durable "
             "evidence before benchmark worktrees or result files are created"
         )
+    validate_sandbox_provider_allowlist_matches_network_policy(
+        fields["audited_sandbox_provider_allowlist_evidence"],
+        network_policy,
+    )
 
 
 def sandbox_provider_allowlist_audit_fields() -> dict[str, Any]:
@@ -1343,7 +1440,17 @@ def result_record(
         lineage_after=lineage_after,
         verifier_gated=verifier_gated_promotion,
     )
-    return {
+    network_policy_payload = payload.get("network_policy")
+    network_policy = network_policy_name(network_policy_payload)
+    network_policy_allowlist = network_policy_allowlist_endpoints(network_policy_payload)
+    audit_fields = sandbox_provider_allowlist_audit_fields()
+    audit_evidence = audit_fields.get("audited_sandbox_provider_allowlist_evidence")
+    if isinstance(audit_evidence, dict):
+        validate_sandbox_provider_allowlist_matches_network_policy(
+            audit_evidence,
+            network_policy_payload,
+        )
+    record = {
         "task_id": payload["task_id"],
         "category": payload["category"],
         "fixture": payload.get("fixture"),
@@ -1352,8 +1459,8 @@ def result_record(
         "provider": provider,
         "model": provider,
         "no_external_solution_search": bool(payload.get("no_external_solution_search")),
-        "network_policy": payload.get("network_policy"),
-        **sandbox_provider_allowlist_audit_fields(),
+        "network_policy": network_policy,
+        **audit_fields,
         **source_metadata,
         "max_tokens": max_tokens,
         "timeout_secs": timeout,
@@ -1399,6 +1506,9 @@ def result_record(
         ),
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
     }
+    if network_policy_allowlist is not None:
+        record["network_policy_allowlist_endpoints"] = network_policy_allowlist
+    return record
 
 
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:
@@ -1422,7 +1532,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
             "before benchmark worktrees or result files are created"
         )
     if args.require_audited_sandbox_provider_allowlist or not args.smoke_only:
-        ensure_audited_sandbox_provider_allowlist_ready()
+        ensure_audited_sandbox_provider_allowlist_ready(args.network_policy_payload)
     base_run_id = args.run_id or datetime.now(timezone.utc).strftime("self-correction-%Y%m%dT%H%M%SZ")
     requested_results = Path(args.results)
     results_artifact = str(requested_results)
@@ -1460,7 +1570,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
 
             attempts = 1 if args.smoke_only else max(args.attempts, 1)
             for attempt in range(1, attempts + 1):
-                payload = task_payload(fixture, run_id, attempt)
+                payload = task_payload(fixture, run_id, attempt, args.network_policy_payload)
                 lineage_before = lineage_count(workspace, fixture.task_id)
                 a2_result = (
                     None
@@ -1524,6 +1634,29 @@ class SelfCorrectionTests(unittest.TestCase):
         self.assertEqual(second["attempt"], 2)
         self.assertTrue(first["no_external_solution_search"])
         self.assertEqual(first["network_policy"], "Isolated")
+
+    def test_task_payload_can_encode_serde_allowlist_network_policy(self) -> None:
+        payload = task_payload(
+            FIXTURES["fibonacci"],
+            "run",
+            1,
+            {"AllowList": ["https://api.openai.com"]},
+        )
+        self.assertEqual(payload["network_policy"], {"AllowList": ["https://api.openai.com"]})
+        self.assertEqual(network_policy_name(payload["network_policy"]), "AllowList")
+
+    def test_parse_benchmark_network_policy_accepts_isolated_and_allowlist(self) -> None:
+        self.assertEqual(parse_benchmark_network_policy("isolated"), "Isolated")
+        self.assertEqual(
+            parse_benchmark_network_policy("allowlist:https://api.openai.com, https://api.anthropic.com"),
+            {"AllowList": ["https://api.openai.com", "https://api.anthropic.com"]},
+        )
+        with self.assertRaisesRegex(ValueError, "allowlist requires at least one endpoint"):
+            parse_benchmark_network_policy("allowlist:")
+        with self.assertRaisesRegex(ValueError, "absolute https URLs"):
+            parse_benchmark_network_policy("allowlist:http://api.openai.com")
+        with self.assertRaisesRegex(ValueError, "--network-policy must be"):
+            parse_benchmark_network_policy("open")
 
     def test_indexed_run_id_preserves_single_run_id(self) -> None:
         self.assertEqual(indexed_run_id("run", 1, 1), "run")
@@ -1709,6 +1842,58 @@ class SelfCorrectionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "--require-audited-sandbox-provider-allowlist"):
                 run_benchmark(args)
             self.assertFalse(results.exists())
+
+    def test_allowlist_evidence_mismatch_fails_before_worktree_and_results(self) -> None:
+        global AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
+        global AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS
+        global AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE
+        original_enforced = AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
+        original_status = AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS
+        original_evidence = AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE
+        profile_lines = [
+            "(version 1)",
+            "(allow default)",
+            "(deny network*)",
+            '(allow network-outbound (remote tcp "api.openai.com:443"))',
+        ]
+        try:
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = True
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = "enforced"
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE = {
+                "status": "enforced",
+                "enforcement_layer": "test-sandbox-wrapper",
+                "launch_boundary": "candidate-worktree agent subprocess",
+                "benchmark_network_policy": "AllowList",
+                "provider_endpoint_allowlist_enforced": True,
+                "allowed_provider_endpoints": ["https://api.openai.com"],
+                "public_solution_egress_blocked": True,
+                "blocked_solution_hosts": ["github.com", "githubusercontent.com", "github.io"],
+                "sandbox_profile_sha256": sandbox_profile_lines_sha256(profile_lines),
+                "sandbox_profile_lines": profile_lines,
+            }
+            with tempfile.TemporaryDirectory() as directory:
+                project = self.committed_minimal_project(Path(directory))
+                results = project / "results" / "benchmark.jsonl"
+                args = parse_args(
+                    [
+                        "--repo",
+                        str(project),
+                        "--smoke-only",
+                        "--require-audited-sandbox-provider-allowlist",
+                        "--network-policy",
+                        "allowlist:https://api.anthropic.com",
+                        "--results",
+                        str(results),
+                    ]
+                )
+
+                with self.assertRaisesRegex(RuntimeError, "allowed_provider_endpoints must exactly match"):
+                    run_benchmark(args)
+                self.assertFalse(results.exists())
+        finally:
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = original_enforced
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = original_status
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE = original_evidence
 
     def test_task_payload_carries_fixture_verifier_command(self) -> None:
         fixture = FIXTURES["compound-hidden"]
@@ -2238,6 +2423,67 @@ diff --git a/crates/a2ctl/src/main.rs b/crates/a2ctl/src/main.rs
             self.assertTrue(record["audited_sandbox_provider_allowlist_enforced"])
             self.assertEqual(record["audited_sandbox_provider_allowlist_status"], "enforced")
             self.assertEqual(record["audited_sandbox_provider_allowlist_evidence"], evidence)
+        finally:
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = original_enforced
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = original_status
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE = original_evidence
+
+    def test_result_record_rejects_allowlist_evidence_policy_mismatch(self) -> None:
+        global AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
+        global AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS
+        global AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE
+        original_enforced = AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED
+        original_status = AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS
+        original_evidence = AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE
+        profile_lines = [
+            "(version 1)",
+            "(allow default)",
+            "(deny network*)",
+            '(allow network-outbound (remote tcp "api.openai.com:443"))',
+        ]
+        try:
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = True
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = "enforced"
+            AUDITED_SANDBOX_PROVIDER_ALLOWLIST_EVIDENCE = {
+                "status": "enforced",
+                "enforcement_layer": "test-sandbox-wrapper",
+                "launch_boundary": "candidate-worktree agent subprocess",
+                "benchmark_network_policy": "Isolated",
+                "provider_endpoint_allowlist_enforced": True,
+                "allowed_provider_endpoints": ["https://api.openai.com"],
+                "public_solution_egress_blocked": True,
+                "blocked_solution_hosts": ["github.com", "githubusercontent.com", "github.io"],
+                "sandbox_profile_sha256": sandbox_profile_lines_sha256(profile_lines),
+                "sandbox_profile_lines": profile_lines,
+            }
+            payload = task_payload(
+                FIXTURES["fibonacci"],
+                "run",
+                1,
+                {"AllowList": ["https://api.openai.com"]},
+            )
+            verify_result = CommandResult(FIBONACCI_VERIFY_COMMAND, 1, "", "fail", 0.1)
+            with self.assertRaisesRegex(RuntimeError, "benchmark_network_policy must match"):
+                result_record(
+                    payload=payload,
+                    provider="gemini",
+                    workspace=Path("/tmp/workspace"),
+                    a2_result=None,
+                    verify_result=verify_result,
+                    lineage_before=0,
+                    lineage_after=1,
+                    lineage_reconciled_by_core=False,
+                    patch_stats={},
+                    anti_repeat_retry_enabled=True,
+                    source_metadata={
+                        "source_head": "abcdef",
+                        "source_head_short": "abcdef",
+                        "source_branch": "main",
+                        "source_dirty": False,
+                    },
+                    max_tokens=123,
+                    timeout=456,
+                )
         finally:
             AUDITED_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED = original_enforced
             AUDITED_SANDBOX_PROVIDER_ALLOWLIST_STATUS = original_status

@@ -56,6 +56,7 @@ class SelfCorrectionRecord:
     source_dirty: bool | None = None
     no_external_solution_search: bool | None = None
     network_policy: str | None = None
+    network_policy_allowlist_endpoints: tuple[str, ...] = ()
     benchmark_source: str | None = None
     senior_swe_bench_export_sha256: str | None = None
     senior_swe_bench_export_row_index: int | None = None
@@ -97,6 +98,7 @@ class SelfCorrectionRecord:
         source_dirty: bool | None = None,
         no_external_solution_search: bool | None = None,
         network_policy: str | None = None,
+        network_policy_allowlist_endpoints: tuple[str, ...] = (),
         benchmark_source: str | None = None,
         senior_swe_bench_export_sha256: str | None = None,
         senior_swe_bench_export_row_index: int | None = None,
@@ -161,6 +163,11 @@ class SelfCorrectionRecord:
         object.__setattr__(self, "source_dirty", source_dirty)
         object.__setattr__(self, "no_external_solution_search", no_external_solution_search)
         object.__setattr__(self, "network_policy", network_policy)
+        object.__setattr__(
+            self,
+            "network_policy_allowlist_endpoints",
+            network_policy_allowlist_endpoints,
+        )
         object.__setattr__(self, "benchmark_source", benchmark_source)
         object.__setattr__(
             self, "senior_swe_bench_export_sha256", senior_swe_bench_export_sha256
@@ -438,6 +445,13 @@ def load_records(path: Path) -> list[SelfCorrectionRecord]:
                         if isinstance(payload.get("network_policy"), str) and payload.get("network_policy")
                         else None
                     ),
+                    network_policy_allowlist_endpoints=tuple(
+                        endpoint
+                        for endpoint in payload.get("network_policy_allowlist_endpoints", [])
+                        if isinstance(endpoint, str) and endpoint
+                    )
+                    if isinstance(payload.get("network_policy_allowlist_endpoints"), list)
+                    else (),
                     benchmark_source=(
                         str(payload["benchmark_source"])
                         if isinstance(payload.get("benchmark_source"), str) and payload.get("benchmark_source")
@@ -769,6 +783,8 @@ def normalized_evidence_row(record: SelfCorrectionRecord) -> dict[str, Any]:
         row["no_external_solution_search"] = record.no_external_solution_search
     if record.network_policy is not None:
         row["network_policy"] = record.network_policy
+    if record.network_policy_allowlist_endpoints:
+        row["network_policy_allowlist_endpoints"] = list(record.network_policy_allowlist_endpoints)
     if record.benchmark_source is not None:
         row["benchmark_source"] = record.benchmark_source
     if record.senior_swe_bench_export_sha256 is not None:
@@ -1702,7 +1718,8 @@ class SelfCorrectionScoreTests(unittest.TestCase):
             "resolved": True,
             "prior_lineage_present": False,
             "no_external_solution_search": True,
-            "network_policy": "Isolated",
+            "network_policy": "AllowList",
+            "network_policy_allowlist_endpoints": ["https://api.openai.com", 7, ""],
             "benchmark_source": "senior-swe-bench",
             "senior_swe_bench_export_sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
             "senior_swe_bench_export_row_index": 42,
@@ -1713,7 +1730,8 @@ class SelfCorrectionScoreTests(unittest.TestCase):
             records = load_records(logfile)
 
         self.assertEqual(records[0].no_external_solution_search, True)
-        self.assertEqual(records[0].network_policy, "Isolated")
+        self.assertEqual(records[0].network_policy, "AllowList")
+        self.assertEqual(records[0].network_policy_allowlist_endpoints, ("https://api.openai.com",))
         self.assertEqual(records[0].benchmark_source, "senior-swe-bench")
         self.assertEqual(
             records[0].senior_swe_bench_export_sha256,
@@ -1935,7 +1953,8 @@ class SelfCorrectionScoreTests(unittest.TestCase):
             resolved=False,
             prior_lineage_present=False,
             no_external_solution_search=True,
-            network_policy="Isolated",
+            network_policy="AllowList",
+            network_policy_allowlist_endpoints=("https://api.openai.com",),
             benchmark_source="senior-swe-bench",
             senior_swe_bench_export_sha256="abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
             senior_swe_bench_export_row_index=42,
@@ -1944,7 +1963,8 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         row = normalized_evidence_row(record)
 
         self.assertEqual(row["no_external_solution_search"], True)
-        self.assertEqual(row["network_policy"], "Isolated")
+        self.assertEqual(row["network_policy"], "AllowList")
+        self.assertEqual(row["network_policy_allowlist_endpoints"], ["https://api.openai.com"])
         self.assertEqual(row["benchmark_source"], "senior-swe-bench")
         self.assertEqual(
             row["senior_swe_bench_export_sha256"],

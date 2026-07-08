@@ -642,6 +642,11 @@ fn normalized_demo_evidence_row_from_payload(payload: &serde_json::Value) -> ser
         payload.get("no_external_solution_search"),
     );
     insert_valid_optional_string(&mut row, "network_policy", payload.get("network_policy"));
+    insert_valid_optional_string_array(
+        &mut row,
+        "network_policy_allowlist_endpoints",
+        payload.get("network_policy_allowlist_endpoints"),
+    );
     insert_valid_optional_string(
         &mut row,
         "benchmark_source",
@@ -751,6 +756,25 @@ fn insert_valid_optional_string(
         .filter(|value| !value.is_empty())
     {
         row.insert(field.into(), serde_json::Value::from(value));
+    }
+}
+
+fn insert_valid_optional_string_array(
+    row: &mut serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    value: Option<&serde_json::Value>,
+) {
+    let Some(values) = value.and_then(serde_json::Value::as_array) else {
+        return;
+    };
+    let strings = values
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(serde_json::Value::from)
+        .collect::<Vec<_>>();
+    if !strings.is_empty() {
+        row.insert(field.into(), serde_json::Value::Array(strings));
     }
 }
 
@@ -5728,6 +5752,10 @@ mod tests {
         row["lineage_reconciled_by_core"] = serde_json::Value::String("false".to_string());
         row["no_external_solution_search"] = serde_json::Value::String("true".to_string());
         row["network_policy"] = serde_json::Value::Array(vec![]);
+        row["network_policy_allowlist_endpoints"] = serde_json::Value::Array(vec![
+            serde_json::Value::String("https://api.openai.com".to_string()),
+            serde_json::Value::Number(1.into()),
+        ]);
         row["benchmark_source"] = serde_json::Value::String(String::new());
         row["senior_swe_bench_export_sha256"] = serde_json::json!({});
         row["senior_swe_bench_export_row_index"] = serde_json::Value::String("9".to_string());
@@ -5768,6 +5796,10 @@ mod tests {
                 "{field} should be omitted when malformed"
             );
         }
+        assert_eq!(
+            object.get("network_policy_allowlist_endpoints"),
+            Some(&serde_json::json!(["https://api.openai.com"]))
+        );
     }
 
     #[cfg(unix)]

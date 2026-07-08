@@ -47,6 +47,7 @@ DEFAULT_ARCHIVE_EVIDENCE = Path(
 DEFAULT_FIXTURE = "compound-archive-same-crate-hidden"
 DEFAULT_PROVIDER = "opencode/minimax-coding-plan/MiniMax-M3"
 FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY = "Isolated"
+FRESH_ALLOWED_BENCHMARK_NETWORK_POLICIES = frozenset({"Isolated", "AllowList"})
 FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR = (
     "fail_closed_provider_launch_until_audited_sandbox_provider_allowlist"
 )
@@ -843,6 +844,36 @@ def run_agent_network_boundary_inventory_json(path: Path) -> dict[str, object]:
     }
 
 
+def fresh_benchmark_network_policy(args: argparse.Namespace) -> str:
+    raw_policy = getattr(args, "network_policy", "isolated")
+    if not isinstance(raw_policy, str):
+        raise RuntimeError("fresh --network-policy must be a string")
+    policy = raw_policy.strip()
+    lowered = policy.lower()
+    if lowered == "isolated":
+        return "Isolated"
+    if lowered.startswith("allowlist:") or lowered.startswith("allow-list:"):
+        endpoints = [
+            endpoint.strip()
+            for endpoint in policy.split(":", 1)[1].split(",")
+            if endpoint.strip()
+        ]
+        if not endpoints:
+            raise RuntimeError(
+                "fresh --network-policy allowlist requires at least one provider endpoint"
+            )
+        for endpoint in endpoints:
+            parsed = urllib.parse.urlparse(endpoint)
+            if parsed.scheme != "https" or not parsed.hostname:
+                raise RuntimeError(
+                    "fresh --network-policy allowlist endpoints must be absolute https URLs"
+                )
+        return "AllowList"
+    raise RuntimeError(
+        "fresh --network-policy must be isolated or allowlist:<https-endpoint>[,<https-endpoint>...]"
+    )
+
+
 def fresh_preflight_report(
     args: argparse.Namespace,
     evidence_json: Path,
@@ -891,7 +922,7 @@ def fresh_preflight_report(
             if args.allow_dirty_source
             else True,
             "dirty_source_allowed": args.allow_dirty_source,
-            "benchmark_task_network_policy": FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY,
+            "benchmark_task_network_policy": fresh_benchmark_network_policy(args),
             "restricted_network_policy_current_behavior": FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR,
             "audited_sandbox_provider_allowlist_enforced": FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_ENFORCED,
             "audited_sandbox_provider_allowlist_status": FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS,
@@ -918,7 +949,7 @@ def fresh_preflight_report(
             "No results JSONL, demo-evidence JSON, or fresh provenance contract result was created by this preflight; the named results/evidence paths are future outputs only.",
             "Live provider auth, quota, and model availability are not verified until the fresh run executes.",
             "Clean-source readiness and source revision metadata are checked before fresh results/evidence files are created; newly generated rows record that pre-run source state, and the new artifacts must then be archived deliberately.",
-            "Benchmark task payloads request network_policy=Isolated; current provider-backed runs under restricted policy are expected to fail closed until an audited sandbox/provider allowlist exists.",
+            "Benchmark task payloads request a restricted network_policy (Isolated by default, or explicit AllowList when requested); current provider-backed runs under restricted policy are expected to fail closed until an audited sandbox/provider allowlist exists.",
             "No audited sandbox/provider allowlist is enforced for fresh provider-backed demo execution yet; this report records status=not_implemented rather than treating preflight as sandbox evidence.",
             "This preflight records the agent network boundary precondition command but does not execute it; the confirmed fresh wrapper runs it before provider launch and it is expected to fail closed until sandbox runtime support and launch wrappers are wired.",
             "Optional --preflight-boundary-inventory-json records the source-boundary --json audit for operators, but that inventory is still readiness/gap evidence only and does not prove runtime sandbox enforcement or loop behavior.",
@@ -1263,10 +1294,9 @@ def verify_fresh_preflight_report(
     else:
         if not isinstance(checks, dict):
             raise RuntimeError("fresh preflight report lacks checks")
-        if checks.get("benchmark_task_network_policy") != FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY:
+        if checks.get("benchmark_task_network_policy") not in FRESH_ALLOWED_BENCHMARK_NETWORK_POLICIES:
             raise RuntimeError(
-                "fresh preflight report checks.benchmark_task_network_policy must be "
-                f"{FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY}"
+                "fresh preflight report checks.benchmark_task_network_policy must be Isolated or AllowList"
             )
         if checks.get("restricted_network_policy_current_behavior") != FRESH_PREFLIGHT_RESTRICTED_NETWORK_BEHAVIOR:
             raise RuntimeError(
@@ -1476,6 +1506,21 @@ def validate_fresh_rows_for_host_path_markers(
             )
 
 
+def fresh_provider_endpoint_target_key(endpoint: str, *, index: int) -> str:
+    parsed = urllib.parse.urlparse(endpoint)
+    try:
+        endpoint_host = (parsed.hostname or "").lower()
+        endpoint_port = parsed.port if parsed.port is not None else 443
+    except ValueError:
+        endpoint_host = ""
+        endpoint_port = 0
+    if parsed.scheme != "https" or not endpoint_host or endpoint_port <= 0 or endpoint_port > 65535:
+        raise RuntimeError(
+            f"fresh demo row {index} sandbox/provider allowlist evidence must record valid https provider endpoints"
+        )
+    return f"{endpoint_host}:{endpoint_port}"
+
+
 def validate_fresh_sandbox_provider_allowlist_evidence(
     row: dict[str, object], *, index: int
 ) -> None:
@@ -1496,10 +1541,20 @@ def validate_fresh_sandbox_provider_allowlist_evidence(
             f"fresh demo row {index} sandbox/provider allowlist evidence status must be "
             f"{FRESH_REQUIRED_SANDBOX_PROVIDER_ALLOWLIST_STATUS!r}"
         )
-    if evidence.get("benchmark_network_policy") != FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY:
+    benchmark_network_policy = evidence.get("benchmark_network_policy")
+    if benchmark_network_policy not in FRESH_ALLOWED_BENCHMARK_NETWORK_POLICIES:
         raise RuntimeError(
             f"fresh demo row {index} sandbox/provider allowlist evidence must record "
-            f"benchmark_network_policy={FRESH_PREFLIGHT_BENCHMARK_NETWORK_POLICY!r}"
+            "benchmark_network_policy='Isolated' or 'AllowList'"
+        )
+    row_network_policy = row.get("network_policy")
+    if (
+        row_network_policy in FRESH_ALLOWED_BENCHMARK_NETWORK_POLICIES
+        and benchmark_network_policy != row_network_policy
+    ):
+        raise RuntimeError(
+            f"fresh demo row {index} sandbox/provider allowlist evidence benchmark_network_policy "
+            "must match the row network_policy"
         )
     for key in ("provider_endpoint_allowlist_enforced", "public_solution_egress_blocked"):
         if evidence.get(key) is not True:
@@ -1548,6 +1603,27 @@ def validate_fresh_sandbox_provider_allowlist_evidence(
                 f"fresh demo row {index} sandbox/provider allowlist evidence must record valid provider endpoint ports"
             ) from None
         allowed_endpoint_hosts.append(f"{endpoint_host}:{endpoint_port}")
+    row_allowlist_endpoints = row.get("network_policy_allowlist_endpoints")
+    if row_network_policy == "AllowList":
+        if not isinstance(row_allowlist_endpoints, list) or not row_allowlist_endpoints or not all(
+            isinstance(endpoint, str) and endpoint for endpoint in row_allowlist_endpoints
+        ):
+            raise RuntimeError(
+                f"fresh demo row {index} records network_policy=AllowList without network_policy_allowlist_endpoints"
+            )
+        requested_targets = {
+            fresh_provider_endpoint_target_key(endpoint, index=index)
+            for endpoint in row_allowlist_endpoints
+        }
+        evidence_targets = set(allowed_endpoint_hosts)
+        if requested_targets != evidence_targets:
+            raise RuntimeError(
+                f"fresh demo row {index} sandbox/provider allowlist evidence allowed_provider_endpoints must exactly match network_policy_allowlist_endpoints"
+            )
+    elif isinstance(row_allowlist_endpoints, list) and row_allowlist_endpoints:
+        raise RuntimeError(
+            f"fresh demo row {index} records network_policy_allowlist_endpoints without network_policy=AllowList"
+        )
     sandbox_sha = evidence.get("sandbox_profile_sha256")
     sandbox_runtime = evidence.get("sandbox_runtime")
     has_profile_sha = isinstance(sandbox_sha, str) and re.fullmatch(r"[0-9a-f]{64}", sandbox_sha)
@@ -1845,10 +1921,10 @@ def validate_fresh_rows(
                 f"fresh demo row {index} does not record no_external_solution_search=true; "
                 "fresh provider-backed benchmark evidence must audit the no-GitHub solution-search guard"
             )
-        if network_policy != "Isolated":
+        if network_policy not in FRESH_ALLOWED_BENCHMARK_NETWORK_POLICIES:
             raise RuntimeError(
                 f"fresh demo row {index} records network_policy={network_policy!r}; "
-                "fresh provider-backed benchmark evidence must record the fail-closed benchmark agent network policy"
+                "fresh provider-backed benchmark evidence must record a restricted benchmark agent network policy"
             )
         if (
             sandbox_provider_allowlist_enforced
@@ -1905,7 +1981,7 @@ def fresh_validation_summary(args: argparse.Namespace) -> str:
         f"all rows match run_id {args.run_id!r} or numeric suffixed variants; "
         "all rows share one source revision/branch/dirty-state and source_head_short prefixes source_head; "
         "no host-specific path markers are present; "
-        "no_external_solution_search=true and network_policy=Isolated are recorded for every row; "
+        "no_external_solution_search=true and a restricted network_policy (Isolated or AllowList) are recorded for every row; "
         "Senior SWE Bench rows, when present, include export SHA-256 and row-index provenance; "
         "audited_sandbox_provider_allowlist_enforced=true, "
         "audited_sandbox_provider_allowlist_status='enforced', and durable "
@@ -1925,7 +2001,7 @@ def fresh_preflight_summary(args: argparse.Namespace) -> str:
         "# preflight checked local prerequisites: empty results/evidence paths; "
         f"provider binary {provider_binary_name(args.provider)!r} present; "
         f"local provider config present when supported; {source_check}; "
-        "benchmark task payloads request network_policy=Isolated; "
+        f"benchmark task payloads request network_policy={fresh_benchmark_network_policy(args)}; "
         "audited sandbox/provider-allowlist execution is not implemented/enforced yet. "
         "Live provider auth, quota, and model availability are not verified until the fresh run executes."
     )
@@ -1947,6 +2023,8 @@ def fresh_command(args: argparse.Namespace) -> list[str]:
         str(args.max_tokens),
         "--timeout",
         str(args.timeout),
+        "--network-policy",
+        getattr(args, "network_policy", "isolated"),
         "--results",
         str(args.results),
     ]
@@ -3887,6 +3965,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     fresh.add_argument("--max-tokens", type=int, default=100_000)
     fresh.add_argument("--timeout", type=int, default=1800)
     fresh.add_argument(
+        "--network-policy",
+        default="isolated",
+        help=(
+            "Forwarded to bench/self_correction.py: isolated or "
+            "allowlist:<https-endpoint>[,<https-endpoint>...]. Real provider-backed "
+            "runs still require audited sandbox/provider allowlist evidence."
+        ),
+    )
+    fresh.add_argument(
         "--run-id",
         required=True,
         help="Required stable prefix for rows produced by this fresh demo invocation.",
@@ -4053,6 +4140,11 @@ def main(argv: list[str]) -> int:
 
     if args.mode == "fresh":
         evidence_json = args.evidence_json or default_fresh_evidence_path(args.results)
+        try:
+            fresh_benchmark_network_policy(args)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
         if args.preflight_report_json and not args.preflight_only:
             print("error: --preflight-report-json requires --preflight-only", file=sys.stderr)
             return 2
@@ -7065,8 +7157,52 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("100000", command)
         self.assertIn("--timeout", command)
         self.assertIn("1800", command)
+        self.assertIn("--network-policy", command)
+        self.assertIn("isolated", command)
         self.assertIn("--run-id", command)
         self.assertIn("fresh-demo", command)
+
+    def test_fresh_command_can_forward_allowlist_network_policy(self) -> None:
+        args = argparse.Namespace(
+            fixture=DEFAULT_FIXTURE,
+            provider=DEFAULT_PROVIDER,
+            runs=3,
+            attempts=3,
+            max_tokens=100_000,
+            timeout=1800,
+            network_policy="allowlist:https://api.openai.com",
+            results=Path("docs/benchmark-results/self-correction/fresh.jsonl"),
+            run_id="fresh-demo",
+            allow_dirty_source=False,
+            keep_workspace=False,
+            evidence_json=None,
+        )
+
+        command = fresh_command(args)
+
+        self.assertEqual(fresh_benchmark_network_policy(args), "AllowList")
+        self.assertIn("--network-policy", command)
+        self.assertIn("allowlist:https://api.openai.com", command)
+
+    def test_fresh_cli_rejects_invalid_network_policy_before_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                result = main(
+                    [
+                        "fresh",
+                        "--results",
+                        str(Path(tmpdir) / "fresh.jsonl"),
+                        "--run-id",
+                        "fresh-demo",
+                        "--network-policy",
+                        "allowlist:",
+                        "--print-only",
+                    ]
+                )
+
+        self.assertEqual(result, 2)
+        self.assertIn("allowlist requires at least one provider endpoint", stderr.getvalue())
 
     def test_fresh_command_can_print_dirty_local_smoke(self) -> None:
         args = argparse.Namespace(
@@ -7111,7 +7247,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("all rows match run_id 'fresh-demo'", output)
         self.assertIn("no host-specific path markers are present", output)
         self.assertIn("source_dirty=false", output)
-        self.assertIn("no_external_solution_search=true and network_policy=Isolated are recorded for every row", output)
+        self.assertIn("no_external_solution_search=true and a restricted network_policy (Isolated or AllowList) are recorded for every row", output)
         self.assertIn(str(results.with_suffix(".demo-evidence.json")), output)
         self.assertIn("verify-evidence-contract", output)
         self.assertIn("--fresh-run-id", output)
@@ -7189,7 +7325,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("Live provider auth, quota, and model availability are not verified", output)
         self.assertIn("bench/self_correction.py", output)
         self.assertIn("# would validate fresh results before scoring", output)
-        self.assertIn("no_external_solution_search=true and network_policy=Isolated are recorded for every row", output)
+        self.assertIn("no_external_solution_search=true and a restricted network_policy (Isolated or AllowList) are recorded for every row", output)
         self.assertIn(str(results.with_suffix(".demo-evidence.json")), output)
         self.assertIn("verify-evidence-contract", output)
         self.assertIn("--reference-evidence-json", output)
@@ -7262,7 +7398,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(data["checks"]["audited_sandbox_provider_allowlist_status"], "not_implemented")
         notes = " ".join(data["notes"])
         self.assertIn("before fresh results/evidence files are created", notes)
-        self.assertIn("network_policy=Isolated", notes)
+        self.assertIn("restricted network_policy", notes)
         self.assertIn("fail closed until an audited sandbox/provider allowlist exists", notes)
         self.assertIn("agent network boundary precondition", notes)
         self.assertIn("does not execute it", notes)
@@ -9164,6 +9300,46 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 RuntimeError, "audited_sandbox_provider_allowlist_enforced"
             ):
+                validate_fresh_results(args)
+
+    def test_validate_fresh_results_accepts_allowlist_network_policy_with_matching_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            row = {
+                "run_id": "fresh-demo-1",
+                "source_head": "abcdef1234567890abcdef1234567890abcdef12",
+                "source_head_short": "abcdef1",
+                "source_branch": "main",
+                "source_dirty": False,
+                "max_tokens": 100_000,
+                "timeout_secs": 1800,
+                "no_external_solution_search": True,
+                "network_policy": "AllowList",
+                "network_policy_allowlist_endpoints": ["https://api.openai.com"],
+                "audited_sandbox_provider_allowlist_enforced": True,
+                "audited_sandbox_provider_allowlist_status": "enforced",
+                "audited_sandbox_provider_allowlist_evidence": {
+                    **self.fresh_sandbox_provider_allowlist_evidence(),
+                    "benchmark_network_policy": "AllowList",
+                },
+            }
+            results.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            args = argparse.Namespace(
+                results=results,
+                run_id="fresh-demo",
+                allow_dirty_source=False,
+                max_tokens=100_000,
+                timeout=1800,
+            )
+
+            validate_fresh_results(args)
+
+            row["audited_sandbox_provider_allowlist_evidence"] = {
+                **self.fresh_sandbox_provider_allowlist_evidence(),
+                "benchmark_network_policy": "Isolated",
+            }
+            results.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "benchmark_network_policy must match"):
                 validate_fresh_results(args)
 
     def test_validate_fresh_results_rejects_malformed_sandbox_allowlist_audit(self) -> None:
