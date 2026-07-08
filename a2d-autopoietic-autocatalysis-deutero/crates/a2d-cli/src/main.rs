@@ -9956,37 +9956,65 @@ fn artifact_defers_to_checkout_inspection(artifact: &str) -> bool {
 }
 
 const MAX_PUBLIC_GITHUB_REFERENCE_PERCENT_DECODE_PASSES: usize = 8;
+const MAX_PUBLIC_GITHUB_REFERENCE_HTML_ENTITY_CHARS: usize = 32;
 
 fn contains_public_github_solution_reference(artifact: &str) -> bool {
-    contains_public_github_solution_reference_text_layers(artifact)
-        || contains_base64_encoded_public_github_solution_reference(artifact)
+    contains_public_github_solution_reference_decoded_layers(artifact, true)
 }
 
 fn contains_public_github_solution_reference_text_layers(artifact: &str) -> bool {
-    let normalized = artifact.to_ascii_lowercase();
-    if contains_public_github_solution_reference_normalized(&normalized) {
-        return true;
-    }
+    contains_public_github_solution_reference_decoded_layers(artifact, false)
+}
 
-    let mut current = normalized;
+fn contains_public_github_solution_reference_decoded_layers(
+    artifact: &str,
+    scan_base64_tokens: bool,
+) -> bool {
+    let mut current = artifact.to_string();
     for _ in 0..MAX_PUBLIC_GITHUB_REFERENCE_PERCENT_DECODE_PASSES {
-        let percent_decoded = percent_decode_ascii_sequences(&current).to_ascii_lowercase();
-        if percent_decoded == current {
-            break;
-        }
-        if contains_public_github_solution_reference_normalized(&percent_decoded) {
+        if contains_public_github_solution_reference_in_layer(&current, scan_base64_tokens) {
             return true;
         }
-        current = percent_decoded;
+
+        let percent_decoded = percent_decode_ascii_sequences(&current);
+        if contains_public_github_solution_reference_in_layer(&percent_decoded, scan_base64_tokens)
+        {
+            return true;
+        }
+
+        let html_decoded = decode_public_github_reference_html_entities(&percent_decoded);
+        if contains_public_github_solution_reference_in_layer(&html_decoded, scan_base64_tokens) {
+            return true;
+        }
+
+        if html_decoded == current {
+            break;
+        }
+        current = html_decoded;
     }
 
-    let next = percent_decode_ascii_sequences(&current).to_ascii_lowercase();
+    let next_percent = percent_decode_ascii_sequences(&current);
+    let next = decode_public_github_reference_html_entities(&next_percent);
+    let current_normalized = current.to_ascii_lowercase();
+    let next_normalized = next.to_ascii_lowercase();
     next != current
-        && (contains_public_github_solution_reference_normalized(&next)
-            || current.contains("github")
-            || current.contains("refs")
-            || next.contains("github")
-            || next.contains("refs"))
+        && (contains_public_github_solution_reference_in_layer(&next, scan_base64_tokens)
+            || contains_suspicious_partially_decoded_public_reference_marker(&current_normalized)
+            || contains_suspicious_partially_decoded_public_reference_marker(&next_normalized))
+}
+
+fn contains_suspicious_partially_decoded_public_reference_marker(normalized: &str) -> bool {
+    ["github%", "github&", "refs%", "refs&"]
+        .iter()
+        .any(|needle| normalized.contains(needle))
+}
+
+fn contains_public_github_solution_reference_in_layer(
+    text: &str,
+    scan_base64_tokens: bool,
+) -> bool {
+    contains_public_github_solution_reference_normalized(&text.to_ascii_lowercase())
+        || (scan_base64_tokens && contains_base64_encoded_public_github_solution_reference(text))
 }
 
 fn contains_public_github_solution_reference_normalized(normalized: &str) -> bool {
@@ -10124,6 +10152,57 @@ fn percent_decode_ascii_sequences(input: &str) -> String {
         i += 1;
     }
     decoded
+}
+
+fn decode_public_github_reference_html_entities(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut decoded = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '&' {
+            if let Some((entity, consumed)) =
+                decode_public_github_reference_html_entity(&chars[i..])
+            {
+                decoded.push(entity);
+                i += consumed;
+                continue;
+            }
+        }
+        decoded.push(chars[i]);
+        i += 1;
+    }
+    decoded
+}
+
+fn decode_public_github_reference_html_entity(chars: &[char]) -> Option<(char, usize)> {
+    let max_scan = chars
+        .len()
+        .min(MAX_PUBLIC_GITHUB_REFERENCE_HTML_ENTITY_CHARS + 2);
+    let semicolon = (1..max_scan).find(|idx| chars[*idx] == ';')?;
+    let token = chars[1..semicolon]
+        .iter()
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let decoded = if let Some(hex) = token.strip_prefix("#x") {
+        u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)?
+    } else if let Some(decimal) = token.strip_prefix('#') {
+        decimal.parse::<u32>().ok().and_then(char::from_u32)?
+    } else {
+        match token.as_str() {
+            "amp" => '&',
+            "apos" => '\'',
+            "colon" => ':',
+            "commat" => '@',
+            "dot" | "period" => '.',
+            "gt" => '>',
+            "lt" => '<',
+            "num" => '#',
+            "quot" => '"',
+            "sol" => '/',
+            _ => return None,
+        }
+    };
+    Some((decoded, semicolon + 1))
 }
 
 fn hex_value(c: char) -> Option<u8> {

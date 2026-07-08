@@ -48,9 +48,12 @@
 **Hardened:** 2026-07-07 — Senior SWE-Bench retry/local-evaluation `fitness_evidence_path` handoffs now serialize in-project artifacts repo-relative and outside-project relative exports as absolute CWD-stable paths
 **Hardened:** 2026-07-07 — Senior SWE-Bench local-evaluation/evidence artifact provenance now avoids host-local project/temp paths for in-project retry artifacts and isolated evaluator checkouts
 **Hardened:** 2026-07-07 — Senior SWE-Bench artifact diagnosis/selection now rejects base64/base64url-encoded public GitHub solution references, including assignment-style metadata, while preserving benign base64-looking local notes
+**Hardened:** 2026-07-08 — Senior SWE-Bench artifact diagnosis/selection now rejects bounded HTML/entity-encoded and mixed percent/entity/base64 public GitHub solution references
 **Hardened:** 2026-07-05 — CLI provider subprocesses now receive explicit no-public-solution-search policy env flags (observability only, not network isolation)
 **Hardened:** 2026-07-05 — Senior SWE-Bench no-search fitness labels now distinguish policy-declared evidence from network-isolation proof
 **Depends on:** Stage 1 (complete)
+
+**Addendum:** 2026-07-08 — Senior SWE-Bench artifact diagnosis/selection now rejects public GitHub solution references hidden behind bounded HTML/XML entities and mixed percent/entity/base64 layers. Regression coverage includes `github&#46;com`, zero-padded decimal entities, `github&#x2e;com`, `github&period;com`, `refs&#x2f;pull`, HTML→percent, percent→HTML, nested `&amp;#46;`, and percent/entity-obfuscated base64 tokens while preserving benign local entity metadata. Focused diagnosis/selection suites and full `CARGO_BUILD_JOBS=2 cargo test` passed. Fresh source-patch evidence `runs/20260708-senior-swe-bench-html-entity-reference-detection-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json` is full-passing with `source_diff_hash: b21036b7853f831fdf428422248e50d36b7d8c9e`, matching the current scoped crates diff. This is detector hardening, not official Senior SWE-Bench mastery or network no-search enforcement.
 
 ## 2026-07-05 Update: Retry Executor Artifact Persistence
 

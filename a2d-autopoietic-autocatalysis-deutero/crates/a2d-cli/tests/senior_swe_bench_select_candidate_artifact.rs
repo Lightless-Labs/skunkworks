@@ -229,7 +229,7 @@ fn senior_swe_bench_select_candidate_artifact_fails_closed_on_unsafe_manifests()
     assert!(String::from_utf8_lossy(&rejected_multi.stderr).contains("exactly one"));
 
     let safe_artifact = root.join("safe-gh-pr-fragments.artifact");
-    let safe_diff = b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nNotes: high priority fix through PR review for this GH project; gh_pr_number metadata is local; issue id data %2541 and deep issue data %25252525252525252541 are local metadata. Benign base64 note SGVsbG8gdGhpcyBpcyBhIGxvY2FsIGJlbmNoIG5vdGUgd2l0aG91dCBwdWJsaWMgc291cmNlIHJlZmVyZW5jZXM= is not a public source.\n";
+    let safe_diff = b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nNotes: high priority fix through PR review for this GH project; gh_pr_number metadata is local; issue id data %2541 and deep issue data %25252525252525252541 are local metadata. Benign base64 note SGVsbG8gdGhpcyBpcyBhIGxvY2FsIGJlbmNoIG5vdGUgd2l0aG91dCBwdWJsaWMgc291cmNlIHJlZmVyZW5jZXM= is not a public source. Benign HTML entity text AT&amp;T issue&#35;123 is local metadata. A local github integration &amp; docs note is not a public source reference.\n";
     fs::write(&safe_artifact, safe_diff).unwrap();
     let safe_manifest = write_manifest(
         &root,
@@ -320,6 +320,46 @@ fn senior_swe_bench_select_candidate_artifact_fails_closed_on_unsafe_manifests()
             b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: https://github%2525252525252525252ecom/example/repo/pull/1\n".as_slice(),
         ),
         (
+            "public-html-decimal-github-host",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: https://github&#46;com/example/repo/pull/1\n".as_slice(),
+        ),
+        (
+            "public-html-long-decimal-github-host",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: https://github&#0000000046;com/example/repo/pull/1\n".as_slice(),
+        ),
+        (
+            "public-html-hex-github-host",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: https://github&#x2e;com/example/repo/pull/1\n".as_slice(),
+        ),
+        (
+            "public-html-named-github-host",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: https://github&period;com/example/repo/pull/1\n".as_slice(),
+        ),
+        (
+            "public-html-pull-ref",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: refs&#x2f;pull&#x2f;123&#x2f;head\n".as_slice(),
+        ),
+        (
+            "public-html-to-percent-github-host",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: https://github&#37;2ecom/example/repo/pull/1\n".as_slice(),
+        ),
+        (
+            "public-nested-html-github-host",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: https://github&amp;#46;com/example/repo/pull/1\n".as_slice(),
+        ),
+        (
+            "public-percent-encoded-html-entity-github-host",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: https://github%26%2346%3bcom/example/repo/pull/1\n".as_slice(),
+        ),
+        (
+            "public-percent-obfuscated-base64-github-url",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: aHR0%63HM6Ly9naXRodWIuY29tL29yZy9yZXBvL3B1bGwvMTIz\n".as_slice(),
+        ),
+        (
+            "public-html-obfuscated-base64-github-url",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: aHR0&#99;HM6Ly9naXRodWIuY29tL29yZy9yZXBvL3B1bGwvMTIz\n".as_slice(),
+        ),
+        (
             "public-base64-github-url",
             b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: aHR0cHM6Ly9naXRodWIuY29tL29yZy9yZXBvL3B1bGwvMTIz\n".as_slice(),
         ),
@@ -397,8 +437,18 @@ fn senior_swe_bench_select_candidate_artifact_fails_closed_on_unsafe_manifests()
             ])
             .output()
             .expect("run select command");
-        assert_eq!(rejected_public.status.code(), Some(1));
-        assert!(String::from_utf8_lossy(&rejected_public.stderr).contains("public GitHub"));
+        assert_eq!(
+            rejected_public.status.code(),
+            Some(1),
+            "{name}: stdout={} stderr={}",
+            String::from_utf8_lossy(&rejected_public.stdout),
+            String::from_utf8_lossy(&rejected_public.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&rejected_public.stderr).contains("public GitHub"),
+            "{name}: stderr={}",
+            String::from_utf8_lossy(&rejected_public.stderr)
+        );
     }
 
     let _ = fs::remove_dir_all(root);
