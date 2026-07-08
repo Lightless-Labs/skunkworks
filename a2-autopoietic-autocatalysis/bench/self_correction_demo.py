@@ -593,7 +593,8 @@ def ensure_agent_network_boundary_precondition_ready() -> None:
             details = f" ({details})"
         raise RuntimeError(
             "fresh provider-backed runs are blocked because the agent network boundary "
-            "precondition failed closed before provider launch; command="
+            "precondition failed closed before provider launch "
+            "(sandbox runtime/enforcement unavailable or check failed); command="
             f"{display_command(AGENT_NETWORK_BOUNDARY_PRECONDITION_COMMAND)!r}{details}"
         )
 
@@ -869,7 +870,12 @@ def load_preflight_report(path: Path) -> dict[str, object]:
     return data
 
 
-def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = False) -> None:
+def verify_fresh_preflight_report(
+    path: Path,
+    *,
+    require_current_head: bool = False,
+    require_boundary_inventory: bool = False,
+) -> None:
     report = load_preflight_report(path)
     if report.get("mode") != "fresh_preflight":
         raise RuntimeError("fresh preflight report mode is not fresh_preflight")
@@ -897,6 +903,11 @@ def verify_fresh_preflight_report(path: Path, *, require_current_head: bool = Fa
             )
     if not isinstance(boundary_inventory_created, bool):
         raise RuntimeError("fresh preflight report boundary_inventory_created must be boolean")
+    if require_boundary_inventory and boundary_inventory_created is not True:
+        raise RuntimeError(
+            "fresh preflight report lacks required embedded boundary inventory; "
+            "rerun preflight with --preflight-boundary-inventory-json"
+        )
     if boundary_inventory_created is True:
         if not isinstance(boundary_inventory, dict):
             raise RuntimeError(
@@ -3726,6 +3737,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Fail when the report source_head/source_dirty does not match the current source state.",
     )
+    preflight_report.add_argument(
+        "--require-boundary-inventory",
+        action="store_true",
+        help=(
+            "Fail unless the preflight report embeds a recorded "
+            "bench/agent_network_boundary_check.py --json inventory."
+        ),
+    )
 
     fresh = subparsers.add_parser(
         "fresh",
@@ -3896,6 +3915,7 @@ def main(argv: list[str]) -> int:
             verify_fresh_preflight_report(
                 args.report_json,
                 require_current_head=args.require_current_head,
+                require_boundary_inventory=args.require_boundary_inventory,
             )
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -5209,6 +5229,22 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(args.mode, "verify-preflight-report")
         self.assertEqual(args.report_json, Path("fresh.report.json"))
         self.assertTrue(args.require_current_head)
+        self.assertFalse(args.require_boundary_inventory)
+
+    def test_verify_preflight_report_cli_parses_require_boundary_inventory(self) -> None:
+        args = parse_args(
+            [
+                "verify-preflight-report",
+                "--report-json",
+                "fresh.report.json",
+                "--require-boundary-inventory",
+            ]
+        )
+
+        self.assertEqual(args.mode, "verify-preflight-report")
+        self.assertEqual(args.report_json, Path("fresh.report.json"))
+        self.assertFalse(args.require_current_head)
+        self.assertTrue(args.require_boundary_inventory)
 
     def test_verify_preflight_report_cli_dispatches_require_current_head(self) -> None:
         with mock.patch(__name__ + ".verify_fresh_preflight_report") as verify:
@@ -5222,7 +5258,29 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
-        verify.assert_called_once_with(Path("fresh.report.json"), require_current_head=True)
+        verify.assert_called_once_with(
+            Path("fresh.report.json"),
+            require_current_head=True,
+            require_boundary_inventory=False,
+        )
+
+    def test_verify_preflight_report_cli_dispatches_require_boundary_inventory(self) -> None:
+        with mock.patch(__name__ + ".verify_fresh_preflight_report") as verify:
+            result = main(
+                [
+                    "verify-preflight-report",
+                    "--report-json",
+                    "fresh.report.json",
+                    "--require-boundary-inventory",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        verify.assert_called_once_with(
+            Path("fresh.report.json"),
+            require_current_head=False,
+            require_boundary_inventory=True,
+        )
 
     def test_archive_flags_work_without_explicit_subcommand(self) -> None:
         args = parse_args(["--archive", "custom.jsonl", "--print-only"])
@@ -7493,6 +7551,50 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertIn("agent_network_boundary_precondition_required: True", output)
         self.assertIn("agent_network_boundary_precondition_executed: False", output)
         self.assertIn("agent_network_boundary_precondition_status: not_executed_in_preflight", output)
+        self.assertIn("readiness only", output)
+        self.assertIn("not loop evidence", output)
+
+    def test_verify_preflight_report_require_boundary_inventory_rejects_report_without_inventory(self) -> None:
+        report = {
+            "mode": "fresh_preflight",
+            "creates_loop_evidence": False,
+            "provider_backed_benchmark_executed": False,
+            "results_created": False,
+            "evidence_json_created": False,
+            "fresh_provenance_contract_executed": False,
+            "live_provider_auth_quota_model_checked": False,
+            "checks": self.required_preflight_network_checks(),
+            "source_metadata": {
+                "source_head": "1234567890abcdef1234567890abcdef12345678",
+                "source_dirty": False,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(
+                RuntimeError,
+                "lacks required embedded boundary inventory",
+            ):
+                verify_fresh_preflight_report(report_path, require_boundary_inventory=True)
+
+    def test_verify_preflight_report_require_boundary_inventory_accepts_embedded_inventory(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content()
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=hashlib.sha256(inventory_json.encode("utf-8")).hexdigest(),
+            inventory_content=inventory_content,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                verify_fresh_preflight_report(report_path, require_boundary_inventory=True)
+
+        output = stdout.getvalue()
+        self.assertIn("Fresh preflight report check", output)
         self.assertIn("readiness only", output)
         self.assertIn("not loop evidence", output)
 
