@@ -143,9 +143,16 @@ fn write_executable_script(path: &std::path::Path, body: &str) {
 }
 
 fn sample_manifest(command: &[&str]) -> String {
+    sample_manifest_with_url(
+        "https://senior-swe-bench.snorkel.ai/tasks/task-hard",
+        command,
+    )
+}
+
+fn sample_manifest_with_url(benchmark_url: &str, command: &[&str]) -> String {
     serde_json::to_string_pretty(&serde_json::json!({
         "schema_version": "a2d.senior-swe-bench-official-evaluator-manifest.v1",
-        "benchmark_url": "https://senior-swe-bench.snorkel.ai/tasks/task-hard",
+        "benchmark_url": benchmark_url,
         "task_id": "task-hard",
         "repo": "owner/repo",
         "hidden_holdouts": true,
@@ -280,6 +287,79 @@ fn official_evaluator_manifest_inspect_rejects_command_mismatch_before_evaluator
         !sentinel.exists(),
         "manifest mismatch must fail before evaluator execution"
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn official_evaluator_manifest_inspect_rejects_untrusted_benchmark_url_origins_before_evaluator() {
+    let root = std::env::temp_dir().join(format!(
+        "a2d-official-manifest-url-origin-{}",
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let cycle_input = root.join("cycle-input.json");
+    let sentinel = root.join("evaluator-ran");
+    let evaluator = root.join("official-evaluator.sh");
+    write_executable_script(&evaluator, &format!("touch {}", sentinel.to_string_lossy()));
+    let evaluator_text = evaluator.to_string_lossy().to_string();
+    fs::write(&cycle_input, sample_cycle_input()).unwrap();
+
+    for (case, benchmark_url) in [
+        (
+            "http-scheme",
+            "http://senior-swe-bench.snorkel.ai/tasks/task-hard",
+        ),
+        (
+            "lookalike-host-suffix",
+            "https://senior-swe-bench.snorkel.ai.evil.test/tasks/task-hard",
+        ),
+        (
+            "userinfo-authority-spoof",
+            "https://senior-swe-bench.snorkel.ai@evil.test/tasks/task-hard",
+        ),
+        (
+            "path-contains-trusted-host",
+            "https://evil.test/senior-swe-bench.snorkel.ai/tasks/task-hard",
+        ),
+    ] {
+        let manifest = root.join(format!("official-manifest-{case}.json"));
+        fs::write(
+            &manifest,
+            sample_manifest_with_url(benchmark_url, &[&evaluator_text, "official"]),
+        )
+        .unwrap();
+
+        let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+            .args([
+                "senior-swe-bench-official-evaluator-manifest-inspect",
+                "--task-cycle-input",
+                cycle_input.to_str().unwrap(),
+                "--official-evaluator-manifest",
+                manifest.to_str().unwrap(),
+                "--",
+                evaluator.to_str().unwrap(),
+                "official",
+            ])
+            .output()
+            .expect("run official manifest inspect");
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "case={case} stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("benchmark_url"),
+            "case={case} stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !sentinel.exists(),
+            "case={case}: untrusted URL origin must fail before evaluator execution"
+        );
+    }
 
     let _ = fs::remove_dir_all(root);
 }
