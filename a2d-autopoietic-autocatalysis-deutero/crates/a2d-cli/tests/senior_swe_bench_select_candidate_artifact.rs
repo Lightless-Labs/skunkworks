@@ -229,7 +229,7 @@ fn senior_swe_bench_select_candidate_artifact_fails_closed_on_unsafe_manifests()
     assert!(String::from_utf8_lossy(&rejected_multi.stderr).contains("exactly one"));
 
     let safe_artifact = root.join("safe-gh-pr-fragments.artifact");
-    let safe_diff = b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nNotes: high priority fix through PR review for this GH project; gh_pr_number metadata is local; issue id data %2541 and deep issue data %25252525252525252541 are local metadata.\n";
+    let safe_diff = b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nNotes: high priority fix through PR review for this GH project; gh_pr_number metadata is local; issue id data %2541 and deep issue data %25252525252525252541 are local metadata. Benign base64 note SGVsbG8gdGhpcyBpcyBhIGxvY2FsIGJlbmNoIG5vdGUgd2l0aG91dCBwdWJsaWMgc291cmNlIHJlZmVyZW5jZXM= is not a public source.\n";
     fs::write(&safe_artifact, safe_diff).unwrap();
     let safe_manifest = write_manifest(
         &root,
@@ -318,6 +318,26 @@ fn senior_swe_bench_select_candidate_artifact_fails_closed_on_unsafe_manifests()
         (
             "public-over-depth-percent-encoded-github-host",
             b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: https://github%2525252525252525252ecom/example/repo/pull/1\n".as_slice(),
+        ),
+        (
+            "public-base64-github-url",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: aHR0cHM6Ly9naXRodWIuY29tL29yZy9yZXBvL3B1bGwvMTIz\n".as_slice(),
+        ),
+        (
+            "public-assigned-base64-github-url",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource=aHR0cHM6Ly9naXRodWIuY29tL29yZy9yZXBvL3B1bGwvMTIz\n".as_slice(),
+        ),
+        (
+            "public-base64url-unpadded-github-url",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: aHR0cHM6Ly9naXRodWIuY29tL29yZy9yZXBvL3B1bGwvMTIzYWE_\n".as_slice(),
+        ),
+        (
+            "public-base64-pull-ref",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: cmVmcy9wdWxsLzEyMy9oZWFk\n".as_slice(),
+        ),
+        (
+            "public-base64-raw-content",
+            b"diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old\n+new\nsource: aHR0cHM6Ly9yYXcuZ2l0aHVidXNlcmNvbnRlbnQuY29tL29yZy9yZXBvL21haW4vZml4LmRpZmY=\n".as_slice(),
         ),
         (
             "public-percent-encoded-pull-ref",

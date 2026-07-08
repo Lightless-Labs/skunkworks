@@ -9958,6 +9958,11 @@ fn artifact_defers_to_checkout_inspection(artifact: &str) -> bool {
 const MAX_PUBLIC_GITHUB_REFERENCE_PERCENT_DECODE_PASSES: usize = 8;
 
 fn contains_public_github_solution_reference(artifact: &str) -> bool {
+    contains_public_github_solution_reference_text_layers(artifact)
+        || contains_base64_encoded_public_github_solution_reference(artifact)
+}
+
+fn contains_public_github_solution_reference_text_layers(artifact: &str) -> bool {
     let normalized = artifact.to_ascii_lowercase();
     if contains_public_github_solution_reference_normalized(&normalized) {
         return true;
@@ -9967,7 +9972,7 @@ fn contains_public_github_solution_reference(artifact: &str) -> bool {
     for _ in 0..MAX_PUBLIC_GITHUB_REFERENCE_PERCENT_DECODE_PASSES {
         let percent_decoded = percent_decode_ascii_sequences(&current).to_ascii_lowercase();
         if percent_decoded == current {
-            return false;
+            break;
         }
         if contains_public_github_solution_reference_normalized(&percent_decoded) {
             return true;
@@ -9995,6 +10000,112 @@ fn contains_public_github_solution_reference_normalized(normalized: &str) -> boo
         || normalized.contains("/issues/")
         || normalized.contains("refs/pull")
         || contains_github_cli_solution_search_command(normalized)
+}
+
+const MIN_PUBLIC_GITHUB_REFERENCE_BASE64_TOKEN_BYTES: usize = 16;
+const MAX_PUBLIC_GITHUB_REFERENCE_BASE64_TOKEN_BYTES: usize = 4096;
+
+fn contains_base64_encoded_public_github_solution_reference(artifact: &str) -> bool {
+    let bytes = artifact.as_bytes();
+    let mut start: Option<usize> = None;
+
+    for (idx, byte) in bytes.iter().copied().enumerate() {
+        if is_base64_candidate_byte(byte) {
+            if start.is_none() {
+                start = Some(idx);
+            }
+        } else if let Some(token_start) = start.take() {
+            if base64_token_decodes_to_public_github_solution_reference(&artifact[token_start..idx])
+            {
+                return true;
+            }
+        }
+    }
+
+    if let Some(token_start) = start {
+        return base64_token_decodes_to_public_github_solution_reference(&artifact[token_start..]);
+    }
+
+    false
+}
+
+fn is_base64_candidate_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'-' | b'_')
+}
+
+fn base64_token_decodes_to_public_github_solution_reference(token: &str) -> bool {
+    if token.len() < MIN_PUBLIC_GITHUB_REFERENCE_BASE64_TOKEN_BYTES
+        || token.len() > MAX_PUBLIC_GITHUB_REFERENCE_BASE64_TOKEN_BYTES
+    {
+        return false;
+    }
+
+    decode_base64_candidate(token, Base64Alphabet::Standard)
+        .or_else(|| decode_base64_candidate(token, Base64Alphabet::UrlSafe))
+        .and_then(|decoded| String::from_utf8(decoded).ok())
+        .is_some_and(|decoded| contains_public_github_solution_reference_text_layers(&decoded))
+}
+
+#[derive(Clone, Copy)]
+enum Base64Alphabet {
+    Standard,
+    UrlSafe,
+}
+
+fn decode_base64_candidate(token: &str, alphabet: Base64Alphabet) -> Option<Vec<u8>> {
+    let mut output = Vec::with_capacity(token.len() * 3 / 4);
+    let mut buffer = 0u32;
+    let mut bits = 0u8;
+    let mut padding = 0usize;
+    let mut saw_padding = false;
+    let mut symbols = 0usize;
+
+    for byte in token.bytes() {
+        if byte == b'=' {
+            saw_padding = true;
+            padding += 1;
+            if padding > 2 {
+                return None;
+            }
+            continue;
+        }
+        if saw_padding {
+            return None;
+        }
+        let value = base64_value(byte, alphabet)?;
+        symbols += 1;
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        while bits >= 8 {
+            bits -= 8;
+            output.push(((buffer >> bits) & 0xff) as u8);
+        }
+    }
+
+    if symbols < 2 || symbols % 4 == 1 {
+        return None;
+    }
+    if padding > 0 && (symbols + padding) % 4 != 0 {
+        return None;
+    }
+    if bits > 0 && (buffer & ((1u32 << bits) - 1)) != 0 {
+        return None;
+    }
+
+    Some(output)
+}
+
+fn base64_value(byte: u8, alphabet: Base64Alphabet) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' if matches!(alphabet, Base64Alphabet::Standard) => Some(62),
+        b'/' if matches!(alphabet, Base64Alphabet::Standard) => Some(63),
+        b'-' if matches!(alphabet, Base64Alphabet::UrlSafe) => Some(62),
+        b'_' if matches!(alphabet, Base64Alphabet::UrlSafe) => Some(63),
+        _ => None,
+    }
 }
 
 fn percent_decode_ascii_sequences(input: &str) -> String {
