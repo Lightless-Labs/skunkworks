@@ -22,6 +22,8 @@ This is **defense-in-depth only**. It reduces ambient network configuration inhe
 
 `remove_network_configuration_env_drops_explicit_network_env` constructs a child command with explicit network configuration variables, applies the scrubber, and verifies the child no longer sees any scrubbed variable while unrelated sentinel env survives. The test avoids mutating process-global parent environment.
 
+`network_env_scrub_preserves_no_public_solution_search_policy_env` applies both layers to the same child `Command`: all scrubbed network/proxy/package-manager keys are injected, A²D's explicit no-public-solution-search policy env is injected, then the scrubber runs. The child must see none of the network configuration keys and must still see every A²D policy flag. This pins the intended boundary: remove ambient network configuration without deleting explicit benchmark-integrity observability.
+
 ## Evidence
 
 Fresh source-patch gate:
@@ -38,5 +40,14 @@ Postcommit clean-head replay evidence:
 - `runs/20260708-postcommit-fitness-evidence-provider-env-scrub/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`
 - `source_tree_dirty: false`
 - `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`
+
+Follow-up policy-preservation coverage:
+
+- `runs/20260708-provider-network-env-policy-preservation-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`
+- `schema_version: a2d.fitness-evidence.v1`
+- `actual_tests_evaluated: true`
+- `non_regressing: true`
+- `fitness: 1.0`
+- `source_diff_hash: 686dd13acbb8d7b168ab9a29b8aef54f6653a479`
 
 Validation included `cargo fmt --check`, focused and full `a2d-providers` tests, full `CARGO_BUILD_JOBS=2 cargo test`, reviewer re-review, and `fitness-evidence-inspect --require-all-tests-pass`.

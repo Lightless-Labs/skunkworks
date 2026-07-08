@@ -587,6 +587,37 @@ mod tests {
     }
 
     #[test]
+    fn network_env_scrub_preserves_no_public_solution_search_policy_env() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("env");
+        for key in network_configuration_env_vars() {
+            command.env(key, "http://example.invalid:9");
+        }
+        command.envs(provider_no_public_solution_search_env());
+        remove_network_configuration_env(&mut command);
+
+        let output = command
+            .output()
+            .expect("policy env plus network scrub probe should run");
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for key in network_configuration_env_vars() {
+            assert!(
+                !stdout
+                    .lines()
+                    .any(|line| line.starts_with(&format!("{key}="))),
+                "network configuration env var {key} leaked to subprocess: {stdout}"
+            );
+        }
+        for (key, value) in provider_no_public_solution_search_env() {
+            assert!(
+                stdout.lines().any(|line| line == format!("{key}={value}")),
+                "no-public-solution-search policy env {key}={value} missing after network scrub: {stdout}"
+            );
+        }
+    }
+
+    #[test]
     fn pi_provider_is_ephemeral_no_tools_artifact_mode() {
         let provider = CliProvider::pi(None);
         let request = InvocationRequest {
