@@ -3319,6 +3319,70 @@ def demo_evidence_audit_requirement_payloads(
     return requirements
 
 
+def demo_evidence_audit_demo_payloads(
+    requirement_payloads: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    demos_by_index: dict[int, dict[str, object]] = {}
+    for requirement_payload in requirement_payloads:
+        requirement = require_str(
+            requirement_payload.get("requirement"),
+            label="audit.requirement_payload.requirement",
+        )
+        for demo_payload_value in require_sequence(
+            requirement_payload.get("demos"),
+            label=f"audit.requirements[{requirement}].demos",
+        ):
+            demo_payload = require_mapping(
+                demo_payload_value,
+                label=f"audit.requirements[{requirement}].demos[]",
+            )
+            demo_index = strict_int(
+                demo_payload.get("demo_index"),
+                label=f"audit.requirements[{requirement}].demo_index",
+            )
+            entry = demos_by_index.setdefault(
+                demo_index,
+                {
+                    "demo_index": demo_index,
+                    "run_id": demo_payload.get("run_id"),
+                    "task_id": demo_payload.get("task_id"),
+                    "artifact_paths": demo_payload.get("artifact_paths"),
+                    "proof_chain": list(EXPECTED_DEMO_REQUIREMENTS),
+                    "steps": [],
+                },
+            )
+            if entry.get("run_id") != demo_payload.get("run_id") or entry.get("task_id") != demo_payload.get("task_id"):
+                raise RuntimeError("demo evidence audit found inconsistent run/task identity for a demo index")
+            step = {
+                key: copy.deepcopy(value)
+                for key, value in demo_payload.items()
+                if key not in {"demo_index", "run_id", "task_id"}
+            }
+            step["requirement"] = requirement
+            entry_steps = require_sequence(entry.get("steps"), label="audit.demo.steps")
+            entry_steps.append(step)
+    demos = [demos_by_index[index] for index in sorted(demos_by_index)]
+    if not demos:
+        raise RuntimeError("demo evidence audit found no complete demo trajectories")
+    for demo in demos:
+        steps = require_sequence(demo.get("steps"), label="audit.demo.steps")
+        requirements = [
+            require_mapping(step, label="audit.demo.steps[]").get("requirement")
+            for step in steps
+        ]
+        if requirements != EXPECTED_DEMO_REQUIREMENTS:
+            raise RuntimeError(
+                "demo evidence audit demo steps must preserve the failed-attempt -> archived-evidence -> retry-context -> later-pass -> lineage -> promotion proof chain"
+            )
+        if any(
+            require_mapping(step, label="audit.demo.steps[]").get("status") != "proved"
+            for step in steps
+        ):
+            raise RuntimeError("demo evidence audit demo steps must all be proved")
+        demo["complete"] = True
+    return demos
+
+
 def demo_evidence_audit_rows(evidence: dict[str, object]) -> list[tuple[str, str]]:
     artifact = require_str(evidence.get("artifact"), label="audit.artifact")
     return [
@@ -3400,8 +3464,17 @@ def demo_evidence_audit_payload(
     artifact = evidence.get("artifact")
     if not isinstance(artifact, str) or not artifact:
         raise RuntimeError("demo evidence audit requires a source artifact path")
+    requirement_payloads = demo_evidence_audit_requirement_payloads(
+        evidence,
+        artifact=artifact,
+        evidence_json=evidence_json,
+    )
+    demo_payloads = demo_evidence_audit_demo_payloads(requirement_payloads)
     return {
         "mode": "archived_demo_evidence_audit",
+        "complete": True,
+        "archived_demo_evidence_complete": True,
+        "complete_scope": "archived_demo_evidence_only_not_fresh_provider_backed_current_head_loop",
         "creates_loop_evidence": False,
         "provider_backed_benchmark_executed": False,
         "fresh_provider_backed_current_head_loop_evidence": False,
@@ -3410,11 +3483,8 @@ def demo_evidence_audit_payload(
         "evidence_json": str(evidence_json),
         "source_artifact": artifact,
         "proof_chain": list(EXPECTED_DEMO_REQUIREMENTS),
-        "requirements": demo_evidence_audit_requirement_payloads(
-            evidence,
-            artifact=artifact,
-            evidence_json=evidence_json,
-        ),
+        "requirements": requirement_payloads,
+        "demos": demo_payloads,
         "rerun_commands": demo_evidence_audit_commands(
             evidence_json, reference_evidence_json, artifact
         ),
@@ -5086,6 +5156,12 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             payload = demo_evidence_audit_payload(DEFAULT_ARCHIVE_EVIDENCE, DEFAULT_ARCHIVE_EVIDENCE)
 
         self.assertEqual(payload["mode"], "archived_demo_evidence_audit")
+        self.assertTrue(payload["complete"])
+        self.assertTrue(payload["archived_demo_evidence_complete"])
+        self.assertEqual(
+            payload["complete_scope"],
+            "archived_demo_evidence_only_not_fresh_provider_backed_current_head_loop",
+        )
         self.assertFalse(payload["creates_loop_evidence"])
         self.assertFalse(payload["provider_backed_benchmark_executed"])
         self.assertFalse(payload["fresh_provider_backed_current_head_loop_evidence"])
@@ -5106,6 +5182,22 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             [entry["requirement"] for entry in requirements],
             EXPECTED_DEMO_REQUIREMENTS,
         )
+        demos = payload["demos"]
+        self.assertEqual(len(demos), 2)
+        for demo in demos:
+            self.assertTrue(demo["complete"])
+            self.assertEqual(demo["proof_chain"], EXPECTED_DEMO_REQUIREMENTS)
+            self.assertEqual(
+                [step["requirement"] for step in demo["steps"]],
+                EXPECTED_DEMO_REQUIREMENTS,
+            )
+            self.assertTrue(all(step["status"] == "proved" for step in demo["steps"]))
+            self.assertEqual(demo["steps"][0]["requirement"], "failed_first_attempt")
+            self.assertEqual(demo["steps"][2]["requirement"], "retry_context_from_failure_evidence")
+            self.assertEqual(demo["steps"][4]["requirement"], "lineage_trajectory_recorded")
+            self.assertEqual(demo["steps"][5]["requirement"], "verifier_gated_germline_promotion")
+            self.assertIn("archived_failure_selector", demo["steps"][2])
+            self.assertIn("promotion_evidence_audit", demo["steps"][5])
         lineage = requirements[-2]
         promotion = requirements[-1]
         for entry in lineage["demos"]:
@@ -5151,8 +5243,19 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(result, 0)
         data = json.loads(stdout.getvalue())
         self.assertEqual(data["mode"], "archived_demo_evidence_audit")
+        self.assertTrue(data["complete"])
+        self.assertEqual(
+            data["complete_scope"],
+            "archived_demo_evidence_only_not_fresh_provider_backed_current_head_loop",
+        )
         self.assertEqual(data["proof_chain"], EXPECTED_DEMO_REQUIREMENTS)
         self.assertEqual(len(data["requirements"]), len(EXPECTED_DEMO_REQUIREMENTS))
+        self.assertEqual(len(data["demos"]), 2)
+        self.assertEqual(data["demos"][0]["proof_chain"], EXPECTED_DEMO_REQUIREMENTS)
+        self.assertEqual(
+            [step["requirement"] for step in data["demos"][0]["steps"]],
+            EXPECTED_DEMO_REQUIREMENTS,
+        )
         self.assertEqual(data["current_head_provenance"]["current_head"], current["source_head"])
         self.assertFalse(data["current_head_provenance"]["matches_current_head"])
         self.assertFalse(data["senior_swe_bench_uncontaminated_evidence"])
