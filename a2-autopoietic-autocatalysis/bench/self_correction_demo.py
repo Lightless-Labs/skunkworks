@@ -379,16 +379,41 @@ def require_checked_in_evidence_unchanged(path: Path, original_sha256: str | Non
 
 def verify_archive_evidence_regeneration(archive: Path, evidence_json: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="a2-archive-evidence-regeneration-") as tmpdir:
-        regenerated_evidence = Path(tmpdir) / "regenerated.demo-evidence.json"
+        temp_root = Path(tmpdir)
+        regeneration_cwd = temp_root / "non_repo_cwd"
+        regeneration_cwd.mkdir()
+        regenerated_evidence = temp_root / "regenerated.demo-evidence.json"
         if regenerated_evidence.exists():
             raise RuntimeError(
                 "clean-room demo evidence regeneration output unexpectedly preexists: "
                 f"{regenerated_evidence}"
             )
-        result = run_command(score_command(archive, regenerated_evidence), print_only=False)
+        archive_path = Path(archive)
+        regeneration_archive = archive_path
+        archive_source = repo_path(archive_path)
+        if not archive_path.is_absolute():
+            regeneration_archive = archive_path
+            copied_archive = regeneration_cwd / regeneration_archive
+            copied_archive.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(archive_source, copied_archive)
+        else:
+            root = repo_root().resolve(strict=False)
+            try:
+                regeneration_archive = archive_source.resolve(strict=False).relative_to(root)
+            except ValueError:
+                regeneration_archive = archive_path
+            else:
+                copied_archive = regeneration_cwd / regeneration_archive
+                copied_archive.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(archive_source, copied_archive)
+        result = run_command(
+            score_command(regeneration_archive, regenerated_evidence),
+            print_only=False,
+            cwd=regeneration_cwd,
+        )
         if result != 0:
             raise RuntimeError(
-                "clean-room demo evidence regeneration scorer failed before producing comparable output"
+                "clean-room demo evidence regeneration scorer failed from non-repo cwd before producing comparable output"
             )
         if not regenerated_evidence.exists() or regenerated_evidence.stat().st_size == 0:
             raise RuntimeError(
@@ -404,7 +429,8 @@ def verify_archive_evidence_regeneration(archive: Path, evidence_json: Path) -> 
                 f"checked_in_sha256={expected_sha} regenerated_sha256={regenerated_sha}"
             )
         print(
-            "PASS clean-room evidence regeneration: temp output was absent before scoring; "
+            "PASS clean-room evidence regeneration: scorer ran from non-repo temporary cwd "
+            "against a copied archived JSONL; temp output was absent before scoring; "
             f"normalized SHA-256 matches checked-in evidence ({expected_sha})"
         )
 
@@ -3428,11 +3454,11 @@ def verify_evidence_contract(
         print(line)
 
 
-def run_command(command: list[str], *, print_only: bool) -> int:
+def run_command(command: list[str], *, print_only: bool, cwd: Path | None = None) -> int:
     print(f"$ {display_command(command)}")
     if print_only:
         return 0
-    return subprocess.run(command, cwd=repo_root(), check=False).returncode
+    return subprocess.run(command, cwd=cwd or repo_root(), check=False).returncode
 
 
 def canonical_verify_archive_command() -> str:
@@ -5515,11 +5541,16 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
     def test_verify_archive_clean_room_regeneration_matches_checked_in_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            expected = Path(tmpdir) / "expected.demo-evidence.json"
+            temp_root = Path(tmpdir)
+            archive_rel = Path("docs/benchmark-results/self-correction/demo.jsonl")
+            source_archive = temp_root / "repo-source" / archive_rel
+            source_archive.parent.mkdir(parents=True)
+            source_archive.write_text('{"row": 1}\n', encoding="utf-8")
+            expected = temp_root / "expected.demo-evidence.json"
             expected.write_text(
                 json.dumps(
                     {
-                        "artifact": "docs/benchmark-results/self-correction/demo.jsonl",
+                        "artifact": archive_rel.as_posix(),
                         "complete": True,
                         "generated_at": "old timestamp ignored",
                         "demos": [{"requirement": "lineage_trajectory_recorded"}],
@@ -5529,14 +5560,30 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            def fake_run_command(command: list[str], *, print_only: bool = False) -> int:
+            real_repo_path = repo_path
+            observed_cwd: list[Path | None] = []
+
+            def fake_repo_path(path: Path) -> Path:
+                if path == archive_rel:
+                    return source_archive
+                return real_repo_path(path)
+
+            def fake_run_command(
+                command: list[str], *, print_only: bool = False, cwd: Path | None = None
+            ) -> int:
                 self.assertFalse(print_only)
+                observed_cwd.append(cwd)
+                self.assertIsNotNone(cwd)
+                assert cwd is not None
+                self.assertNotIn(repo_root().resolve(), {cwd.resolve(), *cwd.resolve().parents})
+                self.assertTrue((cwd / archive_rel).exists())
+                self.assertEqual(command[-1], archive_rel.as_posix())
                 output_path = Path(command[command.index("--demo-evidence-json") + 1])
                 self.assertFalse(output_path.exists())
                 output_path.write_text(
                     json.dumps(
                         {
-                            "artifact": "docs/benchmark-results/self-correction/demo.jsonl",
+                            "artifact": archive_rel.as_posix(),
                             "complete": True,
                             "generated_at": "new timestamp ignored",
                             "demos": [{"requirement": "lineage_trajectory_recorded"}],
@@ -5548,24 +5595,75 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 return 0
 
             stdout = io.StringIO()
-            with mock.patch(__name__ + ".run_command", side_effect=fake_run_command), contextlib.redirect_stdout(stdout):
-                verify_archive_evidence_regeneration(Path("demo.jsonl"), expected)
+            with mock.patch(__name__ + ".repo_path", side_effect=fake_repo_path), mock.patch(
+                __name__ + ".run_command", side_effect=fake_run_command
+            ), contextlib.redirect_stdout(stdout):
+                verify_archive_evidence_regeneration(archive_rel, expected)
 
         self.assertIn("PASS clean-room evidence regeneration", stdout.getvalue())
+        self.assertEqual(len(observed_cwd), 1)
+
+    def test_verify_archive_clean_room_regeneration_copies_absolute_in_repo_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            archive_abs = repo_path(DEFAULT_ARCHIVE).resolve(strict=False)
+            expected = temp_root / "expected.demo-evidence.json"
+            expected.write_text(
+                json.dumps(
+                    {
+                        "artifact": DEFAULT_ARCHIVE.as_posix(),
+                        "complete": True,
+                        "demos": [{"requirement": "lineage_trajectory_recorded"}],
+                    },
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_run_command(
+                command: list[str], *, print_only: bool = False, cwd: Path | None = None
+            ) -> int:
+                self.assertFalse(print_only)
+                self.assertIsNotNone(cwd)
+                assert cwd is not None
+                self.assertNotIn(repo_root().resolve(), {cwd.resolve(), *cwd.resolve().parents})
+                self.assertTrue((cwd / DEFAULT_ARCHIVE).exists())
+                self.assertEqual(command[-1], DEFAULT_ARCHIVE.as_posix())
+                output_path = Path(command[command.index("--demo-evidence-json") + 1])
+                output_path.write_text(
+                    json.dumps(
+                        {
+                            "artifact": DEFAULT_ARCHIVE.as_posix(),
+                            "complete": True,
+                            "demos": [{"requirement": "lineage_trajectory_recorded"}],
+                        },
+                        sort_keys=True,
+                    ),
+                    encoding="utf-8",
+                )
+                return 0
+
+            with mock.patch(__name__ + ".run_command", side_effect=fake_run_command):
+                verify_archive_evidence_regeneration(archive_abs, expected)
 
     def test_verify_archive_clean_room_regeneration_detects_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
+            archive = Path(tmpdir) / "demo.jsonl"
+            archive.write_text('{"row": 1}\n', encoding="utf-8")
             expected = Path(tmpdir) / "expected.demo-evidence.json"
             expected.write_text(json.dumps({"complete": True}), encoding="utf-8")
 
-            def fake_run_command(command: list[str], *, print_only: bool = False) -> int:
+            def fake_run_command(
+                command: list[str], *, print_only: bool = False, cwd: Path | None = None
+            ) -> int:
+                self.assertIsNotNone(cwd)
                 output_path = Path(command[command.index("--demo-evidence-json") + 1])
                 output_path.write_text(json.dumps({"complete": False}), encoding="utf-8")
                 return 0
 
             with mock.patch(__name__ + ".run_command", side_effect=fake_run_command):
                 with self.assertRaisesRegex(RuntimeError, "regeneration produced different"):
-                    verify_archive_evidence_regeneration(Path("demo.jsonl"), expected)
+                    verify_archive_evidence_regeneration(archive, expected)
 
     def test_verify_archive_rejects_in_place_checked_in_evidence_mutation(self) -> None:
         stderr = io.StringIO()
