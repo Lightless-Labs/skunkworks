@@ -50,4 +50,10 @@ Follow-up policy-preservation coverage:
 - `fitness: 1.0`
 - `source_diff_hash: 686dd13acbb8d7b168ab9a29b8aef54f6653a479`
 
-Validation included `cargo fmt --check`, focused and full `a2d-providers` tests, full `CARGO_BUILD_JOBS=2 cargo test`, reviewer re-review, and `fitness-evidence-inspect --require-all-tests-pass`.
+Senior SWE-Bench evaluator subprocesses reuse the same scrubber as of the follow-up evaluator-boundary slice:
+
+- `runs/20260708-senior-swe-bench-evaluator-network-env-scrub-evidence/local-evaluator/fitness/senior-swe-bench-env-scrub-hard-cycle-0-fitness-evidence.json`
+- `runs/20260708-senior-swe-bench-evaluator-network-env-scrub-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`
+- `source_diff_hash: bcaaa373faa64dea9850b5c9b52bd1e96324cdaf`
+
+Validation included `cargo fmt --check`, focused and full `a2d-providers` tests, focused evaluator-boundary tests, full `CARGO_BUILD_JOBS=2 cargo test`, reviewer re-review, and `fitness-evidence-inspect --require-all-tests-pass`.

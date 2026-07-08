@@ -260,7 +260,7 @@ fn provider_no_public_solution_search_env() -> [(&'static str, &'static str); 5]
     ]
 }
 
-fn network_configuration_env_vars() -> [&'static str; 16] {
+pub fn network_configuration_env_vars() -> [&'static str; 16] {
     // Environment scrubbing is defense-in-depth only. It removes common proxy
     // and package-manager network configuration inherited from the parent
     // process, but it is not OS/network namespace isolation.
@@ -284,7 +284,7 @@ fn network_configuration_env_vars() -> [&'static str; 16] {
     ]
 }
 
-fn remove_network_configuration_env(command: &mut Command) {
+pub fn remove_network_configuration_env(command: &mut Command) {
     for key in network_configuration_env_vars() {
         command.env_remove(key);
     }

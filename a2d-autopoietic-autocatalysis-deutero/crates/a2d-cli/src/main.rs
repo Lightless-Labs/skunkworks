@@ -12,7 +12,7 @@ use a2d_core::metabolism::{CycleReport, InvocationLineage, Metabolism, fitness_e
 use a2d_core::provider::{InvocationRequest, Provider, ProviderPolicy, ProviderRegistry};
 use a2d_core::self_sandbox;
 use a2d_core::types::{ArtifactType, EnzymeDef, EnzymeId};
-use a2d_providers::cli::CliProvider;
+use a2d_providers::cli::{CliProvider, remove_network_configuration_env};
 use senior_swe_bench::{
     SeniorSweBenchOfficialEvaluatorManifestSummary, SeniorSweBenchTask,
     SeniorSweBenchTaskPackageSummary, SeniorSweBenchVariant, build_senior_swe_bench_audit,
@@ -11470,6 +11470,7 @@ fn run_local_senior_swe_bench_evaluator(
         )
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
+    remove_network_configuration_env(&mut command);
     let mut child = command.spawn().unwrap_or_else(|error| {
         eprintln!("failed to start Senior SWE-Bench local evaluator: {error}");
         std::process::exit(1);

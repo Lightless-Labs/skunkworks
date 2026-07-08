@@ -1,3 +1,4 @@
+use a2d_providers::cli::network_configuration_env_vars;
 use std::fs;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -9,6 +10,13 @@ fn unique_suffix() -> String {
         .expect("clock after epoch")
         .as_nanos();
     format!("{}-{nanos}", std::process::id())
+}
+
+fn evaluator_network_env_absence_shell() -> String {
+    network_configuration_env_vars()
+        .into_iter()
+        .map(|key| format!("test -z \"${{{key}-}}\" || {{ echo '{key} leaked' >&2; exit 42; }}\n"))
+        .collect()
 }
 
 fn git_hash_object_bytes(bytes: &[u8]) -> String {
@@ -212,6 +220,45 @@ fn retry_attempt_evaluate_runs_planned_evaluator_once_and_emits_next_args() {
         Some("senior-swe-bench-retry-step")
     );
     assert!(value["fitness_evidence_path"].as_str().is_some());
+
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn retry_attempt_evaluate_scrubs_network_env_while_preserving_no_search_policy_env() {
+    let fixture = write_fixture(
+        "env-scrub",
+        &format!(
+            "test \"${{A2D_SENIOR_SWE_BENCH_GITHUB_SOLUTION_SEARCH_ALLOWED}}\" = false\n\
+             test \"${{A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN}}\" = true\n{}\
+             grep -q new src/lib.rs\n",
+            evaluator_network_env_absence_shell()
+        ),
+    );
+    let evidence_dir = fixture.root.join("fitness");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_a2d"));
+    command
+        .env("A2D_FITNESS_EVIDENCE_EXPORT_DIR", &evidence_dir)
+        .args([
+            "senior-swe-bench-retry-attempt-evaluate",
+            fixture.extraction.to_str().unwrap(),
+        ]);
+    for key in network_configuration_env_vars() {
+        command.env(key, "http://example.invalid:9");
+    }
+
+    let output = command.output().expect("run retry attempt evaluate");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(fixture.marker.exists(), "evaluator should run exactly once");
+    let local_evaluation: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fixture.local_evaluation).unwrap()).unwrap();
+    assert_eq!(local_evaluation["status"].as_str(), Some("passed"));
 
     let _ = fs::remove_dir_all(fixture.root);
 }
