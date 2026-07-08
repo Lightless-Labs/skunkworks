@@ -577,15 +577,20 @@ def fresh_preflight(args: argparse.Namespace, evidence_json: Path) -> None:
     fresh_provider_preflight_after_output_paths(args)
 
 
-def agent_network_boundary_precondition_gate_details(stdout: str) -> list[str]:
+def agent_network_boundary_precondition_payload(stdout: str) -> dict[str, object]:
     if not stdout.strip():
-        return []
+        return {}
     try:
         payload = json.loads(stdout)
     except json.JSONDecodeError:
-        return []
+        return {}
     if not isinstance(payload, dict):
-        return []
+        return {}
+    return payload
+
+
+def agent_network_boundary_precondition_gate_details(stdout: str) -> list[str]:
+    payload = agent_network_boundary_precondition_payload(stdout)
     gate = payload.get("required_sandbox_runtime_gate")
     if not isinstance(gate, dict):
         return []
@@ -593,6 +598,14 @@ def agent_network_boundary_precondition_gate_details(stdout: str) -> list[str]:
     if not isinstance(failures, list):
         return []
     return [failure for failure in failures if isinstance(failure, str)]
+
+
+def agent_network_boundary_precondition_fresh_evidence_blockers(stdout: str) -> list[str]:
+    payload = agent_network_boundary_precondition_payload(stdout)
+    blockers = payload.get("fresh_provider_backed_evidence_blockers")
+    if not isinstance(blockers, list):
+        return []
+    return [blocker for blocker in blockers if isinstance(blocker, str)]
 
 
 def ensure_agent_network_boundary_precondition_ready() -> None:
@@ -605,11 +618,14 @@ def ensure_agent_network_boundary_precondition_ready() -> None:
         check=False,
     )
     gate_failures = agent_network_boundary_precondition_gate_details(result.stdout)
+    blockers = agent_network_boundary_precondition_fresh_evidence_blockers(result.stdout)
     if result.returncode != 0 or gate_failures:
         detail_parts = []
         if gate_failures:
             detail_parts.append(f"required_sandbox_runtime_gate.failures={gate_failures!r}")
-        if result.stdout.strip() and not gate_failures:
+        if blockers:
+            detail_parts.append(f"fresh_provider_backed_evidence_blockers={blockers!r}")
+        if result.stdout.strip() and not gate_failures and not blockers:
             detail_parts.append(f"stdout={result.stdout.strip()!r}")
         if result.stderr.strip():
             detail_parts.append(f"stderr={result.stderr.strip()!r}")
@@ -5693,6 +5709,25 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
     def test_agent_network_boundary_precondition_gate_details_ignores_invalid_json(self) -> None:
         self.assertEqual(agent_network_boundary_precondition_gate_details("not json"), [])
+        self.assertEqual(
+            agent_network_boundary_precondition_fresh_evidence_blockers("not json"),
+            [],
+        )
+
+    def test_agent_network_boundary_precondition_extracts_fresh_evidence_blockers(self) -> None:
+        stdout = json.dumps(
+            {
+                "fresh_provider_backed_evidence_blockers": [
+                    "no fresh current-HEAD loop evidence artifact was produced and validated",
+                    17,
+                ]
+            }
+        )
+
+        self.assertEqual(
+            agent_network_boundary_precondition_fresh_evidence_blockers(stdout),
+            ["no fresh current-HEAD loop evidence artifact was produced and validated"],
+        )
 
     def test_run_agent_network_boundary_inventory_json_passes_through_fresh_evidence_blockers(self) -> None:
         blocker = "no fresh current-HEAD loop evidence artifact was produced and validated"
@@ -5714,6 +5749,48 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(summary["fresh_provider_backed_evidence_blockers"], [blocker])
         self.assertIn("fresh_provider_backed_evidence_blockers", summary["inventory_json"])
         self.assertEqual(json.loads(summary["inventory_json"]), summary["inventory_content"])
+
+    def test_fresh_refuses_confirmed_provider_run_when_precondition_stdout_is_malformed(self) -> None:
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            evidence = Path(tmpdir) / "fresh.demo-evidence.json"
+            failed = subprocess.CompletedProcess(
+                AGENT_NETWORK_BOUNDARY_PRECONDITION_JSON_COMMAND,
+                1,
+                stdout="not json from crashed precondition",
+                stderr="probe failed",
+            )
+            with mock.patch(__name__ + ".subprocess.run", return_value=failed) as run_precondition, mock.patch(
+                __name__ + ".ensure_fresh_sandbox_provider_allowlist_ready"
+            ) as sandbox_ready, mock.patch(
+                __name__ + ".fresh_provider_preflight_after_output_paths"
+            ) as provider_preflight, mock.patch(
+                __name__ + ".run_command"
+            ) as run, contextlib.redirect_stderr(stderr):
+                result = main(
+                    [
+                        "fresh",
+                        "--results",
+                        str(results),
+                        "--evidence-json",
+                        str(evidence),
+                        "--run-id",
+                        "fresh-demo",
+                        "--confirm-provider-run",
+                    ]
+                )
+
+        self.assertEqual(result, 2)
+        self.assertIn("agent network boundary precondition failed closed", stderr.getvalue())
+        self.assertIn("stdout='not json from crashed precondition'", stderr.getvalue())
+        self.assertIn("stderr='probe failed'", stderr.getvalue())
+        self.assertFalse(results.exists())
+        self.assertFalse(evidence.exists())
+        run_precondition.assert_called_once()
+        sandbox_ready.assert_not_called()
+        provider_preflight.assert_not_called()
+        run.assert_not_called()
 
     def test_fresh_refuses_confirmed_provider_run_when_agent_boundary_precondition_fails(self) -> None:
         stderr = io.StringIO()
@@ -5766,6 +5843,53 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         run_precondition.assert_called_once()
         self.assertEqual(run_precondition.call_args.args[0], AGENT_NETWORK_BOUNDARY_PRECONDITION_JSON_COMMAND)
         sandbox_ready.assert_not_called()
+        provider_preflight.assert_not_called()
+        run.assert_not_called()
+
+    def test_fresh_boundary_precondition_reports_blockers_without_treating_them_as_attempt_failures(self) -> None:
+        stderr = io.StringIO()
+        blocker = "no fresh current-HEAD loop evidence artifact was produced and validated"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            evidence = Path(tmpdir) / "fresh.demo-evidence.json"
+            passed_with_blockers = subprocess.CompletedProcess(
+                AGENT_NETWORK_BOUNDARY_PRECONDITION_JSON_COMMAND,
+                0,
+                stdout=json.dumps(
+                    {
+                        "required_sandbox_runtime_gate": {
+                            "passed": True,
+                            "failures": [],
+                        },
+                        "fresh_provider_backed_evidence_blockers": [blocker],
+                    }
+                ),
+                stderr="",
+            )
+            with mock.patch(__name__ + ".subprocess.run", return_value=passed_with_blockers) as run_precondition, mock.patch(
+                __name__ + ".fresh_provider_preflight_after_output_paths"
+            ) as provider_preflight, mock.patch(
+                __name__ + ".run_command"
+            ) as run, contextlib.redirect_stderr(stderr):
+                result = main(
+                    [
+                        "fresh",
+                        "--results",
+                        str(results),
+                        "--evidence-json",
+                        str(evidence),
+                        "--run-id",
+                        "fresh-demo",
+                        "--confirm-provider-run",
+                    ]
+                )
+
+        self.assertEqual(result, 2)
+        self.assertIn("no audited sandbox/provider allowlist is enforced", stderr.getvalue())
+        self.assertNotIn("agent network boundary precondition failed closed", stderr.getvalue())
+        self.assertFalse(results.exists())
+        self.assertFalse(evidence.exists())
+        run_precondition.assert_called_once()
         provider_preflight.assert_not_called()
         run.assert_not_called()
 
