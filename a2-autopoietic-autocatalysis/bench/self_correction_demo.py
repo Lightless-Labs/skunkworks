@@ -2227,15 +2227,28 @@ PROMOTION_LEGACY_MARKERS = ("[applied and rebuilt:",)
 def promotion_legacy_marker_source(row: dict[str, object]) -> dict[str, object] | None:
     for stream in ("stderr", "stdout"):
         value = str(row.get(stream) or "")
-        lowered = value.lower()
         for marker in PROMOTION_LEGACY_MARKERS:
-            offset = lowered.find(marker)
-            if offset >= 0:
-                return {
-                    "promotion_evidence_source": f"legacy_apply_marker_in_{stream}",
-                    "promotion_marker": marker,
-                    "promotion_marker_stream": stream,
-                }
+            marker_match = re.search(re.escape(marker), value, re.IGNORECASE)
+            if marker_match is None:
+                continue
+            offset = marker_match.start()
+            line_end = value.find("\n", offset)
+            marker_line = value[offset : line_end if line_end >= 0 else len(value)]
+            promotion_target = (
+                marker_line[len(marker) :]
+                .strip()
+                .rstrip("]")
+                .strip()
+            )
+            if not promotion_target:
+                continue
+            return {
+                "promotion_evidence_source": f"legacy_apply_marker_in_{stream}",
+                "promotion_marker": marker,
+                "promotion_marker_stream": stream,
+                "promotion_marker_line": value[:offset].count("\n") + 1,
+                "promotion_target": promotion_target,
+            }
     return None
 
 
@@ -3031,9 +3044,15 @@ def contract_demo_artifact_lines(evidence: dict[str, object]) -> list[str]:
             label=f"demos[{demo_index - 1}].verifier_gated_germline_promotion.promotion_evidence_source",
         )
         promotion_marker = promotion_audit.get("promotion_marker")
+        promotion_marker_line = promotion_audit.get("promotion_marker_line")
+        promotion_target = promotion_audit.get("promotion_target")
         promotion_audit_summary = f"promotion_evidence_source={promotion_source}"
         if promotion_marker is not None:
             promotion_audit_summary += f"; promotion_marker={promotion_marker}"
+        if promotion_marker_line is not None:
+            promotion_audit_summary += f"; promotion_marker_line={promotion_marker_line}"
+        if promotion_target is not None:
+            promotion_audit_summary += f"; promotion_target={promotion_target}"
         lines.extend(
             [
                 f"  demo {demo_index}: {failed.get('run_id')} / {failed.get('task_id')}",
@@ -3217,8 +3236,25 @@ def audit_step_summary(step: dict[str, object]) -> str:
                 "demo evidence audit promotion gate must record concrete promotion artifact or legacy apply marker evidence"
             )
         audit_details = f"promotion_evidence_source={promotion_source}"
+        if promotion_source.startswith("legacy_apply_marker_in_"):
+            marker_line = strict_int(
+                promotion_audit.get("promotion_marker_line"),
+                label="audit.promotion.promotion_marker_line",
+            )
+            if marker_line <= 0:
+                raise RuntimeError("demo evidence audit promotion marker line must be positive")
+            promotion_target = require_str(
+                promotion_audit.get("promotion_target"),
+                label="audit.promotion.promotion_target",
+            )
+            if not promotion_target:
+                raise RuntimeError("demo evidence audit promotion target must be non-empty")
         if "promotion_marker" in promotion_audit:
             audit_details += f"; promotion_marker={promotion_audit.get('promotion_marker')}"
+        if "promotion_marker_line" in promotion_audit:
+            audit_details += f"; promotion_marker_line={promotion_audit.get('promotion_marker_line')}"
+        if "promotion_target" in promotion_audit:
+            audit_details += f"; promotion_target={promotion_audit.get('promotion_target')}"
         return (
             f"promotion gate evidence: {selector_summary(selector)}; "
             f"verify_returncode={field_map.get('verify_returncode')}; "

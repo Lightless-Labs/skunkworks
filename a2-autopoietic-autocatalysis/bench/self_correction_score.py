@@ -14,6 +14,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -333,14 +334,30 @@ PROMOTION_LEGACY_APPLY_MARKER = "[applied and rebuilt:"
 
 
 def payload_promotion_legacy_marker_source(payload: dict[str, Any]) -> dict[str, Any] | None:
+    marker_pattern = re.compile(re.escape(PROMOTION_LEGACY_APPLY_MARKER), re.IGNORECASE)
     for stream in ("stderr", "stdout"):
         value = str(payload.get(stream) or "")
-        if PROMOTION_LEGACY_APPLY_MARKER in value.lower():
-            return {
-                "promotion_evidence_source": f"legacy_apply_marker_in_{stream}",
-                "promotion_marker": PROMOTION_LEGACY_APPLY_MARKER,
-                "promotion_marker_stream": stream,
-            }
+        marker_match = marker_pattern.search(value)
+        if marker_match is None:
+            continue
+        marker_offset = marker_match.start()
+        line_end = value.find("\n", marker_offset)
+        marker_line = value[marker_offset : line_end if line_end >= 0 else len(value)]
+        promotion_target = (
+            marker_line[len(PROMOTION_LEGACY_APPLY_MARKER) :]
+            .strip()
+            .rstrip("]")
+            .strip()
+        )
+        if not promotion_target:
+            continue
+        return {
+            "promotion_evidence_source": f"legacy_apply_marker_in_{stream}",
+            "promotion_marker": PROMOTION_LEGACY_APPLY_MARKER,
+            "promotion_marker_stream": stream,
+            "promotion_marker_line": value[:marker_offset].count("\n") + 1,
+            "promotion_target": promotion_target,
+        }
     return None
 
 
@@ -647,9 +664,22 @@ def has_verifier_gated_promotion(record: SelfCorrectionRecord) -> bool:
             and promotion_artifact_matches_record(record)
             and record.promotion_evidence_audit is not None
         )
-    return record.promotion_evidence_present and isinstance(record.promotion_evidence_audit, dict) and record.promotion_evidence_audit.get(
-        "promotion_evidence_source"
-    ) in {"legacy_apply_marker_in_stderr", "legacy_apply_marker_in_stdout"}
+    if not (
+        record.promotion_evidence_present
+        and isinstance(record.promotion_evidence_audit, dict)
+    ):
+        return False
+    marker_line = record.promotion_evidence_audit.get("promotion_marker_line")
+    promotion_target = record.promotion_evidence_audit.get("promotion_target")
+    return (
+        record.promotion_evidence_audit.get("promotion_evidence_source")
+        in {"legacy_apply_marker_in_stderr", "legacy_apply_marker_in_stdout"}
+        and isinstance(marker_line, int)
+        and not isinstance(marker_line, bool)
+        and marker_line > 0
+        and isinstance(promotion_target, str)
+        and bool(promotion_target)
+    )
 
 
 def has_retry_context_from_failure(
@@ -1492,6 +1522,8 @@ class SelfCorrectionScoreTests(unittest.TestCase):
                     "promotion_evidence_source": "legacy_apply_marker_in_stderr",
                     "promotion_marker": PROMOTION_LEGACY_APPLY_MARKER,
                     "promotion_marker_stream": "stderr",
+                    "promotion_marker_line": 1,
+                    "promotion_target": "task",
                 },
             ),
         ]
@@ -1552,6 +1584,8 @@ class SelfCorrectionScoreTests(unittest.TestCase):
                     "promotion_evidence_source": "legacy_apply_marker_in_stderr",
                     "promotion_marker": PROMOTION_LEGACY_APPLY_MARKER,
                     "promotion_marker_stream": "stderr",
+                    "promotion_marker_line": 1,
+                    "promotion_target": "task",
                 },
                 source_head="1234567890abcdef1234567890abcdef12345678",
                 source_head_short="1234567",
@@ -1609,7 +1643,75 @@ class SelfCorrectionScoreTests(unittest.TestCase):
         self.assertEqual(chain[2]["evidence_rows"][0]["source_dirty"], False)
         self.assertTrue(chain[5]["fields"]["promotion_evidence_present"])
         self.assertTrue(chain[5]["evidence_row"]["promotion_evidence_present"])
+        self.assertEqual(
+            chain[5]["promotion_evidence_audit"]["promotion_marker_line"], 1
+        )
+        self.assertEqual(
+            chain[5]["promotion_evidence_audit"]["promotion_target"], "task"
+        )
         self.assertEqual(chain[5]["evidence_row"]["source_branch"], "main")
+
+    def test_legacy_promotion_marker_audit_records_line_and_target(self) -> None:
+        audit = payload_promotion_legacy_marker_source(
+            {
+                "stderr": "first line\n[applied and rebuilt: self-correction target]\n",
+            }
+        )
+
+        self.assertEqual(
+            audit,
+            {
+                "promotion_evidence_source": "legacy_apply_marker_in_stderr",
+                "promotion_marker": PROMOTION_LEGACY_APPLY_MARKER,
+                "promotion_marker_stream": "stderr",
+                "promotion_marker_line": 2,
+                "promotion_target": "self-correction target",
+            },
+        )
+
+    def test_legacy_promotion_requires_nonempty_marker_target(self) -> None:
+        records = [
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=1,
+                resolved=False,
+                prior_lineage_present=False,
+                verify_returncode=1,
+                verify_command="cargo test -p demo hidden_regression",
+                lineage_records_before=0,
+                lineage_records_after=1,
+                verifier_failure_evidence_present=True,
+                verifier_failure_evidence_structured_present=True,
+            ),
+            SelfCorrectionRecord(
+                task_id="task",
+                run_id="run",
+                attempt=2,
+                resolved=True,
+                prior_lineage_present=True,
+                verify_returncode=0,
+                lineage_records_before=1,
+                lineage_records_after=2,
+                lineage_reconciled_by_core=True,
+                promotion_evidence_present=True,
+                promotion_evidence_audit={
+                    "promotion_evidence_source": "legacy_apply_marker_in_stderr",
+                    "promotion_marker": PROMOTION_LEGACY_APPLY_MARKER,
+                    "promotion_marker_stream": "stderr",
+                    "promotion_marker_line": 1,
+                    "promotion_target": "",
+                },
+            ),
+        ]
+
+        self.assertEqual(demo_run_ids(records), [])
+        evidence_map = demo_evidence_map(
+            records,
+            artifact_label="missing-promotion-target.jsonl",
+            artifact_sha256="b" * 64,
+        )
+        self.assertFalse(evidence_map["complete"])
 
     def test_demo_evidence_json_omits_source_metadata_for_legacy_rows(self) -> None:
         records = [
@@ -2002,6 +2104,8 @@ class SelfCorrectionScoreTests(unittest.TestCase):
                     "promotion_evidence_source": "legacy_apply_marker_in_stderr",
                     "promotion_marker": PROMOTION_LEGACY_APPLY_MARKER,
                     "promotion_marker_stream": "stderr",
+                    "promotion_marker_line": 1,
+                    "promotion_target": "task",
                 },
             ),
         ]

@@ -857,15 +857,26 @@ fn promotion_legacy_marker_source(payload: &serde_json::Value) -> Option<serde_j
         let Some(output) = payload.get(stream).and_then(serde_json::Value::as_str) else {
             continue;
         };
-        if output
-            .to_lowercase()
-            .contains(PROMOTION_LEGACY_APPLY_MARKER)
-        {
-            return Some(serde_json::json!({
-                "promotion_evidence_source": format!("legacy_apply_marker_in_{stream}"),
-                "promotion_marker": PROMOTION_LEGACY_APPLY_MARKER,
-                "promotion_marker_stream": stream,
-            }));
+        for (line_index, line) in output.lines().enumerate() {
+            let marker_offset = line
+                .to_ascii_lowercase()
+                .find(PROMOTION_LEGACY_APPLY_MARKER);
+            if let Some(marker_offset) = marker_offset {
+                let promotion_target = line[marker_offset + PROMOTION_LEGACY_APPLY_MARKER.len()..]
+                    .trim()
+                    .trim_end_matches(']')
+                    .trim();
+                if promotion_target.is_empty() {
+                    continue;
+                }
+                return Some(serde_json::json!({
+                    "promotion_evidence_source": format!("legacy_apply_marker_in_{stream}"),
+                    "promotion_marker": PROMOTION_LEGACY_APPLY_MARKER,
+                    "promotion_marker_stream": stream,
+                    "promotion_marker_line": line_index + 1,
+                    "promotion_target": promotion_target,
+                }));
+            }
         }
     }
     None
@@ -1365,10 +1376,17 @@ fn validate_demo_evidence_demo(
         true,
         "verifier_gated_germline_promotion.evidence_row",
     )?;
-    let promotion_audit_source = promotion
-        .get("promotion_evidence_audit")
+    let promotion_audit = promotion.get("promotion_evidence_audit");
+    let promotion_audit_source = promotion_audit
         .and_then(|audit| audit.get("promotion_evidence_source"))
         .and_then(serde_json::Value::as_str);
+    let legacy_marker_line = promotion_audit
+        .and_then(|audit| audit.get("promotion_marker_line"))
+        .and_then(serde_json::Value::as_i64);
+    let legacy_promotion_target = promotion_audit
+        .and_then(|audit| audit.get("promotion_target"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|target| !target.is_empty());
     let legacy_promotion_evidence = promotion_fields
         .get("promotion_evidence_present")
         .and_then(serde_json::Value::as_bool)
@@ -1380,7 +1398,9 @@ fn validate_demo_evidence_demo(
         && matches!(
             promotion_audit_source,
             Some("legacy_apply_marker_in_stderr" | "legacy_apply_marker_in_stdout")
-        );
+        )
+        && legacy_marker_line.is_some_and(|line| line > 0)
+        && legacy_promotion_target.is_some();
     let structured_promotion_evidence = promotion_fields
         .get("promotion_verifier_gated")
         .and_then(serde_json::Value::as_bool)
@@ -5369,7 +5389,9 @@ mod tests {
                             "promotion_evidence_audit": {
                                 "promotion_evidence_source": "legacy_apply_marker_in_stderr",
                                 "promotion_marker": "[applied and rebuilt:",
-                                "promotion_marker_stream": "stderr"
+                                "promotion_marker_stream": "stderr",
+                                "promotion_marker_line": 1,
+                                "promotion_target": "self-correction test"
                             }
                         }
                     ]
@@ -5422,6 +5444,25 @@ mod tests {
             );
         }
         row
+    }
+
+    #[test]
+    fn demo_evidence_legacy_promotion_marker_source_handles_unicode_prefix_offsets() {
+        let payload = serde_json::json!({
+            "stderr": "A² prefix before marker\n[applied and rebuilt: self-correction target]\n"
+        });
+
+        let audit = promotion_legacy_marker_source(&payload).unwrap();
+
+        assert_eq!(
+            audit["promotion_evidence_source"],
+            serde_json::Value::String("legacy_apply_marker_in_stderr".to_string())
+        );
+        assert_eq!(audit["promotion_marker_line"], serde_json::Value::from(2));
+        assert_eq!(
+            audit["promotion_target"],
+            serde_json::Value::String("self-correction target".to_string())
+        );
     }
 
     fn complete_demo_evidence_with_artifact_rows(
