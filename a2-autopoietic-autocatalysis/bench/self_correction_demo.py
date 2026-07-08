@@ -731,6 +731,16 @@ def run_agent_network_boundary_inventory_json(path: Path) -> dict[str, object]:
         if isinstance(required_gate, dict) and isinstance(required_gate.get("failures"), list)
         else []
     )
+    fresh_provider_backed_evidence_blockers = inventory.get(
+        "fresh_provider_backed_evidence_blockers"
+    )
+    if not isinstance(fresh_provider_backed_evidence_blockers, list):
+        fresh_provider_backed_evidence_blockers = []
+    fresh_provider_backed_evidence_blockers = [
+        blocker
+        for blocker in fresh_provider_backed_evidence_blockers
+        if isinstance(blocker, str)
+    ]
     return {
         "path": str(path),
         "command": display_command(AGENT_NETWORK_BOUNDARY_INVENTORY_JSON_COMMAND),
@@ -767,6 +777,7 @@ def run_agent_network_boundary_inventory_json(path: Path) -> dict[str, object]:
             isinstance(required_gate, dict) and required_gate.get("passed") is True
         ),
         "required_sandbox_runtime_gate_failures": required_gate_failures,
+        "fresh_provider_backed_evidence_blockers": fresh_provider_backed_evidence_blockers,
     }
 
 
@@ -1068,6 +1079,15 @@ def verify_fresh_preflight_report(
             raise RuntimeError(
                 "fresh preflight boundary inventory embedded required_sandbox_runtime_gate.command must be the JSON sandbox runtime precondition command"
             )
+        embedded_fresh_provider_blockers = embedded_inventory.get(
+            "fresh_provider_backed_evidence_blockers"
+        )
+        if not isinstance(embedded_fresh_provider_blockers, list) or not all(
+            isinstance(item, str) for item in embedded_fresh_provider_blockers
+        ):
+            raise RuntimeError(
+                "fresh preflight boundary inventory embedded inventory must record fresh_provider_backed_evidence_blockers as a list of strings"
+            )
         if FRESH_PREFLIGHT_SANDBOX_PROVIDER_ALLOWLIST_STATUS != "enforced":
             if embedded_required_gate_passed is not False:
                 raise RuntimeError(
@@ -1076,6 +1096,10 @@ def verify_fresh_preflight_report(
             if not embedded_required_gate_failures:
                 raise RuntimeError(
                     "fresh preflight boundary inventory embedded required_sandbox_runtime_gate.failures must name missing prerequisites while audited sandbox/provider allowlist status is not_implemented"
+                )
+            if not embedded_fresh_provider_blockers:
+                raise RuntimeError(
+                    "fresh preflight boundary inventory embedded inventory must name fresh provider-backed evidence blockers while audited sandbox/provider allowlist status is not_implemented"
                 )
         for key, label in [
             ("creates_loop_evidence", "loop evidence"),
@@ -1124,6 +1148,10 @@ def verify_fresh_preflight_report(
         if boundary_inventory.get("required_sandbox_runtime_gate_failures") != embedded_required_gate_failures:
             raise RuntimeError(
                 "fresh preflight boundary inventory summary field required_sandbox_runtime_gate_failures does not match embedded inventory_json"
+            )
+        if boundary_inventory.get("fresh_provider_backed_evidence_blockers") != embedded_fresh_provider_blockers:
+            raise RuntimeError(
+                "fresh preflight boundary inventory summary field fresh_provider_backed_evidence_blockers does not match embedded inventory_json"
             )
         declared_inventory_path = report.get("boundary_inventory_json")
         if isinstance(declared_inventory_path, str) and declared_inventory_path:
@@ -4106,6 +4134,11 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                 and launch_sandbox_enforced
                 and a2_sandbox_enforced
             ),
+            "fresh_provider_backed_evidence_blockers": []
+            if required_gate_passed
+            else [
+                "no fresh current-HEAD loop evidence artifact was produced and validated"
+            ],
         }
 
     def fresh_preflight_report_with_boundary_inventory(
@@ -4132,6 +4165,12 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         required_gate_failures = (
             required_gate.get("failures")
             if isinstance(required_gate, dict) and isinstance(required_gate.get("failures"), list)
+            else []
+        )
+        fresh_provider_blockers = (
+            inventory_content.get("fresh_provider_backed_evidence_blockers")
+            if isinstance(inventory_content, dict)
+            and isinstance(inventory_content.get("fresh_provider_backed_evidence_blockers"), list)
             else []
         )
         return {
@@ -4179,6 +4218,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                     isinstance(required_gate, dict) and required_gate.get("passed") is True
                 ),
                 "required_sandbox_runtime_gate_failures": required_gate_failures,
+                "fresh_provider_backed_evidence_blockers": fresh_provider_blockers,
             },
             "checks": {
                 **self.required_preflight_network_checks(),
@@ -5654,6 +5694,27 @@ class SelfCorrectionDemoTests(unittest.TestCase):
     def test_agent_network_boundary_precondition_gate_details_ignores_invalid_json(self) -> None:
         self.assertEqual(agent_network_boundary_precondition_gate_details("not json"), [])
 
+    def test_run_agent_network_boundary_inventory_json_passes_through_fresh_evidence_blockers(self) -> None:
+        blocker = "no fresh current-HEAD loop evidence artifact was produced and validated"
+        inventory_payload = self.preflight_boundary_inventory_content()
+        inventory_payload["fresh_provider_backed_evidence_blockers"] = [blocker]
+        completed = subprocess.CompletedProcess(
+            AGENT_NETWORK_BOUNDARY_INVENTORY_JSON_COMMAND,
+            0,
+            stdout=json.dumps(inventory_payload),
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch(
+            __name__ + ".subprocess.run", return_value=completed
+        ) as run:
+            inventory_path = Path(tmpdir) / "fresh.boundary.json"
+            summary = run_agent_network_boundary_inventory_json(inventory_path)
+
+        run.assert_called_once()
+        self.assertEqual(summary["fresh_provider_backed_evidence_blockers"], [blocker])
+        self.assertIn("fresh_provider_backed_evidence_blockers", summary["inventory_json"])
+        self.assertEqual(json.loads(summary["inventory_json"]), summary["inventory_content"])
+
     def test_fresh_refuses_confirmed_provider_run_when_agent_boundary_precondition_fails(self) -> None:
         stderr = io.StringIO()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -6914,6 +6975,9 @@ class SelfCorrectionDemoTests(unittest.TestCase):
                         "required_sandbox_runtime_gate_failures": [
                             "sandbox runtime/enforcement prerequisites missing"
                         ],
+                        "fresh_provider_backed_evidence_blockers": inventory_content[
+                            "fresh_provider_backed_evidence_blockers"
+                        ],
                     }
 
                 with mock.patch(
@@ -6976,6 +7040,10 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertEqual(
             data["boundary_inventory"]["required_sandbox_runtime_gate_failures"],
             ["sandbox runtime/enforcement prerequisites missing"],
+        )
+        self.assertEqual(
+            data["boundary_inventory"]["fresh_provider_backed_evidence_blockers"],
+            ["no fresh current-HEAD loop evidence artifact was produced and validated"],
         )
         self.assertTrue(data["checks"]["agent_network_boundary_inventory_json_requested"])
         self.assertTrue(data["checks"]["agent_network_boundary_inventory_json_executed"])
@@ -7234,6 +7302,22 @@ class SelfCorrectionDemoTests(unittest.TestCase):
             report_path = Path(tmpdir) / "fresh.report.json"
             report_path.write_text(json.dumps(report), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "required_sandbox_runtime_gate"):
+                verify_fresh_preflight_report(report_path)
+
+    def test_verify_preflight_boundary_inventory_rejects_missing_fresh_evidence_blockers(self) -> None:
+        inventory_content = self.preflight_boundary_inventory_content()
+        inventory_content.pop("fresh_provider_backed_evidence_blockers")
+        inventory_json = json.dumps(inventory_content, indent=2, sort_keys=True) + "\n"
+        inventory_sha256 = hashlib.sha256(inventory_json.encode("utf-8")).hexdigest()
+        report = self.fresh_preflight_report_with_boundary_inventory(
+            inventory_json=inventory_json,
+            inventory_json_sha256=inventory_sha256,
+            inventory_content=inventory_content,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "fresh.report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "fresh_provider_backed_evidence_blockers"):
                 verify_fresh_preflight_report(report_path)
 
     def test_verify_preflight_boundary_inventory_rejects_required_runtime_gate_overclaim(self) -> None:
