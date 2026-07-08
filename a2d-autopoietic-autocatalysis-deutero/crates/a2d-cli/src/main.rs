@@ -5395,7 +5395,7 @@ fn build_senior_swe_bench_retry_attempt_step_evidence_execution(
         "fitness_evidence_path": fitness_evidence_path,
         "fitness_evidence_inspect_args": fitness_evidence_inspect_args,
         "fitness_evidence_inspect_exit_code": output.status.code().unwrap_or(0),
-        "fitness_evidence_inspect_stdout_preview": preview_text_lossy(&output.stdout),
+        "fitness_evidence_inspect_stdout_preview": portable_preview_text_lossy(&output.stdout),
         "provider_invocations_started": false,
         "evaluator_invocations_started": false,
         "retry_step_started": false,
@@ -9620,6 +9620,41 @@ fn preview_text_lossy(bytes: &[u8]) -> String {
         preview.push_str("...");
     }
     preview
+}
+
+fn portable_preview_text_lossy(bytes: &[u8]) -> String {
+    let mut preview = preview_text_lossy(bytes);
+    let root = a2d_project_root().to_string_lossy().to_string();
+    if !root.is_empty() {
+        preview = preview.replace(&format!("{root}/"), "");
+        preview = preview.replace(&root, ".");
+    }
+    if let Ok(canonical_root) = fs::canonicalize(a2d_project_root()) {
+        let canonical_root = canonical_root.to_string_lossy().to_string();
+        if !canonical_root.is_empty() {
+            preview = preview.replace(&format!("{canonical_root}/"), "");
+            preview = preview.replace(&canonical_root, ".");
+        }
+    }
+    let raw_temp_dir = std::env::temp_dir().to_string_lossy().to_string();
+    replace_path_prefix_in_preview(&mut preview, &raw_temp_dir, "<temp>");
+    if let Ok(temp_dir) = fs::canonicalize(std::env::temp_dir()) {
+        let temp_dir = temp_dir.to_string_lossy().to_string();
+        replace_path_prefix_in_preview(&mut preview, &temp_dir, "<temp>");
+        if let Some(without_private) = temp_dir.strip_prefix("/private/") {
+            replace_path_prefix_in_preview(&mut preview, &format!("/{without_private}"), "<temp>");
+        }
+    }
+    preview
+}
+
+fn replace_path_prefix_in_preview(preview: &mut String, prefix: &str, replacement: &str) {
+    let prefix = prefix.trim_end_matches('/');
+    if prefix.is_empty() {
+        return;
+    }
+    *preview = preview.replace(&format!("{prefix}/"), &format!("{replacement}/"));
+    *preview = preview.replace(prefix, replacement);
 }
 
 fn required_plan_string(value: &Value, field: &str) -> Result<String, String> {

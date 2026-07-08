@@ -373,6 +373,25 @@ fn retry_attempt_step_evidence_runs_planned_inspection_once() {
         value["fitness_evidence_summary"]["source_diff_hash"].as_str(),
         Some(current_crates_diff_hash().as_str())
     );
+    let fitness_evidence_path = value["fitness_evidence_path"]
+        .as_str()
+        .expect("fitness evidence path");
+    assert!(
+        fitness_evidence_path.contains(fixture.root.to_str().unwrap()),
+        "structured evidence path should remain authoritative and parseable: {fitness_evidence_path}"
+    );
+    let stdout_preview = value["fitness_evidence_inspect_stdout_preview"]
+        .as_str()
+        .expect("stdout preview");
+    assert!(stdout_preview.contains("Fitness evidence:"));
+    assert!(
+        !stdout_preview.contains(fixture.root.to_str().unwrap()),
+        "stdout preview leaked host-local fixture root: {stdout_preview}"
+    );
+    assert!(
+        stdout_preview.contains("<temp>/"),
+        "stdout preview should preserve portability marker: {stdout_preview}"
+    );
 
     let _ = fs::remove_dir_all(fixture.root);
 }
