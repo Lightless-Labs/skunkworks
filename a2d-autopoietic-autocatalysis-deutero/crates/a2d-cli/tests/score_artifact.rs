@@ -197,7 +197,9 @@ fn assert_exported_provenance(evidence: &serde_json::Value) {
     assert!(
         evidence["source_revision"]
             .as_str()
-            .is_some_and(|revision| !revision.is_empty()),
+            .is_some_and(|revision| {
+                revision.len() == 40 && revision.chars().all(|ch| ch.is_ascii_hexdigit())
+            }),
         "{evidence}"
     );
     assert!(

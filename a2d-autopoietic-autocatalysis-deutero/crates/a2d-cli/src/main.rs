@@ -2424,6 +2424,9 @@ fn validate_autopilot_source_fitness_evidence(
         return Err("source fitness evidence evidence_command is empty".to_string());
     }
 
+    validate_git_object_hash(source_revision).map_err(|error| {
+        format!("source fitness evidence source_revision {error}: {source_revision}")
+    })?;
     let current_revision = git_scope_revision_at(root, source_diff_scope)?;
     if source_revision != current_revision {
         return Err(format!(
@@ -9561,7 +9564,10 @@ fn validate_retry_attempt_local_official_provenance(
 }
 
 fn validate_retry_attempt_local_source_provenance(value: &Value) -> Result<(), String> {
-    required_non_empty_json_string(value, "source_revision")?;
+    let source_revision = required_non_empty_json_string(value, "source_revision")?;
+    validate_git_object_hash(&source_revision).map_err(|error| {
+        format!("Senior SWE-Bench local evaluation source_revision {error}: {source_revision}")
+    })?;
     if value
         .get("source_tree_dirty")
         .and_then(Value::as_bool)
@@ -9581,7 +9587,7 @@ fn validate_retry_attempt_local_source_provenance(value: &Value) -> Result<(), S
     required_non_empty_json_string(value, "evidence_command")?;
 
     let current_revision = git_scope_revision("crates")?;
-    if value.get("source_revision").and_then(Value::as_str) != Some(current_revision.as_str()) {
+    if source_revision != current_revision {
         return Err(format!(
             "Senior SWE-Bench local evaluation source_revision does not match current crates revision {current_revision}"
         ));
@@ -13416,7 +13422,7 @@ fn git_scope_revision(scope: &str) -> Result<String, String> {
 fn git_scope_revision_at(root: &Path, scope: &str) -> Result<String, String> {
     let repo_relative_scope = git_repo_relative_scope_at(root, scope)?;
     let revision_spec = format!("HEAD:{repo_relative_scope}");
-    git_output_at(root, &["rev-parse", "--short", &revision_spec])
+    git_output_at(root, &["rev-parse", &revision_spec])
 }
 
 fn git_status_for_scope(scope: &str) -> Result<String, String> {
@@ -13691,6 +13697,9 @@ fn validate_exported_fitness_evidence_value(value: &Value) -> Result<(), String>
         .get("source_revision")
         .and_then(Value::as_str)
         .ok_or_else(|| "exported fitness evidence missing source_revision".to_string())?;
+    validate_git_object_hash(source_revision).map_err(|error| {
+        format!("exported fitness evidence source_revision {error}: {source_revision}")
+    })?;
     let current_revision = git_scope_revision("crates")?;
     if source_revision != current_revision {
         return Err(format!(
@@ -15905,8 +15914,19 @@ mod tests {
         let mut evidence = complete_fitness_evidence(0);
         assert!(validate_exported_fitness_evidence_value(&evidence).is_err());
 
-        evidence["source_revision"] =
-            json!(git_scope_revision("crates").expect("git revision works"));
+        let current_source_revision = git_scope_revision("crates").expect("git revision works");
+        assert_eq!(
+            current_source_revision.len(),
+            40,
+            "source_revision must be a full git object id, not a short rev"
+        );
+        assert!(
+            current_source_revision
+                .chars()
+                .all(|ch| ch.is_ascii_hexdigit()),
+            "source_revision must be hexadecimal"
+        );
+        evidence["source_revision"] = json!(current_source_revision.clone());
         evidence["source_tree_dirty"] = json!(
             !git_status_for_scope("crates")
                 .expect("git status works")
@@ -15983,6 +16003,29 @@ mod tests {
 
         evidence["source_diff_hash"] =
             json!(git_diff_hash_for_scope("crates").expect("git diff hash works"));
+        let short_revision = git_scope_revision("crates")
+            .expect("git revision works")
+            .chars()
+            .take(7)
+            .collect::<String>();
+        evidence["source_revision"] = json!(short_revision);
+        assert!(
+            validate_exported_fitness_evidence_value(&evidence)
+                .expect_err("short source_revision must be rejected")
+                .contains("source_revision")
+        );
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let scope = git_repo_relative_scope_at(repo_root, "crates").expect("scope resolves");
+        if let Ok(stale_source_revision) =
+            git_output_at(repo_root, &["rev-parse", &format!("HEAD^:{scope}")])
+        {
+            if stale_source_revision != current_source_revision {
+                evidence["source_revision"] = json!(stale_source_revision);
+                let error = validate_exported_fitness_evidence_value(&evidence)
+                    .expect_err("stale but well-formed source_revision must be rejected");
+                assert!(error.contains("does not match current revision"), "{error}");
+            }
+        }
         evidence["source_revision"] = json!("bogus");
         assert!(validate_exported_fitness_evidence_value(&evidence).is_err());
     }

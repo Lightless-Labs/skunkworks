@@ -56,7 +56,6 @@ fn repo_relative_crates_scope() -> String {
 fn current_crates_revision() -> String {
     git_output(&[
         "rev-parse",
-        "--short",
         &format!("HEAD:{}", repo_relative_crates_scope()),
     ])
 }

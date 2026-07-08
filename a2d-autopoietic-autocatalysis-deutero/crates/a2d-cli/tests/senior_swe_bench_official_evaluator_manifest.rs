@@ -96,7 +96,7 @@ fn repo_relative_crates_scope(root: &Path) -> String {
 
 fn current_crates_source_revision(root: &Path) -> String {
     let scope = repo_relative_crates_scope(root);
-    git_output_at(root, &["rev-parse", "--short", &format!("HEAD:{scope}")])
+    git_output_at(root, &["rev-parse", &format!("HEAD:{scope}")])
 }
 
 fn current_crates_status(root: &Path) -> String {
