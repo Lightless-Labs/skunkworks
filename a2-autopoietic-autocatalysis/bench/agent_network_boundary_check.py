@@ -40,8 +40,38 @@ SELF_CORRECTION_TODO = REPO_ROOT / "todos/self-correction-loop.md"
 SANDBOX_RUNTIME_PACKAGE = "@anthropic-ai/sandbox-runtime"
 
 
+def _strip_subprocess_output(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace").strip()
+    return value.strip()
+
+
 def run(command: list[str], cwd: Path | None = None) -> dict[str, Any]:
-    process = subprocess.run(command, cwd=cwd, text=True, capture_output=True, timeout=30)
+    try:
+        process = subprocess.run(command, cwd=cwd, text=True, capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "command": command,
+            "cwd": str(cwd) if cwd else None,
+            "returncode": None,
+            "stdout": _strip_subprocess_output(exc.stdout),
+            "stderr": _strip_subprocess_output(exc.stderr),
+            "error": "timeout",
+            "timeout_secs": exc.timeout,
+            "timed_out": True,
+        }
+    except OSError as exc:
+        return {
+            "command": command,
+            "cwd": str(cwd) if cwd else None,
+            "returncode": None,
+            "stdout": "",
+            "stderr": str(exc),
+            "error": "spawn_error",
+            "exception": type(exc).__name__,
+        }
     return {
         "command": command,
         "cwd": str(cwd) if cwd else None,
@@ -2049,6 +2079,49 @@ def main(argv: list[str]) -> int:
 
 
 class AgentNetworkBoundaryCheckTests(unittest.TestCase):
+    def test_run_reports_timeout_as_structured_failure(self) -> None:
+        with mock.patch(
+            __name__ + ".subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["npm", "root", "-g"], 30, output=b"partial\n", stderr=b"slow\n"),
+        ):
+            result = run(["npm", "root", "-g"])
+
+        self.assertIsNone(result["returncode"])
+        self.assertEqual(result["error"], "timeout")
+        self.assertTrue(result["timed_out"])
+        self.assertEqual(result["timeout_secs"], 30)
+        self.assertEqual(result["stdout"], "partial")
+        self.assertEqual(result["stderr"], "slow")
+
+    def test_run_reports_spawn_error_as_structured_failure(self) -> None:
+        with mock.patch(__name__ + ".subprocess.run", side_effect=FileNotFoundError("missing npm")):
+            result = run(["npm", "root", "-g"])
+
+        self.assertIsNone(result["returncode"])
+        self.assertEqual(result["error"], "spawn_error")
+        self.assertEqual(result["exception"], "FileNotFoundError")
+        self.assertIn("missing npm", result["stderr"])
+
+    def test_sandbox_runtime_probe_fails_closed_when_npm_root_times_out(self) -> None:
+        timeout = {
+            "command": ["npm", "root", "-g"],
+            "cwd": None,
+            "returncode": None,
+            "stdout": "",
+            "stderr": "",
+            "error": "timeout",
+            "timeout_secs": 30,
+            "timed_out": True,
+        }
+
+        with mock.patch(__name__ + ".run", return_value=timeout):
+            result = npm_global_package_path(SANDBOX_RUNTIME_PACKAGE)
+
+        self.assertFalse(result["available"])
+        self.assertEqual(result["npm_root"], timeout)
+        self.assertIsNone(result["path"])
+        self.assertIsNone(result["package_json"])
+
     def test_extract_function_body_returns_named_function_only(self) -> None:
         text = "function unrelated() { sandbox-exec }\nasync function target() { const x = { y: true }; spawn(cmd); }"
         body = extract_function_body(text, "target")
