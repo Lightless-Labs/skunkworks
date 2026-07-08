@@ -16615,6 +16615,29 @@ mod tests {
     }
 
     #[test]
+    fn provider_policy_gate_rejects_missing_fitness_evidence() {
+        let mut current = policy_summary(TopologyMode::CurrentPolicy, 1.0, 4, 20.0);
+        let proposed = policy_summary(TopologyMode::ProposedPolicy, 1.0, 4, 20.0);
+        current.best_total = 0;
+
+        let decision = decide_provider_policy_gate(&current, &proposed);
+
+        assert!(!decision.accepted);
+        assert_eq!(decision.reason, "missing fitness evidence");
+    }
+
+    #[test]
+    fn provider_policy_gate_rejects_zero_fitness_comparison_as_inconclusive() {
+        let current = policy_summary(TopologyMode::CurrentPolicy, 0.0, 4, 20.0);
+        let proposed = policy_summary(TopologyMode::ProposedPolicy, 0.0, 4, 20.0);
+
+        let decision = decide_provider_policy_gate(&current, &proposed);
+
+        assert!(!decision.accepted);
+        assert_eq!(decision.reason, "zero-fitness comparison is inconclusive");
+    }
+
+    #[test]
     fn provider_policy_gate_rejects_material_invocation_cost_increase() {
         let current = policy_summary(TopologyMode::CurrentPolicy, 1.0, 4, 20.0);
         let proposed = policy_summary(TopologyMode::ProposedPolicy, 1.0, 7, 20.0);

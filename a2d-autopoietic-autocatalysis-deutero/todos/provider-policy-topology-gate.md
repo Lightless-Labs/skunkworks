@@ -3,7 +3,7 @@
 **Created:** 2026-05-23
 **Started:** 2026-05-26 — bounded current-vs-proposed comparison gate implemented
 **Completed:** 2026-05-28 — live runtime provider_policy proposal rejected for missing comparison evidence; no durable lineage policy written
-**Hardened:** 2026-07-08 — direct unit coverage now pins material invocation and wall-clock cost rejection branches
+**Hardened:** 2026-07-08 — direct unit coverage now pins material invocation, wall-clock cost, missing-evidence, and zero-fitness rejection branches
 **Plan:** `docs/plans/provider-policy-topology-gate.md`
 **Depends on:** `provider_policy` typed artifact and lineage persistence (implemented 2026-05-23).
 
@@ -52,6 +52,8 @@ This is the next safety step after `provider-policy-lineage-persistence-2026-05-
 ## Coverage hardening
 
 2026-07-08: Added direct regression coverage for the existing cost rejection branches. `provider_policy_gate_rejects_material_invocation_cost_increase` and `provider_policy_gate_rejects_material_wall_clock_cost_increase` keep best fitness equal and assert `fitness_delta == 0.0`, then exceed invocation or wall-clock slack so durable provider-policy changes still fail closed on cost. Fresh source-patch evidence: `runs/20260708-provider-policy-cost-gate-coverage-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json` (`source_diff_hash: f41c4653f0fecd35ec3a5eac4a6647796664df65`). This is coverage only; no provider default or durable policy changed.
+
+2026-07-08: Added direct regression coverage for the missing-evidence and zero-fitness inconclusive branches. `provider_policy_gate_rejects_missing_fitness_evidence` proves absent comparison evidence cannot persist a policy, and `provider_policy_gate_rejects_zero_fitness_comparison_as_inconclusive` proves no-signal comparisons fail closed instead of becoming durable defaults. Fresh source-patch evidence: `runs/20260708-provider-policy-fail-closed-coverage-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json` (`source_diff_hash: 816612ba83ba9365d45014f9d555c6016a1503b4`). This is coverage only; no provider default or durable policy changed.
 
 ## Live validation
 

@@ -3,7 +3,7 @@
 **Created:** 2026-05-26
 **Started:** 2026-05-26 — bounded current-vs-proposed gate implemented
 **Completed:** 2026-05-28 — live runtime provider_policy proposal exercised and durability was rejected without fitness evidence
-**Hardened:** 2026-07-08 — cost-specific rejection branches now have direct unit coverage for invocation and wall-clock increases
+**Hardened:** 2026-07-08 — cost-specific and no-evidence/no-signal rejection branches now have direct unit coverage
 **Todo:** `todos/provider-policy-topology-gate.md`
 
 ## Goal
@@ -32,6 +32,7 @@ Implemented on 2026-05-26:
 - The gate rejects missing fitness evidence, worse best fitness, zero-fitness inconclusive comparisons, material invocation increases, and material wall-clock increases.
 - Provider-policy snapshots used for comparison/persistence are filtered to current germline enzymes so outer-loop-only assignments such as `maintainer` are not written as durable challenge-metabolism policy.
 - 2026-07-08 hardening pins the cost rejection branches directly: `provider_policy_gate_rejects_material_invocation_cost_increase` and `provider_policy_gate_rejects_material_wall_clock_cost_increase` keep fitness equal (`fitness_delta == 0.0`) and prove the gate rejects only because invocation or wall-clock slack is exceeded. Fresh source-patch evidence: `runs/20260708-provider-policy-cost-gate-coverage-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_diff_hash: f41c4653f0fecd35ec3a5eac4a6647796664df65`. This is test coverage only, not a provider default/policy change.
+- 2026-07-08 hardening also pins the missing-evidence and zero-fitness inconclusive branches directly: `provider_policy_gate_rejects_missing_fitness_evidence` and `provider_policy_gate_rejects_zero_fitness_comparison_as_inconclusive` prove that absent or no-signal comparison outcomes fail closed before lineage persistence. Fresh source-patch evidence: `runs/20260708-provider-policy-fail-closed-coverage-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`, full-passing with `source_diff_hash: 816612ba83ba9365d45014f9d555c6016a1503b4`. This is test coverage only, not a provider default/policy change.
 
 ## Acceptance criteria
 
