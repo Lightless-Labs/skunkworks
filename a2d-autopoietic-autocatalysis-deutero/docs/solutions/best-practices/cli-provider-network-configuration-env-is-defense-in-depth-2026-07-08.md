@@ -33,4 +33,10 @@ Fresh source-patch gate:
 - `fitness: 1.0`
 - `source_diff_hash: 5e0c1967b4edc6cbf67b44edb2d8bc2cf49227d7`
 
+Postcommit clean-head replay evidence:
+
+- `runs/20260708-postcommit-fitness-evidence-provider-env-scrub/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`
+- `source_tree_dirty: false`
+- `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`
+
 Validation included `cargo fmt --check`, focused and full `a2d-providers` tests, full `CARGO_BUILD_JOBS=2 cargo test`, reviewer re-review, and `fitness-evidence-inspect --require-all-tests-pass`.

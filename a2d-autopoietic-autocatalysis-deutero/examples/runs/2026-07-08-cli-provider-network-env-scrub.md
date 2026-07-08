@@ -22,6 +22,11 @@ A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260708-provider-network-env-scrub-evidenc
 cargo run -q -p a2d -- fitness-evidence-inspect \
   runs/20260708-provider-network-env-scrub-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
   --require-all-tests-pass
+A2D_FITNESS_EVIDENCE_EXPORT_DIR=runs/20260708-postcommit-fitness-evidence-provider-env-scrub/actual-test-score-artifact \
+  cargo run -q -p a2d -- score-artifact sudoku runs/20260701-score-artifact-fitness-evidence/good-sudoku-artifact.rs
+cargo run -q -p a2d -- fitness-evidence-inspect \
+  runs/20260708-postcommit-fitness-evidence-provider-env-scrub/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json \
+  --require-all-tests-pass
 ```
 
 Reviewer found the first process-global env-mutating regression unsafe; the final regression uses explicit `Command::env` values and does not mutate parent process env.
@@ -38,4 +43,10 @@ Fresh source-patch evidence:
 - `all_tests_pass: true`
 - `source_diff_hash: 5e0c1967b4edc6cbf67b44edb2d8bc2cf49227d7`
 
-This gates the provider-boundary source patch. It is not network-forensics evidence, official Senior SWE-Bench evidence, or repeated autonomous benchmark mastery.
+Postcommit clean-head replay evidence:
+
+- `runs/20260708-postcommit-fitness-evidence-provider-env-scrub/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`
+- `source_tree_dirty: false`
+- `source_diff_hash: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`
+
+This gates the provider-boundary source patch and verifies a clean-head replay after commit. It is not network-forensics evidence, official Senior SWE-Bench evidence, or repeated autonomous benchmark mastery.
