@@ -84,16 +84,20 @@ pub fn evaluate_rust_code(code: &str, test_timeout: Duration) -> SandboxResult {
 
     // Try to compile with --test for test binary
     let test_binary = dir.path().join("test_main");
-    let test_compile = Command::new("rustc")
+    let mut test_compile_command = Command::new("rustc");
+    test_compile_command
         .args(["--test", "--edition", "2024"])
         .arg(&src_path)
         .arg("-o")
-        .arg(&test_binary)
-        .output();
+        .arg(&test_binary);
+    harden_sandbox_child_command(&mut test_compile_command);
+    let test_compile = test_compile_command.output();
 
     let (tests_passed, tests_failed, test_output, timed_out, test_elapsed) = match test_compile {
         Ok(output) if output.status.success() => {
-            let run = run_with_timeout(Command::new(&test_binary), test_timeout);
+            let mut test_command = Command::new(&test_binary);
+            harden_sandbox_child_command(&mut test_command);
+            let run = run_with_timeout(test_command, test_timeout);
             match run {
                 TimedRun::Completed {
                     stdout,
@@ -220,13 +224,20 @@ fn run_with_timeout(mut cmd: Command, limit: Duration) -> TimedRun {
     }
 }
 
+fn harden_sandbox_child_command(command: &mut Command) {
+    crate::process_env::apply_no_public_solution_search_env(command);
+    crate::process_env::remove_network_configuration_env(command);
+}
+
 fn compile_rust(src: &Path, binary: &PathBuf) -> SandboxResult {
-    let output = Command::new("rustc")
+    let mut command = Command::new("rustc");
+    command
         .args(["--edition", "2024"])
         .arg(src)
         .arg("-o")
-        .arg(binary)
-        .output();
+        .arg(binary);
+    harden_sandbox_child_command(&mut command);
+    let output = command.output();
 
     match output {
         Ok(output) => {
@@ -427,5 +438,77 @@ mod tests {
         let (passed, failed) = parse_test_results(output);
         assert_eq!(passed, 5);
         assert_eq!(failed, 0);
+    }
+
+    #[test]
+    fn sandbox_child_process_env_fixture() {
+        if std::env::var("A2D_RUN_SANDBOX_ENV_FIXTURE").as_deref() != Ok("1") {
+            return;
+        }
+
+        let network_keys = crate::process_env::network_configuration_env_vars()
+            .into_iter()
+            .map(|key| format!("        assert!(std::env::var({key:?}).is_err(), {key:?});"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let policy_assertions = crate::process_env::no_public_solution_search_env()
+            .into_iter()
+            .map(|(key, value)| {
+                format!(
+                    "        assert_eq!(std::env::var({key:?}).as_deref(), Ok({value:?}), {key:?});"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let code = format!(
+            r#"
+fn main() {{}}
+
+#[cfg(test)]
+mod tests {{
+    #[test]
+    fn generated_test_observes_sandbox_child_env() {{
+{policy_assertions}
+{network_keys}
+    }}
+}}
+"#,
+        );
+
+        let result = evaluate_rust_code(&code, DEFAULT_TEST_TIMEOUT);
+        assert!(
+            result.compiled,
+            "generated env probe should compile: {}",
+            result.compile_output
+        );
+        assert!(
+            result.is_green(),
+            "generated env probe should pass; test output:\n{}",
+            result.test_output
+        );
+    }
+
+    #[test]
+    fn sandbox_evaluated_code_receives_policy_env_and_scrubbed_network_env() {
+        let current_exe = std::env::current_exe().expect("current test binary path");
+        let mut command = Command::new(current_exe);
+        command
+            .arg("--exact")
+            .arg("sandbox::tests::sandbox_child_process_env_fixture")
+            .arg("--nocapture")
+            .env("A2D_RUN_SANDBOX_ENV_FIXTURE", "1");
+        for key in crate::process_env::network_configuration_env_vars() {
+            command.env(key, format!("sandbox-leak-sentinel-{key}"));
+        }
+
+        let output = command
+            .output()
+            .expect("fixture test process should execute");
+        assert!(
+            output.status.success(),
+            "fixture failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

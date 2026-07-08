@@ -264,30 +264,11 @@ pub fn network_configuration_env_vars() -> [&'static str; 16] {
     // Environment scrubbing is defense-in-depth only. It removes common proxy
     // and package-manager network configuration inherited from the parent
     // process, but it is not OS/network namespace isolation.
-    [
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "FTP_PROXY",
-        "NO_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-        "ftp_proxy",
-        "no_proxy",
-        "GIT_PROXY_COMMAND",
-        "CARGO_HTTP_PROXY",
-        "CARGO_HTTP_CAINFO",
-        "CARGO_HTTP_CHECK_REVOKE",
-        "RUSTUP_DIST_SERVER",
-        "RUSTUP_UPDATE_ROOT",
-    ]
+    a2d_core::process_env::network_configuration_env_vars()
 }
 
 pub fn remove_network_configuration_env(command: &mut Command) {
-    for key in network_configuration_env_vars() {
-        command.env_remove(key);
-    }
+    a2d_core::process_env::remove_network_configuration_env(command);
 }
 
 fn isolated_provider_cwd(command: &str) -> Result<std::path::PathBuf, ProviderError> {

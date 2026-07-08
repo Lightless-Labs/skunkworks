@@ -5,6 +5,7 @@ pub mod lineage;
 pub mod metabolism;
 pub mod observer;
 pub mod prime;
+pub mod process_env;
 pub mod provider;
 pub mod raf;
 pub mod sandbox;
