@@ -2,6 +2,7 @@
 
 **Created:** 2026-06-04
 **Status:** Completed 2026-06-04
+**Addendum:** 2026-07-03 — aligned language-pattern tool-event scanning with repeat fingerprint normalization by using `textFromUnknown` for structured tool inputs/results, and strengthened regression coverage that different `bash` commands do not collapse into one repeat bucket.
 
 ## Context
 

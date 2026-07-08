@@ -13,7 +13,7 @@ function matchesLoopPattern(snapshot: AgentContextSnapshot, trigger: TriggerConf
 	const haystack = [
 		...snapshot.lastUserMessages.map((m) => m.text),
 		...snapshot.lastAssistantMessages.map((m) => m.text),
-		...snapshot.toolEvents.map((e) => `${e.name} ${String(e.input ?? "")} ${String(e.result ?? "")}`),
+		...snapshot.toolEvents.map((e) => `${e.name} ${textFromUnknown(e.input)} ${textFromUnknown(e.result)}`),
 	]
 		.join("\n")
 		.toLowerCase();

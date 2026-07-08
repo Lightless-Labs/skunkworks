@@ -148,6 +148,23 @@ test("loop-detected triggers fire only when recent context matches a loop patter
 		snapshot({ toolEvents: [{ name: "test", result: "failed with E123" }] }),
 	);
 	assert.equal(regexMatch?.name, "loop");
+
+	const structuredToolMatch = shouldFireTrigger(
+		config,
+		createInitialState(),
+		event({ timestamp: 4, kind: "tool-result" }),
+		snapshot({
+			toolEvents: [
+				{
+					name: "bash",
+					input: { command: "npm test" },
+					result: { stderr: "still seeing the same error in the structured result" },
+					isError: true,
+				},
+			],
+		}),
+	);
+	assert.equal(structuredToolMatch?.name, "loop");
 });
 
 test("loop-detected triggers on repeated errored tool-result fingerprints", () => {
@@ -205,7 +222,7 @@ test("repeat loop detection ignores non-errors when repeatRequireError is set", 
 	assert.equal(oldState.recentToolFingerprints?.length, 2);
 });
 
-test("repeat loop detection keeps distinct tool inputs separate", () => {
+test("repeat loop detection keeps distinct bash commands separate", () => {
 	const config = cloneConfig();
 	config.triggers = [
 		{
@@ -219,11 +236,14 @@ test("repeat loop detection keeps distinct tool inputs separate", () => {
 		},
 	];
 	const state = createInitialState();
-	const first = { toolName: "bash", input: { command: "npm test -- test-a" }, result: "failed", isError: true };
-	const second = { toolName: "bash", input: { command: "npm test -- test-b" }, result: "failed", isError: true };
+	const first = { toolName: "bash", input: { command: "npm test -- test-a" }, result: "", isError: true };
+	const second = { toolName: "bash", input: { command: "npm test -- test-b" }, result: "", isError: true };
 
 	assert.equal(shouldFireTrigger(config, state, event({ timestamp: 1, kind: "tool-result", payload: first }), snapshot()), undefined);
 	assert.equal(shouldFireTrigger(config, state, event({ timestamp: 2, kind: "tool-result", payload: second }), snapshot()), undefined);
+
+	const repeatedFirst = shouldFireTrigger(config, state, event({ timestamp: 3, kind: "tool-result", payload: first }), snapshot());
+	assert.equal(repeatedFirst?.name, "repeat-loop");
 });
 
 test("repeat loop detection only fires on tool-result events", () => {
