@@ -10,10 +10,11 @@ Smoke the fixture without a model:
 bench/self_correction.py --smoke-only --results /tmp/a2-self-correction-smoke.jsonl
 ```
 
-Run real A² attempts with a cheap provider:
+Direct provider-backed harness commands are fail-closed prerequisites, not a sandbox bypass: non-smoke runs currently fail before benchmark worktree/result creation unless audited sandbox/provider allowlist enforcement is wired and durable evidence validates. Prefer the `bench/self_correction_demo.py fresh ... --confirm-provider-run` wrapper for auditable fresh demo regeneration. If you intentionally run the direct harness after enforcement exists, keep the explicit guard in the command so manual reruns document the prerequisite:
 
 ```bash
 bench/self_correction.py --provider gemini --attempts 3 \
+  --require-audited-sandbox-provider-allowlist \
   --results bench/self-correction-results.jsonl
 ```
 
@@ -24,6 +25,7 @@ bench/self_correction.py --fixture compound-hidden \
   --provider opencode/minimax-coding-plan/MiniMax-M2.7 \
   --runs 3 \
   --attempts 3 \
+  --require-audited-sandbox-provider-allowlist \
   --results bench/self-correction-compound-results.jsonl
 ```
 
@@ -33,6 +35,7 @@ Run the harder compound fixture that usually exercises the loop instead of pass@
 bench/self_correction.py --fixture compound-hidden \
   --provider opencode/minimax-coding-plan/MiniMax-M2.7 \
   --attempts 3 \
+  --require-audited-sandbox-provider-allowlist \
   --results bench/self-correction-compound-results.jsonl
 ```
 
@@ -166,11 +169,13 @@ Run the anti-repeat retry ablation by keeping the same fixture/provider/attempt 
 bench/self_correction.py --fixture compound-hidden \
   --provider opencode/minimax-coding-plan/MiniMax-M2.7 \
   --attempts 3 \
+  --require-audited-sandbox-provider-allowlist \
   --results /tmp/a2-anti-repeat-ablation.jsonl
 bench/self_correction.py --fixture compound-hidden \
   --provider opencode/minimax-coding-plan/MiniMax-M2.7 \
   --attempts 3 \
   --disable-anti-repeat \
+  --require-audited-sandbox-provider-allowlist \
   --results /tmp/a2-anti-repeat-ablation.jsonl
 bench/self_correction_score.py /tmp/a2-anti-repeat-ablation.jsonl
 ```

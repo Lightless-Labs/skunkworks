@@ -3624,6 +3624,19 @@ def verify_demo_docs_texts(docs: dict[str, str]) -> None:
     for description, predicate in readme_required_commands:
         if not any(predicate(line) for line in readme_shell_lines):
             missing.append(f"bench/README.md: {description}")
+    direct_harness_prefixes = ("bench/self_correction.py ", "python3 bench/self_correction.py ")
+    for doc_path in ("bench/README.md", "docs/HANDOFF.md", "todos/self-correction-loop.md"):
+        for line in markdown_logical_shell_lines(docs[doc_path]):
+            if (
+                line.startswith(direct_harness_prefixes)
+                and " --provider " in line
+                and " --smoke-only" not in line
+                and " --require-audited-sandbox-provider-allowlist" not in line
+            ):
+                missing.append(
+                    f"{doc_path}: direct provider-backed bench/self_correction.py commands must include "
+                    "--require-audited-sandbox-provider-allowlist"
+                )
     if missing:
         raise RuntimeError("demo documentation audit missing required text: " + "; ".join(missing))
 
@@ -4668,6 +4681,42 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(RuntimeError, "--confirm-provider-run"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_readme_direct_provider_harness_without_allowlist_guard(
+        self,
+    ) -> None:
+        docs = self.demo_docs_fixture()
+        docs["bench/README.md"] += (
+            "\nbench/self_correction.py --provider gemini --attempts 3 "
+            "--results bench/self-correction-results.jsonl\n"
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "--require-audited-sandbox-provider-allowlist"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_handoff_direct_provider_harness_without_allowlist_guard(
+        self,
+    ) -> None:
+        docs = self.demo_docs_fixture()
+        docs["docs/HANDOFF.md"] += (
+            "\nbench/self_correction.py --fixture compound-hidden --provider gemini "
+            "--attempts 3\n"
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "--require-audited-sandbox-provider-allowlist"):
+            verify_demo_docs_texts(docs)
+
+    def test_verify_demo_docs_texts_rejects_python_direct_provider_harness_without_allowlist_guard(
+        self,
+    ) -> None:
+        docs = self.demo_docs_fixture()
+        docs["docs/HANDOFF.md"] += (
+            "\npython3 bench/self_correction.py --fixture compound-hidden --provider gemini "
+            "--attempts 3\n"
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "--require-audited-sandbox-provider-allowlist"):
             verify_demo_docs_texts(docs)
 
     def test_verify_demo_docs_texts_rejects_readme_fresh_contract_without_budget(
