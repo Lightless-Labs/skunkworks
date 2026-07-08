@@ -1,4 +1,4 @@
-use a2d_providers::cli::network_configuration_env_vars;
+use a2d_providers::cli::{network_configuration_env_vars, provider_no_public_solution_search_env};
 use std::fs;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -16,6 +16,17 @@ fn evaluator_network_env_absence_shell() -> String {
     network_configuration_env_vars()
         .into_iter()
         .map(|key| format!("test -z \"${{{key}-}}\" || {{ echo '{key} leaked' >&2; exit 42; }}\n"))
+        .collect()
+}
+
+fn evaluator_no_search_policy_env_shell() -> String {
+    provider_no_public_solution_search_env()
+        .into_iter()
+        .map(|(key, value)| {
+            format!(
+                "test \"${{{key}-}}\" = '{value}' || {{ echo '{key} missing' >&2; exit 43; }}\n"
+            )
+        })
         .collect()
 }
 
@@ -229,9 +240,9 @@ fn retry_attempt_evaluate_scrubs_network_env_while_preserving_no_search_policy_e
     let fixture = write_fixture(
         "env-scrub",
         &format!(
-            "test \"${{A2D_SENIOR_SWE_BENCH_GITHUB_SOLUTION_SEARCH_ALLOWED}}\" = false\n\
-             test \"${{A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN}}\" = true\n{}\
+            "{}{}\
              grep -q new src/lib.rs\n",
+            evaluator_no_search_policy_env_shell(),
             evaluator_network_env_absence_shell()
         ),
     );

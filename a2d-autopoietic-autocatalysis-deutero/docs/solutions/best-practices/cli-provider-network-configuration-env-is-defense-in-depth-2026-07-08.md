@@ -56,4 +56,10 @@ Senior SWE-Bench evaluator subprocesses reuse the same scrubber as of the follow
 - `runs/20260708-senior-swe-bench-evaluator-network-env-scrub-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`
 - `source_diff_hash: bcaaa373faa64dea9850b5c9b52bd1e96324cdaf`
 
+Senior SWE-Bench evaluator subprocesses also reuse `provider_no_public_solution_search_env()` as of the policy-env parity follow-up, so the same generic and Senior-specific no-public-solution-search policy flags are visible to evaluator wrappers and their nested test runners:
+
+- `runs/20260708-senior-swe-bench-evaluator-policy-env-parity-evidence/local-evaluator/fitness/senior-swe-bench-policy-env-parity-hard-cycle-0-fitness-evidence.json`
+- `runs/20260708-senior-swe-bench-evaluator-policy-env-parity-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`
+- `source_diff_hash: f564d504708fded164d2d1832d812accbb84bd3d`
+
 Validation included `cargo fmt --check`, focused and full `a2d-providers` tests, focused evaluator-boundary tests, full `CARGO_BUILD_JOBS=2 cargo test`, reviewer re-review, and `fitness-evidence-inspect --require-all-tests-pass`.

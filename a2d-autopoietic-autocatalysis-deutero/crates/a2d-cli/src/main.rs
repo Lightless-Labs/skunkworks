@@ -12,7 +12,9 @@ use a2d_core::metabolism::{CycleReport, InvocationLineage, Metabolism, fitness_e
 use a2d_core::provider::{InvocationRequest, Provider, ProviderPolicy, ProviderRegistry};
 use a2d_core::self_sandbox;
 use a2d_core::types::{ArtifactType, EnzymeDef, EnzymeId};
-use a2d_providers::cli::{CliProvider, remove_network_configuration_env};
+use a2d_providers::cli::{
+    CliProvider, provider_no_public_solution_search_env, remove_network_configuration_env,
+};
 use senior_swe_bench::{
     SeniorSweBenchOfficialEvaluatorManifestSummary, SeniorSweBenchTask,
     SeniorSweBenchTaskPackageSummary, SeniorSweBenchVariant, build_senior_swe_bench_audit,
@@ -11436,6 +11438,7 @@ fn run_local_senior_swe_bench_evaluator(
     command
         .args(&config.command[1..])
         .current_dir(&evaluator_checkout)
+        .envs(provider_no_public_solution_search_env())
         .env("A2D_SENIOR_SWE_BENCH_TASK_ID", &package.task_id)
         .env("A2D_SENIOR_SWE_BENCH_REPO", &package.repo)
         .env(

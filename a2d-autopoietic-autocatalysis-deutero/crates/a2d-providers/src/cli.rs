@@ -241,7 +241,7 @@ fn default_timeout_secs(provider_name: &str) -> u64 {
     }
 }
 
-fn provider_no_public_solution_search_env() -> [(&'static str, &'static str); 5] {
+pub fn provider_no_public_solution_search_env() -> [(&'static str, &'static str); 5] {
     // Policy-observability only: these flags make the benchmark no-public-
     // solution-search contract visible to provider subprocesses. They do not
     // enforce OS/network isolation.

@@ -19,6 +19,7 @@ Before spawning the Senior SWE-Bench evaluator command, apply the same shared ne
 - Set explicit evaluator policy/context env first.
 - Remove inherited network/proxy/package-manager configuration with `remove_network_configuration_env` before `spawn`.
 - Keep the scope explicit: this is defense-in-depth and policy-boundary hygiene, not OS/network no-egress enforcement.
+- Reuse `provider_no_public_solution_search_env()` for evaluator commands too, so evaluator wrappers and their nested test runners see the same generic and Senior-specific no-public-solution-search policy flags as provider subprocesses.
 
 ## Regression
 
@@ -28,7 +29,7 @@ Before spawning the Senior SWE-Bench evaluator command, apply the same shared ne
 - `A2D_SENIOR_SWE_BENCH_PUBLIC_SOLUTION_SEARCH_FORBIDDEN=true`
 - every shared network/proxy/package-manager env key is absent
 
-The test imports the public scrub list from `a2d_providers::cli::network_configuration_env_vars` so the regression cannot silently drift from the implementation list.
+The test imports the public scrub list from `a2d_providers::cli::network_configuration_env_vars` so the regression cannot silently drift from the implementation list. The follow-up policy-env parity regression also imports `provider_no_public_solution_search_env()` and asserts all five shared policy flags are present in the evaluator wrapper environment. Senior SWE-Bench task/cycle-input parsers already reject `github_solution_search_allowed=true` before evaluator execution, so these false/forbidden env flags do not contradict an accepted allowed-search path.
 
 ## Evidence
 
@@ -50,6 +51,14 @@ Behavior-specific evaluator evidence:
 - `source_diff_hash: bcaaa373faa64dea9850b5c9b52bd1e96324cdaf`
 - local evaluator script exits 42 if any shared scrub-list env key leaks while requiring the no-search policy env flags to remain present
 
-Validation included `cargo fmt --check`, focused evaluator/provider env-scrub tests, full `CARGO_BUILD_JOBS=2 cargo test`, reviewer with no blockers, and `fitness-evidence-inspect --require-all-tests-pass` on both the source-patch gate and behavior-specific evaluator evidence.
+Policy-env parity evidence:
+
+- `runs/20260708-senior-swe-bench-evaluator-policy-env-parity-evidence/local-evaluator/fitness/senior-swe-bench-policy-env-parity-hard-cycle-0-fitness-evidence.json`
+- `runs/20260708-senior-swe-bench-evaluator-policy-env-parity-evidence/actual-test-score-artifact/baseline-sudoku-solver-cycle-0-fitness-evidence.json`
+- `runs/20260708-senior-swe-bench-evaluator-policy-env-parity-evidence/negative-smoke/missing-policy-env.status`
+- `source_diff_hash: f564d504708fded164d2d1832d812accbb84bd3d`
+- local evaluator script exits nonzero if any of the five shared policy env flags are missing, and the direct negative smoke proves that fixture rejects missing policy env outside A²D
+
+Validation included `cargo fmt --check`, focused evaluator/provider env-scrub tests, full `CARGO_BUILD_JOBS=2 cargo test`, reviewer with no blockers after a stale run-doc hash fix, and `fitness-evidence-inspect --require-all-tests-pass` on source-patch and behavior-specific evaluator evidence.
 
 This is not official Senior SWE-Bench mastery, hidden official holdout proof, live provider-loop success, or no-egress proof.
