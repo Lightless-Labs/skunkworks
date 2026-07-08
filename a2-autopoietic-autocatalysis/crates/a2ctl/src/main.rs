@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 const AGENT_NETWORK_BOUNDARY_ADVISORY: &str = "  [INFO] agent_network_boundary: not part of the 6/6 sentinel gate; run `python3 bench/agent_network_boundary_check.py --self-test` and `python3 bench/agent_network_boundary_check.py --require-sandbox-runtime --json`, or `cargo run -p a2ctl -- sentinel --workspace . --require-agent-network-boundary` for an opt-in fail-closed precondition gate, before treating external benchmark evidence as uncontaminated";
 const DEFAULT_ARCHIVE_EVIDENCE_JSON: &str = "docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json";
 const DEFAULT_ARCHIVE_RESULTS_JSONL: &str = "docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.jsonl";
-const DEMO_EVIDENCE_ADVISORY: &str = "  [INFO] demo_evidence: not part of the 6/6 sentinel gate; run `python3 bench/self_correction_demo.py verify-demo-docs`, `python3 bench/self_correction_demo.py audit-demo-evidence`, `python3 bench/self_correction_demo.py audit-demo-evidence --json`, and `python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json` to audit documented archived loop evidence, or `cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence` for an opt-in combined gate; sentinel default does not refresh or replace those checks";
+const DEMO_EVIDENCE_ADVISORY: &str = "  [INFO] demo_evidence: not part of the 6/6 sentinel gate; default sentinel checks do not validate the reproducible demo artifacts for failed first attempt, archived verifier/failure evidence, retry context from that evidence, later passing attempt, lineage trajectory, or verifier-gated promotion; run `python3 bench/self_correction_demo.py verify-demo-docs`, `python3 bench/self_correction_demo.py audit-demo-evidence`, `python3 bench/self_correction_demo.py audit-demo-evidence --json`, and `python3 bench/self_correction_demo.py verify-archive --evidence-json docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.demo-evidence.json` to audit documented archived loop evidence, or `cargo run -p a2ctl -- sentinel --workspace . --require-demo-evidence` for an opt-in combined gate; sentinel default does not refresh or replace those checks";
 const DEMO_EVIDENCE_PROOF_STEPS: [&str; 6] = [
     "failed_first_attempt",
     "archived_verifier_failure_evidence",
@@ -62,6 +62,8 @@ struct RequiredSentinelGateJson {
     archive: Option<String>,
     evidence: Option<String>,
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<serde_json::Value>,
 }
 
 fn render_sentinel_json_output(
@@ -126,25 +128,51 @@ fn agent_network_boundary_command_args() -> Vec<String> {
     ]
 }
 
-fn run_agent_network_boundary_gate(workspace: &str) -> Result<String, String> {
+#[derive(Debug)]
+struct AgentNetworkBoundaryGateOutput {
+    details: Option<serde_json::Value>,
+}
+
+#[derive(Debug)]
+struct AgentNetworkBoundaryGateFailure {
+    error: String,
+    details: Option<serde_json::Value>,
+}
+
+fn parse_agent_network_boundary_details(stdout: &str) -> Option<serde_json::Value> {
+    let value = serde_json::from_str::<serde_json::Value>(stdout).ok()?;
+    value.get("required_sandbox_runtime_gate")?;
+    Some(value)
+}
+
+fn run_agent_network_boundary_gate(
+    workspace: &str,
+) -> Result<AgentNetworkBoundaryGateOutput, AgentNetworkBoundaryGateFailure> {
     let output = std::process::Command::new("python3")
         .args(agent_network_boundary_command_args())
         .current_dir(workspace)
         .output()
-        .map_err(|e| {
-            format!("failed to launch agent network boundary verifier in `{workspace}`: {e}")
+        .map_err(|e| AgentNetworkBoundaryGateFailure {
+            error: format!(
+                "failed to launch agent network boundary verifier in `{workspace}`: {e}"
+            ),
+            details: None,
         })?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let details = parse_agent_network_boundary_details(&stdout);
     if !output.status.success() {
-        return Err(format!(
-            "agent network boundary verifier failed with status {}\nstdout:\n{}\nstderr:\n{}",
-            output.status, stdout, stderr
-        ));
+        return Err(AgentNetworkBoundaryGateFailure {
+            error: format!(
+                "agent network boundary verifier failed with status {}\nstdout:\n{}\nstderr:\n{}",
+                output.status, stdout, stderr
+            ),
+            details,
+        });
     }
 
-    Ok(stdout)
+    Ok(AgentNetworkBoundaryGateOutput { details })
 }
 
 fn demo_evidence_command_args(archive: &str, evidence_json: &str) -> Vec<String> {
@@ -775,7 +803,10 @@ fn is_repo_relative_artifact_path(path: &str) -> bool {
         return false;
     }
     let path = Path::new(path_value);
-    !path.is_absolute() && !path.components().any(|component| matches!(component, std::path::Component::ParentDir))
+    !path.is_absolute()
+        && !path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
 }
 
 fn string_or_default(payload: &serde_json::Value, field: &str) -> serde_json::Value {
@@ -886,7 +917,11 @@ fn promotion_evidence_audit_details(payload: &serde_json::Value) -> Option<serde
 }
 
 fn payload_has_promotion_evidence(payload: &serde_json::Value) -> bool {
-    if payload.get("promotion").and_then(serde_json::Value::as_object).is_some() {
+    if payload
+        .get("promotion")
+        .and_then(serde_json::Value::as_object)
+        .is_some()
+    {
         return promotion_structured_gate(payload) && promotion_artifact_matches_payload(payload);
     }
     promotion_legacy_marker_source(payload).is_some()
@@ -2954,6 +2989,7 @@ async fn main() {
                         archive: Some(demo_archive.clone()),
                         evidence: Some(demo_evidence_json.clone()),
                         error: None,
+                        details: None,
                     },
                     Err(error) => {
                         failed = true;
@@ -2965,6 +3001,7 @@ async fn main() {
                             archive: Some(demo_archive.clone()),
                             evidence: Some(demo_evidence_json.clone()),
                             error: Some(error),
+                            details: None,
                         }
                     }
                 };
@@ -2988,7 +3025,7 @@ async fn main() {
             if require_agent_network_boundary && result.all_passed {
                 let command = agent_network_boundary_command_args();
                 let gate_result = match run_agent_network_boundary_gate(&workspace) {
-                    Ok(_) => RequiredSentinelGateJson {
+                    Ok(output) => RequiredSentinelGateJson {
                         name: "agent_network_boundary",
                         required: true,
                         passed: true,
@@ -2996,6 +3033,7 @@ async fn main() {
                         archive: None,
                         evidence: None,
                         error: None,
+                        details: output.details,
                     },
                     Err(error) => {
                         failed = true;
@@ -3006,7 +3044,8 @@ async fn main() {
                             command,
                             archive: None,
                             evidence: None,
-                            error: Some(error),
+                            error: Some(error.error),
+                            details: error.details,
                         }
                     }
                 };
@@ -4756,6 +4795,7 @@ mod tests {
                 archive: Some(DEFAULT_ARCHIVE_RESULTS_JSONL.to_string()),
                 evidence: Some(DEFAULT_ARCHIVE_EVIDENCE_JSON.to_string()),
                 error: None,
+                details: None,
             }],
         )
         .unwrap();
@@ -4826,6 +4866,7 @@ mod tests {
                 archive: Some(DEFAULT_ARCHIVE_RESULTS_JSONL.to_string()),
                 evidence: Some(DEFAULT_ARCHIVE_EVIDENCE_JSON.to_string()),
                 error: Some("demo evidence verifier failed".to_string()),
+                details: None,
             }],
         )
         .unwrap();
@@ -4839,6 +4880,95 @@ mod tests {
             data["required_gates"][0]["error"],
             "demo evidence verifier failed"
         );
+    }
+
+    #[test]
+    fn sentinel_json_required_gate_details_are_omitted_when_absent() {
+        let result = a2_eval::sentinel::SuiteResult {
+            results: vec![a2_eval::sentinel::SentinelResult {
+                name: "compile_check".into(),
+                passed: true,
+                detail: "compiled".into(),
+            }],
+            all_passed: true,
+            score: 1.0,
+        };
+        let output = render_sentinel_json_output(
+            ".",
+            &result,
+            vec![RequiredSentinelGateJson {
+                name: "agent_network_boundary",
+                required: true,
+                passed: false,
+                command: agent_network_boundary_command_args(),
+                archive: None,
+                evidence: None,
+                error: Some("boundary verifier failed".to_string()),
+                details: None,
+            }],
+        )
+        .unwrap();
+
+        let data: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert!(data["required_gates"][0].get("details").is_none());
+    }
+
+    #[test]
+    fn sentinel_json_required_gate_details_preserve_boundary_gate_payload() {
+        let result = a2_eval::sentinel::SuiteResult {
+            results: vec![a2_eval::sentinel::SentinelResult {
+                name: "compile_check".into(),
+                passed: true,
+                detail: "compiled".into(),
+            }],
+            all_passed: true,
+            score: 1.0,
+        };
+        let details = serde_json::json!({
+            "required_sandbox_runtime_gate": {
+                "passed": false,
+                "failures": ["@anthropic-ai/sandbox-runtime not installed globally"],
+                "command": "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime --json"
+            },
+            "fresh_provider_backed_current_head_loop_evidence": false,
+            "senior_swe_bench_uncontaminated_evidence": false
+        });
+        let output = render_sentinel_json_output(
+            ".",
+            &result,
+            vec![RequiredSentinelGateJson {
+                name: "agent_network_boundary",
+                required: true,
+                passed: false,
+                command: agent_network_boundary_command_args(),
+                archive: None,
+                evidence: None,
+                error: Some("boundary verifier failed".to_string()),
+                details: Some(details.clone()),
+            }],
+        )
+        .unwrap();
+
+        let data: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(data["required_gates"][0]["details"], details);
+        assert_eq!(
+            data["required_gates"][0]["details"]["required_sandbox_runtime_gate"]["failures"][0],
+            "@anthropic-ai/sandbox-runtime not installed globally"
+        );
+    }
+
+    #[test]
+    fn agent_network_boundary_details_parse_only_json_with_required_gate() {
+        let payload =
+            r#"{"required_sandbox_runtime_gate":{"passed":false,"failures":["missing runtime"]}}"#;
+        let parsed = parse_agent_network_boundary_details(payload).unwrap();
+
+        assert_eq!(
+            parsed["required_sandbox_runtime_gate"]["failures"][0],
+            "missing runtime"
+        );
+        assert!(parse_agent_network_boundary_details("not json").is_none());
+        assert!(parse_agent_network_boundary_details(r#"{"complete":true}"#).is_none());
     }
 
     #[test]
@@ -4866,6 +4996,13 @@ mod tests {
             .expect("demo evidence advisory should be present");
 
         assert!(advisory.contains("not part of the 6/6 sentinel gate"));
+        assert!(advisory.contains("default sentinel checks do not validate"));
+        assert!(advisory.contains("failed first attempt"));
+        assert!(advisory.contains("archived verifier/failure evidence"));
+        assert!(advisory.contains("retry context from that evidence"));
+        assert!(advisory.contains("later passing attempt"));
+        assert!(advisory.contains("lineage trajectory"));
+        assert!(advisory.contains("verifier-gated promotion"));
         assert!(advisory.contains("python3 bench/self_correction_demo.py verify-demo-docs"));
         assert!(advisory.contains("python3 bench/self_correction_demo.py audit-demo-evidence"));
         assert!(
@@ -4889,6 +5026,13 @@ mod tests {
         assert_eq!(lines[0], "Non-gating advisory checks:");
         assert!(lines[1].contains("[INFO] agent_network_boundary"));
         assert!(lines[2].contains("[INFO] demo_evidence"));
+        assert!(block.contains("default sentinel checks do not validate"));
+        assert!(block.contains("failed first attempt"));
+        assert!(block.contains("archived verifier/failure evidence"));
+        assert!(block.contains("retry context from that evidence"));
+        assert!(block.contains("later passing attempt"));
+        assert!(block.contains("lineage trajectory"));
+        assert!(block.contains("verifier-gated promotion"));
         assert!(block.contains("python3 bench/self_correction_demo.py verify-demo-docs"));
         assert!(block.contains("python3 bench/self_correction_demo.py audit-demo-evidence"));
         assert!(block.contains("python3 bench/self_correction_demo.py audit-demo-evidence --json"));
@@ -5992,10 +6136,8 @@ mod tests {
 
     #[test]
     fn demo_evidence_artifact_validation_rejects_string_promotion_verify_returncode() {
-        let workspace = std::env::temp_dir().join(format!(
-            "a2-promotion-string-verify-{}",
-            std::process::id()
-        ));
+        let workspace =
+            std::env::temp_dir().join(format!("a2-promotion-string-verify-{}", std::process::id()));
         let artifact = "evidence/results.jsonl";
         let artifact_path = workspace.join(artifact);
         std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
