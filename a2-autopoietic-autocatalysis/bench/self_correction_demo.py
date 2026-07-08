@@ -1928,6 +1928,7 @@ def fresh_command(args: argparse.Namespace) -> list[str]:
         command.extend(["--run-id", args.run_id])
     if not args.allow_dirty_source:
         command.append("--require-clean-source")
+    command.append("--require-audited-sandbox-provider-allowlist")
     if args.keep_workspace:
         command.append("--keep-workspace")
     return command
@@ -6906,6 +6907,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         command = fresh_command(args)
 
         self.assertIn("--require-clean-source", command)
+        self.assertIn("--require-audited-sandbox-provider-allowlist", command)
         self.assertIn("--fixture", command)
         self.assertIn(DEFAULT_FIXTURE, command)
         self.assertIn("--provider", command)
@@ -6957,6 +6959,7 @@ class SelfCorrectionDemoTests(unittest.TestCase):
 
         output = stdout.getvalue()
         self.assertEqual(result, 0)
+        self.assertIn("--require-audited-sandbox-provider-allowlist", output)
         self.assertIn("# would validate fresh results before scoring", output)
         self.assertIn("all rows match run_id 'fresh-demo'", output)
         self.assertIn("no host-specific path markers are present", output)

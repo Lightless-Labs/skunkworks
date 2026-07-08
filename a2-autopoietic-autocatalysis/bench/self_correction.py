@@ -748,6 +748,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "source tree is clean."
         ),
     )
+    parser.add_argument(
+        "--require-audited-sandbox-provider-allowlist",
+        action="store_true",
+        help=(
+            "Fail before creating benchmark worktrees or result files unless audited "
+            "sandbox/provider allowlist enforcement is enabled with durable evidence."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.runs < 1:
         parser.error("--runs must be at least 1")
@@ -1258,6 +1266,20 @@ def provider_endpoint_host_is_synthetic_or_local(host: str) -> bool:
     )
 
 
+def ensure_audited_sandbox_provider_allowlist_ready() -> None:
+    fields = sandbox_provider_allowlist_audit_fields()
+    if (
+        fields.get("audited_sandbox_provider_allowlist_enforced") is not True
+        or fields.get("audited_sandbox_provider_allowlist_status") != "enforced"
+        or not isinstance(fields.get("audited_sandbox_provider_allowlist_evidence"), dict)
+    ):
+        raise RuntimeError(
+            "--require-audited-sandbox-provider-allowlist requires audited "
+            "sandbox/provider allowlist enforcement with status=enforced and durable "
+            "evidence before benchmark worktrees or result files are created"
+        )
+
+
 def sandbox_provider_allowlist_audit_fields() -> dict[str, Any]:
     fields: dict[str, Any] = {
         "audited_sandbox_provider_allowlist_enforced": (
@@ -1399,6 +1421,8 @@ def run_benchmark(args: argparse.Namespace) -> int:
             "--require-clean-source requires a clean project-scoped source tree "
             "before benchmark worktrees or result files are created"
         )
+    if args.require_audited_sandbox_provider_allowlist or not args.smoke_only:
+        ensure_audited_sandbox_provider_allowlist_ready()
     base_run_id = args.run_id or datetime.now(timezone.utc).strftime("self-correction-%Y%m%dT%H%M%SZ")
     requested_results = Path(args.results)
     results_artifact = str(requested_results)
@@ -1622,6 +1646,67 @@ class SelfCorrectionTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(RuntimeError, "--require-clean-source"):
+                run_benchmark(args)
+            self.assertFalse(results.exists())
+
+    def committed_minimal_project(self, root: Path) -> Path:
+        project = root / "project"
+        project.mkdir()
+        (project / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+        subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        subprocess.run(["git", "add", "project/Cargo.toml"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=A2 Test",
+                "-c",
+                "user.email=a2@example.invalid",
+                "commit",
+                "-m",
+                "initial",
+            ],
+            cwd=root,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        return project
+
+    def test_require_audited_sandbox_provider_allowlist_fails_before_result_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = self.committed_minimal_project(Path(directory))
+            results = project / "results" / "benchmark.jsonl"
+            args = parse_args(
+                [
+                    "--repo",
+                    str(project),
+                    "--smoke-only",
+                    "--require-audited-sandbox-provider-allowlist",
+                    "--results",
+                    str(results),
+                ]
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "--require-audited-sandbox-provider-allowlist"):
+                run_benchmark(args)
+            self.assertFalse(results.exists())
+
+    def test_provider_backed_run_requires_audited_sandbox_provider_allowlist_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = self.committed_minimal_project(Path(directory))
+            results = project / "results" / "benchmark.jsonl"
+            args = parse_args(
+                [
+                    "--repo",
+                    str(project),
+                    "--results",
+                    str(results),
+                ]
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "--require-audited-sandbox-provider-allowlist"):
                 run_benchmark(args)
             self.assertFalse(results.exists())
 
