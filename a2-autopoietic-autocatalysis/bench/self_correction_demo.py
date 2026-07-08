@@ -589,10 +589,27 @@ def agent_network_boundary_precondition_payload(stdout: str) -> dict[str, object
     return payload
 
 
-def agent_network_boundary_precondition_gate_details(stdout: str) -> list[str]:
+def agent_network_boundary_precondition_required_gate(stdout: str) -> dict[str, object] | None:
     payload = agent_network_boundary_precondition_payload(stdout)
     gate = payload.get("required_sandbox_runtime_gate")
     if not isinstance(gate, dict):
+        return None
+    return gate
+
+
+def agent_network_boundary_precondition_gate_passed(stdout: str) -> bool | None:
+    gate = agent_network_boundary_precondition_required_gate(stdout)
+    if gate is None:
+        return None
+    passed = gate.get("passed")
+    if not isinstance(passed, bool):
+        return None
+    return passed
+
+
+def agent_network_boundary_precondition_gate_details(stdout: str) -> list[str]:
+    gate = agent_network_boundary_precondition_required_gate(stdout)
+    if gate is None:
         return []
     failures = gate.get("failures")
     if not isinstance(failures, list):
@@ -617,10 +634,13 @@ def ensure_agent_network_boundary_precondition_ready() -> None:
         text=True,
         check=False,
     )
+    gate_passed = agent_network_boundary_precondition_gate_passed(result.stdout)
     gate_failures = agent_network_boundary_precondition_gate_details(result.stdout)
     blockers = agent_network_boundary_precondition_fresh_evidence_blockers(result.stdout)
-    if result.returncode != 0 or gate_failures:
+    if result.returncode != 0 or gate_passed is not True or gate_failures:
         detail_parts = []
+        if gate_passed is not True:
+            detail_parts.append(f"required_sandbox_runtime_gate.passed={gate_passed!r}")
         if gate_failures:
             detail_parts.append(f"required_sandbox_runtime_gate.failures={gate_failures!r}")
         if blockers:
@@ -5708,11 +5728,30 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         )
 
     def test_agent_network_boundary_precondition_gate_details_ignores_invalid_json(self) -> None:
+        self.assertIsNone(agent_network_boundary_precondition_gate_passed("not json"))
         self.assertEqual(agent_network_boundary_precondition_gate_details("not json"), [])
         self.assertEqual(
             agent_network_boundary_precondition_fresh_evidence_blockers("not json"),
             [],
         )
+
+    def test_agent_network_boundary_precondition_gate_passed_extracts_boolean_only(self) -> None:
+        self.assertTrue(
+            agent_network_boundary_precondition_gate_passed(
+                json.dumps({"required_sandbox_runtime_gate": {"passed": True}})
+            )
+        )
+        self.assertFalse(
+            agent_network_boundary_precondition_gate_passed(
+                json.dumps({"required_sandbox_runtime_gate": {"passed": False}})
+            )
+        )
+        self.assertIsNone(
+            agent_network_boundary_precondition_gate_passed(
+                json.dumps({"required_sandbox_runtime_gate": {"passed": "false"}})
+            )
+        )
+        self.assertIsNone(agent_network_boundary_precondition_gate_passed(json.dumps({})))
 
     def test_agent_network_boundary_precondition_extracts_fresh_evidence_blockers(self) -> None:
         stdout = json.dumps(
@@ -5842,6 +5881,54 @@ class SelfCorrectionDemoTests(unittest.TestCase):
         self.assertFalse(evidence.exists())
         run_precondition.assert_called_once()
         self.assertEqual(run_precondition.call_args.args[0], AGENT_NETWORK_BOUNDARY_PRECONDITION_JSON_COMMAND)
+        sandbox_ready.assert_not_called()
+        provider_preflight.assert_not_called()
+        run.assert_not_called()
+
+    def test_fresh_refuses_confirmed_provider_run_when_required_gate_is_false_even_with_zero_exit(self) -> None:
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results = Path(tmpdir) / "fresh.jsonl"
+            evidence = Path(tmpdir) / "fresh.demo-evidence.json"
+            inconsistent_success = subprocess.CompletedProcess(
+                AGENT_NETWORK_BOUNDARY_PRECONDITION_JSON_COMMAND,
+                0,
+                stdout=json.dumps(
+                    {
+                        "required_sandbox_runtime_gate": {
+                            "passed": False,
+                            "failures": [],
+                        }
+                    }
+                ),
+                stderr="",
+            )
+            with mock.patch(__name__ + ".subprocess.run", return_value=inconsistent_success) as run_precondition, mock.patch(
+                __name__ + ".ensure_fresh_sandbox_provider_allowlist_ready"
+            ) as sandbox_ready, mock.patch(
+                __name__ + ".fresh_provider_preflight_after_output_paths"
+            ) as provider_preflight, mock.patch(
+                __name__ + ".run_command"
+            ) as run, contextlib.redirect_stderr(stderr):
+                result = main(
+                    [
+                        "fresh",
+                        "--results",
+                        str(results),
+                        "--evidence-json",
+                        str(evidence),
+                        "--run-id",
+                        "fresh-demo",
+                        "--confirm-provider-run",
+                    ]
+                )
+
+        self.assertEqual(result, 2)
+        self.assertIn("agent network boundary precondition failed closed", stderr.getvalue())
+        self.assertIn("required_sandbox_runtime_gate.passed=False", stderr.getvalue())
+        self.assertFalse(results.exists())
+        self.assertFalse(evidence.exists())
+        run_precondition.assert_called_once()
         sandbox_ready.assert_not_called()
         provider_preflight.assert_not_called()
         run.assert_not_called()
