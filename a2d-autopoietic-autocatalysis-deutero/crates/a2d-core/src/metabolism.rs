@@ -3154,7 +3154,7 @@ mod tests {
                     passed: true,
                 },
                 crate::benchmark::CaseResult {
-                    name: "fools_mate_leaves_checked_side_with_no_legal_moves".to_string(),
+                    name: "private_acceptance_case_42".to_string(),
                     passed: false,
                 },
             ],
@@ -3167,8 +3167,8 @@ mod tests {
         let encoded = serde_json::to_string(&value).unwrap();
 
         assert!(encoded.contains("hidden_acceptance"));
-        assert!(!encoded.contains("fools_mate"));
-        assert!(!encoded.contains("checked_side"));
+        assert!(!encoded.contains("private_acceptance_case_42"));
+        assert!(!encoded.contains("acceptance_case"));
     }
 
     #[test]

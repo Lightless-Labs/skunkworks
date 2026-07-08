@@ -15720,6 +15720,9 @@ mod tests {
     #[test]
     fn a2d_core_does_not_contain_domain_challenge_catalog_code() {
         let core_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../a2d-core/src");
+        // These strings mirror concrete built-in challenge catalog and hidden-holdout
+        // identifiers that must stay out of a2d-core. Update them when
+        // crates/a2d-cli/src/challenges.rs adds or renames domain oracles.
         let forbidden = [
             "sudoku_solver",
             "rubiks_cube",
@@ -15728,7 +15731,22 @@ mod tests {
             "rubiks-cube",
             "chess-engine",
             "a2d_rubiks_acceptance",
+            "initial_board_has_32_pieces",
+            "white_has_legal_moves_from_start",
+            "generated_moves_do_not_leave_own_king_in_check",
+            "kingside_castling_is_generated_after_path_is_clear_and_moves_rook",
+            "en_passant_is_generated_immediately_and_removes_captured_pawn",
+            "fools_mate_leaves_checked_side_with_no_legal_moves",
             "solves_easy_puzzle",
+            "solves_medium_puzzle",
+            "solves_hard_puzzle",
+            "solved_board_validates",
+            "rejects_invalid_puzzle",
+            "empty_board_solvable",
+            "every_rotation_changes_solved_cube_and_inverse_restores",
+            "quarter_turns_have_order_four_not_two",
+            "known_sequence_inverse_roundtrip_restores_solved",
+            "solver_solves_known_scrambles_by_returning_moves",
             "seeded_scramble_is_replayable_and_solvable",
         ];
         let mut checked = 0usize;
