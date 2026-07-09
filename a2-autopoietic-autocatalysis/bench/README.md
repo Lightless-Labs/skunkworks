@@ -248,10 +248,10 @@ python3 bench/generate_tasks.py --source self --limit 1 --jsonl \
   | cargo run -p a2ctl -- run --provider opencode --apply
 ```
 
-Senior SWE Bench support is offline-ingest only: export tasks from `https://senior-swe-bench.snorkel.ai/tasks` to a local JSON/JSONL file yourself, then convert that file into policy-bearing A² task JSONL. The generator stamps each emitted Senior SWE payload with `benchmark_source="senior-swe-bench"`, `no_external_solution_search=true`, `network_policy="Isolated"`, `senior_swe_bench_export_sha256`, and `senior_swe_bench_export_row_index`; current restricted-policy execution still fails closed until audited sandbox/provider allowlist enforcement is wired, so this is task-ingest/productization support rather than uncontaminated benchmark evidence.
+Senior SWE Bench / SWE-Bench Pro support is offline-ingest only: export tasks from `https://senior-swe-bench.snorkel.ai/tasks` to a local JSON/JSONL file yourself, then convert that file into policy-bearing A² task JSONL. The generator accepts `--source senior-swe-bench` and the alias `--source swe-bench-pro`. Each emitted payload is stamped with `benchmark_source="senior-swe-bench"`, `no_external_solution_search=true`, `network_policy="Isolated"`, `senior_swe_bench_export_sha256`, and `senior_swe_bench_export_row_index`; when present in the export, repo/task URL/issue/base commit metadata is also preserved as `senior_swe_bench_*` fields and repeated in the task prompt under `Senior SWE Bench metadata`. Current restricted-policy execution still fails closed or produces no candidate until audited sandbox/provider allowlist enforcement is wired, so this is task-ingest/productization support rather than uncontaminated benchmark evidence.
 
 ```bash
-python3 bench/generate_tasks.py --source senior-swe-bench \
+python3 bench/generate_tasks.py --source swe-bench-pro \
   --dataset-path senior-swe-export.jsonl \
   --jsonl \
   | cargo run -p a2ctl -- run --provider opencode --apply

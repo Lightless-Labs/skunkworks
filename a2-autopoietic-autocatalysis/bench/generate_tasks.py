@@ -5,7 +5,8 @@ Modes:
   --source self              Use A²'s own bench/tasks/*.toml (default)
   --source humaneval         Pull from HumanEval (164 Python tasks)
   --source swebench          Pull from SWE-bench Lite (300 real-world tasks)
-  --source senior-swe-bench  Load a local Senior SWE Bench export via --dataset-path
+  --source senior-swe-bench  Load a local Senior SWE Bench / SWE-Bench Pro export via --dataset-path
+  --source swe-bench-pro     Alias for --source senior-swe-bench
 
 Default output remains one task description per line. For benchmark evidence,
 prefer --jsonl: every emitted task carries no_external_solution_search=true and
@@ -17,6 +18,7 @@ Usage:
     python3 bench/generate_tasks.py --source self
     python3 bench/generate_tasks.py --source humaneval --limit 10 --jsonl | cargo run -p a2ctl -- run --provider codex
     python3 bench/generate_tasks.py --source senior-swe-bench --dataset-path senior-swe-export.jsonl --jsonl | cargo run -p a2ctl -- run --provider codex
+    python3 bench/generate_tasks.py --source swe-bench-pro --dataset-path senior-swe-export.jsonl --jsonl | cargo run -p a2ctl -- run --provider codex
     python3 bench/generate_tasks.py --source self --jsonl | cargo run -p a2ctl -- run --provider codex
 """
 
@@ -31,6 +33,15 @@ from pathlib import Path
 from typing import Any, Optional
 
 DEFAULT_NETWORK_POLICY = "Isolated"
+SENIOR_SWE_OPTIONAL_METADATA_FIELDS = (
+    "repo",
+    "task_url",
+    "issue_number",
+    "base_commit",
+    "source_head",
+    "commit_sha",
+    "revision",
+)
 
 
 def task_payload(
@@ -205,6 +216,29 @@ def senior_swe_problem_statement(raw_task: dict[str, Any]) -> str:
     )
 
 
+def senior_swe_metadata_from_raw(raw_task: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for field in SENIOR_SWE_OPTIONAL_METADATA_FIELDS:
+        value = raw_task.get(field)
+        if isinstance(value, str) and value.strip():
+            metadata[f"senior_swe_bench_{field}"] = value.strip()
+        elif field == "issue_number" and isinstance(value, int) and value > 0:
+            metadata[f"senior_swe_bench_{field}"] = value
+    return metadata
+
+
+def senior_swe_problem_with_metadata(statement: str, metadata: dict[str, Any]) -> str:
+    lines = []
+    if metadata:
+        lines.append("Senior SWE Bench metadata:")
+        for key in sorted(metadata):
+            label = key.removeprefix("senior_swe_bench_")
+            lines.append(f"- {label}: {metadata[key]}")
+        lines.append("")
+    lines.append(statement)
+    return "\n".join(lines).strip()
+
+
 def load_senior_swe_bench_export(path: Path, limit: int) -> list[dict[str, Any]]:
     export_bytes = path.read_bytes()
     export_sha256 = hashlib.sha256(export_bytes).hexdigest()
@@ -212,23 +246,26 @@ def load_senior_swe_bench_export(path: Path, limit: int) -> list[dict[str, Any]]
     for index, raw_task in export_rows_from_path(path):
         if len(tasks) >= limit:
             break
+        metadata: dict[str, Any] = {}
         if isinstance(raw_task, str):
             task_id = f"senior-swe-bench-local-{index}"
             statement = raw_task.strip()
         elif isinstance(raw_task, dict):
             task_id = senior_swe_task_id(raw_task, index)
             statement = senior_swe_problem_statement(raw_task)
+            metadata = senior_swe_metadata_from_raw(raw_task)
         else:
             raise ValueError(f"Senior SWE Bench export row {index} is not an object or string")
         if not statement:
             raise ValueError(f"Senior SWE Bench export row {index} has an empty problem statement")
         task = task_payload(
             task_id,
-            statement,
+            senior_swe_problem_with_metadata(statement, metadata),
             benchmark_source="senior-swe-bench",
         )
         task["senior_swe_bench_export_sha256"] = export_sha256
         task["senior_swe_bench_export_row_index"] = index
+        task.update(metadata)
         tasks.append(task)
     return tasks
 
@@ -259,6 +296,10 @@ def run_self_test() -> None:
             "id": "repo-issue-1",
             "title": "Fix durable audit rows",
             "problem_statement": "Repair the verifier without consulting public patches.",
+            "repo": "example/project",
+            "task_url": "https://senior-swe-bench.snorkel.ai/tasks/repo-issue-1",
+            "issue_number": 9187,
+            "base_commit": "0123456789abcdef0123456789abcdef01234567",
         },
         {"task_id": "senior-swe-bench-repo-issue-2", "prompt": "Add a regression test."},
     ]
@@ -274,6 +315,12 @@ def run_self_test() -> None:
     assert senior_tasks[1]["senior_swe_bench_export_row_index"] == 2
     assert isinstance(senior_tasks[0]["senior_swe_bench_export_sha256"], str)
     assert len(senior_tasks[0]["senior_swe_bench_export_sha256"]) == 64
+    assert senior_tasks[0]["senior_swe_bench_repo"] == "example/project"
+    assert senior_tasks[0]["senior_swe_bench_task_url"].endswith("/tasks/repo-issue-1")
+    assert senior_tasks[0]["senior_swe_bench_issue_number"] == 9187
+    assert senior_tasks[0]["senior_swe_bench_base_commit"] == "0123456789abcdef0123456789abcdef01234567"
+    assert "Senior SWE Bench metadata:" in senior_tasks[0]["problem_statement"]
+    assert "repo: example/project" in senior_tasks[0]["problem_statement"]
     assert (
         senior_tasks[0]["senior_swe_bench_export_sha256"]
         == senior_tasks[1]["senior_swe_bench_export_sha256"]
@@ -298,12 +345,21 @@ def run_self_test() -> None:
     assert limited_jsonl_tasks[0]["network_policy"] == DEFAULT_NETWORK_POLICY
     assert limited_jsonl_tasks[0]["no_external_solution_search"] is True
 
+    alias_args = parse_args([
+        "--source",
+        "swe-bench-pro",
+        "--dataset-path",
+        "senior-swe-export.jsonl",
+        "--jsonl",
+    ])
+    assert alias_args.source == "swe-bench-pro"
+
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate benchmark tasks for A²")
     parser.add_argument(
         "--source",
-        choices=["self", "humaneval", "swebench", "senior-swe-bench"],
+        choices=["self", "humaneval", "swebench", "senior-swe-bench", "swe-bench-pro", "swebench-pro"],
         default="self",
     )
     parser.add_argument("--limit", type=int, default=10)
@@ -336,7 +392,7 @@ def main(argv: list[str]) -> int:
         tasks = load_humaneval(args.limit)
     elif args.source == "swebench":
         tasks = load_swebench_lite(args.limit)
-    elif args.source == "senior-swe-bench":
+    elif args.source in {"senior-swe-bench", "swe-bench-pro", "swebench-pro"}:
         if args.dataset_path is None:
             raise SystemExit("--source senior-swe-bench requires --dataset-path with a local export")
         tasks = load_senior_swe_bench_export(args.dataset_path, args.limit)

@@ -2105,6 +2105,22 @@ struct RunInputTask {
     no_external_solution_search: bool,
     #[serde(default)]
     network_policy: Option<a2_core::protocol::NetworkPolicy>,
+    #[serde(default)]
+    benchmark_source: Option<String>,
+    #[serde(default)]
+    senior_swe_bench_export_sha256: Option<String>,
+    #[serde(default)]
+    senior_swe_bench_export_row_index: Option<u64>,
+    #[serde(default)]
+    senior_swe_bench_repo: Option<String>,
+    #[serde(default)]
+    senior_swe_bench_task_url: Option<String>,
+    #[serde(default)]
+    senior_swe_bench_issue_number: Option<u64>,
+    #[serde(default)]
+    senior_swe_bench_base_commit: Option<String>,
+    #[serde(default)]
+    senior_swe_bench_source_head: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3618,6 +3634,59 @@ fn parse_run_input(line: &str) -> ParsedRunInput {
     }
 }
 
+fn benchmark_provenance_lines(input: &RunInputTask) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(value) = input
+        .benchmark_source
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("benchmark_source: {}", value.trim()));
+    }
+    if let Some(value) = input
+        .senior_swe_bench_repo
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("senior_swe_bench_repo: {}", value.trim()));
+    }
+    if let Some(value) = input
+        .senior_swe_bench_task_url
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("senior_swe_bench_task_url: {}", value.trim()));
+    }
+    if let Some(value) = input.senior_swe_bench_issue_number {
+        lines.push(format!("senior_swe_bench_issue_number: {value}"));
+    }
+    if let Some(value) = input
+        .senior_swe_bench_base_commit
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("senior_swe_bench_base_commit: {}", value.trim()));
+    }
+    if let Some(value) = input
+        .senior_swe_bench_source_head
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("senior_swe_bench_source_head: {}", value.trim()));
+    }
+    if let Some(value) = input
+        .senior_swe_bench_export_sha256
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("senior_swe_bench_export_sha256: {}", value.trim()));
+    }
+    if let Some(value) = input.senior_swe_bench_export_row_index {
+        lines.push(format!("senior_swe_bench_export_row_index: {value}"));
+    }
+    lines
+}
+
 fn task_from_run_input(
     ingester: &a2_sensorium::ingest::Ingester,
     input: ParsedRunInput,
@@ -3636,6 +3705,26 @@ fn task_from_run_input(
                 .filter(|task_id| !task_id.trim().is_empty())
                 .unwrap_or_else(|| derive_run_title(&input.problem_statement));
             let mut task = ingester.from_human(title, &input.problem_statement);
+            let benchmark_provenance = benchmark_provenance_lines(&input);
+            if !benchmark_provenance.is_empty()
+                && !task.description.contains("## Benchmark Provenance")
+            {
+                task.description.push_str("\n\n## Benchmark Provenance\n");
+                for line in &benchmark_provenance {
+                    task.description.push_str("- ");
+                    task.description.push_str(line);
+                    task.description.push('\n');
+                }
+            }
+            if let Some(origin) = input
+                .benchmark_source
+                .as_deref()
+                .filter(|origin| !origin.trim().is_empty())
+            {
+                task.source = a2_core::protocol::TaskSource::External {
+                    origin: origin.trim().to_string(),
+                };
+            }
 
             if let Some(task_id) = input.task_id.as_deref().filter(|id| !id.trim().is_empty()) {
                 task.id = a2_core::id::TaskId::parse_str(task_id)
@@ -6540,6 +6629,50 @@ mod tests {
         assert_eq!(
             task.network_policy,
             Some(a2_core::protocol::NetworkPolicy::Isolated)
+        );
+    }
+
+    #[test]
+    fn json_run_input_preserves_senior_swe_bench_provenance_in_task_description() {
+        let ingester = a2_sensorium::ingest::Ingester::new(build_budget(50_000, 300));
+        let task = task_from_run_input(
+            &ingester,
+            parse_run_input(
+                r#"{"task_id":"senior-swe-bench-better-auth-fix-api-key-run","problem_statement":"Fix API-key secondary storage behavior","benchmark_source":"senior-swe-bench","no_external_solution_search":true,"network_policy":"Isolated","senior_swe_bench_repo":"better-auth/better-auth","senior_swe_bench_task_url":"https://senior-swe-bench.snorkel.ai/tasks/better-auth-fix-api-key-run","senior_swe_bench_issue_number":9187,"senior_swe_bench_base_commit":"0123456789abcdef0123456789abcdef01234567","senior_swe_bench_export_sha256":"2df654573928cd0977fd402ca047215d45220a9ef72699643e1405e0a9165a4a","senior_swe_bench_export_row_index":1}"#,
+            ),
+        );
+
+        assert!(task.no_external_solution_search);
+        assert_eq!(
+            task.network_policy,
+            Some(a2_core::protocol::NetworkPolicy::Isolated)
+        );
+        assert!(matches!(
+            task.source,
+            a2_core::protocol::TaskSource::External { ref origin } if origin == "senior-swe-bench"
+        ));
+        assert!(task.description.contains("## Benchmark Provenance"));
+        assert!(
+            task.description
+                .contains("senior_swe_bench_repo: better-auth/better-auth")
+        );
+        assert!(task.description.contains(
+            "senior_swe_bench_task_url: https://senior-swe-bench.snorkel.ai/tasks/better-auth-fix-api-key-run"
+        ));
+        assert!(
+            task.description
+                .contains("senior_swe_bench_issue_number: 9187")
+        );
+        assert!(
+            task.description
+                .contains("senior_swe_bench_base_commit: 0123456789abcdef0123456789abcdef01234567")
+        );
+        assert!(task.description.contains(
+            "senior_swe_bench_export_sha256: 2df654573928cd0977fd402ca047215d45220a9ef72699643e1405e0a9165a4a"
+        ));
+        assert!(
+            task.description
+                .contains("senior_swe_bench_export_row_index: 1")
         );
     }
 
