@@ -77,6 +77,9 @@ fn main() {
         "swe-bench-pro-readiness" => {
             run_swe_bench_pro_readiness(&args[2..]);
         }
+        "swe-bench-pro-access-manifest-inspect" => {
+            run_swe_bench_pro_access_manifest_inspect(&args[2..]);
+        }
         "senior-swe-bench-audit" => {
             if args.len() > 5 {
                 eprintln!(
@@ -189,7 +192,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|swe-bench-pro-readiness|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-official-evaluator-manifest-inspect|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|senior-swe-bench-retry-attempt-evaluate|senior-swe-bench-retry-attempt-step|senior-swe-bench-retry-attempt-step-evidence|senior-swe-bench-retry-run-result|senior-swe-bench-retry-status|senior-swe-bench-retry-run-next-gate|senior-swe-bench-retry-execute|senior-swe-bench-retry-resume-attempt-plan|senior-swe-bench-retry-run-next-cycle|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|swe-bench-pro-readiness|swe-bench-pro-access-manifest-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-official-evaluator-manifest-inspect|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|senior-swe-bench-retry-attempt-evaluate|senior-swe-bench-retry-attempt-step|senior-swe-bench-retry-attempt-step-evidence|senior-swe-bench-retry-run-result|senior-swe-bench-retry-status|senior-swe-bench-retry-run-next-gate|senior-swe-bench-retry-execute|senior-swe-bench-retry-resume-attempt-plan|senior-swe-bench-retry-run-next-cycle|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -279,6 +282,256 @@ fn build_swe_bench_pro_readiness(args: &[String]) -> Result<Value, String> {
     }
 
     Ok(value)
+}
+
+fn run_swe_bench_pro_access_manifest_inspect(args: &[String]) {
+    match build_swe_bench_pro_access_manifest_inspection(args) {
+        Ok(value) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&value)
+                    .expect("SWE-Bench Pro access manifest inspection JSON must serialize")
+            );
+        }
+        Err(error) => {
+            eprintln!("SWE-Bench Pro access manifest inspection error: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn build_swe_bench_pro_access_manifest_inspection(args: &[String]) -> Result<Value, String> {
+    let mut manifest_path: Option<PathBuf> = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--manifest" => {
+                index += 1;
+                manifest_path = Some(PathBuf::from(
+                    args.get(index)
+                        .ok_or_else(|| "--manifest requires a path".to_string())?,
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "unknown swe-bench-pro-access-manifest-inspect argument: {other}"
+                ));
+            }
+        }
+        index += 1;
+    }
+    let manifest_path = manifest_path.ok_or_else(|| "missing --manifest".to_string())?;
+    let manifest_json = if manifest_path == Path::new("-") {
+        let mut input = String::new();
+        std::io::stdin()
+            .read_to_string(&mut input)
+            .map_err(|error| format!("failed to read SWE-Bench Pro access manifest: {error}"))?;
+        input
+    } else {
+        fs::read_to_string(&manifest_path)
+            .map_err(|error| format!("failed to read SWE-Bench Pro access manifest: {error}"))?
+    };
+    let manifest: Value = serde_json::from_str(&manifest_json)
+        .map_err(|error| format!("invalid SWE-Bench Pro access manifest JSON: {error}"))?;
+    validate_swe_bench_pro_access_manifest_no_private_fields(&manifest)?;
+
+    let schema = required_string_field(&manifest, "schema_version")?;
+    if schema != "a2d.swe-bench-pro-access-manifest.v1" {
+        return Err("expected a2d.swe-bench-pro-access-manifest.v1".to_string());
+    }
+    let benchmark = required_string_field(&manifest, "benchmark")?;
+    if benchmark != "swe-bench-pro" {
+        return Err("SWE-Bench Pro access manifest benchmark must be swe-bench-pro".to_string());
+    }
+    let instance_id = required_safe_manifest_identifier(&manifest, "instance_id", false)?;
+    let repo = required_safe_manifest_identifier(&manifest, "repo", true)?;
+    let public_context_path =
+        PathBuf::from(required_string_field(&manifest, "public_context_path")?);
+    if !public_context_path.is_file() {
+        return Err("SWE-Bench Pro public context file not found".to_string());
+    }
+    let expected_public_context_hash = required_string_field(&manifest, "public_context_hash")?;
+    validate_git_object_hash(&expected_public_context_hash)
+        .map_err(|error| format!("SWE-Bench Pro public_context_hash {error}"))?;
+    let actual_public_context_hash = file_content_hash(&public_context_path)
+        .map_err(|error| redact_swe_bench_pro_path_error(&error))?;
+    if expected_public_context_hash != actual_public_context_hash {
+        return Err("SWE-Bench Pro public_context_hash mismatch".to_string());
+    }
+    let sealed_evaluator_command = required_string_array(&manifest, "sealed_evaluator_command")?;
+    if sealed_evaluator_command.is_empty() {
+        return Err("SWE-Bench Pro sealed_evaluator_command is empty".to_string());
+    }
+    let sealed_evaluator_command_hash = git_hash_object_bytes(
+        serde_json::to_string(&sealed_evaluator_command)
+            .expect("sealed evaluator command serializes")
+            .as_bytes(),
+    )?;
+    require_bool_field(&manifest, "hidden_holdouts", true)?;
+    require_bool_field(&manifest, "github_solution_search_allowed", false)?;
+    require_bool_field(&manifest, "benchmark_sources_visible_to_a2d", false)?;
+    require_bool_field(&manifest, "solution_material_visible_to_a2d", false)?;
+    let evaluator_output_policy = required_string_field(&manifest, "evaluator_output_policy")?;
+    if evaluator_output_policy != "pass_fail_metrics_only" {
+        return Err(
+            "SWE-Bench Pro evaluator_output_policy must be pass_fail_metrics_only".to_string(),
+        );
+    }
+    let manifest_hash = if manifest_path == Path::new("-") {
+        git_hash_object_bytes(manifest_json.as_bytes())?
+    } else {
+        file_content_hash(&manifest_path)
+            .map_err(|error| redact_swe_bench_pro_path_error(&error))?
+    };
+    Ok(json!({
+        "schema_version": "a2d.swe-bench-pro-access-manifest-inspection.v1",
+        "benchmark": benchmark,
+        "instance_id": instance_id,
+        "repo": repo,
+        "manifest_hash": manifest_hash,
+        "manifest_path_redacted": true,
+        "manifest_valid": true,
+        "public_context_hash": actual_public_context_hash,
+        "public_context_path_redacted": true,
+        "coder_visible_context_kind": "public_context_only",
+        "sealed_evaluator_command_hash": sealed_evaluator_command_hash,
+        "sealed_evaluator_command_redacted": true,
+        "evaluator_output_policy": evaluator_output_policy,
+        "hidden_holdouts": true,
+        "github_solution_search_allowed": false,
+        "benchmark_sources_loaded": false,
+        "solution_material_loaded": false,
+        "benchmark_sources_visible_to_a2d": false,
+        "solution_material_visible_to_a2d": false,
+        "provider_invocations_started": false,
+        "evaluator_invocations_started": false,
+        "fitness_evidence_inspection_started": false,
+        "fitness_claim_allowed_before_evidence": false,
+        "note": "inspection only: validates blind SWE-Bench Pro access metadata without running evaluators or loading benchmark-private sources/solutions",
+    }))
+}
+
+fn validate_swe_bench_pro_access_manifest_no_private_fields(value: &Value) -> Result<(), String> {
+    let forbidden = [
+        "benchmark_source_path",
+        "benchmark_sources_path",
+        "benchmark_repo_path",
+        "hidden_tests_path",
+        "hidden_holdout_path",
+        "solution_path",
+        "solution_patch_path",
+        "reference_solution_path",
+        "credential_path",
+        "credentials_path",
+        "token",
+        "secret",
+    ];
+    let allowed = [
+        "schema_version",
+        "benchmark",
+        "instance_id",
+        "repo",
+        "public_context_path",
+        "public_context_hash",
+        "sealed_evaluator_command",
+        "hidden_holdouts",
+        "github_solution_search_allowed",
+        "benchmark_sources_visible_to_a2d",
+        "solution_material_visible_to_a2d",
+        "evaluator_output_policy",
+    ];
+    let object = value
+        .as_object()
+        .ok_or_else(|| "SWE-Bench Pro access manifest must be a JSON object".to_string())?;
+    for key in object.keys() {
+        if forbidden.contains(&key.as_str()) {
+            return Err(
+                "forbidden benchmark-private field in SWE-Bench Pro access manifest".to_string(),
+            );
+        }
+        if !allowed.contains(&key.as_str()) {
+            return Err("unknown field in SWE-Bench Pro access manifest".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn redact_swe_bench_pro_path_error(error: &str) -> String {
+    if error.contains("hash-object") {
+        "failed to hash SWE-Bench Pro access manifest field".to_string()
+    } else {
+        "failed to read SWE-Bench Pro access manifest field".to_string()
+    }
+}
+
+fn required_string_field(value: &Value, field: &str) -> Result<String, String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| format!("SWE-Bench Pro access manifest missing {field}"))
+}
+
+fn required_safe_manifest_identifier(
+    value: &Value,
+    field: &str,
+    allow_single_slash: bool,
+) -> Result<String, String> {
+    let raw = required_string_field(value, field)?;
+    if raw.len() > 200 {
+        return Err(format!("SWE-Bench Pro access manifest {field} is too long"));
+    }
+    let slash_count = raw.chars().filter(|ch| *ch == '/').count();
+    if (!allow_single_slash && slash_count > 0) || (allow_single_slash && slash_count != 1) {
+        return Err(format!(
+            "SWE-Bench Pro access manifest {field} is not a safe identifier"
+        ));
+    }
+    if !raw
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/'))
+        || raw.starts_with('/')
+        || raw.ends_with('/')
+        || raw.contains("//")
+    {
+        return Err(format!(
+            "SWE-Bench Pro access manifest {field} is not a safe identifier"
+        ));
+    }
+    Ok(raw)
+}
+
+fn required_string_array(value: &Value, field: &str) -> Result<Vec<String>, String> {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("SWE-Bench Pro access manifest missing {field}"))?
+        .iter()
+        .map(|part| {
+            part.as_str()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(ToString::to_string)
+                .ok_or_else(|| {
+                    format!("SWE-Bench Pro access manifest {field} contains non-string entry")
+                })
+        })
+        .collect()
+}
+
+fn require_bool_field(value: &Value, field: &str, expected: bool) -> Result<(), String> {
+    let actual = value
+        .get(field)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("SWE-Bench Pro access manifest missing {field}"))?;
+    if actual != expected {
+        return Err(format!(
+            "SWE-Bench Pro access manifest {field} must be {expected}"
+        ));
+    }
+    Ok(())
 }
 
 fn load_or_seed_germline() -> Germline {
