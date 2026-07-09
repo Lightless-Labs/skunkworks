@@ -74,6 +74,9 @@ fn main() {
         "fitness-evidence-inspect" => {
             run_fitness_evidence_inspect(&args[2..]);
         }
+        "swe-bench-pro-readiness" => {
+            run_swe_bench_pro_readiness(&args[2..]);
+        }
         "senior-swe-bench-audit" => {
             if args.len() > 5 {
                 eprintln!(
@@ -186,11 +189,96 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-official-evaluator-manifest-inspect|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|senior-swe-bench-retry-attempt-evaluate|senior-swe-bench-retry-attempt-step|senior-swe-bench-retry-attempt-step-evidence|senior-swe-bench-retry-run-result|senior-swe-bench-retry-status|senior-swe-bench-retry-run-next-gate|senior-swe-bench-retry-execute|senior-swe-bench-retry-resume-attempt-plan|senior-swe-bench-retry-run-next-cycle|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|swe-bench-pro-readiness|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-official-evaluator-manifest-inspect|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|senior-swe-bench-retry-attempt-evaluate|senior-swe-bench-retry-attempt-step|senior-swe-bench-retry-attempt-step-evidence|senior-swe-bench-retry-run-result|senior-swe-bench-retry-status|senior-swe-bench-retry-run-next-gate|senior-swe-bench-retry-execute|senior-swe-bench-retry-resume-attempt-plan|senior-swe-bench-retry-run-next-cycle|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
     }
+}
+
+fn run_swe_bench_pro_readiness(args: &[String]) {
+    match build_swe_bench_pro_readiness(args) {
+        Ok(value) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&value)
+                    .expect("SWE-Bench Pro readiness JSON must serialize")
+            );
+            let can_start = value
+                .get("can_start_a2d_iteration")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !can_start {
+                std::process::exit(2);
+            }
+        }
+        Err(error) => {
+            eprintln!("SWE-Bench Pro readiness error: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn build_swe_bench_pro_readiness(args: &[String]) -> Result<Value, String> {
+    let mut manifest_path: Option<PathBuf> = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--official-evaluator-manifest" => {
+                index += 1;
+                manifest_path = Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                    "--official-evaluator-manifest requires a path".to_string()
+                })?));
+            }
+            other => {
+                return Err(format!("unknown swe-bench-pro-readiness argument: {other}"));
+            }
+        }
+        index += 1;
+    }
+
+    let mut value = json!({
+        "schema_version": "a2d.swe-bench-pro-readiness.v1",
+        "status": "blocked",
+        "blocker": "missing_reviewed_swe_bench_pro_access_artifact",
+        "can_start_a2d_iteration": false,
+        "benchmark_sources_loaded": false,
+        "solution_material_loaded": false,
+        "github_solution_search_allowed": false,
+        "senior_swe_bench_manifest_accepted_as_pro": false,
+        "a2d_fitness_evidence_required_for_self_change": true,
+        "note": "readiness gate only; does not load benchmark sources, solutions, or start A²D iteration",
+    });
+
+    if let Some(manifest_path) = manifest_path {
+        value["manifest_path"] = Value::String(manifest_path.display().to_string());
+        let manifest = read_artifact_to_string(&manifest_path)?;
+        let manifest_value: Value = serde_json::from_str(&manifest)
+            .map_err(|error| format!("invalid benchmark manifest JSON: {error}"))?;
+        let schema = manifest_value
+            .get("schema_version")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        value["manifest_schema_version"] = Value::String(schema.to_string());
+        let benchmark_url = manifest_value
+            .get("benchmark_url")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !benchmark_url.is_empty() {
+            value["benchmark_url"] = Value::String(benchmark_url.to_string());
+        }
+        if schema == "a2d.senior-swe-bench-official-evaluator-manifest.v1"
+            || benchmark_url.contains("senior-swe-bench.snorkel.ai")
+        {
+            value["blocker"] =
+                Value::String("senior_swe_bench_manifest_is_not_swe_bench_pro".to_string());
+        } else {
+            value["blocker"] =
+                Value::String("unreviewed_swe_bench_pro_access_artifact_schema".to_string());
+        }
+    }
+
+    Ok(value)
 }
 
 fn load_or_seed_germline() -> Germline {
