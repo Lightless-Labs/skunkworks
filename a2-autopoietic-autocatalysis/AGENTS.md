@@ -12,7 +12,8 @@ This project currently has no . Use this file as the cross-agent entrypoint.
 This is a shared monorepo checkout using trunk-based development. Be boringly reliable:
 
 - Work directly on `main` in the main shared checkout unless the user explicitly says otherwise.
-- Do **not** create or use git worktrees.
+- Do **not** create or use git worktrees for assistant/operator git workflow in this shared checkout.
+- This workflow rule does **not** prohibit A² product/runtime support for isolated candidate worktree execution; do not remove or rewrite runtime worktree code/docs solely because of this instruction.
 - Do **not** use `git stash`.
 - Do **not** run `git reset --hard`, `git clean`, force checkout, or other destructive tree-rewrite commands.
 - Do **not** try clever branch/history reconciliation. Fetch, inspect, fast-forward/merge normally when safe, and ask before any destructive or ambiguous operation.
