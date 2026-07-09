@@ -6634,11 +6634,14 @@ fn run_retry_next_cycle_command(argv: &[String]) -> Result<RetryNextCycleCommand
         .map_err(|error| format!("failed to create next-cycle stdout capture: {error}"))?;
     let stderr_file = fs::File::create(&stderr_path)
         .map_err(|error| format!("failed to create next-cycle stderr capture: {error}"))?;
-    let mut child = Command::new(current_exe)
+    let mut command = Command::new(current_exe);
+    command
         .args(argv)
         .current_dir(a2d_project_root())
         .stdout(Stdio::from(stdout_file))
-        .stderr(Stdio::from(stderr_file))
+        .stderr(Stdio::from(stderr_file));
+    harden_retry_next_cycle_child_command(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|error| format!("failed to run persisted next cycle command: {error}"))?;
     let timeout = env::var("A2D_SENIOR_SWE_BENCH_RETRY_NEXT_CYCLE_TIMEOUT_SECS")
@@ -6688,6 +6691,11 @@ fn run_retry_next_cycle_command(argv: &[String]) -> Result<RetryNextCycleCommand
             }
         }
     }
+}
+
+fn harden_retry_next_cycle_child_command(command: &mut Command) {
+    command.envs(provider_no_public_solution_search_env());
+    remove_network_configuration_env(command);
 }
 
 fn validate_retry_resume_attempt_execution_boundary(
@@ -18350,6 +18358,64 @@ mod tests {
         )
         .unwrap();
         (root, retry_execution_path, expected_manifest, argv)
+    }
+
+    #[test]
+    fn retry_next_cycle_child_env_fixture() {
+        if std::env::var("A2D_RUN_RETRY_NEXT_CYCLE_ENV_FIXTURE").as_deref() != Ok("1") {
+            return;
+        }
+
+        for (key, value) in provider_no_public_solution_search_env() {
+            assert_eq!(std::env::var(key).as_deref(), Ok(value), "{key}");
+        }
+        for key in a2d_providers::cli::network_configuration_env_vars() {
+            assert!(std::env::var(key).is_err(), "{key}");
+        }
+    }
+
+    #[test]
+    fn retry_next_cycle_child_env_driver() {
+        if std::env::var("A2D_RUN_RETRY_NEXT_CYCLE_ENV_DRIVER").as_deref() != Ok("1") {
+            return;
+        }
+
+        let output = run_retry_next_cycle_command(&[
+            "--exact".to_string(),
+            "tests::retry_next_cycle_child_env_fixture".to_string(),
+            "--nocapture".to_string(),
+        ])
+        .expect("retry next-cycle child should run");
+        assert_eq!(output.exit_code, Some(0));
+        assert!(
+            !output.timed_out,
+            "fixture command must not time out; stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn retry_next_cycle_child_process_receives_policy_env_and_scrubbed_network_env() {
+        let current_exe = std::env::current_exe().expect("current test binary path");
+        let mut command = std::process::Command::new(current_exe);
+        command
+            .arg("--exact")
+            .arg("tests::retry_next_cycle_child_env_driver")
+            .arg("--nocapture")
+            .env("A2D_RUN_RETRY_NEXT_CYCLE_ENV_DRIVER", "1")
+            .env("A2D_RUN_RETRY_NEXT_CYCLE_ENV_FIXTURE", "1")
+            .env("A2D_SENIOR_SWE_BENCH_RETRY_NEXT_CYCLE_TIMEOUT_SECS", "5");
+        for key in a2d_providers::cli::network_configuration_env_vars() {
+            command.env(key, format!("retry-next-cycle-leak-sentinel-{key}"));
+        }
+
+        let output = command.output().expect("fixture driver should execute");
+        assert!(
+            output.status.success(),
+            "fixture driver failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
