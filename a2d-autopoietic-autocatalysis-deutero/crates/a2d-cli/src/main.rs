@@ -8173,7 +8173,134 @@ fn build_senior_swe_bench_retry_execution(
         )?;
         let extraction_text = serde_json::to_string(&extraction)
             .map_err(|error| format!("failed to serialize retry attempt extraction: {error}"))?;
-        let evaluation = build_senior_swe_bench_retry_attempt_evaluation(&extraction_text)?;
+        let evaluation = match build_senior_swe_bench_retry_attempt_evaluation(&extraction_text) {
+            Ok(evaluation) => evaluation,
+            Err(error) => {
+                let error_preview = portable_preview_text_lossy(error.as_bytes());
+                let error_artifact = json!({
+                    "schema_version": "a2d.senior-swe-bench-retry-attempt-evaluation-error.v1",
+                    "task_id": extraction.get("task_id").cloned().unwrap_or(Value::Null),
+                    "repo": extraction.get("repo").cloned().unwrap_or(Value::Null),
+                    "attempt_index": attempt_index,
+                    "candidate_patch_path": extraction.get("candidate_patch_path").cloned().unwrap_or(Value::Null),
+                    "candidate_patch_hash": extraction.get("candidate_patch_hash").cloned().unwrap_or(Value::Null),
+                    "evaluate_args": extraction.get("evaluate_args").cloned().unwrap_or(Value::Null),
+                    "error_preview": error_preview,
+                    "provider_invocations_started": false,
+                    "evaluator_invocations_started": false,
+                    "retry_step_started": false,
+                    "fitness_evidence_inspection_started": false,
+                    "fitness_claim_allowed_before_evidence": false,
+                    "github_solution_search_allowed": false,
+                    "note": "evaluation wrapper failed before a validated local-evaluation artifact existed; no fitness claim is allowed",
+                });
+                let error_artifact_path = attempt_dir.join("retry-attempt-evaluation-error.json");
+                write_json_artifact(&error_artifact_path, &error_artifact)?;
+                let mut record = json!({
+                    "attempt_index": attempt_index,
+                    "cycle_output_manifest": manifest,
+                    "attempt_dir": attempt_dir,
+                    "candidate_patch_path": extraction.get("candidate_patch_path").cloned().unwrap_or(Value::Null),
+                    "candidate_patch_hash": extraction.get("candidate_patch_hash").cloned().unwrap_or(Value::Null),
+                    "evaluation_error_artifact": error_artifact_path,
+                    "evaluation_error_preview": error_artifact.get("error_preview").cloned().unwrap_or(Value::Null),
+                    "provider_invocations_started": false,
+                    "evaluator_invocations_started": false,
+                    "fitness_evidence_inspection_passed": false,
+                });
+                if attempt_index + 1 < max_attempts {
+                    let current_cycle_text = read_artifact_to_string(&current_cycle_input)?;
+                    let mut next_cycle_input: Value = serde_json::from_str(&current_cycle_text)
+                        .map_err(|error| {
+                            format!(
+                                "failed to parse current Senior SWE-Bench cycle input for evaluation-error feedback: {error}"
+                            )
+                        })?;
+                    let next_object = next_cycle_input.as_object_mut().ok_or_else(|| {
+                        "Senior SWE-Bench cycle input must be an object for evaluation-error feedback"
+                            .to_string()
+                    })?;
+                    let feedback = format!(
+                        "SENIOR SWE-BENCH MECHANICAL PATCH PREFLIGHT FEEDBACK (from previous candidate patch; no evaluator or fitness evidence ran):\n- task_id: {}\n- repo: {}\n- candidate_patch_hash: {}\n- evaluator_invocations_started: false\n- fitness_evidence_path: none\n- error_preview: {}\n\nUse this mechanical feedback to revise the next candidate patch. Preserve the no-GitHub/public-solution-search rule, solve only from supplied local checkout context and local tests, and return only a syntactically valid unified diff candidate patch.",
+                        extraction
+                            .get("task_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("<unknown>"),
+                        extraction
+                            .get("repo")
+                            .and_then(Value::as_str)
+                            .unwrap_or("<unknown>"),
+                        extraction
+                            .get("candidate_patch_hash")
+                            .and_then(Value::as_str)
+                            .unwrap_or("<unknown>"),
+                        error_artifact
+                            .get("error_preview")
+                            .and_then(Value::as_str)
+                            .unwrap_or("<unavailable>")
+                    );
+                    let design = next_object
+                        .get("design")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    next_object.insert(
+                        "design".to_string(),
+                        Value::String(format!("{design}\n\n{feedback}")),
+                    );
+                    let plan = next_object
+                        .get("plan")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    next_object.insert(
+                        "plan".to_string(),
+                        Value::String(format!(
+                            "1. Read the Senior SWE-Bench mechanical patch preflight feedback from the previous candidate patch.\n2. Fix the unified diff syntax/applicability issue before changing semantics.\n3. Use the supplied checkout context/local tests without public solution search.\n4. Return only a revised unified diff candidate patch.\n\nPrevious plan:\n{plan}"
+                        )),
+                    );
+                    if let Some(evaluation) = next_object
+                        .get_mut("evaluation")
+                        .and_then(Value::as_object_mut)
+                    {
+                        evaluation.insert(
+                            "status".to_string(),
+                            Value::String("not_evaluated".to_string()),
+                        );
+                        evaluation.insert("fitness".to_string(), Value::Null);
+                    }
+                    let next_cycle_input_path = attempt_dir.join("next-cycle-input.json");
+                    write_json_artifact(&next_cycle_input_path, &next_cycle_input)?;
+                    let next_cycle_output_dir = config.work_dir.join(format!(
+                        "attempt-{}/cycle-output-artifacts",
+                        attempt_index + 1
+                    ));
+                    let next_cycle_command = retry_execute_next_cycle_command(
+                        &next_cycle_input_path,
+                        &config.checkout,
+                        &next_cycle_output_dir,
+                    );
+                    record["next_cycle_input_path"] = json!(next_cycle_input_path);
+                    record["next_cycle_command"] = next_cycle_command;
+                    record["retry_step_decision"] = json!("build_next_cycle_input");
+                    attempt_records.push(record);
+                    current_cycle_input = next_cycle_input_path;
+                    continue;
+                }
+                record["retry_step_decision"] = json!("stop");
+                attempt_records.push(record);
+                let terminal = retry_execute_attach_official_manifest_inspection(
+                    retry_execution_terminal_result(
+                        &retry_plan_value,
+                        attempt_records,
+                        "failed",
+                        "retry_attempt_evaluation_failed",
+                        None,
+                    ),
+                    official_manifest_inspection_path.as_deref(),
+                );
+                write_json_artifact(&config.work_dir.join("retry-execution.json"), &terminal)?;
+                return Ok(terminal);
+            }
+        };
         write_json_artifact(
             &attempt_dir.join("retry-attempt-evaluation.json"),
             &evaluation,
@@ -11313,12 +11440,13 @@ fn validate_senior_swe_bench_candidate_patch_applicable(
     let patch_path = fs::canonicalize(candidate_patch)
         .map_err(|error| format!("failed to canonicalize candidate patch: {error}"))?;
     let command_text = format!(
-        "git apply --check --whitespace=nowarn -- {}",
+        "git apply --check --recount --whitespace=nowarn -- {}",
         retry_artifact_path_string(&patch_path)
     );
     let output = Command::new("git")
         .arg("apply")
         .arg("--check")
+        .arg("--recount")
         .arg("--whitespace=nowarn")
         .arg("--")
         .arg(&patch_path)
@@ -11348,6 +11476,7 @@ fn apply_candidate_patch_to_checkout(
         .map_err(|error| format!("failed to canonicalize candidate patch: {error}"))?;
     let output = Command::new("git")
         .arg("apply")
+        .arg("--recount")
         .arg("--whitespace=nowarn")
         .arg("--")
         .arg(&patch_path)
@@ -14582,6 +14711,7 @@ mod tests {
             .expect("applicable candidate patch passes preflight");
 
         assert!(command.contains("git apply --check"));
+        assert!(command.contains("--recount"));
         assert_eq!(
             fs::read_to_string(checkout.join("lib.rs")).unwrap(),
             "original\n"
@@ -14957,7 +15087,7 @@ mod tests {
             Some(&evaluator_checkout),
             Some(true),
             Some("passed"),
-            Some("git apply --check --whitespace=nowarn -- candidate.diff"),
+            Some("git apply --check --recount --whitespace=nowarn -- candidate.diff"),
             Some(&manifest_path),
             Some(&manifest_hash),
             Some(&inspection_path),
@@ -15218,7 +15348,7 @@ mod tests {
         object.insert(
             "candidate_patch_preflight_command".to_string(),
             Value::String(format!(
-                "git apply --check --whitespace=nowarn -- {}",
+                "git apply --check --recount --whitespace=nowarn -- {}",
                 candidate_patch_path.display()
             )),
         );

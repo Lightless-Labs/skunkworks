@@ -368,6 +368,107 @@ fn write_fixture_in(
 }
 
 #[test]
+fn retry_execute_turns_candidate_patch_preflight_failure_into_next_cycle_feedback() {
+    let fixture = write_fixture(
+        "corrupt-patch-preflight",
+        2,
+        "echo evaluator-should-not-run >&2\nexit 99\n",
+    );
+    let corrupt_diff = b"diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-missing\n+new\n";
+    let corrupt_manifest = write_manifest(&fixture.root, "corrupt-candidate", corrupt_diff);
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "senior-swe-bench-retry-execute",
+            "--retry-plan",
+            fixture.retry_plan.to_str().unwrap(),
+            "--task-cycle-input",
+            fixture.cycle_input.to_str().unwrap(),
+            "--checkout",
+            fixture.checkout.to_str().unwrap(),
+            "--work-dir",
+            fixture.work_dir.to_str().unwrap(),
+            "--attempt-output-manifest",
+            corrupt_manifest.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--",
+            fixture.evaluator.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run retry execute");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .expect("failed retry execute should print terminal JSON");
+    assert_eq!(value["status"].as_str(), Some("failed"));
+    assert_eq!(
+        value["stop_reason"].as_str(),
+        Some("precomputed_attempt_manifests_exhausted")
+    );
+    assert_eq!(value["attempts_executed"].as_u64(), Some(1));
+    assert_eq!(value["provider_invocations_started"].as_bool(), Some(false));
+    assert_eq!(
+        value["evaluator_invocations_started"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        value["fitness_claim_allowed_before_evidence"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        value["fitness_claim_allowed_after_evidence_inspection"].as_bool(),
+        Some(false)
+    );
+    assert!(value.get("final_evidence_path").is_none());
+    assert!(value.get("terminal_run_result").is_none());
+    assert!(value.get("next_cycle_command").is_some());
+    assert_eq!(
+        value["attempts"][0]["retry_step_decision"].as_str(),
+        Some("build_next_cycle_input")
+    );
+    assert!(
+        value["attempts"][0]["evaluation_error_preview"]
+            .as_str()
+            .unwrap()
+            .contains("candidate patch preflight")
+    );
+    assert!(
+        value["attempts"][0]["evaluation_error_artifact"]
+            .as_str()
+            .is_some()
+    );
+
+    let persisted = fixture.work_dir.join("retry-execution.json");
+    assert!(
+        persisted.is_file(),
+        "failed terminal summary should persist"
+    );
+    let persisted_value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&persisted).unwrap()).unwrap();
+    assert_eq!(persisted_value, value);
+    let attempt_dir = fixture.work_dir.join("attempt-0");
+    assert!(attempt_dir.join("retry-attempt-plan.json").is_file());
+    assert!(attempt_dir.join("retry-attempt-extraction.json").is_file());
+    assert!(
+        attempt_dir
+            .join("retry-attempt-evaluation-error.json")
+            .is_file()
+    );
+    assert!(!attempt_dir.join("retry-attempt-evaluation.json").exists());
+    assert!(!attempt_dir.join("local-evaluation.json").exists());
+    let next_cycle_input = attempt_dir.join("next-cycle-input.json");
+    assert!(next_cycle_input.is_file());
+    let next_cycle_text = fs::read_to_string(&next_cycle_input).unwrap();
+    assert!(next_cycle_text.contains("MECHANICAL PATCH PREFLIGHT FEEDBACK"));
+    assert!(next_cycle_text.contains("candidate patch preflight"));
+    assert!(next_cycle_text.contains("not_evaluated"));
+}
+
+#[test]
 fn retry_execute_succeeds_on_first_precomputed_attempt_without_provider_invocation() {
     let fixture = write_fixture(
         "success",

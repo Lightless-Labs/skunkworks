@@ -206,7 +206,7 @@ fn write_fixture(name: &str, status: &str) -> Fixture {
         "original_checkout_mutated": false,
         "candidate_patch_preflight_checked": true,
         "candidate_patch_preflight_status": "passed",
-        "candidate_patch_preflight_command": "git apply --check --whitespace=nowarn -- candidate.patch",
+        "candidate_patch_preflight_command": "git apply --check --recount --whitespace=nowarn -- candidate.patch",
         "checkout": checkout,
         "evaluator_command": ["/bin/true"],
         "source_revision": current_crates_revision(),
