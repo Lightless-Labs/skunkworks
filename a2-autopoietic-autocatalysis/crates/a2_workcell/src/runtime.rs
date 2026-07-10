@@ -12,6 +12,7 @@ use a2_core::id::*;
 use a2_core::protocol::*;
 use a2_core::traits::*;
 use chrono::Utc;
+use sha2::{Digest, Sha256};
 
 use crate::budget::BudgetTracker;
 
@@ -334,7 +335,7 @@ fn benchmark_sensitive_runtime_text(value: &str) -> bool {
         || lower.contains("## task")
 }
 
-fn task_requires_redacted_catalyst_errors(task: &TaskContract) -> bool {
+fn task_requires_benchmark_lineage_redaction(task: &TaskContract) -> bool {
     let source_is_benchmark = match &task.source {
         TaskSource::External { origin } => {
             let origin = origin.to_ascii_lowercase();
@@ -367,7 +368,7 @@ fn safe_catalyst_error_focus(error: &A2Error, task: &TaskContract) -> String {
             "catalyst execution failed before producing a candidate patch"
         }
     };
-    if task_requires_redacted_catalyst_errors(task) || benchmark_sensitive_runtime_text(raw) {
+    if task_requires_benchmark_lineage_redaction(task) || benchmark_sensitive_runtime_text(raw) {
         "catalyst execution failed before producing a candidate patch; detailed error withheld to avoid leaking benchmark task text".into()
     } else {
         compact_snippet(raw, 600)
@@ -385,6 +386,83 @@ fn catalyst_failure_verification(failure_focus: String) -> ExternalVerification 
         stderr_excerpt: String::new(),
         verified_at: Utc::now(),
     }
+}
+
+fn summarized_text_hash(label: &str, value: &str) -> String {
+    let bytes = value.len();
+    let lines = value.lines().count();
+    let sha256 = format!("{:x}", Sha256::digest(value.as_bytes()));
+    format!("{label}_withheld: sha256={sha256}; bytes={bytes}; lines={lines}")
+}
+
+fn lineage_patch_diff_for_task(patch: &PatchBundle, task: &TaskContract) -> Option<String> {
+    if patch.diff.trim().is_empty() {
+        return None;
+    }
+    if task_requires_benchmark_lineage_redaction(task) {
+        Some(summarized_text_hash(
+            "benchmark_candidate_patch_diff",
+            &patch.diff,
+        ))
+    } else {
+        Some(patch.diff.clone())
+    }
+}
+
+fn lineage_patch_rationale_for_task(patch: &PatchBundle, task: &TaskContract) -> Option<String> {
+    if patch.rationale.trim().is_empty() {
+        return None;
+    }
+    if task_requires_benchmark_lineage_redaction(task) {
+        Some(summarized_text_hash(
+            "benchmark_candidate_patch_rationale",
+            &patch.rationale,
+        ))
+    } else {
+        Some(patch.rationale.clone())
+    }
+}
+
+fn lineage_external_verifications_for_task(
+    patch: &PatchBundle,
+    task: &TaskContract,
+) -> Vec<ExternalVerification> {
+    if !task_requires_benchmark_lineage_redaction(task) {
+        return patch.worktree_verifications.clone();
+    }
+
+    patch
+        .worktree_verifications
+        .iter()
+        .map(|verification| {
+            let mut sanitized = verification.clone();
+            if !sanitized.command.trim().is_empty() {
+                sanitized.command =
+                    summarized_text_hash("benchmark_verifier_command", &sanitized.command);
+            }
+            if !sanitized.failing_tests.is_empty() {
+                sanitized.failing_tests = vec![summarized_text_hash(
+                    "benchmark_verifier_failing_tests",
+                    &sanitized.failing_tests.join("\n"),
+                )];
+            }
+            if !sanitized.failure_focus.is_empty() {
+                sanitized.failure_focus = vec![summarized_text_hash(
+                    "benchmark_verifier_failure_focus",
+                    &sanitized.failure_focus.join("\n"),
+                )];
+            }
+            if !sanitized.stdout_excerpt.trim().is_empty() {
+                sanitized.stdout_excerpt =
+                    summarized_text_hash("benchmark_verifier_stdout", &sanitized.stdout_excerpt);
+            }
+            if !sanitized.stderr_excerpt.trim().is_empty() {
+                sanitized.stderr_excerpt =
+                    summarized_text_hash("benchmark_verifier_stderr", &sanitized.stderr_excerpt);
+            }
+            sanitized
+        })
+        .collect()
 }
 
 /// Render a prior LineageRecord as a prompt motif for the context pack.
@@ -630,11 +708,15 @@ pub async fn run_workcell(
             .as_ref()
             .map(|p| p.id.clone())
             .unwrap_or_else(PatchId::new),
-        patch_diff: patch.as_ref().map(|p| p.diff.clone()),
-        patch_rationale: patch.as_ref().map(|p| p.rationale.clone()),
+        patch_diff: patch
+            .as_ref()
+            .and_then(|p| lineage_patch_diff_for_task(p, &config.task)),
+        patch_rationale: patch
+            .as_ref()
+            .and_then(|p| lineage_patch_rationale_for_task(p, &config.task)),
         external_verifications: patch
             .as_ref()
-            .map(|p| p.worktree_verifications.clone())
+            .map(|p| lineage_external_verifications_for_task(p, &config.task))
             .unwrap_or(no_candidate_verifications),
         parent_germline: config.germline_version,
         model_attributions: patch
@@ -818,6 +900,12 @@ mod tests {
         verification: ExternalVerification,
     }
 
+    struct BenchmarkPatchCatalyst {
+        id: CatalystId,
+        diff: String,
+        rationale: String,
+    }
+
     struct FailingCatalyst {
         id: CatalystId,
         message: String,
@@ -854,6 +942,45 @@ mod tests {
                     }],
                 },
                 worktree_verifications: vec![self.verification.clone()],
+                network_policy_enforced: None,
+                model_attribution: ModelAttribution {
+                    provider: "t".into(),
+                    model: "m".into(),
+                    tokens_in: 1,
+                    tokens_out: 1,
+                },
+                created_at: Utc::now(),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Catalyst for BenchmarkPatchCatalyst {
+        fn id(&self) -> &CatalystId {
+            &self.id
+        }
+        fn name(&self) -> &str {
+            "benchmark-patch"
+        }
+        async fn execute(
+            &self,
+            task: &TaskContract,
+            _context: &ContextPack,
+            _model: &dyn ModelProvider,
+        ) -> A2Result<PatchBundle> {
+            Ok(PatchBundle {
+                id: PatchId::new(),
+                task_id: task.id.clone(),
+                workcell_id: WorkcellId::new(),
+                diff: self.diff.clone(),
+                rationale: self.rationale.clone(),
+                test_results: TestResults {
+                    passed: 1,
+                    failed: 0,
+                    skipped: 0,
+                    details: vec![],
+                },
+                worktree_verifications: vec![],
                 network_policy_enforced: None,
                 model_attribution: ModelAttribution {
                     provider: "t".into(),
@@ -1550,6 +1677,113 @@ mod tests {
         assert!(retry_context.contains("command: catalyst.execute"));
         assert!(retry_context.contains("withheld"));
         assert!(!retry_context.contains("synthetic-redaction-fixture"));
+    }
+
+    #[tokio::test]
+    async fn benchmark_candidate_patch_payload_is_hashed_before_lineage_retry_context() {
+        let task_id = TaskId::new();
+        let mut task = test_task(task_id);
+        task.title = "Senior SWE Bench task".into();
+        task.source = TaskSource::External {
+            origin: "senior-swe-bench".into(),
+        };
+        task.no_external_solution_search = true;
+        let config = test_workcell_config(task);
+        let catalyst = BenchmarkPatchCatalyst {
+            id: CatalystId::new(),
+            diff: "--- a/private_repo.py\n+++ b/private_repo.py\n+SECRET_PATCH_SHOULD_NOT_ARCHIVE\n+https://private-benchmark.example.invalid/tasks/synthetic-redaction-fixture".into(),
+            rationale: "Applied SECRET_SOLUTION_SHOULD_NOT_ARCHIVE from hidden benchmark context".into(),
+        };
+
+        let result = run_workcell(config, &catalyst, &NoopProvider, &AlwaysPassEvaluator)
+            .await
+            .unwrap();
+
+        assert!(
+            result.patch.is_some(),
+            "the live result may carry the candidate patch for immediate evaluation"
+        );
+        let archived_diff = result.lineage.patch_diff.as_deref().unwrap();
+        let archived_rationale = result.lineage.patch_rationale.as_deref().unwrap();
+        assert!(archived_diff.contains("benchmark_candidate_patch_diff_withheld: sha256="));
+        assert!(archived_diff.contains("bytes="));
+        assert!(archived_diff.contains("lines="));
+        assert!(
+            archived_rationale.contains("benchmark_candidate_patch_rationale_withheld: sha256=")
+        );
+        assert!(!archived_diff.contains("SECRET_PATCH_SHOULD_NOT_ARCHIVE"));
+        assert!(!archived_diff.contains("private-benchmark.example.invalid"));
+        assert!(!archived_rationale.contains("SECRET_SOLUTION_SHOULD_NOT_ARCHIVE"));
+
+        let retry_context = render_prior_motif(&result.lineage, 0);
+        assert!(retry_context.contains("benchmark_candidate_patch_diff_withheld"));
+        assert!(retry_context.contains("benchmark_candidate_patch_rationale_withheld"));
+        assert!(!retry_context.contains("SECRET_PATCH_SHOULD_NOT_ARCHIVE"));
+        assert!(!retry_context.contains("SECRET_SOLUTION_SHOULD_NOT_ARCHIVE"));
+        assert!(!retry_context.contains("private-benchmark.example.invalid"));
+    }
+
+    #[tokio::test]
+    async fn benchmark_verifier_payload_is_hashed_before_lineage_retry_context() {
+        let verification = ExternalVerification {
+            passed: false,
+            command: "python3 private_verifier.py".into(),
+            exit_code: Some(1),
+            failing_tests: vec!["SECRET_HIDDEN_TEST_SHOULD_NOT_ARCHIVE".into()],
+            failure_focus: vec!["failure mentions /private/source/path and SECRET_TASK_TEXT".into()],
+            stdout_excerpt: "stdout includes https://private-benchmark.example.invalid/tasks/synthetic-redaction-fixture".into(),
+            stderr_excerpt: "stderr includes SECRET_SOLUTION_SHOULD_NOT_ARCHIVE".into(),
+            verified_at: Utc::now(),
+        };
+        let task_id = TaskId::new();
+        let mut task = test_task(task_id);
+        task.source = TaskSource::External {
+            origin: "senior-swe-bench".into(),
+        };
+        task.no_external_solution_search = true;
+        let config = test_workcell_config(task);
+        let catalyst = VerifierCatalyst {
+            id: CatalystId::new(),
+            verification,
+        };
+
+        let result = run_workcell(config, &catalyst, &NoopProvider, &AlwaysPassEvaluator)
+            .await
+            .unwrap();
+
+        assert_eq!(result.lineage.external_verifications.len(), 1);
+        let archived = &result.lineage.external_verifications[0];
+        assert!(
+            archived
+                .command
+                .contains("benchmark_verifier_command_withheld")
+        );
+        assert!(archived.failing_tests[0].contains("benchmark_verifier_failing_tests_withheld"));
+        assert!(archived.failure_focus[0].contains("benchmark_verifier_failure_focus_withheld"));
+        assert!(
+            archived
+                .stdout_excerpt
+                .contains("benchmark_verifier_stdout_withheld")
+        );
+        assert!(
+            archived
+                .stderr_excerpt
+                .contains("benchmark_verifier_stderr_withheld")
+        );
+        let archived_text = serde_json::to_string(archived).unwrap();
+        assert!(!archived_text.contains("python3 private_verifier.py"));
+        assert!(!archived_text.contains("SECRET_HIDDEN_TEST_SHOULD_NOT_ARCHIVE"));
+        assert!(!archived_text.contains("SECRET_TASK_TEXT"));
+        assert!(!archived_text.contains("private-benchmark.example.invalid"));
+        assert!(!archived_text.contains("SECRET_SOLUTION_SHOULD_NOT_ARCHIVE"));
+
+        let retry_context = render_prior_motif(&result.lineage, 0);
+        assert!(retry_context.contains("benchmark_verifier_command_withheld"));
+        assert!(retry_context.contains("benchmark_verifier_failure_focus_withheld"));
+        assert!(!retry_context.contains("SECRET_HIDDEN_TEST_SHOULD_NOT_ARCHIVE"));
+        assert!(!retry_context.contains("SECRET_TASK_TEXT"));
+        assert!(!retry_context.contains("private-benchmark.example.invalid"));
+        assert!(!retry_context.contains("SECRET_SOLUTION_SHOULD_NOT_ARCHIVE"));
     }
 
     #[test]
