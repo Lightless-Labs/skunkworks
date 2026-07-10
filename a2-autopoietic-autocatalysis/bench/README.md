@@ -248,11 +248,12 @@ python3 bench/generate_tasks.py --source self --limit 1 --jsonl \
   | cargo run -p a2ctl -- run --provider opencode --apply
 ```
 
-Senior SWE Bench / SWE-Bench Pro support is offline-ingest only: export tasks through the benchmark's private export workflow to a local JSON/JSONL file yourself, then convert that file into policy-bearing A² task JSONL. The generator accepts `--source senior-swe-bench` and the alias `--source swe-bench-pro`. Each emitted payload is stamped with `benchmark_source="senior-swe-bench"`, `no_external_solution_search=true`, `network_policy="Isolated"`, and an opaque deterministic task ID. Repo/task URL/issue/base commit/export-row metadata plus solution/patch/diff/test-patch-looking lines are not emitted into the A² task JSONL prompt path, so A² does not receive benchmark source locators or solution-adjacent text as retry context. Current restricted-policy execution still fails closed or produces no candidate until audited sandbox/provider allowlist enforcement is wired, so this is task-ingest/productization support rather than uncontaminated benchmark evidence.
+Senior SWE Bench / SWE-Bench Pro support is offline-ingest only: export tasks through the benchmark's private export workflow to a local JSON/JSONL file yourself, then convert that file into policy-bearing A² task JSONL. The generator accepts `--source senior-swe-bench` and the alias `--source swe-bench-pro`. Each emitted payload is stamped with `benchmark_source="senior-swe-bench"`, `no_external_solution_search=true`, `network_policy="Isolated"`, and an opaque deterministic task ID. Repo/task URL/issue/base commit/export-row metadata plus solution/patch/diff/test-patch-looking lines are not emitted into the A² task JSONL prompt path, so A² does not receive benchmark source locators or solution-adjacent text as retry context. Add one or more `--verify-command '<command>'` flags to include system-side candidate-worktree verifier commands in the JSONL; those commands must be one-line and must not contain URLs, raw commit hashes, or solution/patch/source-locator metadata. Current restricted-policy execution still fails closed or produces no candidate until audited sandbox/provider allowlist enforcement is wired, so this is task-ingest/productization support rather than uncontaminated benchmark evidence.
 
 ```bash
 python3 bench/generate_tasks.py --source swe-bench-pro \
   --dataset-path senior-swe-export.jsonl \
+  --verify-command 'python -m pytest tests/test_contract.py' \
   --jsonl \
   | cargo run -p a2ctl -- run --provider opencode --apply
 ```

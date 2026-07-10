@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -49,6 +50,7 @@ def task_payload(
     problem_statement: str,
     *,
     benchmark_source: Optional[str] = None,
+    verification_commands: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "task_id": task_id,
@@ -58,6 +60,11 @@ def task_payload(
     }
     if benchmark_source:
         payload["benchmark_source"] = benchmark_source
+    if verification_commands:
+        payload["verification_commands"] = [
+            {"command": validate_prompt_safe_verification_command(command), "expect_exit": 0}
+            for command in verification_commands
+        ]
     return payload
 
 
@@ -294,9 +301,69 @@ def senior_swe_problem_with_metadata(statement: str, metadata: dict[str, Any]) -
     return "\n".join(lines).strip()
 
 
-def load_senior_swe_bench_export(path: Path, limit: int) -> list[dict[str, Any]]:
+SENIOR_SWE_VERIFY_COMMAND_PRIVATE_MARKERS = (
+    "repo:",
+    "repo_url:",
+    "repo-url",
+    "task_url:",
+    "task-url",
+    "issue_number:",
+    "issue-number",
+    "base_commit:",
+    "base-commit",
+    "commit_sha:",
+    "commit-sha",
+    "revision:",
+    "solution:",
+    "patch:",
+    "diff:",
+    "test_patch:",
+    "test-patch",
+    "source_path:",
+    "source-path",
+    "dataset_path:",
+    "dataset-path",
+)
+
+
+FORTY_HEX_RE = re.compile(r"\b[0-9a-fA-F]{40}\b")
+PRIVATE_VERIFIER_WORD_RE = re.compile(
+    r"(^|[^a-z0-9])"
+    r"(solution|patch|diff|test[-_]?patch|repo[-_]?url|task[-_]?url|source[-_]?path|dataset[-_]?path|base[-_]?commit|commit[-_]?sha)"
+    r"([^a-z0-9]|$)"
+)
+
+
+def validate_prompt_safe_verification_command(command: str) -> str:
+    command = command.strip()
+    if not command:
+        raise ValueError("verification command must not be empty")
+    if "\n" in command or "\r" in command:
+        raise ValueError("verification command must be a single line")
+    lower = command.lower()
+    if "://" in lower:
+        raise ValueError("verification command must not contain URLs")
+    if any(marker in lower for marker in SENIOR_SWE_VERIFY_COMMAND_PRIVATE_MARKERS):
+        raise ValueError("verification command contains private benchmark metadata marker")
+    if PRIVATE_VERIFIER_WORD_RE.search(lower):
+        raise ValueError("verification command contains solution/source-locator vocabulary")
+    if FORTY_HEX_RE.search(command):
+        raise ValueError("verification command must not contain raw commit hashes")
+    return command
+
+
+def load_senior_swe_bench_export(
+    path: Path,
+    limit: int,
+    *,
+    verification_commands: Optional[list[str]] = None,
+) -> list[dict[str, Any]]:
     export_bytes = path.read_bytes()
     export_sha256 = hashlib.sha256(export_bytes).hexdigest()
+    safe_verification_commands = [
+        validate_prompt_safe_verification_command(command)
+        for command in (verification_commands or [])
+    ]
     tasks = []
     for index, raw_task in export_rows_from_path(path):
         if len(tasks) >= limit:
@@ -315,6 +382,7 @@ def load_senior_swe_bench_export(path: Path, limit: int) -> list[dict[str, Any]]
             task_id,
             statement,
             benchmark_source="senior-swe-bench",
+            verification_commands=safe_verification_commands,
         )
         tasks.append(task)
     return tasks
@@ -330,6 +398,12 @@ def assert_benchmark_payloads_have_policy(tasks: list[dict[str, Any]]) -> None:
             raise AssertionError(f"{task.get('task_id')} missing network_policy={DEFAULT_NETWORK_POLICY}")
         if not task.get("problem_statement"):
             raise AssertionError(f"{task.get('task_id')} missing problem_statement")
+        for verification in task.get("verification_commands", []):
+            command = verification.get("command")
+            if command != validate_prompt_safe_verification_command(str(command)):
+                raise AssertionError(f"{task.get('task_id')} has unsafe verification command")
+            if verification.get("expect_exit") != 0:
+                raise AssertionError(f"{task.get('task_id')} verification command must expect exit 0")
 
 
 def run_self_test() -> None:
@@ -353,7 +427,11 @@ def run_self_test() -> None:
             "commit_sha": "fedcba9876543210fedcba9876543210fedcba98",
             "revision": "private-revision-label",
             "solution": "SECRET_SOLUTION_SHOULD_NOT_BE_INCLUDED",
+            "Solution": "MIXED_CASE_SECRET_SOLUTION_SHOULD_NOT_BE_INCLUDED",
             "patch": "SECRET_PATCH_SHOULD_NOT_BE_INCLUDED",
+            "PATCH": "MIXED_CASE_SECRET_PATCH_SHOULD_NOT_BE_INCLUDED",
+            "diff": "SECRET_DIFF_SHOULD_NOT_BE_INCLUDED",
+            "Test_Patch": "MIXED_CASE_SECRET_TEST_PATCH_SHOULD_NOT_BE_INCLUDED",
         },
         {"task_id": "senior-swe-bench-repo-issue-2", "prompt": "Add a regression test."},
     ]
@@ -361,6 +439,11 @@ def run_self_test() -> None:
         json.dump({"tasks": sample_export}, handle)
         handle.flush()
         senior_tasks = load_senior_swe_bench_export(Path(handle.name), limit=10)
+        verified_senior_tasks = load_senior_swe_bench_export(
+            Path(handle.name),
+            limit=1,
+            verification_commands=["python -m pytest tests/test_contract.py -k \"not slow\""],
+        )
     assert_benchmark_payloads_have_policy(senior_tasks)
     assert senior_tasks[0]["task_id"].startswith("senior-swe-bench-")
     assert senior_tasks[1]["task_id"].startswith("senior-swe-bench-")
@@ -385,10 +468,14 @@ def run_self_test() -> None:
     assert "https://" not in senior_tasks[0]["problem_statement"]
     assert "/tasks/" not in senior_tasks[0]["problem_statement"]
     assert str(Path(handle.name)) not in senior_tasks[0]["problem_statement"]
+    serialized_senior_task = json.dumps(senior_tasks[0], sort_keys=True)
     assert "SECRET_SOLUTION" not in senior_tasks[0]["problem_statement"]
     assert "SECRET_PATCH" not in senior_tasks[0]["problem_statement"]
     assert "SECRET_DIFF" not in senior_tasks[0]["problem_statement"]
     assert "SECRET_TEST_PATCH" not in senior_tasks[0]["problem_statement"]
+    assert "MIXED_CASE_SECRET_SOLUTION" not in serialized_senior_task
+    assert "MIXED_CASE_SECRET_PATCH" not in serialized_senior_task
+    assert "MIXED_CASE_SECRET_TEST_PATCH" not in serialized_senior_task
     assert "private/source/path" not in senior_tasks[0]["problem_statement"]
     assert "private-revision-label" not in senior_tasks[0]["problem_statement"]
     assert "fedcba9876543210" not in senior_tasks[0]["problem_statement"]
@@ -402,6 +489,28 @@ def run_self_test() -> None:
     for task in senior_tasks:
         assert task["network_policy"] == DEFAULT_NETWORK_POLICY
         assert task["no_external_solution_search"] is True
+        assert "verification_commands" not in task
+    assert verified_senior_tasks[0]["verification_commands"] == [
+        {"command": "python -m pytest tests/test_contract.py -k \"not slow\"", "expect_exit": 0}
+    ]
+    verified_json = json.loads(json.dumps(verified_senior_tasks[0], sort_keys=True))
+    assert verified_json["verification_commands"][0]["command"].endswith('-k "not slow"')
+    for unsafe_command in [
+        "python verify.py --task-url https://private-benchmark.example.invalid/tasks/1",
+        "python verify.py commit_sha:0123456789abcdef0123456789abcdef01234567",
+        "python verify.py --solution SECRET_SOLUTION_SHOULD_NOT_BE_INCLUDED",
+        "python verify.py solution SECRET_SOLUTION_SHOULD_NOT_BE_INCLUDED",
+        "python verify.py --patch: SECRET_PATCH_SHOULD_NOT_BE_INCLUDED",
+        "python verify.py --Test-Patch SECRET_TEST_PATCH_SHOULD_NOT_BE_INCLUDED",
+        "python verify.py --source-path /private/source/path",
+        "python verify.py\npython leak.py",
+    ]:
+        try:
+            validate_prompt_safe_verification_command(unsafe_command)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"unsafe verification command was accepted: {unsafe_command}")
 
     with tempfile.NamedTemporaryFile("w", suffix=".jsonl", encoding="utf-8") as handle:
         handle.write(json.dumps({"id": "jsonl-1", "description": "First task"}) + "\n")
@@ -428,9 +537,12 @@ def run_self_test() -> None:
         "swe-bench-pro",
         "--dataset-path",
         "senior-swe-export.jsonl",
+        "--verify-command",
+        "python -m pytest",
         "--jsonl",
     ])
     assert alias_args.source == "swe-bench-pro"
+    assert alias_args.verify_command == ["python -m pytest"]
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -449,6 +561,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "Use an offline export; do not let benchmark agents fetch public solutions."
         ),
     )
+    parser.add_argument(
+        "--verify-command",
+        action="append",
+        default=[],
+        help=(
+            "System-side verifier command to include in Senior SWE Bench JSONL tasks. "
+            "May be repeated; commands must be one-line and must not contain URLs, raw commit hashes, "
+            "or solution/patch/source-locator metadata."
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="Output the legacy JSON array of task descriptions")
     parser.add_argument("--jsonl", action="store_true", help="Output one policy-bearing JSON task object per line for a2ctl run")
     parser.add_argument("--self-test", action="store_true", help="Run local payload policy checks")
@@ -463,6 +585,8 @@ def main(argv: list[str]) -> int:
         return 0
     if args.json and args.jsonl:
         raise SystemExit("--json and --jsonl are mutually exclusive")
+    if args.verify_command and args.source not in {"senior-swe-bench", "swe-bench-pro", "swebench-pro"}:
+        raise SystemExit("--verify-command is only supported for Senior SWE Bench sources")
 
     if args.source == "self":
         tasks = load_self_tasks(args.limit)
@@ -473,7 +597,11 @@ def main(argv: list[str]) -> int:
     elif args.source in {"senior-swe-bench", "swe-bench-pro", "swebench-pro"}:
         if args.dataset_path is None:
             raise SystemExit("--source senior-swe-bench requires --dataset-path with a local export")
-        tasks = load_senior_swe_bench_export(args.dataset_path, args.limit)
+        tasks = load_senior_swe_bench_export(
+            args.dataset_path,
+            args.limit,
+            verification_commands=args.verify_command,
+        )
     else:
         raise AssertionError(f"unhandled source: {args.source}")
 
