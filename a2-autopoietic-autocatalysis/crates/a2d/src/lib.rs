@@ -569,6 +569,79 @@ mod tests {
         }
     }
 
+    struct ContextCapturingCatalyst {
+        id: CatalystId,
+        seen_task: Arc<Mutex<Option<TaskContract>>>,
+        seen_context: Arc<Mutex<Option<ContextPack>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Catalyst for ContextCapturingCatalyst {
+        fn id(&self) -> &CatalystId {
+            &self.id
+        }
+        fn name(&self) -> &str {
+            "context-capturing"
+        }
+        async fn execute(
+            &self,
+            task: &TaskContract,
+            ctx: &ContextPack,
+            _model: &dyn ModelProvider,
+        ) -> A2Result<PatchBundle> {
+            *self.seen_task.lock().unwrap() = Some(task.clone());
+            *self.seen_context.lock().unwrap() = Some(ctx.clone());
+            Ok(PatchBundle {
+                id: PatchId::new(),
+                task_id: task.id.clone(),
+                workcell_id: WorkcellId::new(),
+                diff: "+hello".into(),
+                rationale: "captured task with prior context".into(),
+                test_results: TestResults {
+                    passed: 1,
+                    failed: 0,
+                    skipped: 0,
+                    details: vec![],
+                },
+                worktree_verifications: vec![],
+                network_policy_enforced: None,
+                model_attribution: ModelAttribution {
+                    provider: "test".into(),
+                    model: "context-capture".into(),
+                    tokens_in: 100,
+                    tokens_out: 50,
+                },
+                created_at: Utc::now(),
+            })
+        }
+    }
+
+    struct FailingCatalyst {
+        id: CatalystId,
+        message: String,
+    }
+
+    #[async_trait::async_trait]
+    impl Catalyst for FailingCatalyst {
+        fn id(&self) -> &CatalystId {
+            &self.id
+        }
+        fn name(&self) -> &str {
+            "failing"
+        }
+        async fn execute(
+            &self,
+            _task: &TaskContract,
+            _ctx: &ContextPack,
+            _model: &dyn ModelProvider,
+        ) -> A2Result<PatchBundle> {
+            Err(a2_core::error::A2Error::CatalystFailure(
+                self.id.clone(),
+                self.message.clone(),
+            ))
+        }
+    }
+
     struct VerifiedCatalyst(CatalystId);
 
     #[async_trait::async_trait]
@@ -955,6 +1028,111 @@ mod tests {
             1,
             "duplicate prior verifier records should not duplicate retry criteria"
         );
+    }
+
+    #[tokio::test]
+    async fn same_task_second_attempt_loads_prior_lineage_from_sqlite_store() {
+        let store = Arc::new(
+            a2_archive::SqliteLineageStore::new(rusqlite::Connection::open_in_memory().unwrap())
+                .unwrap(),
+        );
+        let gov = Governor::new(
+            GermlineVersion::new(),
+            Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 10,
+            },
+        )
+        .with_lineage_store(store.clone());
+
+        let task_id = TaskId::new();
+        let task = TaskContract {
+            id: task_id.clone(),
+            title: "same task retry".into(),
+            description: "retry from persisted lineage".into(),
+            acceptance_criteria: vec!["Original criterion remains".into()],
+            verification_commands: vec![],
+            budget: Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 10,
+            },
+            priority: Priority::Normal,
+            source: TaskSource::External {
+                origin: "synthetic".into(),
+            },
+            no_external_solution_search: false,
+            network_policy: None,
+            created_at: Utc::now(),
+        };
+
+        let first = gov
+            .run_task(
+                task.clone(),
+                &FailingCatalyst {
+                    id: CatalystId::new(),
+                    message: "synthetic catalyst failure before candidate patch".into(),
+                },
+                &NoopModel,
+                &PassEvaluator,
+            )
+            .await
+            .unwrap();
+
+        assert!(first.result.patch.is_none());
+        assert_eq!(first.lineage.external_verifications.len(), 1);
+        assert_eq!(
+            first.lineage.external_verifications[0].command,
+            "catalyst.execute"
+        );
+        assert_eq!(store.for_task(&task_id).await.unwrap().len(), 1);
+
+        let seen_task = Arc::new(Mutex::new(None));
+        let seen_context = Arc::new(Mutex::new(None));
+        let second = gov
+            .run_task(
+                task,
+                &ContextCapturingCatalyst {
+                    id: CatalystId::new(),
+                    seen_task: seen_task.clone(),
+                    seen_context: seen_context.clone(),
+                },
+                &NoopModel,
+                &PassEvaluator,
+            )
+            .await
+            .unwrap();
+
+        assert!(second.result.patch.is_some());
+        let captured_task = seen_task.lock().unwrap().clone().unwrap();
+        assert!(
+            captured_task
+                .acceptance_criteria
+                .contains(&"Original criterion remains".into())
+        );
+        assert!(
+            captured_task
+                .acceptance_criteria
+                .contains(&"Prior external verification must pass: catalyst.execute".into())
+        );
+        assert!(captured_task.acceptance_criteria.contains(
+            &"Prior verifier failure must be fixed: synthetic catalyst failure before candidate patch"
+                .into()
+        ));
+
+        let captured_context = seen_context.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            captured_context.prior_attempts,
+            vec![first.lineage.id.clone()]
+        );
+        assert_eq!(captured_context.retrieved_motifs.len(), 1);
+        assert!(captured_context.retrieved_motifs[0].contains("command: catalyst.execute"));
+        assert!(
+            captured_context.retrieved_motifs[0]
+                .contains("synthetic catalyst failure before candidate patch")
+        );
+        assert_eq!(store.for_task(&task_id).await.unwrap().len(), 2);
     }
 
     #[tokio::test]
