@@ -1633,6 +1633,11 @@ enum Commands {
         /// Auto-apply promoted patches via git apply.
         #[arg(long)]
         apply: bool,
+        /// Bounded same-task attempts to run for each stdin task. Attempts reuse
+        /// the same parsed TaskContract and stable task ID so prior lineage can
+        /// feed retry context instead of creating separate benchmark tasks.
+        #[arg(long, default_value_t = 1, value_parser = parse_positive_usize)]
+        attempts: usize,
         /// Execution-level network policy for every stdin task. Use `isolated`
         /// to fail closed unless the selected catalyst/provider can enforce an
         /// audited network sandbox, or `allowlist:<url>[,<url>...]` for a future
@@ -2154,6 +2159,16 @@ fn restricted_policy_without_candidate(
         )
 }
 
+fn parse_positive_usize(value: &str) -> Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| format!("expected a positive integer, got {value:?}"))?;
+    if parsed == 0 {
+        return Err("value must be greater than zero".into());
+    }
+    Ok(parsed)
+}
+
 fn parse_network_policy_arg(value: &str) -> Result<a2_core::protocol::NetworkPolicy, String> {
     let trimmed = value.trim();
     if trimmed.eq_ignore_ascii_case("open") {
@@ -2302,6 +2317,7 @@ async fn main() {
             timeout,
             provider,
             apply,
+            attempts,
             network_policy,
             disable_anti_repeat_retry,
         } => {
@@ -2380,79 +2396,101 @@ async fn main() {
                 let title = task.title.clone();
                 let task_network_policy = task.network_policy.clone();
 
-                // Check stagnation and advance provider if needed.
-                let strategy = governor.suggest_strategy_change();
-                if strategy == a2d::StrategyChange::SwitchModel && providers.len() > 1 {
+                for attempt in 1..=attempts {
+                    if attempts > 1 {
+                        eprintln!("[attempt {attempt}/{attempts} for {title}]");
+                    }
+
+                    // Check stagnation and advance provider if needed.
+                    let strategy = governor.suggest_strategy_change();
+                    if strategy == a2d::StrategyChange::SwitchModel && providers.len() > 1 {
+                        task_index += 1;
+                        eprintln!(
+                            "[stagnation: switching to {}]",
+                            providers[task_index % providers.len()].model_id()
+                        );
+                    }
+
+                    let p = providers[task_index % providers.len()].as_ref();
                     task_index += 1;
-                    eprintln!(
-                        "[stagnation: switching to {}]",
-                        providers[task_index % providers.len()].model_id()
-                    );
-                }
 
-                let p = providers[task_index % providers.len()].as_ref();
-                task_index += 1;
-
-                match run_task(&governor, task, &catalyst, p, &evaluator).await {
-                    Ok(outcome) => {
-                        let mut apply_ok = false;
-                        let mut verify_ok = false;
-                        if apply
-                            && let a2_core::protocol::PromotionDecision::PromoteGermline { .. } =
-                                &outcome.decision
-                            && let Some(patch) = &outcome.result.patch
-                        {
-                            let apply_outcome =
-                                apply_and_verify_patch(&patch.diff, &workspace_root);
-                            apply_ok = apply_outcome.applied;
-                            verify_ok = apply_outcome.verified;
-
-                            if let Err(e) = governor
-                                .reconcile_lineage_apply_outcome(
-                                    &outcome.lineage.id,
-                                    apply_outcome.applied,
-                                    apply_outcome.verified,
-                                    apply_outcome.note.clone(),
-                                    apply_outcome.external_verification.clone(),
-                                )
-                                .await
+                    match run_task(&governor, task.clone(), &catalyst, p, &evaluator).await {
+                        Ok(outcome) => {
+                            let mut apply_ok = false;
+                            let mut verify_ok = false;
+                            if apply
+                                && let a2_core::protocol::PromotionDecision::PromoteGermline {
+                                    ..
+                                } = &outcome.decision
+                                && let Some(patch) = &outcome.result.patch
                             {
-                                eprintln!("[lineage reconciliation failed for {title}: {e}]");
-                            }
+                                let apply_outcome =
+                                    apply_and_verify_patch(&patch.diff, &workspace_root);
+                                apply_ok = apply_outcome.applied;
+                                verify_ok = apply_outcome.verified;
 
-                            if apply_outcome.verified {
-                                eprintln!("[applied and rebuilt: {title}]");
-                            } else {
+                                if let Err(e) = governor
+                                    .reconcile_lineage_apply_outcome(
+                                        &outcome.lineage.id,
+                                        apply_outcome.applied,
+                                        apply_outcome.verified,
+                                        apply_outcome.note.clone(),
+                                        apply_outcome.external_verification.clone(),
+                                    )
+                                    .await
+                                {
+                                    eprintln!("[lineage reconciliation failed for {title}: {e}]");
+                                }
+
+                                if apply_outcome.verified {
+                                    eprintln!("[applied and rebuilt: {title}]");
+                                } else {
+                                    eprintln!(
+                                        "[apply/rebuild failed for {title}: {}]",
+                                        apply_outcome.note
+                                    );
+                                }
+                            }
+                            governor.record_apply_outcome(apply_ok, verify_ok);
+                            let task_completed = matches!(
+                                outcome.decision,
+                                a2_core::protocol::PromotionDecision::MergeSomatic
+                                    | a2_core::protocol::PromotionDecision::PromoteGermline { .. }
+                            );
+                            if restricted_policy_without_candidate(
+                                task_network_policy.as_ref(),
+                                outcome.result.patch.is_some(),
+                            ) {
+                                restricted_policy_launch_blocked = true;
                                 eprintln!(
-                                    "[apply/rebuild failed for {title}: {}]",
-                                    apply_outcome.note
+                                    "[restricted network policy blocked provider launch for {title}; no candidate patch produced]"
                                 );
                             }
+                            rows.push(run_summary_row(&title, p, &outcome));
+                            if task_completed && (!apply || verify_ok) {
+                                if attempts > 1 && attempt < attempts {
+                                    eprintln!(
+                                        "[task completed on attempt {attempt}/{attempts} for {title}; stopping retries]"
+                                    );
+                                }
+                                break;
+                            }
                         }
-                        governor.record_apply_outcome(apply_ok, verify_ok);
-                        if restricted_policy_without_candidate(
-                            task_network_policy.as_ref(),
-                            outcome.result.patch.is_some(),
-                        ) {
-                            restricted_policy_launch_blocked = true;
-                            eprintln!(
-                                "[restricted network policy blocked provider launch for {title}; no candidate patch produced]"
-                            );
+                        Err(e) => {
+                            if restricted_policy_without_candidate(
+                                task_network_policy.as_ref(),
+                                false,
+                            ) {
+                                restricted_policy_launch_blocked = true;
+                            }
+                            rows.push(RunSummaryRow {
+                                title: title.clone(),
+                                model: requested_model(p),
+                                tokens: 0,
+                                duration_secs: 0.0,
+                                decision: format!("error: {e}"),
+                            });
                         }
-                        rows.push(run_summary_row(&title, p, &outcome));
-                    }
-                    Err(e) => {
-                        if restricted_policy_without_candidate(task_network_policy.as_ref(), false)
-                        {
-                            restricted_policy_launch_blocked = true;
-                        }
-                        rows.push(RunSummaryRow {
-                            title,
-                            model: requested_model(p),
-                            tokens: 0,
-                            duration_secs: 0.0,
-                            decision: format!("error: {e}"),
-                        });
                     }
                 }
             }
@@ -4739,8 +4777,119 @@ fn command_failure_message(label: &str, output: &std::process::Output) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use a2_core::traits::{Catalyst, Evaluator, LineageStore, ModelProvider};
     use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct RunAttemptsNoopModel;
+
+    #[async_trait::async_trait]
+    impl ModelProvider for RunAttemptsNoopModel {
+        async fn generate(
+            &self,
+            _prompt: &str,
+            _system: Option<&str>,
+        ) -> a2_core::error::A2Result<a2_core::traits::GenerateResponse> {
+            Ok(a2_core::traits::GenerateResponse {
+                text: "noop".into(),
+                tokens_in: 1,
+                tokens_out: 1,
+            })
+        }
+
+        fn provider_id(&self) -> &str {
+            "test"
+        }
+
+        fn model_id(&self) -> &str {
+            "noop"
+        }
+    }
+
+    struct RunAttemptsPassEvaluator;
+
+    #[async_trait::async_trait]
+    impl Evaluator for RunAttemptsPassEvaluator {
+        async fn evaluate(
+            &self,
+            patch: &a2_core::protocol::PatchBundle,
+            _task: &a2_core::protocol::TaskContract,
+        ) -> a2_core::error::A2Result<a2_core::protocol::FitnessRecord> {
+            Ok(a2_core::protocol::FitnessRecord {
+                eval_id: a2_core::id::EvalId::new(),
+                task_id: patch.task_id.clone(),
+                somatic: a2_core::protocol::SomaticFitness {
+                    task_completed: true,
+                    tests_pass: true,
+                    acceptance_met: vec![true],
+                    tokens_used: 2,
+                    duration_secs: 0.1,
+                },
+                germline: None,
+                organizational: None,
+                evaluated_at: chrono::Utc::now(),
+            })
+        }
+    }
+
+    struct RunAttemptsCatalyst {
+        id: a2_core::id::CatalystId,
+        calls: Arc<Mutex<usize>>,
+        seen_tasks: Arc<Mutex<Vec<a2_core::protocol::TaskContract>>>,
+        seen_contexts: Arc<Mutex<Vec<a2_core::protocol::ContextPack>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Catalyst for RunAttemptsCatalyst {
+        fn id(&self) -> &a2_core::id::CatalystId {
+            &self.id
+        }
+
+        fn name(&self) -> &str {
+            "run-attempts-catalyst"
+        }
+
+        async fn execute(
+            &self,
+            task: &a2_core::protocol::TaskContract,
+            context: &a2_core::protocol::ContextPack,
+            _model: &dyn ModelProvider,
+        ) -> a2_core::error::A2Result<a2_core::protocol::PatchBundle> {
+            self.seen_tasks.lock().unwrap().push(task.clone());
+            self.seen_contexts.lock().unwrap().push(context.clone());
+            let mut calls = self.calls.lock().unwrap();
+            *calls += 1;
+            if *calls == 1 {
+                return Err(a2_core::error::A2Error::CatalystFailure(
+                    self.id.clone(),
+                    "synthetic first attempt no candidate".into(),
+                ));
+            }
+            Ok(a2_core::protocol::PatchBundle {
+                id: a2_core::id::PatchId::new(),
+                task_id: task.id.clone(),
+                workcell_id: a2_core::id::WorkcellId::new(),
+                diff: "diff --git a/synthetic b/synthetic\n".into(),
+                rationale: "retry used prior lineage".into(),
+                test_results: a2_core::protocol::TestResults {
+                    passed: 1,
+                    failed: 0,
+                    skipped: 0,
+                    details: vec![],
+                },
+                worktree_verifications: vec![],
+                network_policy_enforced: None,
+                model_attribution: a2_core::protocol::ModelAttribution {
+                    provider: "test".into(),
+                    model: "noop".into(),
+                    tokens_in: 1,
+                    tokens_out: 1,
+                },
+                created_at: chrono::Utc::now(),
+            })
+        }
+    }
 
     #[test]
     fn formats_promotion_decisions_for_summary_output() {
@@ -6617,6 +6766,101 @@ mod tests {
             "cargo test -p a2ctl hidden_case"
         );
         assert_eq!(task.verification_commands[0].expect_exit, 0);
+    }
+
+    #[test]
+    fn run_cli_accepts_bounded_same_task_attempts() {
+        let cli = Cli::try_parse_from(["a2ctl", "run", "--attempts", "2"]).unwrap();
+        match cli.command {
+            Commands::Run { attempts, .. } => assert_eq!(attempts, 2),
+            _ => panic!("expected run command"),
+        }
+        assert!(Cli::try_parse_from(["a2ctl", "run", "--attempts", "0"]).is_err());
+    }
+
+    #[tokio::test]
+    async fn run_attempts_reuse_same_task_and_lineage_until_success() {
+        let store = Arc::new(
+            a2_archive::SqliteLineageStore::new(rusqlite::Connection::open_in_memory().unwrap())
+                .unwrap(),
+        );
+        let governor = a2d::Governor::with_stagnation_detector(
+            a2_core::id::GermlineVersion::new(),
+            build_budget(50_000, 300),
+            a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
+        )
+        .with_lineage_store(store.clone())
+        .with_anti_repeat_retry(false);
+        let ingester = a2_sensorium::ingest::Ingester::new(build_budget(50_000, 300));
+        let task = task_from_run_input(
+            &ingester,
+            parse_run_input(
+                r#"{"task_id":"bounded-same-task","problem_statement":"Synthetic retry task"}"#,
+            ),
+        );
+        let task_id = task.id.clone();
+        let seen_tasks = Arc::new(Mutex::new(Vec::new()));
+        let seen_contexts = Arc::new(Mutex::new(Vec::new()));
+        let calls = Arc::new(Mutex::new(0));
+        let catalyst = RunAttemptsCatalyst {
+            id: a2_core::id::CatalystId::new(),
+            calls: calls.clone(),
+            seen_tasks: seen_tasks.clone(),
+            seen_contexts: seen_contexts.clone(),
+        };
+        let provider = RunAttemptsNoopModel;
+        let evaluator = RunAttemptsPassEvaluator;
+        let attempts = 3;
+
+        for attempt in 1..=attempts {
+            let outcome = run_task(&governor, task.clone(), &catalyst, &provider, &evaluator)
+                .await
+                .unwrap();
+            let task_completed = matches!(
+                outcome.decision,
+                a2_core::protocol::PromotionDecision::MergeSomatic
+                    | a2_core::protocol::PromotionDecision::PromoteGermline { .. }
+            );
+            if task_completed {
+                assert_eq!(
+                    attempt, 2,
+                    "second attempt should complete from prior lineage"
+                );
+                break;
+            }
+        }
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            2,
+            "successful attempt stops an up-to-N run"
+        );
+        let captured_tasks = seen_tasks.lock().unwrap().clone();
+        assert_eq!(captured_tasks.len(), 2);
+        assert!(captured_tasks.iter().all(|captured| captured.id == task_id));
+        assert!(
+            captured_tasks
+                .iter()
+                .all(|captured| captured.title == task.title)
+        );
+        let captured_contexts = seen_contexts.lock().unwrap().clone();
+        assert!(captured_contexts[0].prior_attempts.is_empty());
+        assert_eq!(captured_contexts[1].prior_attempts.len(), 1);
+        assert!(
+            captured_contexts[1]
+                .retrieved_motifs
+                .iter()
+                .any(|motif| motif.contains("command: catalyst.execute")),
+            "second attempt should see persisted no-candidate lineage evidence: {:?}",
+            captured_contexts[1].retrieved_motifs
+        );
+        let records = store.for_task(&task_id).await.unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|record| record.task_id == task_id));
+        assert_eq!(
+            records[0].external_verifications[0].command,
+            "catalyst.execute"
+        );
     }
 
     #[test]
