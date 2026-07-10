@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-07-10 (session 140 — SWE-Bench Pro sealed evaluator scaffold)
+**Last updated:** 2026-07-10 (session 141 — SWE-Bench Pro operator manifest template)
 **Update this document:** before context compaction, at session end, or when significant state changes.
 
 ## System State
@@ -84,6 +84,8 @@ Monorepo HEAD includes a sibling A² self-correction benchmark commit (`Record M
 - **Provider-policy comparisons are now inspectable:** `a2d compare-provider-policy <challenge> <cycles> [policy-json|@path]` runs current and proposed policies with persistence disabled, prints policy deltas, and reports a gate decision.
 
 ### What happened this session
+
+- **SWE-Bench Pro operator manifest template/checklist now exists, but it is not a reviewed manifest and does not unblock Pro execution.** After the user asked to "make one," added `docs/plans/swe-bench-pro-access-manifest-operator-template.md` and `docs/plans/swe-bench-pro-access-manifest.template.json` as an invalid-by-default, placeholder-only handoff for a trusted external evaluator operator. The template documents the exact `a2d.swe-bench-pro-access-manifest.v1` metadata shape, public-context hash expectations, no-search/visibility booleans, and operator review checklist while requiring any filled manifest, public context path, sealed evaluator command, credentials, benchmark sources, hidden tests, solutions, raw evaluator output, and host-local paths to remain outside git and outside A²D-visible prompts/artifacts. This is documentation/intake scaffolding only: no real reviewed SWE-Bench Pro access/evaluator artifact was created, no readiness gate was unblocked, no sealed Pro evaluation ran, and no official Pro fitness or hidden-holdout claim is made.
 
 - **SWE-Bench Pro remains blocked on a real reviewed sealed access/evaluator artifact after a fresh blocker audit.** Active goal rechecked as `goal-20260708234448-ocqbbp`; objective is specifically to run A²D against SWE-Bench Pro without leaking benchmark sources or solutions. A tracked-file path-only audit plus `a2d swe-bench-pro-readiness` found only scaffold/synthetic Pro artifacts and no real reviewed SWE-Bench Pro access/evaluator artifact. The readiness gate exited blocked with `missing_reviewed_swe_bench_pro_access_artifact`, `can_start_a2d_iteration: false`, `benchmark_sources_loaded: false`, `solution_material_loaded: false`, `github_solution_search_allowed: false`, and `senior_swe_bench_manifest_accepted_as_pro: false`. Audit artifacts under `runs/20260710-swe-bench-pro-access-blocker-audit/` persist only blocker/readiness metadata and a leak scan; they do not include benchmark sources, hidden tests, solution material, raw evaluator commands, candidate patches, or host-local paths. This is a stop-condition/blocker audit only: no A²D self-iteration against real SWE-Bench Pro ran, no official Pro hidden-holdout performance is claimed, and further scaffolding should not be treated as progress toward the live Pro objective unless a reviewed Pro artifact appears.
 
