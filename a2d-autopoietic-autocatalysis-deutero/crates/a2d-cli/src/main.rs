@@ -80,6 +80,9 @@ fn main() {
         "swe-bench-pro-access-manifest-inspect" => {
             run_swe_bench_pro_access_manifest_inspect(&args[2..]);
         }
+        "swe-bench-pro-evaluate" => {
+            run_swe_bench_pro_evaluate(&args[2..]);
+        }
         "senior-swe-bench-audit" => {
             if args.len() > 5 {
                 eprintln!(
@@ -192,7 +195,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|swe-bench-pro-readiness|swe-bench-pro-access-manifest-inspect|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-official-evaluator-manifest-inspect|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|senior-swe-bench-retry-attempt-evaluate|senior-swe-bench-retry-attempt-step|senior-swe-bench-retry-attempt-step-evidence|senior-swe-bench-retry-run-result|senior-swe-bench-retry-status|senior-swe-bench-retry-run-next-gate|senior-swe-bench-retry-execute|senior-swe-bench-retry-resume-attempt-plan|senior-swe-bench-retry-run-next-cycle|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|swe-bench-pro-readiness|swe-bench-pro-access-manifest-inspect|swe-bench-pro-evaluate|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-official-evaluator-manifest-inspect|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|senior-swe-bench-retry-attempt-evaluate|senior-swe-bench-retry-attempt-step|senior-swe-bench-retry-attempt-step-evidence|senior-swe-bench-retry-run-result|senior-swe-bench-retry-status|senior-swe-bench-retry-run-next-gate|senior-swe-bench-retry-execute|senior-swe-bench-retry-resume-attempt-plan|senior-swe-bench-retry-run-next-cycle|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -480,6 +483,15 @@ fn required_safe_manifest_identifier(
     allow_single_slash: bool,
 ) -> Result<String, String> {
     let raw = required_string_field(value, field)?;
+    validate_safe_identifier_text(&raw, field, allow_single_slash)?;
+    Ok(raw)
+}
+
+fn validate_safe_identifier_text(
+    raw: &str,
+    field: &str,
+    allow_single_slash: bool,
+) -> Result<(), String> {
     if raw.len() > 200 {
         return Err(format!("SWE-Bench Pro access manifest {field} is too long"));
     }
@@ -500,7 +512,7 @@ fn required_safe_manifest_identifier(
             "SWE-Bench Pro access manifest {field} is not a safe identifier"
         ));
     }
-    Ok(raw)
+    Ok(())
 }
 
 fn required_string_array(value: &Value, field: &str) -> Result<Vec<String>, String> {
@@ -532,6 +544,517 @@ fn require_bool_field(value: &Value, field: &str, expected: bool) -> Result<(), 
         ));
     }
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct SweBenchProAccessManifest {
+    benchmark: String,
+    instance_id: String,
+    repo: String,
+    public_context_hash: String,
+    sealed_evaluator_command: Vec<String>,
+    sealed_evaluator_command_hash: String,
+    manifest_hash: String,
+    evaluator_output_policy: String,
+}
+
+#[derive(Debug, Clone)]
+struct SweBenchProEvaluateConfig {
+    manifest: PathBuf,
+    candidate_patch: PathBuf,
+    checkout: PathBuf,
+    output: Option<PathBuf>,
+    apply_candidate_patch: bool,
+}
+
+fn run_swe_bench_pro_evaluate(args: &[String]) {
+    let config = parse_swe_bench_pro_evaluate_args(args).unwrap_or_else(|error| {
+        eprintln!("SWE-Bench Pro sealed evaluation error: {error}");
+        std::process::exit(1);
+    });
+    let manifest = load_swe_bench_pro_access_manifest(&config.manifest).unwrap_or_else(|error| {
+        eprintln!("SWE-Bench Pro sealed evaluation error: {error}");
+        std::process::exit(1);
+    });
+    let evaluation =
+        build_swe_bench_pro_sealed_evaluation(&config, &manifest).unwrap_or_else(|error| {
+            eprintln!("SWE-Bench Pro sealed evaluation error: {error}");
+            std::process::exit(1);
+        });
+    let passed = evaluation.get("status").and_then(Value::as_str) == Some("passed");
+    let json = serde_json::to_vec_pretty(&evaluation)
+        .expect("SWE-Bench Pro sealed evaluation JSON must serialize");
+    if let Some(output) = &config.output {
+        if let Some(parent) = output.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent).unwrap_or_else(|error| {
+                eprintln!("SWE-Bench Pro sealed evaluation error: failed to create output directory: {error}");
+                std::process::exit(1);
+            });
+        }
+        fs::write(output, json).unwrap_or_else(|error| {
+            eprintln!("SWE-Bench Pro sealed evaluation error: failed to write output: {error}");
+            std::process::exit(1);
+        });
+        println!("SWE-Bench Pro sealed evaluation written");
+    } else {
+        println!("{}", String::from_utf8_lossy(&json));
+    }
+    if !passed {
+        std::process::exit(2);
+    }
+}
+
+fn parse_swe_bench_pro_evaluate_args(args: &[String]) -> Result<SweBenchProEvaluateConfig, String> {
+    let mut manifest = None;
+    let mut candidate_patch = None;
+    let mut checkout = None;
+    let mut output = None;
+    let mut apply_candidate_patch = false;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--manifest" => {
+                index += 1;
+                manifest = Some(PathBuf::from(
+                    args.get(index)
+                        .ok_or_else(|| "--manifest requires a path".to_string())?,
+                ));
+            }
+            "--candidate-patch" => {
+                index += 1;
+                candidate_patch =
+                    Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                        "--candidate-patch requires a path".to_string()
+                    })?));
+            }
+            "--checkout" => {
+                index += 1;
+                checkout = Some(PathBuf::from(
+                    args.get(index)
+                        .ok_or_else(|| "--checkout requires a path".to_string())?,
+                ));
+            }
+            "--output" => {
+                index += 1;
+                output = Some(PathBuf::from(
+                    args.get(index)
+                        .ok_or_else(|| "--output requires a path".to_string())?,
+                ));
+            }
+            "--apply-candidate-patch" => apply_candidate_patch = true,
+            other => return Err(format!("unknown swe-bench-pro-evaluate argument: {other}")),
+        }
+        index += 1;
+    }
+    Ok(SweBenchProEvaluateConfig {
+        manifest: manifest.ok_or_else(|| "missing --manifest".to_string())?,
+        candidate_patch: candidate_patch.ok_or_else(|| "missing --candidate-patch".to_string())?,
+        checkout: checkout.ok_or_else(|| "missing --checkout".to_string())?,
+        output,
+        apply_candidate_patch,
+    })
+}
+
+fn load_swe_bench_pro_access_manifest(path: &Path) -> Result<SweBenchProAccessManifest, String> {
+    let manifest_json = if path == Path::new("-") {
+        let mut input = String::new();
+        std::io::stdin()
+            .read_to_string(&mut input)
+            .map_err(|error| format!("failed to read SWE-Bench Pro access manifest: {error}"))?;
+        input
+    } else {
+        fs::read_to_string(path)
+            .map_err(|error| format!("failed to read SWE-Bench Pro access manifest: {error}"))?
+    };
+    let manifest: Value = serde_json::from_str(&manifest_json)
+        .map_err(|error| format!("invalid SWE-Bench Pro access manifest JSON: {error}"))?;
+    validate_swe_bench_pro_access_manifest_no_private_fields(&manifest)?;
+
+    let schema = required_string_field(&manifest, "schema_version")?;
+    if schema != "a2d.swe-bench-pro-access-manifest.v1" {
+        return Err("expected a2d.swe-bench-pro-access-manifest.v1".to_string());
+    }
+    let benchmark = required_string_field(&manifest, "benchmark")?;
+    if benchmark != "swe-bench-pro" {
+        return Err("SWE-Bench Pro access manifest benchmark must be swe-bench-pro".to_string());
+    }
+    let instance_id = required_safe_manifest_identifier(&manifest, "instance_id", false)?;
+    let repo = required_safe_manifest_identifier(&manifest, "repo", true)?;
+    let public_context_path =
+        PathBuf::from(required_string_field(&manifest, "public_context_path")?);
+    if !public_context_path.is_file() {
+        return Err("SWE-Bench Pro public context file not found".to_string());
+    }
+    let expected_public_context_hash = required_string_field(&manifest, "public_context_hash")?;
+    validate_git_object_hash(&expected_public_context_hash)
+        .map_err(|error| format!("SWE-Bench Pro public_context_hash {error}"))?;
+    let actual_public_context_hash = file_content_hash(&public_context_path)
+        .map_err(|error| redact_swe_bench_pro_path_error(&error))?;
+    if expected_public_context_hash != actual_public_context_hash {
+        return Err("SWE-Bench Pro public_context_hash mismatch".to_string());
+    }
+    let sealed_evaluator_command = required_string_array(&manifest, "sealed_evaluator_command")?;
+    if sealed_evaluator_command.is_empty() {
+        return Err("SWE-Bench Pro sealed_evaluator_command is empty".to_string());
+    }
+    let sealed_evaluator_command_hash = git_hash_object_bytes(
+        serde_json::to_string(&sealed_evaluator_command)
+            .expect("sealed evaluator command serializes")
+            .as_bytes(),
+    )?;
+    require_bool_field(&manifest, "hidden_holdouts", true)?;
+    require_bool_field(&manifest, "github_solution_search_allowed", false)?;
+    require_bool_field(&manifest, "benchmark_sources_visible_to_a2d", false)?;
+    require_bool_field(&manifest, "solution_material_visible_to_a2d", false)?;
+    let evaluator_output_policy = required_string_field(&manifest, "evaluator_output_policy")?;
+    if evaluator_output_policy != "pass_fail_metrics_only" {
+        return Err(
+            "SWE-Bench Pro evaluator_output_policy must be pass_fail_metrics_only".to_string(),
+        );
+    }
+    let manifest_hash = if path == Path::new("-") {
+        git_hash_object_bytes(manifest_json.as_bytes())?
+    } else {
+        file_content_hash(path).map_err(|error| redact_swe_bench_pro_path_error(&error))?
+    };
+    Ok(SweBenchProAccessManifest {
+        benchmark,
+        instance_id,
+        repo,
+        public_context_hash: actual_public_context_hash,
+        sealed_evaluator_command,
+        sealed_evaluator_command_hash,
+        manifest_hash,
+        evaluator_output_policy,
+    })
+}
+
+fn build_swe_bench_pro_sealed_evaluation(
+    config: &SweBenchProEvaluateConfig,
+    manifest: &SweBenchProAccessManifest,
+) -> Result<Value, String> {
+    if !config.candidate_patch.is_file() {
+        return Err("SWE-Bench Pro candidate patch not found".to_string());
+    }
+    if !config.checkout.is_dir() {
+        return Err("SWE-Bench Pro checkout directory not found".to_string());
+    }
+    let candidate_patch_hash = file_content_hash(&config.candidate_patch)
+        .map_err(|_| "SWE-Bench Pro candidate patch hash failed".to_string())?;
+    let original_checkout_before = checkout_content_fingerprint(&config.checkout)
+        .map_err(|_| "SWE-Bench Pro checkout fingerprint failed".to_string())?;
+    validate_senior_swe_bench_candidate_patch_applicable(&config.checkout, &config.candidate_patch)
+        .map_err(|_| "SWE-Bench Pro candidate patch preflight failed".to_string())?;
+
+    let (evaluator_checkout, candidate_patch_applied, evaluator_checkout_mode, _cleanup) =
+        prepare_swe_bench_pro_evaluator_checkout(config)?;
+    let output = run_swe_bench_pro_sealed_evaluator(
+        config,
+        manifest,
+        &candidate_patch_hash,
+        &evaluator_checkout,
+        candidate_patch_applied,
+        evaluator_checkout_mode,
+    )?;
+    let original_checkout_mutated = checkout_content_fingerprint(&config.checkout)
+        .map(|after| after != original_checkout_before)
+        .unwrap_or(true);
+    let status_success =
+        output.status.success() && !(config.apply_candidate_patch && original_checkout_mutated);
+    let status = if status_success { "passed" } else { "failed" };
+    let fitness_evidence = if status_success {
+        if let Some(export_dir) = fitness_evidence_export_dir() {
+            let path = export_swe_bench_pro_fitness_evidence(
+                &swe_bench_pro_fitness_report(status_success),
+                &export_dir,
+                manifest,
+                &candidate_patch_hash,
+                candidate_patch_applied,
+                evaluator_checkout_mode,
+                original_checkout_mutated,
+            )?;
+            Some(
+                file_content_hash(&path)
+                    .map_err(|_| "SWE-Bench Pro fitness evidence hash failed".to_string())?,
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    Ok(json!({
+        "schema_version": "a2d.swe-bench-pro-sealed-evaluation.v1",
+        "benchmark": &manifest.benchmark,
+        "instance_id": &manifest.instance_id,
+        "repo": &manifest.repo,
+        "manifest_hash": &manifest.manifest_hash,
+        "manifest_path_redacted": true,
+        "public_context_hash": &manifest.public_context_hash,
+        "public_context_path_redacted": true,
+        "sealed_evaluator_command_hash": &manifest.sealed_evaluator_command_hash,
+        "sealed_evaluator_command_redacted": true,
+        "evaluator_kind": "sealed_swe_bench_pro",
+        "evaluator_output_policy": &manifest.evaluator_output_policy,
+        "candidate_patch_hash": candidate_patch_hash,
+        "candidate_patch_path_redacted": true,
+        "candidate_patch_preflight_checked": true,
+        "candidate_patch_preflight_status": "passed",
+        "candidate_patch_preflight_command_redacted": true,
+        "candidate_patch_applied": candidate_patch_applied,
+        "evaluator_checkout_mode": evaluator_checkout_mode,
+        "evaluator_checkout_redacted": true,
+        "original_checkout_mutated": original_checkout_mutated,
+        "status": status,
+        "exit_code": output.status.code(),
+        "hidden_holdouts": true,
+        "github_solution_search_allowed": false,
+        "benchmark_sources_loaded": false,
+        "solution_material_loaded": false,
+        "benchmark_sources_visible_to_a2d": false,
+        "solution_material_visible_to_a2d": false,
+        "evaluator_stdout_redacted": true,
+        "evaluator_stderr_redacted": true,
+        "fitness_evidence_exported": fitness_evidence.is_some(),
+        "fitness_evidence_path_redacted": fitness_evidence.is_some(),
+        "fitness_evidence_hash": fitness_evidence,
+        "fitness_claim_allowed": fitness_evidence.is_some(),
+        "note": "sealed SWE-Bench Pro evaluator scaffold: raw evaluator output, paths, commands, benchmark sources, hidden tests, and solution material are not persisted",
+    }))
+}
+
+fn swe_bench_pro_fitness_report(status_success: bool) -> FitnessReport {
+    FitnessReport::compute(vec![
+        CaseResult {
+            name: "all_tests_pass".to_string(),
+            passed: status_success,
+        },
+        CaseResult {
+            name: "hidden_acceptance".to_string(),
+            passed: status_success,
+        },
+        CaseResult {
+            name: "has_no_solution_search_policy_declared".to_string(),
+            passed: true,
+        },
+    ])
+}
+
+fn export_swe_bench_pro_fitness_evidence(
+    report: &FitnessReport,
+    export_dir: &Path,
+    manifest: &SweBenchProAccessManifest,
+    candidate_patch_hash: &str,
+    candidate_patch_applied: bool,
+    evaluator_checkout_mode: &str,
+    original_checkout_mutated: bool,
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(export_dir).map_err(|error| {
+        format!("failed to create SWE-Bench Pro fitness evidence export dir: {error}")
+    })?;
+    let value: Value = serde_json::from_slice(&fitness_evidence_artifact(
+        0,
+        report,
+        standalone_fitness_evidence_delta(report),
+    ))
+    .map_err(|error| format!("SWE-Bench Pro fitness evidence artifact was not JSON: {error}"))?;
+    let mut value = add_export_source_provenance(value)?;
+    let object = value.as_object_mut().ok_or_else(|| {
+        "SWE-Bench Pro fitness evidence must be a JSON object before provenance".to_string()
+    })?;
+    object.insert(
+        "evaluator_kind".to_string(),
+        Value::String("sealed_swe_bench_pro".to_string()),
+    );
+    object.insert(
+        "candidate_patch_hash".to_string(),
+        Value::String(candidate_patch_hash.to_string()),
+    );
+    object.insert(
+        "candidate_patch_applied".to_string(),
+        Value::Bool(candidate_patch_applied),
+    );
+    object.insert(
+        "evaluator_checkout_mode".to_string(),
+        Value::String(evaluator_checkout_mode.to_string()),
+    );
+    object.insert(
+        "original_checkout_mutated".to_string(),
+        Value::Bool(original_checkout_mutated),
+    );
+    object.insert(
+        "candidate_patch_preflight_checked".to_string(),
+        Value::Bool(true),
+    );
+    object.insert(
+        "candidate_patch_preflight_status".to_string(),
+        Value::String("passed".to_string()),
+    );
+    object.insert(
+        "swe_bench_pro_manifest_hash".to_string(),
+        Value::String(manifest.manifest_hash.clone()),
+    );
+    object.insert(
+        "swe_bench_pro_public_context_hash".to_string(),
+        Value::String(manifest.public_context_hash.clone()),
+    );
+    object.insert(
+        "swe_bench_pro_sealed_evaluator_command_hash".to_string(),
+        Value::String(manifest.sealed_evaluator_command_hash.clone()),
+    );
+    object.insert(
+        "swe_bench_pro_instance_id".to_string(),
+        Value::String(manifest.instance_id.clone()),
+    );
+    object.insert(
+        "swe_bench_pro_repo".to_string(),
+        Value::String(manifest.repo.clone()),
+    );
+    object.insert(
+        "swe_bench_pro_hidden_holdouts".to_string(),
+        Value::Bool(true),
+    );
+    object.insert(
+        "swe_bench_pro_github_solution_search_allowed".to_string(),
+        Value::Bool(false),
+    );
+    validate_exported_fitness_evidence_value(&value)?;
+    let path = fitness_evidence_export_path(
+        export_dir,
+        &format!("swe-bench-pro-{}", safe_file_stem(&manifest.instance_id)),
+        None,
+        0,
+        0,
+    );
+    let json = serde_json::to_vec_pretty(&value)
+        .map_err(|error| format!("failed to serialize SWE-Bench Pro fitness evidence: {error}"))?;
+    fs::write(&path, json).map_err(|error| {
+        format!("failed to write SWE-Bench Pro fitness evidence export: {error}")
+    })?;
+    Ok(path)
+}
+
+fn sanitized_swe_bench_pro_evidence_args(args: &[String]) -> String {
+    let mut sanitized = Vec::new();
+    let mut index = 1usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--manifest" => {
+                sanitized.push("--manifest".to_string());
+                sanitized.push("<redacted>".to_string());
+                index += 2;
+            }
+            "--candidate-patch" => {
+                sanitized.push("--candidate-patch".to_string());
+                sanitized.push("<redacted>".to_string());
+                index += 2;
+            }
+            "--checkout" => {
+                sanitized.push("--checkout".to_string());
+                sanitized.push("<redacted>".to_string());
+                index += 2;
+            }
+            "--output" => {
+                sanitized.push("--output".to_string());
+                sanitized.push("<redacted>".to_string());
+                index += 2;
+            }
+            other => {
+                sanitized.push(other.to_string());
+                index += 1;
+            }
+        }
+    }
+    sanitized.join(" ")
+}
+
+fn prepare_swe_bench_pro_evaluator_checkout(
+    config: &SweBenchProEvaluateConfig,
+) -> Result<
+    (
+        PathBuf,
+        bool,
+        &'static str,
+        Option<SeniorSweBenchCheckoutCleanup>,
+    ),
+    String,
+> {
+    if !config.apply_candidate_patch {
+        return Ok((config.checkout.clone(), false, "supplied_checkout", None));
+    }
+    let temp_root = env::var("A2D_SWE_BENCH_PRO_PATCHED_CHECKOUT_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            env::temp_dir().join(format!("a2d-swe-bench-pro-evaluator-{}", unique_suffix()))
+        });
+    validate_patched_checkout_temp_root(&config.checkout, &temp_root)
+        .map_err(|_| "SWE-Bench Pro patched checkout temp root is unsafe".to_string())?;
+    fs::create_dir_all(&temp_root)
+        .map_err(|_| "failed to create SWE-Bench Pro patched checkout temp root".to_string())?;
+    let evaluator_checkout = temp_root.join(format!("patched-checkout-{}", unique_suffix()));
+    copy_dir_recursively(&config.checkout, &evaluator_checkout)
+        .map_err(|_| "failed to prepare SWE-Bench Pro isolated checkout".to_string())?;
+    apply_candidate_patch_to_checkout(&evaluator_checkout, &config.candidate_patch).map_err(
+        |_| {
+            let _ = fs::remove_dir_all(&evaluator_checkout);
+            "failed to apply SWE-Bench Pro candidate patch in isolated checkout".to_string()
+        },
+    )?;
+    Ok((
+        evaluator_checkout.clone(),
+        true,
+        "isolated_copy",
+        Some(SeniorSweBenchCheckoutCleanup {
+            path: evaluator_checkout,
+        }),
+    ))
+}
+
+fn run_swe_bench_pro_sealed_evaluator(
+    config: &SweBenchProEvaluateConfig,
+    manifest: &SweBenchProAccessManifest,
+    candidate_patch_hash: &str,
+    evaluator_checkout: &Path,
+    candidate_patch_applied: bool,
+    evaluator_checkout_mode: &str,
+) -> Result<std::process::Output, String> {
+    let executable = manifest
+        .sealed_evaluator_command
+        .first()
+        .ok_or_else(|| "SWE-Bench Pro sealed evaluator command is empty".to_string())?;
+    let mut command = Command::new(executable);
+    command.args(&manifest.sealed_evaluator_command[1..]);
+    command.current_dir(evaluator_checkout);
+    command.envs(provider_no_public_solution_search_env());
+    command.env("A2D_SWE_BENCH_PRO_INSTANCE_ID", &manifest.instance_id);
+    command.env("A2D_SWE_BENCH_PRO_REPO", &manifest.repo);
+    command.env(
+        "A2D_SWE_BENCH_PRO_CANDIDATE_PATCH_HASH",
+        candidate_patch_hash,
+    );
+    command.env("A2D_SWE_BENCH_PRO_CANDIDATE_PATCH", &config.candidate_patch);
+    command.env(
+        "A2D_SWE_BENCH_PRO_CANDIDATE_PATCH_APPLIED",
+        if candidate_patch_applied {
+            "true"
+        } else {
+            "false"
+        },
+    );
+    command.env(
+        "A2D_SWE_BENCH_PRO_EVALUATOR_CHECKOUT_MODE",
+        evaluator_checkout_mode,
+    );
+    command.env("A2D_SWE_BENCH_PRO_GITHUB_SOLUTION_SEARCH_ALLOWED", "false");
+    command.env("A2D_SWE_BENCH_PRO_PUBLIC_SOLUTION_SEARCH_FORBIDDEN", "true");
+    remove_network_configuration_env(&mut command);
+    command
+        .output()
+        .map_err(|_| "failed to run sealed SWE-Bench Pro evaluator".to_string())
 }
 
 fn load_or_seed_germline() -> Germline {
@@ -13816,11 +14339,16 @@ fn collect_source_provenance() -> Result<SourceProvenance, String> {
     reject_untracked_source_files(&source_diff_scope, &source_status)?;
     let source_tree_dirty = !source_status.is_empty();
     let source_diff_hash = git_diff_hash_for_scope(&source_diff_scope)?;
-    let command = env::args()
-        .skip(1)
-        .map(|arg| command_path_arg_artifact_string(&arg))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let args = env::args().collect::<Vec<_>>();
+    let command = if args.get(1).map(String::as_str) == Some("swe-bench-pro-evaluate") {
+        sanitized_swe_bench_pro_evidence_args(&args)
+    } else {
+        args.iter()
+            .skip(1)
+            .map(|arg| command_path_arg_artifact_string(arg))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
     Ok(SourceProvenance {
         source_revision,
         source_tree_dirty,
@@ -14063,6 +14591,13 @@ fn validate_exportable_fitness_evidence_shape(bytes: &[u8]) -> Result<Value, Str
         "official_hidden_holdouts",
         "official_github_solution_search_allowed",
         "official_benchmark_provided_command",
+        "swe_bench_pro_manifest_hash",
+        "swe_bench_pro_public_context_hash",
+        "swe_bench_pro_sealed_evaluator_command_hash",
+        "swe_bench_pro_instance_id",
+        "swe_bench_pro_repo",
+        "swe_bench_pro_hidden_holdouts",
+        "swe_bench_pro_github_solution_search_allowed",
     ]);
     for field in object.keys() {
         if !required_fields.contains(field.as_str())
@@ -14166,6 +14701,7 @@ fn validate_exportable_fitness_evidence_shape(bytes: &[u8]) -> Result<Value, Str
 
     validate_optional_evaluator_kind(&value)?;
     validate_official_evaluator_manifest_provenance(&value)?;
+    validate_swe_bench_pro_fitness_provenance(&value)?;
 
     Ok(value)
 }
@@ -14262,6 +14798,7 @@ fn validate_exported_fitness_evidence_value(value: &Value) -> Result<(), String>
     validate_optional_patch_application_provenance(value)?;
     validate_optional_candidate_patch_preflight_provenance(value)?;
     validate_official_evaluator_manifest_provenance(value)?;
+    validate_swe_bench_pro_fitness_provenance(value)?;
 
     Ok(())
 }
@@ -14355,6 +14892,90 @@ fn validate_optional_candidate_patch_preflight_provenance(value: &Value) -> Resu
                     .to_string(),
             );
         }
+    }
+    Ok(())
+}
+
+fn validate_swe_bench_pro_fitness_provenance(value: &Value) -> Result<(), String> {
+    let pro_fields = [
+        "swe_bench_pro_manifest_hash",
+        "swe_bench_pro_public_context_hash",
+        "swe_bench_pro_sealed_evaluator_command_hash",
+        "swe_bench_pro_instance_id",
+        "swe_bench_pro_repo",
+        "swe_bench_pro_hidden_holdouts",
+        "swe_bench_pro_github_solution_search_allowed",
+    ];
+    let evaluator_kind = value.get("evaluator_kind").and_then(Value::as_str);
+    let has_pro_fields = pro_fields.iter().any(|field| value.get(field).is_some());
+    if evaluator_kind != Some("sealed_swe_bench_pro") {
+        if has_pro_fields {
+            return Err(
+                "SWE-Bench Pro provenance present for non-Pro evaluator evidence".to_string(),
+            );
+        }
+        return Ok(());
+    }
+    for field in pro_fields {
+        if value.get(field).is_none() {
+            return Err(format!("sealed SWE-Bench Pro evidence missing {field}"));
+        }
+    }
+    for field in [
+        "candidate_patch_path",
+        "candidate_patch_artifact_path",
+        "evaluator_checkout",
+        "candidate_patch_preflight_command",
+        "official_evaluator_manifest_path",
+        "official_evaluator_manifest_inspection_path",
+        "official_benchmark_url",
+        "official_benchmark_provided_command",
+    ] {
+        if value.get(field).is_some() {
+            return Err(format!(
+                "sealed SWE-Bench Pro evidence contains non-redacted field {field}"
+            ));
+        }
+    }
+    for field in [
+        "swe_bench_pro_manifest_hash",
+        "swe_bench_pro_public_context_hash",
+        "swe_bench_pro_sealed_evaluator_command_hash",
+    ] {
+        let hash = value
+            .get(field)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("sealed SWE-Bench Pro evidence {field} is not a string"))?;
+        validate_git_object_hash(hash)
+            .map_err(|error| format!("sealed SWE-Bench Pro evidence {field} {error}"))?;
+    }
+    let instance_id = value
+        .get("swe_bench_pro_instance_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "sealed SWE-Bench Pro evidence swe_bench_pro_instance_id is not a string".to_string()
+        })?;
+    validate_safe_identifier_text(instance_id, "swe_bench_pro_instance_id", false)?;
+    let repo = value
+        .get("swe_bench_pro_repo")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "sealed SWE-Bench Pro evidence swe_bench_pro_repo is not a string".to_string()
+        })?;
+    validate_safe_identifier_text(repo, "swe_bench_pro_repo", true)?;
+    if value
+        .get("swe_bench_pro_hidden_holdouts")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err("sealed SWE-Bench Pro evidence hidden holdouts are not true".to_string());
+    }
+    if value
+        .get("swe_bench_pro_github_solution_search_allowed")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err("sealed SWE-Bench Pro evidence allows GitHub solution search".to_string());
     }
     Ok(())
 }
@@ -14637,7 +15258,7 @@ fn validate_optional_evaluator_kind(value: &Value) -> Result<(), String> {
             .ok_or_else(|| "fitness evidence evaluator_kind is not a string".to_string())?;
         if !matches!(
             evaluator_kind,
-            "provided_local_command" | "official_senior_swe_bench"
+            "provided_local_command" | "official_senior_swe_bench" | "sealed_swe_bench_pro"
         ) {
             return Err(format!(
                 "fitness evidence evaluator_kind is not recognized: {evaluator_kind}"
