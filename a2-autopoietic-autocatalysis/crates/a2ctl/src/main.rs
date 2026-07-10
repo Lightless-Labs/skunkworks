@@ -3624,14 +3624,102 @@ fn yes_no(value: bool) -> &'static str {
 
 enum ParsedRunInput {
     Plain(String),
-    Json(RunInputTask),
+    Json(Box<RunInputTask>),
 }
 
 fn parse_run_input(line: &str) -> ParsedRunInput {
     match serde_json::from_str::<RunInputTask>(line) {
-        Ok(task) => ParsedRunInput::Json(task),
+        Ok(task) => ParsedRunInput::Json(Box::new(task)),
         Err(_) => ParsedRunInput::Plain(line.to_string()),
     }
+}
+
+fn is_senior_swe_bench_input(input: &RunInputTask) -> bool {
+    input.benchmark_source.as_deref().is_some_and(|value| {
+        let normalized = value.trim().to_ascii_lowercase();
+        normalized == "senior-swe-bench"
+            || normalized == "swe-bench-pro"
+            || normalized == "swebench-pro"
+    })
+}
+
+fn prompt_safe_run_title(input: &RunInputTask) -> String {
+    if is_senior_swe_bench_input(input) {
+        "Senior SWE Bench task".into()
+    } else {
+        input
+            .task_id
+            .as_deref()
+            .filter(|task_id| !task_id.trim().is_empty())
+            .unwrap_or_else(|| derive_run_title(&input.problem_statement))
+            .to_string()
+    }
+}
+
+fn sanitize_senior_swe_prompt_text(value: &str) -> String {
+    const PRIVATE_PREFIXES: &[&str] = &[
+        "repo:",
+        "repo_url:",
+        "task_url:",
+        "issue_number:",
+        "base_commit:",
+        "source_head:",
+        "commit_sha:",
+        "revision:",
+        "solution:",
+        "patch:",
+        "diff:",
+        "test_patch:",
+        "source_path:",
+        "file_path:",
+        "dataset_path:",
+    ];
+    value
+        .lines()
+        .filter(|line| {
+            let lower = line.trim().to_ascii_lowercase();
+            !lower.contains("://")
+                && !PRIVATE_PREFIXES
+                    .iter()
+                    .any(|prefix| lower.starts_with(prefix))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+fn prompt_safe_problem_statement(input: &RunInputTask) -> String {
+    if is_senior_swe_bench_input(input) {
+        sanitize_senior_swe_prompt_text(&input.problem_statement)
+    } else {
+        input.problem_statement.clone()
+    }
+}
+
+fn has_private_senior_swe_provenance(input: &RunInputTask) -> bool {
+    input
+        .senior_swe_bench_repo
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || input
+            .senior_swe_bench_task_url
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || input.senior_swe_bench_issue_number.is_some()
+        || input
+            .senior_swe_bench_base_commit
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || input
+            .senior_swe_bench_source_head
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || input
+            .senior_swe_bench_export_sha256
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || input.senior_swe_bench_export_row_index.is_some()
 }
 
 fn benchmark_provenance_lines(input: &RunInputTask) -> Vec<String> {
@@ -3643,46 +3731,12 @@ fn benchmark_provenance_lines(input: &RunInputTask) -> Vec<String> {
     {
         lines.push(format!("benchmark_source: {}", value.trim()));
     }
-    if let Some(value) = input
-        .senior_swe_bench_repo
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        lines.push(format!("senior_swe_bench_repo: {}", value.trim()));
-    }
-    if let Some(value) = input
-        .senior_swe_bench_task_url
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        lines.push(format!("senior_swe_bench_task_url: {}", value.trim()));
-    }
-    if let Some(value) = input.senior_swe_bench_issue_number {
-        lines.push(format!("senior_swe_bench_issue_number: {value}"));
-    }
-    if let Some(value) = input
-        .senior_swe_bench_base_commit
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        lines.push(format!("senior_swe_bench_base_commit: {}", value.trim()));
-    }
-    if let Some(value) = input
-        .senior_swe_bench_source_head
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        lines.push(format!("senior_swe_bench_source_head: {}", value.trim()));
-    }
-    if let Some(value) = input
-        .senior_swe_bench_export_sha256
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        lines.push(format!("senior_swe_bench_export_sha256: {}", value.trim()));
-    }
-    if let Some(value) = input.senior_swe_bench_export_row_index {
-        lines.push(format!("senior_swe_bench_export_row_index: {value}"));
+    // Keep source/solution-adjacent Senior SWE metadata out of the prompt that
+    // is handed to A². The raw JSON input may retain repo/task URL/issue/commit
+    // provenance for operator-side audit, but TaskContract.description is retry
+    // context/prompt material and must not expose benchmark source locators.
+    if has_private_senior_swe_provenance(input) {
+        lines.push("senior_swe_bench_private_provenance: withheld_from_prompt".into());
     }
     lines
 }
@@ -3699,12 +3753,10 @@ fn task_from_run_input(
             metadata: vec![],
         }),
         ParsedRunInput::Json(input) => {
-            let title = input
-                .task_id
-                .as_deref()
-                .filter(|task_id| !task_id.trim().is_empty())
-                .unwrap_or_else(|| derive_run_title(&input.problem_statement));
-            let mut task = ingester.from_human(title, &input.problem_statement);
+            let input = *input;
+            let title = prompt_safe_run_title(&input);
+            let prompt_statement = prompt_safe_problem_statement(&input);
+            let mut task = ingester.from_human(&title, &prompt_statement);
             let benchmark_provenance = benchmark_provenance_lines(&input);
             if !benchmark_provenance.is_empty()
                 && !task.description.contains("## Benchmark Provenance")
@@ -6633,12 +6685,12 @@ mod tests {
     }
 
     #[test]
-    fn json_run_input_preserves_senior_swe_bench_provenance_in_task_description() {
+    fn json_run_input_preserves_only_prompt_safe_senior_swe_bench_provenance_in_task_description() {
         let ingester = a2_sensorium::ingest::Ingester::new(build_budget(50_000, 300));
         let task = task_from_run_input(
             &ingester,
             parse_run_input(
-                r#"{"task_id":"senior-swe-bench-better-auth-fix-api-key-run","problem_statement":"Fix API-key secondary storage behavior","benchmark_source":"senior-swe-bench","no_external_solution_search":true,"network_policy":"Isolated","senior_swe_bench_repo":"better-auth/better-auth","senior_swe_bench_task_url":"https://senior-swe-bench.snorkel.ai/tasks/better-auth-fix-api-key-run","senior_swe_bench_issue_number":9187,"senior_swe_bench_base_commit":"0123456789abcdef0123456789abcdef01234567","senior_swe_bench_export_sha256":"2df654573928cd0977fd402ca047215d45220a9ef72699643e1405e0a9165a4a","senior_swe_bench_export_row_index":1}"#,
+                r#"{"task_id":"senior-swe-bench-synthetic-redaction-fixture","problem_statement":"Fix synthetic benchmark behavior\ntask_url: https://private-benchmark.example.invalid/tasks/synthetic-redaction-fixture\ncommit_sha: fedcba9876543210fedcba9876543210fedcba98\nrevision: private-revision-label\nsolution: SECRET_SOLUTION_SHOULD_NOT_PROMPT\npatch: SECRET_PATCH_SHOULD_NOT_PROMPT\ndiff: SECRET_DIFF_SHOULD_NOT_PROMPT\ntest_patch: SECRET_TEST_PATCH_SHOULD_NOT_PROMPT\nsource_path: /private/source/path","benchmark_source":"senior-swe-bench","no_external_solution_search":true,"network_policy":"Isolated","senior_swe_bench_repo":"example/project","senior_swe_bench_task_url":"https://private-benchmark.example.invalid/tasks/synthetic-redaction-fixture","senior_swe_bench_issue_number":9187,"senior_swe_bench_base_commit":"0123456789abcdef0123456789abcdef01234567","senior_swe_bench_source_head":"fedcba9876543210fedcba9876543210fedcba98","senior_swe_bench_export_sha256":"2df654573928cd0977fd402ca047215d45220a9ef72699643e1405e0a9165a4a","senior_swe_bench_export_row_index":1}"#,
             ),
         );
 
@@ -6652,27 +6704,49 @@ mod tests {
             a2_core::protocol::TaskSource::External { ref origin } if origin == "senior-swe-bench"
         ));
         assert!(task.description.contains("## Benchmark Provenance"));
+        assert!(!task.description.contains("synthetic-redaction-fixture"));
         assert!(
             task.description
-                .contains("senior_swe_bench_repo: better-auth/better-auth")
+                .contains("senior_swe_bench_private_provenance: withheld_from_prompt")
         );
-        assert!(task.description.contains(
-            "senior_swe_bench_task_url: https://senior-swe-bench.snorkel.ai/tasks/better-auth-fix-api-key-run"
-        ));
+        assert!(!task.description.contains("senior_swe_bench_repo:"));
+        assert!(!task.description.contains("senior_swe_bench_task_url:"));
+        assert!(!task.description.contains("senior_swe_bench_issue_number:"));
+        assert!(!task.description.contains("senior_swe_bench_base_commit:"));
+        assert!(!task.description.contains("https://"));
+        assert!(!task.description.contains("/tasks/"));
         assert!(
-            task.description
-                .contains("senior_swe_bench_issue_number: 9187")
+            !task
+                .description
+                .contains("SECRET_SOLUTION_SHOULD_NOT_PROMPT")
+        );
+        assert!(!task.description.contains("SECRET_PATCH_SHOULD_NOT_PROMPT"));
+        assert!(!task.description.contains("SECRET_DIFF_SHOULD_NOT_PROMPT"));
+        assert!(
+            !task
+                .description
+                .contains("SECRET_TEST_PATCH_SHOULD_NOT_PROMPT")
+        );
+        assert!(!task.description.contains("/private/source/path"));
+        assert!(!task.description.contains("fedcba9876543210"));
+        assert!(!task.description.contains("private-revision-label"));
+        assert!(!task.description.contains("commit_sha:"));
+        assert!(!task.description.contains("revision:"));
+        assert!(!task.description.contains("senior_swe_bench_source_head:"));
+        assert!(!task.description.contains("solution:"));
+        assert!(!task.description.contains("patch:"));
+        assert!(!task.description.contains("diff:"));
+        assert!(!task.description.contains("test_patch:"));
+        assert!(!task.description.contains("senior_swe_bench_export_sha256:"));
+        assert!(
+            !task
+                .description
+                .contains("senior_swe_bench_export_row_index:")
         );
         assert!(
-            task.description
-                .contains("senior_swe_bench_base_commit: 0123456789abcdef0123456789abcdef01234567")
-        );
-        assert!(task.description.contains(
-            "senior_swe_bench_export_sha256: 2df654573928cd0977fd402ca047215d45220a9ef72699643e1405e0a9165a4a"
-        ));
-        assert!(
-            task.description
-                .contains("senior_swe_bench_export_row_index: 1")
+            !task
+                .description
+                .contains("2df654573928cd0977fd402ca047215d45220a9ef72699643e1405e0a9165a4a")
         );
     }
 

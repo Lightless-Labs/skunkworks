@@ -185,18 +185,41 @@ def tasks_from_export_data(data: Any) -> list[Any]:
     raise ValueError("Senior SWE Bench export must be a JSON object, JSON array, or JSONL file")
 
 
-def senior_swe_task_id(raw_task: dict[str, Any], index: int) -> str:
-    raw_id = (
-        raw_task.get("task_id")
-        or raw_task.get("id")
-        or raw_task.get("instance_id")
-        or raw_task.get("name")
-        or f"local-{index}"
-    )
-    task_id = str(raw_id).strip()
-    if task_id.startswith("senior-swe-bench-"):
-        return task_id
-    return f"senior-swe-bench-{task_id}"
+def senior_swe_task_id(index: int, export_sha256: str) -> str:
+    opaque = hashlib.sha256(f"{export_sha256}:{index}".encode()).hexdigest()[:16]
+    return f"senior-swe-bench-{opaque}"
+
+
+SENIOR_SWE_PROMPT_PRIVATE_PREFIXES = (
+    "repo:",
+    "task_url:",
+    "issue_number:",
+    "base_commit:",
+    "source_head:",
+    "commit_sha:",
+    "revision:",
+    "solution:",
+    "patch:",
+    "diff:",
+    "test_patch:",
+    "repo_url:",
+    "source_path:",
+    "file_path:",
+    "dataset_path:",
+)
+
+
+def sanitize_senior_swe_statement(statement: str) -> str:
+    safe_lines = []
+    for line in statement.splitlines():
+        stripped = line.strip()
+        lower = stripped.lower()
+        if "://" in lower:
+            continue
+        if lower.startswith(SENIOR_SWE_PROMPT_PRIVATE_PREFIXES):
+            continue
+        safe_lines.append(line)
+    return "\n".join(safe_lines).strip()
 
 
 def senior_swe_problem_statement(raw_task: dict[str, Any]) -> str:
@@ -204,13 +227,18 @@ def senior_swe_problem_statement(raw_task: dict[str, Any]) -> str:
         value = raw_task.get(key)
         if isinstance(value, str) and value.strip():
             title = raw_task.get("title")
-            statement = value.strip()
-            if isinstance(title, str) and title.strip() and title.strip() not in statement:
-                return f"{title.strip()}\n\n{statement}"
+            statement = sanitize_senior_swe_statement(value.strip())
+            safe_title = (
+                sanitize_senior_swe_statement(title.strip())
+                if isinstance(title, str) and title.strip()
+                else ""
+            )
+            if safe_title and safe_title not in statement:
+                return f"{safe_title}\n\n{statement}".strip()
             return statement
     title = raw_task.get("title")
     if isinstance(title, str) and title.strip():
-        return title.strip()
+        return sanitize_senior_swe_statement(title.strip())
     raise ValueError(
         "Senior SWE Bench export row is missing problem_statement/prompt/instructions/description"
     )
@@ -227,13 +255,40 @@ def senior_swe_metadata_from_raw(raw_task: dict[str, Any]) -> dict[str, Any]:
     return metadata
 
 
+def prompt_safe_senior_swe_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, value in metadata.items():
+        label = key.removeprefix("senior_swe_bench_")
+        text = str(value)
+        if label in {
+            "repo",
+            "task_url",
+            "issue_number",
+            "base_commit",
+            "source_head",
+            "commit_sha",
+            "revision",
+        }:
+            continue
+        if (
+            "://" in text
+            or "/" in text
+            or text.startswith("~")
+            or text.endswith((".json", ".jsonl"))
+        ):
+            continue
+        safe[key] = value
+    return safe
+
+
 def senior_swe_problem_with_metadata(statement: str, metadata: dict[str, Any]) -> str:
     lines = []
-    if metadata:
+    safe_metadata = prompt_safe_senior_swe_metadata(metadata)
+    if safe_metadata:
         lines.append("Senior SWE Bench metadata:")
-        for key in sorted(metadata):
+        for key in sorted(safe_metadata):
             label = key.removeprefix("senior_swe_bench_")
-            lines.append(f"- {label}: {metadata[key]}")
+            lines.append(f"- {label}: {safe_metadata[key]}")
         lines.append("")
     lines.append(statement)
     return "\n".join(lines).strip()
@@ -246,26 +301,21 @@ def load_senior_swe_bench_export(path: Path, limit: int) -> list[dict[str, Any]]
     for index, raw_task in export_rows_from_path(path):
         if len(tasks) >= limit:
             break
-        metadata: dict[str, Any] = {}
         if isinstance(raw_task, str):
-            task_id = f"senior-swe-bench-local-{index}"
-            statement = raw_task.strip()
+            task_id = senior_swe_task_id(index, export_sha256)
+            statement = sanitize_senior_swe_statement(raw_task.strip())
         elif isinstance(raw_task, dict):
-            task_id = senior_swe_task_id(raw_task, index)
+            task_id = senior_swe_task_id(index, export_sha256)
             statement = senior_swe_problem_statement(raw_task)
-            metadata = senior_swe_metadata_from_raw(raw_task)
         else:
             raise ValueError(f"Senior SWE Bench export row {index} is not an object or string")
         if not statement:
             raise ValueError(f"Senior SWE Bench export row {index} has an empty problem statement")
         task = task_payload(
             task_id,
-            senior_swe_problem_with_metadata(statement, metadata),
+            statement,
             benchmark_source="senior-swe-bench",
         )
-        task["senior_swe_bench_export_sha256"] = export_sha256
-        task["senior_swe_bench_export_row_index"] = index
-        task.update(metadata)
         tasks.append(task)
     return tasks
 
@@ -295,11 +345,15 @@ def run_self_test() -> None:
         {
             "id": "repo-issue-1",
             "title": "Fix durable audit rows",
-            "problem_statement": "Repair the verifier without consulting public patches.",
+            "problem_statement": "Repair the verifier without consulting public patches.\ntask_url: https://private-benchmark.example.invalid/tasks/repo-issue-1\ncommit_sha: fedcba9876543210fedcba9876543210fedcba98\nrevision: private-revision-label\nsolution: SECRET_SOLUTION_SHOULD_NOT_BE_INCLUDED\npatch: SECRET_PATCH_SHOULD_NOT_BE_INCLUDED\ndiff: SECRET_DIFF_SHOULD_NOT_BE_INCLUDED\ntest_patch: SECRET_TEST_PATCH_SHOULD_NOT_BE_INCLUDED\nrepo_url: https://example.invalid/private/repo\nsource_path: /private/source/path",
             "repo": "example/project",
-            "task_url": "https://senior-swe-bench.snorkel.ai/tasks/repo-issue-1",
+            "task_url": "https://private-benchmark.example.invalid/tasks/repo-issue-1",
             "issue_number": 9187,
             "base_commit": "0123456789abcdef0123456789abcdef01234567",
+            "commit_sha": "fedcba9876543210fedcba9876543210fedcba98",
+            "revision": "private-revision-label",
+            "solution": "SECRET_SOLUTION_SHOULD_NOT_BE_INCLUDED",
+            "patch": "SECRET_PATCH_SHOULD_NOT_BE_INCLUDED",
         },
         {"task_id": "senior-swe-bench-repo-issue-2", "prompt": "Add a regression test."},
     ]
@@ -308,23 +362,42 @@ def run_self_test() -> None:
         handle.flush()
         senior_tasks = load_senior_swe_bench_export(Path(handle.name), limit=10)
     assert_benchmark_payloads_have_policy(senior_tasks)
-    assert senior_tasks[0]["task_id"] == "senior-swe-bench-repo-issue-1"
-    assert senior_tasks[1]["task_id"] == "senior-swe-bench-repo-issue-2"
+    assert senior_tasks[0]["task_id"].startswith("senior-swe-bench-")
+    assert senior_tasks[1]["task_id"].startswith("senior-swe-bench-")
+    assert senior_tasks[0]["task_id"] != senior_tasks[1]["task_id"]
+    assert "repo-issue" not in senior_tasks[0]["task_id"]
+    assert "repo-issue" not in senior_tasks[1]["task_id"]
+    assert "row-" not in senior_tasks[0]["task_id"]
+    assert "row-" not in senior_tasks[1]["task_id"]
     assert senior_tasks[0]["benchmark_source"] == "senior-swe-bench"
-    assert senior_tasks[0]["senior_swe_bench_export_row_index"] == 1
-    assert senior_tasks[1]["senior_swe_bench_export_row_index"] == 2
-    assert isinstance(senior_tasks[0]["senior_swe_bench_export_sha256"], str)
-    assert len(senior_tasks[0]["senior_swe_bench_export_sha256"]) == 64
-    assert senior_tasks[0]["senior_swe_bench_repo"] == "example/project"
-    assert senior_tasks[0]["senior_swe_bench_task_url"].endswith("/tasks/repo-issue-1")
-    assert senior_tasks[0]["senior_swe_bench_issue_number"] == 9187
-    assert senior_tasks[0]["senior_swe_bench_base_commit"] == "0123456789abcdef0123456789abcdef01234567"
-    assert "Senior SWE Bench metadata:" in senior_tasks[0]["problem_statement"]
-    assert "repo: example/project" in senior_tasks[0]["problem_statement"]
-    assert (
-        senior_tasks[0]["senior_swe_bench_export_sha256"]
-        == senior_tasks[1]["senior_swe_bench_export_sha256"]
-    )
+    assert "senior_swe_bench_export_row_index" not in senior_tasks[0]
+    assert "senior_swe_bench_export_sha256" not in senior_tasks[0]
+    assert "senior_swe_bench_repo" not in senior_tasks[0]
+    assert "senior_swe_bench_task_url" not in senior_tasks[0]
+    assert "senior_swe_bench_issue_number" not in senior_tasks[0]
+    assert "senior_swe_bench_base_commit" not in senior_tasks[0]
+    assert "Senior SWE Bench metadata:" not in senior_tasks[0]["problem_statement"]
+    assert "repo: example/project" not in senior_tasks[0]["problem_statement"]
+    assert "task_url:" not in senior_tasks[0]["problem_statement"]
+    assert "issue_number:" not in senior_tasks[0]["problem_statement"]
+    assert "base_commit:" not in senior_tasks[0]["problem_statement"]
+    assert "0123456789abcdef" not in senior_tasks[0]["problem_statement"]
+    assert "https://" not in senior_tasks[0]["problem_statement"]
+    assert "/tasks/" not in senior_tasks[0]["problem_statement"]
+    assert str(Path(handle.name)) not in senior_tasks[0]["problem_statement"]
+    assert "SECRET_SOLUTION" not in senior_tasks[0]["problem_statement"]
+    assert "SECRET_PATCH" not in senior_tasks[0]["problem_statement"]
+    assert "SECRET_DIFF" not in senior_tasks[0]["problem_statement"]
+    assert "SECRET_TEST_PATCH" not in senior_tasks[0]["problem_statement"]
+    assert "private/source/path" not in senior_tasks[0]["problem_statement"]
+    assert "private-revision-label" not in senior_tasks[0]["problem_statement"]
+    assert "fedcba9876543210" not in senior_tasks[0]["problem_statement"]
+    assert "solution:" not in senior_tasks[0]["problem_statement"].lower()
+    assert "patch:" not in senior_tasks[0]["problem_statement"].lower()
+    assert "diff:" not in senior_tasks[0]["problem_statement"].lower()
+    assert "test_patch:" not in senior_tasks[0]["problem_statement"].lower()
+    assert "repo_url:" not in senior_tasks[0]["problem_statement"].lower()
+    assert "source_path:" not in senior_tasks[0]["problem_statement"].lower()
     assert "Fix durable audit rows" in senior_tasks[0]["problem_statement"]
     for task in senior_tasks:
         assert task["network_policy"] == DEFAULT_NETWORK_POLICY
@@ -337,10 +410,15 @@ def run_self_test() -> None:
         handle.flush()
         limited_jsonl_tasks = load_senior_swe_bench_export(Path(handle.name), limit=2)
     assert len(limited_jsonl_tasks) == 2
-    assert limited_jsonl_tasks[0]["task_id"] == "senior-swe-bench-jsonl-1"
-    assert limited_jsonl_tasks[0]["senior_swe_bench_export_row_index"] == 1
-    assert limited_jsonl_tasks[1]["task_id"] == "senior-swe-bench-jsonl-2"
-    assert limited_jsonl_tasks[1]["senior_swe_bench_export_row_index"] == 3
+    assert limited_jsonl_tasks[0]["task_id"].startswith("senior-swe-bench-")
+    assert "senior_swe_bench_export_row_index" not in limited_jsonl_tasks[0]
+    assert limited_jsonl_tasks[1]["task_id"].startswith("senior-swe-bench-")
+    assert "senior_swe_bench_export_row_index" not in limited_jsonl_tasks[1]
+    assert limited_jsonl_tasks[0]["task_id"] != limited_jsonl_tasks[1]["task_id"]
+    assert "jsonl-1" not in limited_jsonl_tasks[0]["task_id"]
+    assert "jsonl-2" not in limited_jsonl_tasks[1]["task_id"]
+    assert "row-" not in limited_jsonl_tasks[0]["task_id"]
+    assert "row-" not in limited_jsonl_tasks[1]["task_id"]
     assert limited_jsonl_tasks[0]["benchmark_source"] == "senior-swe-bench"
     assert limited_jsonl_tasks[0]["network_policy"] == DEFAULT_NETWORK_POLICY
     assert limited_jsonl_tasks[0]["no_external_solution_search"] is True

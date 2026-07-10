@@ -1169,9 +1169,12 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn pi_provider_uses_pi_model_ids() {
-        let provider = PiProvider::new(PiProvider::DEFAULT_MODEL_ID).await.unwrap();
+    #[test]
+    fn pi_provider_uses_pi_model_ids_without_requiring_harness_binary() {
+        let provider = PiProvider {
+            model_id: PiProvider::DEFAULT_MODEL_ID.to_string(),
+            binary_path: "pi".to_string(),
+        };
 
         assert_eq!(provider.provider_id(), "pi");
         assert_eq!(provider.model_id(), "zai/glm-5.1");

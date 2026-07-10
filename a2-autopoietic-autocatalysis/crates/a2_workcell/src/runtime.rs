@@ -7,7 +7,7 @@
 //! The runtime enforces budget limits, membrane policies, and captures
 //! full lineage for every action.
 
-use a2_core::error::A2Result;
+use a2_core::error::{A2Error, A2Result};
 use a2_core::id::*;
 use a2_core::protocol::*;
 use a2_core::traits::*;
@@ -325,6 +325,68 @@ fn external_verification_focus(verification: &ExternalVerification) -> Option<St
     verification_failure_focus(&combined, 1_200)
 }
 
+fn benchmark_sensitive_runtime_text(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("senior swe bench metadata")
+        || lower.contains("swe-bench pro metadata")
+        || lower.contains("problem_statement")
+        || lower.contains("# task:")
+        || lower.contains("## task")
+}
+
+fn task_requires_redacted_catalyst_errors(task: &TaskContract) -> bool {
+    let source_is_benchmark = match &task.source {
+        TaskSource::External { origin } => {
+            let origin = origin.to_ascii_lowercase();
+            origin.contains("senior-swe-bench")
+                || origin.contains("swe-bench")
+                || origin.contains("swebench")
+        }
+        TaskSource::Internal { .. } => false,
+        TaskSource::Sensorium { evidence_id } => benchmark_sensitive_runtime_text(evidence_id),
+    };
+    task.no_external_solution_search
+        || source_is_benchmark
+        || benchmark_sensitive_runtime_text(&task.title)
+        || benchmark_sensitive_runtime_text(&task.description)
+}
+
+fn safe_catalyst_error_focus(error: &A2Error, task: &TaskContract) -> String {
+    let raw = match error {
+        A2Error::CatalystFailure(_, message)
+        | A2Error::ProviderError(message)
+        | A2Error::PromotionRejected(message)
+        | A2Error::RollbackRequired(message)
+        | A2Error::MembraneDenied(message) => message.as_str(),
+        A2Error::TaskRejected(_, message) => message.as_str(),
+        A2Error::BudgetExceeded(_, message) => message.as_str(),
+        A2Error::Timeout { operation, .. } => operation.as_str(),
+        A2Error::InvariantViolation { detail, .. } => detail.as_str(),
+        A2Error::ConstitutionalViolation { clause } => clause.as_str(),
+        A2Error::Io(_) | A2Error::Json(_) => {
+            "catalyst execution failed before producing a candidate patch"
+        }
+    };
+    if task_requires_redacted_catalyst_errors(task) || benchmark_sensitive_runtime_text(raw) {
+        "catalyst execution failed before producing a candidate patch; detailed error withheld to avoid leaking benchmark task text".into()
+    } else {
+        compact_snippet(raw, 600)
+    }
+}
+
+fn catalyst_failure_verification(failure_focus: String) -> ExternalVerification {
+    ExternalVerification {
+        passed: false,
+        command: "catalyst.execute".into(),
+        exit_code: None,
+        failing_tests: vec![],
+        failure_focus: vec![failure_focus],
+        stdout_excerpt: String::new(),
+        stderr_excerpt: String::new(),
+        verified_at: Utc::now(),
+    }
+}
+
 /// Render a prior LineageRecord as a prompt motif for the context pack.
 fn render_prior_motif(record: &LineageRecord, index: usize) -> String {
     let model = record
@@ -511,6 +573,7 @@ pub async fn run_workcell(
     )
     .await;
 
+    let mut no_candidate_verifications = Vec::new();
     let patch = match timed {
         Err(_elapsed) => {
             tracing::warn!(
@@ -518,6 +581,10 @@ pub async fn run_workcell(
                 timeout_secs = config.budget.max_duration_secs,
                 "catalyst timed out — wall-clock budget exceeded"
             );
+            no_candidate_verifications.push(catalyst_failure_verification(format!(
+                "catalyst timed out before producing a candidate patch after {}s wall-clock budget",
+                config.budget.max_duration_secs
+            )));
             None
         }
         Ok(Ok(p)) => {
@@ -533,6 +600,9 @@ pub async fn run_workcell(
         }
         Ok(Err(e)) => {
             tracing::error!(workcell = %config.workcell_id, "catalyst failed: {e}");
+            no_candidate_verifications.push(catalyst_failure_verification(
+                safe_catalyst_error_focus(&e, &config.task),
+            ));
             None
         }
     };
@@ -565,7 +635,7 @@ pub async fn run_workcell(
         external_verifications: patch
             .as_ref()
             .map(|p| p.worktree_verifications.clone())
-            .unwrap_or_default(),
+            .unwrap_or(no_candidate_verifications),
         parent_germline: config.germline_version,
         model_attributions: patch
             .as_ref()
@@ -748,6 +818,11 @@ mod tests {
         verification: ExternalVerification,
     }
 
+    struct FailingCatalyst {
+        id: CatalystId,
+        message: String,
+    }
+
     #[async_trait::async_trait]
     impl Catalyst for VerifierCatalyst {
         fn id(&self) -> &CatalystId {
@@ -788,6 +863,64 @@ mod tests {
                 },
                 created_at: Utc::now(),
             })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Catalyst for FailingCatalyst {
+        fn id(&self) -> &CatalystId {
+            &self.id
+        }
+        fn name(&self) -> &str {
+            "failing"
+        }
+        async fn execute(
+            &self,
+            _task: &TaskContract,
+            _context: &ContextPack,
+            _model: &dyn ModelProvider,
+        ) -> A2Result<PatchBundle> {
+            Err(A2Error::CatalystFailure(
+                self.id.clone(),
+                self.message.clone(),
+            ))
+        }
+    }
+
+    fn test_task(task_id: TaskId) -> TaskContract {
+        TaskContract {
+            id: task_id,
+            title: "test task".into(),
+            description: "do a thing".into(),
+            acceptance_criteria: vec!["it works".into()],
+            verification_commands: vec![],
+            budget: Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 10,
+            },
+            priority: Priority::Normal,
+            source: TaskSource::External {
+                origin: "test".into(),
+            },
+            no_external_solution_search: false,
+            network_policy: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    fn test_workcell_config(task: TaskContract) -> WorkcellConfig {
+        WorkcellConfig {
+            workcell_id: WorkcellId::new(),
+            germline_version: GermlineVersion::new(),
+            budget: Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 10,
+            },
+            task,
+            prior_lineage: vec![],
+            enable_anti_repeat_retry: true,
         }
     }
 
@@ -1335,6 +1468,137 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.lineage.external_verifications, vec![verification]);
+    }
+
+    #[tokio::test]
+    async fn no_candidate_catalyst_failure_is_persisted_as_redacted_external_verification() {
+        let task_id = TaskId::new();
+        let config = test_workcell_config(test_task(task_id));
+        let catalyst = FailingCatalyst {
+            id: CatalystId::new(),
+            message: "provider failed while processing Senior SWE Bench metadata for https://private-benchmark.example.invalid/tasks/synthetic-redaction-fixture with problem_statement details".into(),
+        };
+
+        let result = run_workcell(config, &catalyst, &NoopProvider, &AlwaysPassEvaluator)
+            .await
+            .unwrap();
+
+        assert!(result.patch.is_none());
+        assert_eq!(result.lineage.external_verifications.len(), 1);
+        let verification = &result.lineage.external_verifications[0];
+        assert!(!verification.passed);
+        assert_eq!(verification.command, "catalyst.execute");
+        assert_eq!(verification.exit_code, None);
+        let focus = verification.failure_focus.join("\n");
+        assert!(focus.contains("failed before producing a candidate patch"));
+        assert!(focus.contains("withheld"));
+        assert!(!focus.contains("synthetic-redaction-fixture"));
+        assert!(!focus.contains("problem_statement"));
+        assert!(!focus.contains("private-benchmark.example.invalid/tasks"));
+    }
+
+    #[tokio::test]
+    async fn non_benchmark_no_candidate_failure_preserves_benign_url_context() {
+        let task_id = TaskId::new();
+        let config = test_workcell_config(test_task(task_id));
+        let catalyst = FailingCatalyst {
+            id: CatalystId::new(),
+            message: "provider failed while reading benign docs at https://docs.example.invalid/retry-guide".into(),
+        };
+
+        let result = run_workcell(config, &catalyst, &NoopProvider, &AlwaysPassEvaluator)
+            .await
+            .unwrap();
+
+        assert!(result.patch.is_none());
+        assert_eq!(result.lineage.external_verifications.len(), 1);
+        let focus = result.lineage.external_verifications[0]
+            .failure_focus
+            .join("\n");
+        assert!(focus.contains("https://docs.example.invalid/retry-guide"));
+        assert!(!focus.contains("withheld"));
+    }
+
+    #[tokio::test]
+    async fn benchmark_no_candidate_failure_redacts_task_specific_error_text_without_markers() {
+        let task_id = TaskId::new();
+        let mut task = test_task(task_id);
+        task.title = "synthetic-redaction-fixture".into();
+        task.source = TaskSource::External {
+            origin: "senior-swe-bench".into(),
+        };
+        task.no_external_solution_search = true;
+        let config = test_workcell_config(task);
+        let catalyst = FailingCatalyst {
+            id: CatalystId::new(),
+            message: "provider failed while handling synthetic-redaction-fixture".into(),
+        };
+
+        let result = run_workcell(config, &catalyst, &NoopProvider, &AlwaysPassEvaluator)
+            .await
+            .unwrap();
+
+        assert!(result.patch.is_none());
+        assert_eq!(result.lineage.external_verifications.len(), 1);
+        let focus = result.lineage.external_verifications[0]
+            .failure_focus
+            .join("\n");
+        assert!(focus.contains("withheld"));
+        assert!(!focus.contains("synthetic-redaction-fixture"));
+
+        let retry_context = render_prior_motif(&result.lineage, 0);
+        assert!(retry_context.contains("command: catalyst.execute"));
+        assert!(retry_context.contains("withheld"));
+        assert!(!retry_context.contains("synthetic-redaction-fixture"));
+    }
+
+    #[test]
+    fn no_candidate_catalyst_failure_renders_as_retry_context() {
+        let task_id = TaskId::new();
+        let prior = LineageRecord {
+            id: LineageId::new(),
+            task_id: task_id.clone(),
+            patch_id: PatchId::new(),
+            patch_diff: None,
+            patch_rationale: None,
+            external_verifications: vec![ExternalVerification {
+                passed: false,
+                command: "catalyst.execute".into(),
+                exit_code: None,
+                failing_tests: vec![],
+                failure_focus: vec![
+                    "catalyst execution failed before producing a candidate patch".into(),
+                ],
+                stdout_excerpt: String::new(),
+                stderr_excerpt: String::new(),
+                verified_at: Utc::now(),
+            }],
+            parent_germline: GermlineVersion::new(),
+            model_attributions: vec![],
+            fitness: FitnessRecord {
+                eval_id: EvalId::new(),
+                task_id,
+                somatic: SomaticFitness {
+                    task_completed: false,
+                    tests_pass: false,
+                    acceptance_met: vec![],
+                    tokens_used: 0,
+                    duration_secs: 5.0,
+                },
+                germline: None,
+                organizational: None,
+                evaluated_at: Utc::now(),
+            },
+            created_at: Utc::now(),
+        };
+
+        let motif = render_prior_motif(&prior, 0);
+
+        assert!(motif.contains("external_verification:"));
+        assert!(motif.contains("command: catalyst.execute"));
+        assert!(motif.contains("failed before producing a candidate patch"));
+        assert!(!motif.contains("problem_statement"));
+        assert!(!motif.contains("private-benchmark.example.invalid/tasks"));
     }
 
     #[tokio::test]

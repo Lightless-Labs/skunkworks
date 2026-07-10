@@ -2181,7 +2181,7 @@ class AgentNetworkBoundaryCheckTests(unittest.TestCase):
 
     def test_extract_function_body_survives_urls_and_regex_literals_before_function(self) -> None:
         text = (
-            "const url = 'https://senior-swe-bench.snorkel.ai/tasks';\n"
+            "const url = 'https://private-benchmark.example.invalid/tasks';\n"
             "const quotedPath = \"/$bunfs/root/\";\n"
             "const regex = /['`]|https?:\\/\\//g;\n"
             "async function runDispatch() {\n"
