@@ -5,9 +5,11 @@
 //!   a2ctl run < tasks.txt              — run stdin tasks sequentially
 //!                                        (plain text or JSONL with problem_statement)
 //!   a2ctl bench                        — run the A² benchmark suite
-//!   a2ctl sentinel                     — run the seed sentinel suite
+//!   a2ctl sentinel                     — run public developer health checks
 //!   a2ctl hello                        — print a one-line greeting
-//!   a2ctl status                       — show system health
+//!   a2ctl status                       — show maturity and system health
+
+mod maturity;
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
@@ -89,7 +91,11 @@ fn render_sentinel_output(workspace: &str, result: &a2_eval::sentinel::SuiteResu
     use std::fmt::Write as _;
 
     let mut output = String::new();
-    writeln!(output, "A² Seed Sentinel Suite").expect("write to string should not fail");
+    writeln!(
+        output,
+        "A² Public Developer Health Checks (legacy command: sentinel)"
+    )
+    .expect("write to string should not fail");
     writeln!(output, "Workspace: {workspace}").expect("write to string should not fail");
     writeln!(output).expect("write to string should not fail");
 
@@ -1751,7 +1757,7 @@ enum Commands {
         #[arg(long)]
         apply: bool,
     },
-    /// Run the seed sentinel suite.
+    /// Run the six public developer health checks (legacy command name).
     Sentinel {
         /// Workspace root path (defaults to current directory).
         #[arg(long, default_value = ".")]
@@ -1792,8 +1798,12 @@ enum Commands {
     },
     /// Print a one-line greeting.
     Hello,
-    /// Show system status and health.
-    Status,
+    /// Show authoritative maturity status and missing gate evidence.
+    Status {
+        /// Emit the machine-readable maturity report.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 struct RunSummaryRow {
@@ -2204,6 +2214,24 @@ const DEFAULT_STAGNATION_WINDOW: usize = 3;
 const DEFAULT_BENCH_MAX_TOKENS: u64 = 100_000;
 const DEFAULT_BENCH_TIMEOUT_SECS: u64 = 1800;
 
+/// Central CLI lockout for every path that can mutate the operator germline.
+/// This check runs immediately after argument parsing, before logs, providers,
+/// worktrees, lineage databases, or Git state can be created or changed.
+fn requested_live_germline_mutation(command: &Commands) -> Option<&'static str> {
+    match command {
+        Commands::Task { apply: true, .. } => Some("task --apply"),
+        Commands::Run { apply: true, .. } => Some("run --apply"),
+        Commands::Autopilot { apply: true, .. } => Some("autopilot --apply"),
+        Commands::AutopilotResident { apply: true, .. } => Some("autopilot-resident --apply"),
+        Commands::Scan {
+            run: true,
+            apply: true,
+            ..
+        } => Some("scan --run --apply"),
+        _ => None,
+    }
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -2214,6 +2242,14 @@ async fn main() {
         .init();
 
     let cli = Cli::parse();
+
+    if let Some(entrypoint) = requested_live_germline_mutation(&cli.command) {
+        eprintln!(
+            "Refusing mutation-capable entrypoint `{entrypoint}`: {}",
+            maturity::live_germline_mutation_block_reason()
+        );
+        std::process::exit(2);
+    }
 
     match cli.command {
         Commands::Task {
@@ -3200,24 +3236,27 @@ async fn main() {
         Commands::Hello => {
             println!("Hello from A².");
         }
-        Commands::Status => {
-            println!("A² — Autopoietic Autocatalysis");
-            println!("Version: {}", env!("CARGO_PKG_VERSION"));
-            println!("Stage: 0 (bootstrap)");
-            println!("Profile: B0 (human-gated)");
-            println!();
-            println!("Crates:");
-            println!("  a2_core         — core types and traits");
-            println!("  a2_constitution — constitutional kernel");
-            println!("  a2_workcell     — workcell runtime");
-            println!("  a2_membrane     — policy engine");
-            println!("  a2_broker       — model routing");
-            println!("  a2_eval         — seed evaluator + sentinels");
-            println!("  a2_archive      — lineage store");
-            println!("  a2_sensorium    — input ingestion");
-            println!("  a2_raf          — causal graph diagnostics");
-            println!("  a2d             — control plane daemon");
-            println!("  a2ctl           — this CLI");
+        Commands::Status { json } => {
+            let report = maturity::MaturityReport::current();
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report)
+                        .expect("maturity report serialization must succeed")
+                );
+            } else {
+                println!("A² — Autopoietic Autocatalysis");
+                println!("Version: {}", env!("CARGO_PKG_VERSION"));
+                println!("Maturity: {:?}", report.maturity);
+                println!("Bootstrap profile: {}", report.bootstrap_profile);
+                println!("Live germline mutation: disabled");
+                println!("Developer checks: {}", report.developer_health_checks);
+                println!();
+                println!("Missing gate evidence:");
+                for missing in report.missing_evidence {
+                    println!("  {} — {}", missing.id, missing.requirement);
+                }
+            }
         }
     }
 }
@@ -4995,6 +5034,63 @@ mod tests {
     }
 
     #[test]
+    fn every_mutation_capable_apply_entrypoint_is_locked_out() {
+        let cases = [
+            (
+                vec!["a2ctl", "task", "title", "description", "--apply"],
+                "task --apply",
+            ),
+            (vec!["a2ctl", "run", "--apply"], "run --apply"),
+            (vec!["a2ctl", "autopilot", "--apply"], "autopilot --apply"),
+            (
+                vec!["a2ctl", "autopilot-resident", "--apply"],
+                "autopilot-resident --apply",
+            ),
+            (
+                vec!["a2ctl", "scan", "--run", "--apply"],
+                "scan --run --apply",
+            ),
+        ];
+
+        for (args, expected) in cases {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert_eq!(
+                requested_live_germline_mutation(&cli.command),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn read_only_and_candidate_only_entrypoints_remain_available() {
+        let cases = [
+            vec!["a2ctl", "status", "--json"],
+            vec!["a2ctl", "task", "title", "description", "--dry-run"],
+            vec!["a2ctl", "run"],
+            vec!["a2ctl", "autopilot", "--dry-run"],
+            vec![
+                "a2ctl",
+                "autopilot-resident",
+                "--dry-run",
+                "--max-runs",
+                "1",
+            ],
+            vec!["a2ctl", "scan"],
+        ];
+
+        for args in cases {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert_eq!(requested_live_germline_mutation(&cli.command), None);
+        }
+    }
+
+    #[test]
+    fn status_cli_supports_machine_readable_output() {
+        let cli = Cli::try_parse_from(["a2ctl", "status", "--json"]).unwrap();
+        assert!(matches!(cli.command, Commands::Status { json: true }));
+    }
+
+    #[test]
     fn sentinel_cli_keeps_demo_evidence_gate_opt_in() {
         let cli = Cli::try_parse_from(["a2ctl", "sentinel", "--workspace", "."]).unwrap();
         match cli.command {
@@ -5136,7 +5232,7 @@ mod tests {
 
         assert!(!output.contains("[PASS]"));
         assert!(!output.contains("Sentinel gate: PASS"));
-        assert!(!output.contains("A² Seed Sentinel Suite"));
+        assert!(!output.contains("A² Public Developer Health Checks"));
         let data: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(data["workspace"], ".");
         assert_eq!(data["sentinel_gate"], "PASS");
@@ -5516,7 +5612,7 @@ mod tests {
         ));
 
         let expected = [
-            "A² Seed Sentinel Suite".to_string(),
+            "A² Public Developer Health Checks (legacy command: sentinel)".to_string(),
             "Workspace: <workspace>".to_string(),
             String::new(),
             "  [PASS] compile_check: compiled <path> at <timestamp> commit <hex>".to_string(),

@@ -1,8 +1,11 @@
 # Phase 1 Implementation Plan
 
 **Created:** 2026-04-01  
-**Status:** Proposed  
+**Reviewed:** 2026-07-10 (via remediation roadmap audit)
+**Status:** Historical implementation plan — partially implemented, exit condition not met
 **Scope:** Phase 1 of A² foundations, ending at the Stage 0 gate and establishing Stage 1 self-hosting under bootstrap profile B0.
+
+> **Maturity correction:** The crate scaffolding and prototype runtime described below were partially implemented, but the Bazel, escrow, mission, constitutional, membrane, atomic-promotion, and clean-checkout exit criteria were not met. A² remains `PreStage0`. Current execution is governed by [`2026-07-10-a2-remediation-roadmap.md`](2026-07-10-a2-remediation-roadmap.md) and [`../MATURITY.md`](../MATURITY.md).
 
 ## Goal
 

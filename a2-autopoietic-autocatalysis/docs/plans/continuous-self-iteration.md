@@ -1,8 +1,11 @@
 # Continuous Self-Iteration Plan
 
 **Created:** 2026-05-25
-**Status:** Initial autopilot loop, resident wrapper, verified checklist updates, and aggregate run logs implemented 2026-05-27
+**Reviewed:** 2026-07-10 (via remediation roadmap audit)
+**Status:** Observational/dry-run operation available; resident mutation blocked at `PreStage0`
 **Scope:** Make A² continuously pick, execute, verify, and log self-improvement work inside this repository.
+
+> **Safety lockout:** Discovery, dry-run, and candidate-only execution may continue, but every live-germline `--apply` path is disabled. Mutation-capable resident operation cannot be re-enabled until the remediation roadmap's Phase-4 Stage-0 gate, Phase-5 B0 end-to-end admission trace, and Phase-6 external-value `GO` are all proved. See [`../MATURITY.md`](../MATURITY.md).
 
 ## Goal
 
@@ -12,7 +15,7 @@ A² should not require a human to repeatedly say "keep going." The repository ne
 
 - No dependency on sibling projects.
 - No directory traversal outside this repository.
-- No hidden autonomous mutation without explicit `--apply`.
+- No live-germline mutation; `--apply` is fail-closed while maturity is `PreStage0`.
 
 ## Initial Slice
 
@@ -27,7 +30,7 @@ It should:
 3. Include source-code `TODO`/`FIXME` scan results as lower-structure candidate work.
 4. Pin stable task IDs from explicit task content or candidate source locations so lineage survives repeated autopilot runs.
 5. Run up to `--max-iterations` workcells using configured providers.
-6. Optionally apply promoted patches via the existing apply + verification path when `--apply` is explicit.
+6. Historical behavior applied promoted patches when `--apply` was explicit. This path is now locked out because the legacy apply + verification flow is not atomic, B0-approved admission.
 7. Write durable JSONL events under `.a2/autopilot/runs/<run-id>/events.jsonl`.
 8. Write `run_summary.json` with per-iteration candidate source, model attribution, patch stats, verifier focus, and apply/rebuild outcome.
 9. Support `--dry-run` for monitoring candidate selection without model calls.

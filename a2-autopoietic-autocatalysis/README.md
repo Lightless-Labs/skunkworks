@@ -11,7 +11,7 @@ cargo test
 cargo run -p a2ctl -- sentinel --workspace .
 ```
 
-Expected state as of the latest handoff: Rust tests pass and the sentinel suite reports `6/6 PASS`.
+Expected state as of the latest handoff: Rust tests pass and the legacy `sentinel` command reports `6/6 PASS` for its **public developer health checks**. Those six repository-visible checks are not hidden escrow and are not the Stage-0 gate.
 
 ## Self-Correction Benchmark Score Output
 
@@ -79,6 +79,9 @@ bench/self_correction.py --fixture compound-hidden \
 bench/self_correction_score.py /tmp/a2-self-correction.jsonl
 bench/self_correction_score.py --require-demo --trajectories \
   docs/benchmark-results/self-correction/a2-archive-same-crate-opencode-minimax-m3-20260615T165316Z.jsonl
+
+# Authoritative machine-readable maturity (currently PreStage0)
+cargo run -p a2ctl -- status --json
 
 # Autopilot dry-run discovery
 cargo run -p a2ctl -- autopilot --dry-run

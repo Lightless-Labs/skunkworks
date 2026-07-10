@@ -1,8 +1,7 @@
-//! Hidden sentinel suite — evaluation benchmarks the system cannot see.
+//! Public developer health checks retained behind the legacy `sentinel` name.
 //!
-//! These exist from Stage 0 onward (per DESIGN.md v0.3.0). They are
-//! the primary anti-Goodharting mechanism: if visible benchmark scores
-//! diverge from sentinel scores, the system is gaming its evaluator.
+//! These six repository-visible checks are useful local feedback, but they are
+//! neither hidden nor the Stage-0 sentinel/escrow gate described by DESIGN.md.
 
 use serde::Serialize;
 
@@ -40,7 +39,7 @@ fn command_failure(
     }
 }
 
-/// Result of running the full sentinel suite.
+/// Result of running the full public developer health-check suite.
 #[derive(Clone, Debug, Serialize)]
 pub struct SuiteResult {
     pub results: Vec<SentinelResult>,
@@ -48,7 +47,7 @@ pub struct SuiteResult {
     pub score: f64,
 }
 
-/// A single sentinel benchmark.
+/// A single public developer health check (legacy type name).
 pub struct Sentinel {
     pub name: String,
     pub description: String,
@@ -86,7 +85,7 @@ pub struct SentinelResult {
     pub detail: String,
 }
 
-/// The seed sentinel suite — Stage 0 hidden benchmarks.
+/// Public developer health-check suite (legacy type name).
 pub struct SentinelSuite {
     sentinels: Vec<Sentinel>,
 }
@@ -102,7 +101,7 @@ impl SentinelSuite {
         self.sentinels.push(sentinel);
     }
 
-    /// Run all sentinels. Returns individual results and overall pass/fail.
+    /// Run all public checks. Returns individual results and overall pass/fail.
     pub fn run_all(&self) -> SuiteResult {
         let results: Vec<SentinelResult> = self.sentinels.iter().map(|s| s.run()).collect();
         let all_passed = results.iter().all(|r| r.passed);
@@ -119,8 +118,8 @@ impl SentinelSuite {
         }
     }
 
-    /// Create the Stage 0 seed sentinel suite.
-    /// These are intentionally simple — enough to catch obvious gaming.
+    /// Create the six public developer health checks.
+    /// This compatibility constructor is not the Stage-0 gate or hidden escrow.
     pub fn seed_suite(workspace_root: std::path::PathBuf) -> Self {
         let mut suite = Self::new();
 
