@@ -373,6 +373,45 @@ def _signal_process_group(
         return [f"killpg({pgid}, {sig.name}):permission_error:{error}"]
 
 
+def _path_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(root.resolve(strict=False))
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _process_cwd(pid: int, timeout: float = 1) -> tuple[str | None, str | None]:
+    proc_cwd = Path(f"/proc/{pid}/cwd")
+    try:
+        if proc_cwd.exists():
+            return str(proc_cwd.resolve(strict=True)), None
+    except OSError:
+        pass
+    try:
+        completed = subprocess.run(
+            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"cwd attribution timed out for pid {pid}"
+    except OSError as error:
+        return None, f"cwd attribution failed for pid {pid}: {error}"
+    if completed.returncode != 0:
+        if not _process_alive(pid):
+            return None, "gone"
+        return None, f"cwd attribution exited {completed.returncode} for pid {pid}"
+    for line in completed.stdout.splitlines():
+        if line.startswith("n") and len(line) > 1:
+            return line[1:], None
+    if not _process_alive(pid):
+        return None, "gone"
+    return None, f"cwd attribution missing for pid {pid}"
+
+
 def _target_state(target_dir: Path) -> dict[str, Any]:
     started = time.monotonic()
     state: dict[str, Any] = {
@@ -781,17 +820,38 @@ def run_bounded(
             )
             for pid in sorted(final_token_pids)
         ]
-        new_relevant_unattributed = [
-            row
+        new_relevant_candidates = [
+            row.copy()
             for row in after_rows
             if _process_identity(row) not in baseline_identities
             and row["pid"] not in final_token_pids
             and not str(row["state"]).startswith("Z")
             and _is_relevant_process(row, target_dir)
         ]
+        new_relevant_local: list[dict[str, Any]] = []
+        new_relevant_external: list[dict[str, Any]] = []
+        new_relevant_unverified: list[dict[str, Any]] = []
+        for row in new_relevant_candidates:
+            process_cwd, cwd_error = _process_cwd(row["pid"])
+            row["cwd"] = process_cwd
+            row["cwd_attribution_error"] = None if cwd_error == "gone" else cwd_error
+            if cwd_error == "gone":
+                continue
+            if _executable_under_target(row, target_dir) or (
+                process_cwd is not None and _path_within(Path(process_cwd), cwd)
+            ):
+                new_relevant_local.append(row)
+            elif cwd_error is not None:
+                # Attribution uncertainty is fail-closed but never authorizes a
+                # signal against a possibly unrelated shared-host process.
+                new_relevant_unverified.append(row)
+            else:
+                new_relevant_external.append(row)
         orphan_by_identity = {
             (row["pid"], row.get("started_at")): row
-            for row in owned_orphans + new_relevant_unattributed
+            for row in owned_orphans
+            + new_relevant_local
+            + new_relevant_unverified
         }
         orphan_rows = list(orphan_by_identity.values())
         group_absent = pgid is None or (group_isolated and not _group_alive(pgid))
@@ -849,7 +909,9 @@ def run_bounded(
                 "target_after": target_after,
                 "observed_process_tree": list(observed.values()),
                 "process_tree_at_timeout": timeout_snapshot,
-                "unattributed_new_relevant_processes": new_relevant_unattributed,
+                "local_new_relevant_processes": new_relevant_local,
+                "external_concurrent_relevant_processes": new_relevant_external,
+                "unverified_new_relevant_processes": new_relevant_unverified,
                 "cleanup": {
                     "actions": cleanup_actions,
                     "group_absent": group_absent,
@@ -1101,7 +1163,7 @@ print(child.pid, flush=True)
             self.assertTrue(
                 any(
                     row["pid"] == child_pid
-                    for row in report["unattributed_new_relevant_processes"]
+                    for row in report["local_new_relevant_processes"]
                 )
             )
             self.assertTrue(
