@@ -1,5 +1,25 @@
 # Benchmark Harness
 
+## Phase-0 Bounded Verification
+
+Run trusted verification commands through `phase0_liveness.py` while A² remains `PreStage0`. The runner creates a child-owned process group, enforces a hard command timeout, retains bounded stdout/stderr tails, records target/lock and process-tree diagnostics, and fails closed when final orphan attribution cannot be proved.
+
+```bash
+HEAD=$(git rev-parse HEAD)
+python3 bench/phase0_liveness.py \
+  --cwd . \
+  --timeout-secs 600 \
+  --target-dir target \
+  --report "docs/evidence/remediation/phase-0/${HEAD}/focused-cargo-test.json" \
+  -- cargo test -p a2ctl maturity -- --nocapture
+```
+
+The JSON report is written as a non-passing `initializing` artifact before launch and atomically replaced on completion. A nonzero harness exit, `timed_out=true`, `cleanup.complete=false`, or nonempty `cleanup.orphans` is not green verification evidence. Run the deterministic process-cleanup regression suite with:
+
+```bash
+python3 bench/phase0_liveness.py --self-test
+```
+
 ## Self-Correction Benchmark
 
 `bench/self_correction.py` is the first loop-shaped A² benchmark. It creates an isolated git worktree, injects a deterministic fixture regression, commits that bug only in the isolated branch, and runs repeated `a2ctl run --apply` attempts with the same JSONL `task_id`.
