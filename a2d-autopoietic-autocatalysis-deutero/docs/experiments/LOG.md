@@ -207,3 +207,43 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - 0 public-green but hidden-fail; 0 tool calls; 0 hidden-name hits; ledgers verified.
   - No adjudication was needed: every hidden test is consistent with an independently written solution.
   - Limitations: auditor and coder share a vendor (OpenAI). A strong model at medium effort solves every task, so these tasks test precise spec compliance by a weaker or low-effort coder; they do not test what is beyond reach for current frontier models.
+
+### Holdouts — Confirmation-2  [phase P1]
+- 2026-10-14. **Confirmation-2: 48 tasks, 12 families × 4 levels, suite hash `25435ab324375a0f79f0b3fdd8f07b6f94341f92d3bca23642d4b68b02957ad5`.** Authored blind by Codex `gpt-6.1-sol` (high) into `$A2D_HOLDOUT_DIR/confirmation-2`.
+- Families: calc-parser, date-arith, elevator-sim, huffman-codec, interval-tree, inventory-alloc, log-store, markdown-inline, polynomial, regex-lite, trie-autocomplete, undo-editor.
+- Validation: 48/48 accepted on the first pass.
+- **Independent-solve audit:** Codex `gpt-6.1-sol` (medium), arm D, k = 3. **48/48 pass every hidden test** (49 invocations; one task needed a repair attempt). 0 public-green but hidden-fail; integrity OK.
+- Reserved for the final P4 claim. Power planning for P4 happens at the P3 → P4 gate; any extension families are authored blind before any P4 result.
+
+### E07 — P2 seed lift confirmation on Confirmation-1  [phase P2]
+- Registered: 2026-10-15 (frozen paths at commit e1915c89). Since E06 (eeaa7e7) only controller and validator files have changed: `crates/a2d-lift/src/{lib,tests,validate}.rs`. The arm-C treatment is the one piloted in E06.
+- Hypothesis: the seed A²D metabolism (arm C) passes hidden tests more often than its own coder used as a plain repair loop (D) **and** than best-of-k (B), at an **equal invocation cap** (k = 5).
+- Claim rule (roadmap Addenda of 2026-10-14):
+  - Primary comparison C vs D; secondary C vs B.
+  - Overall **SUPPORTED** needs both to be SUPPORTED: 95% paired cluster-bootstrap CI lower bound > 0 **and** point lift ≥ 10 pp, with at least 10 families and at least one discordant pair.
+  - **RULED OUT** (CI upper < 10 pp) is decided by C vs D alone.
+  - Otherwise **INCONCLUSIVE**. The single allowed extension is a second replicate pass, analysed pooled at the family level.
+- Arms / configuration: A, B, D, C; k = 5; replicates r = 1 (E06 rule); `--primary D`; seed 7; jobs 4; tuples in seeded random order; arms in a seeded per-tuple order.
+- Task set: **Confirmation-1**, `$A2D_HOLDOUT_DIR/confirmation-1` (suite hash 7bd1b669051c93c7aa6ad0cd9eb316384682a332aa3d981ba205464932f1b9dd), n = 148, families = 37
+- Model(s): `codex/gpt-6-luna`, reasoning effort low, no-tools lane, provider timeout 300 s     k = 5     replicates = 1
+- Budget cap: 2,400 invocations (planned max 148 × 16 = 2,368), 21,600 s wall-clock (about 2× expected). No other Codex jobs run on the account during generation.
+- Infrastructure exceptions (predefined):
+  - Provider errors and timeouts count as arm failures.
+  - Voided or incomplete tuples are excluded. If more than 5% are excluded, the run is Invalid and is rerun as a new registration.
+  - Hidden-name hits in prompts or any coder tool call → IntegrityReview before any class is reported.
+- Protocol:
+  1. Run `--defer-scoring --out $A2D_HOLDOUT_DIR/runs/E07`.
+  2. `a2d lift manifest` → `runs/2026-10-15-e07-confirmation-1/manifest.json`; commit and push.
+  3. `a2d lift score --expect-head <manifest ledger_head>`.
+  4. Copy `summary.json` and the content-free ledger into the repo.
+  5. Scored once.
+- Reported beside the class:
+  - per-arm invocations, tokens and provider time;
+  - hidden-pass fraction (secondary);
+  - public-green but hidden-fail counts;
+  - family sign-flip p;
+  - descriptive McNemar.
+- Result: pending
+- Artifacts: runs/2026-10-15-e07-confirmation-1/ (manifest, ledger, summary); the full run is in `$A2D_HOLDOUT_DIR/runs/E07` and is never opened.
+- Deviations:
+- Decision:

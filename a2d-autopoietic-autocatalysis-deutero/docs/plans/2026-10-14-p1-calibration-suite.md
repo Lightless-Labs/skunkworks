@@ -1,7 +1,8 @@
 # Plan: P1 — Calibrate a Non-Saturated Suite
 
 **Created:** 2026-10-14
-**Status:** Active
+**Status:** Completed
+**Completed:** 2026-10-14 (calibration-v2 accepted after T7 redesign 1/2; Confirmation-1 = 148 tasks, Confirmation-2 = 48 tasks, both audited; see LOG)
 **Parent:** `docs/plans/2026-10-14-lift-first-roadmap.md` § P1
 **Exit (from parent):** Confirmation-1 and Confirmation-2 families generated and validated outside the repo with hashes logged; non-Claude review of the suite recorded; power planning done.
 

@@ -1,7 +1,7 @@
 # Plan: Lift-First Roadmap
 
 **Created:** 2026-10-14
-**Status:** Active — phase P1 (P0 exit met 2026-10-14)
+**Status:** Active — phase P2 (P0 exit 2026-10-14; P1 exit 2026-10-14)
 **Reviewed:** 2026-10-14 (independent review, Codex gpt-6.1-sol xhigh). The other non-Claude lanes were unavailable; see Blockers. Changes adopted: repair-loop comparator, three-way result classification, pilot/development/confirmation split, frozen controller, B-headroom calibration, harness-first P4, process metrics as diagnostics only.
 **Addendum:** 2026-10-14 — coder lane: the owner stopped the Kimi, Z.ai, MiniMax and Gemini subscriptions on purpose and suggested Luna via Codex or Pi. `gpt-6-luna` works through Codex with A²D's provider flags. `gpt-6.1-luna` is not offered on this ChatGPT account (Codex model list fetched 2026-10-14 has 6.1 only as Sol). Pi's `openai-codex` provider is not authenticated. P0/P1 updated accordingly.
 **Addendum:** 2026-10-14 — P0 gate. Exit criteria met (isolation tests, four arms end to end on mocks, E01). Reviewed by Codex `gpt-6.1-sol` (high) and a fresh-context Claude subagent, each in an empty temp dir with copied inputs. Diversity reduced to one non-Claude family (see Blockers). Adopted (commits `e8e7fa3`, `2eefa0d`):
@@ -69,6 +69,24 @@ Process diagnostics:
 - T7 at 1 of 2; no tripwire hits.
 
 Reviewer note: the cadence was good. The drift was analytical: a power formula never checked against `classify`, replicate value inferred from per-arm agreement, and a pilot-set change without an addendum. All three are corrected here. Lesson: plan with a simulation of the implemented decision rule, not a textbook formula.
+**Addendum:** 2026-10-14 — **P1 exit.**
+- **Confirmation-1:** 148 tasks, 37 families, hash `7bd1b669051c93c7…`.
+- **Confirmation-2:** 48 tasks, 12 families, hash `25435ab324375a0f…`.
+
+Both were authored and validated blind by Codex, and both pass an independent-solve audit (Codex `gpt-6.1-sol` from the requirements and public tests: 148/148 and 48/48), which meets § P1 Oracles' independent-reference requirement. The suite review is recorded in the P1-gate Addendum; the power planning is in E05 and E06.
+
+Process diagnostics at exit:
+- 1 session, 6 results (E01–E06);
+- 778 coder invocations (3.9% of the cap), 6.7M tokens;
+- 42 commits since adoption (38 tagged);
+- T7 at 1 of 2; no tripwire hits.
+
+Process changes adopted:
+- simulate the implemented classifier for power planning;
+- never run holdout authoring alongside a registered run;
+- wait on run artifacts, not on `pgrep -f` of a pattern that matches the waiting loop itself.
+
+Next: E07 (P2 confirmation).
 **Supersedes as primary goal:** `swe-bench-pro-blind-evaluator-adapter.md` (parked), the Senior SWE-Bench retry chain (parked)
 **Grounding:** `docs/research/2026-10-14-direction-audit.md`, `docs/research/2026-10-14-dgm-rqgm-relevance.md`
 **Decision deadline:** P2 confirmation result recorded by **2026-11-30**. Missing it is a non-result, not a falsification: record "not measured by deadline", stop adding seed-cycle complexity, and continue per Completion.
