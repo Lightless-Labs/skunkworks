@@ -216,13 +216,13 @@ def shard_spec(value: str) -> tuple[int, int]:
     return i, n
 
 
-def start_proxy(cfg: argparse.Namespace, run_dir: Path) -> subprocess.Popen:
-    port_file = run_dir / "proxy.port"
+def start_proxy(cfg: argparse.Namespace, run_dir: Path, tag: str) -> subprocess.Popen:
+    port_file = run_dir / f"proxy.{tag}.port"
     port_file.unlink(missing_ok=True)
     allow = [arg for e in cfg.endpoint for arg in ("--allow", e.removeprefix("https://").split("/")[0] + ":443")]
     proc = subprocess.Popen(
         [sys.executable, str(Path(__file__).with_name("egress_proxy.py")), *allow,
-         "--log", str(run_dir / "proxy.jsonl"), "--port-file", str(port_file)],
+         "--log", str(run_dir / f"proxy.{tag}.jsonl"), "--port-file", str(port_file)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     for _ in range(100):
@@ -266,7 +266,7 @@ def main(argv: list[str]) -> int:
             row = json.loads(line)
             done.add((row["opaque_id"], row["arm"]))
     order = arm_order(full_sample, cfg.seed)
-    proxy = start_proxy(cfg, run_dir)
+    proxy = start_proxy(cfg, run_dir, f"shard{shard_index}of{shard_count}")
     try:
         for opaque in sample:
             pending = [a for a in order[opaque] if a in arms and (opaque, a) not in done]
