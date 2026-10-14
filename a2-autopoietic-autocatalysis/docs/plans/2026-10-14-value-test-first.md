@@ -111,3 +111,27 @@ The owner disabled Z.ai and MiniMax and directed E1 to Codex `gpt-6-luna`, which
 - egress: only `chatgpt.com:443` and `auth.openai.com:443` through the proxy.
 
 Probes confirmed `NO_TOOL` / `NO_SEARCH_TOOL` answers, private-dir reads denied, and GitHub refused. Codex's bundled system skills remain; they are identical across arms and network-confined. The smoke run (`smoke-codex-1`, gate-failed task) produced a diff, visible feedback and a grade, with egress to `chatgpt.com` only. Reasoning effort is A²'s fixed `high` for every arm.
+
+### 2026-10-14 — Calibration ceiling: switch to issue-only instructions (before calibration 5)
+
+`raw` calibration on the 5 calibration tasks (private rows under `~/.a2-e1/private/runs/`). These tasks are excluded from the sample, and every run is listed here:
+
+| run | reasoning effort | raw resolved |
+|---|---|---|
+| `calib-1` | high | 5/5 |
+| `calib-2-low` | low | 4/5 |
+| `calib-3-minimal` | minimal | provider rejection (`gpt-6-luna` does not support `minimal`); not a data point |
+| `calib-4-none` | none | 5/5 |
+
+Reasoning effort is not a usable lever. The official instruction (problem statement + `requirements` + `interface`) gives the agent the exact names and signatures the hidden tests check. Decision:
+- E1 uses **issue-only instructions**: the problem statement alone, with `requirements` and `interface` withheld from every arm.
+- Reasoning effort is fixed at A²'s default `high` for every arm.
+
+The interface then becomes discoverable only through visible-test feedback, which is the channel the retry arms differ on. Results are reported as an issue-only variant of native-graded SWE-Bench Pro V2, never as SWE-Bench Pro scores. Per-attempt time is not reduced, so time is not confounded with feedback.
+
+**Pre-stated rule for `calib-5-issue-only`** (raw, same 5 tasks):
+- 1–3 resolved → lock `protocol-v1.toml` with issue-only + high.
+- 4–5 resolved → stop adjusting ansible and record a blocker. A new subset (Go toolchain for flipt, or openlibrary submodules) is a separate decision.
+- 0 resolved → run `stateless-retry` on the same 5 first. Lock if it resolves ≥ 2; otherwise this is a subset decision.
+
+Note: `A2_CODEX_REASONING_EFFORT` is also inherited by the verifier's shell (harmless; it only affects Codex).
