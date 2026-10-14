@@ -1,7 +1,8 @@
 use a2_core::error::{A2Error, A2Result};
 use a2_core::protocol::NetworkPolicy;
 use a2_workcell::sandbox_profile::{
-    materialize_provider_command_for_network_policy, pi_provider_args,
+    ProviderCommandMaterialization,
+    materialize_provider_command_for_network_policy_with_egress_proxy, pi_provider_args,
     sandbox_exec_available_on_this_platform,
 };
 use async_trait::async_trait;
@@ -74,6 +75,7 @@ async fn resolve_binary(binary: &str) -> A2Result<String> {
 }
 
 const A2_PROVIDER_NETWORK_POLICY_ENV: &str = "A2_PROVIDER_NETWORK_POLICY";
+const A2_PROVIDER_EGRESS_PROXY_ENV: &str = "A2_PROVIDER_EGRESS_PROXY";
 
 fn parse_provider_network_policy(policy: Option<&str>) -> A2Result<Option<NetworkPolicy>> {
     let Some(policy) = policy else {
@@ -112,6 +114,33 @@ fn parse_provider_network_policy(policy: Option<&str>) -> A2Result<Option<Networ
     )))
 }
 
+fn parse_provider_egress_proxy(value: Option<&str>) -> A2Result<Option<u16>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let (host, port) = value.rsplit_once(':').ok_or_else(|| {
+        A2Error::ProviderError(format!(
+            "{A2_PROVIDER_EGRESS_PROXY_ENV}={value} is invalid: expected 127.0.0.1:PORT or localhost:PORT"
+        ))
+    })?;
+    if !(host == "127.0.0.1" || host.eq_ignore_ascii_case("localhost")) {
+        return Err(A2Error::ProviderError(format!(
+            "{A2_PROVIDER_EGRESS_PROXY_ENV}={value} is invalid: proxy host must be 127.0.0.1 or localhost"
+        )));
+    }
+    let port = port.parse::<u16>().map_err(|_| {
+        A2Error::ProviderError(format!(
+            "{A2_PROVIDER_EGRESS_PROXY_ENV}={value} is invalid: port must be an integer from 1 to 65535"
+        ))
+    })?;
+    if port == 0 {
+        return Err(A2Error::ProviderError(format!(
+            "{A2_PROVIDER_EGRESS_PROXY_ENV}={value} is invalid: port must be greater than zero"
+        )));
+    }
+    Ok(Some(port))
+}
+
 fn broker_sandbox_profile_dir() -> PathBuf {
     env::temp_dir().join("a2-broker-sandbox-profiles")
 }
@@ -121,18 +150,21 @@ fn materialize_broker_provider_command_for_policy(
     binary_path: &str,
     provider_args: Vec<OsString>,
     policy_value: Option<&str>,
+    egress_proxy_value: Option<&str>,
     sandbox_exec_available: bool,
     profile_dir: &Path,
-) -> A2Result<(OsString, Vec<OsString>)> {
+) -> A2Result<ProviderCommandMaterialization> {
     let policy = parse_provider_network_policy(policy_value)?;
+    let egress_proxy_port = parse_provider_egress_proxy(egress_proxy_value)?;
     if policy.is_some() && !sandbox_exec_available {
         return Err(A2Error::ProviderError(format!(
             "{provider} provider launch refused because {A2_PROVIDER_NETWORK_POLICY_ENV}={}; /usr/bin/sandbox-exec is unavailable or not executable on this platform",
             policy_value.unwrap_or("")
         )));
     }
-    let materialized = materialize_provider_command_for_network_policy(
+    materialize_provider_command_for_network_policy_with_egress_proxy(
         policy.as_ref(),
+        egress_proxy_port,
         profile_dir,
         OsString::from(binary_path),
         provider_args,
@@ -141,8 +173,7 @@ fn materialize_broker_provider_command_for_policy(
         A2Error::ProviderError(format!(
             "{provider} sandbox command materialization: {error}"
         ))
-    })?;
-    Ok((materialized.program, materialized.args))
+    })
 }
 
 fn materialize_broker_provider_command_with_network_policy(
@@ -150,7 +181,8 @@ fn materialize_broker_provider_command_with_network_policy(
     binary_path: &str,
     provider_args: Vec<OsString>,
     network_policy: &NetworkPolicy,
-) -> A2Result<(OsString, Vec<OsString>)> {
+    egress_proxy_value: Option<&str>,
+) -> A2Result<ProviderCommandMaterialization> {
     if matches!(
         network_policy,
         NetworkPolicy::Isolated | NetworkPolicy::AllowList(_)
@@ -160,8 +192,10 @@ fn materialize_broker_provider_command_with_network_policy(
             "{provider} provider launch refused because restricted network policy requires /usr/bin/sandbox-exec, which is unavailable or not executable on this platform"
         )));
     }
-    let materialized = materialize_provider_command_for_network_policy(
+    let egress_proxy_port = parse_provider_egress_proxy(egress_proxy_value)?;
+    materialize_provider_command_for_network_policy_with_egress_proxy(
         Some(network_policy),
+        egress_proxy_port,
         &broker_sandbox_profile_dir(),
         OsString::from(binary_path),
         provider_args,
@@ -170,21 +204,22 @@ fn materialize_broker_provider_command_with_network_policy(
         A2Error::ProviderError(format!(
             "{provider} sandbox command materialization: {error}"
         ))
-    })?;
-    Ok((materialized.program, materialized.args))
+    })
 }
 
 fn materialize_broker_provider_command(
     provider: &str,
     binary_path: &str,
     provider_args: Vec<OsString>,
-) -> A2Result<(OsString, Vec<OsString>)> {
+) -> A2Result<ProviderCommandMaterialization> {
     let policy_value = env::var(A2_PROVIDER_NETWORK_POLICY_ENV).ok();
+    let egress_proxy_value = env::var(A2_PROVIDER_EGRESS_PROXY_ENV).ok();
     materialize_broker_provider_command_for_policy(
         provider,
         binary_path,
         provider_args,
         policy_value.as_deref(),
+        egress_proxy_value.as_deref(),
         sandbox_exec_available_on_this_platform(),
         &broker_sandbox_profile_dir(),
     )
@@ -195,11 +230,10 @@ fn broker_provider_command(
     binary_path: &str,
     provider_args: Vec<OsString>,
 ) -> A2Result<Command> {
-    let (program, args) =
-        materialize_broker_provider_command(provider, binary_path, provider_args)?;
-    let mut cmd = Command::new(program);
+    let materialized = materialize_broker_provider_command(provider, binary_path, provider_args)?;
+    let mut cmd = Command::new(materialized.program);
     clear_env(&mut cmd);
-    cmd.args(args);
+    cmd.args(materialized.args).envs(materialized.env);
     Ok(cmd)
 }
 
@@ -212,15 +246,17 @@ fn broker_provider_command_with_network_policy(
     let Some(network_policy) = network_policy else {
         return broker_provider_command(provider, binary_path, provider_args);
     };
-    let (program, args) = materialize_broker_provider_command_with_network_policy(
+    let egress_proxy_value = env::var(A2_PROVIDER_EGRESS_PROXY_ENV).ok();
+    let materialized = materialize_broker_provider_command_with_network_policy(
         provider,
         binary_path,
         provider_args,
         network_policy,
+        egress_proxy_value.as_deref(),
     )?;
-    let mut cmd = Command::new(program);
+    let mut cmd = Command::new(materialized.program);
     clear_env(&mut cmd);
-    cmd.args(args);
+    cmd.args(materialized.args).envs(materialized.env);
     Ok(cmd)
 }
 
@@ -1028,10 +1064,13 @@ mod tests {
         let providers = ["claude", "gemini", "codex", "pi", "opencode"];
         let open_policies = [None, Some("Open"), Some(" open ")];
         let restricted_policies = [
-            "Isolated",
-            " IsoLaTeD ",
-            "AllowList:https://api.openai.com",
-            " ALLOWLIST:https://api.anthropic.com ",
+            ("Isolated", None),
+            (" IsoLaTeD ", None),
+            ("AllowList:https://api.openai.com", Some("127.0.0.1:43123")),
+            (
+                " ALLOWLIST:https://api.anthropic.com ",
+                Some("localhost:43123"),
+            ),
         ];
         let profile_dir = std::env::temp_dir().join(format!(
             "a2-broker-policy-test-{}-{}",
@@ -1045,19 +1084,21 @@ mod tests {
 
         for provider in providers {
             for policy in open_policies {
-                let (program, args) = materialize_broker_provider_command_for_policy(
+                let materialized = materialize_broker_provider_command_for_policy(
                     provider,
                     provider,
                     vec![OsString::from("--arg")],
                     policy,
+                    None,
                     false,
                     &profile_dir,
                 )
                 .unwrap_or_else(|error| {
                     panic!("{provider} should allow unrestricted policy {policy:?}: {error}")
                 });
-                assert_eq!(program, OsString::from(provider));
-                assert_eq!(args, vec![OsString::from("--arg")]);
+                assert_eq!(materialized.program, OsString::from(provider));
+                assert_eq!(materialized.args, vec![OsString::from("--arg")]);
+                assert!(materialized.env.is_empty());
             }
 
             let deny_error = materialize_broker_provider_command_for_policy(
@@ -1065,6 +1106,7 @@ mod tests {
                 provider,
                 vec![OsString::from("--arg")],
                 Some("deny"),
+                None,
                 true,
                 &profile_dir,
             )
@@ -1077,12 +1119,13 @@ mod tests {
                 "invalid deny policy must fail before any provider launch: {deny_error}"
             );
 
-            for policy in restricted_policies {
+            for (policy, egress_proxy) in restricted_policies {
                 let unavailable = materialize_broker_provider_command_for_policy(
                     provider,
                     provider,
                     vec![OsString::from("--arg")],
                     Some(policy),
+                    egress_proxy,
                     false,
                     &profile_dir,
                 )
@@ -1097,21 +1140,38 @@ mod tests {
                     "restricted-policy error must fail closed before unsandboxed launch: {unavailable_message}"
                 );
 
-                let (program, args) = materialize_broker_provider_command_for_policy(
+                let materialized = materialize_broker_provider_command_for_policy(
                     provider,
                     provider,
                     vec![OsString::from("--arg")],
                     Some(policy),
+                    egress_proxy,
                     true,
                     &profile_dir,
                 )
                 .unwrap_or_else(|error| {
                     panic!("{provider}/{policy} should materialize sandbox argv: {error}")
                 });
-                assert_eq!(program, OsString::from("/usr/bin/sandbox-exec"));
-                assert_eq!(args[0], OsString::from("-f"));
-                assert_eq!(args[2], OsString::from(provider));
-                assert_eq!(args[3], OsString::from("--arg"));
+                assert_eq!(
+                    materialized.program,
+                    OsString::from("/usr/bin/sandbox-exec")
+                );
+                assert_eq!(materialized.args[0], OsString::from("-f"));
+                assert_eq!(materialized.args[2], OsString::from(provider));
+                assert_eq!(materialized.args[3], OsString::from("--arg"));
+                if policy.trim().to_ascii_lowercase().starts_with("allowlist:") {
+                    assert!(materialized.env.contains(&(
+                        OsString::from("HTTPS_PROXY"),
+                        OsString::from("http://127.0.0.1:43123")
+                    )));
+                    assert!(
+                        materialized
+                            .env
+                            .contains(&(OsString::from("NO_PROXY"), OsString::new()))
+                    );
+                } else {
+                    assert!(materialized.env.is_empty());
+                }
             }
         }
 

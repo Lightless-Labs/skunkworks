@@ -61,26 +61,63 @@ impl SandboxProfile {
 pub fn sandbox_profile_for_network_policy(
     policy: &NetworkPolicy,
 ) -> Result<SandboxProfile, String> {
-    sandbox_profile_for_network_policy_with_denied_paths(policy, &[])
+    sandbox_profile_for_network_policy_with_egress_proxy(policy, None)
+}
+
+pub fn sandbox_profile_for_network_policy_with_egress_proxy(
+    policy: &NetworkPolicy,
+    egress_proxy_port: Option<u16>,
+) -> Result<SandboxProfile, String> {
+    sandbox_profile_for_network_policy_with_denied_paths_and_egress_proxy(
+        policy,
+        &[],
+        egress_proxy_port,
+    )
 }
 
 pub fn sandbox_profile_for_network_policy_with_denied_paths(
     policy: &NetworkPolicy,
     denied_paths: &[PathBuf],
 ) -> Result<SandboxProfile, String> {
+    sandbox_profile_for_network_policy_with_denied_paths_and_egress_proxy(
+        policy,
+        denied_paths,
+        None,
+    )
+}
+
+pub fn sandbox_profile_for_network_policy_with_denied_paths_and_egress_proxy(
+    policy: &NetworkPolicy,
+    denied_paths: &[PathBuf],
+    egress_proxy_port: Option<u16>,
+) -> Result<SandboxProfile, String> {
     let mut profile = match policy {
         NetworkPolicy::Open => {
+            if egress_proxy_port.is_some() {
+                return Err("network_policy=Open cannot use an egress proxy port".into());
+            }
             return Err(
                 "network_policy=Open does not need a sandbox profile; unrestricted provider launch must remain explicit"
                     .into(),
             );
         }
-        NetworkPolicy::Isolated => profile_from_lines(vec![
-            "(version 1)".into(),
-            "(allow default)".into(),
-            "(deny network*)".into(),
-        ]),
-        NetworkPolicy::AllowList(endpoints) => provider_allowlist_profile(endpoints)?,
+        NetworkPolicy::Isolated => {
+            if egress_proxy_port.is_some() {
+                return Err("network_policy=Isolated cannot use an egress proxy port".into());
+            }
+            profile_from_lines(vec![
+                "(version 1)".into(),
+                "(allow default)".into(),
+                "(deny network*)".into(),
+            ])
+        }
+        NetworkPolicy::AllowList(endpoints) => {
+            let port = egress_proxy_port.ok_or_else(|| {
+                "Seatbelt cannot filter hostnames; an egress proxy is required for network_policy=AllowList"
+                    .to_string()
+            })?;
+            provider_allowlist_profile(endpoints, port)?
+        }
     };
 
     if denied_paths.is_empty() {
@@ -119,6 +156,7 @@ pub struct ProviderCommandMaterialization {
     pub profile_path: Option<PathBuf>,
     pub program: OsString,
     pub args: Vec<OsString>,
+    pub env: Vec<(OsString, OsString)>,
     pub sandboxed: bool,
 }
 
@@ -132,8 +170,30 @@ where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
-    materialize_provider_command_for_network_policy_with_denied_paths(
+    materialize_provider_command_for_network_policy_with_denied_paths_and_egress_proxy(
         policy,
+        None,
+        profile_dir,
+        child_program,
+        child_args,
+        &[],
+    )
+}
+
+pub fn materialize_provider_command_for_network_policy_with_egress_proxy<I, S>(
+    policy: Option<&NetworkPolicy>,
+    egress_proxy_port: Option<u16>,
+    profile_dir: &Path,
+    child_program: impl Into<OsString>,
+    child_args: I,
+) -> Result<ProviderCommandMaterialization, String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    materialize_provider_command_for_network_policy_with_denied_paths_and_egress_proxy(
+        policy,
+        egress_proxy_port,
         profile_dir,
         child_program,
         child_args,
@@ -152,10 +212,33 @@ where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
+    materialize_provider_command_for_network_policy_with_denied_paths_and_egress_proxy(
+        policy,
+        None,
+        profile_dir,
+        child_program,
+        child_args,
+        denied_paths,
+    )
+}
+
+pub fn materialize_provider_command_for_network_policy_with_denied_paths_and_egress_proxy<I, S>(
+    policy: Option<&NetworkPolicy>,
+    egress_proxy_port: Option<u16>,
+    profile_dir: &Path,
+    child_program: impl Into<OsString>,
+    child_args: I,
+    denied_paths: &[PathBuf],
+) -> Result<ProviderCommandMaterialization, String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
     match policy {
         Some(restricted @ (NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) => {
-            let materialized = materialize_sandbox_exec_command_with_denied_paths(
+            let materialized = materialize_sandbox_exec_command_with_denied_paths_and_egress_proxy(
                 restricted,
+                egress_proxy_port,
                 profile_dir,
                 child_program,
                 child_args,
@@ -166,10 +249,17 @@ where
                 profile_path: Some(materialized.profile_path),
                 program: materialized.program,
                 args: materialized.args,
+                env: provider_proxy_environment(restricted, egress_proxy_port)?,
                 sandboxed: true,
             })
         }
         Some(NetworkPolicy::Open) | None => {
+            if egress_proxy_port.is_some() {
+                return Err(
+                    "egress proxy port requires network_policy=AllowList; open provider launches do not use it"
+                        .into(),
+                );
+            }
             if !denied_paths.is_empty() {
                 return Err(
                     "deny-read paths require an isolated or allowlist network policy sandbox"
@@ -181,6 +271,7 @@ where
                 profile_path: None,
                 program: child_program.into(),
                 args: child_args.into_iter().map(Into::into).collect(),
+                env: vec![],
                 sandboxed: false,
             })
         }
@@ -197,8 +288,30 @@ where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
-    materialize_sandbox_exec_command_with_denied_paths(
+    materialize_sandbox_exec_command_with_denied_paths_and_egress_proxy(
         policy,
+        None,
+        profile_dir,
+        child_program,
+        child_args,
+        &[],
+    )
+}
+
+pub fn materialize_sandbox_exec_command_with_egress_proxy<I, S>(
+    policy: &NetworkPolicy,
+    egress_proxy_port: Option<u16>,
+    profile_dir: &Path,
+    child_program: impl Into<OsString>,
+    child_args: I,
+) -> Result<SandboxExecCommandMaterialization, String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    materialize_sandbox_exec_command_with_denied_paths_and_egress_proxy(
+        policy,
+        egress_proxy_port,
         profile_dir,
         child_program,
         child_args,
@@ -217,7 +330,33 @@ where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
-    let profile = sandbox_profile_for_network_policy_with_denied_paths(policy, denied_paths)?;
+    materialize_sandbox_exec_command_with_denied_paths_and_egress_proxy(
+        policy,
+        None,
+        profile_dir,
+        child_program,
+        child_args,
+        denied_paths,
+    )
+}
+
+pub fn materialize_sandbox_exec_command_with_denied_paths_and_egress_proxy<I, S>(
+    policy: &NetworkPolicy,
+    egress_proxy_port: Option<u16>,
+    profile_dir: &Path,
+    child_program: impl Into<OsString>,
+    child_args: I,
+    denied_paths: &[PathBuf],
+) -> Result<SandboxExecCommandMaterialization, String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let profile = sandbox_profile_for_network_policy_with_denied_paths_and_egress_proxy(
+        policy,
+        denied_paths,
+        egress_proxy_port,
+    )?;
     let profile_dir = create_and_canonicalize_profile_dir(profile_dir)?;
     let profile_path = profile_dir.join(format!("a2-sandbox-{}.sb", profile.profile_sha256));
     write_profile_without_following_symlinks(&profile_path, &profile.text())?;
@@ -409,26 +548,74 @@ fn sandbox_exec_path_is_executable(path: &Path) -> bool {
     }
 }
 
-fn provider_allowlist_profile(endpoints: &[String]) -> Result<SandboxProfile, String> {
+fn provider_allowlist_profile(
+    endpoints: &[String],
+    egress_proxy_port: u16,
+) -> Result<SandboxProfile, String> {
     if endpoints.is_empty() {
         return Err("provider allowlist sandbox profile requires at least one endpoint".into());
     }
+    if egress_proxy_port == 0 {
+        return Err("egress proxy port must be greater than zero".into());
+    }
 
     let mut seen = BTreeSet::new();
+    for endpoint in endpoints {
+        let (host, port) = normalize_provider_endpoint(endpoint)?;
+        seen.insert((host, port));
+    }
     let mut lines = vec![
         "(version 1)".into(),
         "(allow default)".into(),
         "(deny network*)".into(),
+        format!("(allow network-outbound (remote tcp \"localhost:{egress_proxy_port}\"))"),
     ];
-    for endpoint in endpoints {
-        let (host, port) = normalize_provider_endpoint(endpoint)?;
-        if seen.insert((host.clone(), port)) {
-            lines.push(format!(
-                "(allow network-outbound (remote tcp \"{host}:{port}\"))"
-            ));
-        }
-    }
+    lines.extend(
+        seen.into_iter()
+            .map(|(host, port)| format!("; a2-allowlist-endpoint {host}:{port}")),
+    );
     Ok(profile_from_lines(lines))
+}
+
+fn provider_proxy_environment(
+    policy: &NetworkPolicy,
+    egress_proxy_port: Option<u16>,
+) -> Result<Vec<(OsString, OsString)>, String> {
+    match policy {
+        NetworkPolicy::AllowList(_) => {
+            let port = egress_proxy_port.ok_or_else(|| {
+                "Seatbelt cannot filter hostnames; an egress proxy is required for network_policy=AllowList"
+                    .to_string()
+            })?;
+            if port == 0 {
+                return Err("egress proxy port must be greater than zero".into());
+            }
+            let proxy = OsString::from(format!("http://127.0.0.1:{port}"));
+            let mut env = [
+                "HTTPS_PROXY",
+                "HTTP_PROXY",
+                "ALL_PROXY",
+                "https_proxy",
+                "http_proxy",
+                "all_proxy",
+            ]
+            .into_iter()
+            .map(|key| (OsString::from(key), proxy.clone()))
+            .collect::<Vec<_>>();
+            env.push((OsString::from("NODE_USE_ENV_PROXY"), OsString::from("1")));
+            env.push((OsString::from("NO_PROXY"), OsString::new()));
+            env.push((OsString::from("no_proxy"), OsString::new()));
+            Ok(env)
+        }
+        NetworkPolicy::Isolated => {
+            if egress_proxy_port.is_some() {
+                Err("network_policy=Isolated cannot use an egress proxy port".into())
+            } else {
+                Ok(vec![])
+            }
+        }
+        NetworkPolicy::Open => Err("network_policy=Open does not use a proxy environment".into()),
+    }
 }
 
 fn profile_from_lines(profile_lines: Vec<String>) -> SandboxProfile {
@@ -766,26 +953,59 @@ mod tests {
     }
 
     #[test]
-    fn allowlist_profile_emits_exact_provider_host_port_rules() {
-        let profile = sandbox_profile_for_network_policy(&NetworkPolicy::AllowList(vec![
-            "https://api.openai.com".into(),
-            "api.anthropic.com:8443".into(),
-        ]))
+    fn allowlist_profile_emits_exact_proxy_rule_and_sorted_endpoint_comments() {
+        let profile = sandbox_profile_for_network_policy_with_egress_proxy(
+            &NetworkPolicy::AllowList(vec![
+                "https://api.openai.com".into(),
+                "api.anthropic.com:8443".into(),
+            ]),
+            Some(43123),
+        )
         .unwrap();
 
         assert_eq!(profile.engine, "sandbox-exec");
-        assert!(profile.profile_lines.contains(&"(deny network*)".into()));
-        assert!(
-            profile
-                .profile_lines
-                .contains(&"(allow network-outbound (remote tcp \"api.openai.com:443\"))".into())
+        assert_eq!(
+            profile.profile_lines,
+            vec![
+                "(version 1)",
+                "(allow default)",
+                "(deny network*)",
+                "(allow network-outbound (remote tcp \"localhost:43123\"))",
+                "; a2-allowlist-endpoint api.anthropic.com:8443",
+                "; a2-allowlist-endpoint api.openai.com:443",
+            ]
         );
-        assert!(
-            profile.profile_lines.contains(
-                &"(allow network-outbound (remote tcp \"api.anthropic.com:8443\"))".into()
-            )
+        assert_eq!(
+            profile.text(),
+            "(version 1)\n(allow default)\n(deny network*)\n(allow network-outbound (remote tcp \"localhost:43123\"))\n; a2-allowlist-endpoint api.anthropic.com:8443\n; a2-allowlist-endpoint api.openai.com:443\n"
         );
-        assert_eq!(profile.profile_sha256, sha256_text(&profile.text()));
+        assert_eq!(
+            profile.profile_sha256,
+            "760d90c4bab60db7ade72ae8f658a5e0cc408256af3e7e790ab4a50d65651802"
+        );
+    }
+
+    #[test]
+    fn allowlist_profile_without_egress_proxy_fails_closed() {
+        let error = sandbox_profile_for_network_policy(&NetworkPolicy::AllowList(vec![
+            "https://api.openai.com".into(),
+        ]))
+        .unwrap_err();
+
+        assert!(error.contains("Seatbelt cannot filter hostnames"));
+        assert!(error.contains("egress proxy is required"));
+    }
+
+    #[test]
+    fn isolated_profile_rejects_egress_proxy_port() {
+        let error = sandbox_profile_for_network_policy_with_egress_proxy(
+            &NetworkPolicy::Isolated,
+            Some(43123),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("Isolated"));
+        assert!(error.contains("egress proxy"));
     }
 
     #[test]
@@ -796,9 +1016,10 @@ mod tests {
             "raw.githubusercontent.com",
             "docs.github.io",
         ] {
-            let err = sandbox_profile_for_network_policy(&NetworkPolicy::AllowList(vec![
-                endpoint.into(),
-            ]))
+            let err = sandbox_profile_for_network_policy_with_egress_proxy(
+                &NetworkPolicy::AllowList(vec![endpoint.into()]),
+                Some(43123),
+            )
             .unwrap_err();
             assert!(
                 err.contains("public solution hosts"),
@@ -818,9 +1039,10 @@ mod tests {
             "singlelabel",
         ] {
             assert!(
-                sandbox_profile_for_network_policy(&NetworkPolicy::AllowList(vec![
-                    endpoint.into()
-                ]))
+                sandbox_profile_for_network_policy_with_egress_proxy(
+                    &NetworkPolicy::AllowList(vec![endpoint.into()]),
+                    Some(43123),
+                )
                 .is_err(),
                 "endpoint should be rejected: {endpoint}"
             );
@@ -891,11 +1113,12 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
 
-        let materialized = materialize_sandbox_exec_command(
+        let materialized = materialize_sandbox_exec_command_with_egress_proxy(
             &NetworkPolicy::AllowList(vec![
                 "https://api.openai.com".into(),
                 "API.OPENAI.COM:443".into(),
             ]),
+            Some(43123),
             &temp_dir,
             "provider-cli",
             ["--json"],
@@ -924,6 +1147,139 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn allowlist_materialization_sets_proxy_environment_and_isolated_omits_it() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "a2-sandbox-proxy-env-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let allowlist = materialize_provider_command_for_network_policy_with_egress_proxy(
+            Some(&NetworkPolicy::AllowList(vec![
+                "https://api.openai.com".into(),
+            ])),
+            Some(43123),
+            &temp_dir,
+            "provider-cli",
+            ["--json"],
+        )
+        .unwrap();
+        let expected_proxy = OsString::from("http://127.0.0.1:43123");
+        for key in [
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "ALL_PROXY",
+            "https_proxy",
+            "http_proxy",
+            "all_proxy",
+        ] {
+            assert!(
+                allowlist
+                    .env
+                    .contains(&(OsString::from(key), expected_proxy.clone())),
+                "missing {key} in {:?}",
+                allowlist.env
+            );
+        }
+        assert!(
+            allowlist
+                .env
+                .contains(&(OsString::from("NODE_USE_ENV_PROXY"), OsString::from("1")))
+        );
+        for key in ["NO_PROXY", "no_proxy"] {
+            assert!(
+                allowlist
+                    .env
+                    .contains(&(OsString::from(key), OsString::new()))
+            );
+        }
+
+        let isolated = materialize_provider_command_for_network_policy(
+            Some(&NetworkPolicy::Isolated),
+            &temp_dir,
+            "provider-cli",
+            ["--json"],
+        )
+        .unwrap();
+        assert!(isolated.env.is_empty());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn allowlist_profile_is_accepted_and_only_proxy_listener_is_reachable() {
+        let proxy_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_port = proxy_listener.local_addr().unwrap().port();
+        let blocked_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let blocked_port = blocked_listener.local_addr().unwrap().port();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "a2-sandbox-allowlist-runtime-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let accepted = materialize_sandbox_exec_command_with_egress_proxy(
+            &NetworkPolicy::AllowList(vec!["https://api.openai.com".into()]),
+            Some(proxy_port),
+            &temp_dir,
+            "/usr/bin/true",
+            std::iter::empty::<&str>(),
+        )
+        .unwrap();
+        let output = std::process::Command::new(&accepted.program)
+            .args(&accepted.args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "sandbox-exec rejected profile: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let allowed = materialize_sandbox_exec_command_with_egress_proxy(
+            &NetworkPolicy::AllowList(vec!["https://api.openai.com".into()]),
+            Some(proxy_port),
+            &temp_dir,
+            "/usr/bin/nc",
+            ["-z", "127.0.0.1", &proxy_port.to_string()],
+        )
+        .unwrap();
+        assert!(
+            std::process::Command::new(&allowed.program)
+                .args(&allowed.args)
+                .status()
+                .unwrap()
+                .success(),
+            "sandbox must allow connecting to the configured proxy port"
+        );
+
+        let blocked = materialize_sandbox_exec_command_with_egress_proxy(
+            &NetworkPolicy::AllowList(vec!["https://api.openai.com".into()]),
+            Some(proxy_port),
+            &temp_dir,
+            "/usr/bin/nc",
+            ["-z", "127.0.0.1", &blocked_port.to_string()],
+        )
+        .unwrap();
+        assert!(
+            !std::process::Command::new(&blocked.program)
+                .args(&blocked.args)
+                .status()
+                .unwrap()
+                .success(),
+            "sandbox must deny connecting to any other local port"
+        );
+
+        std::fs::remove_dir_all(&temp_dir).ok();
     }
 
     #[cfg(unix)]

@@ -1643,6 +1643,9 @@ enum Commands {
         /// Canonical subpath denied to sandboxed providers. May be repeated.
         #[arg(long)]
         deny_read: Vec<PathBuf>,
+        /// Loopback HTTPS CONNECT proxy used to enforce an allowlist policy.
+        #[arg(long, value_parser = parse_egress_proxy_arg)]
+        egress_proxy: Option<u16>,
         /// Maximum token budget per task.
         #[arg(long, default_value = "50000")]
         max_tokens: u64,
@@ -2294,6 +2297,42 @@ fn parse_network_policy_arg(value: &str) -> Result<a2_core::protocol::NetworkPol
     )
 }
 
+fn parse_egress_proxy_arg(value: &str) -> Result<u16, String> {
+    let (host, port) = value
+        .rsplit_once(':')
+        .ok_or_else(|| "egress proxy must be 127.0.0.1:PORT or localhost:PORT".to_string())?;
+    if !(host == "127.0.0.1" || host.eq_ignore_ascii_case("localhost")) {
+        return Err("egress proxy must use loopback host 127.0.0.1 or localhost".into());
+    }
+    let port = port
+        .parse::<u16>()
+        .map_err(|_| "egress proxy port must be an integer from 1 to 65535".to_string())?;
+    if port == 0 {
+        return Err("egress proxy port must be greater than zero".into());
+    }
+    Ok(port)
+}
+
+fn validate_egress_proxy_policy(
+    policy: Option<&a2_core::protocol::NetworkPolicy>,
+    egress_proxy_port: Option<u16>,
+) -> Result<(), String> {
+    match (policy, egress_proxy_port) {
+        (Some(a2_core::protocol::NetworkPolicy::AllowList(_)), Some(_)) => Ok(()),
+        (Some(a2_core::protocol::NetworkPolicy::AllowList(_)), None) => Err(
+            "Seatbelt cannot filter hostnames; --network-policy allowlist requires --egress-proxy 127.0.0.1:PORT or localhost:PORT"
+                .into(),
+        ),
+        (Some(a2_core::protocol::NetworkPolicy::Isolated), Some(_)) => {
+            Err("--egress-proxy cannot be used with --network-policy isolated".into())
+        }
+        (Some(a2_core::protocol::NetworkPolicy::Open) | None, Some(_)) => {
+            Err("--egress-proxy requires --network-policy allowlist:<endpoint>".into())
+        }
+        (_, None) => Ok(()),
+    }
+}
+
 fn validate_run_workspace(path: &Path) -> Result<PathBuf, String> {
     if !path.exists() {
         return Err(format!("workspace does not exist: {}", path.display()));
@@ -2530,6 +2569,7 @@ async fn main() {
             emit_jsonl,
             prompt_profile,
             deny_read,
+            egress_proxy,
             max_tokens,
             timeout,
             provider,
@@ -2551,6 +2591,11 @@ async fn main() {
             };
             if let Err(error) = validate_deny_read_policy(network_policy.as_ref(), &deny_read) {
                 eprintln!("Invalid --deny-read: {error}");
+                std::process::exit(1);
+            }
+            if let Err(error) = validate_egress_proxy_policy(network_policy.as_ref(), egress_proxy)
+            {
+                eprintln!("Invalid --egress-proxy: {error}");
                 std::process::exit(1);
             }
             let deny_read = match canonicalize_deny_read_paths(&deny_read) {
@@ -2578,7 +2623,8 @@ async fn main() {
             let catalyst =
                 a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root.clone())
                     .with_prompt_profile(prompt_profile.into())
-                    .with_deny_read_paths(deny_read);
+                    .with_deny_read_paths(deny_read)
+                    .with_egress_proxy_port(egress_proxy);
             let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
             let governor = a2d::Governor::with_stagnation_detector(
                 a2_core::id::GermlineVersion::new(),
@@ -7505,6 +7551,62 @@ mod tests {
         );
         assert!(parse_network_policy_arg("allowlist:").is_err());
         assert!(parse_network_policy_arg("prompt-only").is_err());
+    }
+
+    #[test]
+    fn run_cli_validates_egress_proxy_loopback_addresses() {
+        for value in ["127.0.0.1:43123", "localhost:43123", "LOCALHOST:43123"] {
+            let cli = Cli::try_parse_from([
+                "a2ctl",
+                "run",
+                "--network-policy",
+                "allowlist:https://api.openai.com",
+                "--egress-proxy",
+                value,
+            ])
+            .unwrap();
+            match cli.command {
+                Commands::Run { egress_proxy, .. } => assert_eq!(egress_proxy, Some(43123)),
+                _ => panic!("expected run command"),
+            }
+        }
+
+        for value in [
+            "0.0.0.0:43123",
+            "192.0.2.10:43123",
+            "[::1]:43123",
+            "https://127.0.0.1:43123",
+            "localhost:0",
+            "localhost:not-a-port",
+        ] {
+            assert!(
+                Cli::try_parse_from([
+                    "a2ctl",
+                    "run",
+                    "--network-policy",
+                    "allowlist:https://api.openai.com",
+                    "--egress-proxy",
+                    value,
+                ])
+                .is_err(),
+                "non-loopback or malformed proxy must be rejected: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn run_allowlist_requires_proxy_and_isolated_rejects_proxy() {
+        let allowlist =
+            a2_core::protocol::NetworkPolicy::AllowList(vec!["https://api.openai.com".into()]);
+        assert!(validate_egress_proxy_policy(Some(&allowlist), None).is_err());
+        assert!(validate_egress_proxy_policy(Some(&allowlist), Some(43123)).is_ok());
+        assert!(
+            validate_egress_proxy_policy(
+                Some(&a2_core::protocol::NetworkPolicy::Isolated),
+                Some(43123)
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -16,8 +16,8 @@
 use crate::sandbox_profile::materialize_provider_command_for_network_policy;
 use crate::sandbox_profile::{
     ProviderCommandMaterialization,
-    materialize_provider_command_for_network_policy_with_denied_paths, pi_provider_args,
-    sandbox_exec_available_on_this_platform,
+    materialize_provider_command_for_network_policy_with_denied_paths_and_egress_proxy,
+    pi_provider_args, sandbox_exec_available_on_this_platform,
 };
 use a2_core::error::{A2Error, A2Result};
 use a2_core::id::*;
@@ -44,6 +44,7 @@ pub struct WorktreeCatalyst {
     base_ref: String,
     prompt_profile: PromptProfile,
     deny_read_paths: Vec<PathBuf>,
+    egress_proxy_port: Option<u16>,
 }
 
 impl WorktreeCatalyst {
@@ -54,6 +55,7 @@ impl WorktreeCatalyst {
             base_ref: "HEAD".into(),
             prompt_profile: PromptProfile::A2,
             deny_read_paths: vec![],
+            egress_proxy_port: None,
         }
     }
 
@@ -65,6 +67,7 @@ impl WorktreeCatalyst {
             base_ref: base_ref.into(),
             prompt_profile: PromptProfile::A2,
             deny_read_paths: vec![],
+            egress_proxy_port: None,
         }
     }
 
@@ -78,6 +81,11 @@ impl WorktreeCatalyst {
         self
     }
 
+    pub fn with_egress_proxy_port(mut self, egress_proxy_port: Option<u16>) -> Self {
+        self.egress_proxy_port = egress_proxy_port;
+        self
+    }
+
     fn materialize_provider_command(
         &self,
         network_policy: Option<&NetworkPolicy>,
@@ -85,8 +93,9 @@ impl WorktreeCatalyst {
         program: &str,
         args: Vec<OsString>,
     ) -> Result<ProviderCommandMaterialization, String> {
-        materialize_provider_command_for_network_policy_with_denied_paths(
+        materialize_provider_command_for_network_policy_with_denied_paths_and_egress_proxy(
             network_policy,
+            self.egress_proxy_port,
             profile_dir,
             program,
             args,
@@ -478,6 +487,7 @@ impl WorktreeCatalyst {
             })?;
         let output = Command::new(&materialized.program)
             .args(&materialized.args)
+            .envs(materialized.env.iter().map(|(key, value)| (key, value)))
             .current_dir(worktree_path)
             .env("PWD", worktree_path)
             .stdin(std::process::Stdio::null())
@@ -553,6 +563,7 @@ impl WorktreeCatalyst {
             })?;
         let output = Command::new(&materialized.program)
             .args(&materialized.args)
+            .envs(materialized.env.iter().map(|(key, value)| (key, value)))
             .current_dir(worktree_path)
             .env("PWD", worktree_path)
             .stdin(std::process::Stdio::null())
@@ -627,6 +638,7 @@ impl WorktreeCatalyst {
             })?;
         let output = Command::new(&materialized.program)
             .args(&materialized.args)
+            .envs(materialized.env.iter().map(|(key, value)| (key, value)))
             .current_dir(worktree_path)
             .env("PWD", worktree_path)
             .stdin(std::process::Stdio::null())
@@ -673,6 +685,7 @@ impl WorktreeCatalyst {
             })?;
         let output = Command::new(&materialized.program)
             .args(&materialized.args)
+            .envs(materialized.env.iter().map(|(key, value)| (key, value)))
             .current_dir(worktree_path)
             .env("PWD", worktree_path)
             .stdin(std::process::Stdio::null())
@@ -731,6 +744,7 @@ impl WorktreeCatalyst {
             })?;
         let output = Command::new(&materialized.program)
             .args(&materialized.args)
+            .envs(materialized.env.iter().map(|(key, value)| (key, value)))
             .current_dir(worktree_path)
             .env("PWD", worktree_path)
             .stdin(std::process::Stdio::null())
@@ -1545,16 +1559,18 @@ mod tests {
     fn allowlist_provider_command_materializes_provider_endpoint_profile_before_spawn() {
         let repo_dir = std::env::temp_dir().join(format!("a2-prompt-{}", uuid::Uuid::now_v7()));
         let profile_dir = repo_dir.join(".a2").join("sandbox-profiles");
+        let catalyst = WorktreeCatalyst::new(repo_dir.clone()).with_egress_proxy_port(Some(43123));
 
-        let materialized = materialize_provider_command_for_network_policy(
-            Some(&NetworkPolicy::AllowList(vec![
-                "https://api.openai.com".to_string(),
-            ])),
-            &profile_dir,
-            "pi",
-            [OsString::from("--model"), OsString::from("provider/model")],
-        )
-        .unwrap();
+        let materialized = catalyst
+            .materialize_provider_command(
+                Some(&NetworkPolicy::AllowList(vec![
+                    "https://api.openai.com".to_string(),
+                ])),
+                &profile_dir,
+                "pi",
+                vec![OsString::from("--model"), OsString::from("provider/model")],
+            )
+            .unwrap();
 
         assert!(materialized.sandboxed);
         assert_eq!(
@@ -1570,8 +1586,17 @@ mod tests {
         assert!(
             profile
                 .profile_lines
-                .contains(&"(allow network-outbound (remote tcp \"api.openai.com:443\"))".into())
+                .contains(&"(allow network-outbound (remote tcp \"localhost:43123\"))".into())
         );
+        assert!(
+            profile
+                .profile_lines
+                .contains(&"; a2-allowlist-endpoint api.openai.com:443".into())
+        );
+        assert!(materialized.env.contains(&(
+            OsString::from("HTTPS_PROXY"),
+            OsString::from("http://127.0.0.1:43123")
+        )));
 
         let _ = std::fs::remove_dir_all(repo_dir);
     }

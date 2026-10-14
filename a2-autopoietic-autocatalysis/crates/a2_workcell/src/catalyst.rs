@@ -507,12 +507,8 @@ mod tests {
             .unwrap_err();
         let message = error.to_string();
         assert!(message.contains("network_policy=AllowList"));
-        assert!(message.contains("sandbox_profile_engine=sandbox-exec"));
-        assert!(message.contains("sandbox_profile_sha256="));
-        assert!(message.contains(
-            r##"sandbox_profile_lines=(version 1)\n(allow default)\n(deny network*)\n(allow network-outbound (remote tcp "api.openai.com:443"))\n"##
-        ));
-        assert!(message.contains("sandbox_exec_available="));
+        assert!(message.contains("sandbox_profile_error=Seatbelt cannot filter hostnames"));
+        assert!(message.contains("egress proxy is required"));
     }
 
     #[tokio::test]
