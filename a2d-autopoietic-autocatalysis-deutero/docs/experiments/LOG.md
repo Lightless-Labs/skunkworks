@@ -245,5 +245,5 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - descriptive McNemar.
 - Result: pending
 - Artifacts: runs/2026-10-15-e07-confirmation-1/ (manifest, ledger, summary); the full run is in `$A2D_HOLDOUT_DIR/runs/E07` and is never opened.
-- Deviations:
+- Deviations: 2026-10-15, at launch: the sibling A² session was running `gpt-6-luna` jobs on the same Codex account (about 1 process, its E1 run). That violates the pre-registered "no other Codex jobs" condition, but this session cannot control it and A²'s schedule is open-ended. Generation proceeded. Tuple and arm orders are randomised, so the contention is noise, not bias. Call durations and provider errors are monitored and reported with the result. Recorded before any submission was scored or inspected.
 - Decision:
