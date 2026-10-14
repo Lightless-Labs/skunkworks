@@ -88,3 +88,11 @@ Local containers are impossible here: the host is a VM without nested virtualiza
 - `a2ctl run` cannot target an external repository;
 - the worktree prompt hard-codes A²'s own crate layout;
 - `TestResults` counts verifier commands, not tests.
+
+### 2026-10-14 — Arms, subset, and agent read boundary (before the protocol exists)
+
+- **Three arms, not four.** A² loads lineage per task id (`Governor::run_task` → `store.for_task`), and each task runs once per arm, so `a2-no-lineage` and `a2-full` would execute the same program in E1. The arms are `raw`, `stateless-retry` and `a2-full`. Whether persistent lineage adds value across generations is E2's question.
+- **Stateless-retry carrier.** The driver loops `a2ctl run --attempts 1 --lineage-db none` with a fresh task id each attempt, and appends the previous attempt's verifier output to the problem statement. No lineage, no ContextPack, and no prior diff carry over. `a2-full` runs `a2ctl run --attempts k` with a fresh lineage db and unredacted verifier feedback. Both start every attempt from the clean base checkout.
+- **Subset.** `ansible/ansible` tasks with ≥ 2 fail-to-pass tests (68 of 82 in V2 at dataset commit `2d52cb3d…`). The Python version is chosen from the base-commit year (≤ 2021 → 3.9, 2022 → 3.10, ≥ 2023 → 3.11), and deps are pinned with `uv pip install --exclude-newer <base date + 1 day>`. A task enters only if gold resolves it and the empty patch does not. openlibrary is out of scope (vendored submodules). In the spike, 3/3 ansible tasks passed the gate.
+- **Agent read boundary.** The sandbox profile is `(allow default)` apart from network, so the agent could read private task material from disk. Agent launches therefore add `(deny file-read* file-write* (subpath <private-dir>))` for the experiment's private directory, which holds the parquet, gold and test patches, test lists and manifests. Verifier and grader run in A²'s process, outside the agent sandbox. The verifier command the agent sees is only `python3 <committed script> --task <opaque id>`; no private path appears in any prompt or command string.
+- **Test-path reverts.** Both the visible-feedback verifier and the final grader revert agent edits to test paths before running, matching the official `test.sh`.
