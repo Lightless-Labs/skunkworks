@@ -31,7 +31,7 @@ Pre-registration and results for `docs/plans/2026-10-14-lift-first-roadmap.md`. 
 - Budget cap: 3 invocations, 1800 s wall-clock
 - Infrastructure exceptions (predefined): none. A provider error or timeout counts as a task failure.
 - Result-class rule: not applicable (single arm, no comparison). Report hidden pass rate per task.
-- Result: pending
+- Result: **2/3 hidden pass** (chess 8/8, sudoku 6/6; rubiks 4/6, failing both solver tests). 3 invocations, 224 s wall-clock, 34–47 s per invocation. No extraction, provider or timeout failures. Token usage was not captured: the Codex CLI provider reports zeros (the count is only on Codex's stderr).
 - Artifacts: runs/2026-10-14-e01-tiny-arm-a/ (ledger: runs/2026-10-14-e01-tiny-arm-a/ledger.jsonl)
-- Deviations:
-- Decision:
+- Deviations: none.
+- Decision: P0 exit item 5 met. Luna-low passes chess and sudoku at pass@1, so the legacy tasks are near saturation and serve as plumbing only; P1 needs a harder suite. Capture Codex token counts before P1 so budget reporting is complete.

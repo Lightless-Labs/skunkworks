@@ -1,0 +1,244 @@
+const SIDE: usize = 9;
+
+pub fn parse(s: &str) -> [[u8; 9]; 9] {
+    let bytes = s.as_bytes();
+    assert_eq!(bytes.len(), SIDE * SIDE, "Sudoku input must contain 81 characters");
+
+    let mut grid = [[0; SIDE]; SIDE];
+    for (i, &byte) in bytes.iter().enumerate() {
+        assert!(byte.is_ascii_digit(), "Sudoku input must contain only digits");
+        grid[i / SIDE][i % SIDE] = byte - b'0';
+    }
+    grid
+}
+
+pub fn solve(mut grid: [[u8; 9]; 9]) -> Option<[[u8; 9]; 9]> {
+    if grid.iter().flatten().any(|&value| value > 9) || !givens_are_consistent(&grid) {
+        return None;
+    }
+
+    if solve_in_place(&mut grid) {
+        Some(grid)
+    } else {
+        None
+    }
+}
+
+pub fn validate(grid: &[[u8; 9]; 9]) -> bool {
+    for row in 0..SIDE {
+        let mut seen = [false; 10];
+        for col in 0..SIDE {
+            let value = grid[row][col] as usize;
+            if !(1..=9).contains(&value) || seen[value] {
+                return false;
+            }
+            seen[value] = true;
+        }
+    }
+
+    for col in 0..SIDE {
+        let mut seen = [false; 10];
+        for row in 0..SIDE {
+            let value = grid[row][col] as usize;
+            if !(1..=9).contains(&value) || seen[value] {
+                return false;
+            }
+            seen[value] = true;
+        }
+    }
+
+    for box_row in (0..SIDE).step_by(3) {
+        for box_col in (0..SIDE).step_by(3) {
+            let mut seen = [false; 10];
+            for row in box_row..box_row + 3 {
+                for col in box_col..box_col + 3 {
+                    let value = grid[row][col] as usize;
+                    if !(1..=9).contains(&value) || seen[value] {
+                        return false;
+                    }
+                    seen[value] = true;
+                }
+            }
+        }
+    }
+
+    true
+}
+
+fn givens_are_consistent(grid: &[[u8; 9]; 9]) -> bool {
+    for row in 0..SIDE {
+        for col in 0..SIDE {
+            let value = grid[row][col];
+            if value == 0 {
+                continue;
+            }
+            if grid[row]
+                .iter()
+                .enumerate()
+                .any(|(i, &other)| i != col && other == value)
+            {
+                return false;
+            }
+            if (0..SIDE).any(|r| r != row && grid[r][col] == value) {
+                return false;
+            }
+
+            let box_row = (row / 3) * 3;
+            let box_col = (col / 3) * 3;
+            for r in box_row..box_row + 3 {
+                for c in box_col..box_col + 3 {
+                    if (r != row || c != col) && grid[r][c] == value {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+fn solve_in_place(grid: &mut [[u8; 9]; 9]) -> bool {
+    let mut best: Option<(usize, usize, u16)> = None;
+
+    for row in 0..SIDE {
+        for col in 0..SIDE {
+            if grid[row][col] != 0 {
+                continue;
+            }
+
+            let candidates = candidates_for(grid, row, col);
+            let count = candidates.count_ones();
+            if count == 0 {
+                return false;
+            }
+            if best.is_none_or(|(_, _, mask)| count < mask.count_ones()) {
+                best = Some((row, col, candidates));
+                if count == 1 {
+                    break;
+                }
+            }
+        }
+        if best.is_some_and(|(_, _, mask)| mask.count_ones() == 1) {
+            break;
+        }
+    }
+
+    let Some((row, col, mut candidates)) = best else {
+        return true;
+    };
+
+    while candidates != 0 {
+        let bit = candidates & candidates.wrapping_neg();
+        candidates &= !bit;
+        grid[row][col] = bit.trailing_zeros() as u8 + 1;
+
+        if solve_in_place(grid) {
+            return true;
+        }
+        grid[row][col] = 0;
+    }
+
+    false
+}
+
+fn candidates_for(grid: &[[u8; 9]; 9], row: usize, col: usize) -> u16 {
+    let mut used = 0u16;
+
+    for i in 0..SIDE {
+        let row_value = grid[row][i];
+        let col_value = grid[i][col];
+        if row_value != 0 {
+            used |= 1 << (row_value - 1);
+        }
+        if col_value != 0 {
+            used |= 1 << (col_value - 1);
+        }
+    }
+
+    let box_row = (row / 3) * 3;
+    let box_col = (col / 3) * 3;
+    for r in box_row..box_row + 3 {
+        for c in box_col..box_col + 3 {
+            let value = grid[r][c];
+            if value != 0 {
+                used |= 1 << (value - 1);
+            }
+        }
+    }
+
+    0x01ff & !used
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_grid() {
+        let grid = parse(
+            "530070000\
+             600195000\
+             098000060\
+             800060003\
+             400803001\
+             700020006\
+             060000280\
+             000419005\
+             000080079",
+        );
+        assert_eq!(grid[0], [5, 3, 0, 0, 7, 0, 0, 0, 0]);
+        assert_eq!(grid[8], [0, 0, 0, 0, 8, 0, 0, 7, 9]);
+    }
+
+    #[test]
+    fn solves_puzzle() {
+        let puzzle = parse(
+            "530070000\
+             600195000\
+             098000060\
+             800060003\
+             400803001\
+             700020006\
+             060000280\
+             000419005\
+             000080079",
+        );
+        let solution = solve(puzzle).expect("puzzle should have a solution");
+        assert!(validate(&solution));
+        assert_eq!(solution[0], [5, 3, 4, 6, 7, 8, 9, 1, 2]);
+    }
+
+    #[test]
+    fn rejects_invalid_and_unsolvable_grids() {
+        let mut duplicate = [[0; 9]; 9];
+        duplicate[0][0] = 1;
+        duplicate[0][1] = 1;
+        assert!(solve(duplicate).is_none());
+
+        let mut out_of_range = [[0; 9]; 9];
+        out_of_range[0][0] = 10;
+        assert!(solve(out_of_range).is_none());
+    }
+
+    #[test]
+    fn validates_only_complete_legal_grids() {
+        let solved = parse(
+            "534678912\
+             672195348\
+             198342567\
+             859761423\
+             426853791\
+             713924856\
+             961537284\
+             287419635\
+             345286179",
+        );
+        assert!(validate(&solved));
+
+        let mut incomplete = solved;
+        incomplete[0][0] = 0;
+        assert!(!validate(&incomplete));
+    }
+}

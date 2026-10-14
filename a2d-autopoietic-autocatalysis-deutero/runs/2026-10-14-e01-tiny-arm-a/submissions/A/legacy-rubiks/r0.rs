@@ -1,0 +1,303 @@
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Cube {
+    // Faces are ordered U, D, L, R, F, B. Each face uses row-major cells.
+    faces: [[u8; 9]; 6],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Move {
+    U,
+    UPrime,
+    D,
+    DPrime,
+    L,
+    LPrime,
+    R,
+    RPrime,
+    F,
+    FPrime,
+    B,
+    BPrime,
+}
+
+impl Cube {
+    fn new() -> Self {
+        Self {
+            faces: std::array::from_fn(|face| [face as u8; 9]),
+        }
+    }
+}
+
+fn rotate(cube: &mut Cube, mv: Move) {
+    // Sticker coordinates: x points right, y points up, z points front.
+    // Each sticker is represented by its cubie position and outward normal.
+    fn position(face: usize, cell: usize) -> ([i8; 3], [i8; 3]) {
+        let row = (cell / 3) as i8;
+        let col = (cell % 3) as i8;
+        match face {
+            0 => ([col - 1, 1, row - 1], [0, 1, 0]),   // U
+            1 => ([col - 1, -1, 1 - row], [0, -1, 0]), // D
+            2 => ([-1, 1 - row, col - 1], [-1, 0, 0]), // L
+            3 => ([1, 1 - row, 1 - col], [1, 0, 0]),   // R
+            4 => ([col - 1, 1 - row, 1], [0, 0, 1]),   // F
+            _ => ([1 - col, 1 - row, -1], [0, 0, -1]), // B
+        }
+    }
+
+    fn face_cell(pos: [i8; 3], normal: [i8; 3]) -> (usize, usize) {
+        let (face, row, col) = match normal {
+            [0, 1, 0] => (0, pos[2] + 1, pos[0] + 1),
+            [0, -1, 0] => (1, 1 - pos[2], pos[0] + 1),
+            [-1, 0, 0] => (2, 1 - pos[1], pos[2] + 1),
+            [1, 0, 0] => (3, 1 - pos[1], 1 - pos[2]),
+            [0, 0, 1] => (4, 1 - pos[1], pos[0] + 1),
+            _ => (5, 1 - pos[1], 1 - pos[0]),
+        };
+        (face, (row * 3 + col) as usize)
+    }
+
+    let (axis, layer, clockwise) = match mv {
+        Move::U => (1, 1, true),
+        Move::UPrime => (1, 1, false),
+        Move::D => (1, -1, false),
+        Move::DPrime => (1, -1, true),
+        Move::L => (0, -1, false),
+        Move::LPrime => (0, -1, true),
+        Move::R => (0, 1, true),
+        Move::RPrime => (0, 1, false),
+        Move::F => (2, 1, true),
+        Move::FPrime => (2, 1, false),
+        Move::B => (2, -1, false),
+        Move::BPrime => (2, -1, true),
+    };
+
+    let old = cube.faces;
+    for face in 0..6 {
+        for cell in 0..9 {
+            let (mut pos, mut normal) = position(face, cell);
+            if pos[axis] != layer {
+                continue;
+            }
+
+            // Clockwise as seen from outside the turning face.
+            let turns = if clockwise { 1 } else { 3 };
+            for _ in 0..turns {
+                match axis {
+                    0 => {
+                        pos = [pos[0], -pos[2], pos[1]];
+                        normal = [normal[0], -normal[2], normal[1]];
+                    }
+                    1 => {
+                        pos = [pos[2], pos[1], -pos[0]];
+                        normal = [normal[2], normal[1], -normal[0]];
+                    }
+                    _ => {
+                        pos = [-pos[1], pos[0], pos[2]];
+                        normal = [-normal[1], normal[0], normal[2]];
+                    }
+                }
+            }
+
+            let (new_face, new_cell) = face_cell(pos, normal);
+            cube.faces[new_face][new_cell] = old[face][cell];
+        }
+    }
+}
+
+fn is_solved(cube: &Cube) -> bool {
+    cube.faces
+        .iter()
+        .all(|face| face.iter().all(|&sticker| sticker == face[0]))
+}
+
+fn scramble(cube: &mut Cube, len: usize, seed: u64) -> Vec<Move> {
+    const MOVES: [Move; 12] = [
+        Move::U,
+        Move::UPrime,
+        Move::D,
+        Move::DPrime,
+        Move::L,
+        Move::LPrime,
+        Move::R,
+        Move::RPrime,
+        Move::F,
+        Move::FPrime,
+        Move::B,
+        Move::BPrime,
+    ];
+
+    let mut state = seed;
+    let mut result = Vec::with_capacity(len);
+    for _ in 0..len {
+        // SplitMix64, with wrapping arithmetic for defined deterministic output.
+        state = state.wrapping_add(0x9E3779B97F4A7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+        z ^= z >> 31;
+
+        let mv = MOVES[(z as usize) % MOVES.len()];
+        rotate(cube, mv);
+        result.push(mv);
+    }
+    result
+}
+
+fn solve(cube: &Cube) -> Option<Vec<Move>> {
+    if is_solved(cube) {
+        return Some(Vec::new());
+    }
+
+    // Search the inverse of a move sequence from the solved state. IDA* uses
+    // misplaced stickers as an admissible lower bound (each turn moves at
+    // most 20 stickers, so ceil(misplaced / 20) is a lower bound).
+    fn heuristic(cube: &Cube) -> usize {
+        let misplaced: usize = cube
+            .faces
+            .iter()
+            .map(|face| face.iter().filter(|&&sticker| sticker != face[0]).count())
+            .sum();
+        (misplaced + 19) / 20
+    }
+
+    fn inverse(mv: Move) -> Move {
+        match mv {
+            Move::U => Move::UPrime,
+            Move::UPrime => Move::U,
+            Move::D => Move::DPrime,
+            Move::DPrime => Move::D,
+            Move::L => Move::LPrime,
+            Move::LPrime => Move::L,
+            Move::R => Move::RPrime,
+            Move::RPrime => Move::R,
+            Move::F => Move::FPrime,
+            Move::FPrime => Move::F,
+            Move::B => Move::BPrime,
+            Move::BPrime => Move::B,
+        }
+    }
+
+    fn face_id(mv: Move) -> u8 {
+        match mv {
+            Move::U | Move::UPrime => 0,
+            Move::D | Move::DPrime => 1,
+            Move::L | Move::LPrime => 2,
+            Move::R | Move::RPrime => 3,
+            Move::F | Move::FPrime => 4,
+            Move::B | Move::BPrime => 5,
+        }
+    }
+
+    fn search(
+        current: &Cube,
+        target: &Cube,
+        remaining: usize,
+        previous_face: Option<u8>,
+        path: &mut Vec<Move>,
+    ) -> bool {
+        if is_solved(current) {
+            return true;
+        }
+        if remaining == 0 || heuristic(current) > remaining {
+            return false;
+        }
+
+        const MOVES: [Move; 12] = [
+            Move::U,
+            Move::UPrime,
+            Move::D,
+            Move::DPrime,
+            Move::L,
+            Move::LPrime,
+            Move::R,
+            Move::RPrime,
+            Move::F,
+            Move::FPrime,
+            Move::B,
+            Move::BPrime,
+        ];
+
+        for mv in MOVES {
+            let face = face_id(mv);
+            if previous_face == Some(face) {
+                continue;
+            }
+            let mut next = current.clone();
+            rotate(&mut next, mv);
+            path.push(mv);
+            if search(&next, target, remaining - 1, Some(face), path) {
+                return true;
+            }
+            path.pop();
+        }
+        let _ = target;
+        false
+    }
+
+    // Practical depth bound for this standard-library-only IDA* solver.
+    let max_depth = 12;
+    let mut start = Cube::new();
+    for depth in 0..=max_depth {
+        let mut path = Vec::new();
+        if search(&start, cube, depth, None, &mut path) {
+            // The search path takes solved to the scrambled state; invert it
+            // to produce the requested solution.
+            return Some(path.into_iter().rev().map(inverse).collect());
+        }
+    }
+
+    // Search from the input directly toward solved as well. This also handles
+    // states whose shortest solution is within the bound but whose forward
+    // path ordering differs from the solved-to-input search.
+    start = cube.clone();
+    for depth in 0..=max_depth {
+        let mut path = Vec::new();
+        if search(&start, &Cube::new(), depth, None, &mut path) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn solved_state_detection() {
+        let cube = Cube::new();
+        assert!(is_solved(&cube));
+    }
+
+    #[test]
+    fn rotation_and_inverse_restore_state() {
+        let original = Cube::new();
+        let mut cube = original.clone();
+        rotate(&mut cube, Move::R);
+        rotate(&mut cube, Move::RPrime);
+        assert_eq!(cube, original);
+    }
+
+    #[test]
+    fn scramble_changes_state_and_is_deterministic() {
+        let mut first = Cube::new();
+        let mut second = Cube::new();
+        let moves_a = scramble(&mut first, 20, 1234);
+        let moves_b = scramble(&mut second, 20, 1234);
+        assert_eq!(moves_a, moves_b);
+        assert_eq!(first, second);
+        assert!(!is_solved(&first));
+    }
+
+    #[test]
+    fn basic_solve_works() {
+        let mut cube = Cube::new();
+        let moves = scramble(&mut cube, 3, 7);
+        let solution = solve(&cube).expect("short scramble should be solvable");
+        for mv in solution {
+            rotate(&mut cube, mv);
+        }
+        assert!(is_solved(&cube));
+        assert_eq!(moves.len(), 3);
+    }
+}
