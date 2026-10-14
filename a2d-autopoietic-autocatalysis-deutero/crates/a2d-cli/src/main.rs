@@ -80,6 +80,12 @@ fn main() {
         "swe-bench-pro-access-manifest-inspect" => {
             run_swe_bench_pro_access_manifest_inspect(&args[2..]);
         }
+        "swe-bench-pro-cycle-input" => {
+            run_swe_bench_pro_cycle_input(&args[2..]);
+        }
+        "swe-bench-pro-cycle-input-feedback" => {
+            run_swe_bench_pro_cycle_input_feedback(&args[2..]);
+        }
         "swe-bench-pro-evaluate" => {
             run_swe_bench_pro_evaluate(&args[2..]);
         }
@@ -195,7 +201,7 @@ fn main() {
         "lineage" => show_lineage(),
         _ => {
             eprintln!(
-                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|swe-bench-pro-readiness|swe-bench-pro-access-manifest-inspect|swe-bench-pro-evaluate|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-official-evaluator-manifest-inspect|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|senior-swe-bench-retry-attempt-evaluate|senior-swe-bench-retry-attempt-step|senior-swe-bench-retry-attempt-step-evidence|senior-swe-bench-retry-run-result|senior-swe-bench-retry-status|senior-swe-bench-retry-run-next-gate|senior-swe-bench-retry-execute|senior-swe-bench-retry-resume-attempt-plan|senior-swe-bench-retry-run-next-cycle|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
+                "Usage: a2d <cycle|cycle-input|challenge|score-artifact|fitness-evidence-inspect|swe-bench-pro-readiness|swe-bench-pro-access-manifest-inspect|swe-bench-pro-cycle-input|swe-bench-pro-cycle-input-feedback|swe-bench-pro-evaluate|senior-swe-bench-audit|senior-swe-bench-evaluate|senior-swe-bench-official-evaluator-manifest-inspect|senior-swe-bench-extract-patch|senior-swe-bench-diagnose-artifact|senior-swe-bench-select-candidate-artifact|senior-swe-bench-cycle-input-feedback|senior-swe-bench-retry-plan|senior-swe-bench-retry-step|senior-swe-bench-retry-attempt-plan|senior-swe-bench-retry-attempt-extract-patch|senior-swe-bench-retry-attempt-evaluate|senior-swe-bench-retry-attempt-step|senior-swe-bench-retry-attempt-step-evidence|senior-swe-bench-retry-run-result|senior-swe-bench-retry-status|senior-swe-bench-retry-run-next-gate|senior-swe-bench-retry-execute|senior-swe-bench-retry-resume-attempt-plan|senior-swe-bench-retry-run-next-cycle|compare-topologies|compare-provider-policy|compare-role-providers|validate-escalation|autopilot|status|enzymes|lineage>"
             );
             std::process::exit(1);
         }
@@ -248,19 +254,19 @@ fn build_swe_bench_pro_readiness(args: &[String]) -> Result<Value, String> {
         "status": "blocked",
         "blocker": "missing_reviewed_swe_bench_pro_access_artifact",
         "can_start_a2d_iteration": false,
+        "manifest_path_redacted": true,
         "benchmark_sources_loaded": false,
         "solution_material_loaded": false,
         "github_solution_search_allowed": false,
         "senior_swe_bench_manifest_accepted_as_pro": false,
         "a2d_fitness_evidence_required_for_self_change": true,
-        "note": "readiness gate only; does not load benchmark sources, solutions, or start A²D iteration",
+        "note": "readiness gate only; validates access metadata without loading benchmark-private sources, solutions, or starting an A²D iteration",
     });
 
     if let Some(manifest_path) = manifest_path {
-        value["manifest_path"] = Value::String(manifest_path.display().to_string());
-        let manifest = read_artifact_to_string(&manifest_path)?;
-        let manifest_value: Value = serde_json::from_str(&manifest)
-            .map_err(|error| format!("invalid benchmark manifest JSON: {error}"))?;
+        let manifest_json = read_swe_bench_pro_access_manifest_json(&manifest_path)?;
+        let manifest_value: Value = serde_json::from_str(&manifest_json)
+            .map_err(|_| "invalid benchmark manifest JSON".to_string())?;
         let schema = manifest_value
             .get("schema_version")
             .and_then(Value::as_str)
@@ -270,17 +276,42 @@ fn build_swe_bench_pro_readiness(args: &[String]) -> Result<Value, String> {
             .get("benchmark_url")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if !benchmark_url.is_empty() {
-            value["benchmark_url"] = Value::String(benchmark_url.to_string());
-        }
         if schema == "a2d.senior-swe-bench-official-evaluator-manifest.v1"
             || benchmark_url.contains("senior-swe-bench.snorkel.ai")
         {
             value["blocker"] =
                 Value::String("senior_swe_bench_manifest_is_not_swe_bench_pro".to_string());
-        } else {
+        } else if schema != "a2d.swe-bench-pro-access-manifest.v1" {
             value["blocker"] =
                 Value::String("unreviewed_swe_bench_pro_access_artifact_schema".to_string());
+        } else {
+            match parse_swe_bench_pro_access_manifest(
+                &manifest_path,
+                &manifest_json,
+                &manifest_value,
+            ) {
+                Ok(manifest) => {
+                    value["status"] = Value::String("ready".to_string());
+                    value["blocker"] = Value::Null;
+                    value["can_start_a2d_iteration"] = Value::Bool(true);
+                    value["benchmark"] = Value::String(manifest.benchmark);
+                    value["instance_id"] = Value::String(manifest.instance_id);
+                    value["repo"] = Value::String(manifest.repo);
+                    value["manifest_hash"] = Value::String(manifest.manifest_hash);
+                    value["public_context_hash"] = Value::String(manifest.public_context_hash);
+                    value["public_context_path_redacted"] = Value::Bool(true);
+                    value["sealed_evaluator_command_hash"] =
+                        Value::String(manifest.sealed_evaluator_command_hash);
+                    value["sealed_evaluator_command_redacted"] = Value::Bool(true);
+                    value["evaluator_output_policy"] =
+                        Value::String(manifest.evaluator_output_policy);
+                }
+                Err(_) => {
+                    value["blocker"] =
+                        Value::String("invalid_reviewed_swe_bench_pro_access_artifact".to_string());
+                    value["validation_error_redacted"] = Value::Bool(true);
+                }
+            }
         }
     }
 
@@ -370,6 +401,33 @@ fn build_swe_bench_pro_access_manifest_inspection(args: &[String]) -> Result<Val
             .expect("sealed evaluator command serializes")
             .as_bytes(),
     )?;
+    let sealed_evaluator_executable_hash = match manifest.get("sealed_evaluator_executable_hash") {
+        Some(Value::String(expected)) => {
+            validate_git_object_hash(expected).map_err(|error| {
+                format!("SWE-Bench Pro sealed_evaluator_executable_hash {error}")
+            })?;
+            let executable = Path::new(
+                sealed_evaluator_command
+                    .first()
+                    .expect("non-empty command checked above"),
+            );
+            if !executable.is_file() {
+                return Err("SWE-Bench Pro sealed evaluator executable not found".to_string());
+            }
+            let actual = file_content_hash(executable)
+                .map_err(|error| redact_swe_bench_pro_path_error(&error))?;
+            if actual != *expected {
+                return Err("SWE-Bench Pro sealed evaluator executable hash mismatch".to_string());
+            }
+            Some(actual)
+        }
+        Some(_) => {
+            return Err(
+                "SWE-Bench Pro sealed_evaluator_executable_hash must be a string".to_string(),
+            );
+        }
+        None => None,
+    };
     require_bool_field(&manifest, "hidden_holdouts", true)?;
     require_bool_field(&manifest, "github_solution_search_allowed", false)?;
     require_bool_field(&manifest, "benchmark_sources_visible_to_a2d", false)?;
@@ -398,6 +456,7 @@ fn build_swe_bench_pro_access_manifest_inspection(args: &[String]) -> Result<Val
         "public_context_path_redacted": true,
         "coder_visible_context_kind": "public_context_only",
         "sealed_evaluator_command_hash": sealed_evaluator_command_hash,
+        "sealed_evaluator_executable_hash": sealed_evaluator_executable_hash,
         "sealed_evaluator_command_redacted": true,
         "evaluator_output_policy": evaluator_output_policy,
         "hidden_holdouts": true,
@@ -437,6 +496,7 @@ fn validate_swe_bench_pro_access_manifest_no_private_fields(value: &Value) -> Re
         "public_context_path",
         "public_context_hash",
         "sealed_evaluator_command",
+        "sealed_evaluator_executable_hash",
         "hidden_holdouts",
         "github_solution_search_allowed",
         "benchmark_sources_visible_to_a2d",
@@ -551,9 +611,11 @@ struct SweBenchProAccessManifest {
     benchmark: String,
     instance_id: String,
     repo: String,
+    public_context_path: PathBuf,
     public_context_hash: String,
     sealed_evaluator_command: Vec<String>,
     sealed_evaluator_command_hash: String,
+    sealed_evaluator_executable_hash: Option<String>,
     manifest_hash: String,
     evaluator_output_policy: String,
 }
@@ -581,7 +643,7 @@ fn run_swe_bench_pro_evaluate(args: &[String]) {
             eprintln!("SWE-Bench Pro sealed evaluation error: {error}");
             std::process::exit(1);
         });
-    let passed = evaluation.get("status").and_then(Value::as_str) == Some("passed");
+    let status = evaluation.get("status").and_then(Value::as_str);
     let json = serde_json::to_vec_pretty(&evaluation)
         .expect("SWE-Bench Pro sealed evaluation JSON must serialize");
     if let Some(output) = &config.output {
@@ -601,8 +663,10 @@ fn run_swe_bench_pro_evaluate(args: &[String]) {
     } else {
         println!("{}", String::from_utf8_lossy(&json));
     }
-    if !passed {
-        std::process::exit(2);
+    match status {
+        Some("passed") => {}
+        Some("failed") => std::process::exit(2),
+        _ => std::process::exit(3),
     }
 }
 
@@ -657,37 +721,49 @@ fn parse_swe_bench_pro_evaluate_args(args: &[String]) -> Result<SweBenchProEvalu
     })
 }
 
-fn load_swe_bench_pro_access_manifest(path: &Path) -> Result<SweBenchProAccessManifest, String> {
-    let manifest_json = if path == Path::new("-") {
+fn read_swe_bench_pro_access_manifest_json(path: &Path) -> Result<String, String> {
+    if path == Path::new("-") {
         let mut input = String::new();
         std::io::stdin()
             .read_to_string(&mut input)
-            .map_err(|error| format!("failed to read SWE-Bench Pro access manifest: {error}"))?;
-        input
+            .map_err(|_| "failed to read SWE-Bench Pro access manifest".to_string())?;
+        Ok(input)
     } else {
         fs::read_to_string(path)
-            .map_err(|error| format!("failed to read SWE-Bench Pro access manifest: {error}"))?
-    };
-    let manifest: Value = serde_json::from_str(&manifest_json)
-        .map_err(|error| format!("invalid SWE-Bench Pro access manifest JSON: {error}"))?;
-    validate_swe_bench_pro_access_manifest_no_private_fields(&manifest)?;
+            .map_err(|_| "failed to read SWE-Bench Pro access manifest".to_string())
+    }
+}
 
-    let schema = required_string_field(&manifest, "schema_version")?;
+fn load_swe_bench_pro_access_manifest(path: &Path) -> Result<SweBenchProAccessManifest, String> {
+    let manifest_json = read_swe_bench_pro_access_manifest_json(path)?;
+    let manifest: Value = serde_json::from_str(&manifest_json)
+        .map_err(|_| "invalid SWE-Bench Pro access manifest JSON".to_string())?;
+    parse_swe_bench_pro_access_manifest(path, &manifest_json, &manifest)
+}
+
+fn parse_swe_bench_pro_access_manifest(
+    path: &Path,
+    manifest_json: &str,
+    manifest: &Value,
+) -> Result<SweBenchProAccessManifest, String> {
+    validate_swe_bench_pro_access_manifest_no_private_fields(manifest)?;
+
+    let schema = required_string_field(manifest, "schema_version")?;
     if schema != "a2d.swe-bench-pro-access-manifest.v1" {
         return Err("expected a2d.swe-bench-pro-access-manifest.v1".to_string());
     }
-    let benchmark = required_string_field(&manifest, "benchmark")?;
+    let benchmark = required_string_field(manifest, "benchmark")?;
     if benchmark != "swe-bench-pro" {
         return Err("SWE-Bench Pro access manifest benchmark must be swe-bench-pro".to_string());
     }
-    let instance_id = required_safe_manifest_identifier(&manifest, "instance_id", false)?;
-    let repo = required_safe_manifest_identifier(&manifest, "repo", true)?;
+    let instance_id = required_safe_manifest_identifier(manifest, "instance_id", false)?;
+    let repo = required_safe_manifest_identifier(manifest, "repo", true)?;
     let public_context_path =
-        PathBuf::from(required_string_field(&manifest, "public_context_path")?);
+        PathBuf::from(required_string_field(manifest, "public_context_path")?);
     if !public_context_path.is_file() {
         return Err("SWE-Bench Pro public context file not found".to_string());
     }
-    let expected_public_context_hash = required_string_field(&manifest, "public_context_hash")?;
+    let expected_public_context_hash = required_string_field(manifest, "public_context_hash")?;
     validate_git_object_hash(&expected_public_context_hash)
         .map_err(|error| format!("SWE-Bench Pro public_context_hash {error}"))?;
     let actual_public_context_hash = file_content_hash(&public_context_path)
@@ -695,7 +771,7 @@ fn load_swe_bench_pro_access_manifest(path: &Path) -> Result<SweBenchProAccessMa
     if expected_public_context_hash != actual_public_context_hash {
         return Err("SWE-Bench Pro public_context_hash mismatch".to_string());
     }
-    let sealed_evaluator_command = required_string_array(&manifest, "sealed_evaluator_command")?;
+    let sealed_evaluator_command = required_string_array(manifest, "sealed_evaluator_command")?;
     if sealed_evaluator_command.is_empty() {
         return Err("SWE-Bench Pro sealed_evaluator_command is empty".to_string());
     }
@@ -704,11 +780,38 @@ fn load_swe_bench_pro_access_manifest(path: &Path) -> Result<SweBenchProAccessMa
             .expect("sealed evaluator command serializes")
             .as_bytes(),
     )?;
-    require_bool_field(&manifest, "hidden_holdouts", true)?;
-    require_bool_field(&manifest, "github_solution_search_allowed", false)?;
-    require_bool_field(&manifest, "benchmark_sources_visible_to_a2d", false)?;
-    require_bool_field(&manifest, "solution_material_visible_to_a2d", false)?;
-    let evaluator_output_policy = required_string_field(&manifest, "evaluator_output_policy")?;
+    let sealed_evaluator_executable_hash = match manifest.get("sealed_evaluator_executable_hash") {
+        Some(Value::String(expected)) => {
+            validate_git_object_hash(expected).map_err(|error| {
+                format!("SWE-Bench Pro sealed_evaluator_executable_hash {error}")
+            })?;
+            let executable = Path::new(
+                sealed_evaluator_command
+                    .first()
+                    .expect("non-empty command checked above"),
+            );
+            if !executable.is_file() {
+                return Err("SWE-Bench Pro sealed evaluator executable not found".to_string());
+            }
+            let actual = file_content_hash(executable)
+                .map_err(|error| redact_swe_bench_pro_path_error(&error))?;
+            if actual != *expected {
+                return Err("SWE-Bench Pro sealed evaluator executable hash mismatch".to_string());
+            }
+            Some(actual)
+        }
+        Some(_) => {
+            return Err(
+                "SWE-Bench Pro sealed_evaluator_executable_hash must be a string".to_string(),
+            );
+        }
+        None => None,
+    };
+    require_bool_field(manifest, "hidden_holdouts", true)?;
+    require_bool_field(manifest, "github_solution_search_allowed", false)?;
+    require_bool_field(manifest, "benchmark_sources_visible_to_a2d", false)?;
+    require_bool_field(manifest, "solution_material_visible_to_a2d", false)?;
+    let evaluator_output_policy = required_string_field(manifest, "evaluator_output_policy")?;
     if evaluator_output_policy != "pass_fail_metrics_only" {
         return Err(
             "SWE-Bench Pro evaluator_output_policy must be pass_fail_metrics_only".to_string(),
@@ -723,12 +826,571 @@ fn load_swe_bench_pro_access_manifest(path: &Path) -> Result<SweBenchProAccessMa
         benchmark,
         instance_id,
         repo,
+        public_context_path,
         public_context_hash: actual_public_context_hash,
         sealed_evaluator_command,
         sealed_evaluator_command_hash,
+        sealed_evaluator_executable_hash,
         manifest_hash,
         evaluator_output_policy,
     })
+}
+
+fn run_swe_bench_pro_cycle_input(args: &[String]) {
+    let manifest_path = parse_swe_bench_pro_manifest_only_args(args, "swe-bench-pro-cycle-input")
+        .unwrap_or_else(|error| {
+            eprintln!("SWE-Bench Pro cycle input error: {error}");
+            std::process::exit(1);
+        });
+    let manifest = load_swe_bench_pro_access_manifest(&manifest_path).unwrap_or_else(|error| {
+        eprintln!("SWE-Bench Pro cycle input error: {error}");
+        std::process::exit(1);
+    });
+    let cycle_input = build_swe_bench_pro_cycle_input(&manifest).unwrap_or_else(|error| {
+        eprintln!("SWE-Bench Pro cycle input error: {error}");
+        std::process::exit(1);
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&cycle_input)
+            .expect("SWE-Bench Pro cycle input JSON must serialize")
+    );
+}
+
+fn parse_swe_bench_pro_manifest_only_args(
+    args: &[String],
+    command: &str,
+) -> Result<PathBuf, String> {
+    if args.len() != 2 || args[0] != "--manifest" {
+        return Err(format!("Usage: a2d {command} --manifest <json|->"));
+    }
+    Ok(PathBuf::from(&args[1]))
+}
+
+fn build_swe_bench_pro_cycle_input(manifest: &SweBenchProAccessManifest) -> Result<Value, String> {
+    let public_context_json = fs::read_to_string(&manifest.public_context_path)
+        .map_err(|_| "failed to read SWE-Bench Pro public context".to_string())?;
+    let public_context: Value = serde_json::from_str(&public_context_json)
+        .map_err(|_| "invalid SWE-Bench Pro public context JSON".to_string())?;
+    validate_swe_bench_pro_public_context(&public_context, manifest)?;
+    let problem_statement =
+        required_public_context_text(&public_context, "problem_statement", 64 * 1024)?;
+    let allowed_context_summary = required_public_context_string_array(
+        &public_context,
+        "allowed_context_summary",
+        64,
+        4 * 1024,
+    )?;
+    let summary = if allowed_context_summary.is_empty() {
+        "- No additional operator-approved context.".to_string()
+    } else {
+        allowed_context_summary
+            .iter()
+            .map(|entry| format!("- {entry}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    Ok(json!({
+        "requirements": format!(
+            "SWE-BENCH PRO PUBLIC TASK CONTEXT (operator-reviewed; no hidden tests or solution material):\n{problem_statement}\n\nOperator-approved context summary:\n{summary}\n\nDeliverable: return only a unified diff candidate patch for the supplied checkout. Do not output markdown fences or a full replacement repository. Do not claim fitness before the sealed evaluator runs."
+        ),
+        "design": format!(
+            "Work only from the supplied checkout for {} and the public task context. Public GitHub/web solution search is forbidden. Hidden tests, evaluator internals, benchmark-private source, and reference solutions are unavailable and must not be requested. Return only a unified diff candidate patch.",
+            manifest.repo
+        ),
+        "plan": "1. Inspect the supplied checkout snapshot and public task statement.\n2. Identify the failing behavior using only local source and local tests.\n3. Implement the smallest fix.\n4. Check relevant local behavior.\n5. Return only a unified diff candidate patch with no markdown fences.".to_string(),
+        "benchmark_context": {
+            "schema_version": "a2d.swe-bench-pro-cycle-context.v1",
+            "benchmark": "swe-bench-pro",
+            "instance_id": manifest.instance_id,
+            "repo": manifest.repo,
+            "manifest_hash": manifest.manifest_hash,
+            "public_context_hash": manifest.public_context_hash,
+            "sealed_evaluator_command_hash": manifest.sealed_evaluator_command_hash,
+            "hidden_holdouts": true,
+            "github_solution_search_allowed": false,
+            "benchmark_sources_visible_to_a2d": false,
+            "solution_material_visible_to_a2d": false
+        },
+        "evaluation": {
+            "status": "not_evaluated",
+            "evaluator": "sealed_swe_bench_pro",
+            "fitness": Value::Null,
+            "attempt": 0,
+            "note": "run the sealed SWE-Bench Pro evaluator before claiming task fitness"
+        }
+    }))
+}
+
+fn validate_swe_bench_pro_public_context(
+    value: &Value,
+    manifest: &SweBenchProAccessManifest,
+) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "SWE-Bench Pro public context must be a JSON object".to_string())?;
+    let allowed = [
+        "schema_version",
+        "instance_id",
+        "repo",
+        "problem_statement",
+        "allowed_context_summary",
+        "forbidden_context",
+    ];
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(
+            "unknown or benchmark-private field in SWE-Bench Pro public context".to_string(),
+        );
+    }
+    let schema = required_public_context_text(value, "schema_version", 100)?;
+    if schema != "a2d.swe-bench-pro-public-context.v1" {
+        return Err("expected a2d.swe-bench-pro-public-context.v1".to_string());
+    }
+    let instance_id = required_public_context_text(value, "instance_id", 200)?;
+    validate_safe_identifier_text(&instance_id, "instance_id", false)?;
+    if instance_id != manifest.instance_id {
+        return Err("SWE-Bench Pro public context instance_id mismatch".to_string());
+    }
+    let repo = required_public_context_text(value, "repo", 200)?;
+    validate_safe_identifier_text(&repo, "repo", true)?;
+    if repo != manifest.repo {
+        return Err("SWE-Bench Pro public context repo mismatch".to_string());
+    }
+    required_public_context_text(value, "problem_statement", 64 * 1024)?;
+    required_public_context_string_array(value, "allowed_context_summary", 64, 4 * 1024)?;
+    required_public_context_string_array(value, "forbidden_context", 32, 1024)?;
+    Ok(())
+}
+
+fn required_public_context_text(
+    value: &Value,
+    field: &str,
+    max_bytes: usize,
+) -> Result<String, String> {
+    let text = value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| format!("SWE-Bench Pro public context missing {field}"))?;
+    if text.len() > max_bytes
+        || text
+            .chars()
+            .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+    {
+        return Err(format!("SWE-Bench Pro public context {field} is not safe"));
+    }
+    Ok(text.to_string())
+}
+
+fn required_public_context_string_array(
+    value: &Value,
+    field: &str,
+    max_entries: usize,
+    max_entry_bytes: usize,
+) -> Result<Vec<String>, String> {
+    let entries = value
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("SWE-Bench Pro public context missing {field}"))?;
+    if entries.len() > max_entries {
+        return Err(format!(
+            "SWE-Bench Pro public context {field} has too many entries"
+        ));
+    }
+    entries
+        .iter()
+        .map(|entry| {
+            let text = entry
+                .as_str()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .ok_or_else(|| {
+                    format!("SWE-Bench Pro public context {field} contains invalid entry")
+                })?;
+            if text.len() > max_entry_bytes || text.chars().any(char::is_control) {
+                return Err(format!(
+                    "SWE-Bench Pro public context {field} contains unsafe entry"
+                ));
+            }
+            Ok(text.to_string())
+        })
+        .collect()
+}
+
+fn run_swe_bench_pro_cycle_input_feedback(args: &[String]) {
+    if args.len() != 2 {
+        eprintln!(
+            "Usage: a2d swe-bench-pro-cycle-input-feedback <cycle-input.json|-> <sealed-evaluation.json>"
+        );
+        std::process::exit(1);
+    }
+    let cycle_input = read_artifact_to_string(Path::new(&args[0])).unwrap_or_else(|_| {
+        eprintln!("SWE-Bench Pro cycle input feedback error: failed to read cycle input");
+        std::process::exit(1);
+    });
+    let sealed_evaluation = read_artifact_to_string(Path::new(&args[1])).unwrap_or_else(|_| {
+        eprintln!("SWE-Bench Pro cycle input feedback error: failed to read sealed evaluation");
+        std::process::exit(1);
+    });
+    let feedback = build_swe_bench_pro_cycle_input_feedback(&cycle_input, &sealed_evaluation)
+        .unwrap_or_else(|error| {
+            eprintln!("SWE-Bench Pro cycle input feedback error: {error}");
+            std::process::exit(1);
+        });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&feedback)
+            .expect("SWE-Bench Pro cycle input feedback JSON must serialize")
+    );
+}
+
+fn build_swe_bench_pro_cycle_input_feedback(
+    cycle_input: &str,
+    sealed_evaluation: &str,
+) -> Result<Value, String> {
+    validate_cycle_input_bundle(cycle_input)?;
+    let mut cycle_value: Value = serde_json::from_str(cycle_input)
+        .map_err(|_| "invalid SWE-Bench Pro cycle input JSON".to_string())?;
+    let cycle_object = cycle_value
+        .as_object()
+        .ok_or_else(|| "SWE-Bench Pro cycle input must be a JSON object".to_string())?;
+    let allowed_cycle_fields = [
+        "requirements",
+        "design",
+        "plan",
+        "benchmark_context",
+        "evaluation",
+    ];
+    if cycle_object
+        .keys()
+        .any(|key| !allowed_cycle_fields.contains(&key.as_str()))
+    {
+        return Err("unknown or reserved field in SWE-Bench Pro cycle input".to_string());
+    }
+    let context = cycle_object
+        .get("benchmark_context")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "SWE-Bench Pro cycle input missing benchmark_context".to_string())?;
+    let allowed_context_fields = [
+        "schema_version",
+        "benchmark",
+        "instance_id",
+        "repo",
+        "manifest_hash",
+        "public_context_hash",
+        "sealed_evaluator_command_hash",
+        "hidden_holdouts",
+        "github_solution_search_allowed",
+        "benchmark_sources_visible_to_a2d",
+        "solution_material_visible_to_a2d",
+    ];
+    if context
+        .keys()
+        .any(|key| !allowed_context_fields.contains(&key.as_str()))
+    {
+        return Err("unknown field in SWE-Bench Pro cycle benchmark_context".to_string());
+    }
+    let cycle_context = Value::Object(context.clone());
+    if required_string_field(&cycle_context, "schema_version")?
+        != "a2d.swe-bench-pro-cycle-context.v1"
+        || required_string_field(&cycle_context, "benchmark")? != "swe-bench-pro"
+    {
+        return Err("invalid SWE-Bench Pro cycle benchmark_context schema".to_string());
+    }
+    let instance_id = required_safe_manifest_identifier(&cycle_context, "instance_id", false)?;
+    let repo = required_safe_manifest_identifier(&cycle_context, "repo", true)?;
+    let manifest_hash = required_string_field(&cycle_context, "manifest_hash")?;
+    let public_context_hash = required_string_field(&cycle_context, "public_context_hash")?;
+    let sealed_evaluator_command_hash =
+        required_string_field(&cycle_context, "sealed_evaluator_command_hash")?;
+    for (field, hash) in [
+        ("manifest_hash", &manifest_hash),
+        ("public_context_hash", &public_context_hash),
+        (
+            "sealed_evaluator_command_hash",
+            &sealed_evaluator_command_hash,
+        ),
+    ] {
+        validate_git_object_hash(hash)
+            .map_err(|error| format!("SWE-Bench Pro cycle input {field} {error}"))?;
+    }
+    require_bool_field(&cycle_context, "hidden_holdouts", true)?;
+    require_bool_field(&cycle_context, "github_solution_search_allowed", false)?;
+    require_bool_field(&cycle_context, "benchmark_sources_visible_to_a2d", false)?;
+    require_bool_field(&cycle_context, "solution_material_visible_to_a2d", false)?;
+
+    let evaluation: Value = serde_json::from_str(sealed_evaluation)
+        .map_err(|_| "invalid SWE-Bench Pro sealed evaluation JSON".to_string())?;
+    validate_swe_bench_pro_feedback_evaluation(&evaluation)?;
+    for (field, expected) in [
+        ("instance_id", instance_id.as_str()),
+        ("repo", repo.as_str()),
+        ("manifest_hash", manifest_hash.as_str()),
+        ("public_context_hash", public_context_hash.as_str()),
+        (
+            "sealed_evaluator_command_hash",
+            sealed_evaluator_command_hash.as_str(),
+        ),
+    ] {
+        if required_string_field(&evaluation, field)? != expected {
+            return Err(format!("SWE-Bench Pro sealed evaluation {field} mismatch"));
+        }
+    }
+    let status = required_string_field(&evaluation, "status")?;
+    if status != "failed" {
+        return Err(
+            "SWE-Bench Pro retry requires a completed phenotype failure, not pass or infrastructure error"
+                .to_string(),
+        );
+    }
+    if evaluation.get("exit_code").and_then(Value::as_i64) != Some(1) {
+        return Err("SWE-Bench Pro retry requires sealed evaluator exit_code 1".to_string());
+    }
+    let candidate_patch_hash = required_string_field(&evaluation, "candidate_patch_hash")?;
+    validate_git_object_hash(&candidate_patch_hash)
+        .map_err(|error| format!("SWE-Bench Pro candidate_patch_hash {error}"))?;
+    let exit_code = evaluation
+        .get("exit_code")
+        .and_then(Value::as_i64)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "not_reported".to_string());
+    let aggregate_metrics = evaluation
+        .get("aggregate_metrics")
+        .and_then(Value::as_object)
+        .map(|metrics| {
+            format!(
+                "{} passed / {} failed / {} total",
+                metrics.get("passed").and_then(Value::as_u64).unwrap_or(0),
+                metrics.get("failed").and_then(Value::as_u64).unwrap_or(0),
+                metrics.get("total").and_then(Value::as_u64).unwrap_or(0),
+            )
+        })
+        .unwrap_or_else(|| "not_reported".to_string());
+    let attempt = cycle_object
+        .get("evaluation")
+        .and_then(Value::as_object)
+        .and_then(|value| value.get("attempt"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if attempt >= 7 {
+        return Err("SWE-Bench Pro retry attempt limit reached".to_string());
+    }
+    let next_attempt = attempt + 1;
+    let feedback = format!(
+        "SWE-BENCH PRO SEALED EVALUATOR FEEDBACK (redacted aggregate only; no hidden output):\n- status: failed\n- exit_code: {exit_code}\n- aggregate_metrics: {aggregate_metrics}\n- candidate_patch_hash: {candidate_patch_hash}\n\nRevise the candidate using only the public task context, supplied checkout, and local tests. Do not search public solutions. Return only a revised unified diff candidate patch."
+    );
+
+    let object = cycle_value
+        .as_object_mut()
+        .ok_or_else(|| "SWE-Bench Pro cycle input must be a JSON object".to_string())?;
+    let design = object
+        .get("design")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    object.insert(
+        "design".to_string(),
+        Value::String(format!("{design}\n\n{feedback}")),
+    );
+    let previous_plan = object
+        .get("plan")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    object.insert(
+        "plan".to_string(),
+        Value::String(format!(
+            "1. Read the redacted sealed-evaluator result from the previous candidate.\n2. Reinspect the supplied checkout context and local tests for a different root cause.\n3. Produce the smallest revised fix without public solution search.\n4. Return only a revised unified diff candidate patch.\n\nPrevious plan:\n{previous_plan}"
+        )),
+    );
+    object.insert(
+        "evaluation".to_string(),
+        json!({
+            "status": "not_evaluated",
+            "evaluator": "sealed_swe_bench_pro",
+            "fitness": Value::Null,
+            "attempt": next_attempt,
+            "note": "previous redacted sealed-evaluator result is included in design; evaluate the revised patch before claiming fitness"
+        }),
+    );
+    Ok(cycle_value)
+}
+
+fn validate_swe_bench_pro_feedback_evaluation(value: &Value) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "SWE-Bench Pro sealed evaluation must be a JSON object".to_string())?;
+    let allowed = [
+        "schema_version",
+        "benchmark",
+        "instance_id",
+        "repo",
+        "manifest_hash",
+        "manifest_path_redacted",
+        "public_context_hash",
+        "public_context_path_redacted",
+        "sealed_evaluator_command_hash",
+        "sealed_evaluator_executable_hash",
+        "sealed_evaluator_command_redacted",
+        "evaluator_kind",
+        "evaluator_output_policy",
+        "candidate_patch_hash",
+        "candidate_patch_path_redacted",
+        "candidate_patch_preflight_checked",
+        "candidate_patch_preflight_status",
+        "candidate_patch_preflight_command_redacted",
+        "candidate_patch_applied",
+        "evaluator_checkout_mode",
+        "evaluator_checkout_redacted",
+        "original_checkout_mutated",
+        "status",
+        "exit_code",
+        "aggregate_metrics",
+        "hidden_holdouts",
+        "github_solution_search_allowed",
+        "benchmark_sources_loaded",
+        "solution_material_loaded",
+        "benchmark_sources_visible_to_a2d",
+        "solution_material_visible_to_a2d",
+        "evaluator_stdout_redacted",
+        "evaluator_stderr_redacted",
+        "fitness_evidence_exported",
+        "fitness_evidence_path_redacted",
+        "fitness_evidence_hash",
+        "fitness_claim_allowed",
+        "note",
+    ];
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err("unknown or non-redacted field in SWE-Bench Pro sealed evaluation".to_string());
+    }
+    if required_string_field(value, "schema_version")? != "a2d.swe-bench-pro-sealed-evaluation.v1"
+        || required_string_field(value, "benchmark")? != "swe-bench-pro"
+        || required_string_field(value, "evaluator_kind")? != "sealed_swe_bench_pro"
+        || required_string_field(value, "evaluator_output_policy")? != "pass_fail_metrics_only"
+    {
+        return Err("invalid SWE-Bench Pro sealed evaluation provenance".to_string());
+    }
+    if let Some(hash) = value.get("sealed_evaluator_executable_hash")
+        && !hash.is_null()
+    {
+        let hash = hash.as_str().ok_or_else(|| {
+            "SWE-Bench Pro sealed evaluator executable hash must be string or null".to_string()
+        })?;
+        validate_git_object_hash(hash)
+            .map_err(|error| format!("SWE-Bench Pro sealed evaluator executable hash {error}"))?;
+    }
+    let status = required_string_field(value, "status")?;
+    if !matches!(
+        status.as_str(),
+        "passed" | "failed" | "infrastructure_error"
+    ) {
+        return Err("invalid SWE-Bench Pro sealed evaluation status".to_string());
+    }
+    if value
+        .get("exit_code")
+        .is_some_and(|code| !code.is_null() && code.as_i64().is_none())
+    {
+        return Err(
+            "SWE-Bench Pro sealed evaluation exit_code must be integer or null".to_string(),
+        );
+    }
+    if let Some(metrics) = value.get("aggregate_metrics")
+        && !metrics.is_null()
+    {
+        let object = metrics.as_object().ok_or_else(|| {
+            "SWE-Bench Pro sealed evaluation aggregate_metrics must be object or null".to_string()
+        })?;
+        let allowed = ["passed", "failed", "total"];
+        if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+            return Err("SWE-Bench Pro aggregate_metrics contains unknown fields".to_string());
+        }
+        let passed = object
+            .get("passed")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "SWE-Bench Pro aggregate_metrics missing passed".to_string())?;
+        let failed = object
+            .get("failed")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "SWE-Bench Pro aggregate_metrics missing failed".to_string())?;
+        let total = object
+            .get("total")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "SWE-Bench Pro aggregate_metrics missing total".to_string())?;
+        if total == 0 || passed.saturating_add(failed) != total {
+            return Err("SWE-Bench Pro aggregate_metrics counts are inconsistent".to_string());
+        }
+    }
+    for field in [
+        "manifest_path_redacted",
+        "public_context_path_redacted",
+        "sealed_evaluator_command_redacted",
+        "candidate_patch_path_redacted",
+        "candidate_patch_preflight_checked",
+        "candidate_patch_preflight_command_redacted",
+        "evaluator_checkout_redacted",
+        "evaluator_stdout_redacted",
+        "evaluator_stderr_redacted",
+        "hidden_holdouts",
+    ] {
+        require_bool_field(value, field, true)?;
+    }
+    for field in [
+        "github_solution_search_allowed",
+        "benchmark_sources_loaded",
+        "solution_material_loaded",
+        "benchmark_sources_visible_to_a2d",
+        "solution_material_visible_to_a2d",
+        "original_checkout_mutated",
+    ] {
+        require_bool_field(value, field, false)?;
+    }
+    if required_string_field(value, "candidate_patch_preflight_status")? != "passed" {
+        return Err("SWE-Bench Pro candidate patch preflight did not pass".to_string());
+    }
+    let checkout_mode = required_string_field(value, "evaluator_checkout_mode")?;
+    if !matches!(
+        checkout_mode.as_str(),
+        "supplied_checkout" | "isolated_copy"
+    ) {
+        return Err("invalid SWE-Bench Pro evaluator checkout mode".to_string());
+    }
+    let candidate_patch_applied = value
+        .get("candidate_patch_applied")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            "SWE-Bench Pro sealed evaluation missing candidate_patch_applied".to_string()
+        })?;
+    if (checkout_mode == "isolated_copy") != candidate_patch_applied {
+        return Err("SWE-Bench Pro candidate patch application provenance mismatch".to_string());
+    }
+    let evidence_exported = value
+        .get("fitness_evidence_exported")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            "SWE-Bench Pro sealed evaluation missing fitness_evidence_exported".to_string()
+        })?;
+    let evidence_path_redacted = value
+        .get("fitness_evidence_path_redacted")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            "SWE-Bench Pro sealed evaluation missing fitness_evidence_path_redacted".to_string()
+        })?;
+    let fitness_claim_allowed = value
+        .get("fitness_claim_allowed")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            "SWE-Bench Pro sealed evaluation missing fitness_claim_allowed".to_string()
+        })?;
+    if evidence_exported != evidence_path_redacted || evidence_exported != fitness_claim_allowed {
+        return Err("SWE-Bench Pro fitness evidence provenance mismatch".to_string());
+    }
+    match value.get("fitness_evidence_hash") {
+        Some(Value::String(hash)) if evidence_exported => validate_git_object_hash(hash)
+            .map_err(|error| format!("SWE-Bench Pro fitness_evidence_hash {error}"))?,
+        Some(Value::Null) if !evidence_exported => {}
+        _ => return Err("SWE-Bench Pro fitness evidence hash mismatch".to_string()),
+    }
+    Ok(())
 }
 
 fn build_swe_bench_pro_sealed_evaluation(
@@ -761,9 +1423,22 @@ fn build_swe_bench_pro_sealed_evaluation(
     let original_checkout_mutated = checkout_content_fingerprint(&config.checkout)
         .map(|after| after != original_checkout_before)
         .unwrap_or(true);
-    let status_success =
-        output.status.success() && !(config.apply_candidate_patch && original_checkout_mutated);
-    let status = if status_success { "passed" } else { "failed" };
+    let evaluator_exit_code = output.status.code();
+    let process_status = if config.apply_candidate_patch && original_checkout_mutated {
+        "infrastructure_error"
+    } else {
+        match evaluator_exit_code {
+            Some(0) => "passed",
+            Some(1) => "failed",
+            _ => "infrastructure_error",
+        }
+    };
+    let (status, aggregate_metrics) =
+        match parse_swe_bench_pro_sealed_result_metrics(&output.stdout, process_status) {
+            Ok(metrics) => (process_status, metrics),
+            Err(_) => ("infrastructure_error", None),
+        };
+    let status_success = status == "passed";
     let fitness_evidence = if status_success {
         if let Some(export_dir) = fitness_evidence_export_dir() {
             let path = export_swe_bench_pro_fitness_evidence(
@@ -795,6 +1470,7 @@ fn build_swe_bench_pro_sealed_evaluation(
         "public_context_hash": &manifest.public_context_hash,
         "public_context_path_redacted": true,
         "sealed_evaluator_command_hash": &manifest.sealed_evaluator_command_hash,
+        "sealed_evaluator_executable_hash": &manifest.sealed_evaluator_executable_hash,
         "sealed_evaluator_command_redacted": true,
         "evaluator_kind": "sealed_swe_bench_pro",
         "evaluator_output_policy": &manifest.evaluator_output_policy,
@@ -808,7 +1484,8 @@ fn build_swe_bench_pro_sealed_evaluation(
         "evaluator_checkout_redacted": true,
         "original_checkout_mutated": original_checkout_mutated,
         "status": status,
-        "exit_code": output.status.code(),
+        "exit_code": evaluator_exit_code,
+        "aggregate_metrics": aggregate_metrics,
         "hidden_holdouts": true,
         "github_solution_search_allowed": false,
         "benchmark_sources_loaded": false,
@@ -823,6 +1500,72 @@ fn build_swe_bench_pro_sealed_evaluation(
         "fitness_claim_allowed": fitness_evidence.is_some(),
         "note": "sealed SWE-Bench Pro evaluator scaffold: raw evaluator output, paths, commands, benchmark sources, hidden tests, and solution material are not persisted",
     }))
+}
+
+fn parse_swe_bench_pro_sealed_result_metrics(
+    stdout: &[u8],
+    process_status: &str,
+) -> Result<Option<Value>, String> {
+    let text = String::from_utf8_lossy(stdout);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+        // Legacy sealed evaluators may emit opaque text. It remains fully redacted
+        // and supplies no gradient beyond the process exit contract.
+        return Ok(None);
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| "sealed SWE-Bench Pro result must be an object".to_string())?;
+    let allowed = ["schema_version", "passed", "metrics"];
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err("sealed SWE-Bench Pro result contains unknown fields".to_string());
+    }
+    if value.get("schema_version").and_then(Value::as_str)
+        != Some("a2d.swe-bench-pro-sealed-result.v1")
+    {
+        return Err("sealed SWE-Bench Pro result schema mismatch".to_string());
+    }
+    let passed = value
+        .get("passed")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "sealed SWE-Bench Pro result missing passed".to_string())?;
+    if passed != (process_status == "passed") {
+        return Err("sealed SWE-Bench Pro result status mismatch".to_string());
+    }
+    let metrics = value
+        .get("metrics")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "sealed SWE-Bench Pro result missing metrics".to_string())?;
+    let allowed_metrics = ["passed", "failed", "total"];
+    if metrics
+        .keys()
+        .any(|key| !allowed_metrics.contains(&key.as_str()))
+    {
+        return Err("sealed SWE-Bench Pro metrics contain unknown fields".to_string());
+    }
+    let passed_count = metrics
+        .get("passed")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "sealed SWE-Bench Pro metrics missing passed".to_string())?;
+    let failed_count = metrics
+        .get("failed")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "sealed SWE-Bench Pro metrics missing failed".to_string())?;
+    let total = metrics
+        .get("total")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "sealed SWE-Bench Pro metrics missing total".to_string())?;
+    if total == 0 || passed_count.saturating_add(failed_count) != total {
+        return Err("sealed SWE-Bench Pro metrics counts are inconsistent".to_string());
+    }
+    Ok(Some(json!({
+        "passed": passed_count,
+        "failed": failed_count,
+        "total": total,
+    })))
 }
 
 fn swe_bench_pro_fitness_report(status_success: bool) -> FitnessReport {
@@ -1026,6 +1769,15 @@ fn run_swe_bench_pro_sealed_evaluator(
         .sealed_evaluator_command
         .first()
         .ok_or_else(|| "SWE-Bench Pro sealed evaluator command is empty".to_string())?;
+    if let Some(expected_hash) = &manifest.sealed_evaluator_executable_hash {
+        let actual_hash = file_content_hash(Path::new(executable))
+            .map_err(|_| "failed to re-hash sealed SWE-Bench Pro evaluator".to_string())?;
+        if actual_hash != *expected_hash {
+            return Err(
+                "sealed SWE-Bench Pro evaluator changed after manifest validation".to_string(),
+            );
+        }
+    }
     let mut command = Command::new(executable);
     command.args(&manifest.sealed_evaluator_command[1..]);
     command.current_dir(evaluator_checkout);
@@ -3562,6 +4314,16 @@ struct CycleInputConfig {
     num_cycles: usize,
     output_artifacts: Option<PathBuf>,
     checkout: Option<PathBuf>,
+    swe_bench_pro_evaluation: Option<PathBuf>,
+    swe_bench_pro_manifest: Option<PathBuf>,
+    swe_bench_pro_candidate_patch: Option<PathBuf>,
+    swe_bench_pro_evaluator_checkout: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct SweBenchProPressureSeed {
+    fitness_report: Vec<u8>,
+    failure_report: Vec<u8>,
 }
 
 fn parse_cycle_input_args(args: &[String]) -> Result<CycleInputConfig, String> {
@@ -3571,6 +4333,10 @@ fn parse_cycle_input_args(args: &[String]) -> Result<CycleInputConfig, String> {
     let mut num_cycles: Option<usize> = None;
     let mut output_artifacts: Option<PathBuf> = None;
     let mut checkout: Option<PathBuf> = None;
+    let mut swe_bench_pro_evaluation: Option<PathBuf> = None;
+    let mut swe_bench_pro_manifest: Option<PathBuf> = None;
+    let mut swe_bench_pro_candidate_patch: Option<PathBuf> = None;
+    let mut swe_bench_pro_evaluator_checkout: Option<PathBuf> = None;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -3594,6 +4360,47 @@ fn parse_cycle_input_args(args: &[String]) -> Result<CycleInputConfig, String> {
                 checkout = Some(PathBuf::from(value));
                 index += 2;
             }
+            "--swe-bench-pro-evaluation" => {
+                if swe_bench_pro_evaluation.is_some() {
+                    return Err("duplicate --swe-bench-pro-evaluation argument".to_string());
+                }
+                let value = args.get(index + 1).ok_or_else(|| {
+                    "--swe-bench-pro-evaluation requires a redacted evaluation JSON path"
+                        .to_string()
+                })?;
+                swe_bench_pro_evaluation = Some(PathBuf::from(value));
+                index += 2;
+            }
+            "--swe-bench-pro-manifest" => {
+                if swe_bench_pro_manifest.is_some() {
+                    return Err("duplicate --swe-bench-pro-manifest argument".to_string());
+                }
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--swe-bench-pro-manifest requires a path".to_string())?;
+                swe_bench_pro_manifest = Some(PathBuf::from(value));
+                index += 2;
+            }
+            "--swe-bench-pro-candidate-patch" => {
+                if swe_bench_pro_candidate_patch.is_some() {
+                    return Err("duplicate --swe-bench-pro-candidate-patch argument".to_string());
+                }
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--swe-bench-pro-candidate-patch requires a path".to_string())?;
+                swe_bench_pro_candidate_patch = Some(PathBuf::from(value));
+                index += 2;
+            }
+            "--swe-bench-pro-evaluator-checkout" => {
+                if swe_bench_pro_evaluator_checkout.is_some() {
+                    return Err("duplicate --swe-bench-pro-evaluator-checkout argument".to_string());
+                }
+                let value = args.get(index + 1).ok_or_else(|| {
+                    "--swe-bench-pro-evaluator-checkout requires a directory".to_string()
+                })?;
+                swe_bench_pro_evaluator_checkout = Some(PathBuf::from(value));
+                index += 2;
+            }
             value if num_cycles.is_none() => {
                 let parsed = value
                     .parse::<usize>()
@@ -3608,11 +4415,32 @@ fn parse_cycle_input_args(args: &[String]) -> Result<CycleInputConfig, String> {
     if num_cycles == 0 {
         return Err("cycle-input cycle count must be greater than zero".to_string());
     }
+    let pressure_binding_count = [
+        swe_bench_pro_manifest.is_some(),
+        swe_bench_pro_candidate_patch.is_some(),
+        swe_bench_pro_evaluator_checkout.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    if swe_bench_pro_evaluation.is_some() && pressure_binding_count != 3 {
+        return Err("--swe-bench-pro-evaluation requires --swe-bench-pro-manifest, --swe-bench-pro-candidate-patch, and --swe-bench-pro-evaluator-checkout for trusted re-evaluation".to_string());
+    }
+    if swe_bench_pro_evaluation.is_none() && pressure_binding_count != 0 {
+        return Err(
+            "SWE-Bench Pro pressure binding arguments require --swe-bench-pro-evaluation"
+                .to_string(),
+        );
+    }
     Ok(CycleInputConfig {
         path: path.to_string(),
         num_cycles,
         output_artifacts,
         checkout,
+        swe_bench_pro_evaluation,
+        swe_bench_pro_manifest,
+        swe_bench_pro_candidate_patch,
+        swe_bench_pro_evaluator_checkout,
     })
 }
 
@@ -3916,7 +4744,7 @@ fn run_cycle_input(args: &[String]) {
     let config = parse_cycle_input_args(args).unwrap_or_else(|error| {
         eprintln!("{error}");
         eprintln!(
-            "Usage: a2d cycle-input <artifact-bundle.json|-> [cycles] [--checkout <dir>] [--output-artifacts <dir>]"
+            "Usage: a2d cycle-input <artifact-bundle.json|-> [cycles] [--checkout <dir>] [--output-artifacts <dir>] [--swe-bench-pro-evaluation <redacted-evaluation.json> --swe-bench-pro-manifest <json> --swe-bench-pro-candidate-patch <diff> --swe-bench-pro-evaluator-checkout <dir>]"
         );
         std::process::exit(1);
     });
@@ -3925,6 +4753,95 @@ fn run_cycle_input(args: &[String]) {
         eprintln!("{error}");
         std::process::exit(1);
     });
+    let (input, pressure_seed) = if let Some(evaluation_path) = &config.swe_bench_pro_evaluation {
+        let manifest_path = config
+            .swe_bench_pro_manifest
+            .as_ref()
+            .expect("pressure manifest required by parser");
+        let candidate_patch = config
+            .swe_bench_pro_candidate_patch
+            .as_ref()
+            .expect("pressure candidate patch required by parser");
+        let evaluator_checkout = config
+            .swe_bench_pro_evaluator_checkout
+            .as_ref()
+            .expect("pressure evaluator checkout required by parser");
+        if [
+            Path::new(&config.path),
+            evaluation_path.as_path(),
+            manifest_path.as_path(),
+        ]
+        .iter()
+        .filter(|path| **path == Path::new("-"))
+        .count()
+            > 1
+        {
+            eprintln!("at most one SWE-Bench Pro pressure input may read stdin");
+            std::process::exit(1);
+        }
+        let recorded_evaluation = read_artifact_to_string(evaluation_path).unwrap_or_else(|_| {
+            eprintln!("failed to read redacted SWE-Bench Pro evaluation");
+            std::process::exit(1);
+        });
+        let recorded_value: Value =
+            serde_json::from_str(&recorded_evaluation).unwrap_or_else(|_| {
+                eprintln!("invalid redacted SWE-Bench Pro evaluation JSON");
+                std::process::exit(1);
+            });
+        let manifest = load_swe_bench_pro_access_manifest(manifest_path).unwrap_or_else(|error| {
+            eprintln!("SWE-Bench Pro evolutionary pressure error: {error}");
+            std::process::exit(1);
+        });
+        if manifest.sealed_evaluator_executable_hash.is_none() {
+            eprintln!(
+                "SWE-Bench Pro evolutionary pressure error: trusted re-evaluation requires sealed_evaluator_executable_hash"
+            );
+            std::process::exit(1);
+        }
+        let fresh_config = SweBenchProEvaluateConfig {
+            manifest: manifest_path.clone(),
+            candidate_patch: candidate_patch.clone(),
+            checkout: evaluator_checkout.clone(),
+            output: None,
+            apply_candidate_patch: true,
+        };
+        let fresh_value = build_swe_bench_pro_sealed_evaluation(&fresh_config, &manifest)
+            .unwrap_or_else(|error| {
+                eprintln!("SWE-Bench Pro evolutionary pressure re-evaluation error: {error}");
+                std::process::exit(1);
+            });
+        if recorded_value != fresh_value {
+            eprintln!(
+                "SWE-Bench Pro evolutionary pressure error: recorded evaluation does not match trusted fresh re-evaluation"
+            );
+            std::process::exit(1);
+        }
+        let trusted_input = build_swe_bench_pro_cycle_input(&manifest).unwrap_or_else(|error| {
+            eprintln!("SWE-Bench Pro evolutionary pressure error: {error}");
+            std::process::exit(1);
+        });
+        let trusted_input = serde_json::to_string(&trusted_input)
+            .expect("trusted SWE-Bench Pro cycle input must serialize");
+        let fresh_evaluation = serde_json::to_string(&fresh_value)
+            .expect("fresh SWE-Bench Pro evaluation must serialize");
+        let feedback = build_swe_bench_pro_cycle_input_feedback(&trusted_input, &fresh_evaluation)
+            .unwrap_or_else(|error| {
+                eprintln!("SWE-Bench Pro evolutionary pressure error: {error}");
+                std::process::exit(1);
+            });
+        let pressure_seed =
+            build_swe_bench_pro_pressure_seed(&fresh_evaluation).unwrap_or_else(|error| {
+                eprintln!("SWE-Bench Pro evolutionary pressure error: {error}");
+                std::process::exit(1);
+            });
+        (
+            serde_json::to_string(&feedback)
+                .expect("SWE-Bench Pro feedback cycle input must serialize"),
+            Some(pressure_seed),
+        )
+    } else {
+        (input, None)
+    };
     let input = if let Some(checkout) = &config.checkout {
         enrich_cycle_input_with_checkout(&input, checkout).unwrap_or_else(|error| {
             eprintln!("{error}");
@@ -3937,11 +4854,68 @@ fn run_cycle_input(args: &[String]) {
         config.num_cycles,
         &input,
         config.output_artifacts.as_deref(),
+        pressure_seed.as_ref(),
     );
 }
 
+fn build_swe_bench_pro_pressure_seed(
+    sealed_evaluation: &str,
+) -> Result<SweBenchProPressureSeed, String> {
+    let evaluation: Value = serde_json::from_str(sealed_evaluation)
+        .map_err(|_| "invalid SWE-Bench Pro sealed evaluation JSON".to_string())?;
+    validate_swe_bench_pro_feedback_evaluation(&evaluation)?;
+    if required_string_field(&evaluation, "status")? != "failed" {
+        return Err(
+            "only a failed sealed evaluation can seed an evolutionary-pressure retry".to_string(),
+        );
+    }
+    if evaluation.get("exit_code").and_then(Value::as_i64) != Some(1) {
+        return Err(
+            "sealed evaluator did not report a completed benchmark failure (exit_code 1)"
+                .to_string(),
+        );
+    }
+    let candidate_patch_hash = required_string_field(&evaluation, "candidate_patch_hash")?;
+    let (passed, failed, total) = evaluation
+        .get("aggregate_metrics")
+        .and_then(Value::as_object)
+        .map(|metrics| {
+            (
+                metrics.get("passed").and_then(Value::as_u64).unwrap_or(0),
+                metrics.get("failed").and_then(Value::as_u64).unwrap_or(0),
+                metrics.get("total").and_then(Value::as_u64).unwrap_or(0),
+            )
+        })
+        .filter(|(_, _, total)| *total > 0)
+        .unwrap_or((0, 1, 1));
+    let fitness = passed as f64 / total as f64;
+    let pressure = json!({
+        "schema_version": "a2d.swe-bench-pro-evolutionary-pressure.v1",
+        "actual_tests_evaluated": true,
+        "selection_status": "provisional_unselected_failure",
+        "fitness": fitness,
+        "passed": passed,
+        "failed": failed,
+        "total": total,
+        "failed_cases": ["hidden_acceptance"],
+        "results": [{"name": "hidden_acceptance", "passed": false}],
+        "candidate_patch_hash": candidate_patch_hash,
+        "baseline_relative_improvement_proved": false,
+        "non_regressing": false,
+        "diagnostic_present": false,
+        "raw_evaluator_output_redacted": true,
+        "note": "pressure signal only; this is not a2d.fitness-evidence.v1 and cannot authorize inheritance"
+    });
+    Ok(SweBenchProPressureSeed {
+        fitness_report: serde_json::to_vec_pretty(&pressure)
+            .expect("SWE-Bench Pro pressure artifact must serialize"),
+        failure_report: b"SEALED SWE-BENCH PRO RESULT: candidate failed aggregate hidden acceptance. Raw evaluator output, hidden test names, benchmark-private source, and solution material remain withheld. Evolve the A2D strategy, then regenerate a unified diff from the public task context and supplied checkout only."
+            .to_vec(),
+    })
+}
+
 fn run_cycle(num_cycles: usize, requirements: &str) {
-    run_cycle_with_options(num_cycles, requirements, None);
+    run_cycle_with_options(num_cycles, requirements, None, None);
 }
 
 fn export_cycle_output_artifacts(
@@ -4040,20 +5014,40 @@ fn sanitize_output_artifact_segment(value: &str) -> String {
     }
 }
 
-fn run_cycle_with_options(num_cycles: usize, requirements: &str, output_artifacts: Option<&Path>) {
+fn run_cycle_with_options(
+    num_cycles: usize,
+    requirements: &str,
+    output_artifacts: Option<&Path>,
+    pressure_seed: Option<&SweBenchProPressureSeed>,
+) {
     println!("A²D Catalytic Cycle ({num_cycles} cycle(s))");
     println!("Requirements: {requirements}");
     println!("═══════════════════");
 
     let germline = load_or_seed_germline();
     let registry = build_runtime_registry(&germline);
-    let mut metabolism = apply_runtime_env(
-        Metabolism::new(germline, registry)
-            .with_benchmark(seed_benchmark())
-            .with_project_root(project_root()),
-    );
+    let metabolism = Metabolism::new(germline, registry).with_project_root(project_root());
+    let metabolism = if pressure_seed.is_some() {
+        metabolism
+    } else {
+        metabolism.with_benchmark(seed_benchmark())
+    };
+    let mut metabolism = apply_runtime_env(metabolism);
 
     seed_initial_runtime_artifacts(&mut metabolism, requirements);
+    if let Some(pressure_seed) = pressure_seed {
+        metabolism.seed_artifact(
+            ArtifactType::from("fitness_report"),
+            pressure_seed.fitness_report.clone(),
+        );
+        metabolism.seed_artifact(
+            ArtifactType::from("failure_report"),
+            pressure_seed.failure_report.clone(),
+        );
+        println!(
+            "SWE-Bench Pro evolutionary-pressure mode: redacted failed fitness seeded; seed Rust benchmark disabled; all self-changes remain non-durable until regenerated candidates are sealed-evaluated"
+        );
+    }
 
     let lineage_dir = lineage_dir();
     let archive = LineageArchive::init(&lineage_dir).ok();
@@ -4182,7 +5176,8 @@ fn run_cycle_with_options(num_cycles: usize, requirements: &str, output_artifact
         // this cycle produced actual benchmark evidence. RAF closure alone is
         // not self-improvement.
         let regressed = report.fitness_delta.is_some_and(|d| d < 0.0);
-        let has_fitness_evidence = report_has_actual_fitness_evidence(&report);
+        let has_fitness_evidence =
+            pressure_seed.is_none() && report_has_actual_fitness_evidence(&report);
         if report.accepted_mutations > 0 {
             if !has_fitness_evidence {
                 println!("  ⚠ No actual-test fitness evidence — skipping lineage commit");
@@ -18381,6 +19376,7 @@ mod tests {
         assert_eq!(config.num_cycles, 1);
         assert_eq!(config.output_artifacts, None);
         assert_eq!(config.checkout, None);
+        assert_eq!(config.swe_bench_pro_evaluation, None);
 
         let config = parse_cycle_input_args(&["-".to_string(), "2".to_string()])
             .expect("stdin cycle-input args parse");
@@ -18423,6 +19419,38 @@ mod tests {
         assert_eq!(config.num_cycles, 2);
         assert_eq!(config.checkout, Some(PathBuf::from("runs/checkout")));
         assert_eq!(config.output_artifacts, Some(PathBuf::from("runs/out")));
+        assert_eq!(config.swe_bench_pro_evaluation, None);
+
+        let config = parse_cycle_input_args(&[
+            "task-cycle-input.json".to_string(),
+            "--swe-bench-pro-evaluation".to_string(),
+            "sealed-evaluation.json".to_string(),
+            "--swe-bench-pro-manifest".to_string(),
+            "access-manifest.json".to_string(),
+            "--swe-bench-pro-candidate-patch".to_string(),
+            "candidate.patch".to_string(),
+            "--swe-bench-pro-evaluator-checkout".to_string(),
+            "full-checkout".to_string(),
+            "1".to_string(),
+        ])
+        .expect("cycle-input Pro pressure evaluation parses");
+        assert_eq!(config.num_cycles, 1);
+        assert_eq!(
+            config.swe_bench_pro_evaluation,
+            Some(PathBuf::from("sealed-evaluation.json"))
+        );
+        assert_eq!(
+            config.swe_bench_pro_manifest,
+            Some(PathBuf::from("access-manifest.json"))
+        );
+        assert_eq!(
+            config.swe_bench_pro_candidate_patch,
+            Some(PathBuf::from("candidate.patch"))
+        );
+        assert_eq!(
+            config.swe_bench_pro_evaluator_checkout,
+            Some(PathBuf::from("full-checkout"))
+        );
 
         assert!(
             parse_cycle_input_args(&[])
@@ -18474,6 +19502,43 @@ mod tests {
             ])
             .expect_err("cycle-input rejects duplicate checkout")
             .contains("duplicate --checkout")
+        );
+        assert!(
+            parse_cycle_input_args(&[
+                "input.json".to_string(),
+                "--swe-bench-pro-evaluation".to_string(),
+            ])
+            .expect_err("cycle-input requires Pro evaluation path")
+            .contains("requires a redacted evaluation JSON path")
+        );
+        assert!(
+            parse_cycle_input_args(&[
+                "input.json".to_string(),
+                "--swe-bench-pro-evaluation".to_string(),
+                "a.json".to_string(),
+                "--swe-bench-pro-evaluation".to_string(),
+                "b.json".to_string(),
+            ])
+            .expect_err("cycle-input rejects duplicate Pro evaluation")
+            .contains("duplicate --swe-bench-pro-evaluation")
+        );
+        assert!(
+            parse_cycle_input_args(&[
+                "input.json".to_string(),
+                "--swe-bench-pro-evaluation".to_string(),
+                "a.json".to_string(),
+            ])
+            .expect_err("pressure evaluation requires trusted binding inputs")
+            .contains("requires --swe-bench-pro-manifest")
+        );
+        assert!(
+            parse_cycle_input_args(&[
+                "input.json".to_string(),
+                "--swe-bench-pro-manifest".to_string(),
+                "manifest.json".to_string(),
+            ])
+            .expect_err("pressure bindings require an evaluation")
+            .contains("require --swe-bench-pro-evaluation")
         );
     }
 

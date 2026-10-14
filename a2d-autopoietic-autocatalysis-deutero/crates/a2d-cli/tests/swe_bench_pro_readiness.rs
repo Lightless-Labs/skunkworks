@@ -96,10 +96,9 @@ fn swe_bench_pro_readiness_rejects_senior_swe_bench_manifest_as_not_pro() {
         value["blocker"].as_str(),
         Some("senior_swe_bench_manifest_is_not_swe_bench_pro")
     );
-    assert_eq!(
-        value["manifest_path"].as_str(),
-        Some(manifest.to_string_lossy().as_ref())
-    );
+    assert_eq!(value["manifest_path_redacted"].as_bool(), Some(true));
+    assert!(value.get("manifest_path").is_none());
+    assert!(value.get("benchmark_url").is_none());
     assert_eq!(
         value["senior_swe_bench_manifest_accepted_as_pro"].as_bool(),
         Some(false)
@@ -418,9 +417,12 @@ fn write_pro_manifest(
     fs::write(
         &public_context,
         serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": "a2d.swe-bench-pro-public-context.v1",
             "instance_id": "swe-pro-001",
             "repo": "owner/repo",
-            "problem_statement": "Public synthetic task context only."
+            "problem_statement": "Public synthetic task context only.",
+            "allowed_context_summary": ["Use the supplied checkout and local tests only."],
+            "forbidden_context": ["hidden tests", "reference solutions", "public solution search"]
         }))
         .unwrap(),
     )
@@ -462,6 +464,277 @@ fn write_tiny_checkout_and_patch(
     )
     .unwrap();
     (checkout, patch)
+}
+
+#[test]
+fn swe_bench_pro_readiness_accepts_valid_reviewed_pro_manifest_without_running_evaluator() {
+    let root = std::env::temp_dir().join(format!(
+        "a2d-swe-bench-pro-ready-manifest-{}",
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let sentinel = root.join("evaluator-ran");
+    let evaluator = root.join("sealed-evaluator.sh");
+    write_executable_script(&evaluator, &format!("touch {}", sentinel.display()));
+    let (manifest, public_context) = write_pro_manifest(&root, &evaluator);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "swe-bench-pro-readiness",
+            "--official-evaluator-manifest",
+            manifest.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run ready SWE-Bench Pro gate");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["status"].as_str(), Some("ready"));
+    assert!(value["blocker"].is_null());
+    assert_eq!(value["can_start_a2d_iteration"].as_bool(), Some(true));
+    assert_eq!(value["instance_id"].as_str(), Some("swe-pro-001"));
+    assert_eq!(value["repo"].as_str(), Some("owner/repo"));
+    assert_eq!(value["manifest_path_redacted"].as_bool(), Some(true));
+    assert_eq!(value["public_context_path_redacted"].as_bool(), Some(true));
+    assert_eq!(
+        value["sealed_evaluator_command_redacted"].as_bool(),
+        Some(true)
+    );
+    assert!(value.get("manifest_path").is_none());
+    assert!(value.get("public_context_path").is_none());
+    assert!(value.get("sealed_evaluator_command").is_none());
+    assert!(!sentinel.exists(), "readiness must not execute evaluator");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for hidden_path in [&manifest, &public_context, &evaluator] {
+        assert!(!stdout.contains(hidden_path.to_string_lossy().as_ref()));
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn swe_bench_pro_public_context_and_redacted_failure_bridge_two_attempts_without_leaks() {
+    let root = std::env::temp_dir().join(format!(
+        "a2d-swe-bench-pro-cycle-bridge-{}",
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let evaluator = root.join("sealed-evaluator.sh");
+    write_executable_script(&evaluator, "exit 1");
+    let (manifest, public_context) = write_pro_manifest(&root, &evaluator);
+    let (_checkout, patch) = write_tiny_checkout_and_patch(&root);
+
+    let first = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "swe-bench-pro-cycle-input",
+            "--manifest",
+            manifest.to_str().unwrap(),
+        ])
+        .output()
+        .expect("build first Pro cycle input");
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_value: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(
+        first_value["benchmark_context"]["schema_version"].as_str(),
+        Some("a2d.swe-bench-pro-cycle-context.v1")
+    );
+    assert_eq!(first_value["evaluation"]["attempt"].as_u64(), Some(0));
+    assert_eq!(
+        first_value["evaluation"]["status"].as_str(),
+        Some("not_evaluated")
+    );
+    assert!(
+        first_value["requirements"]
+            .as_str()
+            .unwrap()
+            .contains("Return only a unified diff")
+            || first_value["requirements"]
+                .as_str()
+                .unwrap()
+                .contains("return only a unified diff")
+    );
+    assert_eq!(
+        first_value["benchmark_context"]["github_solution_search_allowed"].as_bool(),
+        Some(false)
+    );
+    assert!(first_value.get("sealed_evaluator_command").is_none());
+    assert!(first_value.get("public_context_path").is_none());
+
+    let first_path = root.join("cycle-input-0.json");
+    fs::write(&first_path, &first.stdout).unwrap();
+    let canary = "EVALUATOR_PRIVATE_CANARY_DO_NOT_COPY";
+    let context = &first_value["benchmark_context"];
+    let failed_evaluation = serde_json::json!({
+        "schema_version": "a2d.swe-bench-pro-sealed-evaluation.v1",
+        "benchmark": "swe-bench-pro",
+        "instance_id": context["instance_id"],
+        "repo": context["repo"],
+        "manifest_hash": context["manifest_hash"],
+        "manifest_path_redacted": true,
+        "public_context_hash": context["public_context_hash"],
+        "public_context_path_redacted": true,
+        "sealed_evaluator_command_hash": context["sealed_evaluator_command_hash"],
+        "sealed_evaluator_command_redacted": true,
+        "evaluator_kind": "sealed_swe_bench_pro",
+        "evaluator_output_policy": "pass_fail_metrics_only",
+        "candidate_patch_hash": git_hash_object_file(&patch),
+        "candidate_patch_path_redacted": true,
+        "candidate_patch_preflight_checked": true,
+        "candidate_patch_preflight_status": "passed",
+        "candidate_patch_preflight_command_redacted": true,
+        "candidate_patch_applied": true,
+        "evaluator_checkout_mode": "isolated_copy",
+        "evaluator_checkout_redacted": true,
+        "original_checkout_mutated": false,
+        "status": "failed",
+        "exit_code": 1,
+        "hidden_holdouts": true,
+        "github_solution_search_allowed": false,
+        "benchmark_sources_loaded": false,
+        "solution_material_loaded": false,
+        "benchmark_sources_visible_to_a2d": false,
+        "solution_material_visible_to_a2d": false,
+        "evaluator_stdout_redacted": true,
+        "evaluator_stderr_redacted": true,
+        "fitness_evidence_exported": false,
+        "fitness_evidence_path_redacted": false,
+        "fitness_evidence_hash": null,
+        "fitness_claim_allowed": false,
+        "note": canary
+    });
+    let evaluation_path = root.join("sealed-evaluation.json");
+    fs::write(
+        &evaluation_path,
+        serde_json::to_vec_pretty(&failed_evaluation).unwrap(),
+    )
+    .unwrap();
+
+    let second = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "swe-bench-pro-cycle-input-feedback",
+            first_path.to_str().unwrap(),
+            evaluation_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("build second Pro cycle input");
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second_text = String::from_utf8(second.stdout).unwrap();
+    let second_value: serde_json::Value = serde_json::from_str(&second_text).unwrap();
+    assert_eq!(second_value["evaluation"]["attempt"].as_u64(), Some(1));
+    assert_eq!(
+        second_value["evaluation"]["status"].as_str(),
+        Some("not_evaluated")
+    );
+    assert!(second_value["evaluation"]["fitness"].is_null());
+    assert!(
+        second_value["design"]
+            .as_str()
+            .unwrap()
+            .contains("status: failed")
+    );
+    assert!(
+        second_value["plan"]
+            .as_str()
+            .unwrap()
+            .contains("revised unified diff")
+    );
+    for hidden in [
+        canary.to_string(),
+        manifest.to_string_lossy().to_string(),
+        public_context.to_string_lossy().to_string(),
+        evaluator.to_string_lossy().to_string(),
+        evaluation_path.to_string_lossy().to_string(),
+    ] {
+        assert!(
+            !second_text.contains(&hidden),
+            "retry input leaked {hidden}"
+        );
+    }
+
+    let mut bad_evaluation = failed_evaluation;
+    bad_evaluation
+        .as_object_mut()
+        .unwrap()
+        .insert("evaluator_stdout".to_string(), serde_json::json!(canary));
+    fs::write(
+        &evaluation_path,
+        serde_json::to_vec_pretty(&bad_evaluation).unwrap(),
+    )
+    .unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "swe-bench-pro-cycle-input-feedback",
+            first_path.to_str().unwrap(),
+            evaluation_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("reject non-redacted Pro feedback");
+    assert_eq!(rejected.status.code(), Some(1));
+    assert!(!String::from_utf8_lossy(&rejected.stderr).contains(canary));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn swe_bench_pro_cycle_input_rejects_unknown_public_context_fields_without_echoing_values() {
+    let root = std::env::temp_dir().join(format!(
+        "a2d-swe-bench-pro-public-context-reject-{}",
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let evaluator = root.join("sealed-evaluator.sh");
+    write_executable_script(&evaluator, "exit 1");
+    let (manifest, public_context) = write_pro_manifest(&root, &evaluator);
+    let private_canary = "PRIVATE_SOLUTION_CANARY";
+    let mut context: serde_json::Value =
+        serde_json::from_slice(&fs::read(&public_context).unwrap()).unwrap();
+    context.as_object_mut().unwrap().insert(
+        "solution_patch".to_string(),
+        serde_json::json!(private_canary),
+    );
+    fs::write(
+        &public_context,
+        serde_json::to_vec_pretty(&context).unwrap(),
+    )
+    .unwrap();
+    let mut manifest_value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    manifest_value["public_context_hash"] =
+        serde_json::Value::String(git_hash_object_file(&public_context));
+    fs::write(
+        &manifest,
+        serde_json::to_vec_pretty(&manifest_value).unwrap(),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "swe-bench-pro-cycle-input",
+            "--manifest",
+            manifest.to_str().unwrap(),
+        ])
+        .output()
+        .expect("reject private Pro public-context field");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(private_canary));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(private_canary));
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -648,6 +921,92 @@ fn swe_bench_pro_evaluate_runs_sealed_evaluator_without_persisting_hidden_output
 }
 
 #[test]
+fn swe_bench_pro_evaluate_accepts_only_aggregate_metrics_from_completed_failure() {
+    let root = std::env::temp_dir().join(format!(
+        "a2d-swe-bench-pro-evaluate-metrics-{}",
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let evaluator = root.join("sealed-evaluator.sh");
+    write_executable_script(
+        &evaluator,
+        "printf '%s\\n' '{\"schema_version\":\"a2d.swe-bench-pro-sealed-result.v1\",\"passed\":false,\"metrics\":{\"passed\":7,\"failed\":2,\"total\":9}}'; exit 1",
+    );
+    let (manifest, _) = write_pro_manifest(&root, &evaluator);
+    let (checkout, patch) = write_tiny_checkout_and_patch(&root);
+    let output_path = root.join("evaluation.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "swe-bench-pro-evaluate",
+            "--manifest",
+            manifest.to_str().unwrap(),
+            "--candidate-patch",
+            patch.to_str().unwrap(),
+            "--checkout",
+            checkout.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--output",
+            output_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run failed Pro evaluator with aggregate metrics");
+
+    assert_eq!(output.status.code(), Some(2));
+    let value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&output_path).unwrap()).unwrap();
+    assert_eq!(value["status"].as_str(), Some("failed"));
+    assert_eq!(value["exit_code"].as_i64(), Some(1));
+    assert_eq!(value["aggregate_metrics"]["passed"].as_u64(), Some(7));
+    assert_eq!(value["aggregate_metrics"]["failed"].as_u64(), Some(2));
+    assert_eq!(value["aggregate_metrics"]["total"].as_u64(), Some(9));
+    assert!(value.get("evaluator_stdout").is_none());
+    assert!(value.get("evaluator_stderr").is_none());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn swe_bench_pro_evaluate_classifies_non_contract_exit_as_infrastructure_error() {
+    let root = std::env::temp_dir().join(format!(
+        "a2d-swe-bench-pro-evaluate-infra-{}",
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let evaluator = root.join("sealed-evaluator.sh");
+    write_executable_script(&evaluator, "exit 3");
+    let (manifest, _) = write_pro_manifest(&root, &evaluator);
+    let (checkout, patch) = write_tiny_checkout_and_patch(&root);
+    let output_path = root.join("evaluation.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "swe-bench-pro-evaluate",
+            "--manifest",
+            manifest.to_str().unwrap(),
+            "--candidate-patch",
+            patch.to_str().unwrap(),
+            "--checkout",
+            checkout.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--output",
+            output_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run infrastructure-failing Pro evaluator");
+
+    assert_eq!(output.status.code(), Some(3));
+    let value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&output_path).unwrap()).unwrap();
+    assert_eq!(value["status"].as_str(), Some("infrastructure_error"));
+    assert_eq!(value["exit_code"].as_i64(), Some(3));
+    assert!(value["aggregate_metrics"].is_null());
+    assert_eq!(value["fitness_claim_allowed"].as_bool(), Some(false));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn swe_bench_pro_evaluate_rejects_private_manifest_fields_before_evaluator() {
     let root = std::env::temp_dir().join(format!(
         "a2d-swe-bench-pro-evaluate-bad-{}",
@@ -709,6 +1068,141 @@ fn swe_bench_pro_evaluate_rejects_private_manifest_fields_before_evaluator() {
     );
     assert!(!stderr.contains("hidden_tests_path"), "{stderr}");
     assert!(!stdout.contains("private/hidden-tests"), "{stdout}");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+fn add_executable_hash_to_manifest(manifest: &std::path::Path, evaluator: &std::path::Path) {
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&fs::read(manifest).unwrap()).unwrap();
+    value["sealed_evaluator_executable_hash"] =
+        serde_json::Value::String(git_hash_object_file(evaluator));
+    fs::write(manifest, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+}
+
+fn run_pro_pressure_cycle_input(
+    cycle_input: &std::path::Path,
+    evaluation: &std::path::Path,
+    manifest: &std::path::Path,
+    patch: &std::path::Path,
+    checkout: &std::path::Path,
+) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "cycle-input",
+            cycle_input.to_str().unwrap(),
+            "1",
+            "--swe-bench-pro-evaluation",
+            evaluation.to_str().unwrap(),
+            "--swe-bench-pro-manifest",
+            manifest.to_str().unwrap(),
+            "--swe-bench-pro-candidate-patch",
+            patch.to_str().unwrap(),
+            "--swe-bench-pro-evaluator-checkout",
+            checkout.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run cycle-input in Pro pressure mode")
+}
+
+fn write_pro_cycle_input(root: &std::path::Path, manifest: &std::path::Path) -> std::path::PathBuf {
+    let output = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "swe-bench-pro-cycle-input",
+            "--manifest",
+            manifest.to_str().unwrap(),
+        ])
+        .output()
+        .expect("build Pro cycle input");
+    assert!(output.status.success(), "{output:?}");
+    let path = root.join("cycle-input.json");
+    fs::write(&path, output.stdout).unwrap();
+    path
+}
+
+#[test]
+fn swe_bench_pro_pressure_mode_requires_pinned_evaluator_before_any_cycle() {
+    let root = std::env::temp_dir().join(format!(
+        "a2d-swe-bench-pro-pressure-unpinned-{}",
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let evaluator = root.join("sealed-evaluator.sh");
+    write_executable_script(&evaluator, "exit 1");
+    let (manifest, _) = write_pro_manifest(&root, &evaluator);
+    let (checkout, patch) = write_tiny_checkout_and_patch(&root);
+    let cycle_input = write_pro_cycle_input(&root, &manifest);
+    let evaluation = root.join("evaluation.json");
+    fs::write(&evaluation, "{}").unwrap();
+
+    let output =
+        run_pro_pressure_cycle_input(&cycle_input, &evaluation, &manifest, &patch, &checkout);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("requires sealed_evaluator_executable_hash"),
+        "{stderr}"
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("Catalytic Cycle"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn swe_bench_pro_pressure_mode_rejects_tampered_recorded_evaluation_before_any_cycle() {
+    let root = std::env::temp_dir().join(format!(
+        "a2d-swe-bench-pro-pressure-tampered-{}",
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let evaluator = root.join("sealed-evaluator.sh");
+    write_executable_script(
+        &evaluator,
+        "printf '%s\\n' '{\"schema_version\":\"a2d.swe-bench-pro-sealed-result.v1\",\"passed\":false,\"metrics\":{\"passed\":7,\"failed\":2,\"total\":9}}'; exit 1",
+    );
+    let (manifest, _) = write_pro_manifest(&root, &evaluator);
+    add_executable_hash_to_manifest(&manifest, &evaluator);
+    let (checkout, patch) = write_tiny_checkout_and_patch(&root);
+    let cycle_input = write_pro_cycle_input(&root, &manifest);
+    let evaluation = root.join("evaluation.json");
+    let recorded = Command::new(env!("CARGO_BIN_EXE_a2d"))
+        .args([
+            "swe-bench-pro-evaluate",
+            "--manifest",
+            manifest.to_str().unwrap(),
+            "--candidate-patch",
+            patch.to_str().unwrap(),
+            "--checkout",
+            checkout.to_str().unwrap(),
+            "--apply-candidate-patch",
+            "--output",
+            evaluation.to_str().unwrap(),
+        ])
+        .output()
+        .expect("record sealed Pro evaluation");
+    assert_eq!(recorded.status.code(), Some(2), "{recorded:?}");
+
+    // Claim a better score than the sealed evaluator actually reported.
+    let mut tampered: serde_json::Value =
+        serde_json::from_slice(&fs::read(&evaluation).unwrap()).unwrap();
+    tampered["aggregate_metrics"] = serde_json::json!({"passed": 8, "failed": 1, "total": 9});
+    fs::write(&evaluation, serde_json::to_vec_pretty(&tampered).unwrap()).unwrap();
+
+    let output =
+        run_pro_pressure_cycle_input(&cycle_input, &evaluation, &manifest, &patch, &checkout);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("does not match trusted fresh re-evaluation"),
+        "{stderr}"
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("Catalytic Cycle"));
+    assert_eq!(
+        fs::read_to_string(checkout.join("lib.rs")).unwrap(),
+        "original\n"
+    );
 
     let _ = fs::remove_dir_all(root);
 }
