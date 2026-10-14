@@ -20,7 +20,7 @@ Stop building gates before any value datum exists. Run one cheap, pre-registered
 
 **Primary metric:** resolved rate, `a2-full` vs `stateless-retry`, on paired tasks. **GO** requires ≥ +15 pp, using an exact McNemar test or paired bootstrap, one-sided α = 0.10. **INCONCLUSIVE = NO GO.**
 
-**Oracle separation (mandatory).** All arms receive feedback only from public/visible checks (pass-to-pass tests, or the agent's own test runs). Hidden fail-to-pass tests score the final artifact once, after the run. Hidden-test output never reaches any arm. (A²D's audit found exactly this leak.)
+**Oracle separation (mandatory).** All arms receive feedback only from public/visible checks (pass-to-pass tests, or the agent's own test runs). Hidden fail-to-pass tests score the final artifact once, after the run. Hidden-test output never reaches any arm.
 
 **Boundaries.**
 - Agent arms run under the existing `sandbox-exec` `AllowList` profile, which permits model API endpoints only (`cd88992`). Do not rebuild this.
@@ -59,9 +59,9 @@ Never edit it after outcomes are observed. Corrections go in a dated addendum.
 
 | Result | Decision |
 |---|---|
-| E1 NO GO / INCONCLUSIVE | Stop A² as a research runtime. Package it as an eval harness (Option D) or archive it with a post-mortem (Option E). Offer the protocol to A²D as its entry gate. |
+| E1 NO GO / INCONCLUSIVE | Stop A² as a research runtime. Package it as an eval harness (Option D) or archive it with a post-mortem (Option E). |
 | E1 GO, E2 NO GO | A² is a better retry loop, not a self-producing system. Take Option D, or keep it as DESIGN.md's Stage-2 reflexive patching tool. Do not resume Phases 3/4/8. |
-| E1 GO, E2 GO | Resume the roadmap in dependency order (1 → 2 → slim 4). Run Phase 3 and RAF only against admitted trajectories. Then consider consolidating with A²D. |
+| E1 GO, E2 GO | Resume the roadmap in dependency order (1 → 2 → slim 4). Run Phase 3 and RAF only against admitted trajectories. |
 | No decision by 2026-11-30 | NO GO. |
 
 ## Work rules

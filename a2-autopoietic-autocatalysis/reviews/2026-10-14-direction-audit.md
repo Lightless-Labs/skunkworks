@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-14
 **Scope:** Strategic audit of A² (Autopoietic Autocatalysis): intended direction vs. what was built, judgment of the 2026-07-10 remediation roadmap, options, and a recommendation.
-**Method:** Read-only. I read DESIGN.md, README, HANDOFF (top, demo-evidence and decision-log sections), MATURITY, all plans, phase-0 evidence, and the archived benchmark JSONL. I checked claims against crate sources and `Cargo.toml` dependency edges, went through the 426 commits touching this directory, and surveyed the sibling A²D project. I ran no tests and no provider CLIs. The last A² commit is 2026-07-11 (`53e723f`), so the project has been idle for about three months. File:line references point at the working tree: HEAD `53e723f` plus uncommitted local edits present on 2026-10-14 (`bench/self_correction.py`, `docs/HANDOFF.md` and `todos/self-correction-loop.md` are modified). `crates/*` references match HEAD.
+**Method:** Read-only. I read DESIGN.md, README, HANDOFF (top, demo-evidence and decision-log sections), MATURITY, all plans, phase-0 evidence, and the archived benchmark JSONL. I checked claims against crate sources and `Cargo.toml` dependency edges, went through the 426 commits touching this directory. I ran no tests and no provider CLIs. The last A² commit is 2026-07-11 (`53e723f`), so the project has been idle for about three months. File:line references point at the working tree: HEAD `53e723f` plus uncommitted local edits present on 2026-10-14 (`bench/self_correction.py`, `docs/HANDOFF.md` and `todos/self-correction-loop.md` are modified). `crates/*` references match HEAD.
 
 ---
 
@@ -169,19 +169,9 @@ Keyword buckets over the 426 commit subjects. They overlap and are approximate.
 
 That is not evidence *against* the thesis. It is the absence of any test of it, after six months.
 
-### 3.5 Sibling A²D: same evidential point, duplicated plumbing
+### 3.5 Sibling projects
 
-A²D (`../a2d-autopoietic-autocatalysis-deutero`, about 45.9k LOC Rust across `a2d-cli`/`a2d-core`/`a2d-providers`) has the same destination (memory `project_a2d.md`) and **no path dependency on any A² crate**. Provider adapters, sandboxed worktree runners, lineage, retry loops, Senior-SWE-Bench / SWE-Bench-Pro harnesses and contamination guards have been written twice.
-
-A²D's own HANDOFF says:
-
-- "Evolved topology value is unknown";
-- "Compounding self-modification is unproven";
-- seed-vs-evolved results are noisy (83/67, 67/50, 83/50).
-
-Its one real-repo pass (`runs/20260709-senior-swe-bench-live-self-iteration-…/validation-summary.json`) was a provided local evaluator, not the official one. The sequence was: DeepSeek attempt 0 failed patch preflight, then Kimi k2.6 passed 3/3 first try. That is provider switching, not learning. Its July log is the same hardening pattern: percent-, base64- and HTML-entity GitHub-reference detectors, env scrubbing, evidence schemas.
-
-**Consolidation is justified on cost, not on evidence.** Neither project is ahead on the thesis.
+*Removed 2026-10-14 at the owner's direction: A² work must not read or depend on sibling projects.*
 
 ---
 
@@ -238,7 +228,7 @@ Its one real-repo pass (`runs/20260709-senior-swe-bench-live-self-iteration-…/
 - **Work:**
   1. container sandbox shared by all arms;
   2. a stateless-retry arm and history-leak fix in the harness;
-  3. a pre-registered held-out external set of 30–60 tasks. The primary set is Senior SWE-Bench / SWE-Bench Pro, using the sanitized-provenance tooling already in the repo (`a030380`, `682e8c0`, `5af7602`); A²D targets the same set. SWE-bench Verified/Lite is only a fallback: it is in 2026 models' training data, which inflates raw pass rates and leaves the loop little room to help;
+  3. a pre-registered held-out external set of 30–60 tasks. The primary set is Senior SWE-Bench / SWE-Bench Pro, using the sanitized-provenance tooling already in the repo (`a030380`, `682e8c0`, `5af7602`). SWE-bench Verified/Lite is only a fallback: it is in 2026 models' training data, which inflates raw pass rates and leaves the loop little room to help;
   4. four arms: raw, stateless retry with verifier feedback, A² with lineage disabled, full A²;
   5. then experiment 2, heredity (generation N vs N+1 on the same battery, B0 manual admission via branches).
 - **Risk:** low to medium. The result may well be null. That is the point: it is cheap.
@@ -249,23 +239,20 @@ Its one real-repo pass (`runs/20260709-senior-swe-bench-live-self-iteration-…/
   - **E2:** after 3 admitted self-changes, generation N+3 must beat N by ≥15 pp on the same paired battery. Otherwise, INCONCLUSIVE included, it is NO GO on heredity.
   - **Calendar box:** the decision is due by **2026-11-30**, with no extensions for added gates.
 
-### Option C — Consolidate with A²D
-- **Cost:** about 2–4 weeks of migration, or zero if A² simply stops and A²D inherits the experiment design.
-- **Work:** choose one runtime. A²'s worktree catalyst, lineage and pre-registered campaign design are its best assets. A²D's fitness-evidence and metabolism scheduler are its best assets. Retire the duplicate provider adapters, sandboxes and SWE-bench harnesses.
-- **Risk:** medium. It halves maintenance but rescues nothing evidentially, because A²D's thesis is equally untested. It also risks becoming a porting project that defers the value test again.
-- **What it would prove:** nothing by itself. It is a cost decision.
-- **Kill criterion:** if the consolidated project has not run Option B's E1 by 2026-12-31, stop both.
+### Option C — Consolidate with a sibling project
+
+*Removed 2026-10-14 at the owner's direction (out of scope for A²).*
 
 ### Option D — Reframe A² as a narrow tool
 - **Cost:** about 2–3 weeks to package.
-- **Work:** drop the autopoiesis framing. Ship A² as a **sandboxed, verifier-gated, lineage-recording coding-agent eval harness**: multi-provider, worktree-isolated, pre-registered paired-cohort campaigns. That is what the code actually is, and it is genuinely useful to the wider ecosystem (A²D, Middens/Third Thoughts data collection, Foundry).
+- **Work:** drop the autopoiesis framing. Ship A² as a **sandboxed, verifier-gated, lineage-recording coding-agent eval harness**: multi-provider, worktree-isolated, pre-registered paired-cohort campaigns. That is what the code actually is, and it is genuinely useful to the wider ecosystem (Middens/Third Thoughts data collection, Foundry).
 - **Risk:** low. It gives up the research thesis.
 - **What it would prove:** utility as infrastructure.
 - **Kill criterion:** if no sibling project consumes it within 60 days, archive it.
 
 ### Option E — Stop and write it up
 - **Cost:** about 1 week.
-- **Work:** archive A² with a post-mortem: DESIGN.md as an essay, plus the day-1 Goodhart episode, the validator-recursion pattern and the no-pausing failure mode as findings (they suit Sawdust/Third Thoughts). Redirect the effort to A²D or elsewhere.
+- **Work:** archive A² with a post-mortem: DESIGN.md as an essay, plus the day-1 Goodhart episode, the validator-recursion pattern and the no-pausing failure mode as findings (they suit Sawdust/Third Thoughts). Redirect the effort elsewhere.
 - **Risk:** you lose a thesis that might be right but was never tested.
 - **What it would prove:** nothing about the thesis, but it frees the budget.
 
@@ -273,7 +260,7 @@ Its one real-repo pass (`runs/20260709-senior-swe-bench-live-self-iteration-…/
 
 ## 6. Recommendation
 
-**Option B, run with consolidation in mind (B then C or E).** Freeze the remediation roadmap at Phase 0 (done) and mark Phases 1–8 as *conditional on GO*. Run two pre-registered, time-boxed experiments. Then make an explicit continue / fold-into-A²D / reframe-as-tool / stop decision on the data. Do not migrate A²D first; the experiment is cheaper than the migration and tells you which runtime is worth keeping.
+**Option B (then D or E on failure).** Freeze the remediation roadmap at Phase 0 and mark Phases 1–8 as *conditional on GO*. Run two pre-registered, time-boxed experiments. Then make an explicit continue / reframe-as-tool / stop decision on the data.
 
 ### First actions
 
@@ -301,7 +288,7 @@ Its one real-repo pass (`runs/20260709-senior-swe-bench-live-self-iteration-…/
 
 | Result | Decision |
 |---|---|
-| **E1 NO GO or INCONCLUSIVE** (full A² does not clear +15 pp over stateless retry at the pre-registered test) | Stop A² as a research runtime. Choose D (package as eval harness) or E (archive), and move the experiment protocol to A²D as its entry gate. |
+| **E1 NO GO or INCONCLUSIVE** (full A² does not clear +15 pp over stateless retry at the pre-registered test) | Stop A² as a research runtime. Choose D (package as eval harness) or E (archive). |
 | **E1 GO, E2 NO GO** | A² is a better retry loop, not a self-producing system. Choose D or keep it as a Stage-2 "reflexive patching tool" (DESIGN.md's own minimum viable outcome). Do not resume Phases 3/4/8. |
-| **E1 GO and E2 GO** | Resume the roadmap in dependency order: Phase 1 heredity, then 2, then a slimmed 4. Run Phase 3 and RAF work only against admitted trajectories. Then consolidate A²D into A² (or the reverse), keeping the runtime that produced the GO. |
+| **E1 GO and E2 GO** | Resume the roadmap in dependency order: Phase 1 heredity, then 2, then a slimmed 4. Run Phase 3 and RAF work only against admitted trajectories. |
 | **Not run by 2026-11-30** | Treat as NO GO. The project's binding constraint is the inability to run the experiment, not the absence of gates. |
