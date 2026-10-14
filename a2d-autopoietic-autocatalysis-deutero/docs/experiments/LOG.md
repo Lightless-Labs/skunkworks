@@ -193,3 +193,17 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - Per-attempt hidden passes: A 14; B attempts 10, 13, 12, 10, 14; C first attempt 13, second attempt 15.
 - C pairs (first, second): both pass 10; first only 3; second only 5; neither 6.
 - B's attempt 0 is within the pre-stated ±5-task noise band of A, so nothing is investigated.
+
+### Holdouts — Confirmation-1 final  [phase P1]
+- 2026-10-14. **Confirmation-1: 148 tasks, 37 families × 4 levels, suite hash `7bd1b669051c93c7aa6ad0cd9eb316384682a332aa3d981ba205464932f1b9dd`.** Authored by Codex `gpt-6.1-sol` (high) into `$A2D_HOLDOUT_DIR/confirmation-1`. The developing agent saw only task ids, validate verdicts, counts and hashes.
+- Family names, the only content seen: csv-quote, glob-match, varint-codec, cron-next, text-wrap, graph-paths, json-pointer, bank-ledger, ini-config, rational-matrix, url-parse, line-diff, json-lexer, toml-subset, bitset-ops, indexed-heap, scc-graph, union-groups, rope-text, base32-codec, money-format, numeral-convert, sparse-matrix, life-rules, bowling-score, vending-fsm, http-headers, email-address, row-filter, template-engine, fs-sim, checksums, iso-duration, pretty-printer, bank-queue-sim, knapsack-dp, key-maze.
+- Validation (`a2d lift validate`, final rules) accepts 148/148. Earlier rejections, all repaired blind:
+  - rope-text ×4: a validator parsing bug, since fixed;
+  - fs-sim-l3: a public-coverage gap, repaired by Codex;
+  - template-engine ×3: tests used private reference items, repaired by Codex.
+  One family (key-maze) was re-authored after an OpenAI capacity error.
+- **Independent-solve audit (roadmap § P1 Oracles).** Codex `gpt-6.1-sol` (medium) solved each task blind from the requirements and public tests only, as arm D with k = 3 (`$A2D_HOLDOUT_DIR/audit/c1-run1`, `c1-km`; never experiment data).
+  - **148/148 pass every hidden test on the first attempt** (148 invocations, 1.66M tokens).
+  - 0 public-green but hidden-fail; 0 tool calls; 0 hidden-name hits; ledgers verified.
+  - No adjudication was needed: every hidden test is consistent with an independently written solution.
+  - Limitations: auditor and coder share a vendor (OpenAI). A strong model at medium effort solves every task, so these tasks test precise spec compliance by a weaker or low-effort coder; they do not test what is beyond reach for current frontier models.
