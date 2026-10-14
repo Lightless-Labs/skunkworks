@@ -65,3 +65,19 @@ Pre-registration and results for `docs/plans/2026-10-14-lift-first-roadmap.md`. 
 - Decision:
   - The seed schedule is one feedback cycle per 4 invocations after the first coder call. P2 must pre-register k ≡ 1 (mod 4): k = 5 gives C 2 code attempts, k = 9 gives 3. k = 4 is ruled out because it gives C a single attempt.
   - The P1 suite's public tests must exercise every major API item. The rubiks gap shows that weak public tests make B, C and D submit public-green failures and stop D early. This is now a rule in the P1 plan.
+
+### E03 — calibration headroom pilot (A, B)  [phase P1]
+- Registered: 2026-10-14 (frozen paths at commit 2eefa0d; suite committed in the following commit)
+- Hypothesis: the calibration suite has headroom for the lift test at the P2 budget. Gate, pooled over all tasks: A (one-shot) passes 20–70% and B (best-of-5) passes at most 85%. Per family the same rates are reported; a family where A passes all 4 levels is flagged as saturated, and one where B passes none as floor.
+- Arms / configuration: A, B; k = 5 (the P2 budget, k ≡ 1 mod 4); seed 3; jobs 4. **C and D are deliberately not run**, so the headroom and redesign decisions stay blind to C.
+- Task set: calibration, `tasks/calibration` (suite hash ecd129fa0ca10aca51bc4bd2eaf95e91156005ba882abed0daba110205f57405), n = 24, families = 6
+- Model(s): `codex/gpt-6-luna`, reasoning effort low, no-tools lane, provider timeout 300 s     k = 5     replicates = 1
+- Budget cap: 170 invocations (planned 144), 5400 s wall-clock
+- Infrastructure exceptions (predefined): a tuple with any non-model provider error in either arm (timeout, rate limit, non-zero exit) is excluded from the headroom computation and counted. If more than 20% of tuples are excluded, those tuples are rerun as a new experiment; that is not a redesign. Controller-voided tuples are excluded.
+- Result-class rule: the headroom gate above (pass/fail). No lift classification.
+- Redesign rule (decided before seeing results): if the pooled gate fails, redesign the family *templates* (harder levels if saturated, easier if at the floor) and re-author every family. That counts as T7 redesign 1 of 2. Never weaken public tests to pull B down, and never drop or select individual tasks.
+- If the gate passes: E04 runs all four arms on this suite (A and B again as a second replicate) to fix the primary comparator and estimate discordance for power planning.
+- Result: pending
+- Artifacts: runs/2026-10-14-e03-calibration-headroom/ (ledger: runs/2026-10-14-e03-calibration-headroom/ledger.jsonl)
+- Deviations:
+- Decision:
