@@ -65,6 +65,15 @@ def arm_order(sample: list[str], seed: int) -> dict[str, list[str]]:
     return order
 
 
+def private_markers(gold_patch: str, hidden_fail_to_pass: list[str]) -> list[str]:
+    """Secret content the agent must never see: the gold patch and hidden test ids.
+
+    The private directory's path is not a marker: verifier tracebacks name its venv and temp trees,
+    a2-full receives that same output through a2ctl, and Seatbelt denies reads under it anyway.
+    """
+    return [gold_patch[:200], *hidden_fail_to_pass]
+
+
 def assert_no_private_leak(text: str, private_markers: list[str]) -> None:
     for marker in private_markers:
         if marker and marker in text:
@@ -174,8 +183,7 @@ def classify_infra(attempts: list[dict], returncodes: list[int]) -> str | None:
 def run_arm(cfg: argparse.Namespace, opaque: str, arm: str, run_dir: Path) -> dict:
     manifest = tasks.load_manifest(opaque)
     instruction = common.agent_instruction(manifest, cfg.instruction)
-    markers = [(tasks.private_dir(opaque) / "gold.patch").read_text()[:200], str(tasks.private_dir())]
-    markers += manifest["hidden_fail_to_pass"]
+    markers = private_markers((tasks.private_dir(opaque) / "gold.patch").read_text(), manifest["hidden_fail_to_pass"])
     log = run_dir / f"{opaque}.{arm}.log"
     workspace = fresh_workspace(opaque, arm)
     started = time.time()

@@ -135,3 +135,14 @@ The interface then becomes discoverable only through visible-test feedback, whic
 - 0 resolved → run `stateless-retry` on the same 5 first. Lock if it resolves ≥ 2; otherwise this is a subset decision.
 
 Note: `A2_CODEX_REASONING_EFFORT` is also inherited by the verifier's shell (harmless; it only affects Codex).
+
+**Addendum:** 2026-10-14 — `e1-v1` leak-guard crash (harness fix, no protocol change).
+
+All three shards stopped after 22 rows, on the first stateless-retry attempt that received failing verifier output. The cause was the driver's leak guard, which treated the private directory's *path* as a secret. Pytest tracebacks name the task venv and the verifier temp tree, and both live under that path.
+
+What was in the output:
+- No hidden test id or gold-patch text appeared in any of the 38 recorded attempt files.
+- The a2-full arm had already received the same output through a2ctl.
+- Seatbelt denies reads under the private directory either way.
+
+The fix limits the guard markers to gold-patch content and hidden ids (`run.private_markers`). Verifier output is unchanged, and every arm still receives identical feedback. The completed rows are kept, and the shards resume with the same commands.

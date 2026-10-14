@@ -145,6 +145,15 @@ class LeakTests(unittest.TestCase):
             run.assert_no_private_leak("see /Users/x/.a2-e1/private/e1-1", ["/Users/x/.a2-e1/private"])
         run.assert_no_private_leak("clean text", ["/Users/x/.a2-e1/private", ""])
 
+    def test_markers_are_secret_content_not_the_private_path(self) -> None:
+        markers = run.private_markers("--- a/lib/x.py\n+++ b/lib/x.py\n+fix\n", ["test/t.py::test_hidden"])
+        traceback = "/Users/x/.a2-e1/private/e1-1/venv/lib/python3.9/site-packages/_pytest/main.py:1: in run"
+        run.assert_no_private_leak(traceback, markers)
+        with self.assertRaises(RuntimeError):
+            run.assert_no_private_leak("FAILED test/t.py::test_hidden", markers)
+        with self.assertRaises(RuntimeError):
+            run.assert_no_private_leak("--- a/lib/x.py\n+++ b/lib/x.py\n+fix\n", markers)
+
     def test_payload_names_only_opaque_id_and_committed_verifier(self) -> None:
         payload = run.task_payload("e1-abc123abc123", "Fix it.", "e1-abc123abc123:raw:r1", ["https://api.z.ai"])
         command = payload["verification_commands"][0]["command"]
