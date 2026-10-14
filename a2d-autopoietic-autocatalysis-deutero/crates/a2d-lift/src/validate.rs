@@ -243,10 +243,13 @@ fn uncovered_api(requirements: &str, public_tests: &str) -> BTreeSet<String> {
         .match_indices("pub fn ")
         .filter_map(|(at, _)| {
             let rest = &requirements[at + "pub fn ".len()..];
-            let name: String = rest
+            // Qualified forms like `pub fn Rope::from_str(..)` name the
+            // last path segment.
+            let path: String = rest
                 .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
                 .collect();
+            let name = path.rsplit("::").next().unwrap_or("").to_string();
             (!name.is_empty()).then_some(name)
         })
         .filter(|name| {
@@ -365,9 +368,9 @@ mod tests {
 
     #[test]
     fn uncovered_api_lists_functions_public_tests_never_call() {
-        let requirements =
-            "API: `pub fn new() -> Self`, `pub fn get(&self, k: &str)`, `pub fn solve(&self)`.";
-        let tests = "#[test]\nfn t() { let s = Store::new(); s.get(\"a\"); }\n";
+        let requirements = "API: `pub fn new() -> Self`, `pub fn get(&self, k: &str)`, `pub fn solve(&self)`, `pub fn Store::from_str(s: &str)`.";
+        let tests =
+            "#[test]\nfn t() { let s = Store::new(); s.get(\"a\"); Store::from_str(\"x\"); }\n";
         let uncovered = uncovered_api(requirements, tests);
         assert_eq!(uncovered.into_iter().collect::<Vec<_>>(), ["solve"]);
     }
