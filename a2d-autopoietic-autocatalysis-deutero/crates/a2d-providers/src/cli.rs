@@ -17,6 +17,18 @@ pub struct CliProvider {
     output_parser: Box<dyn Fn(&str) -> (String, Option<String>) + Send + Sync>,
 }
 
+/// Codex features that give the model tools beyond producing text.
+pub const CODEX_DISABLED_FEATURES: &[&str] = &[
+    "shell_tool",
+    "unified_exec",
+    "js_repl",
+    "web_search_request",
+    "standalone_web_search",
+    "browser_use",
+    "computer_use",
+    "apps",
+];
+
 impl CliProvider {
     /// Create a Codex CLI provider.
     ///
@@ -55,6 +67,15 @@ impl CliProvider {
                     "--ignore-user-config".to_string(),
                     "--ignore-rules".to_string(),
                 ]);
+                // Artifact-only role, like OpenCode's no-tools agent and Pi's
+                // --no-tools: a read-only sandbox still lets the model read
+                // any file (hidden tests, holdouts) or search the web.
+                // Verified live 2026-10-14: with these disabled, a request to
+                // run `ls /` gets no exec and the model reports it cannot.
+                for feature in CODEX_DISABLED_FEATURES {
+                    args.push("--disable".to_string());
+                    args.push(feature.to_string());
+                }
                 args
             }),
             output_parser: Box::new(|output: &str| (output.to_string(), None)),
@@ -544,6 +565,24 @@ mod tests {
         assert!(args.contains(&"--skip-git-repo-check".to_string()));
         assert!(args.contains(&"--ignore-user-config".to_string()));
         assert!(args.contains(&"--ignore-rules".to_string()));
+    }
+
+    #[test]
+    fn codex_provider_disables_shell_and_web_tools() {
+        let provider = CliProvider::codex("gpt-6-luna", Some("low"));
+        let request = InvocationRequest {
+            enzyme_id: a2d_core::types::EnzymeId::from("coder"),
+            system: String::new(),
+            prompt: String::new(),
+            max_tokens: 10,
+        };
+        let args = (provider.args_builder)(&request);
+        for feature in ["shell_tool", "unified_exec", "web_search_request"] {
+            assert!(
+                args.windows(2).any(|w| w[0] == "--disable" && w[1] == feature),
+                "{feature} not disabled: {args:?}"
+            );
+        }
     }
 
     #[test]
