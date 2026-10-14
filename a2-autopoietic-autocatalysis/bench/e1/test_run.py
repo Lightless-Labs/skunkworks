@@ -1,0 +1,54 @@
+"""Unit tests for bench/e1/run.py pure logic. Run: python3 -m unittest bench/e1/test_run.py"""
+
+import json
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import run  # noqa: E402
+
+
+class ArmOrderTests(unittest.TestCase):
+    def test_order_is_seeded_permutation_per_task(self) -> None:
+        sample = [f"e1-{i:012x}" for i in range(20)]
+        first, second = run.arm_order(sample, 7), run.arm_order(sample, 7)
+        self.assertEqual(first, second)
+        for arms in first.values():
+            self.assertEqual(sorted(arms), sorted(run.ARMS))
+        self.assertGreater(len({tuple(v) for v in first.values()}), 1)
+        self.assertNotEqual(first, run.arm_order(sample, 8))
+
+
+class LeakTests(unittest.TestCase):
+    def test_private_marker_in_payload_raises(self) -> None:
+        with self.assertRaises(RuntimeError):
+            run.assert_no_private_leak("see /Users/x/.a2-e1/private/e1-1", ["/Users/x/.a2-e1/private"])
+        run.assert_no_private_leak("clean text", ["/Users/x/.a2-e1/private", ""])
+
+    def test_payload_names_only_opaque_id_and_committed_verifier(self) -> None:
+        payload = run.task_payload("e1-abc123abc123", "Fix it.", "e1-abc123abc123:raw:r1", ["https://api.z.ai"])
+        command = payload["verification_commands"][0]["command"]
+        self.assertTrue(command.startswith("python3 "))
+        self.assertTrue(command.endswith("bench/e1/verify.py --task e1-abc123abc123"))
+        self.assertNotIn(".a2-e1", json.dumps(payload))
+        self.assertEqual(payload["network_policy"], {"AllowList": ["https://api.z.ai"]})
+        self.assertTrue(payload["no_external_solution_search"])
+
+
+class VerifierRowTests(unittest.TestCase):
+    def test_verifier_passed_requires_non_empty_all_passed(self) -> None:
+        self.assertFalse(run.verifier_passed({"worktree_verifications": []}))
+        self.assertFalse(run.verifier_passed({"worktree_verifications": [{"passed": True}, {"passed": False}]}))
+        self.assertTrue(run.verifier_passed({"worktree_verifications": [{"passed": True}]}))
+
+    def test_verifier_output_is_bounded_tail(self) -> None:
+        row = {"worktree_verifications": [{"stdout_tail": "a" * 20_000, "stderr_tail": "END"}]}
+        out = run.verifier_output(row)
+        self.assertTrue(out.endswith("END"))
+        self.assertLessEqual(len(out), run.FEEDBACK_TAIL_CHARS)
+
+
+if __name__ == "__main__":
+    unittest.main()
