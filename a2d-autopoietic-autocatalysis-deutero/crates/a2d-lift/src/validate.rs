@@ -18,6 +18,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub const REFERENCE_FILE: &str = "reference.rs";
 pub const MUTANTS_DIR: &str = "mutants";
+/// Authoring-spec minimums (P1 authoring spec v2).
+pub const MIN_MUTANTS: usize = 4;
+pub const MIN_PUBLIC_GREEN_MUTANTS: usize = 2;
+pub const MIN_HIDDEN_TESTS: usize = 12;
 
 #[derive(Debug, Clone)]
 pub struct TaskVerdict {
@@ -84,7 +88,16 @@ pub fn validate_task(task: &Task) -> TaskVerdict {
         mutants_public_green: 0,
     };
     let public = task.public();
-    let has_public = !public.public_tests.trim().is_empty();
+    let has_public = crate::task::count_tests(&public.public_tests) > 0;
+    if !has_public {
+        verdict.problems.push("no public tests".to_string());
+    }
+    let hidden_count = crate::task::count_tests(task.hidden_tests());
+    if hidden_count < MIN_HIDDEN_TESTS {
+        verdict.problems.push(format!(
+            "only {hidden_count} hidden tests (minimum {MIN_HIDDEN_TESTS})"
+        ));
+    }
 
     match fs::read_to_string(task.dir().join(REFERENCE_FILE)) {
         Err(_) => verdict.problems.push(format!("missing {REFERENCE_FILE}")),
@@ -98,6 +111,13 @@ pub fn validate_task(task: &Task) -> TaskVerdict {
                 ));
             }
             let hidden = score_hidden(task, Some(&reference));
+            // A second run must agree: flaky references make every score noise.
+            let again = score_hidden(task, Some(&reference));
+            if hidden.all_passed && (!again.all_passed || again.passed != hidden.passed) {
+                verdict
+                    .problems
+                    .push("reference hidden results are not deterministic".to_string());
+            }
             if !hidden.all_passed {
                 verdict.problems.push(format!(
                     "reference fails hidden ({}/{}{})",
@@ -123,8 +143,10 @@ pub fn validate_task(task: &Task) -> TaskVerdict {
         .unwrap_or_default();
     mutants.sort();
     verdict.mutants = mutants.len();
-    if mutants.is_empty() {
-        verdict.problems.push("no mutants".to_string());
+    if mutants.len() < MIN_MUTANTS {
+        verdict
+            .problems
+            .push(format!("{} mutants (minimum {MIN_MUTANTS})", mutants.len()));
     }
     for path in &mutants {
         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
@@ -132,10 +154,26 @@ pub fn validate_task(task: &Task) -> TaskVerdict {
             verdict.problems.push(format!("unreadable mutant {stem}"));
             continue;
         };
-        if score_hidden(task, Some(&code)).all_passed {
+        // Caught means: compiles against the hidden tests, runs to completion,
+        // and at least one hidden assertion fails. Compile errors and
+        // timeouts are not realistic bugs being caught.
+        let hidden = score_hidden(task, Some(&code));
+        if hidden.all_passed {
             verdict
                 .problems
                 .push(format!("mutant {stem} passes hidden"));
+        } else if !hidden.compiled {
+            verdict.problems.push(format!(
+                "mutant {stem} does not compile against hidden tests"
+            ));
+        } else if hidden.timed_out {
+            verdict
+                .problems
+                .push(format!("mutant {stem} is caught only by a timeout"));
+        } else if hidden.failed == 0 {
+            verdict
+                .problems
+                .push(format!("mutant {stem} is not caught by a failing test"));
         } else {
             verdict.mutants_caught += 1;
         }
@@ -143,10 +181,11 @@ pub fn validate_task(task: &Task) -> TaskVerdict {
             verdict.mutants_public_green += 1;
         }
     }
-    if has_public && !mutants.is_empty() && verdict.mutants_public_green == 0 {
-        verdict.problems.push(
-            "no mutant passes public tests (hidden adds no shown discrimination)".to_string(),
-        );
+    if has_public && verdict.mutants_public_green < MIN_PUBLIC_GREEN_MUTANTS {
+        verdict.problems.push(format!(
+            "{} mutants pass public tests (minimum {MIN_PUBLIC_GREEN_MUTANTS}: hidden tests must add discrimination)",
+            verdict.mutants_public_green
+        ));
     }
 
     let uncovered = uncovered_api(&public.requirements, &public.public_tests);
@@ -215,7 +254,31 @@ mod tests {
         "fn clamp_add(a: u8, b: u8) -> u8 { a.saturating_add(b) }\nfn main() {}\n";
     const WRAPPING: &str = "fn clamp_add(a: u8, b: u8) -> u8 { a.wrapping_add(b) }\nfn main() {}\n";
     const PUBLIC: &str = "#[test]\nfn adds_small() { assert_eq!(clamp_add(1, 2), 3); }\n";
-    const HIDDEN: &str = "#[test]\nfn saturates() { assert_eq!(clamp_add(250, 10), 255); }\n";
+    const CLAMPED: &str =
+        "fn clamp_add(a: u8, b: u8) -> u8 { a.saturating_add(b).min(254) }\nfn main() {}\n";
+    const SUBTRACTS: &str =
+        "fn clamp_add(a: u8, b: u8) -> u8 { a.saturating_sub(b) }\nfn main() {}\n";
+    const ZERO: &str = "fn clamp_add(_a: u8, _b: u8) -> u8 { 0 }\nfn main() {}\n";
+
+    fn hidden() -> String {
+        let mut tests =
+            String::from("#[test]\nfn saturates() { assert_eq!(clamp_add(250, 10), 255); }\n");
+        for i in 0..11u8 {
+            tests.push_str(&format!(
+                "#[test]\nfn adds_{i}() {{ assert_eq!(clamp_add({i}, 3), {i} + 3); }}\n"
+            ));
+        }
+        tests
+    }
+
+    fn mutants() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("wrapping", WRAPPING),
+            ("clamped", CLAMPED),
+            ("subtracts", SUBTRACTS),
+            ("zero", ZERO),
+        ]
+    }
 
     fn write_task(root: &Path, mutants: &[(&str, &str)], hidden: &str) {
         let dir = root.join("clamp");
@@ -236,13 +299,13 @@ mod tests {
     #[test]
     fn accepts_task_whose_hidden_tests_catch_a_public_passing_mutant() {
         let root = tempfile::tempdir().unwrap();
-        write_task(root.path(), &[("wrapping", WRAPPING)], HIDDEN);
+        write_task(root.path(), &mutants(), &hidden());
         let report = validate_suite(root.path(), 2).unwrap();
         let verdict = &report.verdicts[0];
         assert!(verdict.accepted(), "{verdict}");
         assert_eq!(
             (verdict.mutants_caught, verdict.mutants_public_green),
-            (1, 1)
+            (4, 2)
         );
         assert!(
             !verdict.to_string().contains("saturates"),
@@ -269,6 +332,21 @@ mod tests {
         let tests = "#[test]\nfn t() { let s = Store::new(); s.get(\"a\"); }\n";
         let uncovered = uncovered_api(requirements, tests);
         assert_eq!(uncovered.into_iter().collect::<Vec<_>>(), ["solve"]);
+    }
+
+    #[test]
+    fn rejects_uncompilable_mutants_and_thin_oracles() {
+        let root = tempfile::tempdir().unwrap();
+        write_task(
+            root.path(),
+            &[("wrapping", WRAPPING), ("broken", "fn clamp_add(")],
+            "#[test]\nfn saturates() { assert_eq!(clamp_add(250, 10), 255); }\n",
+        );
+        let text = validate_suite(root.path(), 1).unwrap().verdicts[0].to_string();
+        assert!(text.contains("mutant broken does not compile"), "{text}");
+        assert!(text.contains("2 mutants (minimum 4)"), "{text}");
+        assert!(text.contains("only 1 hidden tests"), "{text}");
+        assert!(text.contains("1 mutants pass public tests"), "{text}");
     }
 
     #[test]
