@@ -56,6 +56,9 @@ fn main() {
         "cycle-input" => {
             run_cycle_input(&args[2..]);
         }
+        "lift" => {
+            std::process::exit(a2d_lift::cli_main(&args[2..], None));
+        }
         "challenge" => {
             let challenge_name = arg2;
             let num_cycles: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(3);

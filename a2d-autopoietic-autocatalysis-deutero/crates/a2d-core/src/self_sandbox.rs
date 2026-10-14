@@ -45,8 +45,14 @@ pub const PROTECTED_FILES: &[&str] = &[
     "crates/a2d-core/src/sandbox.rs",
     "crates/a2d-core/src/benchmark.rs",
     "crates/a2d-core/src/self_sandbox.rs",
+    "crates/a2d-cli/src/lift_arm_c.rs",
+    "docs/experiments/LOG.md",
     "CONSTITUTION.md",
 ];
+
+/// Directories that cannot be modified by automated actors: the lift
+/// controller (arms, oracles, stopping rules, ledger) and run artifacts.
+pub const PROTECTED_DIRS: &[&str] = &["crates/a2d-lift/", "runs/"];
 
 /// Files automated actors are allowed to modify through the SystemPatch gate.
 ///
@@ -81,6 +87,9 @@ pub fn is_protected(file_path: &str) -> bool {
     PROTECTED_FILES
         .iter()
         .any(|&p| normalized == p || normalized.ends_with(p))
+        || PROTECTED_DIRS
+            .iter()
+            .any(|&d| normalized.starts_with(d) || normalized.contains(&format!("/{d}")))
 }
 
 /// Check if a file path is eligible for automated SystemPatch modification.
@@ -354,6 +363,11 @@ mod tests {
         assert!(is_protected("crates/a2d-core/src/benchmark.rs"));
         assert!(is_protected("crates/a2d-core/src/self_sandbox.rs"));
         assert!(is_protected("CONSTITUTION.md"));
+        assert!(is_protected("crates/a2d-lift/src/oracle.rs"));
+        assert!(is_protected("/repo/crates/a2d-lift/Cargo.toml"));
+        assert!(is_protected("crates/a2d-cli/src/lift_arm_c.rs"));
+        assert!(is_protected("docs/experiments/LOG.md"));
+        assert!(is_protected("runs/2026-10-14-e01/ledger.jsonl"));
     }
 
     #[test]
@@ -410,6 +424,31 @@ mod tests {
                 .unwrap()
                 .contains("Protected file")
         );
+    }
+
+    #[test]
+    fn patch_to_lift_controller_rejected_immediately() {
+        for file_path in [
+            "crates/a2d-lift/src/oracle.rs",
+            "crates/a2d-lift/src/stats.rs",
+            "crates/a2d-cli/src/lift_arm_c.rs",
+            "docs/experiments/LOG.md",
+        ] {
+            let patch = SystemPatch {
+                file_path: file_path.to_string(),
+                new_content: "// rewritten stopping rule".to_string(),
+            };
+            let result = validate_patch(Path::new("/nonexistent"), &patch);
+            assert!(!result.accepted, "{file_path} accepted");
+            assert!(
+                result
+                    .rejection_reason
+                    .as_ref()
+                    .unwrap()
+                    .contains("Protected file"),
+                "{file_path}"
+            );
+        }
     }
 
     #[test]

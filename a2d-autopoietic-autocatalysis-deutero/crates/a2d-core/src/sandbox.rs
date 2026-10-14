@@ -166,6 +166,96 @@ pub fn evaluate_rust_code(code: &str, test_timeout: Duration) -> SandboxResult {
     }
 }
 
+/// Compile `code` as a test harness only and run the tests whose names
+/// contain `filter`.
+///
+/// Used by the lift controller's public/hidden oracles, which count only their
+/// own module's tests. `compiled` reports the `rustc --test` build. Counts come
+/// from the last `test result:` line, which libtest prints after any captured
+/// test output.
+pub fn run_rust_tests_matching(code: &str, filter: &str, test_timeout: Duration) -> SandboxResult {
+    let not_run = |compile_output: String| SandboxResult {
+        compiled: false,
+        compile_output,
+        tests_passed: None,
+        tests_failed: None,
+        test_output: String::new(),
+        runtime_output: String::new(),
+        timed_out: false,
+        test_elapsed: None,
+    };
+    let dir = match tempfile::Builder::new().prefix("a2d-oracle-").tempdir() {
+        Ok(dir) => dir,
+        Err(e) => return not_run(format!("Failed to create temp dir: {e}")),
+    };
+    let src_path = dir.path().join("main.rs");
+    if let Err(e) = fs::write(&src_path, code) {
+        return not_run(format!("Failed to write source: {e}"));
+    }
+
+    let test_binary = dir.path().join("test_main");
+    let mut compile = Command::new("rustc");
+    compile
+        .args(["--test", "--edition", "2024"])
+        .arg(&src_path)
+        .arg("-o")
+        .arg(&test_binary);
+    harden_sandbox_child_command(&mut compile);
+    match compile.output() {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => return not_run(String::from_utf8_lossy(&output.stderr).into_owned()),
+        Err(e) => return not_run(format!("rustc --test failed to start: {e}")),
+    }
+
+    let mut run = Command::new(&test_binary);
+    run.arg(filter);
+    harden_sandbox_child_command(&mut run);
+    let (tests_passed, tests_failed, test_output, timed_out, test_elapsed) =
+        match run_with_timeout(run, test_timeout) {
+            TimedRun::Completed {
+                stdout,
+                stderr,
+                elapsed,
+            } => {
+                let combined = format!("{stdout}\n{stderr}");
+                let (passed, failed) = parse_last_test_results(&combined);
+                (Some(passed), Some(failed), combined, false, Some(elapsed))
+            }
+            TimedRun::TimedOut { limit, elapsed, .. } => (
+                Some(0),
+                Some(1),
+                format!(
+                    "TEST TIMEOUT: test binary exceeded {}s (killed at {:.2}s)",
+                    limit.as_secs_f64(),
+                    elapsed.as_secs_f64()
+                ),
+                true,
+                Some(elapsed),
+            ),
+            TimedRun::SpawnFailed(e) => (None, None, format!("Test run failed: {e}"), false, None),
+        };
+
+    SandboxResult {
+        compiled: true,
+        compile_output: String::new(),
+        tests_passed,
+        tests_failed,
+        test_output,
+        runtime_output: String::new(),
+        timed_out,
+        test_elapsed,
+    }
+}
+
+fn parse_last_test_results(output: &str) -> (usize, usize) {
+    output
+        .lines()
+        .rev()
+        .find(|line| line.starts_with("test result:"))
+        .map(parse_test_results)
+        .unwrap_or((0, 0))
+}
+
 enum TimedRun {
     Completed {
         stdout: String,
@@ -510,5 +600,59 @@ mod tests {{
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn filtered_test_run_counts_only_matching_module() {
+        let code = r#"
+fn add(a: i32, b: i32) -> i32 { a + b }
+
+#[cfg(test)]
+mod own {
+    #[test]
+    fn candidate_test_fails() { panic!("candidate's own test"); }
+}
+
+#[cfg(test)]
+mod oracle_x1 {
+    use super::*;
+    #[test]
+    fn adds() { assert_eq!(add(2, 2), 4); }
+    #[test]
+    fn adds_negative() { assert_eq!(add(-1, 1), 0); }
+}
+"#;
+        let result = run_rust_tests_matching(code, "oracle_x1::", DEFAULT_TEST_TIMEOUT);
+        assert!(result.compiled, "{}", result.compile_output);
+        assert_eq!(result.tests_passed, Some(2), "{}", result.test_output);
+        assert_eq!(result.tests_failed, Some(0), "{}", result.test_output);
+    }
+
+    #[test]
+    fn filtered_test_run_uses_last_result_line() {
+        let code = r#"
+fn answer() -> i32 { 41 }
+
+#[cfg(test)]
+mod oracle_y2 {
+    use super::*;
+    #[test]
+    fn prints_fake_summary_then_fails() {
+        println!("test result: ok. 99 passed; 0 failed; 0 ignored");
+        assert_eq!(answer(), 42);
+    }
+}
+"#;
+        let result = run_rust_tests_matching(code, "oracle_y2::", DEFAULT_TEST_TIMEOUT);
+        assert!(result.compiled, "{}", result.compile_output);
+        assert_eq!(result.tests_passed, Some(0), "{}", result.test_output);
+        assert_eq!(result.tests_failed, Some(1), "{}", result.test_output);
+    }
+
+    #[test]
+    fn filtered_test_run_reports_compile_failure() {
+        let result = run_rust_tests_matching("fn broken( {", "oracle_z3::", DEFAULT_TEST_TIMEOUT);
+        assert!(!result.compiled);
+        assert_eq!(result.tests_passed, None);
     }
 }
