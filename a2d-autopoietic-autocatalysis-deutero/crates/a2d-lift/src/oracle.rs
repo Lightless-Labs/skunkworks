@@ -199,8 +199,7 @@ mod tests {
     #[test]
     fn candidate_cannot_read_oracle_source_at_compile_time() {
         let tests = "#[test]\nfn sees_nothing() { assert!(!leaked()); }\n";
-        let candidate =
-            "fn leaked() -> bool { include_str!(file!()).contains(&[\"sees\", \"_nothing\"].concat()) }\n";
+        let candidate = "fn leaked() -> bool { include_str!(file!()).contains(&[\"sees\", \"_nothing\"].concat()) }\n";
         let score = score_tests(candidate, tests, "hidden", 10);
         assert!(score.all_passed, "{}", score.output);
     }

@@ -2,8 +2,10 @@
 //! independent reference passes every public and hidden test, every mutant
 //! fails at least one hidden test, at least one mutant passes the public
 //! tests (so hidden tests discriminate beyond them), and hidden tests do not
-//! repeat public test names. Verdicts carry counts and file stems only,
-//! never test content, so holdout sets can be validated blind.
+//! repeat public test names, and the public tests call every `pub fn` the
+//! requirements name. Verdicts carry counts, file stems and requirement
+//! (public) names only, never test content, so holdout sets can be
+//! validated blind.
 
 use crate::oracle::{score_hidden, score_public};
 use crate::task::{Task, load_suite};
@@ -147,6 +149,14 @@ pub fn validate_task(task: &Task) -> TaskVerdict {
         );
     }
 
+    let uncovered = uncovered_api(&public.requirements, &public.public_tests);
+    if has_public && !uncovered.is_empty() {
+        verdict.problems.push(format!(
+            "public tests never call {}",
+            uncovered.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+
     let shared = test_names(&public.public_tests)
         .intersection(&test_names(task.hidden_tests()))
         .count();
@@ -156,6 +166,26 @@ pub fn validate_task(task: &Task) -> TaskVerdict {
             .push(format!("hidden repeats {shared} public test name(s)"));
     }
     verdict
+}
+
+/// `pub fn` names in the requirements that the public tests never call
+/// (`name(` or `name::<`).
+fn uncovered_api(requirements: &str, public_tests: &str) -> BTreeSet<String> {
+    requirements
+        .match_indices("pub fn ")
+        .filter_map(|(at, _)| {
+            let rest = &requirements[at + "pub fn ".len()..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            (!name.is_empty()).then_some(name)
+        })
+        .filter(|name| {
+            !public_tests.contains(&format!("{name}("))
+                && !public_tests.contains(&format!("{name}::<"))
+        })
+        .collect()
 }
 
 /// Names of `#[test]` functions in a test source file.
@@ -230,6 +260,15 @@ mod tests {
         let text = verdict.to_string();
         assert!(text.contains("mutant wrapping passes hidden"), "{text}");
         assert!(text.contains("repeats 1 public test name"), "{text}");
+    }
+
+    #[test]
+    fn uncovered_api_lists_functions_public_tests_never_call() {
+        let requirements =
+            "API: `pub fn new() -> Self`, `pub fn get(&self, k: &str)`, `pub fn solve(&self)`.";
+        let tests = "#[test]\nfn t() { let s = Store::new(); s.get(\"a\"); }\n";
+        let uncovered = uncovered_api(requirements, tests);
+        assert_eq!(uncovered.into_iter().collect::<Vec<_>>(), ["solve"]);
     }
 
     #[test]
