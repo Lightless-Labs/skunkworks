@@ -1,9 +1,31 @@
 # Plan: Lift-First Roadmap
 
 **Created:** 2026-10-14
-**Status:** Active — phase P0
+**Status:** Active — phase P1 (P0 exit met 2026-10-14)
 **Reviewed:** 2026-10-14 (independent review, Codex gpt-6.1-sol xhigh). The other non-Claude lanes were unavailable; see Blockers. Changes adopted: repair-loop comparator, three-way result classification, pilot/development/confirmation split, frozen controller, B-headroom calibration, harness-first P4, process metrics as diagnostics only.
 **Addendum:** 2026-10-14 — coder lane: the owner stopped the Kimi, Z.ai, MiniMax and Gemini subscriptions on purpose and suggested Luna via Codex or Pi. `gpt-6-luna` works through Codex with A²D's provider flags. `gpt-6.1-luna` is not offered on this ChatGPT account (Codex model list fetched 2026-10-14 has 6.1 only as Sol). Pi's `openai-codex` provider is not authenticated. P0/P1 updated accordingly.
+**Addendum:** 2026-10-14 — P0 gate. Exit criteria met (isolation tests, four arms end to end on mocks, E01). Reviewed by Codex `gpt-6.1-sol` (high) and a fresh-context Claude subagent, each in an empty temp dir with copied inputs. Diversity reduced to one non-Claude family (see Blockers). Adopted (commits `e8e7fa3`, `2eefa0d`):
+- no-tools Codex lane (live-verified);
+- an oracle that compiles trusted tests apart from candidate code and requires a clean exit;
+- two-phase run (generate everything, then score once);
+- seeded per-tuple arm order;
+- tuple voiding;
+- `--primary` comparator;
+- a classification floor of `--min-families` (default 10) and at least one discordant pair;
+- family sign-flip permutation p reported beside the cluster bootstrap;
+- hash-chained ledger;
+- a registration freeze over all of `crates/`, `Cargo.toml` and `Cargo.lock`, so the treatment is frozen, not only the controller.
+
+Two findings are deferred:
+- **To P2:** at k = 4 the seed schedule gives arm C one coder call (coder → evolver → architect → tester). P2 must pre-register a k, or a schedule, under which C reaches a second coder call. E02 measures the realised schedule.
+- **To P2 confirmation:** the confirmation protocol needs deferred scoring (commit submission hashes, then score).
+
+Process diagnostics:
+- 1 session, 1 result (E01), 3 live invocations per result;
+- 12 commits since adoption, 8 tagged;
+- no tripwire hits.
+
+Reviewer note: arm C landed without a live four-arm run, so the next result must be E02 (all arms live), not more controller work. P1 plan: `docs/plans/2026-10-14-p1-calibration-suite.md`.
 **Supersedes as primary goal:** `swe-bench-pro-blind-evaluator-adapter.md` (parked), the Senior SWE-Bench retry chain (parked)
 **Grounding:** `docs/research/2026-10-14-direction-audit.md`, `docs/research/2026-10-14-dgm-rqgm-relevance.md`
 **Decision deadline:** P2 confirmation result recorded by **2026-11-30**. Missing it is a non-result, not a falsification: record "not measured by deadline", stop adding seed-cycle complexity, and continue per Completion.

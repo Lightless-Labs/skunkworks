@@ -35,3 +35,20 @@ Pre-registration and results for `docs/plans/2026-10-14-lift-first-roadmap.md`. 
 - Artifacts: runs/2026-10-14-e01-tiny-arm-a/ (ledger: runs/2026-10-14-e01-tiny-arm-a/ledger.jsonl)
 - Deviations: none.
 - Decision: P0 exit item 5 met. Luna-low passes chess and sudoku at pass@1, so the legacy tasks are near saturation and serve as plumbing only; P1 needs a harder suite. Capture Codex token counts before P1 so budget reporting is complete.
+
+### E02 — first live four-arm run  [phase P1, development]
+- Registered: 2026-10-14 (frozen paths at commit 2eefa0d; `crates/`, `Cargo.toml`, `Cargo.lock`)
+- Hypothesis: none about lift. This is development data: 3 families is below the classification floor, so the class is Inconclusive by construction. Purpose:
+  1. all four arms run live end to end;
+  2. read arm C's realised schedule at k = 5 from the ledger (does C reach a second coder call?);
+  3. zero coder tool calls and zero hidden-name hits.
+- Arms / configuration: A, B, D, C; k = 5 (the stated seed schedule needs 5 invocations for a second coder call); primary comparator B; seed 1; jobs 3
+- Task set: development, `tasks/dev` (suite hash 6604cf43eb94bfce33a20754636614d8b69dc9b8f887f3fb936eb455d4501128), n = 3, families = 3
+- Model(s): `codex/gpt-6-luna`, reasoning effort low, provider timeout 300 s (default), no-tools lane     k = 5     replicates = 1
+- Budget cap: 60 invocations (planned max 48), 3600 s wall-clock
+- Infrastructure exceptions (predefined): tuples voided by the controller (wall-clock or audit failure) are excluded. Provider errors and timeouts count as failures.
+- Result-class rule: descriptive only (development set).
+- Result: pending
+- Artifacts: runs/2026-10-14-e02-four-arm-dev/ (ledger: runs/2026-10-14-e02-four-arm-dev/ledger.jsonl)
+- Deviations:
+- Decision rule: if C makes at most 1 coder call per tuple at k = 5, P2 must pre-register a k or schedule that is shown to reach ≥ 2.

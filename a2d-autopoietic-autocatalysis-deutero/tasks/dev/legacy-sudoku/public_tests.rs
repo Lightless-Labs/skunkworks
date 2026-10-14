@@ -15,3 +15,14 @@ fn validate_accepts_complete_solution_and_rejects_duplicate() {
     grid[0][0] = grid[0][3];
     assert!(!validate(&grid));
 }
+
+#[test]
+fn solves_a_relabelled_puzzle() {
+    let solved = solve(parse("570030000400915000012000040200040007600207009300080004040000820000691005000020031")).expect("puzzle is solvable");
+    let digits: String = solved
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(|&d| char::from_digit(d as u32, 10).unwrap())
+        .collect();
+    assert_eq!(digits, "576432198438915762912768543251349687684257319397186254149573826823691475765824931");
+}
