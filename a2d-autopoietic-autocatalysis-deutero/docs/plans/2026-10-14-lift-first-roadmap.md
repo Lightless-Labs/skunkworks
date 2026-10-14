@@ -172,3 +172,28 @@ You may move `lift` and the oracle code into a module or crate if `main.rs` buil
   - **Works:** Codex (`gpt-6.1-sol`) and Claude.
 
   A²D's configured default coder and evolver lanes are therefore unavailable. **Mitigation (T2):** proceed with lanes that work. For P1, choose a coder with headroom among OpenAI models via Codex and Claude Haiku/Sonnet 5.5 via the Claude provider. Re-probe the other lanes at each phase gate. Restoring subscriptions is the owner's choice and is not on the critical path.
+
+## Appendix — goal prompt
+
+The standing goal that drives this plan. If you change it, add a dated Addendum explaining why.
+
+```text
+A²D (skunkworks/a2d-autopoietic-autocatalysis-deutero): establish, with pre-registered controller-scored evidence, whether A²D builds working software more reliably than its own coder model used directly (one-shot, best-of-k, plain repair loop) at the same budget — and whether A²D's self-modification widens that margin.
+
+Done only when docs/plans/2026-10-14-lift-first-roadmap.md is marked Completed in one of its three outcomes (success / lift without autopoiesis / falsified), each backed by confirmation results in docs/experiments/LOG.md. Infrastructure is never "done" on its own.
+
+Each session:
+1. Read docs/HANDOFF.md and the roadmap. Run cargo test. Probe provider lanes (trivial prompt, short timeout).
+2. Take the next experiment of the current phase. Pre-register it in LOG.md before any live run.
+3. Make the smallest change that lets it run, tests first. Delegate bounded implementation to Codex. Run independent work in parallel subagents.
+4. Run it through `a2d lift`, with durable artifacts under runs/. Record the result class with its CI. Negative and inconclusive results count.
+5. Decide by the metric. Commit atomically with a [P<n>] tag. Overwrite HANDOFF (≤250 lines). Compound non-obvious learnings.
+
+Rules:
+- Never pause for direction. If blocked on something external (quota, credentials, access), log it under the roadmap's Blockers, switch to an unblocked track and keep going. Never build scaffolding around a blocker.
+- Tripwires: a new LOG result at least every 2 sessions or 10 commits. No new redaction/sandbox/scrub work without an incident in a run artifact. Evidence must exercise the change. Budget caps on every run. At most 5 P4 hypotheses.
+- Hidden and confirmation tests never reach any arm, any enzyme, or you. Each confirmation set is scored once.
+- Phase gates and key designs get independent review from at least 2 non-Claude providers when available. Run reviewers in an empty temp dir, never with the repo as cwd, and record who was consulted.
+- Deutero: at each phase gate, compute process diagnostics (results per session, cost per result, tripwire hits), get them reviewed, and amend the roadmap with a dated Addendum. The loop that builds A²D is held to the same standard as A²D.
+- Deadline: if the P2 seed result is not recorded by 2026-11-30, record NO-GO for the seed cycle and continue per the roadmap.
+```
