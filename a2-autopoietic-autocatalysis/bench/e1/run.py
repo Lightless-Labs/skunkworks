@@ -143,6 +143,8 @@ def run_arm(cfg: argparse.Namespace, opaque: str, arm: str, run_dir: Path) -> di
             text = instruction + (STATELESS_FEEDBACK_HEADER + feedback if feedback else "")
             payload = task_payload(opaque, text, key, cfg.endpoint)
             assert_no_private_leak(json.dumps(payload), markers)
+            # A fresh base copy per attempt: leftover worktree branches must not carry prior attempts.
+            workspace = fresh_workspace(opaque, arm)
             emit = run_dir / f"{opaque}.{arm}.attempt{index}.jsonl"
             emit.unlink(missing_ok=True)
             returncodes.append(run_a2ctl(cfg, workspace, payload, 1, "none", emit, log))
