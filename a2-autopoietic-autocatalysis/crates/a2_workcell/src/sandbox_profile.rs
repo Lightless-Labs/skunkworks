@@ -46,7 +46,8 @@ pub fn codex_provider_args(
 
 /// Environment variable selecting the reasoning effort for A2-launched Codex.
 pub const CODEX_REASONING_EFFORT_ENV: &str = "A2_CODEX_REASONING_EFFORT";
-const CODEX_REASONING_EFFORTS: [&str; 6] = ["none", "minimal", "low", "medium", "high", "xhigh"];
+const CODEX_REASONING_EFFORTS: [&str; 7] =
+    ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// Validates an `A2_CODEX_REASONING_EFFORT` value; unset means `high`.
 pub fn codex_reasoning_effort_from_env_value(value: Option<&str>) -> Result<&str, String> {
@@ -832,7 +833,7 @@ mod tests {
     #[test]
     fn codex_reasoning_effort_from_env_value_validates_and_defaults_to_high() {
         assert_eq!(codex_reasoning_effort_from_env_value(None).unwrap(), "high");
-        for level in ["none", "minimal", "low", "medium", "high", "xhigh"] {
+        for level in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
             assert_eq!(
                 codex_reasoning_effort_from_env_value(Some(level)).unwrap(),
                 level
