@@ -39,6 +39,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod challenges;
+mod lift_arm_c;
 mod senior_swe_bench;
 
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -57,7 +58,10 @@ fn main() {
             run_cycle_input(&args[2..]);
         }
         "lift" => {
-            std::process::exit(a2d_lift::cli_main(&args[2..], None));
+            std::process::exit(a2d_lift::cli_main(
+                &args[2..],
+                Some(&lift_arm_c::MetabolismArm),
+            ));
         }
         "challenge" => {
             let challenge_name = arg2;
@@ -5377,7 +5381,7 @@ fn run_challenge(name: &str, num_cycles: usize) {
     let registry = build_runtime_registry(&germline);
     let mut metabolism = apply_runtime_env(
         Metabolism::new(germline, registry)
-            .with_benchmark(challenge.scoring_benchmark())
+            .with_benchmark(challenge.selection_benchmark())
             .with_project_root(project_root()),
     );
 
@@ -14220,7 +14224,7 @@ fn run_role_provider_comparison(name: &str, enzyme_name: &str, provider_args: &[
             let assigned_provider = registry.provider_for(&enzyme_id).name().to_string();
             let mut metabolism = apply_runtime_env(
                 Metabolism::new(germline, registry)
-                    .with_benchmark(challenge.scoring_benchmark())
+                    .with_benchmark(challenge.selection_benchmark())
                     .with_max_invocations_per_cycle(1)
                     .with_project_root(project_root()),
             );
@@ -14454,7 +14458,7 @@ fn run_escalation_validation(name: &str, enzyme_name: &str) {
         let registry = build_runtime_registry(&germline);
         let mut metabolism = apply_runtime_env(
             Metabolism::new(germline, registry)
-                .with_benchmark(challenge.scoring_benchmark())
+                .with_benchmark(challenge.selection_benchmark())
                 .with_max_invocations_per_cycle(1)
                 .with_project_root(project_root()),
         );
@@ -14781,7 +14785,7 @@ fn run_challenge_for_provider_policy(
     let challenge = load_challenge_or_exit(name);
     let challenge_name = challenge.name.to_string();
     let requirements = challenge.requirements;
-    let benchmark = challenge.scoring_benchmark();
+    let benchmark = challenge.selection_benchmark();
 
     let enzyme_count = germline.enzymes().len();
     let mut registry = build_registry();
@@ -15020,7 +15024,7 @@ fn run_challenge_for_topology(
     let challenge = load_challenge_or_exit(name);
     let challenge_name = challenge.name.to_string();
     let requirements = challenge.requirements;
-    let benchmark = challenge.scoring_benchmark();
+    let benchmark = challenge.selection_benchmark();
 
     let germline = load_germline_for_topology(topology);
     let enzyme_count = germline.enzymes().len();

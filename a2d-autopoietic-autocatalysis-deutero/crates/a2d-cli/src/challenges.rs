@@ -30,12 +30,19 @@ pub struct Baseline {
 }
 
 impl Challenge {
-    /// Benchmark configured exactly as the challenge runtime sees it.
+    /// Benchmark for live metabolism runs: visible checks only.
     ///
-    /// This is the only supported way for callers outside this module to
-    /// obtain a benchmark for a challenge: it attaches the hidden acceptance
-    /// tests so replay/baseline paths cannot accidentally score only visible
-    /// string checks.
+    /// Hidden acceptance tests are an evaluation oracle. They must never drive
+    /// selection, the fitness ratchet or `failure_report` feedback, or the
+    /// result is oracle-selected best-of-N rather than a measurement.
+    pub fn selection_benchmark(&self) -> BenchmarkSuite {
+        self.benchmark.clone()
+    }
+
+    /// Evaluation benchmark: visible checks plus hidden acceptance tests.
+    ///
+    /// For scoring finished artifacts only (`score-artifact`, baselines).
+    /// Live runs use [`Challenge::selection_benchmark`].
     pub fn scoring_benchmark(&self) -> BenchmarkSuite {
         let mut benchmark = self.benchmark.clone();
         benchmark.acceptance_test = self.acceptance_test.clone();
@@ -563,6 +570,14 @@ mod a2d_rubiks_acceptance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_benchmark_never_carries_hidden_acceptance() {
+        for challenge in [chess_engine(), sudoku_solver(), rubiks_cube()] {
+            assert!(challenge.selection_benchmark().acceptance_test.is_none());
+            assert!(challenge.scoring_benchmark().acceptance_test.is_some());
+        }
+    }
 
     #[test]
     fn chess_acceptance_covers_special_moves_and_checkmate() {
