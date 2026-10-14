@@ -92,3 +92,22 @@ Pre-registration and results for `docs/plans/2026-10-14-lift-first-roadmap.md`. 
   - Re-author all six families with harder level ladders: v1's l4 or l3 becomes v2's l1, and each level adds interacting clauses (error precedence, byte or format exactness, cross-feature state).
   - The new suite goes in `tasks/calibration-v2`; the v1 suite is burnt.
   - Model and effort are unchanged.
+
+### E04 — calibration-v2 headroom pilot (A, B)  [phase P1]
+- Registered: 2026-10-14 (frozen paths at commit 93dc025)
+- Hypothesis: the v2 templates give headroom. Same gate as E03: pooled A in 20–70% and B ≤ 85%; per-family rates reported, with saturation and floor flags.
+- Arms / configuration: A, B; k = 5; seed 4; jobs 4. C and D are not run (blind to C).
+- Task set: calibration, `tasks/calibration-v2` (suite hash 067b4a6250521d173ceb3d9a42e191ff43878774f7d2c50bed0023e3749a3458), n = 24, families = 6
+- Model(s): `codex/gpt-6-luna`, reasoning effort low, no-tools lane, provider timeout 300 s     k = 5     replicates = 1
+- Budget cap: 170 invocations (planned 144), 7200 s wall-clock
+- Infrastructure exceptions (predefined): same as E03. Tuples with any non-model provider error are excluded and counted; above 20% excluded, they are rerun.
+- Result-class rule: the headroom gate (pass/fail).
+- Redesign rule (decided before seeing results). If the gate fails, this is **T7 redesign 2 of 2, the last**, and it changes the model instead of the suite: keep `tasks/calibration-v2`.
+  - If saturated (A > 70% or B > 85%), use coder `codex/gpt-5.6-luna`, effort low.
+  - If at the floor (A < 20%), use `codex/gpt-6-luna`, effort medium.
+  - The redesigned configuration gets one more headroom pilot. If that also fails, P1 proceeds with the closest configuration and the deviation is recorded; there is no third redesign.
+- If the gate passes: E05 runs all four arms on this suite (A and B as a second replicate) to fix the primary comparator and estimate discordance for power planning.
+- Result: pending
+- Artifacts: runs/2026-10-14-e04-calibration-v2-headroom/ (ledger: runs/2026-10-14-e04-calibration-v2-headroom/ledger.jsonl)
+- Deviations:
+- Decision:
