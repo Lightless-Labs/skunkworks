@@ -1,7 +1,8 @@
 # A² Remediation Roadmap
 
 **Created:** 2026-07-10  
-**Status:** Proposed — execution not started  
+**Status:** In progress — Phase 0 (items 1–6 landed 2026-07-10/11; boundary gate addressed 2026-10-14)  
+**Addendum:** 2026-10-14 — child-agent containment satisfied by inherited `sandbox-exec` process-tree confinement instead of per-spawn-site wrapping (see Addenda)  
 **Reviewed:** 2026-07-10 (independent roadmap review)  
 **Source:** 2026-07-10 goal/implementation audit  
 **Scope:** Recover A² from a pre-Stage-0 mutation/retry prototype into the smallest defensible self-producing software-factory seed described by `DESIGN.md`.
@@ -470,3 +471,21 @@ Execute these items in order:
 - Add an addendum when execution discovers a gap; do not silently rewrite acceptance criteria after observing results.
 - Mark a phase complete only when every acceptance criterion has an authoritative evidence path.
 - Keep phase evidence compact and immutable; keep detailed operational logs outside `docs/HANDOFF.md`.
+
+## Addenda
+
+### 2026-10-14 — Child-agent containment via inherited process-tree sandbox
+
+**Gap.** The Phase-0 stop/go boundary gate (`agent_network_boundary_check.py --require-sandbox-runtime`) failed because `@anthropic-ai/sandbox-runtime` was not installed and two external spawn sites — Foundry's `pi-foundry-team` `runDispatch` (loaded globally through the operator's Pi `settings.json` packages) and Pi's example `subagent` extension — start child `pi` processes without their own sandbox wrapper. The gate assumed containment had to be applied at each spawn site.
+
+**Mechanism change.** Phase 2 item 9 asks that enforcement "cover the actual process tree". On macOS, a Seatbelt profile applied by `sandbox-exec` is inherited by every descendant, so a restricted-policy A²-launched `pi` already confines anything it spawns. The gate now accepts either mechanism:
+
+1. `launch_site_sandbox` — the original requirement (runtime installed and each child spawn site wrapped); or
+2. `inherited_process_tree_sandbox` — all of:
+   - every A²-owned `pi` launch is `sandbox-exec`-materialized for `Isolated`/`AllowList` (existing check);
+   - every A²-owned `pi` launch passes `--no-extensions --no-skills --no-prompt-templates` through the shared `pi_provider_args` builder, so settings-package extensions such as Foundry never load (verified against Pi 0.80.6 `resource-loader.js`: `noExtensions` drops all non-CLI extension paths, including settings packages);
+   - a live, provider-free probe in the audit using A²'s exact `Isolated` profile text: an unsandboxed control grandchild reaches a loopback listener; a `sandbox-exec` grandchild is denied with `EPERM`. A Rust unit test pins the same property in `a2_workcell::sandbox_profile`.
+
+**Why this is a tightening, not a relaxation.** Under the old mechanism, A²'s Pi children loaded the operator's ambient extensions and the gate depended on code in other repositories. Under the new one, those extensions do not load at all, and containment is a property of A²'s own launch path proven by execution rather than by static inspection of third-party source. The spawn-site findings remain in the report as informational.
+
+**Unchanged blockers.** `usable_sandbox_provider_allowlist_enforced` stays false and fresh provider-backed evidence remains blocked until a provider-backed run records its policy and allowlist evidence. Phase 2 item 9 is not complete: the other providers (Claude, Codex, Gemini, OpenCode) still load their own ambient user configuration, and Seatbelt does not confine work handed to launchd/LaunchServices (`open`, `launchctl submit`); the profiles do not yet deny those mach services.
