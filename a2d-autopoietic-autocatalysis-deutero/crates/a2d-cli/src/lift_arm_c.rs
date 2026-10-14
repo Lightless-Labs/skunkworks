@@ -164,6 +164,7 @@ mod tests {
             primary: Some(Arm::B),
             min_families: 1,
             record_hidden_output: false,
+            defer_scoring: false,
         };
         let outcomes = a2d_lift::run_arms(
             &plan,

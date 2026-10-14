@@ -67,6 +67,22 @@ impl Ledger {
         })
     }
 
+    /// Reopen an existing ledger to continue its chain (deferred scoring).
+    /// The chain is verified first.
+    pub fn resume(path: &Path) -> Result<Self, String> {
+        let (records, head) = verify_chain(path)?;
+        let file = OpenOptions::new()
+            .append(true)
+            .open(path)
+            .map_err(|e| format!("open {}: {e}", path.display()))?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            file,
+            seq: records as u64,
+            last_line_hash: head,
+        })
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }

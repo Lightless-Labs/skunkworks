@@ -19,12 +19,13 @@ usage:
   a2d lift hash <suite-dir>
   a2d lift validate <suite-dir> [--jobs <n>]
   a2d lift verify-ledger <ledger.jsonl>
+  a2d lift score --out <run-dir> --suite <dir> [--jobs <n>] [--record-hidden-output]
   a2d lift run --experiment <id> --suite <dir> --model codex/<model> --out <dir>
                --max-invocations <n> --max-wall-clock-secs <s>
                (--registered-at <git-sha> --expect-suite-hash <sha256> | --unregistered)
                [--arms A,B,D,C] [--k <n>] [--replicates <n>] [--jobs <n>]
                [--primary B|D] [--seed <n>] [--min-families <n>] [--effort <level>]
-               [--record-hidden-output]";
+               [--record-hidden-output] [--defer-scoring]";
 
 pub fn cli_main(args: &[String], arm_c: Option<&dyn ArmC>) -> i32 {
     let result = match args.first().map(String::as_str) {
@@ -35,6 +36,7 @@ pub fn cli_main(args: &[String], arm_c: Option<&dyn ArmC>) -> i32 {
             .map(|hash| println!("{hash}")),
         Some("run") => run(&args[1..], arm_c),
         Some("validate") => validate(&args[1..]),
+        Some("score") => score(&args[1..]),
         Some("verify-ledger") => args
             .get(1)
             .ok_or_else(|| USAGE.to_string())
@@ -63,7 +65,10 @@ fn parse_flags(args: &[String]) -> Result<BTreeMap<String, String>, String> {
         let name = arg
             .strip_prefix("--")
             .ok_or_else(|| format!("unexpected argument {arg:?}\n{USAGE}"))?;
-        if name == "record-hidden-output" || name == "unregistered" {
+        if matches!(
+            name,
+            "record-hidden-output" | "unregistered" | "defer-scoring"
+        ) {
             flags.insert(name.to_string(), "true".to_string());
             continue;
         }
@@ -296,6 +301,7 @@ fn run(args: &[String], arm_c: Option<&dyn ArmC>) -> Result<(), String> {
         primary,
         min_families,
         record_hidden_output: flags.contains_key("record-hidden-output"),
+        defer_scoring: flags.contains_key("defer-scoring"),
     };
     println!(
         "a2d lift {experiment}: {} tasks × {} replicates × arms {:?}, k={k}, model {model}",
@@ -304,6 +310,43 @@ fn run(args: &[String], arm_c: Option<&dyn ArmC>) -> Result<(), String> {
         arms.iter().map(|a| a.label()).collect::<Vec<_>>()
     );
     let result = run_arms(&plan, &suite, provider, &meter, &out_dir, arm_c)?;
+    if !result.scored {
+        println!(
+            "generation complete{}; scoring deferred. Commit {} then run: a2d lift score --out {} --suite {}",
+            if result.aborted { " (ABORTED)" } else { "" },
+            out_dir.display(),
+            out_dir.display(),
+            suite_dir.display()
+        );
+        return Ok(());
+    }
+    report(&result, &plan, &meter, &out_dir)
+}
+
+/// `a2d lift score`: hidden scoring for a run generated with --defer-scoring.
+fn score(args: &[String]) -> Result<(), String> {
+    let flags = parse_flags(args)?;
+    let out_dir = PathBuf::from(required(&flags, "out")?);
+    let suite_dir = PathBuf::from(required(&flags, "suite")?);
+    let jobs: usize = flags
+        .get("jobs")
+        .map_or(Ok(1), |_| number(&flags, "jobs"))?;
+    let (result, plan, meter) = crate::score_deferred(
+        &out_dir,
+        &suite_dir,
+        jobs.max(1),
+        flags.contains_key("record-hidden-output"),
+    )?;
+    report(&result, &plan, &meter, &out_dir)
+}
+
+/// Print outcomes, write summary.json and append the summary to the ledger.
+fn report(
+    result: &crate::RunResult,
+    plan: &RunPlan,
+    meter: &crate::meter::SharedMeter,
+    out_dir: &Path,
+) -> Result<(), String> {
     for o in &result.outcomes {
         println!(
             "  {} {} r{}: {} ({}/{} hidden, {} invocations, {} coder){}",
@@ -321,10 +364,10 @@ fn run(args: &[String], arm_c: Option<&dyn ArmC>) -> Result<(), String> {
                 .unwrap_or_default()
         );
     }
-    let summary = summarize(&result, &plan);
+    let summary = summarize(result, plan);
     let pretty = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
     fs::write(out_dir.join("summary.json"), format!("{pretty}\n")).map_err(|e| e.to_string())?;
-    let mut m = crate::meter::lock(&meter);
+    let mut m = crate::meter::lock(meter);
     m.ledger
         .append("summary", summary)
         .map_err(|e| e.to_string())?;

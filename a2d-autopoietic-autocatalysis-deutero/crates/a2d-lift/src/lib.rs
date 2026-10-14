@@ -113,6 +113,9 @@ pub struct RunPlan {
     pub primary: Option<Arm>,
     pub min_families: usize,
     pub record_hidden_output: bool,
+    /// Stop after generation; score later with [`score_deferred`] once the
+    /// submissions are committed (confirmation protocol).
+    pub defer_scoring: bool,
 }
 
 /// A submission from the generation phase, before hidden scoring.
@@ -154,6 +157,8 @@ pub struct RunResult {
     pub aborted: bool,
     /// Saved invocation files that contain a hidden test function name.
     pub hidden_name_hits: Vec<String>,
+    /// False when scoring was deferred.
+    pub scored: bool,
 }
 
 /// Seeded permutation of the planned arms for one tuple.
@@ -236,6 +241,15 @@ pub fn run_arms(
             json!({"submissions": submissions.len(), "aborted": aborted}),
         )
         .map_err(|e| e.to_string())?;
+    if plan.defer_scoring {
+        return Ok(RunResult {
+            outcomes: Vec::new(),
+            tuples_planned: tuples.len(),
+            aborted,
+            hidden_name_hits: Vec::new(),
+            scored: false,
+        });
+    }
 
     let outcomes = score_all(plan, suite, submissions, meter, out_dir)?;
     let hidden_name_hits = scan_for_hidden_names(suite, &out_dir.join("invocations"));
@@ -244,7 +258,132 @@ pub fn run_arms(
         tuples_planned: tuples.len(),
         aborted,
         hidden_name_hits,
+        scored: true,
     })
+}
+
+/// Score a run whose generation phase finished with `defer_scoring`. The
+/// ledger chain is verified and continued; the suite must match the
+/// registered hash; every submission file must match its ledgered SHA-256;
+/// a run is scored at most once.
+pub fn score_deferred(
+    out_dir: &Path,
+    suite_dir: &Path,
+    jobs: usize,
+    record_hidden_output: bool,
+) -> Result<(RunResult, RunPlan, SharedMeter), String> {
+    let ledger_path = out_dir.join("ledger.jsonl");
+    let ledger = ledger::Ledger::resume(&ledger_path)?;
+    let records: Vec<Value> = fs::read_to_string(&ledger_path)
+        .map_err(|e| e.to_string())?
+        .lines()
+        .map(|line| serde_json::from_str(line).map_err(|e| e.to_string()))
+        .collect::<Result<_, _>>()?;
+    let of_kind = |kind: &'static str| records.iter().filter(move |r| r["kind"] == kind);
+    if of_kind("score").next().is_some() {
+        return Err("run already scored; a run is scored once".to_string());
+    }
+    let registration = of_kind("registration")
+        .next()
+        .ok_or("ledger has no registration")?;
+    let generation = of_kind("generation_complete")
+        .next()
+        .ok_or("generation phase did not complete")?;
+
+    let arms: Vec<Arm> = registration["arms"]
+        .as_array()
+        .ok_or("registration lacks arms")?
+        .iter()
+        .map(|a| Arm::parse(a.as_str().unwrap_or("")))
+        .collect::<Result<_, _>>()?;
+    let number = |key: &str| {
+        registration[key]
+            .as_u64()
+            .ok_or(format!("registration lacks {key}"))
+    };
+    let plan = RunPlan {
+        arms,
+        k: number("k")? as usize,
+        replicates: number("replicates")? as u32,
+        jobs,
+        seed: number("seed")?,
+        primary: registration["primary_comparator"]
+            .as_str()
+            .map(Arm::parse)
+            .transpose()?,
+        min_families: number("min_families")? as usize,
+        record_hidden_output,
+        defer_scoring: false,
+    };
+    let suite = task::load_suite(suite_dir, registration["suite_hash"].as_str())?;
+
+    let mut submissions = Vec::new();
+    for r in of_kind("submission") {
+        let arm = Arm::parse(r["arm"].as_str().unwrap_or(""))?;
+        let task_id = r["task"].as_str().unwrap_or("");
+        let task = suite
+            .tasks
+            .iter()
+            .position(|t| t.id == task_id)
+            .ok_or(format!("submission for unknown task {task_id}"))?;
+        let replicate = r["replicate"].as_u64().unwrap_or(0) as u32;
+        let code = match r["artifact_sha256"].as_str() {
+            None => None,
+            Some(expected) => {
+                let path = out_dir
+                    .join("submissions")
+                    .join(arm.label())
+                    .join(task_id)
+                    .join(format!("r{replicate}.rs"));
+                let code = fs::read_to_string(&path)
+                    .map_err(|e| format!("read {}: {e}", path.display()))?;
+                if ledger::sha256_hex(code.as_bytes()) != expected {
+                    return Err(format!(
+                        "submission {} does not match its ledgered hash",
+                        path.display()
+                    ));
+                }
+                Some(code)
+            }
+        };
+        let count = |key: &str| r[key].as_u64().unwrap_or(0);
+        submissions.push(Submission {
+            arm,
+            task,
+            replicate,
+            code,
+            public_green: r["public"]["all_passed"].as_bool().unwrap_or(false),
+            invocations: count("invocations") as usize,
+            tokens: count("tokens") as usize,
+            provider_ms: count("provider_ms"),
+            coder_calls: count("coder_calls") as usize,
+            void_reason: r["void_reason"].as_str().map(str::to_string),
+        });
+    }
+
+    let meter = meter::Meter::new(
+        ledger,
+        0,
+        std::time::Duration::from_secs(365 * 24 * 3600),
+        out_dir.join("invocations"),
+    );
+    lock(&meter)
+        .ledger
+        .append(
+            "scoring_started",
+            json!({"deferred": true, "submissions": submissions.len()}),
+        )
+        .map_err(|e| e.to_string())?;
+    let outcomes = score_all(&plan, &suite, submissions, &meter, out_dir)?;
+    let hidden_name_hits = scan_for_hidden_names(&suite, &out_dir.join("invocations"));
+    let result = RunResult {
+        outcomes,
+        tuples_planned: suite.tasks.len() * plan.replicates as usize,
+        aborted: generation["aborted"].as_bool().unwrap_or(true),
+        hidden_name_hits,
+        scored: true,
+    };
+    Ok((result, plan, meter))
 }
 
 /// One arm on one tuple, generation only. `Ok(None)` means the run must

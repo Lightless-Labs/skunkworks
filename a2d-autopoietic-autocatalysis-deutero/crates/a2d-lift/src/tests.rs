@@ -135,6 +135,7 @@ fn hidden_tests_never_reach_any_arm_and_are_scored_once() {
         primary: Some(Arm::B),
         min_families: 1,
         record_hidden_output: false,
+        defer_scoring: false,
     };
     let arm_c = MockArmC { attempts_wanted: 4 };
     let result = run_arms(&plan, &suite(), provider, &meter, dir.path(), Some(&arm_c)).unwrap();
@@ -242,6 +243,7 @@ fn arm_c_budget_is_enforced_across_all_enzymes() {
         primary: None,
         min_families: 1,
         record_hidden_output: false,
+        defer_scoring: false,
     };
     let greedy = MockArmC {
         attempts_wanted: 10,
@@ -284,6 +286,7 @@ fn repair_loop_feeds_back_public_failures_and_stops_when_green() {
         primary: None,
         min_families: 1,
         record_hidden_output: false,
+        defer_scoring: false,
     };
     let outcomes = run_arms(&plan, &suite(), provider, &meter, dir.path(), None)
         .unwrap()
@@ -319,6 +322,7 @@ fn run_aborts_before_exceeding_global_cap() {
         primary: None,
         min_families: 1,
         record_hidden_output: false,
+        defer_scoring: false,
     };
     let result = run_arms(&plan, &suite(), provider, &meter, dir.path(), None).unwrap();
     assert!(result.aborted);
@@ -345,6 +349,7 @@ fn arm_c_without_runner_is_an_error() {
         primary: None,
         min_families: 1,
         record_hidden_output: false,
+        defer_scoring: false,
     };
     assert!(run_arms(&plan, &suite(), provider, &meter, dir.path(), None).is_err());
 }
@@ -360,6 +365,7 @@ fn arm_order_is_a_seeded_permutation_per_tuple() {
         primary: Some(Arm::B),
         min_families: 1,
         record_hidden_output: false,
+        defer_scoring: false,
     };
     let orders: Vec<Vec<Arm>> = (0..20)
         .map(|i| arm_order(&plan, &format!("task-{i}"), 0))
@@ -396,6 +402,7 @@ fn wall_clock_refusal_mid_arm_voids_the_tuple() {
         primary: None,
         min_families: 1,
         record_hidden_output: false,
+        defer_scoring: false,
     };
     let one_task = Suite {
         root: PathBuf::from("mem"),
@@ -411,4 +418,76 @@ fn wall_clock_refusal_mid_arm_voids_the_tuple() {
     let summary = summarize(&result, &plan);
     assert_eq!(summary["tuples_void"], 1);
     assert_eq!(summary["complete"], false);
+}
+
+#[test]
+fn deferred_scoring_scores_once_after_generation_and_detects_tampering() {
+    let dir = tempfile::tempdir().unwrap();
+    let suite_dir = tempfile::tempdir().unwrap();
+    for id in ["t1", "t2"] {
+        let task_dir = suite_dir.path().join(id);
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(
+            task_dir.join("task.json"),
+            format!(r#"{{"id":"{id}","family":"fam-{id}","requirements":"Implement double."}}"#),
+        )
+        .unwrap();
+        fs::write(task_dir.join("public_tests.rs"), PUBLIC).unwrap();
+        fs::write(task_dir.join("hidden_tests.rs"), hidden()).unwrap();
+    }
+    let suite = crate::task::load_suite(suite_dir.path(), None).unwrap();
+    let mut ledger = Ledger::create(&dir.path().join("ledger.jsonl")).unwrap();
+    ledger
+        .append(
+            "registration",
+            json!({"arms": ["A", "B"], "k": 2, "replicates": 1, "seed": 0,
+                   "primary_comparator": null, "min_families": 1, "suite_hash": suite.hash}),
+        )
+        .unwrap();
+    let meter = Meter::new(
+        ledger,
+        100,
+        Duration::from_secs(600),
+        dir.path().join("invocations"),
+    );
+    let (provider, _) = mock(|_, _| GOOD.to_string());
+    let plan = RunPlan {
+        arms: vec![Arm::A, Arm::B],
+        k: 2,
+        replicates: 1,
+        jobs: 2,
+        seed: 0,
+        primary: None,
+        min_families: 1,
+        record_hidden_output: false,
+        defer_scoring: true,
+    };
+    let generated = run_arms(&plan, &suite, provider, &meter, dir.path(), None).unwrap();
+    assert!(!generated.scored && generated.outcomes.is_empty());
+    drop(meter);
+    assert!(
+        !ledger_records(dir.path())
+            .iter()
+            .any(|r| r["kind"] == "score")
+    );
+
+    // Tampering with a committed submission is refused.
+    let submission = dir.path().join("submissions/A/t1/r0.rs");
+    let original = fs::read_to_string(&submission).unwrap();
+    fs::write(&submission, "fn double(x: i32) -> i32 { x * 2 } // edited").unwrap();
+    let err = score_deferred(dir.path(), suite_dir.path(), 2, false)
+        .err()
+        .unwrap();
+    assert!(err.contains("ledgered hash"), "{err}");
+    fs::write(&submission, original).unwrap();
+
+    let (result, plan, _meter) = score_deferred(dir.path(), suite_dir.path(), 2, false).unwrap();
+    assert_eq!(result.outcomes.len(), 4);
+    assert!(result.outcomes.iter().all(|o| o.hidden.all_passed));
+    assert_eq!(summarize(&result, &plan)["complete"], true);
+    assert!(crate::ledger::verify_chain(&dir.path().join("ledger.jsonl")).is_ok());
+    let err = score_deferred(dir.path(), suite_dir.path(), 2, false)
+        .err()
+        .unwrap();
+    assert!(err.contains("already scored"), "{err}");
 }
