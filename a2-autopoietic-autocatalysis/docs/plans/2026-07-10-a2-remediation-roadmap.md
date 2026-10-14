@@ -1,7 +1,8 @@
 # A² Remediation Roadmap
 
 **Created:** 2026-07-10  
-**Status:** In progress — Phase 0 (items 1–6 landed 2026-07-10/11; boundary gate addressed 2026-10-14)  
+**Status:** Frozen 2026-10-14 — Phases 1–8 conditional on E1 GO (see `2026-10-14-value-test-first.md`); Phase 0 frozen with one known gap (Bazel `a2_workcell` test red)  
+**Addendum:** 2026-10-14 — execution order superseded by the value-test-first plan after the independent direction audit  
 **Addendum:** 2026-10-14 — child-agent containment satisfied by inherited `sandbox-exec` process-tree confinement instead of per-spawn-site wrapping (see Addenda)  
 **Reviewed:** 2026-07-10 (independent roadmap review)  
 **Source:** 2026-07-10 goal/implementation audit  
@@ -489,3 +490,7 @@ Execute these items in order:
 **Why this is a tightening, not a relaxation.** Under the old mechanism, A²'s Pi children loaded the operator's ambient extensions and the gate depended on code in other repositories. Under the new one, those extensions do not load at all, and containment is a property of A²'s own launch path proven by execution rather than by static inspection of third-party source. The spawn-site findings remain in the report as informational.
 
 **Unchanged blockers.** `usable_sandbox_provider_allowlist_enforced` stays false and fresh provider-backed evidence remains blocked until a provider-backed run records its policy and allowlist evidence. Phase 2 item 9 is not complete: the other providers (Claude, Codex, Gemini, OpenCode) still load their own ambient user configuration, and Seatbelt does not confine work handed to launchd/LaunchServices (`open`, `launchctl submit`); the profiles do not yet deny those mach services.
+
+### 2026-10-14 — Execution order superseded by value-test-first
+
+The independent direction audit (`reviews/2026-10-14-direction-audit.md`) found that Phase 6 does not depend on Phases 1, 3, 4 or 5, yet this roadmap's rules deferred the only value test behind them. The owner delegated the decision, and Option B was adopted: `docs/plans/2026-10-14-value-test-first.md`. Phases 1–8 are frozen and resume only on E1 GO, following that plan's re-decision table. Phase 0 is frozen, not complete. Its open gap is `worktree_catalyst::tests::full_self_modification_pipeline_create_task_execute_diff_apply_cargo_check`, which spawns `cargo` outside the Bazel test PATH. Anti-wheel-spinning rules 1 and 2 are amended for E1 only: candidate-only provider runs (no `--apply`) are permitted under the sandbox `AllowList` boundary once the E1 protocol is committed.
