@@ -27,20 +27,36 @@
 - Family lists: Confirmation-1 has 12 base families plus 25 extension families; Confirmation-2 has 12 (extend it before P4). Each list is in the LOG and roadmap context, as names only.
 - State: the first 12 Confirmation-1 families (48 tasks) are validated, 48/48 (hash `c4ac2cde…`, superseded once the extension lands). The round-2 driver (`$SCRATCH/author-holdouts-2.sh`, log `author-holdouts-2.log`) authors the extension and then Confirmation-2. When it finishes, re-assemble, re-validate, and record the final hashes in the LOG.
 
-## Next moves
+## Next moves: P1 gate triage (both reviews, 2026-10-14)
 
-1. Finish the P1 gate:
-   - the reviews (Codex Sol plus a fresh Claude subagent) are running;
-   - fold in their recommendations;
-   - add a dated roadmap Addendum with process diagnostics;
-   - mark P1 exit.
-2. **Pre-register E06, the P2 confirmation**, and run it:
-   - Confirmation-1, arms A, B, D, C at k=5, primary comparator D;
-   - `--defer-scoring`, with `--out ~/.a2d-holdout/runs/E06`;
-   - copy the ledger (hashes only) into `runs/`, commit and push, then `a2d lift score` once;
-   - copy the summary in.
-   The run is about 1,600 invocations. Run it with the account otherwise idle.
-3. P3 (ablation) and P4 (autopoietic hypotheses), per the roadmap.
+The reviewers were Codex `gpt-6.1-sol` and a fresh Claude subagent (with simulations). Status: **committed** = ✅; everything else is to do, in this order.
+1. ✅ Validator enforces the spec minimums and only counts real kills (`77046ec`). ✅ Confirmation protocol: `manifest`, `score --expect-head`, freeze re-check through scoring, all-or-nothing scoring, interleaved tuples, integrity gate (`ed92d62`).
+2. **Submission tie-break becomes "latest among equal public rank".** This is a design decision, committed **before** any attempt-level rescoring. It is a treatment change, so E06 re-pilots it.
+   - Diagnostic afterwards: rescore E05's B and C attempts. Investigate only if B's attempt-0 hidden-pass rate differs from A's by more than about 5 tasks (the run-to-run flip band).
+3. **Voids and aborts:** classify over complete tuples if at most 5% of tuples are excluded, otherwise the run is Invalid. Provider timeouts remain failures.
+4. **Validator:**
+   - API-surface check: compile the hidden tests against the reference built as a separate lib crate. Test it on calibration-v2 first for false positives.
+   - One-line `#[test]` names.
+   - At least 3 public and 20 hidden tests.
+5. **Summary:** hidden-pass-fraction secondary and per-arm hidden compile failures.
+6. **Roadmap addendum:**
+   - power target: P(SUPPORTED) is about 50% at a true 10 pp for any n. State it as P(SUPPORTED | 15 pp) and P(RULED OUT | 0).
+   - "Budget" means the equal invocation cap, with a per-arm spend table.
+   - SUPPORTED needs C vs D **and** C vs B (intersection–union). **RULED OUT is C vs D alone.**
+   - calibration-v2 serves as the P2 pilot (third use);
+   - the single extension is a second replicate pass;
+   - run hygiene: no concurrent Codex jobs during runs, and caps with 2× headroom;
+   - the E05 ledger was grep-checked as content-free.
+7. **E06, a C+D re-pilot on calibration-v2 with the new tie-break.**
+   - Measures C and D replicate agreement against E05. Pre-registered: agreement ≤ 0.85 → Confirmation-1 runs r = 2; otherwise r = 1.
+   - Pause the authoring driver (`kill -STOP <pid of author-holdouts-2.sh>`) for the duration.
+8. **Independent-solve audit, which blocks P1 exit** (the roadmap requires an independent reference).
+   - After authoring finishes, run arm D with `codex/gpt-6.1-sol` blind on Confirmation-1, with output under `~/.a2d-holdout/audit/`.
+   - A Codex adjudicator repairs the flagged tasks; they are never dropped.
+   - Re-validate, then take the hash.
+   - Rules: audit outputs are never experiment data. Same vendor as the coder is a recorded limitation.
+   - Confirmation-1 in full before P2; Confirmation-2 before P4.
+9. Then: P1 exit Addendum, then **E07 = the P2 confirmation** (pre-register r from E06, deferred scoring, manifest committed before scoring).
 
 ## The controller: `a2d lift` (`crates/a2d-lift/`)
 
