@@ -11,6 +11,7 @@ The audit remediation roadmap is [`docs/plans/2026-07-10-a2-remediation-roadmap.
 
 **Remediation status (2026-10-14):** maturity `PreStage0`; live germline mutation locked out.
 - Phase 0: maturity relabel + `--apply` lockout (`4c5d1e0`), bounded liveness harness (`e881ee7`, `46fb0a7`), Bazel crate graph (`53e723f`), Cargo/Bazel target parity checker 25/25 (`6715ddf`), boundary gate passing via inherited process-tree sandbox (`cd88992`). Evidence: `docs/evidence/remediation/phase-0/`.
+- Phase 0 not yet complete: `//crates/a2_workcell:a2_workcell_test` is red under Bazel because one pipeline test spawns `cargo` (not on the Bazel test PATH).
 - Fresh provider-backed evidence is still blocked (no audited provider allowlist rows, no fresh run). Next: Phase 1 promotion-transaction tests.
 
 ## Current Numbers (test counts refreshed 2026-07-10; benchmark rows are historical unless dated below)
@@ -18,7 +19,7 @@ The audit remediation roadmap is [`docs/plans/2026-07-10-a2-remediation-roadmap.
 | Metric | Value |
 |--------|-------|
 | Tests | 207 Rust + 35 self-correction Python + 51 scoring Python + 221 demo-wrapper Python tests |
-| Sentinels | 6/6 PASS |
+| Public developer health checks (legacy `a2ctl sentinel`; not Stage-0 sentinels) | 6/6 PASS |
 | Crates | 11 |
 | Benchmark (OpenCode/GLM via A²) | 5/5 (with 100k token / 1800s budget) |
 | Benchmark (OpenCode/GLM raw, no A²) | 5/5 |

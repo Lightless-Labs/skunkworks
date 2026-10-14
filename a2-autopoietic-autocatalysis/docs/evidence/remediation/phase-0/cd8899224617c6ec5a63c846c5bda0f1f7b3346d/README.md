@@ -14,6 +14,15 @@ Supersedes the red boundary result in `../46fb0a756c69f6d0b74fb24a77f9ebc182575e
 - Rust test `sandbox_profile::tests::isolated_profile_denies_network_to_grandchild_processes` passed.
 - `@anthropic-ai/sandbox-runtime` remains absent and the Foundry/subagent spawn sites remain unwrapped; both are now informational.
 
+## Bazel affected targets
+
+`bazel test //crates/a2_workcell:a2_workcell_test //crates/a2_broker:a2_broker_test` (rc 3):
+
+- `//crates/a2_broker:a2_broker_test` passed.
+- `//crates/a2_workcell:a2_workcell_test` 57/58: the new Pi-args and grandchild-denial tests pass under Bazel's own darwin sandbox. `worktree_catalyst::tests::full_self_modification_pipeline_create_task_execute_diff_apply_cargo_check` fails because it spawns `cargo check` and `cargo` is not on the Bazel test PATH. The test predates this change and is not touched by it; it is a test-hermeticity gap that keeps the Bazel target red and blocks Phase-0 completion.
+
+Cargo/Bazel target parity: 25/25 (`cargo-bazel-parity.json`).
+
 ## Remaining blockers (from `fresh_provider_backed_evidence_blockers`)
 
 - usable audited sandbox/provider allowlist enforcement not recorded in fresh rows;
@@ -26,4 +35,6 @@ Known residual risk: Seatbelt does not confine work handed to launchd/LaunchServ
 - `agent-network-boundary.json.gz` / `.rc` — full audit JSON and exit code.
 - `sandbox-profile-tests.txt` — focused Rust test results.
 - `boundary-audit-unit-tests.txt` — 77 audit unit tests OK.
+- `bazel-affected-targets.txt` — Bazel test results for the changed crates.
+- `cargo-bazel-parity.json` — parity checker output.
 - `SHA256SUMS` — digests of the above.
