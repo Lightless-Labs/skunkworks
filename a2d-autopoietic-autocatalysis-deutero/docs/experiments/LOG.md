@@ -107,7 +107,38 @@ Pre-registration and results for `docs/plans/2026-10-14-lift-first-roadmap.md`. 
   - If at the floor (A < 20%), use `codex/gpt-6-luna`, effort medium.
   - The redesigned configuration gets one more headroom pilot. If that also fails, P1 proceeds with the closest configuration and the deviation is recorded; there is no third redesign.
 - If the gate passes: E05 runs all four arms on this suite (A and B as a second replicate) to fix the primary comparator and estimate discordance for power planning.
-- Result: pending
+- Result: **gate PASSED.**
+  - Pooled: A 15/24 (62.5%), B 14/24 (58.3%). B vs A lift −0.042, CI [−0.21, 0.21], discordant 2/3.
+  - Per family (A / B):
+    - dep-resolve 1/4, 3/4
+    - lru-repair 4/4, 4/4 (**saturated**)
+    - rate-sched 2/4, 1/4
+    - semver 2/4, 1/4
+    - stream-b64 2/4, 2/4
+    - txn-kv 4/4, 3/4 (A saturated)
+  - Public-green but hidden-fail: A 6, B 9. The public tests discriminate weakly, so best-of-5 selection does no better than one-shot.
+  - Run integrity: complete; 0 provider errors; 0 tool calls; 0 hidden-name hits; ledger verified (243 records, head 06e69bd2…).
+  - Cost: 144 invocations, 1.33M reported tokens, 3696 s total provider time (about 23 s per call).
 - Artifacts: runs/2026-10-14-e04-calibration-v2-headroom/ (ledger: runs/2026-10-14-e04-calibration-v2-headroom/ledger.jsonl)
+- Deviations: none.
+- Decision:
+  - The v2 template is accepted for the confirmation sets (Codex is authoring them blind into `$A2D_HOLDOUT_DIR`). No further redesign; T7 stands at 1 of 2.
+  - Proceed to E05, all four arms. Saturated families stay in, because the gate is pooled and tasks are never selected individually.
+  - Implication for P2: weak public tests cap what B, D and C can gain from public signals. That is the regime the lift test measures, and it is reported, not corrected.
+
+### E05 — four-arm pilot on calibration-v2  [phase P1 → P2 pilot]
+- Registered: 2026-10-14 (frozen paths at commit 93dc025)
+- Purpose:
+  1. Fix the **primary comparator** for P2: whichever of B and D has the higher pooled hidden pass rate in E05, with ties going to D, the feedback baseline closest to A²D. The `--primary B` flag in this run is nominal.
+  2. Estimate C-vs-comparator discordance for power planning, in families.
+  3. Exercise C live on non-saturated tasks.
+- Arms / configuration: A, B, D, C; k = 5 (C reaches 2 coder calls); seed 5; jobs 4. A and B are a second replicate of E04's configuration.
+- Task set: calibration, `tasks/calibration-v2` (suite hash 067b4a6250521d173ceb3d9a42e191ff43878774f7d2c50bed0023e3749a3458), n = 24, families = 6
+- Model(s): `codex/gpt-6-luna`, reasoning effort low, no-tools lane, provider timeout 300 s     k = 5     replicates = 1
+- Budget cap: 420 invocations (planned ≤ 384), 7200 s wall-clock
+- Infrastructure exceptions (predefined): same as E03/E04.
+- Result-class rule: descriptive (pilot). 6 families is below the classification floor.
+- Result: pending
+- Artifacts: runs/2026-10-14-e05-four-arm-pilot/ (ledger: runs/2026-10-14-e05-four-arm-pilot/ledger.jsonl)
 - Deviations:
 - Decision:

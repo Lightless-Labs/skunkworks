@@ -1,0 +1,295 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+    AlreadyFinished,
+}
+
+pub struct Encoder {
+    buffer: [u8; 2],
+    buffered: usize,
+    finished: bool,
+}
+
+impl Encoder {
+    pub fn new() -> Self {
+        Self {
+            buffer: [0; 2],
+            buffered: 0,
+            finished: false,
+        }
+    }
+
+    pub fn push(&mut self, input: &[u8]) -> Result<String, Error> {
+        if self.finished {
+            return Err(Error::AlreadyFinished);
+        }
+
+        let mut output = String::new();
+        let mut index = 0;
+
+        if self.buffered != 0 {
+            while self.buffered < 3 && index < input.len() {
+                if self.buffered < 2 {
+                    self.buffer[self.buffered] = input[index];
+                }
+                self.buffered += 1;
+                index += 1;
+            }
+
+            if self.buffered == 3 {
+                encode_triplet(
+                    self.buffer[0],
+                    self.buffer[1],
+                    input[index - 1],
+                    &mut output,
+                );
+                self.buffered = 0;
+            } else {
+                return Ok(output);
+            }
+        }
+
+        while index + 3 <= input.len() {
+            encode_triplet(input[index], input[index + 1], input[index + 2], &mut output);
+            index += 3;
+        }
+
+        let remaining = input.len() - index;
+        if remaining != 0 {
+            self.buffer[0] = input[index];
+            if remaining == 2 {
+                self.buffer[1] = input[index + 1];
+            }
+            self.buffered = remaining;
+        }
+
+        Ok(output)
+    }
+
+    pub fn finish(&mut self) -> Result<String, Error> {
+        if self.finished {
+            return Err(Error::AlreadyFinished);
+        }
+
+        let mut output = String::new();
+        match self.buffered {
+            1 => {
+                let a = self.buffer[0];
+                output.push(digit(a >> 2) as char);
+                output.push(digit((a & 0x03) << 4) as char);
+                output.push_str("==");
+            }
+            2 => {
+                let a = self.buffer[0];
+                let b = self.buffer[1];
+                output.push(digit(a >> 2) as char);
+                output.push(digit(((a & 0x03) << 4) | (b >> 4)) as char);
+                output.push(digit((b & 0x0f) << 2) as char);
+                output.push('=');
+            }
+            _ => {}
+        }
+
+        self.buffered = 0;
+        self.finished = true;
+        Ok(output)
+    }
+}
+
+pub struct Decoder {
+    group: [u8; 4],
+    group_offsets: [usize; 4],
+    group_len: usize,
+    pending_second_pad: Option<usize>,
+    terminal_padding: bool,
+    next_offset: usize,
+    finished: bool,
+    sticky_error: Option<Error>,
+}
+
+impl Decoder {
+    pub fn new() -> Self {
+        Self {
+            group: [0; 4],
+            group_offsets: [0; 4],
+            group_len: 0,
+            pending_second_pad: None,
+            terminal_padding: false,
+            next_offset: 0,
+            finished: false,
+            sticky_error: None,
+        }
+    }
+
+    pub fn push(&mut self, input: &[u8]) -> Result<Vec<u8>, Error> {
+        if let Some(error) = &self.sticky_error {
+            return Err(error.clone());
+        }
+        if self.finished {
+            return Err(Error::AlreadyFinished);
+        }
+
+        let mut output = Vec::new();
+
+        for &byte in input {
+            let offset = self.next_offset;
+            self.next_offset += 1;
+
+            if self.terminal_padding {
+                return self.fail(Error::BadPadding { offset });
+            }
+
+            if self.pending_second_pad.is_some() {
+                if byte != b'=' {
+                    return self.fail(Error::BadPadding { offset });
+                }
+
+                self.group[3] = b'=';
+                self.group_offsets[3] = offset;
+                self.pending_second_pad = None;
+                self.group_len = 0;
+                self.terminal_padding = true;
+                output.push(decode_value(self.group[0]) << 2 | decode_value(self.group[1]) >> 4);
+                continue;
+            }
+
+            match self.group_len {
+                0 | 1 => {
+                    if byte == b'=' {
+                        return self.fail(Error::BadPadding { offset });
+                    }
+                    if decode_value_opt(byte).is_none() {
+                        return self.fail(Error::InvalidByte { offset, byte });
+                    }
+                    self.store(byte, offset);
+                }
+                2 => {
+                    if byte == b'=' {
+                        self.group[2] = byte;
+                        self.group_offsets[2] = offset;
+                        self.group_len = 3;
+                        self.pending_second_pad = Some(offset);
+                    } else {
+                        if decode_value_opt(byte).is_none() {
+                            return self.fail(Error::InvalidByte { offset, byte });
+                        }
+                        self.store(byte, offset);
+                    }
+                }
+                3 => {
+                    if byte == b'=' {
+                        self.group[3] = byte;
+                        self.group_offsets[3] = offset;
+                        self.group_len = 0;
+                        self.terminal_padding = true;
+                        output.push(
+                            decode_value(self.group[0]) << 2
+                                | decode_value(self.group[1]) >> 4,
+                        );
+                        output.push(
+                            (decode_value(self.group[1]) << 4)
+                                | (decode_value(self.group[2]) >> 2),
+                        );
+                    } else {
+                        if decode_value_opt(byte).is_none() {
+                            return self.fail(Error::InvalidByte { offset, byte });
+                        }
+                        self.store(byte, offset);
+                        output.push(
+                            decode_value(self.group[0]) << 2
+                                | decode_value(self.group[1]) >> 4,
+                        );
+                        output.push(
+                            (decode_value(self.group[1]) << 4)
+                                | (decode_value(self.group[2]) >> 2),
+                        );
+                        output.push(
+                            (decode_value(self.group[2]) << 6) | decode_value(self.group[3]),
+                        );
+                        self.group_len = 0;
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        Ok(output)
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<u8>, Error> {
+        if let Some(error) = &self.sticky_error {
+            return Err(error.clone());
+        }
+        if self.finished {
+            return Err(Error::AlreadyFinished);
+        }
+
+        if let Some(offset) = self.pending_second_pad {
+            return self.fail(Error::BadPadding { offset });
+        }
+
+        if self.group_len != 0 {
+            return self.fail(Error::Truncated {
+                offset: self.group_offsets[0],
+            });
+        }
+
+        self.finished = true;
+        Ok(Vec::new())
+    }
+
+    fn store(&mut self, byte: u8, offset: usize) {
+        self.group[self.group_len] = byte;
+        self.group_offsets[self.group_len] = offset;
+        self.group_len += 1;
+    }
+
+    fn fail<T>(&mut self, error: Error) -> Result<T, Error> {
+        self.sticky_error = Some(error.clone());
+        Err(error)
+    }
+}
+
+pub fn encode(input: &[u8]) -> String {
+    let mut encoder = Encoder::new();
+    let mut output = encoder.push(input).expect("new encoder is open");
+    output.push_str(&encoder.finish().expect("new encoder is open"));
+    output
+}
+
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut decoder = Decoder::new();
+    let mut output = decoder.push(input)?;
+    output.extend(decoder.finish()?);
+    Ok(output)
+}
+
+fn encode_triplet(a: u8, b: u8, c: u8, output: &mut String) {
+    output.push(digit(a >> 2) as char);
+    output.push(digit(((a & 0x03) << 4) | (b >> 4)) as char);
+    output.push(digit(((b & 0x0f) << 2) | (c >> 6)) as char);
+    output.push(digit(c & 0x3f) as char);
+}
+
+fn digit(value: u8) -> u8 {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    ALPHABET[value as usize]
+}
+
+fn decode_value_opt(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+fn decode_value(byte: u8) -> u8 {
+    decode_value_opt(byte).expect("stored decoder bytes are alphabet digits")
+}
