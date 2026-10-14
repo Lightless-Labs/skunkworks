@@ -1,0 +1,294 @@
+```rust
+use std::collections::{BTreeMap, VecDeque};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyShards,
+    ZeroWeight,
+    TooHeavy { weight: u64, capacity: u64 },
+    Blocked { shard: usize },
+    Missing { key: u64 },
+    Pinned { key: u64 },
+    BadShard { shard: usize },
+    PinnedCapacity { minimum: u128, target: u128 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub key: u64,
+    pub value: i64,
+    pub weight: u64,
+    pub pinned: bool,
+    pub shard: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct Cache {
+    capacities: Vec<u64>,
+    usage: Vec<u64>,
+    entries: BTreeMap<u64, Entry>,
+    order: VecDeque<u64>,
+}
+
+impl Cache {
+    /// Creates a cache with the supplied shard capacities.
+    pub fn new(capacities: Vec<u64>) -> Result<Self, Error> {
+        if capacities.is_empty() {
+            return Err(Error::EmptyShards);
+        }
+        Ok(Self {
+            usage: vec![0; capacities.len()],
+            capacities,
+            entries: BTreeMap::new(),
+            order: VecDeque::new(),
+        })
+    }
+
+    /// Returns a copy of the shard capacities in shard order.
+    pub fn capacities(&self) -> Vec<u64> {
+        self.capacities.clone()
+    }
+
+    /// Returns a copy of resident weight per shard in shard order.
+    pub fn usage(&self) -> Vec<u64> {
+        self.usage.clone()
+    }
+
+    /// Returns the total resident weight across all shards.
+    pub fn used(&self) -> u128 {
+        self.usage.iter().map(|&n| n as u128).sum()
+    }
+
+    /// Returns cloned entries from oldest to newest global recency.
+    pub fn snapshot(&self) -> Vec<Entry> {
+        self.order
+            .iter()
+            .filter_map(|key| self.entries.get(key).cloned())
+            .collect()
+    }
+
+    fn shard(&self, key: u64) -> usize {
+        (key % self.capacities.len() as u64) as usize
+    }
+
+    fn touch(&mut self, key: u64) {
+        self.order.retain(|&existing| existing != key);
+        self.order.push_back(key);
+    }
+
+    fn erase(&mut self, key: u64) -> Option<Entry> {
+        let entry = self.entries.remove(&key)?;
+        self.usage[entry.shard] -= entry.weight;
+        self.order.retain(|&existing| existing != key);
+        Some(entry)
+    }
+
+    fn local_victim(&self, shard: usize) -> Option<u64> {
+        self.order.iter().find_map(|&key| {
+            self.entries
+                .get(&key)
+                .filter(|entry| entry.shard == shard && !entry.pinned)
+                .map(|_| key)
+        })
+    }
+
+    fn global_victim(&self) -> Option<u64> {
+        self.order.iter().find_map(|&key| {
+            self.entries
+                .get(&key)
+                .filter(|entry| !entry.pinned)
+                .map(|_| key)
+        })
+    }
+
+    fn pinned_weight(&self, shard: Option<usize>, except: Option<u64>) -> u128 {
+        self.entries
+            .values()
+            .filter(|entry| {
+                entry.pinned
+                    && Some(entry.key) != except
+                    && shard.is_none_or(|s| entry.shard == s)
+            })
+            .map(|entry| entry.weight as u128)
+            .sum()
+    }
+
+    /// Looks up a key and moves a hit to newest global recency.
+    pub fn get(&mut self, key: u64) -> Option<i64> {
+        let value = self.entries.get(&key).map(|entry| entry.value);
+        if value.is_some() {
+            self.touch(key);
+        }
+        value
+    }
+
+    /// Changes the pin status of an existing key without changing recency.
+    pub fn set_pin(&mut self, key: u64, pinned: bool) -> Result<(), Error> {
+        let entry = self.entries.get_mut(&key).ok_or(Error::Missing { key })?;
+        entry.pinned = pinned;
+        Ok(())
+    }
+
+    /// Removes an unpinned key and returns its value.
+    pub fn remove(&mut self, key: u64) -> Result<i64, Error> {
+        let entry = self.entries.get(&key).ok_or(Error::Missing { key })?;
+        if entry.pinned {
+            return Err(Error::Pinned { key });
+        }
+        Ok(self.erase(key).expect("entry was checked above").value)
+    }
+
+    /// Inserts or replaces a key, evicting oldest eligible entries in its shard.
+    pub fn insert(
+        &mut self,
+        key: u64,
+        value: i64,
+        weight: u64,
+        pinned: bool,
+    ) -> Result<Vec<u64>, Error> {
+        let shard = self.shard(key);
+        let capacity = self.capacities[shard];
+
+        if weight == 0 {
+            return Err(Error::ZeroWeight);
+        }
+        if weight > capacity {
+            return Err(Error::TooHeavy { weight, capacity });
+        }
+
+        let fixed = self.pinned_weight(Some(shard), Some(key));
+        if fixed > (capacity - weight) as u128 {
+            return Err(Error::Blocked { shard });
+        }
+
+        self.erase(key);
+        let mut removed = Vec::new();
+        while self.usage[shard] > capacity - weight {
+            let victim = self
+                .local_victim(shard)
+                .expect("pinned feasibility guarantees an eligible victim");
+            self.erase(victim);
+            removed.push(victim);
+        }
+
+        self.usage[shard] += weight;
+        self.entries.insert(
+            key,
+            Entry {
+                key,
+                value,
+                weight,
+                pinned,
+                shard,
+            },
+        );
+        self.touch(key);
+        Ok(removed)
+    }
+
+    /// Resizes a shard and evicts its oldest unpinned entries as needed.
+    pub fn resize(&mut self, shard: usize, capacity: u64) -> Result<Vec<u64>, Error> {
+        if shard >= self.capacities.len() {
+            return Err(Error::BadShard { shard });
+        }
+
+        let minimum = self.pinned_weight(Some(shard), None);
+        if minimum > capacity as u128 {
+            return Err(Error::PinnedCapacity {
+                minimum,
+                target: capacity as u128,
+            });
+        }
+
+        self.capacities[shard] = capacity;
+        let mut removed = Vec::new();
+        while self.usage[shard] > capacity {
+            let victim = self
+                .local_victim(shard)
+                .expect("pinned capacity check guarantees an eligible victim");
+            self.erase(victim);
+            removed.push(victim);
+        }
+        Ok(removed)
+    }
+
+    /// Evicts oldest unpinned entries globally until usage is at most target.
+    pub fn trim(&mut self, target: u128) -> Result<Vec<u64>, Error> {
+        let minimum = self.pinned_weight(None, None);
+        if minimum > target {
+            return Err(Error::PinnedCapacity { minimum, target });
+        }
+
+        let mut removed = Vec::new();
+        while self.used() > target {
+            let victim = self
+                .global_victim()
+                .expect("pinned weight check guarantees an eligible victim");
+            self.erase(victim);
+            removed.push(victim);
+        }
+        Ok(removed)
+    }
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shards_local_eviction_and_global_order() {
+        let mut cache = Cache::new(vec![3, 4]).unwrap();
+        cache.insert(2, 20, 2, false).unwrap();
+        cache.insert(1, 10, 2, false).unwrap();
+        assert_eq!(cache.insert(4, 40, 2, false), Ok(vec![2]));
+        assert_eq!(cache.usage(), vec![2, 2]);
+        assert_eq!(
+            cache.snapshot().iter().map(|entry| entry.key).collect::<Vec<_>>(),
+            vec![1, 4]
+        );
+    }
+
+    #[test]
+    fn pinning_preserves_recency_and_prevents_removal() {
+        let mut cache = Cache::new(vec![5]).unwrap();
+        cache.insert(8, 80, 2, true).unwrap();
+        assert_eq!(cache.get(8), Some(80));
+        assert_eq!(cache.remove(8), Err(Error::Pinned { key: 8 }));
+        cache.set_pin(8, false).unwrap();
+        assert_eq!(cache.remove(8), Ok(80));
+    }
+
+    #[test]
+    fn trim_and_resize_remove_oldest_entries() {
+        let mut cache = Cache::new(vec![9, 9]).unwrap();
+        cache.insert(2, 0, 2, false).unwrap();
+        cache.insert(1, 0, 3, false).unwrap();
+        assert_eq!(cache.trim(4), Ok(vec![2]));
+        assert_eq!(cache.resize(1, 2), Ok(vec![1]));
+        assert_eq!(cache.used(), 0);
+    }
+
+    #[test]
+    fn failed_replacement_is_atomic_and_same_key_pin_can_be_replaced() {
+        let mut cache = Cache::new(vec![5]).unwrap();
+        cache.insert(1, 10, 2, true).unwrap();
+        cache.insert(2, 20, 3, false).unwrap();
+        let before = cache.snapshot();
+        assert_eq!(cache.insert(2, 30, 5, false), Err(Error::Blocked { shard: 0 }));
+        assert_eq!(cache.snapshot(), before);
+        assert_eq!(cache.insert(1, -1, 5, false), Ok(vec![]));
+        assert_eq!(cache.snapshot()[0].value, 20);
+        assert_eq!(cache.snapshot()[1].value, -1);
+    }
+
+    #[test]
+    fn empty_shards_and_invalid_resize_are_errors() {
+        assert_eq!(Cache::new(vec![]).unwrap_err(), Error::EmptyShards);
+        let mut cache = Cache::new(vec![0]).unwrap();
+        assert_eq!(cache.resize(1, 0), Err(Error::BadShard { shard: 1 }));
+        assert_eq!(cache.insert(0, 0, 1, false), Err(Error::TooHeavy { weight: 1, capacity: 0 }));
+    }
+}
+```

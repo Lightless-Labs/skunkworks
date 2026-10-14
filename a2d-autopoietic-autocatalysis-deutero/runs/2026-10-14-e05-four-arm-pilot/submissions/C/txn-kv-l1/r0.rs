@@ -1,0 +1,224 @@
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    KeyEmpty,
+    NameEmpty,
+    NameInvalid { at: usize },
+    SnapshotLimit,
+    NoTransaction,
+    DepthLimit,
+    SnapshotMissing(String),
+}
+
+pub struct Store {
+    committed: BTreeMap<String, String>,
+    scopes: Vec<BTreeMap<String, String>>,
+    snapshots: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl Store {
+    /// Creates an empty store.
+    pub fn new() -> Self {
+        Self {
+            committed: BTreeMap::new(),
+            scopes: Vec::new(),
+            snapshots: BTreeMap::new(),
+        }
+    }
+
+    fn visible(&self) -> &BTreeMap<String, String> {
+        self.scopes.last().unwrap_or(&self.committed)
+    }
+
+    fn visible_mut(&mut self) -> &mut BTreeMap<String, String> {
+        self.scopes.last_mut().unwrap_or(&mut self.committed)
+    }
+
+    fn validate_name(name: &str) -> Result<(), Error> {
+        if name.is_empty() {
+            return Err(Error::NameEmpty);
+        }
+
+        for (offset, ch) in name.char_indices() {
+            let valid = if offset == 0 {
+                ch.is_ascii_lowercase()
+            } else {
+                ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'
+            };
+            if !valid {
+                return Err(Error::NameInvalid { at: offset });
+            }
+        }
+        Ok(())
+    }
+
+    /// Opens a working scope copied from the currently visible map.
+    pub fn begin(&mut self) -> Result<(), Error> {
+        if self.scopes.len() >= 4 {
+            return Err(Error::DepthLimit);
+        }
+        self.scopes.push(self.visible().clone());
+        Ok(())
+    }
+
+    /// Commits the innermost scope into its parent or committed data.
+    pub fn commit(&mut self) -> Result<(), Error> {
+        let map = self.scopes.pop().ok_or(Error::NoTransaction)?;
+        if let Some(parent) = self.scopes.last_mut() {
+            *parent = map;
+        } else {
+            self.committed = map;
+        }
+        Ok(())
+    }
+
+    /// Discards the innermost working scope.
+    pub fn rollback(&mut self) -> Result<(), Error> {
+        self.scopes.pop().map(|_| ()).ok_or(Error::NoTransaction)
+    }
+
+    /// Inserts or overwrites a key in the visible map.
+    pub fn set(&mut self, key: &str, value: &str) -> Result<(), Error> {
+        if key.is_empty() {
+            return Err(Error::KeyEmpty);
+        }
+        self.visible_mut().insert(key.to_owned(), value.to_owned());
+        Ok(())
+    }
+
+    /// Removes a key from the visible map and reports whether it was present.
+    pub fn delete(&mut self, key: &str) -> Result<bool, Error> {
+        if key.is_empty() {
+            return Err(Error::KeyEmpty);
+        }
+        Ok(self.visible_mut().remove(key).is_some())
+    }
+
+    /// Returns an owned copy of the value for a key in the visible map.
+    pub fn get(&mut self, key: &str) -> Result<Option<String>, Error> {
+        if key.is_empty() {
+            return Err(Error::KeyEmpty);
+        }
+        Ok(self.visible().get(key).cloned())
+    }
+
+    /// Counts visible keys whose complete value equals the supplied value.
+    pub fn count(&mut self, value: &str) -> Result<usize, Error> {
+        Ok(self.visible().values().filter(|v| v.as_str() == value).count())
+    }
+
+    /// Returns the number of open working scopes.
+    pub fn depth(&mut self) -> Result<usize, Error> {
+        Ok(self.scopes.len())
+    }
+
+    /// Saves a copy of the visible map under a validated name.
+    pub fn snapshot(&mut self, name: &str) -> Result<(), Error> {
+        Self::validate_name(name)?;
+        if !self.snapshots.contains_key(name) && self.snapshots.len() >= 3 {
+            return Err(Error::SnapshotLimit);
+        }
+        self.snapshots.insert(name.to_owned(), self.visible().clone());
+        Ok(())
+    }
+
+    /// Replaces the visible map with a copy of a named snapshot.
+    pub fn restore(&mut self, name: &str) -> Result<(), Error> {
+        Self::validate_name(name)?;
+        let map = self
+            .snapshots
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::SnapshotMissing(name.to_owned()))?;
+        *self.visible_mut() = map;
+        Ok(())
+    }
+
+    /// Removes a named snapshot.
+    pub fn forget(&mut self, name: &str) -> Result<(), Error> {
+        Self::validate_name(name)?;
+        self.snapshots
+            .remove(name)
+            .map(|_| ())
+            .ok_or_else(|| Error::SnapshotMissing(name.to_owned()))
+    }
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basic_values() {
+        let mut s = Store::new();
+        s.set("red", "7").unwrap();
+        s.set("blue", "7").unwrap();
+        assert_eq!(s.get("red"), Ok(Some("7".into())));
+        assert_eq!(s.count("7"), Ok(2));
+        assert_eq!(s.delete("blue"), Ok(true));
+        assert_eq!(s.get("blue"), Ok(None));
+    }
+
+    #[test]
+    fn nested_commit() {
+        let mut s = Store::new();
+        s.begin().unwrap();
+        s.set("q", "a").unwrap();
+        s.begin().unwrap();
+        s.set("q", "b").unwrap();
+        s.commit().unwrap();
+        assert_eq!(s.depth(), Ok(1));
+        assert_eq!(s.get("q"), Ok(Some("b".into())));
+        s.rollback().unwrap();
+        assert_eq!(s.get("q"), Ok(None));
+    }
+
+    #[test]
+    fn saved_copy() {
+        let mut s = Store::new();
+        s.set("key", "first").unwrap();
+        s.snapshot("saved").unwrap();
+        s.set("key", "second").unwrap();
+        s.restore("saved").unwrap();
+        assert_eq!(s.get("key"), Ok(Some("first".into())));
+        s.forget("saved").unwrap();
+        assert_eq!(
+            s.restore("saved"),
+            Err(Error::SnapshotMissing("saved".into()))
+        );
+    }
+
+    #[test]
+    fn empty_scope_and_invalid_inputs() {
+        let mut s = Store::new();
+        assert_eq!(s.commit(), Err(Error::NoTransaction));
+        assert_eq!(s.get(""), Err(Error::KeyEmpty));
+        assert_eq!(s.snapshot("Upper"), Err(Error::NameInvalid { at: 0 }));
+        s.begin().unwrap();
+        s.rollback().unwrap();
+        assert_eq!(s.depth(), Ok(0));
+    }
+
+    #[test]
+    fn scope_limit_and_snapshot_capacity() {
+        let mut s = Store::new();
+        for _ in 0..4 {
+            s.begin().unwrap();
+        }
+        assert_eq!(s.begin(), Err(Error::DepthLimit));
+        while s.depth().unwrap() > 0 {
+            s.rollback().unwrap();
+        }
+
+        s.snapshot("one").unwrap();
+        s.snapshot("two").unwrap();
+        s.snapshot("three").unwrap();
+        assert_eq!(s.snapshot("four"), Err(Error::SnapshotLimit));
+        s.snapshot("one").unwrap();
+        s.forget("two").unwrap();
+        s.snapshot("four").unwrap();
+    }
+}

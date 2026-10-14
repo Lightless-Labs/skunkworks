@@ -1,0 +1,286 @@
+```rust
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Job {
+    pub id: String,
+    pub ready_at: u64,
+    pub priority: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dispatch {
+    pub id: String,
+    pub effective_priority: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    TimeReversed,
+    BadId,
+    BadPriority,
+    Duplicate,
+    Unknown,
+    Cancelled,
+    Completed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Status {
+    Queued,
+    Cancelled,
+    Completed,
+}
+
+struct Entry {
+    job: Job,
+    sequence: u64,
+    status: Status,
+}
+
+pub struct Scheduler {
+    aging_ms: u64,
+    last_time: u64,
+    next_sequence: u64,
+    entries: HashMap<String, Entry>,
+}
+
+impl Scheduler {
+    /// Creates an independent scheduler with the given aging interval.
+    pub fn new(aging_ms: u64) -> Self {
+        Self {
+            aging_ms,
+            last_time: 0,
+            next_sequence: 0,
+            entries: HashMap::new(),
+        }
+    }
+
+    /// Inserts a job after validating its ID, priority, and uniqueness.
+    pub fn insert(&mut self, now: u64, job: Job) -> Result<(), Error> {
+        if now < self.last_time {
+            return Err(Error::TimeReversed);
+        }
+        if !valid_id(&job.id) {
+            return Err(Error::BadId);
+        }
+        if job.priority > 9 {
+            return Err(Error::BadPriority);
+        }
+        if self.entries.contains_key(&job.id) {
+            return Err(Error::Duplicate);
+        }
+
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.wrapping_add(1);
+        self.entries.insert(
+            job.id.clone(),
+            Entry {
+                job,
+                sequence,
+                status: Status::Queued,
+            },
+        );
+        self.last_time = now;
+        Ok(())
+    }
+
+    /// Cancels a queued job by its exact ID.
+    pub fn cancel(&mut self, now: u64, id: &str) -> Result<(), Error> {
+        if now < self.last_time {
+            return Err(Error::TimeReversed);
+        }
+
+        let entry = self.entries.get_mut(id).ok_or(Error::Unknown)?;
+        match entry.status {
+            Status::Queued => entry.status = Status::Cancelled,
+            Status::Cancelled => return Err(Error::Cancelled),
+            Status::Completed => return Err(Error::Completed),
+        }
+        self.last_time = now;
+        Ok(())
+    }
+
+    /// Dispatches the ready job with the highest effective priority, if any.
+    pub fn next_ready(&mut self, now: u64) -> Result<Option<Dispatch>, Error> {
+        if now < self.last_time {
+            return Err(Error::TimeReversed);
+        }
+
+        let selected = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.status == Status::Queued && entry.job.ready_at <= now)
+            .map(|(id, entry)| {
+                let elapsed = now - entry.job.ready_at;
+                let gain = if self.aging_ms == 0 {
+                    0
+                } else {
+                    elapsed / self.aging_ms
+                };
+                let effective_priority = (u64::from(entry.job.priority) + gain).min(9) as u8;
+                (id.clone(), effective_priority, entry.sequence)
+            })
+            .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.2.cmp(&a.2)));
+
+        self.last_time = now;
+        let Some((id, effective_priority, _)) = selected else {
+            return Ok(None);
+        };
+
+        if let Some(entry) = self.entries.get_mut(&id) {
+            entry.status = Status::Completed;
+        }
+        Ok(Some(Dispatch {
+            id,
+            effective_priority,
+        }))
+    }
+}
+
+fn valid_id(id: &str) -> bool {
+    (1..=16).contains(&id.len())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatches_highest_priority_and_completes_job() {
+        let mut scheduler = Scheduler::new(0);
+        scheduler
+            .insert(
+                0,
+                Job {
+                    id: "first".into(),
+                    ready_at: 0,
+                    priority: 2,
+                },
+            )
+            .unwrap();
+        scheduler
+            .insert(
+                0,
+                Job {
+                    id: "second".into(),
+                    ready_at: 0,
+                    priority: 7,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            scheduler.next_ready(0).unwrap(),
+            Some(Dispatch {
+                id: "second".into(),
+                effective_priority: 7,
+            })
+        );
+        assert_eq!(scheduler.cancel(0, "second"), Err(Error::Completed));
+    }
+
+    #[test]
+    fn rejects_invalid_id_before_invalid_priority() {
+        let mut scheduler = Scheduler::new(0);
+        assert_eq!(
+            scheduler.insert(
+                0,
+                Job {
+                    id: "Bad ID".into(),
+                    ready_at: 0,
+                    priority: 10,
+                },
+            ),
+            Err(Error::BadId)
+        );
+    }
+
+    #[test]
+    fn failed_operation_does_not_advance_clock() {
+        let mut scheduler = Scheduler::new(0);
+        assert_eq!(scheduler.cancel(10, "missing"), Err(Error::Unknown));
+        assert_eq!(
+            scheduler.insert(
+                5,
+                Job {
+                    id: "valid".into(),
+                    ready_at: 0,
+                    priority: 1,
+                },
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn aging_uses_ready_time_and_caps_priority() {
+        let mut scheduler = Scheduler::new(2);
+        scheduler
+            .insert(
+                0,
+                Job {
+                    id: "aged".into(),
+                    ready_at: 10,
+                    priority: 8,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            scheduler.next_ready(20).unwrap(),
+            Some(Dispatch {
+                id: "aged".into(),
+                effective_priority: 9,
+            })
+        );
+    }
+
+    #[test]
+    fn insertion_order_breaks_effective_priority_ties() {
+        let mut scheduler = Scheduler::new(10);
+        scheduler
+            .insert(
+                0,
+                Job {
+                    id: "older".into(),
+                    ready_at: 0,
+                    priority: 1,
+                },
+            )
+            .unwrap();
+        scheduler
+            .insert(
+                0,
+                Job {
+                    id: "newer".into(),
+                    ready_at: 0,
+                    priority: 2,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(scheduler.next_ready(10).unwrap().unwrap().id, "older");
+    }
+
+    #[test]
+    fn cancelled_ids_remain_reserved() {
+        let mut scheduler = Scheduler::new(0);
+        let job = Job {
+            id: "reserved".into(),
+            ready_at: u64::MAX,
+            priority: 0,
+        };
+        scheduler.insert(0, job.clone()).unwrap();
+        scheduler.cancel(1, "reserved").unwrap();
+
+        assert_eq!(scheduler.cancel(2, "reserved"), Err(Error::Cancelled));
+        assert_eq!(scheduler.insert(2, job), Err(Error::Duplicate));
+    }
+}
+```

@@ -138,7 +138,24 @@ Pre-registration and results for `docs/plans/2026-10-14-lift-first-roadmap.md`. 
 - Budget cap: 420 invocations (planned ≤ 384), 7200 s wall-clock
 - Infrastructure exceptions (predefined): same as E03/E04.
 - Result-class rule: descriptive (pilot). 6 families is below the classification floor.
-- Result: pending
+- Result: **descriptive pilot.**
+  - Hidden pass rates: A 14/24 (58.3%), B 12/24 (50.0%), D 15/24 (62.5%), C 16/24 (66.7%).
+  - C vs D: +4.2 pp, CI [−12.5, +25], discordant 3/2, family sign-flip p = 1.0.
+  - C vs B: +16.7 pp, CI [+4.2, +33.3], discordant 4/0, p = 0.25.
+  - D vs B: +12.5 pp, CI [+4.2, +20.8].
+  - All classes are Inconclusive: 6 families is below the floor.
+  - Public-green but hidden-fail: A 2, B 12, D 9, C 5.
+  - Arm C's realised schedule was coder → evolver → architect → tester → coder on all 24 tasks, so 2 code attempts each.
+  - Cost:
+    - invocations: A 24, B 120, D 36 (stops at public green), C 120;
+    - tokens: A 196k, B 960k, D 405k, C 1.18M;
+    - provider time: A 785 s, B 3839 s, D 1506 s, C 3201 s.
+  - Run integrity: complete; 0 provider errors; 0 tool calls; 0 hidden-name hits; ledger verified (519 records, head 165242e8…).
+  - Replicate agreement with E04 (same configuration, same tasks): A 19/24, B 22/24. Outcomes are mostly determined by the task.
 - Artifacts: runs/2026-10-14-e05-four-arm-pilot/ (ledger: runs/2026-10-14-e05-four-arm-pilot/ledger.jsonl)
-- Deviations:
+- Deviations: 2026-10-14 — for about the first 45 minutes, E05 shared the Codex account with six holdout-authoring jobs. Mean Luna call time was about 65 s (23 s in E04), but there were no provider errors or timeouts, so nothing was excluded. The authoring driver was paused for the rest of the run.
 - Decision:
+  - **Primary comparator for P2: D.** By the pre-registered rule, D's 62.5% beats B's 50%.
+  - **Power plan, C vs D.** Pilot discordance pd = 0.21 (p10 0.125, p01 0.083). 80% power at 10 pp needs about 162 independent pairs, or 210–307 with a family design effect (ρ 0.1–0.3, 4 tasks per family). Replicates add little (79–92% agreement), so power must come from tasks.
+  - **Confirmation-1 is set at the cap: 37 families × 4 = 148 tasks, 1 replicate.** That is about 75% power with no clustering, and less with it. The shortfall is recorded, not hidden; the allowed single sample extension remains available if the result is INCONCLUSIVE.
+  - 25 more Codex-authored families are needed (12 exist). P2 stays at k = 5, the configuration reviewed at the P1 gate.

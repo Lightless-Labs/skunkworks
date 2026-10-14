@@ -1,0 +1,307 @@
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    KeyEmpty,
+    NameEmpty,
+    NameInvalid { at: usize },
+    SnapshotLimit,
+    NoTransaction,
+    DepthLimit,
+    SnapshotMissing(String),
+    TimeBackwards { previous: u64, now: u64 },
+    DeadlineOverflow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Entry {
+    value: String,
+    deadline: Option<u64>,
+}
+
+type Data = BTreeMap<String, Entry>;
+
+pub struct Store {
+    committed: Data,
+    scopes: Vec<Data>,
+    snapshots: BTreeMap<String, Data>,
+    last_time: u64,
+}
+
+impl Store {
+    /// Creates an empty store with its logical clock set to zero.
+    pub fn new() -> Self {
+        Self {
+            committed: BTreeMap::new(),
+            scopes: Vec::new(),
+            snapshots: BTreeMap::new(),
+            last_time: 0,
+        }
+    }
+
+    fn visible(&self) -> &Data {
+        self.scopes.last().unwrap_or(&self.committed)
+    }
+
+    fn visible_mut(&mut self) -> &mut Data {
+        self.scopes.last_mut().unwrap_or(&mut self.committed)
+    }
+
+    fn admit(&mut self, now: u64) -> Result<(), Error> {
+        if now < self.last_time {
+            return Err(Error::TimeBackwards {
+                previous: self.last_time,
+                now,
+            });
+        }
+        self.last_time = now;
+        self.purge_visible(now);
+        Ok(())
+    }
+
+    fn purge(map: &mut Data, now: u64) {
+        map.retain(|_, entry| !entry.deadline.is_some_and(|deadline| deadline <= now));
+    }
+
+    fn purge_visible(&mut self, now: u64) {
+        Self::purge(self.visible_mut(), now);
+    }
+
+    fn validate_key(key: &str) -> Result<(), Error> {
+        if key.is_empty() {
+            Err(Error::KeyEmpty)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_name(name: &str) -> Result<(), Error> {
+        if name.is_empty() {
+            return Err(Error::NameEmpty);
+        }
+        for (i, byte) in name.bytes().enumerate() {
+            let valid = if i == 0 {
+                byte.is_ascii_lowercase()
+            } else {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'
+            };
+            if !valid {
+                return Err(Error::NameInvalid { at: i });
+            }
+        }
+        Ok(())
+    }
+
+    /// Opens a working scope copied from the current visible map.
+    pub fn begin(&mut self, now: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        if self.scopes.len() >= 4 {
+            return Err(Error::DepthLimit);
+        }
+        self.scopes.push(self.visible().clone());
+        Ok(())
+    }
+
+    /// Commits the innermost scope into its parent map.
+    pub fn commit(&mut self, now: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        let map = self.scopes.pop().ok_or(Error::NoTransaction)?;
+        *self.visible_mut() = map;
+        Ok(())
+    }
+
+    /// Discards the innermost scope and restores its parent map.
+    pub fn rollback(&mut self, now: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        if self.scopes.pop().is_none() {
+            return Err(Error::NoTransaction);
+        }
+        self.purge_visible(now);
+        Ok(())
+    }
+
+    /// Inserts or overwrites a key, optionally assigning it an absolute expiry.
+    pub fn set(
+        &mut self,
+        now: u64,
+        key: &str,
+        value: &str,
+        ttl: Option<u64>,
+    ) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_key(key)?;
+        let deadline = match ttl {
+            Some(0) => {
+                self.visible_mut().remove(key);
+                return Ok(());
+            }
+            Some(duration) => Some(now.checked_add(duration).ok_or(Error::DeadlineOverflow)?),
+            None => None,
+        };
+        self.visible_mut().insert(
+            key.to_owned(),
+            Entry {
+                value: value.to_owned(),
+                deadline,
+            },
+        );
+        Ok(())
+    }
+
+    /// Deletes a key from the visible map and reports whether it existed.
+    pub fn delete(&mut self, now: u64, key: &str) -> Result<bool, Error> {
+        self.admit(now)?;
+        Self::validate_key(key)?;
+        Ok(self.visible_mut().remove(key).is_some())
+    }
+
+    /// Returns an owned copy of a key's visible value, if present.
+    pub fn get(&mut self, now: u64, key: &str) -> Result<Option<String>, Error> {
+        self.admit(now)?;
+        Self::validate_key(key)?;
+        Ok(self.visible().get(key).map(|entry| entry.value.clone()))
+    }
+
+    /// Counts visible keys whose complete value equals the supplied value.
+    pub fn count(&mut self, now: u64, value: &str) -> Result<usize, Error> {
+        self.admit(now)?;
+        Ok(self
+            .visible()
+            .values()
+            .filter(|entry| entry.value == value)
+            .count())
+    }
+
+    /// Returns the number of currently open scopes.
+    pub fn depth(&mut self, now: u64) -> Result<usize, Error> {
+        self.admit(now)?;
+        Ok(self.scopes.len())
+    }
+
+    /// Saves a copy of the visible map under a validated name.
+    pub fn snapshot(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        if !self.snapshots.contains_key(name) && self.snapshots.len() >= 3 {
+            return Err(Error::SnapshotLimit);
+        }
+        self.snapshots.insert(name.to_owned(), self.visible().clone());
+        Ok(())
+    }
+
+    /// Replaces the visible map with a copy of a named snapshot.
+    pub fn restore(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        let mut map = self
+            .snapshots
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::SnapshotMissing(name.to_owned()))?;
+        Self::purge(&mut map, now);
+        *self.visible_mut() = map;
+        Ok(())
+    }
+
+    /// Removes a named snapshot.
+    pub fn forget(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        self.snapshots
+            .remove(name)
+            .map(|_| ())
+            .ok_or_else(|| Error::SnapshotMissing(name.to_owned()))
+    }
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normal_path_and_ttl() {
+        let mut store = Store::new();
+        store.set(2, "red", "9", Some(5)).unwrap();
+        assert_eq!(store.get(3, "red"), Ok(Some("9".into())));
+        assert_eq!(store.count(3, "9"), Ok(1));
+        assert_eq!(store.get(7, "red"), Ok(None));
+    }
+
+    #[test]
+    fn invalid_key_and_scope_rollback() {
+        let mut store = Store::new();
+        assert_eq!(store.set(1, "", "x", None), Err(Error::KeyEmpty));
+        store.begin(1).unwrap();
+        store.set(1, "key", "temporary", None).unwrap();
+        store.rollback(2).unwrap();
+        assert_eq!(store.get(2, "key"), Ok(None));
+    }
+
+    #[test]
+    fn snapshots_and_time_validation_end_to_end() {
+        let mut store = Store::new();
+        store.set(1, "x", "saved", Some(20)).unwrap();
+        store.snapshot(1, "copy").unwrap();
+        store.delete(2, "x").unwrap();
+        store.restore(2, "copy").unwrap();
+        assert_eq!(store.get(2, "x"), Ok(Some("saved".into())));
+        assert_eq!(
+            store.depth(1),
+            Err(Error::TimeBackwards {
+                previous: 2,
+                now: 1
+            })
+        );
+    }
+
+    #[test]
+    fn public_ttl() {
+        let mut s = Store::new();
+        s.set(2, "red", "9", Some(5)).unwrap();
+        assert_eq!(s.get(3, "red"), Ok(Some("9".into())));
+        assert_eq!(s.count(3, "9"), Ok(1));
+        assert_eq!(s.delete(4, "red"), Ok(true));
+        assert_eq!(s.get(4, "red"), Ok(None));
+    }
+
+    #[test]
+    fn public_scopes() {
+        let mut s = Store::new();
+        s.begin(1).unwrap();
+        s.set(1, "key", "v", None).unwrap();
+        s.begin(2).unwrap();
+        s.set(2, "key", "w", None).unwrap();
+        s.commit(2).unwrap();
+        assert_eq!(s.depth(2), Ok(1));
+        s.rollback(3).unwrap();
+        assert_eq!(s.get(3, "key"), Ok(None));
+    }
+
+    #[test]
+    fn public_snapshots() {
+        let mut s = Store::new();
+        s.set(1, "x", "saved", Some(20)).unwrap();
+        s.snapshot(1, "copy").unwrap();
+        s.delete(2, "x").unwrap();
+        s.restore(2, "copy").unwrap();
+        assert_eq!(s.get(2, "x"), Ok(Some("saved".into())));
+        s.forget(2, "copy").unwrap();
+    }
+
+    #[test]
+    fn public_time_error() {
+        let mut s = Store::new();
+        s.depth(10).unwrap();
+        assert_eq!(
+            s.get(9, "x"),
+            Err(Error::TimeBackwards {
+                previous: 10,
+                now: 9
+            })
+        );
+    }
+}
+```

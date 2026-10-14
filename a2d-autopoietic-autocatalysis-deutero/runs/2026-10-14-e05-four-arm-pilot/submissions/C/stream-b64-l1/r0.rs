@@ -1,0 +1,146 @@
+const ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+}
+
+/// Encodes bytes as six-bit digits using the standard Base64 alphabet.
+pub fn encode(input: &[u8]) -> String {
+    let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
+
+    for chunk in input.chunks(3) {
+        let a = chunk[0];
+        let b = chunk.get(1).copied().unwrap_or(0);
+        let c = chunk.get(2).copied().unwrap_or(0);
+
+        output.push(ALPHABET[(a >> 2) as usize] as char);
+        output.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+
+        if chunk.len() > 1 {
+            output.push(ALPHABET[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char);
+        } else {
+            output.push('=');
+        }
+
+        if chunk.len() > 2 {
+            output.push(ALPHABET[(c & 0x3f) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+
+    output
+}
+
+/// Decodes Base64 bytes, reporting invalid bytes and padding with input offsets.
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut output = Vec::with_capacity(input.len() / 4 * 3);
+    let mut group = [0u8; 4];
+    let mut offsets = [0usize; 4];
+    let mut len = 0usize;
+    let mut pending_second_padding = None;
+    let mut terminal_padding = false;
+
+    for (offset, &byte) in input.iter().enumerate() {
+        if terminal_padding {
+            return Err(Error::BadPadding { offset });
+        }
+
+        if let Some(padding_offset) = pending_second_padding {
+            if byte != b'=' {
+                return Err(Error::BadPadding { offset });
+            }
+            let _ = padding_offset;
+            output.push((group[0] << 2) | (group[1] >> 4));
+            pending_second_padding = None;
+            len = 0;
+            terminal_padding = true;
+            continue;
+        }
+
+        if byte == b'=' {
+            match len {
+                0 | 1 => return Err(Error::BadPadding { offset }),
+                2 => pending_second_padding = Some(offset),
+                3 => {
+                    output.push((group[0] << 2) | (group[1] >> 4));
+                    output.push((group[1] << 4) | (group[2] >> 2));
+                    len = 0;
+                    terminal_padding = true;
+                }
+                _ => unreachable!(),
+            }
+            continue;
+        }
+
+        let value = match ALPHABET.iter().position(|&candidate| candidate == byte) {
+            Some(value) => value as u8,
+            None => return Err(Error::InvalidByte { offset, byte }),
+        };
+
+        group[len] = value;
+        offsets[len] = offset;
+        len += 1;
+
+        if len == 4 {
+            output.push((group[0] << 2) | (group[1] >> 4));
+            output.push((group[1] << 4) | (group[2] >> 2));
+            output.push((group[2] << 6) | group[3]);
+            len = 0;
+        }
+    }
+
+    if let Some(offset) = pending_second_padding {
+        return Err(Error::BadPadding { offset });
+    }
+    if len != 0 {
+        return Err(Error::Truncated {
+            offset: offsets[0],
+        });
+    }
+
+    Ok(output)
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_normal_and_empty() {
+        assert_eq!(encode(b"Cat"), "Q2F0");
+        assert_eq!(encode(b""), "");
+    }
+
+    #[test]
+    fn decode_normal_and_padding() {
+        assert_eq!(decode(b"YWJj"), Ok(b"abc".to_vec()));
+        assert_eq!(decode(b"T2s="), Ok(b"Ok".to_vec()));
+        assert_eq!(decode(b"Zg=="), Ok(b"f".to_vec()));
+    }
+
+    #[test]
+    fn reports_invalid_and_padding_errors() {
+        assert_eq!(
+            decode(b"Q?=="),
+            Err(Error::InvalidByte {
+                offset: 1,
+                byte: b'?',
+            })
+        );
+        assert_eq!(decode(b"QW=Z"), Err(Error::BadPadding { offset: 3 }));
+        assert_eq!(decode(b"QW="), Err(Error::BadPadding { offset: 2 }));
+    }
+
+    #[test]
+    fn end_to_end_all_byte_values() {
+        let bytes: Vec<u8> = (0..=255).collect();
+        assert_eq!(decode(encode(&bytes).as_bytes()), Ok(bytes));
+    }
+}

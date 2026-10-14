@@ -1,0 +1,380 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-55972-1792006517934588000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a13be9-833d-7cd3-86f1-54d2f0c0c6cc
+--------
+user
+You are a programmer. You receive three complementary artifacts:
+- design: concrete structure or reference implementation details
+- plan: the intended architecture or implementation steps
+- requirements: the user-visible contract to satisfy
+
+Prefer the most specific, most constrained instructions when the artifacts differ.
+Default deliverable: synthesize all three into a SINGLE complete Rust source file.
+If the requirements, design, or plan explicitly require another artifact format (for example, a unified diff candidate patch), follow that explicit deliverable instead.
+Benchmark integrity rule: if the requirements, design, or plan say not to search GitHub, issues, pull requests, commits, forks, public web pages, or solution writeups for benchmark answers, obey that restriction strictly. Solve from the provided context and local tests only.
+For Rust-source deliverables, the file MUST:
+1. Contain a main() function
+2. Include the exact Rust test module header `#[cfg(test)] mod tests` with at least 3 test cases; omitting this fails the mechanical `has_tests` fitness gate even if the solution code works
+3. Use Result<T, E> for error handling where appropriate
+4. Include /// doc comments on public functions
+5. Compile with `rustc --edition 2024`
+6. Do NOT define a module named `a2d_acceptance` — that module will be appended by the system. If you define it, compilation will fail with a duplicate definition error.
+7. Place all your tests in a module named `tests` (i.e. `#[cfg(test)] mod tests { ... }`), NOT `a2d_acceptance`.
+8. Test the normal path, at least one edge/invalid input, and one end-to-end behavior so the tests are meaningful rather than placeholder assertions.
+9. When replacing an existing keyed item, validate the proposed replacement fully before mutating existing state. If validation or capacity checks fail, leave the original value, pin status, recency/order, and all related state unchanged. Handle same-key replacement explicitly so it does not incorrectly fail because the existing item occupies a slot or is pinned. Add or review tests for failed replacement atomicity and same-key replacement of pinned entries.
+10. Before finalizing, trace each mutating operation through success and error paths. Check that errors cannot leave partial changes to values, pins, capacity, recency, or ordering; ensure test expectations match the stated contract and the implementation.
+
+For unified diff deliverables, output raw unified diff text without markdown fences so evaluators can apply and hash the patch bytes directly.
+Output ONLY the requested artifact.
+
+PREVIOUS ATTEMPT FAILED — fix these errors:
+TESTS: 8 passed, 1 failed
+TEST OUTPUT:
+
+running 9 tests
+test a2d_acceptance::pins_and_removal ... ok
+test a2d_acceptance::shards_local_eviction ... ok
+test a2d_acceptance::validation_and_replacement ... ok
+test a2d_acceptance::resize_and_trim ... ok
+test tests::empty_shards_and_invalid_resize_are_errors ... ok
+test tests::pinning_preserves_recency_and_prevents_removal ... ok
+test tests::shards_local_eviction_and_global_order ... ok
+test tests::failed_replacement_is_atomic_and_same_key_pin_can_be_replaced ... FAILED
+test tests::trim_and_resize_remove_oldest_entries ... ok
+
+failures:
+
+---- tests::failed_replacement_is_atomic_and_same_key_pin_can_be_replaced stdout ----
+
+thread 'tests::failed_replacement_is_atomic_and_same_key_pin_can_be_replaced' (78904292) panicked at /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmplIVghn/main.rs:280:9:
+assertion `left == right` failed
+  left: Ok([2])
+ right: Ok([])
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::failed_replacement_is_atomic_and_same_key_pin_can_be_replaced
+
+test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+
+
+{"design":"Repair this weighted sharded cache with global recency and pins. Its implementation has exactly five semantic defects.\n\nImplement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Repair the implementation below and return the corrected complete file. All listed API items must be public; additional private helpers are allowed. No main function is required.\n\nExact public API (Error, Event (when present), and Entry derive Debug, Clone, PartialEq, Eq; Cache derives Debug and Clone):\n```rust\npub enum Error { EmptyShards, ZeroWeight, TooHeavy { weight: u64, capacity: u64 }, Blocked { shard: usize }, Missing { key: u64 }, Pinned { key: u64 }, BadShard { shard: usize }, PinnedCapacity { minimum: u128, target: u128 } }\npub struct Entry { pub key: u64, pub value: i64, pub weight: u64, pub pinned: bool, pub shard: usize }\npub struct Cache { /* private fields */ }\nimpl Cache {\n    pub fn new(capacities: Vec<u64>) -> Result<Self, Error>;\n    pub fn capacities(&self) -> Vec<u64>;\n    pub fn usage(&self) -> Vec<u64>;\n    pub fn used(&self) -> u128;\n    pub fn snapshot(&self) -> Vec<Entry>;\n    pub fn get(&mut self, key: u64) -> Option<i64>;\n    pub fn set_pin(&mut self, key: u64, pinned: bool) -> Result<(), Error>;\n    pub fn remove(&mut self, key: u64) -> Result<i64, Error>;\n    pub fn insert(&mut self, key: u64, value: i64, weight: u64, pinned: bool) -> Result<Vec<u64>, Error>;\n    pub fn resize(&mut self, shard: usize, capacity: u64) -> Result<Vec<u64>, Error>;\n    pub fn trim(&mut self, target: u128) -> Result<Vec<u64>, Error>;\n}\n```\n\nR1. new requires at least one shard; [] returns EmptyShards. A nonempty capacity vector creates empty shards, allowing zero capacities.\nR2. Shard IDs are vector indices, in 0..number_of_shards. Route each key to (key % number_of_shards) without truncating key before the modulo.\nR3. All keys and values in u64 and i64 are supported. Positive weights and capacities may span the full u64 range.\nR4. capacities returns a fresh vector of capacities in shard-ID order. usage returns current resident weight per shard in that same order.\nR5. used returns the exact sum of all shard usage as u128, even if the total exceeds u64::MAX.\nR6. snapshot returns cloned Entries in one GLOBAL oldest-to-newest recency order, including pinned entries and each entry’s computed shard.\nR7. The getters and snapshot have no side effects. Altering a returned vector or a cloned Entry cannot alter the cache.\nR8. An insertion or successful get moves its key to the newest end of global recency; equal values still count as touches.\nR9. get returns Some(value) on a hit, including pinned hits, or None on a miss. A miss changes no state.\nR10. set_pin changes only the pin bit of an existing key; missing keys return Missing { key }. Pinning, unpinning and redundant pin calls NEVER change recency.\nR11. remove returns Missing { key } if absent, Pinned { key } if pinned, otherwise deletes the entry and returns its value. It does not touch survivors.\nR12. All errors are atomic: all values, pins, recency, capacities and usage remain exactly unchanged.\nR13. insert computes the destination shard and validates in this order: ZeroWeight for weight == 0; TooHeavy { weight, capacity } for weight > that shard’s capacity; Blocked { shard } if existing pinned entries other than the same key would prevent fitting the new weight even after evicting every other unpinned entry.\nR14. A same-key pinned entry may be replaced, including changing its weight or unpinning it. Exclude the old same-key weight from BOTH pinned feasibility and resident usage before any eviction.\nR15. The insertion feasibility condition is other pinned weight <= capacity - proposed weight; equality is allowed. No arithmetic may overflow.\nR16. After successful validation, remove the old same-key entry, if any. This replacement is not an eviction and is never returned as a victim.\nR17. If room is needed, repeatedly evict the globally oldest UNPINNED entry belonging to the destination shard until destination usage + weight <= capacity.\nR18. insert never evicts from another shard, even if it contains older entries or unused capacity; spare capacity cannot be borrowed across shards.\nR19. insert stores the new value, weight and supplied pin bit at newest global recency. Return only actual eviction victims in their removal order.\nR20. Pinned entries are immune to capacity eviction, global trim and remove, but not same-key replacement.\nR21. resize first validates shard ID; invalid IDs return BadShard { shard }, regardless of requested capacity.\nR22. For a valid shard, resize calculates its pinned resident weight. If pinned weight exceeds requested capacity, return PinnedCapacity { minimum: that pinned weight as u128, target: requested capacity as u128 } with no changes.\nR23. Otherwise resize installs the new local capacity and removes oldest unpinned entries in that shard until usage <= capacity, returning those keys in removal order.\nR24. resize never affects other shard capacities or entries, and never changes the relative order of survivors.\nR25. resize to the exact pinned weight is allowed. Resize to zero removes all unpinned entries and succeeds only if no pinned entry is in that shard.\nR26. trim first calculates GLOBAL pinned weight. If it exceeds target, return PinnedCapacity { minimum: global pinned weight, target }, without removing anything.\nR27. Otherwise trim repeatedly removes the globally oldest unpinned key, irrespective of shard, until total used <= target. Return victims in global removal order.\nR28. Trim does not change ANY shard capacity. Overshooting below target by evicting an indivisible weighted entry is allowed.\nR29. Trim when total used <= target is a complete no-op, returning []; targets up to u128::MAX are valid.\nR30. Insertion, resizing and trimming stop when the relevant usage equals its limit; they must not evict an additional key at equality.\nR31. Failed replacement must preserve the old value, weight and pin bit as well as old recency.\nR32. Removing or evicting one key frees precisely its stored weight; snapshots contain each resident key once, and usage agrees with snapshot weights.\nR33. Pinned entries remain in global recency, can be touched by get, and resume ordinary eviction priority at that exact position when unpinned.\nR34. Cloning a Cache makes independent copies of all its state. Later actions on a clone cannot alter the original.\nR35. All operations are synchronous and deterministic; no background tasks, wall time, random tie-breaks, external dependencies or panic on documented inputs.\n\nCompiling implementation to repair:\n```rust\nuse std::collections::{BTreeMap, VecDeque};\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub enum Error {\n    EmptyShards,\n    ZeroWeight,\n    TooHeavy { weight: u64, capacity: u64 },\n    Blocked { shard: usize },\n    Missing { key: u64 },\n    Pinned { key: u64 },\n    BadShard { shard: usize },\n    PinnedCapacity { minimum: u128, target: u128 },\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub struct Entry {\n    pub key: u64,\n    pub value: i64,\n    pub weight: u64,\n    pub pinned: bool,\n    pub shard: usize,\n}\n\n#[derive(Debug, Clone)]\npub struct Cache {\n    capacities: Vec<u64>,\n    usage: Vec<u64>,\n    entries: BTreeMap<u64, Entry>,\n    order: VecDeque<u64>,\n}\nimpl Cache {\n    /// Creates a cache with caller-supplied shard budgets.\n    /// The capacity vector also defines the shard count.\n    /// The resulting cache owns all shard storage.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn new(capacities: Vec<u64>) -> Result<Self, Error> {\n        if capacities.is_empty() {\n            return Err(Error::EmptyShards);\n        }\n        Ok(Self {\n            usage: vec![0; capacities.len()],\n            capacities,\n            entries: BTreeMap::new(),\n            order: VecDeque::new(),\n        })\n    }\n\n    /// Copies the shard capacity settings.\n    /// The vector is ordered by shard index.\n    /// The caller owns the returned copy.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn capacities(&self) -> Vec<u64> {\n        self.capacities.clone()\n    }\n\n    /// Copies the resident weight of each shard.\n    /// The vector is ordered by shard index.\n    /// The caller owns the returned copy.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn usage(&self) -> Vec<u64> {\n        self.usage.clone()\n    }\n\n    /// Reads total resident weight across all shards.\n    /// The return type accommodates aggregate weights.\n    /// Individual shard accounting is available through usage.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn used(&self) -> u128 {\n        self.usage.iter().map(|n| *n as u128).sum()\n    }\n\n    /// Copies resident entries in global cache order.\n    /// Entries include their shard and pin metadata.\n    /// The caller owns the returned vector.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn snapshot(&self) -> Vec<Entry> {\n        self.order.iter().map(|k| self.entries[k].clone()).collect()\n    }\n\n    // Maps a key into the configured shard collection.\n    fn shard(&self, key: u64) -> usize {\n        (key % self.capacities.len() as u64) as usize\n    }\n\n    // Records a key in the cache recency structure.\n    fn touch(&mut self, key: u64) {\n        self.order.retain(|k| *k != key);\n        self.order.push_back(key);\n    }\n\n    // Removes the stored entry and its accounting metadata.\n    fn erase(&mut self, key: u64) -> Option<Entry> {\n        let entry = self.entries.remove(&key)?;\n        self.usage[entry.shard] -= entry.weight;\n        self.order.retain(|k| *k != key);\n        Some(entry)\n    }\n\n    // Selects an eligible victim inside a specified shard.\n    fn local_victim(&self, shard: usize) -> Option<u64> {\n        self.order\n            .iter()\n            .rev()\n            .find(|k| self.entries[k].shard == shard && !self.entries[k].pinned)\n            .copied()\n    }\n\n    // Selects an eligible victim across the shard collection.\n    fn global_victim(&self) -> Option<u64> {\n        self.order.iter().find(|k| !self.entries[k].pinned).copied()\n    }\n\n    // Collects protected resident weight for a shard selection.\n    fn pinned_weight(&self, shard: Option<usize>) -> u128 {\n        self.entries\n            .values()\n            .filter(|e| e.pinned && shard.is_none_or(|s| e.shard == s))\n            .map(|e| e.weight as u128)\n            .sum()\n    }\n\n    /// Looks up the value associated with a key.\n    /// Routing follows the cache shard configuration.\n    /// An absent key returns an empty option.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn get(&mut self, key: u64) -> Option<i64> {\n        let value = self.entries.get(&key).map(|e| e.value);\n        if value.is_some() && !self.entries[&key].pinned {\n            self.touch(key);\n        }\n        value\n    }\n\n    /// Changes residency protection for a key.\n    /// The supplied boolean becomes its pin setting.\n    /// The result reports whether the key exists.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn set_pin(&mut self, key: u64, pinned: bool) -> Result<(), Error> {\n        let e = self.entries.get_mut(&key).ok_or(Error::Missing { key })?;\n        e.pinned = pinned;\n        self.touch(key);\n        Ok(())\n    }\n\n    /// Requests explicit deletion of a key.\n    /// On success the stored value is returned.\n    /// The result can report residency protection errors.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn remove(&mut self, key: u64) -> Result<i64, Error> {\n        let e = self.entries.get(&key).ok_or(Error::Missing { key })?;\n        if e.pinned {\n            return Err(Error::Pinned { key });\n        }\n        Ok(self.erase(key).unwrap().value)\n    }\n\n    /// Stores a value with weight and pin metadata.\n    /// The key selects the destination shard.\n    /// The returned list reports removals performed for storage.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn insert(\n        &mut self,\n        key: u64,\n        value: i64,\n        weight: u64,\n        pinned: bool,\n    ) -> Result<Vec<u64>, Error> {\n        let shard = self.shard(key);\n        let capacity = self.capacities[shard];\n        if weight == 0 {\n            return Err(Error::ZeroWeight);\n        }\n        if weight > capacity {\n            return Err(Error::TooHeavy { weight, capacity });\n        }\n        let fixed: u64 = self\n            .entries\n            .values()\n            .filter(|e| e.shard == shard && e.pinned)\n            .map(|e| e.weight)\n            .sum();\n        if fixed > capacity - weight {\n            return Err(Error::Blocked { shard });\n        }\n        self.erase(key);\n        let mut removed = Vec::new();\n        while self.usage[shard] > capacity - weight {\n            let victim = self.local_victim(shard).unwrap();\n            self.erase(victim);\n            removed.push(victim);\n        }\n        self.usage[shard] += weight;\n        self.entries.insert(\n            key,\n            Entry {\n                key,\n                value,\n                weight,\n                pinned,\n                shard,\n            },\n        );\n        self.touch(key);\n        Ok(removed)\n    }\n\n    /// Changes the capacity of a specified shard.\n    /// The result reports removals performed for that change.\n    /// The shard is identified by its vector index.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn resize(&mut self, shard: usize, capacity: u64) -> Result<Vec<u64>, Error> {\n        if shard >= self.capacities.len() {\n            return Err(Error::BadShard { shard });\n        }\n        let minimum = self.pinned_weight(Some(shard));\n        if minimum > capacity as u128 {\n            return Err(Error::PinnedCapacity {\n                minimum,\n                target: capacity as u128,\n            });\n        }\n        self.capacities[shard] = capacity;\n        let mut removed = Vec::new();\n        while self.usage[shard] > capacity {\n            let victim = self.local_victim(shard).unwrap();\n            self.erase(victim);\n            removed.push(victim);\n        }\n        Ok(removed)\n    }\n\n    /// Reduces aggregate resident weight.\n    /// The target applies across the shard collection.\n    /// The result reports removals performed for that target.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn trim(&mut self, target: u128) -> Result<Vec<u64>, Error> {\n        let minimum = self.pinned_weight(None);\n        if minimum > target {\n            return Err(Error::PinnedCapacity { minimum, target });\n        }\n        let mut removed = Vec::new();\n        while self.used() >= target && self.used() > 0 {\n            let victim = self.global_victim().unwrap();\n            self.erase(victim);\n            removed.push(victim);\n        }\n        Ok(removed)\n    }\n}\n```\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\n// R1–R6, R17–R19\n#[test]\nfn shards_local_eviction() {\n    let mut c = Cache::new(vec![3, 4]).unwrap();\n    c.insert(2, 20, 2, false).unwrap();\n    c.insert(1, 10, 2, false).unwrap();\n    assert_eq!(c.insert(4, 40, 2, false), Ok(vec![2]));\n    assert_eq!(c.usage(), vec![2, 2]);\n    assert_eq!(c.used(), 4);\n    assert_eq!(c.capacities(), vec![3, 4]);\n    assert_eq!(\n        c.snapshot().iter().map(|e| e.key).collect::<Vec<_>>(),\n        vec![1, 4]\n    );\n}\n\n// R9–R11, R20\n#[test]\nfn pins_and_removal() {\n    let mut c = Cache::new(vec![5]).unwrap();\n    c.insert(8, 80, 2, true).unwrap();\n    assert_eq!(c.get(8), Some(80));\n    assert_eq!(c.remove(8), Err(Error::Pinned { key: 8 }));\n    c.set_pin(8, false).unwrap();\n    assert_eq!(c.remove(8), Ok(80));\n}\n\n// R21–R29\n#[test]\nfn resize_and_trim() {\n    let mut c = Cache::new(vec![9, 9]).unwrap();\n    c.insert(2, 0, 2, false).unwrap();\n    c.insert(1, 0, 3, false).unwrap();\n    assert_eq!(c.trim(4), Ok(vec![2]));\n    assert_eq!(c.resize(1, 2), Ok(vec![1]));\n    assert_eq!(c.used(), 0);\n}\n\n// R1, R13–R16, R19\n#[test]\nfn validation_and_replacement() {\n    assert!(matches!(Cache::new(vec![]), Err(Error::EmptyShards)));\n    let mut c = Cache::new(vec![5]).unwrap();\n    assert_eq!(c.insert(1, 0, 0, false), Err(Error::ZeroWeight));\n    c.insert(1, 1, 2, false).unwrap();\n    assert_eq!(c.insert(1, 2, 3, false), Ok(vec![]));\n    assert_eq!(c.get(1), Some(2));\n}\n```\n","enzyme_defs":"[{\"id\":\"architect\",\"reactants\":[\"failure_report\",\"fitness_report\"],\"products\":[\"system_patch\"],\"catalysts\":[\"provider_health_report\",\"provider_policy\",\"system_code\"]},{\"id\":\"coder\",\"reactants\":[\"design\",\"plan\",\"requirements\"],\"products\":[\"code\"],\"catalysts\":[\"enzyme_defs\",\"failure_report\"],\"prompt_template\":\"You are a programmer. You receive three complementary artifacts:\\n- design: concrete structure or reference implementation details\\n- plan: the intended architecture or implementation steps\\n- requirements: the user-visible contract to satisfy\\n\\nPrefer the most specific, most constrained instructions when the artifacts differ.\\nDefault deliverable: synthesize all three into a SINGLE complete Rust source file.\\nIf the requirements, design, or plan explicitly require another artifact format (for example, a unified diff candidate patch), follow that explicit deliverable instead.\\nBenchmark integrity rule: if the requirements, design, or plan say not to search GitHub, issues, pull requests, commits, forks, public web pages, or solution writeups for benchmark answers, obey that restriction strictly. Solve from the provided context and local tests only.\\nFor Rust-source deliverables, the file MUST:\\n1. Contain a main() function\\n2. Include the exact Rust test module header `#[cfg(test)] mod tests` with at least 3 test cases; omitting this fails the mechanical `has_tests` fitness gate even if the solution code works\\n3. Use Result<T, E> for error handling where appropriate\\n4. Include /// doc comments on public functions\\n5. Compile with `rustc --edition 2024`\\n6. Do NOT define a module named `a2d_acceptance` — that module will be appended by the system. If you define it, compilation will fail with a duplicate definition error.\\n7. Place all your tests in a module named `tests` (i.e. `#[cfg(test)] mod tests { ... }`), NOT `a2d_acceptance`.\\n8. Test the normal path, at least one edge/invalid input, and one end-to-end behavior so the tests are meaningful rather than placeholder assertions.\\n9. When replacing an existing keyed item, validate the proposed replacement fully before mutating existing state. If validation or capacity checks fail, leave the original value, pin status, recency/order, and all related state unchanged. Handle same-key replacement explicitly so it does not incorrectly fail because the existing item occupies a slot or is pinned. Add or review tests for failed replacement atomicity and same-key replacement of pinned entries.\\n10. Before finalizing, trace each mutating operation through success and error paths. Check that errors cannot leave partial changes to values, pins, capacity, recency, or ordering; ensure test expectations match the stated contract and the implementation.\\n\\nFor unified diff deliverables, output raw unified diff text without markdown fences so evaluators can apply and hash the patch bytes directly.\\nOutput ONLY the requested artifact.\"},{\"id\":\"evolver\",\"reactants\":[\"fitness_report\"],\"products\":[\"enzyme_defs\"],\"catalysts\":[\"enzyme_defs\",\"failure_report\",\"fitness_report\",\"provider_health_report\",\"provider_policy\"]},{\"id\":\"tester\",\"reactants\":[\"code\"],\"products\":[\"test_results\"],\"catalysts\":[\"code\"],\"prompt_template\":\"You are a code reviewer. Given Rust code, evaluate it.\\nCheck: does it compile? Are there tests? Do the tests cover edge cases?\\nOutput a brief assessment with pass/fail for each check.\"}]","failure_report":"TESTS: 8 passed, 1 failed\nTEST OUTPUT:\n\nrunning 9 tests\ntest a2d_acceptance::pins_and_removal ... ok\ntest a2d_acceptance::shards_local_eviction ... ok\ntest a2d_acceptance::validation_and_replacement ... ok\ntest a2d_acceptance::resize_and_trim ... ok\ntest tests::empty_shards_and_invalid_resize_are_errors ... ok\ntest tests::pinning_preserves_recency_and_prevents_removal ... ok\ntest tests::shards_local_eviction_and_global_order ... ok\ntest tests::failed_replacement_is_atomic_and_same_key_pin_can_be_replaced ... FAILED\ntest tests::trim_and_resize_remove_oldest_entries ... ok\n\nfailures:\n\n---- tests::failed_replacement_is_atomic_and_same_key_pin_can_be_replaced stdout ----\n\nthread 'tests::failed_replacement_is_atomic_and_same_key_pin_can_be_replaced' (78904292) panicked at /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmplIVghn/main.rs:280:9:\nassertion `left == right` failed\n  left: Ok([2])\n right: Ok([])\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    tests::failed_replacement_is_atomic_and_same_key_pin_can_be_replaced\n\ntest result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\n","plan":"Repair this weighted sharded cache with global recency and pins. Its implementation has exactly five semantic defects.\n\nImplement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Repair the implementation below and return the corrected complete file. All listed API items must be public; additional private helpers are allowed. No main function is required.\n\nExact public API (Error, Event (when present), and Entry derive Debug, Clone, PartialEq, Eq; Cache derives Debug and Clone):\n```rust\npub enum Error { EmptyShards, ZeroWeight, TooHeavy { weight: u64, capacity: u64 }, Blocked { shard: usize }, Missing { key: u64 }, Pinned { key: u64 }, BadShard { shard: usize }, PinnedCapacity { minimum: u128, target: u128 } }\npub struct Entry { pub key: u64, pub value: i64, pub weight: u64, pub pinned: bool, pub shard: usize }\npub struct Cache { /* private fields */ }\nimpl Cache {\n    pub fn new(capacities: Vec<u64>) -> Result<Self, Error>;\n    pub fn capacities(&self) -> Vec<u64>;\n    pub fn usage(&self) -> Vec<u64>;\n    pub fn used(&self) -> u128;\n    pub fn snapshot(&self) -> Vec<Entry>;\n    pub fn get(&mut self, key: u64) -> Option<i64>;\n    pub fn set_pin(&mut self, key: u64, pinned: bool) -> Result<(), Error>;\n    pub fn remove(&mut self, key: u64) -> Result<i64, Error>;\n    pub fn insert(&mut self, key: u64, value: i64, weight: u64, pinned: bool) -> Result<Vec<u64>, Error>;\n    pub fn resize(&mut self, shard: usize, capacity: u64) -> Result<Vec<u64>, Error>;\n    pub fn trim(&mut self, target: u128) -> Result<Vec<u64>, Error>;\n}\n```\n\nR1. new requires at least one shard; [] returns EmptyShards. A nonempty capacity vector creates empty shards, allowing zero capacities.\nR2. Shard IDs are vector indices, in 0..number_of_shards. Route each key to (key % number_of_shards) without truncating key before the modulo.\nR3. All keys and values in u64 and i64 are supported. Positive weights and capacities may span the full u64 range.\nR4. capacities returns a fresh vector of capacities in shard-ID order. usage returns current resident weight per shard in that same order.\nR5. used returns the exact sum of all shard usage as u128, even if the total exceeds u64::MAX.\nR6. snapshot returns cloned Entries in one GLOBAL oldest-to-newest recency order, including pinned entries and each entry’s computed shard.\nR7. The getters and snapshot have no side effects. Altering a returned vector or a cloned Entry cannot alter the cache.\nR8. An insertion or successful get moves its key to the newest end of global recency; equal values still count as touches.\nR9. get returns Some(value) on a hit, including pinned hits, or None on a miss. A miss changes no state.\nR10. set_pin changes only the pin bit of an existing key; missing keys return Missing { key }. Pinning, unpinning and redundant pin calls NEVER change recency.\nR11. remove returns Missing { key } if absent, Pinned { key } if pinned, otherwise deletes the entry and returns its value. It does not touch survivors.\nR12. All errors are atomic: all values, pins, recency, capacities and usage remain exactly unchanged.\nR13. insert computes the destination shard and validates in this order: ZeroWeight for weight == 0; TooHeavy { weight, capacity } for weight > that shard’s capacity; Blocked { shard } if existing pinned entries other than the same key would prevent fitting the new weight even after evicting every other unpinned entry.\nR14. A same-key pinned entry may be replaced, including changing its weight or unpinning it. Exclude the old same-key weight from BOTH pinned feasibility and resident usage before any eviction.\nR15. The insertion feasibility condition is other pinned weight <= capacity - proposed weight; equality is allowed. No arithmetic may overflow.\nR16. After successful validation, remove the old same-key entry, if any. This replacement is not an eviction and is never returned as a victim.\nR17. If room is needed, repeatedly evict the globally oldest UNPINNED entry belonging to the destination shard until destination usage + weight <= capacity.\nR18. insert never evicts from another shard, even if it contains older entries or unused capacity; spare capacity cannot be borrowed across shards.\nR19. insert stores the new value, weight and supplied pin bit at newest global recency. Return only actual eviction victims in their removal order.\nR20. Pinned entries are immune to capacity eviction, global trim and remove, but not same-key replacement.\nR21. resize first validates shard ID; invalid IDs return BadShard { shard }, regardless of requested capacity.\nR22. For a valid shard, resize calculates its pinned resident weight. If pinned weight exceeds requested capacity, return PinnedCapacity { minimum: that pinned weight as u128, target: requested capacity as u128 } with no changes.\nR23. Otherwise resize installs the new local capacity and removes oldest unpinned entries in that shard until usage <= capacity, returning those keys in removal order.\nR24. resize never affects other shard capacities or entries, and never changes the relative order of survivors.\nR25. resize to the exact pinned weight is allowed. Resize to zero removes all unpinned entries and succeeds only if no pinned entry is in that shard.\nR26. trim first calculates GLOBAL pinned weight. If it exceeds target, return PinnedCapacity { minimum: global pinned weight, target }, without removing anything.\nR27. Otherwise trim repeatedly removes the globally oldest unpinned key, irrespective of shard, until total used <= target. Return victims in global removal order.\nR28. Trim does not change ANY shard capacity. Overshooting below target by evicting an indivisible weighted entry is allowed.\nR29. Trim when total used <= target is a complete no-op, returning []; targets up to u128::MAX are valid.\nR30. Insertion, resizing and trimming stop when the relevant usage equals its limit; they must not evict an additional key at equality.\nR31. Failed replacement must preserve the old value, weight and pin bit as well as old recency.\nR32. Removing or evicting one key frees precisely its stored weight; snapshots contain each resident key once, and usage agrees with snapshot weights.\nR33. Pinned entries remain in global recency, can be touched by get, and resume ordinary eviction priority at that exact position when unpinned.\nR34. Cloning a Cache makes independent copies of all its state. Later actions on a clone cannot alter the original.\nR35. All operations are synchronous and deterministic; no background tasks, wall time, random tie-breaks, external dependencies or panic on documented inputs.\n\nCompiling implementation to repair:\n```rust\nuse std::collections::{BTreeMap, VecDeque};\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub enum Error {\n    EmptyShards,\n    ZeroWeight,\n    TooHeavy { weight: u64, capacity: u64 },\n    Blocked { shard: usize },\n    Missing { key: u64 },\n    Pinned { key: u64 },\n    BadShard { shard: usize },\n    PinnedCapacity { minimum: u128, target: u128 },\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub struct Entry {\n    pub key: u64,\n    pub value: i64,\n    pub weight: u64,\n    pub pinned: bool,\n    pub shard: usize,\n}\n\n#[derive(Debug, Clone)]\npub struct Cache {\n    capacities: Vec<u64>,\n    usage: Vec<u64>,\n    entries: BTreeMap<u64, Entry>,\n    order: VecDeque<u64>,\n}\nimpl Cache {\n    /// Creates a cache with caller-supplied shard budgets.\n    /// The capacity vector also defines the shard count.\n    /// The resulting cache owns all shard storage.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn new(capacities: Vec<u64>) -> Result<Self, Error> {\n        if capacities.is_empty() {\n            return Err(Error::EmptyShards);\n        }\n        Ok(Self {\n            usage: vec![0; capacities.len()],\n            capacities,\n            entries: BTreeMap::new(),\n            order: VecDeque::new(),\n        })\n    }\n\n    /// Copies the shard capacity settings.\n    /// The vector is ordered by shard index.\n    /// The caller owns the returned copy.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn capacities(&self) -> Vec<u64> {\n        self.capacities.clone()\n    }\n\n    /// Copies the resident weight of each shard.\n    /// The vector is ordered by shard index.\n    /// The caller owns the returned copy.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn usage(&self) -> Vec<u64> {\n        self.usage.clone()\n    }\n\n    /// Reads total resident weight across all shards.\n    /// The return type accommodates aggregate weights.\n    /// Individual shard accounting is available through usage.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn used(&self) -> u128 {\n        self.usage.iter().map(|n| *n as u128).sum()\n    }\n\n    /// Copies resident entries in global cache order.\n    /// Entries include their shard and pin metadata.\n    /// The caller owns the returned vector.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn snapshot(&self) -> Vec<Entry> {\n        self.order.iter().map(|k| self.entries[k].clone()).collect()\n    }\n\n    // Maps a key into the configured shard collection.\n    fn shard(&self, key: u64) -> usize {\n        (key % self.capacities.len() as u64) as usize\n    }\n\n    // Records a key in the cache recency structure.\n    fn touch(&mut self, key: u64) {\n        self.order.retain(|k| *k != key);\n        self.order.push_back(key);\n    }\n\n    // Removes the stored entry and its accounting metadata.\n    fn erase(&mut self, key: u64) -> Option<Entry> {\n        let entry = self.entries.remove(&key)?;\n        self.usage[entry.shard] -= entry.weight;\n        self.order.retain(|k| *k != key);\n        Some(entry)\n    }\n\n    // Selects an eligible victim inside a specified shard.\n    fn local_victim(&self, shard: usize) -> Option<u64> {\n        self.order\n            .iter()\n            .rev()\n            .find(|k| self.entries[k].shard == shard && !self.entries[k].pinned)\n            .copied()\n    }\n\n    // Selects an eligible victim across the shard collection.\n    fn global_victim(&self) -> Option<u64> {\n        self.order.iter().find(|k| !self.entries[k].pinned).copied()\n    }\n\n    // Collects protected resident weight for a shard selection.\n    fn pinned_weight(&self, shard: Option<usize>) -> u128 {\n        self.entries\n            .values()\n            .filter(|e| e.pinned && shard.is_none_or(|s| e.shard == s))\n            .map(|e| e.weight as u128)\n            .sum()\n    }\n\n    /// Looks up the value associated with a key.\n    /// Routing follows the cache shard configuration.\n    /// An absent key returns an empty option.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn get(&mut self, key: u64) -> Option<i64> {\n        let value = self.entries.get(&key).map(|e| e.value);\n        if value.is_some() && !self.entries[&key].pinned {\n            self.touch(key);\n        }\n        value\n    }\n\n    /// Changes residency protection for a key.\n    /// The supplied boolean becomes its pin setting.\n    /// The result reports whether the key exists.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn set_pin(&mut self, key: u64, pinned: bool) -> Result<(), Error> {\n        let e = self.entries.get_mut(&key).ok_or(Error::Missing { key })?;\n        e.pinned = pinned;\n        self.touch(key);\n        Ok(())\n    }\n\n    /// Requests explicit deletion of a key.\n    /// On success the stored value is returned.\n    /// The result can report residency protection errors.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn remove(&mut self, key: u64) -> Result<i64, Error> {\n        let e = self.entries.get(&key).ok_or(Error::Missing { key })?;\n        if e.pinned {\n            return Err(Error::Pinned { key });\n        }\n        Ok(self.erase(key).unwrap().value)\n    }\n\n    /// Stores a value with weight and pin metadata.\n    /// The key selects the destination shard.\n    /// The returned list reports removals performed for storage.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn insert(\n        &mut self,\n        key: u64,\n        value: i64,\n        weight: u64,\n        pinned: bool,\n    ) -> Result<Vec<u64>, Error> {\n        let shard = self.shard(key);\n        let capacity = self.capacities[shard];\n        if weight == 0 {\n            return Err(Error::ZeroWeight);\n        }\n        if weight > capacity {\n            return Err(Error::TooHeavy { weight, capacity });\n        }\n        let fixed: u64 = self\n            .entries\n            .values()\n            .filter(|e| e.shard == shard && e.pinned)\n            .map(|e| e.weight)\n            .sum();\n        if fixed > capacity - weight {\n            return Err(Error::Blocked { shard });\n        }\n        self.erase(key);\n        let mut removed = Vec::new();\n        while self.usage[shard] > capacity - weight {\n            let victim = self.local_victim(shard).unwrap();\n            self.erase(victim);\n            removed.push(victim);\n        }\n        self.usage[shard] += weight;\n        self.entries.insert(\n            key,\n            Entry {\n                key,\n                value,\n                weight,\n                pinned,\n                shard,\n            },\n        );\n        self.touch(key);\n        Ok(removed)\n    }\n\n    /// Changes the capacity of a specified shard.\n    /// The result reports removals performed for that change.\n    /// The shard is identified by its vector index.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn resize(&mut self, shard: usize, capacity: u64) -> Result<Vec<u64>, Error> {\n        if shard >= self.capacities.len() {\n            return Err(Error::BadShard { shard });\n        }\n        let minimum = self.pinned_weight(Some(shard));\n        if minimum > capacity as u128 {\n            return Err(Error::PinnedCapacity {\n                minimum,\n                target: capacity as u128,\n            });\n        }\n        self.capacities[shard] = capacity;\n        let mut removed = Vec::new();\n        while self.usage[shard] > capacity {\n            let victim = self.local_victim(shard).unwrap();\n            self.erase(victim);\n            removed.push(victim);\n        }\n        Ok(removed)\n    }\n\n    /// Reduces aggregate resident weight.\n    /// The target applies across the shard collection.\n    /// The result reports removals performed for that target.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn trim(&mut self, target: u128) -> Result<Vec<u64>, Error> {\n        let minimum = self.pinned_weight(None);\n        if minimum > target {\n            return Err(Error::PinnedCapacity { minimum, target });\n        }\n        let mut removed = Vec::new();\n        while self.used() >= target && self.used() > 0 {\n            let victim = self.global_victim().unwrap();\n            self.erase(victim);\n            removed.push(victim);\n        }\n        Ok(removed)\n    }\n}\n```\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\n// R1–R6, R17–R19\n#[test]\nfn shards_local_eviction() {\n    let mut c = Cache::new(vec![3, 4]).unwrap();\n    c.insert(2, 20, 2, false).unwrap();\n    c.insert(1, 10, 2, false).unwrap();\n    assert_eq!(c.insert(4, 40, 2, false), Ok(vec![2]));\n    assert_eq!(c.usage(), vec![2, 2]);\n    assert_eq!(c.used(), 4);\n    assert_eq!(c.capacities(), vec![3, 4]);\n    assert_eq!(\n        c.snapshot().iter().map(|e| e.key).collect::<Vec<_>>(),\n        vec![1, 4]\n    );\n}\n\n// R9–R11, R20\n#[test]\nfn pins_and_removal() {\n    let mut c = Cache::new(vec![5]).unwrap();\n    c.insert(8, 80, 2, true).unwrap();\n    assert_eq!(c.get(8), Some(80));\n    assert_eq!(c.remove(8), Err(Error::Pinned { key: 8 }));\n    c.set_pin(8, false).unwrap();\n    assert_eq!(c.remove(8), Ok(80));\n}\n\n// R21–R29\n#[test]\nfn resize_and_trim() {\n    let mut c = Cache::new(vec![9, 9]).unwrap();\n    c.insert(2, 0, 2, false).unwrap();\n    c.insert(1, 0, 3, false).unwrap();\n    assert_eq!(c.trim(4), Ok(vec![2]));\n    assert_eq!(c.resize(1, 2), Ok(vec![1]));\n    assert_eq!(c.used(), 0);\n}\n\n// R1, R13–R16, R19\n#[test]\nfn validation_and_replacement() {\n    assert!(matches!(Cache::new(vec![]), Err(Error::EmptyShards)));\n    let mut c = Cache::new(vec![5]).unwrap();\n    assert_eq!(c.insert(1, 0, 0, false), Err(Error::ZeroWeight));\n    c.insert(1, 1, 2, false).unwrap();\n    assert_eq!(c.insert(1, 2, 3, false), Ok(vec![]));\n    assert_eq!(c.get(1), Some(2));\n}\n```\n","requirements":"Repair this weighted sharded cache with global recency and pins. Its implementation has exactly five semantic defects.\n\nImplement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Repair the implementation below and return the corrected complete file. All listed API items must be public; additional private helpers are allowed. No main function is required.\n\nExact public API (Error, Event (when present), and Entry derive Debug, Clone, PartialEq, Eq; Cache derives Debug and Clone):\n```rust\npub enum Error { EmptyShards, ZeroWeight, TooHeavy { weight: u64, capacity: u64 }, Blocked { shard: usize }, Missing { key: u64 }, Pinned { key: u64 }, BadShard { shard: usize }, PinnedCapacity { minimum: u128, target: u128 } }\npub struct Entry { pub key: u64, pub value: i64, pub weight: u64, pub pinned: bool, pub shard: usize }\npub struct Cache { /* private fields */ }\nimpl Cache {\n    pub fn new(capacities: Vec<u64>) -> Result<Self, Error>;\n    pub fn capacities(&self) -> Vec<u64>;\n    pub fn usage(&self) -> Vec<u64>;\n    pub fn used(&self) -> u128;\n    pub fn snapshot(&self) -> Vec<Entry>;\n    pub fn get(&mut self, key: u64) -> Option<i64>;\n    pub fn set_pin(&mut self, key: u64, pinned: bool) -> Result<(), Error>;\n    pub fn remove(&mut self, key: u64) -> Result<i64, Error>;\n    pub fn insert(&mut self, key: u64, value: i64, weight: u64, pinned: bool) -> Result<Vec<u64>, Error>;\n    pub fn resize(&mut self, shard: usize, capacity: u64) -> Result<Vec<u64>, Error>;\n    pub fn trim(&mut self, target: u128) -> Result<Vec<u64>, Error>;\n}\n```\n\nR1. new requires at least one shard; [] returns EmptyShards. A nonempty capacity vector creates empty shards, allowing zero capacities.\nR2. Shard IDs are vector indices, in 0..number_of_shards. Route each key to (key % number_of_shards) without truncating key before the modulo.\nR3. All keys and values in u64 and i64 are supported. Positive weights and capacities may span the full u64 range.\nR4. capacities returns a fresh vector of capacities in shard-ID order. usage returns current resident weight per shard in that same order.\nR5. used returns the exact sum of all shard usage as u128, even if the total exceeds u64::MAX.\nR6. snapshot returns cloned Entries in one GLOBAL oldest-to-newest recency order, including pinned entries and each entry’s computed shard.\nR7. The getters and snapshot have no side effects. Altering a returned vector or a cloned Entry cannot alter the cache.\nR8. An insertion or successful get moves its key to the newest end of global recency; equal values still count as touches.\nR9. get returns Some(value) on a hit, including pinned hits, or None on a miss. A miss changes no state.\nR10. set_pin changes only the pin bit of an existing key; missing keys return Missing { key }. Pinning, unpinning and redundant pin calls NEVER change recency.\nR11. remove returns Missing { key } if absent, Pinned { key } if pinned, otherwise deletes the entry and returns its value. It does not touch survivors.\nR12. All errors are atomic: all values, pins, recency, capacities and usage remain exactly unchanged.\nR13. insert computes the destination shard and validates in this order: ZeroWeight for weight == 0; TooHeavy { weight, capacity } for weight > that shard’s capacity; Blocked { shard } if existing pinned entries other than the same key would prevent fitting the new weight even after evicting every other unpinned entry.\nR14. A same-key pinned entry may be replaced, including changing its weight or unpinning it. Exclude the old same-key weight from BOTH pinned feasibility and resident usage before any eviction.\nR15. The insertion feasibility condition is other pinned weight <= capacity - proposed weight; equality is allowed. No arithmetic may overflow.\nR16. After successful validation, remove the old same-key entry, if any. This replacement is not an eviction and is never returned as a victim.\nR17. If room is needed, repeatedly evict the globally oldest UNPINNED entry belonging to the destination shard until destination usage + weight <= capacity.\nR18. insert never evicts from another shard, even if it contains older entries or unused capacity; spare capacity cannot be borrowed across shards.\nR19. insert stores the new value, weight and supplied pin bit at newest global recency. Return only actual eviction victims in their removal order.\nR20. Pinned entries are immune to capacity eviction, global trim and remove, but not same-key replacement.\nR21. resize first validates shard ID; invalid IDs return BadShard { shard }, regardless of requested capacity.\nR22. For a valid shard, resize calculates its pinned resident weight. If pinned weight exceeds requested capacity, return PinnedCapacity { minimum: that pinned weight as u128, target: requested capacity as u128 } with no changes.\nR23. Otherwise resize installs the new local capacity and removes oldest unpinned entries in that shard until usage <= capacity, returning those keys in removal order.\nR24. resize never affects other shard capacities or entries, and never changes the relative order of survivors.\nR25. resize to the exact pinned weight is allowed. Resize to zero removes all unpinned entries and succeeds only if no pinned entry is in that shard.\nR26. trim first calculates GLOBAL pinned weight. If it exceeds target, return PinnedCapacity { minimum: global pinned weight, target }, without removing anything.\nR27. Otherwise trim repeatedly removes the globally oldest unpinned key, irrespective of shard, until total used <= target. Return victims in global removal order.\nR28. Trim does not change ANY shard capacity. Overshooting below target by evicting an indivisible weighted entry is allowed.\nR29. Trim when total used <= target is a complete no-op, returning []; targets up to u128::MAX are valid.\nR30. Insertion, resizing and trimming stop when the relevant usage equals its limit; they must not evict an additional key at equality.\nR31. Failed replacement must preserve the old value, weight and pin bit as well as old recency.\nR32. Removing or evicting one key frees precisely its stored weight; snapshots contain each resident key once, and usage agrees with snapshot weights.\nR33. Pinned entries remain in global recency, can be touched by get, and resume ordinary eviction priority at that exact position when unpinned.\nR34. Cloning a Cache makes independent copies of all its state. Later actions on a clone cannot alter the original.\nR35. All operations are synchronous and deterministic; no background tasks, wall time, random tie-breaks, external dependencies or panic on documented inputs.\n\nCompiling implementation to repair:\n```rust\nuse std::collections::{BTreeMap, VecDeque};\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub enum Error {\n    EmptyShards,\n    ZeroWeight,\n    TooHeavy { weight: u64, capacity: u64 },\n    Blocked { shard: usize },\n    Missing { key: u64 },\n    Pinned { key: u64 },\n    BadShard { shard: usize },\n    PinnedCapacity { minimum: u128, target: u128 },\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub struct Entry {\n    pub key: u64,\n    pub value: i64,\n    pub weight: u64,\n    pub pinned: bool,\n    pub shard: usize,\n}\n\n#[derive(Debug, Clone)]\npub struct Cache {\n    capacities: Vec<u64>,\n    usage: Vec<u64>,\n    entries: BTreeMap<u64, Entry>,\n    order: VecDeque<u64>,\n}\nimpl Cache {\n    /// Creates a cache with caller-supplied shard budgets.\n    /// The capacity vector also defines the shard count.\n    /// The resulting cache owns all shard storage.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn new(capacities: Vec<u64>) -> Result<Self, Error> {\n        if capacities.is_empty() {\n            return Err(Error::EmptyShards);\n        }\n        Ok(Self {\n            usage: vec![0; capacities.len()],\n            capacities,\n            entries: BTreeMap::new(),\n            order: VecDeque::new(),\n        })\n    }\n\n    /// Copies the shard capacity settings.\n    /// The vector is ordered by shard index.\n    /// The caller owns the returned copy.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn capacities(&self) -> Vec<u64> {\n        self.capacities.clone()\n    }\n\n    /// Copies the resident weight of each shard.\n    /// The vector is ordered by shard index.\n    /// The caller owns the returned copy.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn usage(&self) -> Vec<u64> {\n        self.usage.clone()\n    }\n\n    /// Reads total resident weight across all shards.\n    /// The return type accommodates aggregate weights.\n    /// Individual shard accounting is available through usage.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn used(&self) -> u128 {\n        self.usage.iter().map(|n| *n as u128).sum()\n    }\n\n    /// Copies resident entries in global cache order.\n    /// Entries include their shard and pin metadata.\n    /// The caller owns the returned vector.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn snapshot(&self) -> Vec<Entry> {\n        self.order.iter().map(|k| self.entries[k].clone()).collect()\n    }\n\n    // Maps a key into the configured shard collection.\n    fn shard(&self, key: u64) -> usize {\n        (key % self.capacities.len() as u64) as usize\n    }\n\n    // Records a key in the cache recency structure.\n    fn touch(&mut self, key: u64) {\n        self.order.retain(|k| *k != key);\n        self.order.push_back(key);\n    }\n\n    // Removes the stored entry and its accounting metadata.\n    fn erase(&mut self, key: u64) -> Option<Entry> {\n        let entry = self.entries.remove(&key)?;\n        self.usage[entry.shard] -= entry.weight;\n        self.order.retain(|k| *k != key);\n        Some(entry)\n    }\n\n    // Selects an eligible victim inside a specified shard.\n    fn local_victim(&self, shard: usize) -> Option<u64> {\n        self.order\n            .iter()\n            .rev()\n            .find(|k| self.entries[k].shard == shard && !self.entries[k].pinned)\n            .copied()\n    }\n\n    // Selects an eligible victim across the shard collection.\n    fn global_victim(&self) -> Option<u64> {\n        self.order.iter().find(|k| !self.entries[k].pinned).copied()\n    }\n\n    // Collects protected resident weight for a shard selection.\n    fn pinned_weight(&self, shard: Option<usize>) -> u128 {\n        self.entries\n            .values()\n            .filter(|e| e.pinned && shard.is_none_or(|s| e.shard == s))\n            .map(|e| e.weight as u128)\n            .sum()\n    }\n\n    /// Looks up the value associated with a key.\n    /// Routing follows the cache shard configuration.\n    /// An absent key returns an empty option.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn get(&mut self, key: u64) -> Option<i64> {\n        let value = self.entries.get(&key).map(|e| e.value);\n        if value.is_some() && !self.entries[&key].pinned {\n            self.touch(key);\n        }\n        value\n    }\n\n    /// Changes residency protection for a key.\n    /// The supplied boolean becomes its pin setting.\n    /// The result reports whether the key exists.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn set_pin(&mut self, key: u64, pinned: bool) -> Result<(), Error> {\n        let e = self.entries.get_mut(&key).ok_or(Error::Missing { key })?;\n        e.pinned = pinned;\n        self.touch(key);\n        Ok(())\n    }\n\n    /// Requests explicit deletion of a key.\n    /// On success the stored value is returned.\n    /// The result can report residency protection errors.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn remove(&mut self, key: u64) -> Result<i64, Error> {\n        let e = self.entries.get(&key).ok_or(Error::Missing { key })?;\n        if e.pinned {\n            return Err(Error::Pinned { key });\n        }\n        Ok(self.erase(key).unwrap().value)\n    }\n\n    /// Stores a value with weight and pin metadata.\n    /// The key selects the destination shard.\n    /// The returned list reports removals performed for storage.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn insert(\n        &mut self,\n        key: u64,\n        value: i64,\n        weight: u64,\n        pinned: bool,\n    ) -> Result<Vec<u64>, Error> {\n        let shard = self.shard(key);\n        let capacity = self.capacities[shard];\n        if weight == 0 {\n            return Err(Error::ZeroWeight);\n        }\n        if weight > capacity {\n            return Err(Error::TooHeavy { weight, capacity });\n        }\n        let fixed: u64 = self\n            .entries\n            .values()\n            .filter(|e| e.shard == shard && e.pinned)\n            .map(|e| e.weight)\n            .sum();\n        if fixed > capacity - weight {\n            return Err(Error::Blocked { shard });\n        }\n        self.erase(key);\n        let mut removed = Vec::new();\n        while self.usage[shard] > capacity - weight {\n            let victim = self.local_victim(shard).unwrap();\n            self.erase(victim);\n            removed.push(victim);\n        }\n        self.usage[shard] += weight;\n        self.entries.insert(\n            key,\n            Entry {\n                key,\n                value,\n                weight,\n                pinned,\n                shard,\n            },\n        );\n        self.touch(key);\n        Ok(removed)\n    }\n\n    /// Changes the capacity of a specified shard.\n    /// The result reports removals performed for that change.\n    /// The shard is identified by its vector index.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn resize(&mut self, shard: usize, capacity: u64) -> Result<Vec<u64>, Error> {\n        if shard >= self.capacities.len() {\n            return Err(Error::BadShard { shard });\n        }\n        let minimum = self.pinned_weight(Some(shard));\n        if minimum > capacity as u128 {\n            return Err(Error::PinnedCapacity {\n                minimum,\n                target: capacity as u128,\n            });\n        }\n        self.capacities[shard] = capacity;\n        let mut removed = Vec::new();\n        while self.usage[shard] > capacity {\n            let victim = self.local_victim(shard).unwrap();\n            self.erase(victim);\n            removed.push(victim);\n        }\n        Ok(removed)\n    }\n\n    /// Reduces aggregate resident weight.\n    /// The target applies across the shard collection.\n    /// The result reports removals performed for that target.\n    ///\n    /// The complete contract is defined by the task requirements.\n    pub fn trim(&mut self, target: u128) -> Result<Vec<u64>, Error> {\n        let minimum = self.pinned_weight(None);\n        if minimum > target {\n            return Err(Error::PinnedCapacity { minimum, target });\n        }\n        let mut removed = Vec::new();\n        while self.used() >= target && self.used() > 0 {\n            let victim = self.global_victim().unwrap();\n            self.erase(victim);\n            removed.push(victim);\n        }\n        Ok(removed)\n    }\n}\n```\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\n// R1–R6, R17–R19\n#[test]\nfn shards_local_eviction() {\n    let mut c = Cache::new(vec![3, 4]).unwrap();\n    c.insert(2, 20, 2, false).unwrap();\n    c.insert(1, 10, 2, false).unwrap();\n    assert_eq!(c.insert(4, 40, 2, false), Ok(vec![2]));\n    assert_eq!(c.usage(), vec![2, 2]);\n    assert_eq!(c.used(), 4);\n    assert_eq!(c.capacities(), vec![3, 4]);\n    assert_eq!(\n        c.snapshot().iter().map(|e| e.key).collect::<Vec<_>>(),\n        vec![1, 4]\n    );\n}\n\n// R9–R11, R20\n#[test]\nfn pins_and_removal() {\n    let mut c = Cache::new(vec![5]).unwrap();\n    c.insert(8, 80, 2, true).unwrap();\n    assert_eq!(c.get(8), Some(80));\n    assert_eq!(c.remove(8), Err(Error::Pinned { key: 8 }));\n    c.set_pin(8, false).unwrap();\n    assert_eq!(c.remove(8), Ok(80));\n}\n\n// R21–R29\n#[test]\nfn resize_and_trim() {\n    let mut c = Cache::new(vec![9, 9]).unwrap();\n    c.insert(2, 0, 2, false).unwrap();\n    c.insert(1, 0, 3, false).unwrap();\n    assert_eq!(c.trim(4), Ok(vec![2]));\n    assert_eq!(c.resize(1, 2), Ok(vec![1]));\n    assert_eq!(c.used(), 0);\n}\n\n// R1, R13–R16, R19\n#[test]\nfn validation_and_replacement() {\n    assert!(matches!(Cache::new(vec![]), Err(Error::EmptyShards)));\n    let mut c = Cache::new(vec![5]).unwrap();\n    assert_eq!(c.insert(1, 0, 0, false), Err(Error::ZeroWeight));\n    c.insert(1, 1, 2, false).unwrap();\n    assert_eq!(c.insert(1, 2, 3, false), Ok(vec![]));\n    assert_eq!(c.get(1), Some(2));\n}\n```\n"}
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-14T19:35:22.003937Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+use std::collections::{BTreeMap, VecDeque};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyShards,
+    ZeroWeight,
+    TooHeavy { weight: u64, capacity: u64 },
+    Blocked { shard: usize },
+    Missing { key: u64 },
+    Pinned { key: u64 },
+    BadShard { shard: usize },
+    PinnedCapacity { minimum: u128, target: u128 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub key: u64,
+    pub value: i64,
+    pub weight: u64,
+    pub pinned: bool,
+    pub shard: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct Cache {
+    capacities: Vec<u64>,
+    usage: Vec<u64>,
+    entries: BTreeMap<u64, Entry>,
+    order: VecDeque<u64>,
+}
+
+impl Cache {
+    /// Creates a cache with one shard for each supplied capacity.
+    pub fn new(capacities: Vec<u64>) -> Result<Self, Error> {
+        if capacities.is_empty() {
+            return Err(Error::EmptyShards);
+        }
+        Ok(Self {
+            usage: vec![0; capacities.len()],
+            capacities,
+            entries: BTreeMap::new(),
+            order: VecDeque::new(),
+        })
+    }
+
+    /// Returns shard capacities in shard order.
+    pub fn capacities(&self) -> Vec<u64> {
+        self.capacities.clone()
+    }
+
+    /// Returns resident weights in shard order.
+    pub fn usage(&self) -> Vec<u64> {
+        self.usage.clone()
+    }
+
+    /// Returns the exact total resident weight.
+    pub fn used(&self) -> u128 {
+        self.usage.iter().map(|&n| n as u128).sum()
+    }
+
+    /// Returns cloned entries from globally oldest to newest.
+    pub fn snapshot(&self) -> Vec<Entry> {
+        self.order
+            .iter()
+            .filter_map(|key| self.entries.get(key).cloned())
+            .collect()
+    }
+
+    fn shard(&self, key: u64) -> usize {
+        (key % self.capacities.len() as u64) as usize
+    }
+
+    fn touch(&mut self, key: u64) {
+        self.order.retain(|&k| k != key);
+        self.order.push_back(key);
+    }
+
+    fn erase(&mut self, key: u64) -> Option<Entry> {
+        let entry = self.entries.remove(&key)?;
+        self.usage[entry.shard] -= entry.weight;
+        self.order.retain(|&k| k != key);
+        Some(entry)
+    }
+
+    fn local_victim(&self, shard: usize) -> Option<u64> {
+        self.order
+            .iter()
+            .find(|&&key| {
+                self.entries
+                    .get(&key)
+                    .is_some_and(|entry| entry.shard == shard && !entry.pinned)
+            })
+            .copied()
+    }
+
+    fn global_victim(&self) -> Option<u64> {
+        self.order
+            .iter()
+            .find(|&&key| self.entries.get(&key).is_some_and(|entry| !entry.pinned))
+            .copied()
+    }
+
+    fn pinned_weight(&self, shard: Option<usize>, excluding: Option<u64>) -> u128 {
+        self.entries
+            .values()
+            .filter(|entry| {
+                entry.pinned
+                    && Some(entry.key) != excluding
+                    && shard.is_none_or(|s| entry.shard == s)
+            })
+            .map(|entry| entry.weight as u128)
+            .sum()
+    }
+
+    /// Returns a value and moves a hit to newest recency.
+    pub fn get(&mut self, key: u64) -> Option<i64> {
+        let value = self.entries.get(&key).map(|entry| entry.value);
+        if value.is_some() {
+            self.touch(key);
+        }
+        value
+    }
+
+    /// Sets the pin bit of an existing key without changing recency.
+    pub fn set_pin(&mut self, key: u64, pinned: bool) -> Result<(), Error> {
+        let entry = self.entries.get_mut(&key).ok_or(Error::Missing { key })?;
+        entry.pinned = pinned;
+        Ok(())
+    }
+
+    /// Removes an unpinned entry and returns its value.
+    pub fn remove(&mut self, key: u64) -> Result<i64, Error> {
+        match self.entries.get(&key) {
+            None => Err(Error::Missing { key }),
+            Some(entry) if entry.pinned => Err(Error::Pinned { key }),
+            Some(_) => Ok(self.erase(key).expect("entry was checked").value),
+        }
+    }
+
+    /// Inserts or replaces an entry, returning capacity-eviction victims.
+    pub fn insert(
+        &mut self,
+        key: u64,
+        value: i64,
+        weight: u64,
+        pinned: bool,
+    ) -> Result<Vec<u64>, Error> {
+        let shard = self.shard(key);
+        let capacity = self.capacities[shard];
+
+        if weight == 0 {
+            return Err(Error::ZeroWeight);
+        }
+        if weight > capacity {
+            return Err(Error::TooHeavy { weight, capacity });
+        }
+
+        let fixed = self.pinned_weight(Some(shard), Some(key));
+        if fixed > (capacity - weight) as u128 {
+            return Err(Error::Blocked { shard });
+        }
+
+        // Validation is complete. Remove a same-key entry before considering eviction.
+        self.erase(key);
+
+        let mut removed = Vec::new();
+        while self.usage[shard] > capacity - weight {
+            let victim = self
+                .local_victim(shard)
+                .expect("pinned feasibility guarantees an unpinned victim");
+            self.erase(victim);
+            removed.push(victim);
+        }
+
+        self.usage[shard] += weight;
+        self.entries.insert(
+            key,
+            Entry {
+                key,
+                value,
+                weight,
+                pinned,
+                shard,
+            },
+        );
+        self.touch(key);
+        Ok(removed)
+    }
+
+    /// Changes one shard's capacity and returns removed unpinned keys.
+    pub fn resize(&mut self, shard: usize, capacity: u64) -> Result<Vec<u64>, Error> {
+        if shard >= self.capacities.len() {
+            return Err(Error::BadShard { shard });
+        }
+
+        let minimum = self.pinned_weight(Some(shard), None);
+        if minimum > capacity as u128 {
+            return Err(Error::PinnedCapacity {
+                minimum,
+                target: capacity as u128,
+            });
+        }
+
+        self.capacities[shard] = capacity;
+        let mut removed = Vec::new();
+        while self.usage[shard] > capacity {
+            let victim = self
+                .local_victim(shard)
+                .expect("pinned weight fits the requested capacity");
+            self.erase(victim);
+            removed.push(victim);
+        }
+        Ok(removed)
+    }
+
+    /// Reduces total resident weight, returning globally oldest victims.
+    pub fn trim(&mut self, target: u128) -> Result<Vec<u64>, Error> {
+        let minimum = self.pinned_weight(None, None);
+        if minimum > target {
+            return Err(Error::PinnedCapacity { minimum, target });
+        }
+
+        let mut removed = Vec::new();
+        while self.used() > target {
+            let victim = self
+                .global_victim()
+                .expect("pinned weight fits the target");
+            self.erase(victim);
+            removed.push(victim);
+        }
+        Ok(removed)
+    }
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_eviction_and_global_recency() {
+        let mut cache = Cache::new(vec![3, 4]).unwrap();
+        cache.insert(2, 20, 2, false).unwrap();
+        cache.insert(1, 10, 2, false).unwrap();
+        assert_eq!(cache.insert(4, 40, 2, false), Ok(vec![2]));
+        assert_eq!(
+            cache.snapshot().iter().map(|e| e.key).collect::<Vec<_>>(),
+            vec![1, 4]
+        );
+        assert_eq!(cache.usage(), vec![2, 2]);
+    }
+
+    #[test]
+    fn invalid_inputs_leave_state_unchanged() {
+        assert_eq!(Cache::new(vec![]).unwrap_err(), Error::EmptyShards);
+        let mut cache = Cache::new(vec![5]).unwrap();
+        cache.insert(1, 10, 2, true).unwrap();
+        let before = cache.snapshot();
+        assert_eq!(cache.insert(1, 20, 0, false), Err(Error::ZeroWeight));
+        assert_eq!(cache.snapshot(), before);
+        assert_eq!(cache.resize(1, 0), Err(Error::BadShard { shard: 1 }));
+        assert_eq!(cache.snapshot(), before);
+    }
+
+    #[test]
+    fn failed_replacement_is_atomic_and_pinned_same_key_can_be_replaced() {
+        let mut cache = Cache::new(vec![5]).unwrap();
+        cache.insert(1, 10, 2, true).unwrap();
+        cache.insert(2, 20, 2, false).unwrap();
+        let before = cache.snapshot();
+
+        // Other pinned entries prevent this replacement; the original remains intact.
+        cache.insert(3, 30, 1, true).unwrap();
+        let state_before_failure = cache.snapshot();
+        assert_eq!(
+            cache.insert(1, 11, 4, false),
+            Err(Error::Blocked { shard: 0 })
+        );
+        assert_eq!(cache.snapshot(), state_before_failure);
+        assert_ne!(cache.snapshot(), before);
+
+        // A pinned key is replaceable and its own old weight is excluded.
+        let mut single = Cache::new(vec![5]).unwrap();
+        single.insert(7, 70, 5, true).unwrap();
+        assert_eq!(single.insert(7, 71, 5, false), Ok(vec![]));
+        assert_eq!(single.snapshot()[0].value, 71);
+        assert!(!single.snapshot()[0].pinned);
+    }
+
+    #[test]
+    fn trim_removes_oldest_until_at_or_below_target() {
+        let mut cache = Cache::new(vec![8, 8]).unwrap();
+        cache.insert(2, 2, 3, false).unwrap();
+        cache.insert(1, 1, 4, false).unwrap();
+        assert_eq!(cache.trim(4), Ok(vec![2]));
+        assert_eq!(cache.used(), 4);
+        assert_eq!(cache.capacities(), vec![8, 8]);
+    }
+}
+```
+tokens used
+19,767

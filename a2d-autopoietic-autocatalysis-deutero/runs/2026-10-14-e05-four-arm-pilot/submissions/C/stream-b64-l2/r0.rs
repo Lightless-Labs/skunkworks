@@ -1,0 +1,304 @@
+const ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Errors encountered while encoding or decoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+    AlreadyFinished,
+}
+
+fn encode_group(input: &[u8]) -> String {
+    let a = input[0];
+    let b = if input.len() > 1 { input[1] } else { 0 };
+    let c = if input.len() > 2 { input[2] } else { 0 };
+
+    let mut output = String::with_capacity(4);
+    output.push(ALPHABET[(a >> 2) as usize] as char);
+    output.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+
+    if input.len() > 1 {
+        output.push(ALPHABET[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char);
+    } else {
+        output.push('=');
+    }
+
+    if input.len() > 2 {
+        output.push(ALPHABET[(c & 0x3f) as usize] as char);
+    } else {
+        output.push('=');
+    }
+    output
+}
+
+fn digit(byte: u8) -> Option<u8> {
+    ALPHABET.iter().position(|&b| b == byte).map(|i| i as u8)
+}
+
+/// Encodes bytes using the standard six-bit alphabet.
+pub fn encode(input: &[u8]) -> String {
+    let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        output.push_str(&encode_group(chunk));
+    }
+    output
+}
+
+#[derive(Debug, Clone, Default)]
+struct EncoderState {
+    tail: Vec<u8>,
+    finished: bool,
+}
+
+/// Incremental encoder.
+#[derive(Debug, Clone, Default)]
+pub struct Encoder {
+    state: EncoderState,
+}
+
+impl Encoder {
+    /// Creates an empty open encoder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Encodes all newly available complete groups.
+    pub fn push(&mut self, input: &[u8]) -> Result<String, Error> {
+        if self.state.finished {
+            return Err(Error::AlreadyFinished);
+        }
+
+        let mut bytes = std::mem::take(&mut self.state.tail);
+        bytes.extend_from_slice(input);
+
+        let complete_len = bytes.len() / 3 * 3;
+        let mut output = String::with_capacity(complete_len / 3 * 4);
+        for chunk in bytes[..complete_len].chunks(3) {
+            output.push_str(&encode_group(chunk));
+        }
+        self.state.tail.extend_from_slice(&bytes[complete_len..]);
+        Ok(output)
+    }
+
+    /// Encodes any remaining bytes and closes the encoder.
+    pub fn finish(&mut self) -> Result<String, Error> {
+        if self.state.finished {
+            return Err(Error::AlreadyFinished);
+        }
+        self.state.finished = true;
+        if self.state.tail.is_empty() {
+            Ok(String::new())
+        } else {
+            Ok(encode_group(&self.state.tail))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct DecoderState {
+    group: Vec<(u8, usize)>,
+    offset: usize,
+    terminal: bool,
+    pending_padding: Option<usize>,
+    finished: bool,
+    error: Option<Error>,
+}
+
+fn decode_group(group: &[(u8, usize)]) -> Vec<u8> {
+    let a = digit(group[0].0).unwrap();
+    let b = digit(group[1].0).unwrap();
+    let mut output = vec![(a << 2) | (b >> 4)];
+
+    if group[2].0 == b'=' {
+        return output;
+    }
+
+    let c = digit(group[2].0).unwrap();
+    output.push((b << 4) | (c >> 2));
+
+    if group[3].0 != b'=' {
+        let d = digit(group[3].0).unwrap();
+        output.push((c << 6) | d);
+    }
+    output
+}
+
+fn scan_byte(state: &mut DecoderState, byte: u8, offset: usize) -> Result<Option<Vec<u8>>, Error> {
+    if state.terminal {
+        return Err(Error::BadPadding { offset });
+    }
+
+    if let Some(pad_offset) = state.pending_padding {
+        if byte != b'=' {
+            return Err(Error::BadPadding { offset });
+        }
+        state.pending_padding = None;
+        state.group.push((byte, offset));
+        state.terminal = true;
+        let output = decode_group(&state.group);
+        state.group.clear();
+        let _ = pad_offset;
+        return Ok(Some(output));
+    }
+
+    let position = state.group.len();
+    if byte == b'=' {
+        match position {
+            0 | 1 => return Err(Error::BadPadding { offset }),
+            2 => {
+                state.pending_padding = Some(offset);
+                state.group.push((byte, offset));
+                return Ok(None);
+            }
+            3 => {
+                state.group.push((byte, offset));
+                state.terminal = true;
+                let output = decode_group(&state.group);
+                state.group.clear();
+                return Ok(Some(output));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    if let Some(value) = digit(byte) {
+        state.group.push((byte, offset));
+        if state.group.len() == 4 {
+            let output = decode_group(&state.group);
+            state.group.clear();
+            return Ok(Some(output));
+        }
+        let _ = value;
+        return Ok(None);
+    }
+
+    Err(Error::InvalidByte { offset, byte })
+}
+
+/// Incremental decoder.
+#[derive(Debug, Clone, Default)]
+pub struct Decoder {
+    state: DecoderState,
+}
+
+impl Decoder {
+    /// Creates an empty open decoder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Decodes newly completed groups from the supplied bytes.
+    pub fn push(&mut self, input: &[u8]) -> Result<Vec<u8>, Error> {
+        if let Some(error) = &self.state.error {
+            return Err(error.clone());
+        }
+        if self.state.finished {
+            let error = Error::AlreadyFinished;
+            self.state.error = Some(error.clone());
+            return Err(error);
+        }
+
+        let mut output = Vec::new();
+        for &byte in input {
+            let offset = self.state.offset;
+            self.state.offset += 1;
+            match scan_byte(&mut self.state, byte, offset) {
+                Ok(Some(group)) => output.extend(group),
+                Ok(None) => {}
+                Err(error) => {
+                    self.state.error = Some(error.clone());
+                    return Err(error);
+                }
+            }
+        }
+        Ok(output)
+    }
+
+    /// Completes decoding any residual group and closes the decoder.
+    pub fn finish(&mut self) -> Result<Vec<u8>, Error> {
+        if let Some(error) = &self.state.error {
+            return Err(error.clone());
+        }
+        if self.state.finished {
+            let error = Error::AlreadyFinished;
+            self.state.error = Some(error.clone());
+            return Err(error);
+        }
+
+        self.state.finished = true;
+        if let Some(offset) = self.state.pending_padding {
+            let error = Error::BadPadding { offset };
+            self.state.error = Some(error.clone());
+            return Err(error);
+        }
+        if !self.state.group.is_empty() {
+            let error = Error::Truncated {
+                offset: self.state.group[0].1,
+            };
+            self.state.error = Some(error.clone());
+            return Err(error);
+        }
+        Ok(Vec::new())
+    }
+}
+
+/// Decodes bytes, returning an error on malformed input.
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut decoder = Decoder::new();
+    let mut output = decoder.push(input)?;
+    output.extend(decoder.finish()?);
+    Ok(output)
+}
+
+/// Program entry point.
+pub fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normal_encoding_and_decoding() {
+        assert_eq!(encode(b"Cat"), "Q2F0");
+        assert_eq!(decode(b"YWJj"), Ok(b"abc".to_vec()));
+    }
+
+    #[test]
+    fn invalid_and_truncated_inputs() {
+        assert_eq!(
+            decode(b"AA?"),
+            Err(Error::InvalidByte {
+                offset: 2,
+                byte: b'?'
+            })
+        );
+        assert_eq!(decode(b"AAA"), Err(Error::Truncated { offset: 0 }));
+    }
+
+    #[test]
+    fn streaming_round_trip_and_sticky_error() {
+        let mut encoder = Encoder::new();
+        let encoded = format!(
+            "{}{}{}",
+            encoder.push(b"a").unwrap(),
+            encoder.push(b"bcde").unwrap(),
+            encoder.finish().unwrap()
+        );
+        assert_eq!(encoded, encode(b"abcde"));
+
+        let mut decoder = Decoder::new();
+        assert_eq!(decoder.push(b"YWJj").unwrap(), b"abc");
+        assert_eq!(decoder.push(b"!"), Err(Error::InvalidByte { offset: 4, byte: b'!' }));
+        assert_eq!(decoder.finish(), Err(Error::InvalidByte { offset: 4, byte: b'!' }));
+    }
+
+    #[test]
+    fn padded_group_and_closure() {
+        let mut decoder = Decoder::new();
+        assert_eq!(decoder.push(b"Zg==").unwrap(), b"f");
+        assert_eq!(decoder.finish().unwrap(), Vec::<u8>::new());
+        assert_eq!(decoder.push(b""), Err(Error::AlreadyFinished));
+    }
+}
