@@ -108,6 +108,7 @@ def select(args: argparse.Namespace) -> None:
             "repo": row["repo"],
             "base_commit": row["base_commit"],
             "instruction": common.instruction_text(row),
+            "problem_statement": common.instruction_text(row, issue_only=True),
             "fail_to_pass": sorted(set(fail_to_pass)),
             "pass_to_pass": sorted(set(json.loads(row["pass_to_pass"]))),
             "visible_fail_to_pass": visible,
@@ -116,7 +117,10 @@ def select(args: argparse.Namespace) -> None:
         }
         dest = private_dir(opaque)
         dest.mkdir(parents=True, exist_ok=True)
-        (dest / "manifest.json").write_text(json.dumps(manifest, indent=1, sort_keys=True))
+        existing = dest / "manifest.json"
+        if existing.exists():  # keep fields learned during prepare (base_date, install_mode)
+            manifest = {**json.loads(existing.read_text()), **manifest}
+        existing.write_text(json.dumps(manifest, indent=1, sort_keys=True))
         (dest / "gold.patch").write_text(row["patch"])
         (dest / "test.patch").write_text(row["test_patch"])
         selected.append({"opaque_id": opaque, "instance_id": row["instance_id"]})

@@ -54,9 +54,14 @@ def opaque_task_id(instance_id: str) -> str:
     return "e1-" + hashlib.sha256(f"a2-e1:{instance_id}".encode("utf-8")).hexdigest()[:12]
 
 
-def instruction_text(row: dict) -> str:
-    """Agent-facing task text: the official instruction fields only (never patches or test lists)."""
+def instruction_text(row: dict, issue_only: bool = False) -> str:
+    """Agent-facing task text: the official instruction fields only (never patches or test lists).
+
+    `issue_only` keeps just the problem statement (E1 variant; see the plan's 2026-10-14 addenda).
+    """
     sections = [row["problem_statement"].strip()]
+    if issue_only:
+        return sections[0]
     if (row.get("requirements") or "").strip():
         sections.append("Requirements:\n" + row["requirements"].strip())
     if (row.get("interface") or "").strip():
@@ -76,3 +81,11 @@ def junit_case_to_node_id(classname: str, name: str, file_exists: Callable[[str]
         if file_exists(candidate):
             return "::".join([candidate, *parts[i:], name])
     return None
+
+
+def agent_instruction(manifest: dict, mode: str) -> str:
+    if mode == "issue-only":
+        return manifest["problem_statement"]
+    if mode == "full":
+        return manifest["instruction"]
+    raise ValueError(f"unknown instruction mode {mode!r}")

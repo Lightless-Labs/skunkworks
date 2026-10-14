@@ -80,6 +80,22 @@ class InstructionTests(unittest.TestCase):
         self.assertNotIn("Interface", text)
 
 
+class IssueOnlyTests(unittest.TestCase):
+    def test_issue_only_drops_requirements_and_interface(self) -> None:
+        row = {"problem_statement": "  Fix X.  ", "requirements": "Must Y.", "interface": "def f(): ..."}
+        text = common.instruction_text(row, issue_only=True)
+        self.assertEqual(text, "Fix X.")
+
+    def test_agent_instruction_selects_mode_from_manifest(self) -> None:
+        manifest = {"instruction": "Fix X.\n\nRequirements:\nMust Y.", "problem_statement": "Fix X."}
+        self.assertEqual(common.agent_instruction(manifest, "issue-only"), "Fix X.")
+        self.assertEqual(common.agent_instruction(manifest, "full"), manifest["instruction"])
+        with self.assertRaises(ValueError):
+            common.agent_instruction(manifest, "other")
+        with self.assertRaises(KeyError):
+            common.agent_instruction({"instruction": "x"}, "issue-only")
+
+
 class ResolutionTests(unittest.TestCase):
     def test_resolution_requires_all_required_tests(self) -> None:
         self.assertTrue(common.resolved({"a", "b"}, {"a", "b", "c"}))

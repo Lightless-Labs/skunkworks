@@ -26,6 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import common  # noqa: E402
 import tasks  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -161,7 +162,7 @@ def classify_infra(attempts: list[dict], returncodes: list[int]) -> str | None:
 
 def run_arm(cfg: argparse.Namespace, opaque: str, arm: str, run_dir: Path) -> dict:
     manifest = tasks.load_manifest(opaque)
-    instruction = manifest["instruction"]
+    instruction = common.agent_instruction(manifest, cfg.instruction)
     markers = [(tasks.private_dir(opaque) / "gold.patch").read_text()[:200], str(tasks.private_dir())]
     markers += manifest["hidden_fail_to_pass"]
     log = run_dir / f"{opaque}.{arm}.log"
@@ -206,6 +207,7 @@ def run_arm(cfg: argparse.Namespace, opaque: str, arm: str, run_dir: Path) -> di
         "run_id": cfg.run_id,
         "provider": cfg.provider,
         "reasoning_effort": cfg.reasoning_effort,
+        "instruction": cfg.instruction,
         "attempts_used": len(attempts),
         "visible_passed_attempt": next((i + 1 for i, r in enumerate(attempts) if verifier_passed(r)), None),
         "tokens_in": sum(int(r.get("tokens_in") or 0) for r in attempts),
@@ -256,6 +258,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--endpoint", action="append", default=None, help="model endpoint https URL (repeatable)")
     # Non-binding ceiling: Codex input counts include cached context; the per-attempt timeout is the real limit.
     parser.add_argument("--max-tokens", type=int, default=2_000_000)
+    parser.add_argument("--instruction", default="issue-only", choices=["issue-only", "full"],
+                        help="issue-only withholds requirements/interface from every arm (E1 variant)")
     parser.add_argument("--reasoning-effort", default="high",
                         choices=["none", "minimal", "low", "medium", "high", "xhigh", "max"])
     parser.add_argument("--timeout", type=int, default=1500)
