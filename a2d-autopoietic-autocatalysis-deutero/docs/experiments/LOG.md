@@ -159,3 +159,27 @@ Pre-registration and results for `docs/plans/2026-10-14-lift-first-roadmap.md`. 
   - **Power plan, C vs D.** Pilot discordance pd = 0.21 (p10 0.125, p01 0.083). 80% power at 10 pp needs about 162 independent pairs, or 210–307 with a family design effect (ρ 0.1–0.3, 4 tasks per family). Replicates add little (79–92% agreement), so power must come from tasks.
   - **Confirmation-1 is set at the cap: 37 families × 4 = 148 tasks, 1 replicate.** That is about 75% power with no clustering, and less with it. The shortfall is recorded, not hidden; the allowed single sample extension remains available if the result is INCONCLUSIVE.
   - 25 more Codex-authored families are needed (12 exist). P2 stays at k = 5, the configuration reviewed at the P1 gate.
+
+### E06 — C and D re-pilot with the latest-tie submission rule  [phase P1 → P2 pilot]
+- Registered: 2026-10-14 (frozen paths at commit eeaa7e7, which includes the tie-break change 007c7c7)
+- Purpose:
+  1. Pilot the changed treatment (latest-tie submission rule).
+  2. Measure C and D **replicate agreement** against E05 on the same 24 tasks, to set the Confirmation-1 replicate count.
+  For C, E05 is compared under the new rule, recomputed offline (descriptive, done before this run): 17/24.
+- Arms / configuration: C, D; k = 5; primary comparator D (C vs D only); seed 6; jobs 4.
+- Task set: calibration, `tasks/calibration-v2` (suite hash 067b4a6250521d173ceb3d9a42e191ff43878774f7d2c50bed0023e3749a3458), n = 24, families = 6
+- Model(s): `codex/gpt-6-luna`, reasoning effort low, no-tools lane, provider timeout 300 s     k = 5     replicates = 1
+- Budget cap: 260 invocations (planned ≤ 240), 5400 s wall-clock. Holdout authoring is paused for the whole run (no concurrent Codex jobs).
+- Infrastructure exceptions (predefined): as E03–E05; tuple exclusions are capped at 5%.
+- **Decision rule, pre-registered.** Agreement is the per-arm share of tasks with the same hidden outcome as E05 (C: against E05 re-selected under the new rule; D: against E05 directly).
+  - If the mean of C's and D's agreement is **≤ 0.85**, Confirmation-1 runs **r = 2** replicates.
+  - Otherwise it runs r = 1, and the one allowed extension (a second replicate pass) stays in reserve.
+- Result: pending
+- Artifacts: runs/2026-10-14-e06-cd-repilot/ (ledger: runs/2026-10-14-e06-cd-repilot/ledger.jsonl)
+- Deviations:
+- Decision:
+
+E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
+- Per-attempt hidden passes: A 14; B attempts 10, 13, 12, 10, 14; C first attempt 13, second attempt 15.
+- C pairs (first, second): both pass 10; first only 3; second only 5; neither 6.
+- B's attempt 0 is within the pre-stated ±5-task noise band of A, so nothing is investigated.

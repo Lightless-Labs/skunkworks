@@ -26,6 +26,49 @@ Process diagnostics:
 - no tripwire hits.
 
 Reviewer note: arm C landed without a live four-arm run, so the next result must be E02 (all arms live), not more controller work. P1 plan: `docs/plans/2026-10-14-p1-calibration-suite.md`.
+**Addendum:** 2026-10-14 — P1 gate (design for P2).
+
+Reviewers were Codex `gpt-6.1-sol` (high) and a fresh-context Claude subagent, each in an empty temp dir with copies of the inputs. The subagent also simulated the implemented classifier: whole-family percentile bootstrap, 37 families × 4 tasks.
+
+Decisions, all made before any confirmation data exists:
+
+- **Budget.** "Same budget" in the Objective and Metric means an **equal invocation cap per task (k)**. Realised spend per arm (invocations, tokens, provider time) is reported beside every claim, and claims are worded "at an equal invocation cap". In E05, C used about 3× D's calls and tokens, because D stops at public-green.
+- **Claim rule.**
+  - **SUPPORTED** requires the primary comparison (C vs D) **and** the secondary comparison (C vs B) to be SUPPORTED (intersection–union).
+  - **RULED OUT**, i.e. falsification, is decided by C vs D alone.
+  - Completion's "RULED OUT for the seed or minimal configuration" refers to that primary comparison.
+- **Power target, corrected.** SUPPORTED needs a point lift of at least 10 pp, so P(SUPPORTED) is about 50% at a true 10 pp for any n. The earlier "80% power at 10 pp" described a different event. The targets are now P(SUPPORTED | true 15 pp) ≥ 0.8 and P(RULED OUT | true 0) ≥ 0.8.
+  - At 37 × 4 × 1 replicate the simulation gives P(SUPPORTED | 15 pp) ≈ 0.82–0.94, but P(RULED OUT | 0) only ≈ 0.50–0.74 (paired-difference ICC 0–0.3).
+  - At 2 replicates with per-arm agreement ≈ 0.79, P(RULED OUT | 0) ≈ 0.96. The replicate count is set from E06.
+  - The class rule is unchanged.
+- **Classification with exclusions.** Classes are computed over complete tuples when at most 5% of planned tuples are excluded (voided, aborted, missing an arm); above that, the run is Invalid. Provider timeouts are arm failures, never voids. Hidden-name hits or any coder tool call turn the run into IntegrityReview.
+- **Submission tie-break.** Most public passes, then compiled, then the **latest** attempt (was: earliest). This was decided on design grounds before any attempt-level hidden data was examined. For the feedback arms, a later equal attempt has absorbed more feedback, and A²D keeps its latest code. It is a treatment change, re-piloted by E06.
+- **Pilot set.** calibration-v2 serves as the P2 pilot (E05, E06) instead of the development tasks: it shares the confirmation template, while the development set is 3 saturated legacy tasks. This is its third use (E04–E06), against "not reused", but it never supports a claim.
+- **Sample extension.** The single allowed extension is **one more replicate pass over the same Confirmation-1 tasks** (no new authoring), analysed pooled at the family level. The 25 families added to Confirmation-1 are part of the initial sample, not an extension.
+- **Independent reference (required for P1 exit, § P1 Oracles).** Today's references share an author with their tests. Before P2, Codex `gpt-6.1-sol` solves Confirmation-1 blind from the requirements and public tests (arm D, output under `$A2D_HOLDOUT_DIR/audit/`). A Codex adjudicator repairs any task where that solution fails a hidden test the spec does not determine. Rules:
+  - audit outputs are never experiment data;
+  - flagged tasks are repaired, never dropped;
+  - re-validation happens before the hash is taken;
+  - auditor and coder share a vendor, a recorded limitation.
+  - Confirmation-2 gets the same audit before P4.
+- **Validation now enforces:**
+  - mutants that compile and fail a hidden assertion;
+  - at least 4 mutants, of which at least 2 are public-green;
+  - at least 3 public and at least 20 hidden tests;
+  - a deterministic reference;
+  - tests that compile against the reference **as a separate crate** (public API only).
+- **Run hygiene.** No other Codex jobs run on the account during a registered run, so holdout authoring is paused. Global cap = the planned maximum; wall clock = 2× the expected time. The codex CLI version is recorded.
+- **Content-free ledger.** 0 of 450 hidden-only test names appear in E05's ledger. The pre-score anchor is `a2d lift manifest` (no argv or paths), committed before `a2d lift score --expect-head`.
+- **Deferred:**
+  - automated operator-mutation score (as a covariate);
+  - an exploratory token-matched D′;
+  - family-grouping sensitivity for near-sibling families (base32-codec and varint-codec vs stream-b64).
+
+Process diagnostics:
+- 1 session, 5 results, 25 commits up to E05 (21 tagged), about 627 live invocations (3% of the cap);
+- T7 at 1 of 2; no tripwire hits.
+
+Reviewer note: the cadence was good. The drift was analytical: a power formula never checked against `classify`, replicate value inferred from per-arm agreement, and a pilot-set change without an addendum. All three are corrected here. Lesson: plan with a simulation of the implemented decision rule, not a textbook formula.
 **Supersedes as primary goal:** `swe-bench-pro-blind-evaluator-adapter.md` (parked), the Senior SWE-Bench retry chain (parked)
 **Grounding:** `docs/research/2026-10-14-direction-audit.md`, `docs/research/2026-10-14-dgm-rqgm-relevance.md`
 **Decision deadline:** P2 confirmation result recorded by **2026-11-30**. Missing it is a non-result, not a falsification: record "not measured by deadline", stop adding seed-cycle complexity, and continue per Completion.
