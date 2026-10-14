@@ -21,8 +21,9 @@ impl SeedEvaluator {
         Self { token_ceiling }
     }
 
+    /// Tests pass only when something actually ran: zero executed tests is a failure.
     fn check_tests(&self, results: &TestResults) -> bool {
-        results.failed == 0
+        results.failed == 0 && results.passed > 0
     }
 
     fn check_acceptance(&self, patch: &PatchBundle, task: &TaskContract) -> Vec<bool> {
@@ -153,6 +154,25 @@ mod tests {
 
         let fitness = eval.evaluate(&patch, &task).await.unwrap();
         assert!(!fitness.somatic.task_completed);
+    }
+
+    #[tokio::test]
+    async fn zero_executed_tests_score_incomplete() {
+        // A non-empty diff with nothing executed is not evidence of completion.
+        let eval = SeedEvaluator::new(10_000);
+        let task = make_task();
+        let mut patch = make_patch(true, "Fixed: frobulator works now", 500);
+        patch.test_results = TestResults {
+            passed: 0,
+            failed: 0,
+            skipped: 4,
+            details: vec![],
+        };
+
+        let fitness = eval.evaluate(&patch, &task).await.unwrap();
+        assert!(!fitness.somatic.tests_pass);
+        assert!(!fitness.somatic.task_completed);
+        assert!(!fitness.somatic.acceptance_met[0]);
     }
 
     #[tokio::test]
