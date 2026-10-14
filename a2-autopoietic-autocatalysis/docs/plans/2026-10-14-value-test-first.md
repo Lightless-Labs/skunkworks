@@ -74,3 +74,17 @@ Never edit it after outcomes are observed. Corrections go in a dated addendum.
 - **Stalled steps:** two attempts without movement on a blocking step → write a one-page blocker report in `docs/blockers/`, then change the design. Do not make a third tweak.
 - **Shared checkout:** follow `AGENTS.md` (work on `main`, no worktrees, no stash, no destructive git, scoped commits, never touch `a2d-*`).
 - **Long Cargo runs:** use the bounded liveness harness (`bench/phase0_liveness.py`).
+
+## Addenda
+
+### 2026-10-14 — Native grading (no container runtime on this host)
+
+Local containers are impossible here: the host is a VM without nested virtualization, and every SWE-Bench Pro V2 image is amd64-only. See `docs/blockers/2026-10-14-no-container-runtime.md`. E1 therefore uses a **native-graded SWE-Bench Pro V2 Python subset**: history-free shallow checkouts, `uv` venvs pinned with `--exclude-newer <base commit date>`, and an official-equivalent resolution rule. A task enters the sample only if gold resolves it and the empty patch does not. The plan's "Boundaries" item for evaluation becomes "native grading in a disposable copy of the checkout" instead of a `--network none` container. Agent arms are unchanged.
+
+**Feedback signal.** SWE-Bench Pro exposes no visible test subset. For tasks with ≥ 2 fail-to-pass tests, the fail-to-pass set is split deterministically, by SHA-256 of the test id, into a *visible* half and a *hidden* half. Every retrying arm receives identical feedback from running the visible half plus pass-to-pass. The hidden half is used only for final scoring. The primary metric remains official-rule resolution (all fail-to-pass ∪ pass-to-pass), computed once after the run. Hidden-half resolution is reported as a secondary metric. The split rule is fixed in the protocol before any model call.
+
+**A² path facts found while mapping the loop** (to be fixed before calibration):
+- retry feedback is replaced by hashes when `no_external_solution_search` is set, which blinds A²'s retries;
+- `a2ctl run` cannot target an external repository;
+- the worktree prompt hard-codes A²'s own crate layout;
+- `TestResults` counts verifier commands, not tests.
