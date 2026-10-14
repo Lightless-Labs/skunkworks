@@ -12,8 +12,9 @@ The audit remediation roadmap is [`docs/plans/2026-07-10-a2-remediation-roadmap.
 **Remediation status (2026-10-14):** maturity `PreStage0`; live germline mutation locked out.
 - Phase 0: maturity relabel + `--apply` lockout (`4c5d1e0`), bounded liveness harness (`e881ee7`, `46fb0a7`), Bazel crate graph (`53e723f`), Cargo/Bazel target parity checker 25/25 (`6715ddf`), boundary gate passing via inherited process-tree sandbox (`cd88992`). Evidence: `docs/evidence/remediation/phase-0/`.
 - Phase 0 not yet complete: `//crates/a2_workcell:a2_workcell_test` is red under Bazel because one pipeline test spawns `cargo` (not on the Bazel test PATH).
-- **Direction (2026-10-14):** remediation roadmap frozen; active plan is [`docs/plans/2026-10-14-value-test-first.md`](plans/2026-10-14-value-test-first.md) (E1: A² vs stateless retry on held-out external tasks, decision due 2026-11-30, INCONCLUSIVE = NO GO). Basis: [`reviews/2026-10-14-direction-audit.md`](../reviews/2026-10-14-direction-audit.md).
-- Next: zero-spend harness fixes (zero-tests-run fails, history-free task checkouts, `--arm raw` / `--arm stateless-retry`), then verify the SWE-Bench Pro public split and calibrate.
+- **Direction (2026-10-14):** roadmap frozen. The active plan is [`docs/plans/2026-10-14-value-test-first.md`](plans/2026-10-14-value-test-first.md) (see its addenda). E1 compares raw / stateless-retry / a2-full on a native-graded SWE-Bench Pro V2 ansible subset. Decision due 2026-11-30; INCONCLUSIVE = NO GO.
+- **E1 build state:** `bench/e1/` (tasks, grading, verifier, egress proxy, driver) and the `a2ctl run` external-repo flags (`2e9d76c`) are landed. AllowList sandbox profiles were invalid under Seatbelt; the loopback egress-proxy fix is in progress. No local containers ([blocker](blockers/2026-10-14-no-container-runtime.md)). The boundary audit's profile parser is stale after `2e9d76c` and is frozen until E1 reports.
+- Next: finish the AllowList fix, then calibrate (~5 tasks, `raw`), then commit `bench/external-value/protocol-v1.toml` before the first non-calibration call.
 
 ## Current Numbers (test counts refreshed 2026-07-10; benchmark rows are historical unless dated below)
 
