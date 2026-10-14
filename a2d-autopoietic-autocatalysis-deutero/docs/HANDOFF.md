@@ -131,6 +131,7 @@ opencode models | grep -i 'kimi\|glm\|minimax'
 ## Pointers
 
 - Audit: `docs/research/2026-10-14-direction-audit.md`
+- Prior art for the post-lift-test architecture (DGM archive search; RQGM anchor-gated co-evolved evaluator → tester enzyme): `docs/research/2026-10-14-dgm-rqgm-relevance.md`
 - Full pre-reset handoff (sessions ≤141): `docs/handoff-archive/2026-07-10-session-141-HANDOFF.md`
 - Learnings: `docs/solutions/` (search before implementing); todos: `todos/`
 - Sibling A² ran the same self-diagnosis: `../a2-autopoietic-autocatalysis/docs/plans/2026-07-10-a2-remediation-roadmap.md` — avoid its value-last phase ordering.
