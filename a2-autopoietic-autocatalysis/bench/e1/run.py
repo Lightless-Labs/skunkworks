@@ -31,6 +31,11 @@ import tasks  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VERIFY_SCRIPT = REPO_ROOT / "bench" / "e1" / "verify.py"
 ARMS = ("raw", "stateless-retry", "a2-full")
+CODEX_CONFIG_TEMPLATE = Path(__file__).with_name("codex-home.config.toml")
+# Files Codex itself creates at runtime in its home; anything else (AGENTS.md, skills, plugins) is ambient.
+CODEX_HOME_RUNTIME_PREFIXES = ("auth.json", "config.toml", "goals_", "logs_", "memories_", "queue_", "state_",
+                               ".sqlite", ".sandbox_migration", "cache", "log", "models_cache.json",
+                               "installation_id", "tmp", "shell_snapshots", "mcp-oauth-locks")
 FEEDBACK_TAIL_CHARS = 12_000
 STATELESS_FEEDBACK_HEADER = (
     "\n\n---\nA previous attempt at this task was rejected by the verifier. "
@@ -65,6 +70,29 @@ def assert_no_private_leak(text: str, private_markers: list[str]) -> None:
             raise RuntimeError(f"private material marker leaked into agent-visible text: {marker[:40]!r}")
 
 
+def ensure_codex_home(home: Path, user_auth: Path) -> Path:
+    """Isolated CODEX_HOME: the committed config template plus a symlink to the operator's auth.
+
+    The auth file is symlinked, never copied, so a token refresh cannot fork the operator's login.
+    """
+    home.mkdir(parents=True, exist_ok=True)
+    unexpected = [p.name for p in home.iterdir() if not p.name.startswith(CODEX_HOME_RUNTIME_PREFIXES)]
+    skills = home / "skills"
+    if skills.is_dir() and {c.name for c in skills.iterdir()} <= {".system"}:
+        unexpected.remove("skills")  # Codex's bundled system skills only; user skills are ambient.
+    if unexpected:
+        raise RuntimeError(f"isolated CODEX_HOME contains ambient files: {sorted(unexpected)}")
+    auth = home / "auth.json"
+    if not auth.is_symlink() or auth.resolve() != user_auth.resolve():
+        auth.unlink(missing_ok=True)
+        auth.symlink_to(user_auth)
+    config = home / "config.toml"
+    template = CODEX_CONFIG_TEMPLATE.read_text()
+    if not config.exists() or config.read_text() != template:
+        config.write_text(template)
+    return home
+
+
 def fresh_workspace(opaque: str, arm: str) -> Path:
     base = tasks.work_dir(opaque) / "repo"
     dest = tasks.work_dir(opaque) / f"arm-{arm}" / "repo"
@@ -94,8 +122,9 @@ def run_a2ctl(cfg: argparse.Namespace, workspace: Path, payload: dict, attempts:
     with log.open("a") as handle:
         handle.write(json.dumps({"argv": argv[1:], "task_id": payload["task_id"]}) + "\n")
         handle.flush()
+        env = {**os.environ, "CODEX_HOME": str(cfg.codex_home)}
         proc = subprocess.run(argv, input=json.dumps(payload) + "\n", text=True, stdout=handle, stderr=handle,
-                              cwd=REPO_ROOT, timeout=cfg.timeout * attempts + 900)
+                              cwd=REPO_ROOT, env=env, timeout=cfg.timeout * attempts + 900)
     return proc.returncode
 
 
@@ -212,14 +241,15 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--attempts", type=int, default=3)
-    parser.add_argument("--provider", default="pi/zai/glm-5.2")
+    parser.add_argument("--provider", default="codex/gpt-6-luna")
     parser.add_argument("--endpoint", action="append", default=None, help="model endpoint https URL (repeatable)")
     parser.add_argument("--max-tokens", type=int, default=200_000)
     parser.add_argument("--timeout", type=int, default=1500)
     parser.add_argument("--a2ctl", type=Path, default=REPO_ROOT / "target" / "debug" / "a2ctl")
     parser.add_argument("--shard", default="0/1", help="i/n: run only tasks whose sample index % n == i")
     cfg = parser.parse_args(argv)
-    cfg.endpoint = cfg.endpoint or ["https://api.z.ai"]
+    cfg.endpoint = cfg.endpoint or ["https://chatgpt.com", "https://auth.openai.com"]
+    cfg.codex_home = ensure_codex_home(tasks.e1_home() / "codex-home", Path.home() / ".codex" / "auth.json")
     arms = [a for a in cfg.arms.split(",") if a]
     unknown = set(arms) - set(ARMS)
     if unknown:

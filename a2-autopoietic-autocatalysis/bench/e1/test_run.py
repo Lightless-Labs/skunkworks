@@ -35,6 +35,41 @@ class ShardTests(unittest.TestCase):
         self.assertEqual(full[sample[4]], run.arm_order(sample, 3)[sample[4]])
 
 
+class CodexHomeTests(unittest.TestCase):
+    def test_codex_home_has_template_config_and_symlinked_auth(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            auth = root / "user-codex" / "auth.json"
+            auth.parent.mkdir()
+            auth.write_text("{}")
+            home = run.ensure_codex_home(root / "home", auth)
+            self.assertTrue((home / "auth.json").is_symlink())
+            self.assertEqual((home / "auth.json").resolve(), auth.resolve())
+            self.assertEqual((home / "config.toml").read_text(), run.CODEX_CONFIG_TEMPLATE.read_text())
+            self.assertIn("apps = false", (home / "config.toml").read_text())
+            (home / "config.toml").write_text("[mcp_servers.x]\n")
+            run.ensure_codex_home(root / "home", auth)
+            self.assertEqual((home / "config.toml").read_text(), run.CODEX_CONFIG_TEMPLATE.read_text())
+
+    def test_codex_home_rejects_extra_ambient_files(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            auth = root / "auth.json"
+            auth.write_text("{}")
+            home = run.ensure_codex_home(root / "home", auth)
+            (home / "skills" / ".system").mkdir(parents=True)
+            run.ensure_codex_home(root / "home", auth)
+            for ambient in (home / "skills" / "user-skill", home / "plugins", home / "AGENTS.md"):
+                ambient.mkdir() if ambient.suffix == "" else ambient.write_text("ambient")
+                with self.assertRaises(RuntimeError):
+                    run.ensure_codex_home(root / "home", auth)
+                ambient.rmdir() if ambient.is_dir() else ambient.unlink()
+
+
 class LeakTests(unittest.TestCase):
     def test_private_marker_in_payload_raises(self) -> None:
         with self.assertRaises(RuntimeError):
