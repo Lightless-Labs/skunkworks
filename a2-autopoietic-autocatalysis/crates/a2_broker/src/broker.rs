@@ -1,7 +1,8 @@
 use a2_core::error::{A2Error, A2Result};
 use a2_core::protocol::NetworkPolicy;
 use a2_workcell::sandbox_profile::{
-    ProviderCommandMaterialization, codex_provider_args,
+    CODEX_REASONING_EFFORT_ENV, ProviderCommandMaterialization, codex_provider_args,
+    codex_reasoning_effort_from_env_value,
     materialize_provider_command_for_network_policy_with_egress_proxy, pi_provider_args,
     sandbox_exec_available_on_this_platform,
 };
@@ -758,8 +759,14 @@ impl ModelProvider for CodexProvider {
             network_policy,
             Some(NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))
         );
-        let mut provider_args =
-            codex_provider_args(&self.model_id, &combined_prompt, outer_sandboxed);
+        let effort_env = std::env::var(CODEX_REASONING_EFFORT_ENV).ok();
+        let mut provider_args = codex_provider_args(
+            &self.model_id,
+            &combined_prompt,
+            outer_sandboxed,
+            codex_reasoning_effort_from_env_value(effort_env.as_deref())
+                .map_err(A2Error::ProviderError)?,
+        );
         provider_args.push(OsString::from("-o"));
         provider_args.push(out_path.clone().into_os_string());
         let mut cmd = broker_provider_command_with_network_policy(

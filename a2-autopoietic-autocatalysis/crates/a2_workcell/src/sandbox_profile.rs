@@ -22,18 +22,19 @@ pub const PI_AMBIENT_RESOURCE_ISOLATION_ARGS: [&str; 3] =
 /// Inside an A2 Seatbelt profile (`outer_sandboxed`), Codex's own sandbox is bypassed: Seatbelt
 /// profiles cannot nest, and the outer profile already confines the whole process tree. Without
 /// an outer sandbox, Codex keeps its own workspace-write sandbox.
-pub fn codex_provider_args(model_id: &str, prompt: &str, outer_sandboxed: bool) -> Vec<OsString> {
-    let mut args: Vec<OsString> = [
-        "exec",
-        prompt,
-        "-m",
-        model_id,
-        "-c",
-        "model_reasoning_effort=\"high\"",
-    ]
-    .into_iter()
-    .map(OsString::from)
-    .collect();
+pub fn codex_provider_args(
+    model_id: &str,
+    prompt: &str,
+    outer_sandboxed: bool,
+    reasoning_effort: &str,
+) -> Vec<OsString> {
+    let mut args: Vec<OsString> = ["exec", prompt, "-m", model_id, "-c"]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+    args.push(OsString::from(format!(
+        "model_reasoning_effort=\"{reasoning_effort}\""
+    )));
     args.push(OsString::from(if outer_sandboxed {
         "--dangerously-bypass-approvals-and-sandbox"
     } else {
@@ -41,6 +42,21 @@ pub fn codex_provider_args(model_id: &str, prompt: &str, outer_sandboxed: bool) 
     }));
     args.extend(["--ephemeral", "--skip-git-repo-check", "--json"].map(OsString::from));
     args
+}
+
+/// Environment variable selecting the reasoning effort for A2-launched Codex.
+pub const CODEX_REASONING_EFFORT_ENV: &str = "A2_CODEX_REASONING_EFFORT";
+const CODEX_REASONING_EFFORTS: [&str; 6] = ["none", "minimal", "low", "medium", "high", "xhigh"];
+
+/// Validates an `A2_CODEX_REASONING_EFFORT` value; unset means `high`.
+pub fn codex_reasoning_effort_from_env_value(value: Option<&str>) -> Result<&str, String> {
+    match value {
+        None => Ok("high"),
+        Some(level) if CODEX_REASONING_EFFORTS.contains(&level) => Ok(level),
+        Some(other) => Err(format!(
+            "{CODEX_REASONING_EFFORT_ENV}={other:?} is not one of {CODEX_REASONING_EFFORTS:?}"
+        )),
+    }
 }
 
 /// Builds the argv for every A2-owned `pi` provider launch.
@@ -805,8 +821,30 @@ mod tests {
     }
 
     #[test]
+    fn codex_provider_args_carry_requested_reasoning_effort() {
+        let args: Vec<String> = codex_provider_args("gpt-6-luna", "do it", true, "low")
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.contains(&"model_reasoning_effort=\"low\"".to_string()));
+    }
+
+    #[test]
+    fn codex_reasoning_effort_from_env_value_validates_and_defaults_to_high() {
+        assert_eq!(codex_reasoning_effort_from_env_value(None).unwrap(), "high");
+        for level in ["none", "minimal", "low", "medium", "high", "xhigh"] {
+            assert_eq!(
+                codex_reasoning_effort_from_env_value(Some(level)).unwrap(),
+                level
+            );
+        }
+        assert!(codex_reasoning_effort_from_env_value(Some("extreme")).is_err());
+        assert!(codex_reasoning_effort_from_env_value(Some("high\" -c x=1")).is_err());
+    }
+
+    #[test]
     fn codex_provider_args_bypass_inner_sandbox_only_inside_a2_sandbox() {
-        let inside: Vec<String> = codex_provider_args("gpt-6-luna", "do it", true)
+        let inside: Vec<String> = codex_provider_args("gpt-6-luna", "do it", true, "high")
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
@@ -818,7 +856,7 @@ mod tests {
         }
         assert!(!inside.contains(&"--full-auto".to_string()));
 
-        let outside: Vec<String> = codex_provider_args("gpt-6-luna", "do it", false)
+        let outside: Vec<String> = codex_provider_args("gpt-6-luna", "do it", false, "high")
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();

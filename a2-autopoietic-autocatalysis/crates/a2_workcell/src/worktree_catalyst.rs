@@ -15,7 +15,8 @@
 #[cfg(test)]
 use crate::sandbox_profile::materialize_provider_command_for_network_policy;
 use crate::sandbox_profile::{
-    ProviderCommandMaterialization, codex_provider_args,
+    CODEX_REASONING_EFFORT_ENV, ProviderCommandMaterialization, codex_provider_args,
+    codex_reasoning_effort_from_env_value,
     materialize_provider_command_for_network_policy_with_denied_paths_and_egress_proxy,
     pi_provider_args, sandbox_exec_available_on_this_platform,
 };
@@ -549,7 +550,10 @@ impl WorktreeCatalyst {
             network_policy,
             Some(NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))
         );
-        let provider_args = codex_provider_args(model_id, prompt, outer_sandboxed);
+        let effort_env = std::env::var(CODEX_REASONING_EFFORT_ENV).ok();
+        let effort = codex_reasoning_effort_from_env_value(effort_env.as_deref())
+            .map_err(A2Error::ProviderError)?;
+        let provider_args = codex_provider_args(model_id, prompt, outer_sandboxed, effort);
         let profile_dir = self.workspace_root.join(".a2").join("sandbox-profiles");
         let materialized = self
             .materialize_provider_command(network_policy, &profile_dir, "codex", provider_args)
