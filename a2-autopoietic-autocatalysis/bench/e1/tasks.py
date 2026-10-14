@@ -53,6 +53,13 @@ def work_dir(opaque: str | None = None) -> Path:
     return root / opaque if opaque else root
 
 
+def private_tmp() -> Path:
+    """Scratch space for trees that contain the test patch; agent sandboxes cannot read it."""
+    path = private_dir() / "tmp"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def load_manifest(opaque: str) -> dict:
     return json.loads((private_dir(opaque) / "manifest.json").read_text())
 
@@ -148,7 +155,7 @@ def grade_diff(opaque: str, diff: str | None) -> dict:
     manifest = load_manifest(opaque)
     profile = REPO_PROFILES[manifest["repo"]]
     base = work_dir(opaque) / "repo"
-    with tempfile.TemporaryDirectory(prefix="e1-grade-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="e1-grade-", dir=private_tmp()) as tmp:
         tree = Path(tmp) / "tree"
         try:
             grading.build_candidate_tree(base, tree, diff=diff)
