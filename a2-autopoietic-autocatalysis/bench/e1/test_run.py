@@ -95,6 +95,17 @@ class FreshWorkspaceTests(unittest.TestCase):
                 del os.environ["A2_E1_HOME"]
 
 
+class InfraClassificationTests(unittest.TestCase):
+    def test_classification(self) -> None:
+        ok = {"tokens_in": 10, "tokens_out": 5}
+        dead = {"tokens_in": 0, "tokens_out": 0}
+        self.assertIsNone(run.classify_infra([ok], [0]))
+        self.assertEqual(run.classify_infra([], [0]), "no_attempt_row")
+        self.assertEqual(run.classify_infra([], [1]), "a2ctl_failed")
+        self.assertEqual(run.classify_infra([ok, dead], [0, 0]), "provider_error")
+        self.assertEqual(run.classify_infra([dead], [0]), "provider_error")
+
+
 class LeakTests(unittest.TestCase):
     def test_private_marker_in_payload_raises(self) -> None:
         with self.assertRaises(RuntimeError):

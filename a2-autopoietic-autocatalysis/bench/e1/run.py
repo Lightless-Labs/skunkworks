@@ -150,6 +150,15 @@ def verifier_output(row: dict) -> str:
     return text[-FEEDBACK_TAIL_CHARS:]
 
 
+def classify_infra(attempts: list[dict], returncodes: list[int]) -> str | None:
+    """Pre-registered infrastructure-failure classes; agent failures (timeouts, bad diffs) are not infra."""
+    if not attempts:
+        return "a2ctl_failed" if any(rc != 0 for rc in returncodes) else "no_attempt_row"
+    if any(int(a.get("tokens_in") or 0) == 0 and int(a.get("tokens_out") or 0) == 0 for a in attempts):
+        return "provider_error"  # the model never completed a turn (rejected request, quota, auth)
+    return None
+
+
 def run_arm(cfg: argparse.Namespace, opaque: str, arm: str, run_dir: Path) -> dict:
     manifest = tasks.load_manifest(opaque)
     instruction = manifest["instruction"]
@@ -187,11 +196,7 @@ def run_arm(cfg: argparse.Namespace, opaque: str, arm: str, run_dir: Path) -> di
                 break
             feedback = verifier_output(rows[-1])
     final = next((r for r in attempts if verifier_passed(r)), attempts[-1] if attempts else None)
-    infra = None
-    if final is None:
-        infra = "no_attempt_row"
-    elif any(rc != 0 for rc in returncodes) and not attempts:
-        infra = "a2ctl_failed"
+    infra = classify_infra(attempts, returncodes)
     diff = (final or {}).get("patch_diff") or ""
     grade = tasks.grade_diff(opaque, diff) if final is not None else None
     shutil.rmtree(workspace.parent, ignore_errors=True)
@@ -252,7 +257,7 @@ def main(argv: list[str]) -> int:
     # Non-binding ceiling: Codex input counts include cached context; the per-attempt timeout is the real limit.
     parser.add_argument("--max-tokens", type=int, default=2_000_000)
     parser.add_argument("--reasoning-effort", default="high",
-                        choices=["none", "minimal", "low", "medium", "high", "xhigh"])
+                        choices=["none", "minimal", "low", "medium", "high", "xhigh", "max"])
     parser.add_argument("--timeout", type=int, default=1500)
     parser.add_argument("--a2ctl", type=Path, default=REPO_ROOT / "target" / "debug" / "a2ctl")
     parser.add_argument("--shard", default="0/1", help="i/n: run only tasks whose sample index % n == i")
