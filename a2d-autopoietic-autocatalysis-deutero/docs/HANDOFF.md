@@ -1,17 +1,46 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-14 (session 143: P0 complete, gate reviewed, E01–E02 recorded, P1 suite authoring started)
+**Last updated:** 2026-10-14 (session 143: P0 done; P1 nearly done; calibration-v2 accepted; pilot fixed comparator D; Confirmation-1 at the cap being authored blind)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
 
-- **Standing goal:** `docs/plans/2026-10-14-lift-first-roadmap.md`, Appendix. Measure whether A²D (arm C) beats its own coder model used directly at matched invocations: A one-shot, B best-of-k, D repair loop. Then test whether self-modification widens the margin. The plan completes only when it is marked Completed with confirmation results in `docs/experiments/LOG.md`. **Deadline:** P2 seed result by 2026-11-30.
-- **Phase: P1** (calibrate a non-saturated suite). Plan: `docs/plans/2026-10-14-p1-calibration-suite.md`. P0 exited 2026-10-14; see the roadmap's P0-gate Addendum.
-- **Results so far (development only, no findings):**
-  - E01: Luna one-shot passes 2/3 legacy tasks.
-  - E02: all four arms pass 2/3; integrity checks clean; arm C's realised schedule is coder → evolver → architect → tester → coder at k=5.
-  - **P2 must use k ≡ 1 (mod 4).** At k=4, C gets one code attempt.
-- **Coder lane:** `codex/gpt-6-luna`, effort low, run as a **no-tools generator** (`CODEX_DISABLED_FEATURES` in `crates/a2d-providers/src/cli.rs`). About 25–45 s and 11k tokens per call. Reviews use Codex `gpt-6.1-sol` plus a fresh-context Claude subagent, in empty temp dirs.
+- **Standing goal:** `docs/plans/2026-10-14-lift-first-roadmap.md`, Appendix. Measure whether A²D (arm C) beats its own coder model used directly at matched invocations: A one-shot, B best-of-k, D repair loop. Then test whether self-modification widens the margin. **Deadline:** P2 confirmation result by 2026-11-30.
+- **Phase: P1, exit pending.** Exit needs Confirmation-1 and Confirmation-2 validated with hashes logged (in progress), the P1 gate review (running), and power planning (done, E05).
+- **Results** (`docs/experiments/LOG.md`):
+  - E01: Luna one-shot passes 2/3 legacy dev tasks.
+  - E02: first live four-arm run.
+  - E03: calibration v1 saturated, A 79%. That triggered T7 redesign 1/2.
+  - E04: calibration v2 headroom passed, A 62.5%, B 58.3%.
+  - **E05, four-arm pilot on v2:** A 58%, B 50%, D 62.5%, C 67%. C vs D +4 pp, CI [−12.5, +25], so noise. **The P2 primary comparator is D.**
+  - Power plan: pd 0.21 needs about 162 independent pairs for 80% power at 10 pp, and replicates add little. **Confirmation-1 = 37 families × 4 = 148 tasks** (the cap).
+- **Arm C's realised seed schedule:** coder → evolver → architect → tester → coder at k=5 (2 code attempts). **P2 uses k=5.**
+- **The public tests discriminate weakly.** Best-of-5 does no better than one-shot. The rates of public-green-but-hidden-fail submissions are the evidence.
+- **Coder lane:** `codex/gpt-6-luna`, effort low, run as a no-tools generator (about 20–25 s per call when the account isn't contended). **Don't run holdout authoring (Codex Sol, 6 parallel jobs) at the same time as live runs**: Luna calls slowed to about 65 s (E05 deviation).
+
+## Holdouts (never open their contents)
+
+- `$A2D_HOLDOUT_DIR` = `~/.a2d-holdout`, outside the repo.
+  - `authoring/<set>/<family>/` holds Codex's working dirs. **Never read `codex.out`, `codex.err`, `REPORT.md` or any files in them.**
+  - `confirmation-1/` and `confirmation-2/` hold the assembled sets.
+- **Assemble blind:** `python3 -I $SCRATCH/assemble-holdout.py <set>` copies only the contract files and prints task ids. **Validate blind:** `a2d lift validate ~/.a2d-holdout/<set>` prints verdicts only.
+- Family lists: Confirmation-1 has 12 base families plus 25 extension families; Confirmation-2 has 12 (extend it before P4). Each list is in the LOG and roadmap context, as names only.
+- State: the first 12 Confirmation-1 families (48 tasks) are validated, 48/48 (hash `c4ac2cde…`, superseded once the extension lands). The round-2 driver (`$SCRATCH/author-holdouts-2.sh`, log `author-holdouts-2.log`) authors the extension and then Confirmation-2. When it finishes, re-assemble, re-validate, and record the final hashes in the LOG.
+
+## Next moves
+
+1. Finish the P1 gate:
+   - the reviews (Codex Sol plus a fresh Claude subagent) are running;
+   - fold in their recommendations;
+   - add a dated roadmap Addendum with process diagnostics;
+   - mark P1 exit.
+2. **Pre-register E06, the P2 confirmation**, and run it:
+   - Confirmation-1, arms A, B, D, C at k=5, primary comparator D;
+   - `--defer-scoring`, with `--out ~/.a2d-holdout/runs/E06`;
+   - copy the ledger (hashes only) into `runs/`, commit and push, then `a2d lift score` once;
+   - copy the summary in.
+   The run is about 1,600 invocations. Run it with the account otherwise idle.
+3. P3 (ablation) and P4 (autopoietic hypotheses), per the roadmap.
 
 ## The controller: `a2d lift` (`crates/a2d-lift/`)
 
@@ -66,7 +95,7 @@ Stop doing: SWE-bench/redaction/env-scrub scaffolding (T3), constant-artifact ev
 
 ## Tests
 
-`cargo test` is all green (about 520 tests). Five `a2d-cli` fitness-evidence provenance tests fail whenever there are **untracked files under `crates/`**, so commit before running the full suite. The `a2d-lift` tests take about 20 s, because the oracle compiles real code.
+`cargo test` is all green. Five `a2d-cli` fitness-evidence provenance tests fail whenever there are **untracked files under `crates/`**, so commit before running the full suite. The `a2d-lift` tests take about 20 s, because the oracle compiles real code.
 
 ## Legacy (unchanged, deprioritised)
 
