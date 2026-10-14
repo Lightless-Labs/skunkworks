@@ -39,14 +39,15 @@ The triage is complete and recorded in the roadmap Addendum "P1 gate":
 
 **E06 is done.** C/D replicate agreement was 0.875, so **Confirmation-1 runs r = 1**. Across the pilots there is no sign of lift: under the latest-tie rule C passed 17 and 14, D 15 and 16.
 
-0. **State (2026-10-14, late):**
-   - **Confirmation-1 is final: 148 tasks, hash `7bd1b669…`** (LOG "Holdouts — Confirmation-1 final"). The independent-solve audit passed 148/148, so no adjudication was needed.
-   - **Confirmation-2 authoring is running** (log `$SCRATCH/author-holdouts-c2.log`). When it finishes:
-     - assemble and validate it;
-     - repair any rejects blind with `$SCRATCH/FIX.md`, `api_check.sh` and `FIX-VERDICTS.txt` in the family dir;
-     - audit it like Confirmation-1;
-     - log its hash.
-   - Then: P1 exit Addendum, then E07, whose draft is in `$SCRATCH/E07-prereg-draft.md`. Fill in the C1 hash and the registration commit.
+0. **State (2026-10-15):**
+   - **P1 is complete.** Confirmation-1 has 148 tasks (`7bd1b669…`) and Confirmation-2 has 48 (`25435ab3…`). Both are audited 100% by an independent Codex Sol solve.
+   - **E07, the P2 confirmation, is generating** (`--defer-scoring`, out `~/.a2d-holdout/runs/E07`, stdout `~/.a2d-holdout/runs/E07.stdout`).
+   - Deviation already logged: the sibling A² session runs Luna jobs on the same account.
+   - When the ledger has `generation_complete`:
+     1. `./target/debug/a2d lift manifest ~/.a2d-holdout/runs/E07 > runs/2026-10-15-e07-confirmation-1/manifest.json`; commit and push.
+     2. `./target/debug/a2d lift score --out ~/.a2d-holdout/runs/E07 --suite ~/.a2d-holdout/confirmation-1 --expect-head <ledger_head from manifest> --jobs 4`. This re-checks the freeze at `e1915c89`, so **don't touch `crates/` before scoring**.
+     3. Copy `summary.json` and `ledger.jsonl` into `runs/2026-10-15-e07-confirmation-1/`.
+     4. Record the result in the LOG and decide per roadmap § Completion and P2's exit, then go on to P3.
 1. **Holdout authoring is running** (driver `author-holdouts-2.sh`, log `$SCRATCH/author-holdouts-2.log`): the rest of the Confirmation-1 extension, then Confirmation-2. When it finishes:
    - `python3 -I $SCRATCH/assemble-holdout.py confirmation-1`;
    - `a2d lift validate ~/.a2d-holdout/confirmation-1 --jobs 4` (verdict lines only).
