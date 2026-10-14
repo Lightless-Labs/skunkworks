@@ -97,6 +97,19 @@ class ResolutionTests(unittest.TestCase):
         self.assertIsNone(common.junit_case_to_node_id("nowhere.mod", "t", existing.__contains__))
 
 
+class RequirementFilesTests(unittest.TestCase):
+    def test_base_plus_first_existing_unit_requirements(self) -> None:
+        import tasks
+
+        profile = tasks.REPO_PROFILES["ansible/ansible"]
+        present = {"requirements.txt", "test/lib/ansible_test/_data/requirements/units.txt", "test/runner/requirements/units.txt"}
+        self.assertEqual(
+            tasks.requirement_files(profile, present.__contains__),
+            ["requirements.txt", "test/lib/ansible_test/_data/requirements/units.txt"],
+        )
+        self.assertEqual(tasks.requirement_files(profile, {"requirements.txt"}.__contains__), ["requirements.txt"])
+
+
 class SplitSampleTests(unittest.TestCase):
     def test_split_sample_is_seeded_and_disjoint(self) -> None:
         import tasks

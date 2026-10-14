@@ -32,7 +32,13 @@ DATASET_URL = (
 )
 REPO_PROFILES = {
     "ansible/ansible": {
-        "requirements": ["requirements.txt", "test/units/requirements.txt"],
+        "requirements": ["requirements.txt"],
+        # Unit-test requirements moved over ansible's history; the first existing file is used.
+        "unit_requirements": [
+            "test/units/requirements.txt",
+            "test/lib/ansible_test/_data/requirements/units.txt",
+            "test/runner/requirements/units.txt",
+        ],
         "extra": ["pytest", "pytest-mock", "mock"],
         "pythonpath": ["lib", "test/lib"],
     },
@@ -118,6 +124,24 @@ def select(args: argparse.Namespace) -> None:
     print(f"selected {len(selected)} tasks -> {args.out}")
 
 
+def requirement_files(profile: dict, exists) -> list[str]:
+    files = [r for r in profile["requirements"] if exists(r)]
+    files += [r for r in profile.get("unit_requirements", []) if exists(r)][:1]
+    return files
+
+
+def install_requirements(venv: Path, repo: Path, profile: dict, base_date: str) -> str:
+    """Pre-registered two-stage install: date-pinned first; if that fails, the same files unpinned."""
+    reqs = [arg for r in requirement_files(profile, lambda rel: (repo / rel).is_file()) for arg in ("-r", str(repo / r))]
+    base = ["uv", "pip", "install", "-q", "--python", str(venv / "bin" / "python"), *reqs, *profile["extra"]]
+    pinned = subprocess.run([*base, "--exclude-newer", common.exclude_newer_for_base_date(base_date)],
+                            capture_output=True, text=True)
+    if pinned.returncode == 0:
+        return "date-pinned"
+    subprocess.run(base, check=True, capture_output=True, text=True)
+    return "unpinned-fallback"
+
+
 def prepare(opaque: str) -> dict:
     manifest = load_manifest(opaque)
     profile = REPO_PROFILES[manifest["repo"]]
@@ -141,12 +165,12 @@ def prepare(opaque: str) -> dict:
     if not (venv / "bin" / "python").exists():
         python = common.python_for_base_date(manifest["base_date"])
         subprocess.run(["uv", "venv", "-q", "--python", python, str(venv)], check=True)
-        reqs = [arg for r in profile["requirements"] if (repo / r).exists() for arg in ("-r", str(repo / r))]
-        subprocess.run(
-            ["uv", "pip", "install", "-q", "--python", str(venv / "bin" / "python"),
-             "--exclude-newer", common.exclude_newer_for_base_date(manifest["base_date"]), *reqs, *profile["extra"]],
-            check=True,
-        )
+        try:
+            manifest["install_mode"] = install_requirements(venv, repo, profile, manifest["base_date"])
+        except subprocess.CalledProcessError:
+            shutil.rmtree(venv, ignore_errors=True)
+            raise
+        (private_dir(opaque) / "manifest.json").write_text(json.dumps(manifest, indent=1, sort_keys=True))
     return manifest
 
 
@@ -176,9 +200,10 @@ def grade_diff(opaque: str, diff: str | None) -> dict:
 
 
 def gate(opaque: str) -> dict:
-    prepare(opaque)
+    manifest = prepare(opaque)
     gold = (private_dir(opaque) / "gold.patch").read_text()
-    result = {"opaque_id": opaque, "gold": grade_diff(opaque, gold), "empty": grade_diff(opaque, None)}
+    result = {"opaque_id": opaque, "install_mode": manifest.get("install_mode"),
+              "gold": grade_diff(opaque, gold), "empty": grade_diff(opaque, None)}
     result["passed"] = bool(result["gold"]["resolved"] and not result["empty"]["resolved"])
     (private_dir(opaque) / "gate.json").write_text(json.dumps(result, indent=1, sort_keys=True))
     return result
