@@ -1,0 +1,131 @@
+```rust
+use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Package {
+    pub name: String,
+    pub dependencies: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResolveError {
+    MissingDependency { package: String, dependency: String },
+    Cycle(Vec<String>),
+}
+
+pub fn install_order(packages: &[Package]) -> Result<Vec<String>, ResolveError> {
+    let catalog: BTreeMap<&str, &Package> = packages
+        .iter()
+        .map(|package| (package.name.as_str(), package))
+        .collect();
+
+    let mut missing = Vec::new();
+    for package in packages {
+        for dependency in &package.dependencies {
+            if !catalog.contains_key(dependency.as_str()) {
+                missing.push((package.name.as_str(), dependency.as_str()));
+            }
+        }
+    }
+
+    if let Some((package, dependency)) = missing.into_iter().min() {
+        return Err(ResolveError::MissingDependency {
+            package: package.to_string(),
+            dependency: dependency.to_string(),
+        });
+    }
+
+    let graph: BTreeMap<&str, BTreeSet<&str>> = packages
+        .iter()
+        .map(|package| {
+            (
+                package.name.as_str(),
+                package.dependencies.iter().map(String::as_str).collect(),
+            )
+        })
+        .collect();
+
+    fn visit<'a>(
+        node: &'a str,
+        graph: &BTreeMap<&'a str, BTreeSet<&'a str>>,
+        states: &mut BTreeMap<&'a str, u8>,
+        stack: &mut Vec<&'a str>,
+    ) -> Option<Vec<String>> {
+        states.insert(node, 1);
+        stack.push(node);
+
+        for &dependency in &graph[node] {
+            match states.get(dependency).copied().unwrap_or(0) {
+                0 => {
+                    if let Some(cycle) = visit(dependency, graph, states, stack) {
+                        return Some(cycle);
+                    }
+                }
+                1 => {
+                    let start = stack.iter().position(|&name| name == dependency).unwrap();
+                    let mut path: Vec<String> =
+                        stack[start..].iter().map(|name| (*name).to_string()).collect();
+
+                    let smallest = path
+                        .iter()
+                        .enumerate()
+                        .min_by(|(_, left), (_, right)| left.cmp(right))
+                        .map(|(index, _)| index)
+                        .unwrap();
+                    path.rotate_left(smallest);
+                    path.push(path[0].clone());
+                    return Some(path);
+                }
+                _ => {}
+            }
+        }
+
+        stack.pop();
+        states.insert(node, 2);
+        None
+    }
+
+    let mut states = BTreeMap::new();
+    let mut stack = Vec::new();
+    for &name in graph.keys() {
+        if states.get(name).copied().unwrap_or(0) == 0 {
+            if let Some(cycle) = visit(name, &graph, &mut states, &mut stack) {
+                return Err(ResolveError::Cycle(cycle));
+            }
+        }
+    }
+
+    let mut remaining_dependencies: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut dependents: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+
+    for (&name, dependencies) in &graph {
+        remaining_dependencies.insert(name, dependencies.len());
+        for &dependency in dependencies {
+            dependents.entry(dependency).or_default().push(name);
+        }
+    }
+
+    let mut ready: BTreeSet<&str> = remaining_dependencies
+        .iter()
+        .filter_map(|(&name, &count)| (count == 0).then_some(name))
+        .collect();
+
+    let mut order = Vec::with_capacity(packages.len());
+    while let Some(&name) = ready.iter().next() {
+        ready.remove(name);
+        order.push(name.to_string());
+
+        if let Some(package_dependents) = dependents.get(name) {
+            for &dependent in package_dependents {
+                let count = remaining_dependencies.get_mut(dependent).unwrap();
+                *count -= 1;
+                if *count == 0 {
+                    ready.insert(dependent);
+                }
+            }
+        }
+    }
+
+    Ok(order)
+}
+```

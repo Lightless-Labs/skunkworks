@@ -1,0 +1,132 @@
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: u64,
+    pub priority: u32,
+    pub ready_at: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dispatch {
+    pub job: Job,
+    pub enqueued_at: u64,
+    pub started_at: u64,
+    pub effective_priority: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SchedulerError {
+    ZeroAgingInterval,
+    TimeWentBackwards,
+    DuplicateId(u64),
+}
+
+#[derive(Clone, Debug)]
+struct PendingJob {
+    job: Job,
+    enqueued_at: u64,
+    insertion_order: u128,
+}
+
+pub struct Scheduler {
+    aging_interval_ms: u64,
+    last_time: u64,
+    next_insertion_order: u128,
+    pending: Vec<PendingJob>,
+}
+
+impl Scheduler {
+    pub fn new(aging_interval_ms: u64, start_ms: u64) -> Result<Self, SchedulerError> {
+        if aging_interval_ms == 0 {
+            return Err(SchedulerError::ZeroAgingInterval);
+        }
+
+        Ok(Self {
+            aging_interval_ms,
+            last_time: start_ms,
+            next_insertion_order: 0,
+            pending: Vec::new(),
+        })
+    }
+
+    pub fn enqueue(&mut self, job: Job, now: u64) -> Result<(), SchedulerError> {
+        if now < self.last_time {
+            return Err(SchedulerError::TimeWentBackwards);
+        }
+        if self.pending.iter().any(|pending| pending.job.id == job.id) {
+            return Err(SchedulerError::DuplicateId(job.id));
+        }
+
+        let insertion_order = self.next_insertion_order;
+        self.next_insertion_order = self.next_insertion_order.wrapping_add(1);
+        self.pending.push(PendingJob {
+            job,
+            enqueued_at: now,
+            insertion_order,
+        });
+        self.last_time = now;
+        Ok(())
+    }
+
+    pub fn next_ready(&mut self, now: u64) -> Result<Option<Dispatch>, SchedulerError> {
+        if now < self.last_time {
+            return Err(SchedulerError::TimeWentBackwards);
+        }
+
+        let selected = self
+            .pending
+            .iter()
+            .enumerate()
+            .filter(|(_, pending)| pending.job.ready_at <= now)
+            .max_by(|(_, a), (_, b)| {
+                let a_priority = effective_priority(a, now, self.aging_interval_ms);
+                let b_priority = effective_priority(b, now, self.aging_interval_ms);
+
+                a_priority
+                    .cmp(&b_priority)
+                    .then_with(|| b.insertion_order.cmp(&a.insertion_order))
+            })
+            .map(|(index, _)| index);
+
+        self.last_time = now;
+
+        match selected {
+            Some(index) => {
+                let pending = self.pending.remove(index);
+                Ok(Some(Dispatch {
+                    job: pending.job,
+                    enqueued_at: pending.enqueued_at,
+                    started_at: now,
+                    effective_priority: effective_priority(
+                        &pending,
+                        now,
+                        self.aging_interval_ms,
+                    ),
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn cancel(&mut self, id: u64, now: u64) -> Result<Option<Job>, SchedulerError> {
+        if now < self.last_time {
+            return Err(SchedulerError::TimeWentBackwards);
+        }
+
+        let index = self.pending.iter().position(|pending| pending.job.id == id);
+        self.last_time = now;
+
+        Ok(index.map(|index| self.pending.remove(index).job))
+    }
+
+    pub fn len(&self) -> usize {
+        self.pending.len()
+    }
+}
+
+fn effective_priority(pending: &PendingJob, now: u64, aging_interval_ms: u64) -> u32 {
+    let age_steps = (now - pending.enqueued_at) / aging_interval_ms;
+    let total = u64::from(pending.job.priority) + age_steps;
+    total.min(u64::from(u32::MAX)) as u32
+}
+```

@@ -1,0 +1,404 @@
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alphabet {
+    Standard,
+    UrlSafe,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Padding {
+    Required,
+    Forbidden,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Options {
+    pub alphabet: Alphabet,
+    pub padding: Padding,
+    pub ignore_whitespace: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeError {
+    InvalidByte { offset: usize },
+    InvalidPadding { offset: usize },
+    InvalidLength { offset: usize },
+    TrailingData { offset: usize },
+    NonCanonical { offset: usize },
+    Finished,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamError {
+    Finished,
+}
+
+fn alphabet(options: Options) -> &'static [u8; 64] {
+    match options.alphabet {
+        Alphabet::Standard => {
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        }
+        Alphabet::UrlSafe => {
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        }
+    }
+}
+
+fn encode_group(bytes: &[u8], options: Options, padded: bool) -> String {
+    let table = alphabet(options);
+    let mut out = String::with_capacity(4);
+
+    let a = bytes[0];
+    let b = if bytes.len() > 1 { bytes[1] } else { 0 };
+    let c = if bytes.len() > 2 { bytes[2] } else { 0 };
+
+    out.push(table[(a >> 2) as usize] as char);
+    out.push(table[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+
+    if bytes.len() > 1 {
+        out.push(table[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char);
+    } else if padded {
+        out.push('=');
+    }
+
+    if bytes.len() > 2 {
+        out.push(table[(c & 0x3f) as usize] as char);
+    } else if padded {
+        out.push('=');
+    }
+
+    out
+}
+
+pub fn encode(input: &[u8], options: Options) -> String {
+    let mut out = String::with_capacity(input.len().saturating_add(2) / 3 * 4);
+    let mut chunks = input.chunks_exact(3);
+    for chunk in &mut chunks {
+        out.push_str(&encode_group(chunk, options, true));
+    }
+
+    let tail = chunks.remainder();
+    if !tail.is_empty() {
+        out.push_str(&encode_group(
+            tail,
+            options,
+            options.padding == Padding::Required,
+        ));
+    }
+
+    out
+}
+
+fn whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r')
+}
+
+fn value(byte: u8, options: Options) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' if options.alphabet == Alphabet::Standard => Some(62),
+        b'/' if options.alphabet == Alphabet::Standard => Some(63),
+        b'-' if options.alphabet == Alphabet::UrlSafe => Some(62),
+        b'_' if options.alphabet == Alphabet::UrlSafe => Some(63),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Symbol {
+    value: u8,
+    offset: usize,
+}
+
+#[derive(Clone, Copy)]
+enum Slot {
+    Symbol(Symbol),
+    Padding(usize),
+}
+
+pub struct Encoder {
+    options: Options,
+    tail: [u8; 2],
+    tail_len: usize,
+    finished: bool,
+}
+
+impl Encoder {
+    pub fn new(options: Options) -> Self {
+        Self {
+            options,
+            tail: [0; 2],
+            tail_len: 0,
+            finished: false,
+        }
+    }
+
+    pub fn push(&mut self, input: &[u8]) -> Result<String, StreamError> {
+        if self.finished {
+            return Err(StreamError::Finished);
+        }
+
+        let mut out = String::new();
+        let mut index = 0;
+
+        if self.tail_len > 0 {
+            while self.tail_len < 2 && index < input.len() {
+                self.tail[self.tail_len] = input[index];
+                self.tail_len += 1;
+                index += 1;
+            }
+            if self.tail_len == 2 && index < input.len() {
+                let group = [self.tail[0], self.tail[1], input[index]];
+                out.push_str(&encode_group(&group, self.options, true));
+                self.tail_len = 0;
+                index += 1;
+            }
+        }
+
+        while index + 3 <= input.len() {
+            out.push_str(&encode_group(&input[index..index + 3], self.options, true));
+            index += 3;
+        }
+
+        let remaining = &input[index..];
+        self.tail_len = remaining.len();
+        self.tail[..remaining.len()].copy_from_slice(remaining);
+
+        Ok(out)
+    }
+
+    pub fn finish(&mut self) -> Result<String, StreamError> {
+        if self.finished {
+            return Err(StreamError::Finished);
+        }
+        self.finished = true;
+
+        if self.tail_len == 0 {
+            Ok(String::new())
+        } else {
+            Ok(encode_group(
+                &self.tail[..self.tail_len],
+                self.options,
+                self.options.padding == Padding::Required,
+            ))
+        }
+    }
+}
+
+pub struct Decoder {
+    options: Options,
+    slots: [Option<Slot>; 4],
+    slot_len: usize,
+    offset: usize,
+    terminal: bool,
+    finished: bool,
+    error: Option<DecodeError>,
+}
+
+impl Decoder {
+    pub fn new(options: Options) -> Self {
+        Self {
+            options,
+            slots: [None; 4],
+            slot_len: 0,
+            offset: 0,
+            terminal: false,
+            finished: false,
+            error: None,
+        }
+    }
+
+    fn remember_error(&mut self, error: DecodeError) -> DecodeError {
+        self.error = Some(error);
+        error
+    }
+
+    fn process_byte(&mut self, byte: u8, offset: usize, out: &mut Vec<u8>) -> Result<(), DecodeError> {
+        if self.terminal {
+            return Err(DecodeError::TrailingData { offset });
+        }
+
+        let position = self.slot_len;
+
+        if byte == b'=' {
+            if self.options.padding == Padding::Forbidden || position < 2 {
+                return Err(DecodeError::InvalidPadding { offset });
+            }
+            if position == 2 {
+                self.slots[2] = Some(Slot::Padding(offset));
+                self.slot_len = 3;
+                return Ok(());
+            }
+            if position == 3 {
+                match self.slots[2] {
+                    Some(Slot::Padding(_)) => {
+                        self.slots[3] = Some(Slot::Padding(offset));
+                    }
+                    Some(Slot::Symbol(_)) => {
+                        self.slots[3] = Some(Slot::Padding(offset));
+                    }
+                    None => unreachable!(),
+                }
+                self.complete_group(out)?;
+                self.terminal = true;
+                return Ok(());
+            }
+        }
+
+        if position == 3 && matches!(self.slots[2], Some(Slot::Padding(_))) {
+            return Err(DecodeError::InvalidPadding { offset });
+        }
+
+        let Some(v) = value(byte, self.options) else {
+            return Err(DecodeError::InvalidByte { offset });
+        };
+
+        self.slots[position] = Some(Slot::Symbol(Symbol { value: v, offset }));
+        self.slot_len += 1;
+
+        if self.slot_len == 4 {
+            self.complete_group(out)?;
+        }
+
+        Ok(())
+    }
+
+    fn complete_group(&mut self, out: &mut Vec<u8>) -> Result<(), DecodeError> {
+        let s0 = match self.slots[0] {
+            Some(Slot::Symbol(s)) => s.value,
+            _ => return Err(DecodeError::InvalidPadding { offset: self.offset }),
+        };
+        let s1 = match self.slots[1] {
+            Some(Slot::Symbol(s)) => s,
+            _ => return Err(DecodeError::InvalidPadding { offset: self.offset }),
+        };
+
+        match (self.slots[2], self.slots[3]) {
+            (Some(Slot::Symbol(s2)), Some(Slot::Symbol(s3))) => {
+                out.push((s0 << 2) | (s1.value >> 4));
+                out.push((s1.value << 4) | (s2.value >> 2));
+                out.push((s2.value << 6) | s3.value);
+            }
+            (Some(Slot::Symbol(s2)), Some(Slot::Padding(_))) => {
+                if s2.value & 0x03 != 0 {
+                    return Err(DecodeError::NonCanonical { offset: s2.offset });
+                }
+                out.push((s0 << 2) | (s1.value >> 4));
+                out.push((s1.value << 4) | (s2.value >> 2));
+            }
+            (Some(Slot::Padding(_)), Some(Slot::Padding(_))) => {
+                if s1.value.value & 0x0f != 0 {
+                    return Err(DecodeError::NonCanonical {
+                        offset: s1.value.offset,
+                    });
+                }
+                out.push((s0 << 2) | (s1.value.value >> 4));
+            }
+            _ => return Err(DecodeError::InvalidPadding { offset: self.offset }),
+        }
+
+        self.slots = [None; 4];
+        self.slot_len = 0;
+        Ok(())
+    }
+
+    pub fn push(&mut self, input: &str) -> Result<Vec<u8>, DecodeError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if self.finished {
+            return Err(DecodeError::Finished);
+        }
+
+        let mut out = Vec::new();
+        for &byte in input.as_bytes() {
+            let offset = self.offset;
+            self.offset += 1;
+
+            if self.options.ignore_whitespace && whitespace(byte) {
+                continue;
+            }
+
+            if let Err(error) = self.process_byte(byte, offset, &mut out) {
+                return Err(self.remember_error(error));
+            }
+        }
+
+        Ok(out)
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<u8>, DecodeError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if self.finished {
+            return Err(DecodeError::Finished);
+        }
+
+        let mut out = Vec::new();
+
+        if self.options.padding == Padding::Required {
+            if self.slot_len != 0 {
+                let error = DecodeError::InvalidLength { offset: self.offset };
+                return Err(self.remember_error(error));
+            }
+        } else {
+            match self.slot_len {
+                0 => {}
+                1 => {
+                    let error = DecodeError::InvalidLength { offset: self.offset };
+                    return Err(self.remember_error(error));
+                }
+                2 => {
+                    let s0 = match self.slots[0] {
+                        Some(Slot::Symbol(s)) => s.value,
+                        _ => unreachable!(),
+                    };
+                    let s1 = match self.slots[1] {
+                        Some(Slot::Symbol(s)) => s,
+                        _ => unreachable!(),
+                    };
+                    if s1.value & 0x0f != 0 {
+                        let error = DecodeError::NonCanonical { offset: s1.offset };
+                        return Err(self.remember_error(error));
+                    }
+                    out.push((s0 << 2) | (s1.value >> 4));
+                }
+                3 => {
+                    let s0 = match self.slots[0] {
+                        Some(Slot::Symbol(s)) => s.value,
+                        _ => unreachable!(),
+                    };
+                    let s1 = match self.slots[1] {
+                        Some(Slot::Symbol(s)) => s.value,
+                        _ => unreachable!(),
+                    };
+                    let s2 = match self.slots[2] {
+                        Some(Slot::Symbol(s)) => s,
+                        _ => unreachable!(),
+                    };
+                    if s2.value & 0x03 != 0 {
+                        let error = DecodeError::NonCanonical { offset: s2.offset };
+                        return Err(self.remember_error(error));
+                    }
+                    out.push((s0 << 2) | (s1 >> 4));
+                    out.push((s1 << 4) | (s2.value >> 2));
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        self.finished = true;
+        Ok(out)
+    }
+}
+
+pub fn decode(input: &str, options: Options) -> Result<Vec<u8>, DecodeError> {
+    let mut decoder = Decoder::new(options);
+    let mut out = decoder.push(input)?;
+    out.extend(decoder.finish()?);
+    Ok(out)
+}
+```

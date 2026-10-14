@@ -1,0 +1,232 @@
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeError {
+    InvalidByte,
+    InvalidPadding,
+    InvalidLength,
+}
+
+#[derive(Debug, Clone)]
+pub struct Encoder {
+    buffer: [u8; 3],
+    buffered: usize,
+    finished: bool,
+}
+
+impl Encoder {
+    pub fn new() -> Self {
+        Self {
+            buffer: [0; 3],
+            buffered: 0,
+            finished: false,
+        }
+    }
+
+    pub fn update(&mut self, input: &[u8]) -> String {
+        let mut output = String::new();
+
+        for &byte in input {
+            if self.finished {
+                break;
+            }
+
+            self.buffer[self.buffered] = byte;
+            self.buffered += 1;
+
+            if self.buffered == 3 {
+                encode_triplet(&self.buffer, &mut output);
+                self.buffered = 0;
+            }
+        }
+
+        output
+    }
+
+    pub fn finish(&mut self) -> String {
+        let mut output = String::new();
+
+        if !self.finished {
+            match self.buffered {
+                1 => {
+                    let a = self.buffer[0];
+                    output.push(ALPHABET[(a >> 2) as usize] as char);
+                    output.push(ALPHABET[((a & 0x03) << 4) as usize] as char);
+                    output.push_str("==");
+                }
+                2 => {
+                    let a = self.buffer[0];
+                    let b = self.buffer[1];
+                    output.push(ALPHABET[(a >> 2) as usize] as char);
+                    output.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+                    output.push(ALPHABET[((b & 0x0f) << 2) as usize] as char);
+                    output.push('=');
+                }
+                _ => {}
+            }
+
+            self.buffered = 0;
+            self.finished = true;
+        }
+
+        output
+    }
+}
+
+impl Default for Encoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Decoder {
+    quartet: [u8; 4],
+    length: usize,
+    ended: bool,
+    error: Option<DecodeError>,
+}
+
+impl Decoder {
+    pub fn new() -> Self {
+        Self {
+            quartet: [0; 4],
+            length: 0,
+            ended: false,
+            error: None,
+        }
+    }
+
+    pub fn update(&mut self, input: &[u8]) -> Result<Vec<u8>, DecodeError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+
+        let mut output = Vec::new();
+
+        for &byte in input {
+            if byte.is_ascii_whitespace() {
+                continue;
+            }
+
+            if self.ended {
+                return self.fail(DecodeError::InvalidPadding);
+            }
+
+            if self.length == 2 && self.quartet[2] == b'=' {
+                if byte != b'=' {
+                    return self.fail(DecodeError::InvalidPadding);
+                }
+                self.quartet[3] = byte;
+                self.length = 4;
+                output.push(decode_sextet(self.quartet[0]) << 2
+                    | decode_sextet(self.quartet[1]) >> 4);
+                self.ended = true;
+                continue;
+            }
+
+            if byte == b'=' {
+                if self.length < 2 {
+                    return self.fail(DecodeError::InvalidPadding);
+                }
+                self.quartet[self.length] = byte;
+                self.length += 1;
+
+                if self.length == 4 {
+                    output.push(decode_sextet(self.quartet[0]) << 2
+                        | decode_sextet(self.quartet[1]) >> 4);
+                    if self.quartet[2] != b'=' {
+                        output.push(decode_sextet(self.quartet[1]) << 4
+                            | decode_sextet(self.quartet[2]) >> 2);
+                    }
+                    self.ended = true;
+                }
+                continue;
+            }
+
+            if alphabet_value(byte).is_none() {
+                return self.fail(DecodeError::InvalidByte);
+            }
+
+            self.quartet[self.length] = byte;
+            self.length += 1;
+
+            if self.length == 4 {
+                let a = decode_sextet(self.quartet[0]);
+                let b = decode_sextet(self.quartet[1]);
+                let c = decode_sextet(self.quartet[2]);
+                let d = decode_sextet(self.quartet[3]);
+                output.push((a << 2) | (b >> 4));
+                output.push((b << 4) | (c >> 2));
+                output.push((c << 6) | d);
+                self.length = 0;
+            }
+        }
+
+        Ok(output)
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<u8>, DecodeError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if self.length != 0 {
+            return self.fail(DecodeError::InvalidLength);
+        }
+        Ok(Vec::new())
+    }
+
+    fn fail<T>(&mut self, error: DecodeError) -> Result<T, DecodeError> {
+        self.error = Some(error);
+        Err(error)
+    }
+}
+
+impl Default for Decoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+const ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn encode_triplet(bytes: &[u8; 3], output: &mut String) {
+    let a = bytes[0];
+    let b = bytes[1];
+    let c = bytes[2];
+
+    output.push(ALPHABET[(a >> 2) as usize] as char);
+    output.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+    output.push(ALPHABET[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char);
+    output.push(ALPHABET[(c & 0x3f) as usize] as char);
+}
+
+fn alphabet_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+fn decode_sextet(byte: u8) -> u8 {
+    alphabet_value(byte).unwrap_or(0)
+}
+
+pub fn encode(input: &[u8]) -> String {
+    let mut encoder = Encoder::new();
+    let mut output = encoder.update(input);
+    output.push_str(&encoder.finish());
+    output
+}
+
+pub fn decode(input: &str) -> Result<Vec<u8>, DecodeError> {
+    let mut decoder = Decoder::new();
+    let mut output = decoder.update(input.as_bytes())?;
+    output.extend(decoder.finish()?);
+    Ok(output)
+}
+```

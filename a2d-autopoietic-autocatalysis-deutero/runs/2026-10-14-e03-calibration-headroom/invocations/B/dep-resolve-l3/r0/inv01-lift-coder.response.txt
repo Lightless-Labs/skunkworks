@@ -1,0 +1,245 @@
+```rust
+use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Feature {
+    pub name: String,
+    pub dependencies: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Package {
+    pub name: String,
+    pub dependencies: Vec<String>,
+    pub optional_dependencies: Vec<String>,
+    pub features: Vec<Feature>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Request {
+    pub package: String,
+    pub features: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResolveError {
+    MissingPackage(String),
+    UnknownFeature { package: String, feature: String },
+    Cycle(Vec<String>),
+}
+
+fn visit_cycles(
+    node: &str,
+    graph: &BTreeMap<String, BTreeSet<String>>,
+    visited: &mut BTreeSet<String>,
+    stack: &mut Vec<String>,
+    on_stack: &mut BTreeSet<String>,
+) -> Option<Vec<String>> {
+    visited.insert(node.to_string());
+    stack.push(node.to_string());
+    on_stack.insert(node.to_string());
+
+    if let Some(targets) = graph.get(node) {
+        for target in targets {
+            if on_stack.contains(target) {
+                let start = stack.iter().position(|name| name == target).unwrap();
+                let mut cycle = stack[start..].to_vec();
+
+                let smallest = cycle
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| a.cmp(b))
+                    .map(|(index, _)| index)
+                    .unwrap_or(0);
+                cycle.rotate_left(smallest);
+                cycle.push(cycle[0].clone());
+                return Some(cycle);
+            }
+
+            if !visited.contains(target) {
+                if let Some(cycle) =
+                    visit_cycles(target, graph, visited, stack, on_stack)
+                {
+                    return Some(cycle);
+                }
+            }
+        }
+    }
+
+    stack.pop();
+    on_stack.remove(node);
+    None
+}
+
+pub fn resolve(
+    packages: &[Package],
+    requests: &[Request],
+) -> Result<Vec<String>, ResolveError> {
+    let catalog: BTreeMap<&str, &Package> = packages
+        .iter()
+        .map(|package| (package.name.as_str(), package))
+        .collect();
+
+    let mut requested_features: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for request in requests {
+        requested_features
+            .entry(request.package.clone())
+            .or_default()
+            .extend(request.features.iter().cloned());
+    }
+
+    if requested_features.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut missing = BTreeSet::new();
+    let mut unknown_features = BTreeSet::new();
+    let mut relevant = BTreeSet::new();
+    let mut pending: BTreeSet<String> = requested_features.keys().cloned().collect();
+
+    while let Some(name) = pending.iter().next().cloned() {
+        pending.remove(&name);
+
+        let Some(package) = catalog.get(name.as_str()).copied() else {
+            missing.insert(name);
+            continue;
+        };
+
+        if !relevant.insert(name.clone()) {
+            continue;
+        }
+
+        let enabled = requested_features.get(&name).cloned().unwrap_or_default();
+        let feature_map: BTreeMap<&str, &Feature> = package
+            .features
+            .iter()
+            .map(|feature| (feature.name.as_str(), feature))
+            .collect();
+
+        let mut active_optional = BTreeSet::new();
+        for feature_name in enabled {
+            if let Some(feature) = feature_map.get(feature_name.as_str()) {
+                active_optional.extend(feature.dependencies.iter().cloned());
+            } else {
+                unknown_features.insert((name.clone(), feature_name));
+            }
+        }
+
+        let mut targets: BTreeSet<String> =
+            package.dependencies.iter().cloned().collect();
+        targets.extend(
+            package
+                .optional_dependencies
+                .iter()
+                .filter(|target| active_optional.contains(*target))
+                .cloned(),
+        );
+
+        for target in targets {
+            if !catalog.contains_key(target.as_str()) {
+                missing.insert(target);
+            } else if !relevant.contains(&target) {
+                pending.insert(target);
+            }
+        }
+    }
+
+    if let Some(name) = missing.iter().next() {
+        return Err(ResolveError::MissingPackage(name.clone()));
+    }
+
+    if let Some((package, feature)) = unknown_features.iter().next() {
+        return Err(ResolveError::UnknownFeature {
+            package: package.clone(),
+            feature: feature.clone(),
+        });
+    }
+
+    let mut graph: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for name in &relevant {
+        let package = catalog[name.as_str()];
+        let enabled = requested_features.get(name).cloned().unwrap_or_default();
+        let feature_map: BTreeMap<&str, &Feature> = package
+            .features
+            .iter()
+            .map(|feature| (feature.name.as_str(), feature))
+            .collect();
+
+        let mut active_optional = BTreeSet::new();
+        for feature_name in enabled {
+            if let Some(feature) = feature_map.get(feature_name.as_str()) {
+                active_optional.extend(feature.dependencies.iter().cloned());
+            }
+        }
+
+        let mut targets: BTreeSet<String> =
+            package.dependencies.iter().cloned().collect();
+        targets.extend(
+            package
+                .optional_dependencies
+                .iter()
+                .filter(|target| active_optional.contains(*target))
+                .cloned(),
+        );
+        graph.insert(
+            name.clone(),
+            targets
+                .into_iter()
+                .filter(|target| relevant.contains(target))
+                .collect(),
+        );
+    }
+
+    let mut visited = BTreeSet::new();
+    let mut stack = Vec::new();
+    let mut on_stack = BTreeSet::new();
+    for name in &relevant {
+        if !visited.contains(name) {
+            if let Some(cycle) =
+                visit_cycles(name, &graph, &mut visited, &mut stack, &mut on_stack)
+            {
+                return Err(ResolveError::Cycle(cycle));
+            }
+        }
+    }
+
+    let mut remaining_dependencies: BTreeMap<String, usize> = BTreeMap::new();
+    let mut dependents: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    for name in &relevant {
+        let dependencies = graph.get(name).cloned().unwrap_or_default();
+        remaining_dependencies.insert(name.clone(), dependencies.len());
+        for dependency in dependencies {
+            dependents
+                .entry(dependency)
+                .or_default()
+                .insert(name.clone());
+        }
+    }
+
+    let mut ready: BTreeSet<String> = remaining_dependencies
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(name, _)| name.clone())
+        .collect();
+    let mut order = Vec::with_capacity(relevant.len());
+
+    while let Some(name) = ready.iter().next().cloned() {
+        ready.remove(&name);
+        order.push(name.clone());
+
+        if let Some(items) = dependents.get(&name) {
+            for dependent in items {
+                if let Some(count) = remaining_dependencies.get_mut(dependent) {
+                    *count -= 1;
+                    if *count == 0 {
+                        ready.insert(dependent.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(order)
+}
+```

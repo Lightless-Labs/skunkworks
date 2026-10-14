@@ -1,0 +1,140 @@
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Package {
+    pub name: String,
+    pub dependencies: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResolveError {
+    MissingDependency { package: String, dependency: String },
+    Cycle(Vec<String>),
+}
+
+pub fn install_order(packages: &[Package]) -> Result<Vec<String>, ResolveError> {
+    use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
+
+    let by_name: HashMap<&str, usize> = packages
+        .iter()
+        .enumerate()
+        .map(|(index, package)| (package.name.as_str(), index))
+        .collect();
+
+    let mut missing: Option<(&str, &str)> = None;
+    for package in packages {
+        for dependency in &package.dependencies {
+            if !by_name.contains_key(dependency.as_str()) {
+                let candidate = (package.name.as_str(), dependency.as_str());
+                if missing.map_or(true, |current| candidate < current) {
+                    missing = Some(candidate);
+                }
+            }
+        }
+    }
+
+    if let Some((package, dependency)) = missing {
+        return Err(ResolveError::MissingDependency {
+            package: package.to_string(),
+            dependency: dependency.to_string(),
+        });
+    }
+
+    let mut graph: Vec<Vec<usize>> = Vec::with_capacity(packages.len());
+    for package in packages {
+        let mut targets = BTreeSet::new();
+        for dependency in &package.dependencies {
+            targets.insert(by_name[dependency.as_str()]);
+        }
+        graph.push(targets.into_iter().collect());
+    }
+
+    fn visit(
+        node: usize,
+        packages: &[Package],
+        graph: &[Vec<usize>],
+        state: &mut [u8],
+        stack: &mut Vec<usize>,
+    ) -> Option<Vec<String>> {
+        state[node] = 1;
+        stack.push(node);
+
+        for &target in &graph[node] {
+            if state[target] == 0 {
+                if let Some(cycle) = visit(target, packages, graph, state, stack) {
+                    return Some(cycle);
+                }
+            } else if state[target] == 1 {
+                let start = stack.iter().position(|&item| item == target).unwrap();
+                let mut cycle: Vec<String> = stack[start..]
+                    .iter()
+                    .map(|&item| packages[item].name.clone())
+                    .collect();
+
+                let smallest = cycle
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| a.cmp(b))
+                    .map(|(index, _)| index)
+                    .unwrap();
+                cycle.rotate_left(smallest);
+                cycle.push(cycle[0].clone());
+                return Some(cycle);
+            }
+        }
+
+        stack.pop();
+        state[node] = 2;
+        None
+    }
+
+    let mut node_order: Vec<usize> = (0..packages.len()).collect();
+    node_order.sort_by(|&a, &b| packages[a].name.cmp(&packages[b].name));
+
+    let mut state = vec![0; packages.len()];
+    let mut stack = Vec::new();
+    for node in node_order {
+        if state[node] == 0 {
+            if let Some(cycle) = visit(node, packages, &graph, &mut state, &mut stack) {
+                return Err(ResolveError::Cycle(cycle));
+            }
+        }
+    }
+
+    let mut dependent_counts = vec![0usize; packages.len()];
+    let mut dependents = vec![Vec::new(); packages.len()];
+    for (dependent, targets) in graph.iter().enumerate() {
+        for &dependency in targets {
+            dependent_counts[dependent] += 1;
+            dependents[dependency].push(dependent);
+        }
+    }
+
+    let mut ready = BinaryHeap::new();
+    for index in 0..packages.len() {
+        if dependent_counts[index] == 0 {
+            ready.push(std::cmp::Reverse(packages[index].name.clone()));
+        }
+    }
+
+    let indices: HashMap<&str, usize> = packages
+        .iter()
+        .enumerate()
+        .map(|(index, package)| (package.name.as_str(), index))
+        .collect();
+
+    let mut order = Vec::with_capacity(packages.len());
+    while let Some(std::cmp::Reverse(name)) = ready.pop() {
+        let index = indices[name.as_str()];
+        order.push(name);
+
+        for &dependent in &dependents[index] {
+            dependent_counts[dependent] -= 1;
+            if dependent_counts[dependent] == 0 {
+                ready.push(std::cmp::Reverse(packages[dependent].name.clone()));
+            }
+        }
+    }
+
+    Ok(order)
+}
+```

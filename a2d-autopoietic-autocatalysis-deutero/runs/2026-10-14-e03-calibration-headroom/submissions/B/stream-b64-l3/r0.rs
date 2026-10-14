@@ -1,0 +1,299 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeError {
+    InvalidByte { offset: usize },
+    InvalidPadding { offset: usize },
+    InvalidLength { offset: usize },
+    TrailingData { offset: usize },
+    Finished,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamError {
+    Finished,
+}
+
+const ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn encode_group(a: u8, b: Option<u8>, c: Option<u8>) -> [u8; 4] {
+    let s0 = a >> 2;
+    let s1 = ((a & 0x03) << 4) | b.map_or(0, |v| v >> 4);
+    let s2 = b.map_or(64, |v| ((v & 0x0f) << 2) | c.map_or(0, |w| w >> 6));
+    let s3 = c.map_or(64, |v| v & 0x3f);
+
+    [
+        ALPHABET[s0 as usize],
+        ALPHABET[s1 as usize],
+        if s2 == 64 { b'=' } else { ALPHABET[s2 as usize] },
+        if s3 == 64 { b'=' } else { ALPHABET[s3 as usize] },
+    ]
+}
+
+pub fn encode(input: &[u8]) -> String {
+    let mut out = Vec::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let group = encode_group(
+            chunk[0],
+            chunk.get(1).copied(),
+            chunk.get(2).copied(),
+        );
+        out.extend_from_slice(&group);
+    }
+    String::from_utf8(out).expect("base64 output is ASCII")
+}
+
+fn sextet(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+fn is_ignored_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuartetSymbol {
+    Value(u8),
+    Padding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaddingState {
+    None,
+    NeedSecondPadding,
+    Complete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Encoder {
+    tail: [u8; 2],
+    tail_len: usize,
+    finished: bool,
+}
+
+impl Encoder {
+    pub fn new() -> Self {
+        Self {
+            tail: [0; 2],
+            tail_len: 0,
+            finished: false,
+        }
+    }
+
+    pub fn push(&mut self, input: &[u8]) -> Result<String, StreamError> {
+        if self.finished {
+            return Err(StreamError::Finished);
+        }
+
+        let mut out = Vec::with_capacity((self.tail_len + input.len()) / 3 * 4);
+        let mut i = 0;
+
+        if self.tail_len > 0 {
+            while self.tail_len < 2 && i < input.len() {
+                self.tail[self.tail_len] = input[i];
+                self.tail_len += 1;
+                i += 1;
+            }
+            if self.tail_len == 2 && i < input.len() {
+                let group = encode_group(self.tail[0], Some(self.tail[1]), Some(input[i]));
+                out.extend_from_slice(&group);
+                self.tail_len = 0;
+                i += 1;
+            } else {
+                return Ok(String::from_utf8(out).expect("base64 output is ASCII"));
+            }
+        }
+
+        while i + 3 <= input.len() {
+            let group = encode_group(input[i], Some(input[i + 1]), Some(input[i + 2]));
+            out.extend_from_slice(&group);
+            i += 3;
+        }
+
+        self.tail_len = input.len() - i;
+        for j in 0..self.tail_len {
+            self.tail[j] = input[i + j];
+        }
+
+        Ok(String::from_utf8(out).expect("base64 output is ASCII"))
+    }
+
+    pub fn finish(&mut self) -> Result<String, StreamError> {
+        if self.finished {
+            return Err(StreamError::Finished);
+        }
+        self.finished = true;
+
+        let out = if self.tail_len == 0 {
+            String::new()
+        } else {
+            let group = encode_group(
+                self.tail[0],
+                (self.tail_len >= 2).then_some(self.tail[1]),
+                None,
+            );
+            String::from_utf8(group.to_vec()).expect("base64 output is ASCII")
+        };
+        self.tail_len = 0;
+        Ok(out)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Decoder {
+    ignore_whitespace: bool,
+    quartet: [QuartetSymbol; 4],
+    quartet_len: usize,
+    padding: PaddingState,
+    offset: usize,
+    finished: bool,
+    error: Option<DecodeError>,
+}
+
+impl Decoder {
+    pub fn new(ignore_whitespace: bool) -> Self {
+        Self {
+            ignore_whitespace,
+            quartet: [QuartetSymbol::Value(0); 4],
+            quartet_len: 0,
+            padding: PaddingState::None,
+            offset: 0,
+            finished: false,
+            error: None,
+        }
+    }
+
+    fn emit_quartet(&mut self, out: &mut Vec<u8>) {
+        let a = match self.quartet[0] {
+            QuartetSymbol::Value(v) => v,
+            QuartetSymbol::Padding => unreachable!(),
+        };
+        let b = match self.quartet[1] {
+            QuartetSymbol::Value(v) => v,
+            QuartetSymbol::Padding => unreachable!(),
+        };
+
+        out.push((a << 2) | (b >> 4));
+
+        match self.quartet[2] {
+            QuartetSymbol::Padding => {}
+            QuartetSymbol::Value(c) => {
+                out.push((b << 4) | (c >> 2));
+                if let QuartetSymbol::Value(d) = self.quartet[3] {
+                    out.push((c << 6) | d);
+                }
+            }
+        }
+
+        self.quartet_len = 0;
+        self.padding = PaddingState::None;
+    }
+
+    pub fn push(&mut self, input: &str) -> Result<Vec<u8>, DecodeError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if self.finished {
+            return Err(DecodeError::Finished);
+        }
+
+        let mut out = Vec::new();
+        for &byte in input.as_bytes() {
+            let here = self.offset;
+            self.offset += 1;
+
+            if self.ignore_whitespace && is_ignored_whitespace(byte) {
+                continue;
+            }
+
+            if self.padding == PaddingState::Complete {
+                let error = DecodeError::TrailingData { offset: here };
+                self.error = Some(error);
+                return Err(error);
+            }
+
+            if self.padding == PaddingState::NeedSecondPadding {
+                if byte != b'=' {
+                    let error = DecodeError::InvalidPadding { offset: here };
+                    self.error = Some(error);
+                    return Err(error);
+                }
+                self.quartet[3] = QuartetSymbol::Padding;
+                self.quartet_len = 4;
+                self.padding = PaddingState::Complete;
+                self.emit_quartet(&mut out);
+                self.padding = PaddingState::Complete;
+                continue;
+            }
+
+            if byte == b'=' {
+                match self.quartet_len {
+                    0 | 1 => {
+                        let error = DecodeError::InvalidPadding { offset: here };
+                        self.error = Some(error);
+                        return Err(error);
+                    }
+                    2 => {
+                        self.quartet[2] = QuartetSymbol::Padding;
+                        self.quartet_len = 3;
+                        self.padding = PaddingState::NeedSecondPadding;
+                    }
+                    3 => {
+                        self.quartet[3] = QuartetSymbol::Padding;
+                        self.quartet_len = 4;
+                        self.padding = PaddingState::Complete;
+                        self.emit_quartet(&mut out);
+                        self.padding = PaddingState::Complete;
+                    }
+                    _ => unreachable!(),
+                }
+                continue;
+            }
+
+            let Some(value) = sextet(byte) else {
+                let error = DecodeError::InvalidByte { offset: here };
+                self.error = Some(error);
+                return Err(error);
+            };
+
+            self.quartet[self.quartet_len] = QuartetSymbol::Value(value);
+            self.quartet_len += 1;
+            if self.quartet_len == 4 {
+                self.emit_quartet(&mut out);
+            }
+        }
+
+        Ok(out)
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<u8>, DecodeError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if self.finished {
+            return Err(DecodeError::Finished);
+        }
+
+        if self.quartet_len != 0 {
+            let error = DecodeError::InvalidLength { offset: self.offset };
+            self.error = Some(error);
+            return Err(error);
+        }
+
+        self.finished = true;
+        Ok(Vec::new())
+    }
+}
+
+pub fn decode(input: &str, ignore_whitespace: bool) -> Result<Vec<u8>, DecodeError> {
+    let mut decoder = Decoder::new(ignore_whitespace);
+    let mut output = decoder.push(input)?;
+    output.extend(decoder.finish()?);
+    Ok(output)
+}

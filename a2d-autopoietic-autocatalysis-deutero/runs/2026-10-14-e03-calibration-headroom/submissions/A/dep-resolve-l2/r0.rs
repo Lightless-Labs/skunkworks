@@ -1,0 +1,140 @@
+use std::collections::{BTreeSet, HashMap};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Package {
+    pub name: String,
+    pub dependencies: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResolveError {
+    MissingDependency { package: String, dependency: String },
+    Cycle(Vec<String>),
+}
+
+pub fn install_order(packages: &[Package]) -> Result<Vec<String>, ResolveError> {
+    let by_name: HashMap<&str, usize> = packages
+        .iter()
+        .enumerate()
+        .map(|(index, package)| (package.name.as_str(), index))
+        .collect();
+
+    let mut sorted_indices: Vec<usize> = (0..packages.len()).collect();
+    sorted_indices.sort_by(|&a, &b| packages[a].name.cmp(&packages[b].name));
+
+    let mut missing: Option<(String, String)> = None;
+    for &index in &sorted_indices {
+        let package = &packages[index];
+        for dependency in &package.dependencies {
+            if !by_name.contains_key(dependency.as_str()) {
+                let candidate = (package.name.clone(), dependency.clone());
+                if missing.as_ref().is_none_or(|current| candidate < *current) {
+                    missing = Some(candidate);
+                }
+            }
+        }
+    }
+
+    if let Some((package, dependency)) = missing {
+        return Err(ResolveError::MissingDependency {
+            package,
+            dependency,
+        });
+    }
+
+    let mut adjacency: Vec<Vec<usize>> = Vec::with_capacity(packages.len());
+    for package in packages {
+        let mut targets: Vec<usize> = package
+            .dependencies
+            .iter()
+            .map(|dependency| by_name[dependency.as_str()])
+            .collect();
+        targets.sort_by(|&a, &b| packages[a].name.cmp(&packages[b].name));
+        targets.dedup();
+        adjacency.push(targets);
+    }
+
+    let mut state = vec![0u8; packages.len()];
+    let mut stack = Vec::new();
+
+    fn visit(
+        node: usize,
+        packages: &[Package],
+        adjacency: &[Vec<usize>],
+        state: &mut [u8],
+        stack: &mut Vec<usize>,
+    ) -> Option<Vec<String>> {
+        state[node] = 1;
+        stack.push(node);
+
+        for &target in &adjacency[node] {
+            if state[target] == 0 {
+                if let Some(cycle) = visit(target, packages, adjacency, state, stack) {
+                    return Some(cycle);
+                }
+            } else if state[target] == 1 {
+                let start = stack.iter().position(|&item| item == target).unwrap();
+                let mut path: Vec<String> = stack[start..]
+                    .iter()
+                    .map(|&item| packages[item].name.clone())
+                    .collect();
+
+                let smallest = (0..path.len())
+                    .min_by(|&a, &b| path[a].cmp(&path[b]))
+                    .unwrap();
+                path.rotate_left(smallest);
+                path.push(path[0].clone());
+                return Some(path);
+            }
+        }
+
+        stack.pop();
+        state[node] = 2;
+        None
+    }
+
+    for &index in &sorted_indices {
+        if state[index] == 0 {
+            if let Some(cycle) = visit(
+                index,
+                packages,
+                &adjacency,
+                &mut state,
+                &mut stack,
+            ) {
+                return Err(ResolveError::Cycle(cycle));
+            }
+        }
+    }
+
+    // Count each distinct dependent-to-dependency edge once. A package is ready
+    // when all its dependencies have already been installed.
+    let mut remaining_dependencies: Vec<usize> =
+        adjacency.iter().map(Vec::len).collect();
+    let mut dependents = vec![Vec::new(); packages.len()];
+    for (dependent, targets) in adjacency.iter().enumerate() {
+        for &dependency in targets {
+            dependents[dependency].push(dependent);
+        }
+    }
+
+    let mut ready = BTreeSet::new();
+    for index in 0..packages.len() {
+        if remaining_dependencies[index] == 0 {
+            ready.insert((packages[index].name.clone(), index));
+        }
+    }
+
+    let mut order = Vec::with_capacity(packages.len());
+    while let Some((name, index)) = ready.pop_first() {
+        order.push(name);
+        for &dependent in &dependents[index] {
+            remaining_dependencies[dependent] -= 1;
+            if remaining_dependencies[dependent] == 0 {
+                ready.insert((packages[dependent].name.clone(), dependent));
+            }
+        }
+    }
+
+    Ok(order)
+}

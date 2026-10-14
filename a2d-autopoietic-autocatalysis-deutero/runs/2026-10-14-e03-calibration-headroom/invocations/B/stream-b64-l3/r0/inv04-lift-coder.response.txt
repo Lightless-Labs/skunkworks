@@ -1,0 +1,350 @@
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeError {
+    InvalidByte { offset: usize },
+    InvalidPadding { offset: usize },
+    InvalidLength { offset: usize },
+    TrailingData { offset: usize },
+    Finished,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamError {
+    Finished,
+}
+
+const ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+pub fn encode(input: &[u8]) -> String {
+    let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
+    let mut chunks = input.chunks_exact(3);
+
+    for chunk in &mut chunks {
+        let a = chunk[0];
+        let b = chunk[1];
+        let c = chunk[2];
+
+        output.push(ALPHABET[(a >> 2) as usize] as char);
+        output.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+        output.push(ALPHABET[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char);
+        output.push(ALPHABET[(c & 0x3f) as usize] as char);
+    }
+
+    match chunks.remainder() {
+        [] => {}
+        [a] => {
+            output.push(ALPHABET[(a >> 2) as usize] as char);
+            output.push(ALPHABET[((a & 0x03) << 4) as usize] as char);
+            output.push('=');
+            output.push('=');
+        }
+        [a, b] => {
+            output.push(ALPHABET[(a >> 2) as usize] as char);
+            output.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+            output.push(ALPHABET[((b & 0x0f) << 2) as usize] as char);
+            output.push('=');
+        }
+        _ => unreachable!(),
+    }
+
+    output
+}
+
+fn decode_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+fn is_ignored_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuartetItem {
+    Value(u8),
+    Padding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaddingState {
+    None,
+    AfterThirdPosition,
+    AfterFourthPosition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DecodeState {
+    quartet: [u8; 4],
+    len: usize,
+    padding: PaddingState,
+    terminal: bool,
+}
+
+impl DecodeState {
+    fn new() -> Self {
+        Self {
+            quartet: [0; 4],
+            len: 0,
+            padding: PaddingState::None,
+            terminal: false,
+        }
+    }
+
+    fn push_byte(&mut self, byte: u8, offset: usize, output: &mut Vec<u8>) -> Result<(), DecodeError> {
+        if self.terminal {
+            return Err(DecodeError::TrailingData { offset });
+        }
+
+        let item = match self.padding {
+            PaddingState::AfterThirdPosition => {
+                if byte != b'=' {
+                    return Err(DecodeError::InvalidPadding { offset });
+                }
+                QuartetItem::Padding
+            }
+            PaddingState::None => {
+                if byte == b'=' {
+                    if self.len < 2 {
+                        return Err(DecodeError::InvalidPadding { offset });
+                    }
+                    QuartetItem::Padding
+                } else {
+                    match decode_value(byte) {
+                        Some(value) => QuartetItem::Value(value),
+                        None => return Err(DecodeError::InvalidByte { offset }),
+                    }
+                }
+            }
+            PaddingState::AfterFourthPosition => unreachable!(),
+        };
+
+        match item {
+            QuartetItem::Value(value) => self.quartet[self.len] = value,
+            QuartetItem::Padding => {}
+        }
+
+        if item == QuartetItem::Padding {
+            match self.len {
+                2 => self.padding = PaddingState::AfterThirdPosition,
+                3 => {
+                    self.padding = PaddingState::AfterFourthPosition;
+                    self.terminal = true;
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        self.len += 1;
+
+        if self.len == 4 {
+            let a = self.quartet[0];
+            let b = self.quartet[1];
+            output.push((a << 2) | (b >> 4));
+
+            match self.padding {
+                PaddingState::AfterFourthPosition => {
+                    if self.quartet[2] != 0 || self.quartet[3] != 0 {
+                        // The padding positions are zero-initialized; this branch
+                        // simply distinguishes the two legal padding forms below.
+                    }
+                    if self.terminal && self.quartet[2] == 0 {
+                        // A third-position '=' followed by '=' yields one byte.
+                    } else {
+                        output.push((b << 4) | (self.quartet[2] >> 2));
+                    }
+                }
+                PaddingState::AfterThirdPosition => {
+                    output.push((b << 4) | (self.quartet[2] >> 2));
+                    output.push((self.quartet[2] << 6) | self.quartet[3]);
+                }
+                PaddingState::None => {
+                    output.push((b << 4) | (self.quartet[2] >> 2));
+                    output.push((self.quartet[2] << 6) | self.quartet[3]);
+                }
+            }
+
+            self.len = 0;
+            if !self.terminal {
+                self.padding = PaddingState::None;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn finish(&self, eof: usize) -> Result<(), DecodeError> {
+        if self.len != 0 {
+            return Err(DecodeError::InvalidLength { offset: eof });
+        }
+        Ok(())
+    }
+}
+
+pub fn decode(input: &str, ignore_whitespace: bool) -> Result<Vec<u8>, DecodeError> {
+    let mut state = DecodeState::new();
+    let mut output = Vec::new();
+
+    for (offset, byte) in input.bytes().enumerate() {
+        if ignore_whitespace && is_ignored_whitespace(byte) {
+            continue;
+        }
+        state.push_byte(byte, offset, &mut output)?;
+    }
+
+    state.finish(input.len())?;
+    Ok(output)
+}
+
+pub struct Encoder {
+    tail: [u8; 2],
+    tail_len: usize,
+    finished: bool,
+}
+
+impl Encoder {
+    pub fn new() -> Self {
+        Self {
+            tail: [0; 2],
+            tail_len: 0,
+            finished: false,
+        }
+    }
+
+    pub fn push(&mut self, input: &[u8]) -> Result<String, StreamError> {
+        if self.finished {
+            return Err(StreamError::Finished);
+        }
+
+        let mut output = String::with_capacity((self.tail_len + input.len()) / 3 * 4);
+        let mut index = 0;
+
+        if self.tail_len > 0 {
+            while self.tail_len < 3 && index < input.len() {
+                if self.tail_len < 2 {
+                    self.tail[self.tail_len] = input[index];
+                }
+                self.tail_len += 1;
+                index += 1;
+            }
+
+            if self.tail_len == 3 {
+                let a = self.tail[0];
+                let b = self.tail[1];
+                let c = input[index - 1];
+                output.push(ALPHABET[(a >> 2) as usize] as char);
+                output.push(ALPHABET[(((a & 3) << 4) | (b >> 4)) as usize] as char);
+                output.push(ALPHABET[(((b & 15) << 2) | (c >> 6)) as usize] as char);
+                output.push(ALPHABET[(c & 63) as usize] as char);
+                self.tail_len = 0;
+            }
+        }
+
+        while index + 3 <= input.len() {
+            let a = input[index];
+            let b = input[index + 1];
+            let c = input[index + 2];
+            output.push(ALPHABET[(a >> 2) as usize] as char);
+            output.push(ALPHABET[(((a & 3) << 4) | (b >> 4)) as usize] as char);
+            output.push(ALPHABET[(((b & 15) << 2) | (c >> 6)) as usize] as char);
+            output.push(ALPHABET[(c & 63) as usize] as char);
+            index += 3;
+        }
+
+        while index < input.len() {
+            self.tail[self.tail_len] = input[index];
+            self.tail_len += 1;
+            index += 1;
+        }
+
+        Ok(output)
+    }
+
+    pub fn finish(&mut self) -> Result<String, StreamError> {
+        if self.finished {
+            return Err(StreamError::Finished);
+        }
+        self.finished = true;
+
+        let output = match self.tail_len {
+            0 => String::new(),
+            1 => encode(&self.tail[..1]),
+            2 => encode(&self.tail[..2]),
+            _ => unreachable!(),
+        };
+        self.tail_len = 0;
+        Ok(output)
+    }
+}
+
+pub struct Decoder {
+    state: DecodeState,
+    ignore_whitespace: bool,
+    offset: usize,
+    finished: bool,
+    error: Option<DecodeError>,
+}
+
+impl Decoder {
+    pub fn new(ignore_whitespace: bool) -> Self {
+        Self {
+            state: DecodeState::new(),
+            ignore_whitespace,
+            offset: 0,
+            finished: false,
+            error: None,
+        }
+    }
+
+    pub fn push(&mut self, input: &str) -> Result<Vec<u8>, DecodeError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if self.finished {
+            return Err(DecodeError::Finished);
+        }
+
+        let start = self.offset;
+        let mut output = Vec::new();
+
+        for (relative_offset, byte) in input.bytes().enumerate() {
+            let absolute_offset = start + relative_offset;
+            if self.ignore_whitespace && is_ignored_whitespace(byte) {
+                continue;
+            }
+
+            if let Err(error) = self.state.push_byte(byte, absolute_offset, &mut output) {
+                self.error = Some(error);
+                self.offset = start + input.len();
+                return Err(error);
+            }
+        }
+
+        self.offset = start + input.len();
+        Ok(output)
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<u8>, DecodeError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if self.finished {
+            return Err(DecodeError::Finished);
+        }
+
+        if let Err(error) = self.state.finish(self.offset) {
+            self.error = Some(error);
+            return Err(error);
+        }
+
+        self.finished = true;
+        Ok(Vec::new())
+    }
+}
+```

@@ -1,0 +1,103 @@
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BucketError {
+    ZeroInterval,
+    TimeWentBackwards,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TokenBucket {
+    capacity: u64,
+    refill: u64,
+    interval_ms: u64,
+    tokens: u64,
+    remainder: u64,
+    last: u64,
+}
+
+impl TokenBucket {
+    pub fn new(
+        capacity: u64,
+        refill: u64,
+        interval_ms: u64,
+        start_ms: u64,
+    ) -> Result<Self, BucketError> {
+        if interval_ms == 0 {
+            return Err(BucketError::ZeroInterval);
+        }
+
+        Ok(Self {
+            capacity,
+            refill,
+            interval_ms,
+            tokens: capacity,
+            remainder: 0,
+            last: start_ms,
+        })
+    }
+
+    pub fn available(&mut self, now: u64) -> Result<u64, BucketError> {
+        self.advance(now)?;
+        Ok(self.tokens)
+    }
+
+    pub fn try_acquire(&mut self, n: u64, now: u64) -> Result<bool, BucketError> {
+        self.advance(now)?;
+        if n <= self.tokens {
+            self.tokens -= n;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn advance(&mut self, now: u64) -> Result<(), BucketError> {
+        if now < self.last {
+            return Err(BucketError::TimeWentBackwards);
+        }
+
+        let elapsed = now - self.last;
+
+        // Split elapsed into interval-sized groups so no intermediate
+        // multiplication can overflow. Only the token count up to capacity
+        // is needed; reaching capacity also discards the fractional remainder.
+        let intervals = elapsed / self.interval_ms;
+        let partial_elapsed = elapsed % self.interval_ms;
+
+        if self.tokens == self.capacity {
+            self.remainder = 0;
+            self.last = now;
+            return Ok(());
+        }
+
+        // A full interval contributes `refill` tokens. Saturating arithmetic
+        // here is safe because any amount at least the remaining capacity
+        // clamps the bucket to full.
+        let missing = self.capacity - self.tokens;
+        let whole_from_intervals = intervals.saturating_mul(self.refill);
+        if whole_from_intervals >= missing {
+            self.tokens = self.capacity;
+            self.remainder = 0;
+            self.last = now;
+            return Ok(());
+        }
+
+        let partial_numerator =
+            (partial_elapsed as u128) * (self.refill as u128) + (self.remainder as u128);
+        let partial_whole = (partial_numerator / self.interval_ms as u128) as u64;
+        let next_remainder = (partial_numerator % self.interval_ms as u128) as u64;
+
+        let whole = whole_from_intervals + partial_whole;
+        if whole >= missing {
+            self.tokens = self.capacity;
+            self.remainder = 0;
+        } else {
+            self.tokens += whole;
+            self.remainder = next_remainder;
+        }
+
+        self.last = now;
+        Ok(())
+    }
+}
+```

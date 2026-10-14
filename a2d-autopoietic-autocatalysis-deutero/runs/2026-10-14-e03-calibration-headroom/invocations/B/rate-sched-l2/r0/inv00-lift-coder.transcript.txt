@@ -1,0 +1,152 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-84147-1792001529572569000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a13b9d-6a2d-71e0-904c-b0eab07bdb01
+--------
+user
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Do not use inner attributes (#![...]) or inner documentation (//!...). Output ONLY the Rust source code inside ```rust fences.
+All listed types and methods must be public. All fields of the listed structs must be public. Listed structs and error enums must implement Clone, Debug, PartialEq, and Eq. Internal state types need not implement those traits. No operation may panic for any input representable by the API.
+Build an exact integer token bucket using explicit u64 millisecond times.
+Public API:
+#[derive(Clone, Debug, PartialEq, Eq)] pub enum BucketError { ZeroInterval, TimeWentBackwards }
+pub struct TokenBucket (implementation-defined private fields)
+impl TokenBucket {
+  pub fn new(capacity: u64, refill: u64, interval_ms: u64, start_ms: u64) -> Result<Self, BucketError>;
+  pub fn available(&mut self, now: u64) -> Result<u64, BucketError>;
+  pub fn try_acquire(&mut self, n: u64, now: u64) -> Result<bool, BucketError>;
+}
+
+new rejects interval_ms==0 with ZeroInterval. Zero capacity and zero refill are valid. Start full with capacity tokens, fractional remainder zero, and clock start_ms. Every available or try_acquire first advances the bucket to now; now less than the last successfully processed time returns TimeWentBackwards and leaves ALL state unchanged. Equal timestamps are valid.
+On advance, with elapsed=now-last, compute numerator=elapsed*refill+previous_remainder using exact arithmetic, whole=numerator/interval_ms, remainder=numerator%interval_ms. Add whole to tokens. If the resulting token count is greater than OR EQUAL TO capacity, clamp to capacity and discard the entire remainder. Otherwise retain that remainder for future advances. This rule applies even with zero elapsed and when already full. Set last=now. There is no refill bank while full.
+After advancing, try_acquire returns true and subtracts exactly n if n<=tokens; otherwise returns false and consumes nothing. A denied request, including n>capacity, still advances time/refill. n==0 succeeds and still advances time/refill. available returns the advanced token count and consumes nothing. All arithmetic must be exact for the full u64 input range, including very large elapsed*refill and capacities. No floating point.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+#[test]
+fn public_bucket_acquire() {
+let mut b=TokenBucket::new(5,2,10,0).unwrap();
+assert_eq!(b.try_acquire(3,0),Ok(true));
+assert_eq!(b.available(0),Ok(2));
+assert_eq!(b.try_acquire(3,0),Ok(false));
+assert_eq!(b.try_acquire(4,10),Ok(true));
+}
+
+#[test]
+fn public_bucket_capacity() {
+let mut b=TokenBucket::new(7,3,4,2).unwrap();
+assert_eq!(b.available(100),Ok(7));
+assert_eq!(b.try_acquire(7,100),Ok(true));
+assert_eq!(b.available(104),Ok(3));
+}
+
+#[test]
+fn public_bucket_zero_interval() {
+assert!(matches!(TokenBucket::new(2,1,0,0),Err(BucketError::ZeroInterval)));
+}
+
+#[test]
+fn public_bucket_zero_request() {
+let mut b=TokenBucket::new(4,0,1,0).unwrap();
+assert_eq!(b.try_acquire(0,0),Ok(true));
+assert_eq!(b.available(0),Ok(4));
+}
+```
+
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-14T18:12:15.574335Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BucketError {
+    ZeroInterval,
+    TimeWentBackwards,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TokenBucket {
+    capacity: u64,
+    refill: u64,
+    interval_ms: u64,
+    tokens: u64,
+    remainder: u64,
+    last_ms: u64,
+}
+
+impl TokenBucket {
+    pub fn new(
+        capacity: u64,
+        refill: u64,
+        interval_ms: u64,
+        start_ms: u64,
+    ) -> Result<Self, BucketError> {
+        if interval_ms == 0 {
+            return Err(BucketError::ZeroInterval);
+        }
+
+        Ok(Self {
+            capacity,
+            refill,
+            interval_ms,
+            tokens: capacity,
+            remainder: 0,
+            last_ms: start_ms,
+        })
+    }
+
+    pub fn available(&mut self, now: u64) -> Result<u64, BucketError> {
+        self.advance(now)?;
+        Ok(self.tokens)
+    }
+
+    pub fn try_acquire(&mut self, n: u64, now: u64) -> Result<bool, BucketError> {
+        self.advance(now)?;
+        if n <= self.tokens {
+            self.tokens -= n;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn advance(&mut self, now: u64) -> Result<(), BucketError> {
+        if now < self.last_ms {
+            return Err(BucketError::TimeWentBackwards);
+        }
+
+        let elapsed = now - self.last_ms;
+
+        // Compute elapsed * refill + remainder exactly as a 128-bit integer.
+        let numerator = (elapsed as u128) * (self.refill as u128) + (self.remainder as u128);
+        let interval = self.interval_ms as u128;
+        let whole = numerator / interval;
+        let remainder = (numerator % interval) as u64;
+
+        let total = (self.tokens as u128) + whole;
+        if total >= self.capacity as u128 {
+            self.tokens = self.capacity;
+            self.remainder = 0;
+        } else {
+            self.tokens = total as u64;
+            self.remainder = remainder;
+        }
+
+        self.last_ms = now;
+        Ok(())
+    }
+}
+```
+tokens used
+3,274

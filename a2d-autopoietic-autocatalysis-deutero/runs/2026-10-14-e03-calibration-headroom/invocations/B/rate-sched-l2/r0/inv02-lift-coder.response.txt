@@ -1,0 +1,136 @@
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BucketError {
+    ZeroInterval,
+    TimeWentBackwards,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TokenBucket {
+    capacity: u64,
+    refill: u64,
+    interval_ms: u64,
+    tokens: u64,
+    remainder: u64,
+    last_ms: u64,
+}
+
+impl TokenBucket {
+    pub fn new(
+        capacity: u64,
+        refill: u64,
+        interval_ms: u64,
+        start_ms: u64,
+    ) -> Result<Self, BucketError> {
+        if interval_ms == 0 {
+            return Err(BucketError::ZeroInterval);
+        }
+
+        Ok(Self {
+            capacity,
+            refill,
+            interval_ms,
+            tokens: capacity,
+            remainder: 0,
+            last_ms: start_ms,
+        })
+    }
+
+    pub fn available(&mut self, now: u64) -> Result<u64, BucketError> {
+        self.advance(now)?;
+        Ok(self.tokens)
+    }
+
+    pub fn try_acquire(&mut self, n: u64, now: u64) -> Result<bool, BucketError> {
+        self.advance(now)?;
+        if n <= self.tokens {
+            self.tokens -= n;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn advance(&mut self, now: u64) -> Result<(), BucketError> {
+        if now < self.last_ms {
+            return Err(BucketError::TimeWentBackwards);
+        }
+
+        let elapsed = now - self.last_ms;
+        let (whole, new_remainder) =
+            div_product_plus(elapsed, self.refill, self.remainder, self.interval_ms);
+
+        let room = self.capacity - self.tokens;
+        if whole >= room {
+            self.tokens = self.capacity;
+            self.remainder = 0;
+        } else {
+            self.tokens += whole;
+            self.remainder = new_remainder;
+        }
+        self.last_ms = now;
+        Ok(())
+    }
+}
+
+// Returns floor((a * b + c) / divisor) and its remainder without requiring
+// an integer type wider than u64. Here c < divisor.
+fn div_product_plus(a: u64, b: u64, c: u64, divisor: u64) -> (u64, u64) {
+    let mut quotient = 0u64;
+    let mut remainder = 0u64;
+
+    for bit in (0..64).rev() {
+        // Double the current remainder and append the next bit of a.
+        let (doubled, overflow) = remainder.overflowing_add(remainder);
+        let (with_bit, bit_overflow) = doubled.overflowing_add((a >> bit) & 1);
+        let mut carry = overflow || bit_overflow;
+
+        remainder = with_bit;
+        if carry || remainder >= divisor {
+            remainder = remainder.wrapping_sub(divisor);
+            carry = true;
+        }
+        quotient = quotient.wrapping_mul(2).wrapping_add(u64::from(carry));
+    }
+
+    // Accumulate b times the represented quotient/remainder pair for a.
+    // Use binary multiplication while keeping each intermediate remainder
+    // below divisor and detecting quotient overflow.
+    let mut result_q = 0u64;
+    let mut result_r = c;
+    let mut add_q = quotient;
+    let mut add_r = remainder;
+    let mut multiplier = b;
+
+    while multiplier != 0 {
+        if multiplier & 1 != 0 {
+            let (sum_r, overflow) = result_r.overflowing_add(add_r);
+            let carry = overflow || sum_r >= divisor;
+            result_r = if carry {
+                sum_r.wrapping_sub(divisor)
+            } else {
+                sum_r
+            };
+            result_q = result_q
+                .wrapping_add(add_q)
+                .wrapping_add(u64::from(carry));
+        }
+
+        multiplier >>= 1;
+        if multiplier != 0 {
+            let (doubled_r, overflow) = add_r.overflowing_add(add_r);
+            let carry = overflow || doubled_r >= divisor;
+            add_r = if carry {
+                doubled_r.wrapping_sub(divisor)
+            } else {
+                doubled_r
+            };
+            add_q = add_q
+                .wrapping_mul(2)
+                .wrapping_add(u64::from(carry));
+        }
+    }
+
+    (result_q, result_r)
+}
+```

@@ -1,0 +1,139 @@
+use std::collections::{BTreeMap, VecDeque};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WindowError {
+    ZeroWindow,
+    ZeroIdleTtl,
+    TimeWentBackwards,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SlidingWindow {
+    limit: u64,
+    window_ms: u64,
+    idle_ttl_ms: u64,
+    clock: u64,
+    keys: BTreeMap<String, KeyState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct KeyState {
+    requests: VecDeque<(u64, u64)>,
+    last_activity: u64,
+}
+
+impl SlidingWindow {
+    pub fn new(
+        limit: u64,
+        window_ms: u64,
+        idle_ttl_ms: u64,
+        start_ms: u64,
+    ) -> Result<Self, WindowError> {
+        if window_ms == 0 {
+            return Err(WindowError::ZeroWindow);
+        }
+        if idle_ttl_ms == 0 {
+            return Err(WindowError::ZeroIdleTtl);
+        }
+
+        Ok(Self {
+            limit,
+            window_ms,
+            idle_ttl_ms,
+            clock: start_ms,
+            keys: BTreeMap::new(),
+        })
+    }
+
+    fn advance_clock(&mut self, now: u64) -> Result<(), WindowError> {
+        if now < self.clock {
+            return Err(WindowError::TimeWentBackwards);
+        }
+        self.clock = now;
+        Ok(())
+    }
+
+    fn purge_expired(&mut self, key: &str, now: u64) -> u64 {
+        let Some(state) = self.keys.get_mut(key) else {
+            return 0;
+        };
+
+        while let Some(&(timestamp, _)) = state.requests.front() {
+            // Subtraction is safe because accepted requests are recorded at
+            // nondecreasing clock values.
+            if now - timestamp < self.window_ms {
+                break;
+            }
+            state.requests.pop_front();
+        }
+
+        state
+            .requests
+            .iter()
+            .fold(0u64, |sum, &(_, weight)| sum.saturating_add(weight))
+    }
+
+    pub fn try_acquire(
+        &mut self,
+        key: &str,
+        n: u64,
+        now: u64,
+    ) -> Result<bool, WindowError> {
+        self.advance_clock(now)?;
+
+        let live_weight = self.purge_expired(key, now);
+
+        if n == 0 {
+            return Ok(true);
+        }
+
+        let state = self
+            .keys
+            .entry(key.to_owned())
+            .or_insert_with(|| KeyState {
+                requests: VecDeque::new(),
+                last_activity: now,
+            });
+        state.last_activity = now;
+
+        let available = self.limit.saturating_sub(live_weight);
+        if n > available {
+            return Ok(false);
+        }
+
+        state.requests.push_back((now, n));
+        Ok(true)
+    }
+
+    pub fn remaining(&mut self, key: &str, now: u64) -> Result<u64, WindowError> {
+        self.advance_clock(now)?;
+        let live_weight = self.purge_expired(key, now);
+        Ok(self.limit.saturating_sub(live_weight))
+    }
+
+    pub fn evict_idle(&mut self, now: u64) -> Result<Vec<String>, WindowError> {
+        self.advance_clock(now)?;
+
+        let expired: Vec<String> = self
+            .keys
+            .iter()
+            .filter_map(|(key, state)| {
+                if now - state.last_activity >= self.idle_ttl_ms {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for key in &expired {
+            self.keys.remove(key);
+        }
+
+        Ok(expired)
+    }
+
+    pub fn tracked_keys(&self) -> usize {
+        self.keys.len()
+    }
+}

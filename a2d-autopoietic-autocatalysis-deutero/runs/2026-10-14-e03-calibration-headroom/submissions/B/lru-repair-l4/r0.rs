@@ -1,0 +1,128 @@
+use std::collections::VecDeque;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PutError {
+    TooHeavy { weight: usize, capacity: usize },
+}
+
+struct Entry {
+    key: i32,
+    value: i32,
+    weight: usize,
+    deadline: Option<u64>,
+}
+
+pub struct LruCache {
+    capacity: usize,
+    total_weight: usize,
+    entries: VecDeque<Entry>,
+}
+
+impl LruCache {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            total_weight: 0,
+            entries: VecDeque::new(),
+        }
+    }
+
+    fn purge(&mut self, now: u64) {
+        let mut survivors = VecDeque::with_capacity(self.entries.len());
+        while let Some(entry) = self.entries.pop_front() {
+            if entry.deadline.is_some_and(|deadline| deadline <= now) {
+                self.total_weight -= entry.weight;
+            } else {
+                survivors.push_back(entry);
+            }
+        }
+        self.entries = survivors;
+    }
+
+    pub fn len(&mut self, now: u64) -> usize {
+        self.purge(now);
+        self.entries.len()
+    }
+
+    pub fn total_weight(&mut self, now: u64) -> usize {
+        self.purge(now);
+        self.total_weight
+    }
+
+    pub fn keys_lru(&mut self, now: u64) -> Vec<i32> {
+        self.purge(now);
+        self.entries.iter().map(|entry| entry.key).collect()
+    }
+
+    pub fn get(&mut self, key: i32, now: u64) -> Option<i32> {
+        self.purge(now);
+        let position = self.entries.iter().position(|entry| entry.key == key)?;
+        let entry = self.entries.remove(position)?;
+        let value = entry.value;
+        self.entries.push_back(entry);
+        Some(value)
+    }
+
+    pub fn peek(&mut self, key: i32, now: u64) -> Option<i32> {
+        self.purge(now);
+        self.entries
+            .iter()
+            .find(|entry| entry.key == key)
+            .map(|entry| entry.value)
+    }
+
+    pub fn remove(&mut self, key: i32, now: u64) -> Option<i32> {
+        self.purge(now);
+        self.remove_live(key)
+    }
+
+    fn remove_live(&mut self, key: i32) -> Option<i32> {
+        let position = self.entries.iter().position(|entry| entry.key == key)?;
+        let entry = self.entries.remove(position)?;
+        self.total_weight -= entry.weight;
+        Some(entry.value)
+    }
+
+    pub fn put(
+        &mut self,
+        key: i32,
+        value: i32,
+        weight: usize,
+        ttl: Option<u64>,
+        now: u64,
+    ) -> Result<Option<i32>, PutError> {
+        self.purge(now);
+
+        if weight > self.capacity {
+            return Err(PutError::TooHeavy {
+                weight,
+                capacity: self.capacity,
+            });
+        }
+
+        let previous = self.remove_live(key);
+        let deadline = ttl.map(|duration| now.saturating_add(duration));
+
+        if deadline.is_some_and(|deadline| deadline <= now) {
+            return Ok(previous);
+        }
+
+        while self.total_weight > self.capacity - weight {
+            let victim = self
+                .entries
+                .pop_front()
+                .expect("weight invariant guarantees an eviction victim");
+            self.total_weight -= victim.weight;
+        }
+
+        self.entries.push_back(Entry {
+            key,
+            value,
+            weight,
+            deadline,
+        });
+        self.total_weight += weight;
+
+        Ok(previous)
+    }
+}

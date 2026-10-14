@@ -1,0 +1,63 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+PROMPT:
+Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Do not use inner attributes (#![...]) or inner documentation (//!...). Output ONLY the Rust source code inside ```rust fences.
+All listed types and methods must be public. All fields of the listed structs must be public. Listed structs and error enums must implement Clone, Debug, PartialEq, and Eq. Internal state types need not implement those traits. No operation may panic for any input representable by the API.
+Build a weighted per-key sliding-window limiter with explicit idle eviction.
+Public API:
+#[derive(Clone, Debug, PartialEq, Eq)] pub enum WindowError { ZeroWindow, ZeroIdleTtl, TimeWentBackwards }
+pub struct SlidingWindow (implementation-defined private fields)
+impl SlidingWindow {
+  pub fn new(limit: u64, window_ms: u64, idle_ttl_ms: u64, start_ms: u64) -> Result<Self, WindowError>;
+  pub fn try_acquire(&mut self, key: &str, n: u64, now: u64) -> Result<bool, WindowError>;
+  pub fn remaining(&mut self, key: &str, now: u64) -> Result<u64, WindowError>;
+  pub fn evict_idle(&mut self, now: u64) -> Result<Vec<String>, WindowError>;
+  pub fn tracked_keys(&self) -> usize;
+}
+
+new rejects window_ms==0 with ZeroWindow, then idle_ttl_ms==0 with ZeroIdleTtl (that precedence if both are zero). Zero limit is valid. Start with no tracked keys and one global clock equal to start_ms. Every time-taking method FIRST checks now against the global clock, even for nonexistent keys, zero requests, or requests exceeding limit. If now is smaller, return TimeWentBackwards with ALL state unchanged. Otherwise set the global clock to now; equal timestamps are valid. No implicit idle eviction in any method.
+Keys are exact case-sensitive Rust strings, including empty and Unicode strings. Each tracked key has accepted positive requests (timestamp, weight) and a last-activity timestamp. At time now, only accepted requests satisfying now-timestamp < window_ms count; a request at exactly now-window_ms expires. Rejections never add weight. try_acquire and remaining purge expired accepted requests of their specified key. Expiration alone does not remove a tracked key.
+For try_acquire with n>0, create the key if missing and set its last activity to now, whether the request is accepted or rejected (including n>limit). Accept iff n<=limit minus the sum of still-live weights. Accepted positive requests consume n until they expire; multiple requests at the same timestamp count independently. A denial consumes nothing. For n==0, return true after the clock check and expiry purge, but do NOT create a missing key or change an existing key's last activity.
+remaining returns limit minus live accepted weight, or limit for a missing key. It does not create a key or change its last activity. tracked_keys returns the number of retained records, including records with empty histories and records created by denials; it does not advance time.
+evict_idle removes exactly those keys for which now-last_activity >= idle_ttl_ms, returning their owned names in ascending Rust string order. It does not change activity of retained keys. It may remove a key with live accepted requests if idle_ttl_ms < window_ms; removed histories are discarded, and a later attempt for that key starts fresh. Idle eviction is explicit only. All calculations must handle the full u64 range without overflow, including weighted sums and times near u64::MAX.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+#[test]
+fn public_window_weight() {
+let mut w=SlidingWindow::new(5,10,50,0).unwrap();
+assert_eq!(w.try_acquire("alpha",3,0),Ok(true));
+assert_eq!(w.remaining("alpha",1),Ok(2));
+assert_eq!(w.try_acquire("alpha",3,1),Ok(false));
+assert_eq!(w.try_acquire("alpha",5,11),Ok(true));
+}
+
+#[test]
+fn public_window_keys() {
+let mut w=SlidingWindow::new(2,20,50,0).unwrap();
+assert_eq!(w.try_acquire("a",2,0),Ok(true));
+assert_eq!(w.try_acquire("b",2,0),Ok(true));
+assert_eq!(w.remaining("a",0),Ok(0));
+assert_eq!(w.remaining("c",0),Ok(2));
+assert_eq!(w.tracked_keys(),2);
+}
+
+#[test]
+fn public_window_evict() {
+let mut w=SlidingWindow::new(4,10,20,0).unwrap();
+w.try_acquire("old",1,0).unwrap();
+w.try_acquire("new",1,15).unwrap();
+assert_eq!(w.evict_idle(21),Ok(vec![String::from("old")]));
+assert_eq!(w.tracked_keys(),1);
+}
+
+#[test]
+fn public_window_config() {
+assert!(matches!(SlidingWindow::new(1,0,1,0),Err(WindowError::ZeroWindow)));
+assert!(matches!(SlidingWindow::new(1,1,0,0),Err(WindowError::ZeroIdleTtl)));
+}
+```

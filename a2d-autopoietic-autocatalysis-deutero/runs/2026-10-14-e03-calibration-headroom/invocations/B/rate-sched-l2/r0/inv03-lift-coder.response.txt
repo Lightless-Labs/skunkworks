@@ -1,0 +1,120 @@
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BucketError {
+    ZeroInterval,
+    TimeWentBackwards,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TokenBucket {
+    capacity: u64,
+    refill: u64,
+    interval_ms: u64,
+    tokens: u64,
+    remainder: u64,
+    last_ms: u64,
+}
+
+impl TokenBucket {
+    pub fn new(
+        capacity: u64,
+        refill: u64,
+        interval_ms: u64,
+        start_ms: u64,
+    ) -> Result<Self, BucketError> {
+        if interval_ms == 0 {
+            return Err(BucketError::ZeroInterval);
+        }
+
+        Ok(Self {
+            capacity,
+            refill,
+            interval_ms,
+            tokens: capacity,
+            remainder: 0,
+            last_ms: start_ms,
+        })
+    }
+
+    pub fn available(&mut self, now: u64) -> Result<u64, BucketError> {
+        self.advance(now)?;
+        Ok(self.tokens)
+    }
+
+    pub fn try_acquire(&mut self, n: u64, now: u64) -> Result<bool, BucketError> {
+        self.advance(now)?;
+        if n <= self.tokens {
+            self.tokens -= n;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn advance(&mut self, now: u64) -> Result<(), BucketError> {
+        if now < self.last_ms {
+            return Err(BucketError::TimeWentBackwards);
+        }
+
+        let elapsed = now - self.last_ms;
+
+        // The product plus remainder can require 129 bits. Represent it as
+        // three base-2^64 limbs, then divide by the u64 interval.
+        let product = (elapsed as u128) * (self.refill as u128);
+        let low = product as u64;
+        let high = (product >> 64) as u64;
+        let (low, carry) = low.overflowing_add(self.remainder);
+        let high = high + u64::from(carry);
+
+        let (whole, remainder) = div_128_by_u64(high, low, self.interval_ms);
+
+        if whole >= (self.capacity - self.tokens) {
+            self.tokens = self.capacity;
+            self.remainder = 0;
+        } else {
+            self.tokens += whole;
+            self.remainder = remainder;
+        }
+
+        self.last_ms = now;
+        Ok(())
+    }
+}
+
+// Divides the 128-bit value (high * 2^64 + low) by divisor. The quotient
+// may be wider than u64; in that case it is saturated to u64::MAX, which is
+// sufficient because token counts and capacity are u64.
+fn div_128_by_u64(high: u64, low: u64, divisor: u64) -> (u64, u64) {
+    let mut quotient = 0u64;
+    let mut remainder = 0u64;
+    let mut overflow = false;
+
+    for bit_index in (0..128).rev() {
+        let bit = if bit_index >= 64 {
+            (high >> (bit_index - 64)) & 1
+        } else {
+            (low >> bit_index) & 1
+        };
+
+        let doubled = (remainder as u128) * 2 + bit as u128;
+        let next_remainder = doubled % divisor as u128;
+        let quotient_bit = doubled / divisor as u128;
+
+        remainder = next_remainder as u64;
+
+        if bit_index >= 64 {
+            if quotient_bit != 0 {
+                overflow = true;
+            }
+        } else {
+            quotient = (quotient << 1) | quotient_bit as u64;
+        }
+    }
+
+    if overflow {
+        (u64::MAX, remainder)
+    } else {
+        (quotient, remainder)
+    }
+}
+```

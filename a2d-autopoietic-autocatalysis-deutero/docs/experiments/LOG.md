@@ -77,7 +77,18 @@ Pre-registration and results for `docs/plans/2026-10-14-lift-first-roadmap.md`. 
 - Result-class rule: the headroom gate above (pass/fail). No lift classification.
 - Redesign rule (decided before seeing results): if the pooled gate fails, redesign the family *templates* (harder levels if saturated, easier if at the floor) and re-author every family. That counts as T7 redesign 1 of 2. Never weaken public tests to pull B down, and never drop or select individual tasks.
 - If the gate passes: E04 runs all four arms on this suite (A and B again as a second replicate) to fix the primary comparator and estimate discordance for power planning.
-- Result: pending
+- Result: **gate FAILED (saturated).**
+  - Pooled: A 19/24 (79%, outside 20–70%); B 21/24 (87.5%, above 85%). B vs A lift 0.083, CI [0, 0.25], discordant 2/0.
+  - Per family:
+    - saturated (A 4/4, B 4/4): dep-resolve, lru-repair, rate-sched, txn-kv;
+    - semver: A 3/4, B 3/4 (l4 failed);
+    - stream-b64: A 0/4, B 2/4 (byte-exact error offsets and canonical-encoding rules).
+  - Public-green but hidden-fail: A 3, B 3.
+  - Run integrity: complete; 0 provider errors; 0 tool calls; 0 hidden-name hits; ledger verified (243 records, head 5e1265bf…).
+  - Cost: 144 invocations, 728k reported tokens, 2568 s total provider time.
 - Artifacts: runs/2026-10-14-e03-calibration-headroom/ (ledger: runs/2026-10-14-e03-calibration-headroom/ledger.jsonl)
-- Deviations:
-- Decision:
+- Deviations: none. No tuples were excluded.
+- Decision: per the pre-registered rule, this is **T7 suite redesign 1 of 2**, a template redesign.
+  - Re-author all six families with harder level ladders: v1's l4 or l3 becomes v2's l1, and each level adds interacting clauses (error precedence, byte or format exactness, cross-feature state).
+  - The new suite goes in `tasks/calibration-v2`; the v1 suite is burnt.
+  - Model and effort are unchanged.

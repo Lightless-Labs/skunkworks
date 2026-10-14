@@ -1,0 +1,84 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+PROMPT:
+Implement in Rust as a SINGLE source file that compiles with `rustc --edition 2024`, std only. Output ONLY the Rust source code inside ```rust fences.
+
+All listed types, functions, and struct fields must be public. All structs/enums derive Clone, Debug, PartialEq, Eq. Names are nonempty, case-sensitive opaque strings, compared using Rust String ordering. Input package names are unique; do not validate this precondition. Dependency lists may be unsorted and repeated. Do not mutate the inputs.
+
+Exact public API:
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Version { pub major: u32, pub minor: u32, pub patch: u32 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Constraint { Exact(Version), AtLeast(Version), LessThan(Version), Caret(Version) }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dependency { pub package: String, pub constraint: Constraint }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Feature { pub name: String, pub dependencies: Vec<String> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Package {
+    pub name: String,
+    pub versions: Vec<Version>,
+    pub dependencies: Vec<Dependency>,
+    pub optional_dependencies: Vec<Dependency>,
+    pub features: Vec<Feature>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Request { pub package: String, pub constraint: Constraint, pub features: Vec<String> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Installed { pub package: String, pub version: Version }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResolveError {
+    MissingPackage(String),
+    UnknownFeature { package: String, feature: String },
+    Conflict(String),
+    Cycle(Vec<String>),
+}
+pub fn resolve(packages: &[Package], requests: &[Request]) -> Result<Vec<Installed>, ResolveError>;
+
+In optional_dependencies, the target name is Dependency.package. Each package's feature names are unique and nonempty. Every name in Feature.dependencies is guaranteed to name a target in that package's optional_dependencies; repeated feature targets are allowed. Catalog packages may contain missing targets and cycles.
+Every request package is a root. Combine features from repeated requests for the same package by set union. A package has only the features explicitly requested for that package; features do not propagate along edges and there are no default features. Mandatory dependencies are always active. Optional dependencies are active only when their target name appears in at least one enabled feature of their source package; enabling a target activates every optional entry for that target. A target may appear in both mandatory and optional lists. Unenabled optional entries are ignored, including missing targets and cycles. Resolve only the transitive closure of roots along active edges. A package reached via several routes appears once. Empty requests return Ok([]) even if the catalog has broken packages.
+Collect missing names from roots and active dependency targets throughout the reachable graph. Traverse all reachable existing packages even if another root/edge is missing. Unknown features contribute no optional edges; valid requested features still activate their edges. MissingPackage takes precedence over UnknownFeature: report the smallest missing name. If none is missing, report the lexicographically smallest (package, feature) pair of unknown requested features on existing roots. Unreachable catalog defects are ignored.
+Package manifests (dependencies and features) are independent of versions: all versions of a package share the one listed manifest. A Version orders numerically by (major, minor, patch), not by text; all u32 component values are legal. Versions may be unordered, repeated, or empty. The solver returns one Installed per relevant package, with a version actually in that package's versions list.
+Every request contributes its constraint even when requests repeat. Every active dependency entry contributes its constraint, including repeated entries for the same target, multiple dependents, and active optional entries whose target is also mandatory. Do not deduplicate constraints by target or ignore constraints received after a package has been visited. These constraints all apply simultaneously. For each reachable package independently, choose the HIGHEST listed version satisfying ALL constraints from requests and active incoming edges. Unreachable package versions/constraints have no effect.
+Constraint::Exact(v) accepts only v. AtLeast(v) accepts versions >= v, inclusive. LessThan(v) accepts versions < v, strictly. Caret(v) accepts versions >= v subject to: if v.major > 0, the major must equal v.major; otherwise if v.minor > 0, major must be 0 and minor must equal v.minor; otherwise major and minor must be 0 and patch must equal v.patch. Apply these rules without overflow, even at u32::MAX. In particular ^0.0.p accepts only 0.0.p; ^0.m.p with m>0 allows larger patches only; ^M.m.p with M>0 allows larger minor/patch values within major M.
+After missing and unknown-feature checks, if any relevant package has no listed version satisfying all its constraints (including an empty versions list), return Conflict with the smallest such package name. Conflict takes precedence over cycles. No backtracking or manifest changes are involved. After successful selection: Detect cycles using DFS over the relevant graph: start unvisited nodes in ascending package-name order, visit each node's distinct dependency targets in ascending order, and stop at the first edge to a node on the current recursion stack. Extract that stack segment from the target through the current node; these edges point from dependent to dependency. Rotate this sequence so its lexicographically smallest name is first, preserve its direction, and append the first name again. Return Cycle with precisely this closed path. A self-edge yields [name, name]. Finish this cycle check before constructing the installation order.
+If no error: return Ok(installed_order). Return an installation order containing each relevant package exactly once, dependencies before their dependents. Repeated edges count once for ordering. At EVERY step choose the lexicographically smallest package among all currently ready packages (including newly ready packages); this is not a DFS postorder or a batched layer order. Empty relevant graphs return an empty vector.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+fn v(major: u32, minor: u32, patch: u32) -> Version { Version { major, minor, patch } }
+fn any() -> Constraint { Constraint::AtLeast(v(0,0,0)) }
+fn d(package: &str, constraint: Constraint) -> Dependency { Dependency { package: package.into(), constraint } }
+fn p(name: &str, versions: Vec<Version>, deps: Vec<Dependency>) -> Package {
+    Package { name: name.into(), versions, dependencies: deps, optional_dependencies: vec![], features: vec![] }
+}
+fn f(name: &str, deps: &[&str]) -> Feature { Feature { name: name.into(), dependencies: deps.iter().map(|s| s.to_string()).collect() } }
+fn r(name: &str, constraint: Constraint, features: &[&str]) -> Request {
+    Request { package: name.into(), constraint, features: features.iter().map(|s| s.to_string()).collect() }
+}
+fn i(package: &str, version: Version) -> Installed { Installed { package: package.into(), version } }
+
+#[test]
+fn public_highest_with_dependency() {
+let ps = vec![p("app", vec![v(1,0,0)], vec![d("lib", Constraint::AtLeast(v(1,0,0)))]), p("lib", vec![v(1,0,0),v(1,4,0)], vec![])]; assert_eq!(resolve(&ps, &[r("app", any(), &[])]), Ok(vec![i("lib",v(1,4,0)),i("app",v(1,0,0))]));
+}
+
+#[test]
+fn public_exact_and_less_than() {
+let ps = vec![p("a", vec![v(1,0,0),v(2,0,0)], vec![]), p("b", vec![v(1,0,0),v(2,0,0)], vec![])]; assert_eq!(resolve(&ps, &[r("a",Constraint::Exact(v(1,0,0)),&[]),r("b",Constraint::LessThan(v(2,0,0)),&[])]), Ok(vec![i("a",v(1,0,0)),i("b",v(1,0,0))]));
+}
+
+#[test]
+fn public_caret_optional() {
+let mut app = p("app",vec![v(1,0,0)],vec![]); app.optional_dependencies = vec![d("lib",Constraint::Caret(v(1,1,0)))]; app.features = vec![f("on", &["lib"])]; let ps = vec![app,p("lib",vec![v(1,1,0),v(1,8,0),v(2,0,0)],vec![])]; assert_eq!(resolve(&ps,&[r("app",any(),&["on"])]),Ok(vec![i("lib",v(1,8,0)),i("app",v(1,0,0))]));
+}
+
+#[test]
+fn public_errors() {
+assert_eq!(resolve(&[p("q",vec![v(1,0,0)],vec![])],&[r("q",Constraint::Exact(v(2,0,0)),&[])]),Err(ResolveError::Conflict("q".into()))); assert_eq!(resolve(&[],&[r("gone",any(),&[])]),Err(ResolveError::MissingPackage("gone".into()))); assert_eq!(resolve(&[p("a",vec![v(1,0,0)],vec![])],&[r("a",any(),&["bad"])]),Err(ResolveError::UnknownFeature{package:"a".into(),feature:"bad".into()})); assert_eq!(resolve(&[p("a",vec![v(1,0,0)],vec![d("a",any())])],&[r("a",any(),&[])]),Err(ResolveError::Cycle(vec!["a".into(),"a".into()])));
+}
+```

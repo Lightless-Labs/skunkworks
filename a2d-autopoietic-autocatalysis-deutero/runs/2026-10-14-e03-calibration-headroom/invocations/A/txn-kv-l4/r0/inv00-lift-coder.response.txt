@@ -1,0 +1,143 @@
+```rust
+use std::collections::HashMap;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Error {
+    NoTransaction,
+    UnknownSnapshot(u64),
+    ClockWentBackwards { last: u64, now: u64 },
+    DeadlineOverflow,
+}
+
+#[derive(Clone)]
+struct Entry {
+    value: String,
+    deadline: Option<u64>,
+}
+
+pub struct Store {
+    entries: HashMap<String, Entry>,
+    transactions: Vec<HashMap<String, Entry>>,
+    snapshots: HashMap<u64, HashMap<String, Entry>>,
+    last_time: u64,
+}
+
+impl Store {
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            transactions: Vec::new(),
+            snapshots: HashMap::new(),
+            last_time: 0,
+        }
+    }
+
+    fn advance(&mut self, now: u64) -> Result<(), Error> {
+        if now < self.last_time {
+            return Err(Error::ClockWentBackwards {
+                last: self.last_time,
+                now,
+            });
+        }
+
+        self.last_time = now;
+        Self::remove_expired(&mut self.entries, now);
+        Ok(())
+    }
+
+    fn remove_expired(entries: &mut HashMap<String, Entry>, now: u64) {
+        entries.retain(|_, entry| entry.deadline.is_none_or(|deadline| deadline > now));
+    }
+
+    pub fn set(
+        &mut self,
+        key: &str,
+        value: &str,
+        ttl: Option<u64>,
+        now: u64,
+    ) -> Result<(), Error> {
+        self.advance(now)?;
+
+        let deadline = match ttl {
+            Some(duration) => {
+                let deadline = now.checked_add(duration).ok_or(Error::DeadlineOverflow)?;
+                if duration == 0 {
+                    self.entries.remove(key);
+                    return Ok(());
+                }
+                Some(deadline)
+            }
+            None => None,
+        };
+
+        self.entries.insert(
+            key.to_owned(),
+            Entry {
+                value: value.to_owned(),
+                deadline,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn get(&mut self, key: &str, now: u64) -> Result<Option<String>, Error> {
+        self.advance(now)?;
+        Ok(self.entries.get(key).map(|entry| entry.value.clone()))
+    }
+
+    pub fn delete(&mut self, key: &str, now: u64) -> Result<bool, Error> {
+        self.advance(now)?;
+        Ok(self.entries.remove(key).is_some())
+    }
+
+    pub fn count(&mut self, value: &str, now: u64) -> Result<usize, Error> {
+        self.advance(now)?;
+        Ok(self
+            .entries
+            .values()
+            .filter(|entry| entry.value == value)
+            .count())
+    }
+
+    pub fn begin(&mut self, now: u64) -> Result<(), Error> {
+        self.advance(now)?;
+        self.transactions.push(self.entries.clone());
+        Ok(())
+    }
+
+    pub fn commit(&mut self, now: u64) -> Result<(), Error> {
+        self.advance(now)?;
+        if self.transactions.is_empty() {
+            return Err(Error::NoTransaction);
+        }
+        self.transactions.clear();
+        Ok(())
+    }
+
+    pub fn rollback(&mut self, now: u64) -> Result<(), Error> {
+        self.advance(now)?;
+        let Some(mut saved) = self.transactions.pop() else {
+            return Err(Error::NoTransaction);
+        };
+        Self::remove_expired(&mut saved, now);
+        self.entries = saved;
+        Ok(())
+    }
+
+    pub fn snapshot(&mut self, id: u64, now: u64) -> Result<(), Error> {
+        self.advance(now)?;
+        self.snapshots.insert(id, self.entries.clone());
+        Ok(())
+    }
+
+    pub fn restore(&mut self, id: u64, now: u64) -> Result<(), Error> {
+        self.advance(now)?;
+        let Some(mut saved) = self.snapshots.get(&id).cloned() else {
+            return Err(Error::UnknownSnapshot(id));
+        };
+        Self::remove_expired(&mut saved, now);
+        self.entries = saved;
+        Ok(())
+    }
+}
+```

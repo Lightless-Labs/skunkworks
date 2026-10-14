@@ -1,0 +1,138 @@
+```rust
+use std::collections::BTreeMap;
+use std::collections::VecDeque;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WindowError {
+    ZeroWindow,
+    ZeroIdleTtl,
+    TimeWentBackwards,
+}
+
+struct KeyState {
+    requests: VecDeque<(u64, u64)>,
+    live_weight: u64,
+    last_activity: u64,
+}
+
+pub struct SlidingWindow {
+    limit: u64,
+    window_ms: u64,
+    idle_ttl_ms: u64,
+    clock: u64,
+    keys: BTreeMap<String, KeyState>,
+}
+
+impl SlidingWindow {
+    pub fn new(
+        limit: u64,
+        window_ms: u64,
+        idle_ttl_ms: u64,
+        start_ms: u64,
+    ) -> Result<Self, WindowError> {
+        if window_ms == 0 {
+            return Err(WindowError::ZeroWindow);
+        }
+        if idle_ttl_ms == 0 {
+            return Err(WindowError::ZeroIdleTtl);
+        }
+
+        Ok(Self {
+            limit,
+            window_ms,
+            idle_ttl_ms,
+            clock: start_ms,
+            keys: BTreeMap::new(),
+        })
+    }
+
+    fn advance_clock(&mut self, now: u64) -> Result<(), WindowError> {
+        if now < self.clock {
+            return Err(WindowError::TimeWentBackwards);
+        }
+        self.clock = now;
+        Ok(())
+    }
+
+    fn purge_expired(state: &mut KeyState, now: u64, window_ms: u64) {
+        while let Some(&(timestamp, weight)) = state.requests.front() {
+            // Since timestamps are at most now after a successful clock check,
+            // subtraction cannot underflow. This also avoids overflowing timestamp + window.
+            if now - timestamp < window_ms {
+                break;
+            }
+            state.requests.pop_front();
+            state.live_weight -= weight;
+        }
+    }
+
+    pub fn try_acquire(
+        &mut self,
+        key: &str,
+        n: u64,
+        now: u64,
+    ) -> Result<bool, WindowError> {
+        self.advance_clock(now)?;
+
+        if n == 0 {
+            if let Some(state) = self.keys.get_mut(key) {
+                Self::purge_expired(state, now, self.window_ms);
+            }
+            return Ok(true);
+        }
+
+        let state = self.keys.entry(key.to_owned()).or_insert_with(|| KeyState {
+            requests: VecDeque::new(),
+            live_weight: 0,
+            last_activity: now,
+        });
+        Self::purge_expired(state, now, self.window_ms);
+        state.last_activity = now;
+
+        let available = self.limit - state.live_weight;
+        if n > available {
+            return Ok(false);
+        }
+
+        state.requests.push_back((now, n));
+        state.live_weight += n;
+        Ok(true)
+    }
+
+    pub fn remaining(&mut self, key: &str, now: u64) -> Result<u64, WindowError> {
+        self.advance_clock(now)?;
+
+        let Some(state) = self.keys.get_mut(key) else {
+            return Ok(self.limit);
+        };
+        Self::purge_expired(state, now, self.window_ms);
+        Ok(self.limit - state.live_weight)
+    }
+
+    pub fn evict_idle(&mut self, now: u64) -> Result<Vec<String>, WindowError> {
+        self.advance_clock(now)?;
+
+        let idle_ttl_ms = self.idle_ttl_ms;
+        let idle_keys: Vec<String> = self
+            .keys
+            .iter()
+            .filter_map(|(key, state)| {
+                if now - state.last_activity >= idle_ttl_ms {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for key in &idle_keys {
+            self.keys.remove(key);
+        }
+        Ok(idle_keys)
+    }
+
+    pub fn tracked_keys(&self) -> usize {
+        self.keys.len()
+    }
+}
+```

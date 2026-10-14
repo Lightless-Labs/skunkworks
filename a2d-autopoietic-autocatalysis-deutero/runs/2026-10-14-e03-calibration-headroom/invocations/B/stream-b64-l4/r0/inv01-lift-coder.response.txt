@@ -1,0 +1,379 @@
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alphabet {
+    Standard,
+    UrlSafe,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Padding {
+    Required,
+    Forbidden,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Options {
+    pub alphabet: Alphabet,
+    pub padding: Padding,
+    pub ignore_whitespace: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeError {
+    InvalidByte { offset: usize },
+    InvalidPadding { offset: usize },
+    InvalidLength { offset: usize },
+    TrailingData { offset: usize },
+    NonCanonical { offset: usize },
+    Finished,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamError {
+    Finished,
+}
+
+pub struct Encoder {
+    options: Options,
+    tail: [u8; 2],
+    tail_len: usize,
+    finished: bool,
+}
+
+pub struct Decoder {
+    options: Options,
+    quartet: [u8; 4],
+    offsets: [usize; 4],
+    len: usize,
+    second_pad: bool,
+    terminal: bool,
+    offset: usize,
+    finished: bool,
+    error: Option<DecodeError>,
+}
+
+fn alphabet_byte(alphabet: Alphabet, value: u8) -> u8 {
+    match (alphabet, value) {
+        (Alphabet::Standard, 62) => b'+',
+        (Alphabet::Standard, 63) => b'/',
+        (Alphabet::UrlSafe, 62) => b'-',
+        (Alphabet::UrlSafe, 63) => b'_',
+        (_, v @ 0..=25) => b'A' + v,
+        (_, v @ 26..=51) => b'a' + (v - 26),
+        (_, v @ 52..=61) => b'0' + (v - 52),
+        _ => unreachable!(),
+    }
+}
+
+fn decode_value(alphabet: Alphabet, byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' if alphabet == Alphabet::Standard => Some(62),
+        b'/' if alphabet == Alphabet::Standard => Some(63),
+        b'-' if alphabet == Alphabet::UrlSafe => Some(62),
+        b'_' if alphabet == Alphabet::UrlSafe => Some(63),
+        _ => None,
+    }
+}
+
+fn is_ignored(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+}
+
+fn encode_triplet(input: &[u8], alphabet: Alphabet, padding: Padding) -> String {
+    let mut out = String::with_capacity(4);
+    let a = input[0];
+    let b = if input.len() > 1 { input[1] } else { 0 };
+    let c = if input.len() > 2 { input[2] } else { 0 };
+
+    out.push(alphabet_byte(alphabet, a >> 2) as char);
+    out.push(alphabet_byte(alphabet, ((a & 0x03) << 4) | (b >> 4)) as char);
+
+    if input.len() > 1 {
+        out.push(alphabet_byte(alphabet, ((b & 0x0f) << 2) | (c >> 6)) as char);
+    } else if padding == Padding::Required {
+        out.push('=');
+    }
+
+    if input.len() > 2 {
+        out.push(alphabet_byte(alphabet, c & 0x3f) as char);
+    } else if padding == Padding::Required {
+        out.push('=');
+    }
+
+    out
+}
+
+pub fn encode(input: &[u8], options: Options) -> String {
+    let mut out = String::new();
+    for chunk in input.chunks_exact(3) {
+        out.push_str(&encode_triplet(chunk, options.alphabet, options.padding));
+    }
+    let rem = input.len() % 3;
+    if rem != 0 {
+        out.push_str(&encode_triplet(
+            &input[input.len() - rem..],
+            options.alphabet,
+            options.padding,
+        ));
+    }
+    out
+}
+
+impl Encoder {
+    pub fn new(options: Options) -> Self {
+        Self {
+            options,
+            tail: [0; 2],
+            tail_len: 0,
+            finished: false,
+        }
+    }
+
+    pub fn push(&mut self, input: &[u8]) -> Result<String, StreamError> {
+        if self.finished {
+            return Err(StreamError::Finished);
+        }
+
+        let mut out = String::new();
+        let mut i = 0;
+
+        if self.tail_len > 0 {
+            while self.tail_len < 2 && i < input.len() {
+                self.tail[self.tail_len] = input[i];
+                self.tail_len += 1;
+                i += 1;
+            }
+            if self.tail_len == 2 && i < input.len() {
+                let triple = [self.tail[0], self.tail[1], input[i]];
+                out.push_str(&encode_triplet(
+                    &triple,
+                    self.options.alphabet,
+                    Padding::Forbidden,
+                ));
+                self.tail_len = 0;
+                i += 1;
+            }
+        }
+
+        while i + 3 <= input.len() {
+            out.push_str(&encode_triplet(
+                &input[i..i + 3],
+                self.options.alphabet,
+                Padding::Forbidden,
+            ));
+            i += 3;
+        }
+
+        while i < input.len() {
+            self.tail[self.tail_len] = input[i];
+            self.tail_len += 1;
+            i += 1;
+        }
+
+        Ok(out)
+    }
+
+    pub fn finish(&mut self) -> Result<String, StreamError> {
+        if self.finished {
+            return Err(StreamError::Finished);
+        }
+        self.finished = true;
+        let out = if self.tail_len == 0 {
+            String::new()
+        } else {
+            encode_triplet(
+                &self.tail[..self.tail_len],
+                self.options.alphabet,
+                self.options.padding,
+            )
+        };
+        self.tail_len = 0;
+        Ok(out)
+    }
+}
+
+impl Decoder {
+    pub fn new(options: Options) -> Self {
+        Self {
+            options,
+            quartet: [0; 4],
+            offsets: [0; 4],
+            len: 0,
+            second_pad: false,
+            terminal: false,
+            offset: 0,
+            finished: false,
+            error: None,
+        }
+    }
+
+    fn fail(&mut self, error: DecodeError) -> DecodeError {
+        self.error = Some(error);
+        error
+    }
+
+    fn decode_quartet(&mut self, out: &mut Vec<u8>) -> Result<(), DecodeError> {
+        let q = self.quartet;
+        let o = self.offsets;
+        if q[0] == 64 || q[1] == 64 {
+            return Err(self.fail(DecodeError::InvalidPadding {
+                offset: if q[0] == 64 { o[0] } else { o[1] },
+            }));
+        }
+        if q[2] == 64 {
+            if q[3] != 64 {
+                return Err(self.fail(DecodeError::InvalidPadding { offset: o[3] }));
+            }
+            if q[1] & 0x0f != 0 {
+                return Err(self.fail(DecodeError::NonCanonical { offset: o[1] }));
+            }
+            out.push((q[0] << 2) | (q[1] >> 4));
+            self.terminal = true;
+        } else if q[3] == 64 {
+            if q[2] & 0x03 != 0 {
+                return Err(self.fail(DecodeError::NonCanonical { offset: o[2] }));
+            }
+            out.push((q[0] << 2) | (q[1] >> 4));
+            out.push((q[1] << 4) | (q[2] >> 2));
+            self.terminal = true;
+        } else {
+            out.push((q[0] << 2) | (q[1] >> 4));
+            out.push((q[1] << 4) | (q[2] >> 2));
+            out.push((q[2] << 6) | q[3]);
+        }
+        self.len = 0;
+        self.second_pad = false;
+        Ok(())
+    }
+
+    pub fn push(&mut self, input: &str) -> Result<Vec<u8>, DecodeError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if self.finished {
+            return Err(DecodeError::Finished);
+        }
+
+        let mut out = Vec::new();
+        let base = self.offset;
+
+        for (i, byte) in input.bytes().enumerate() {
+            let pos = base + i;
+            if self.options.ignore_whitespace && is_ignored(byte) {
+                continue;
+            }
+
+            if self.terminal {
+                return Err(self.fail(DecodeError::TrailingData { offset: pos }));
+            }
+
+            if byte == b'=' {
+                if self.options.padding == Padding::Forbidden || self.len < 2 {
+                    return Err(self.fail(DecodeError::InvalidPadding { offset: pos }));
+                }
+                if self.second_pad {
+                    if self.len != 3 {
+                        return Err(self.fail(DecodeError::InvalidPadding { offset: pos }));
+                    }
+                    self.quartet[3] = 64;
+                    self.offsets[3] = pos;
+                    self.len = 4;
+                    self.decode_quartet(&mut out)?;
+                    continue;
+                }
+                if self.len == 2 {
+                    self.quartet[2] = 64;
+                    self.offsets[2] = pos;
+                    self.len = 3;
+                    self.second_pad = true;
+                    continue;
+                }
+                if self.len == 3 {
+                    self.quartet[3] = 64;
+                    self.offsets[3] = pos;
+                    self.len = 4;
+                    self.decode_quartet(&mut out)?;
+                    continue;
+                }
+                return Err(self.fail(DecodeError::InvalidPadding { offset: pos }));
+            }
+
+            if self.second_pad {
+                return Err(self.fail(DecodeError::InvalidPadding { offset: pos }));
+            }
+
+            let value = match decode_value(self.options.alphabet, byte) {
+                Some(value) => value,
+                None => return Err(self.fail(DecodeError::InvalidByte { offset: pos })),
+            };
+
+            if self.len >= 3 && self.quartet[2] == 64 {
+                return Err(self.fail(DecodeError::InvalidPadding { offset: pos }));
+            }
+
+            self.quartet[self.len] = value;
+            self.offsets[self.len] = pos;
+            self.len += 1;
+
+            if self.len == 4 {
+                self.decode_quartet(&mut out)?;
+            }
+        }
+
+        self.offset = base + input.len();
+        Ok(out)
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<u8>, DecodeError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if self.finished {
+            return Err(DecodeError::Finished);
+        }
+
+        let eof = self.offset;
+        let mut out = Vec::new();
+
+        if self.options.padding == Padding::Required {
+            if self.len != 0 {
+                return Err(self.fail(DecodeError::InvalidLength { offset: eof }));
+            }
+        } else {
+            if self.second_pad || self.len == 1 || self.len == 3 && self.quartet[2] == 64 {
+                return Err(self.fail(DecodeError::InvalidLength { offset: eof }));
+            }
+            if self.len == 2 {
+                if self.quartet[1] & 0x0f != 0 {
+                    return Err(self.fail(DecodeError::NonCanonical {
+                        offset: self.offsets[1],
+                    }));
+                }
+                out.push((self.quartet[0] << 2) | (self.quartet[1] >> 4));
+            } else if self.len == 3 {
+                if self.quartet[2] & 0x03 != 0 {
+                    return Err(self.fail(DecodeError::NonCanonical {
+                        offset: self.offsets[2],
+                    }));
+                }
+                out.push((self.quartet[0] << 2) | (self.quartet[1] >> 4));
+                out.push((self.quartet[1] << 4) | (self.quartet[2] >> 2));
+            }
+        }
+
+        self.finished = true;
+        self.len = 0;
+        Ok(out)
+    }
+}
+
+pub fn decode(input: &str, options: Options) -> Result<Vec<u8>, DecodeError> {
+    let mut decoder = Decoder::new(options);
+    let mut out = decoder.push(input)?;
+    out.extend(decoder.finish()?);
+    Ok(out)
+}
+```

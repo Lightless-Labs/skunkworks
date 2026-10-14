@@ -1,0 +1,210 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeError {
+    InvalidByte,
+    InvalidPadding,
+    InvalidLength,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DecoderState {
+    Reading,
+    NeedSecondPadding,
+    Finished,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Encoder {
+    pending: [u8; 2],
+    pending_len: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Decoder {
+    quartet: [u8; 4],
+    quartet_len: usize,
+    state: DecoderState,
+}
+
+const ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn encode_sextet(value: u8) -> char {
+    ALPHABET[value as usize] as char
+}
+
+pub fn encode(input: &[u8]) -> String {
+    let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
+
+    for chunk in input.chunks(3) {
+        let a = chunk[0];
+        let b = chunk.get(1).copied().unwrap_or(0);
+        let c = chunk.get(2).copied().unwrap_or(0);
+
+        output.push(encode_sextet(a >> 2));
+        output.push(encode_sextet(((a & 0x03) << 4) | (b >> 4)));
+
+        if chunk.len() >= 2 {
+            output.push(encode_sextet(((b & 0x0f) << 2) | (c >> 6)));
+        } else {
+            output.push('=');
+        }
+
+        if chunk.len() == 3 {
+            output.push(encode_sextet(c & 0x3f));
+        } else {
+            output.push('=');
+        }
+    }
+
+    output
+}
+
+impl Encoder {
+    pub fn new() -> Self {
+        Self {
+            pending: [0; 2],
+            pending_len: 0,
+        }
+    }
+
+    pub fn update(&mut self, input: &[u8]) -> String {
+        let mut combined = Vec::with_capacity(self.pending_len + input.len());
+        combined.extend_from_slice(&self.pending[..self.pending_len]);
+        combined.extend_from_slice(input);
+
+        let complete_len = combined.len() / 3 * 3;
+        let mut output = String::with_capacity(complete_len / 3 * 4);
+
+        for chunk in combined[..complete_len].chunks_exact(3) {
+            let a = chunk[0];
+            let b = chunk[1];
+            let c = chunk[2];
+            output.push(encode_sextet(a >> 2));
+            output.push(encode_sextet(((a & 0x03) << 4) | (b >> 4)));
+            output.push(encode_sextet(((b & 0x0f) << 2) | (c >> 6)));
+            output.push(encode_sextet(c & 0x3f));
+        }
+
+        self.pending_len = combined.len() - complete_len;
+        self.pending[..self.pending_len].copy_from_slice(&combined[complete_len..]);
+        output
+    }
+
+    pub fn finalize(&mut self) -> String {
+        let output = encode(&self.pending[..self.pending_len]);
+        self.pending_len = 0;
+        self.pending = [0; 2];
+        output
+    }
+}
+
+impl Default for Encoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Decoder {
+    pub fn new() -> Self {
+        Self {
+            quartet: [0; 4],
+            quartet_len: 0,
+            state: DecoderState::Reading,
+        }
+    }
+
+    pub fn update(&mut self, input: &[u8]) -> Result<Vec<u8>, DecodeError> {
+        let mut output = Vec::new();
+
+        for &byte in input {
+            if byte.is_ascii_whitespace() {
+                continue;
+            }
+
+            if self.state == DecoderState::Finished {
+                return Err(DecodeError::InvalidPadding);
+            }
+
+            if self.state == DecoderState::NeedSecondPadding {
+                if byte != b'=' {
+                    return Err(DecodeError::InvalidPadding);
+                }
+
+                self.quartet[3] = b'=';
+                self.quartet_len = 0;
+                self.state = DecoderState::Finished;
+                output.push((self.quartet[0] << 2) | (self.quartet[1] >> 4));
+                continue;
+            }
+
+            let position = self.quartet_len;
+            if byte == b'=' {
+                match position {
+                    0 | 1 => return Err(DecodeError::InvalidPadding),
+                    2 => {
+                        self.quartet[2] = b'=';
+                        self.quartet_len = 3;
+                        self.state = DecoderState::NeedSecondPadding;
+                    }
+                    3 => {
+                        self.quartet[3] = b'=';
+                        output.push((self.quartet[0] << 2) | (self.quartet[1] >> 4));
+                        output.push((self.quartet[1] << 4) | (self.quartet[2] >> 2));
+                        self.quartet_len = 0;
+                        self.state = DecoderState::Finished;
+                    }
+                    _ => unreachable!(),
+                }
+                continue;
+            }
+
+            let value = match decode_sextet(byte) {
+                Some(value) => value,
+                None => return Err(DecodeError::InvalidByte),
+            };
+
+            self.quartet[position] = value;
+            self.quartet_len += 1;
+
+            if self.quartet_len == 4 {
+                output.push((self.quartet[0] << 2) | (self.quartet[1] >> 4));
+                output.push((self.quartet[1] << 4) | (self.quartet[2] >> 2));
+                output.push((self.quartet[2] << 6) | self.quartet[3]);
+                self.quartet_len = 0;
+            }
+        }
+
+        Ok(output)
+    }
+
+    pub fn finalize(&mut self) -> Result<Vec<u8>, DecodeError> {
+        if self.quartet_len != 0 || self.state == DecoderState::NeedSecondPadding {
+            return Err(DecodeError::InvalidLength);
+        }
+        Ok(Vec::new())
+    }
+}
+
+impl Default for Decoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn decode_sextet(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+pub fn decode(input: &str) -> Result<Vec<u8>, DecodeError> {
+    let mut decoder = Decoder::new();
+    let mut output = decoder.update(input.as_bytes())?;
+    output.extend(decoder.finalize()?);
+    Ok(output)
+}
