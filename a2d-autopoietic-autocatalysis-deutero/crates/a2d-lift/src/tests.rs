@@ -130,11 +130,21 @@ fn hidden_tests_never_reach_any_arm_and_are_scored_once() {
         arms: vec![Arm::A, Arm::B, Arm::D, Arm::C],
         k: 4,
         replicates: 1,
+        jobs: 1,
+        seed: 0,
+        primary: Some(Arm::B),
+        min_families: 1,
         record_hidden_output: false,
     };
     let arm_c = MockArmC { attempts_wanted: 4 };
-    let outcomes = run_arms(&plan, &suite(), provider, &meter, dir.path(), Some(&arm_c)).unwrap();
+    let result = run_arms(&plan, &suite(), provider, &meter, dir.path(), Some(&arm_c)).unwrap();
+    let outcomes = &result.outcomes;
     assert_eq!(outcomes.len(), 8);
+    assert!(
+        result.hidden_name_hits.is_empty(),
+        "{:?}",
+        result.hidden_name_hits
+    );
 
     let seen = seen.lock().unwrap();
     assert!(!seen.is_empty());
@@ -166,7 +176,31 @@ fn hidden_tests_never_reach_any_arm_and_are_scored_once() {
     let submissions = records.iter().filter(|r| r["kind"] == "submission").count();
     assert_eq!(submissions, 8);
 
-    let summary = summarize(&outcomes, &plan.arms);
+    let summary = summarize(&result, &plan);
+    assert_eq!(summary["complete"], true);
+    let primary: Vec<&Value> = summary["comparisons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["role"] == "primary")
+        .collect();
+    assert_eq!(primary.len(), 1);
+    assert_eq!(primary[0]["comparator"], "B");
+    // Two families < any sensible floor: never a confirmatory class.
+    assert_ne!(primary[0]["class"], "Supported");
+
+    // Generation completes before any hidden score is computed or written.
+    let kinds: Vec<String> = records
+        .iter()
+        .map(|r| r["kind"].as_str().unwrap().to_string())
+        .collect();
+    let generation_done = kinds
+        .iter()
+        .position(|k| k == "generation_complete")
+        .unwrap();
+    assert!(kinds[..generation_done].iter().all(|k| k != "score"));
+    assert!(kinds[generation_done..].iter().all(|k| k != "submission"));
+    assert!(crate::ledger::verify_chain(&dir.path().join("ledger.jsonl")).is_ok());
     let rate = |arm: &str| {
         summary["arms"]
             .as_array()
@@ -203,12 +237,18 @@ fn arm_c_budget_is_enforced_across_all_enzymes() {
         arms: vec![Arm::C],
         k: 4,
         replicates: 1,
+        jobs: 1,
+        seed: 0,
+        primary: None,
+        min_families: 1,
         record_hidden_output: false,
     };
     let greedy = MockArmC {
         attempts_wanted: 10,
     };
-    let outcomes = run_arms(&plan, &suite(), provider, &meter, dir.path(), Some(&greedy)).unwrap();
+    let outcomes = run_arms(&plan, &suite(), provider, &meter, dir.path(), Some(&greedy))
+        .unwrap()
+        .outcomes;
     assert!(outcomes.iter().all(|o| o.invocations == 4));
     assert_eq!(seen.lock().unwrap().len(), 8, "4 per task, never more");
     let records = ledger_records(dir.path());
@@ -239,9 +279,15 @@ fn repair_loop_feeds_back_public_failures_and_stops_when_green() {
         arms: vec![Arm::D],
         k: 4,
         replicates: 1,
+        jobs: 1,
+        seed: 0,
+        primary: None,
+        min_families: 1,
         record_hidden_output: false,
     };
-    let outcomes = run_arms(&plan, &suite(), provider, &meter, dir.path(), None).unwrap();
+    let outcomes = run_arms(&plan, &suite(), provider, &meter, dir.path(), None)
+        .unwrap()
+        .outcomes;
     assert!(
         outcomes
             .iter()
@@ -268,9 +314,16 @@ fn run_aborts_before_exceeding_global_cap() {
         arms: vec![Arm::A, Arm::B],
         k: 4,
         replicates: 1,
+        jobs: 1,
+        seed: 0,
+        primary: None,
+        min_families: 1,
         record_hidden_output: false,
     };
-    let outcomes = run_arms(&plan, &suite(), provider, &meter, dir.path(), None).unwrap();
+    let result = run_arms(&plan, &suite(), provider, &meter, dir.path(), None).unwrap();
+    assert!(result.aborted);
+    assert_eq!(summarize(&result, &plan)["complete"], false);
+    let outcomes = result.outcomes;
     // t1: A (1) + B (4) = 5 = cap; t2's A cannot fit, so the run aborts there.
     assert_eq!(seen.lock().unwrap().len(), 5);
     assert_eq!(outcomes.len(), 2);
@@ -287,7 +340,75 @@ fn arm_c_without_runner_is_an_error() {
         arms: vec![Arm::C],
         k: 1,
         replicates: 1,
+        jobs: 1,
+        seed: 0,
+        primary: None,
+        min_families: 1,
         record_hidden_output: false,
     };
     assert!(run_arms(&plan, &suite(), provider, &meter, dir.path(), None).is_err());
+}
+
+#[test]
+fn arm_order_is_a_seeded_permutation_per_tuple() {
+    let plan = RunPlan {
+        arms: vec![Arm::A, Arm::B, Arm::D, Arm::C],
+        k: 4,
+        replicates: 1,
+        jobs: 1,
+        seed: 7,
+        primary: Some(Arm::B),
+        min_families: 1,
+        record_hidden_output: false,
+    };
+    let orders: Vec<Vec<Arm>> = (0..20)
+        .map(|i| arm_order(&plan, &format!("task-{i}"), 0))
+        .collect();
+    for order in &orders {
+        let mut sorted = order.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![Arm::A, Arm::B, Arm::D, Arm::C]);
+    }
+    assert!(orders.iter().any(|o| o != &orders[0]), "order never varies");
+    assert_eq!(orders[3], arm_order(&plan, "task-3", 0));
+}
+
+#[test]
+fn wall_clock_refusal_mid_arm_voids_the_tuple() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::create(&dir.path().join("ledger.jsonl")).unwrap();
+    let meter = Meter::new(
+        ledger,
+        100,
+        Duration::from_millis(300),
+        dir.path().join("invocations"),
+    );
+    let (provider, _) = mock(|_, _| {
+        std::thread::sleep(Duration::from_millis(400));
+        WRONG.to_string()
+    });
+    let plan = RunPlan {
+        arms: vec![Arm::B],
+        k: 3,
+        replicates: 1,
+        jobs: 1,
+        seed: 0,
+        primary: None,
+        min_families: 1,
+        record_hidden_output: false,
+    };
+    let one_task = Suite {
+        root: PathBuf::from("mem"),
+        hash: "test".to_string(),
+        tasks: vec![Task::for_test("t1", "fam-a", PUBLIC, &hidden())],
+    };
+    let result = run_arms(&plan, &one_task, provider, &meter, dir.path(), None).unwrap();
+    assert_eq!(result.outcomes.len(), 1);
+    assert_eq!(
+        result.outcomes[0].void_reason.as_deref(),
+        Some("wall-clock cap reached")
+    );
+    let summary = summarize(&result, &plan);
+    assert_eq!(summary["tuples_void"], 1);
+    assert_eq!(summary["complete"], false);
 }

@@ -24,8 +24,12 @@ pub struct Attempt {
 }
 
 impl Attempt {
-    fn public_passed(&self) -> usize {
-        self.public.as_ref().map(|s| s.passed).unwrap_or(0)
+    /// Selection key: public tests passed, then whether it compiled.
+    fn public_rank(&self) -> (usize, bool) {
+        self.public
+            .as_ref()
+            .map(|s| (s.passed, s.compiled))
+            .unwrap_or((0, false))
     }
 
     fn public_green(&self) -> bool {
@@ -132,13 +136,14 @@ fn truncate(text: &str, max: usize) -> String {
     format!("{}\n... [truncated]", &text[..end])
 }
 
-/// Frozen submission rule: the attempt with code that passes the most public
-/// tests; ties go to the earliest attempt. `None` if no attempt produced code.
+/// Frozen submission rule: among attempts with code, the most public tests
+/// passed, then compiled over not compiled, then the earliest attempt.
+/// `None` if no attempt produced code.
 pub fn select_submission(attempts: &[Attempt]) -> Option<&Attempt> {
     attempts.iter().filter(|a| a.code.is_some()).fold(
         None,
         |best: Option<&Attempt>, a| match best {
-            Some(b) if b.public_passed() >= a.public_passed() => Some(b),
+            Some(b) if b.public_rank() >= a.public_rank() => Some(b),
             _ => Some(a),
         },
     )
@@ -158,6 +163,7 @@ mod tests {
                 failed: 3 - passed,
                 expected: 3,
                 timed_out: false,
+                exit_success: passed == 3,
                 all_passed: passed == 3,
                 output: String::new(),
             }),
@@ -175,6 +181,10 @@ mod tests {
         assert_eq!(select_submission(&attempts).unwrap().index, 1);
         let ties = [att(0, true, 0), att(1, true, 0)];
         assert_eq!(select_submission(&ties).unwrap().index, 0);
+        let mut not_compiled = att(0, true, 0);
+        not_compiled.public.as_mut().unwrap().compiled = false;
+        let compiled = [not_compiled, att(1, true, 0)];
+        assert_eq!(select_submission(&compiled).unwrap().index, 1);
         let none = [att(0, false, 0)];
         assert!(select_submission(&none).is_none());
     }

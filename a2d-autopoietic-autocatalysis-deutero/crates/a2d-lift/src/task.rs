@@ -27,8 +27,8 @@ fn default_test_timeout_secs() -> u64 {
     30
 }
 
-/// A task as the controller holds it.
-#[derive(Debug, Clone)]
+/// A task as the controller holds it. `Debug` redacts the hidden tests.
+#[derive(Clone)]
 pub struct Task {
     pub id: String,
     pub family: String,
@@ -36,6 +36,7 @@ pub struct Task {
     pub public_tests: String,
     hidden_tests: String,
     pub test_timeout_secs: u64,
+    dir: PathBuf,
 }
 
 /// What an arm (and every enzyme inside arm C) may see.
@@ -46,6 +47,16 @@ pub struct PublicTask {
     pub requirements: String,
     pub public_tests: String,
     pub test_timeout_secs: u64,
+}
+
+impl std::fmt::Debug for Task {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Task")
+            .field("id", &self.id)
+            .field("family", &self.family)
+            .field("hidden_tests", &"<redacted>")
+            .finish_non_exhaustive()
+    }
 }
 
 impl Task {
@@ -63,6 +74,11 @@ impl Task {
         &self.hidden_tests
     }
 
+    /// The task's directory (validation-only files live here).
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(id: &str, family: &str, public: &str, hidden: &str) -> Self {
         Self {
@@ -72,6 +88,7 @@ impl Task {
             public_tests: public.to_string(),
             hidden_tests: hidden.to_string(),
             test_timeout_secs: 10,
+            dir: PathBuf::new(),
         }
     }
 }
@@ -132,6 +149,12 @@ fn load_task(dir: &Path) -> Result<Task, String> {
     let raw = read(TASK_FILE).map_err(|e| format!("{}: {e}", dir.display()))?;
     let file: TaskFile =
         serde_json::from_str(&raw).map_err(|e| format!("{}/{TASK_FILE}: {e}", dir.display()))?;
+    if !is_safe_id(&file.id) || !is_safe_id(&file.family) {
+        return Err(format!(
+            "{}: task id and family must be [A-Za-z0-9._-]+ and not start with '.'",
+            dir.display()
+        ));
+    }
     let hidden_tests = read(HIDDEN_TESTS_FILE)
         .map_err(|e| format!("{}/{HIDDEN_TESTS_FILE}: {e}", dir.display()))?;
     if count_tests(&hidden_tests) == 0 {
@@ -147,7 +170,17 @@ fn load_task(dir: &Path) -> Result<Task, String> {
         public_tests: read(PUBLIC_TESTS_FILE).unwrap_or_default(),
         hidden_tests,
         test_timeout_secs: file.test_timeout_secs,
+        dir: dir.to_path_buf(),
     })
+}
+
+/// Ids become path components of run artifacts.
+fn is_safe_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.starts_with('.')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
 /// Number of `#[test]` functions in a test source file.

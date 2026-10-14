@@ -51,6 +51,16 @@ through typed contexts.
 
 **Enforcement:** Type system (Foundry pattern). No runtime policy.
 
+**Outcome measurement (amended 2026-10-14):** the lift controller
+(`crates/a2d-lift/`), the arm-C glue (`crates/a2d-cli/src/lift_arm_c.rs`),
+the oracle sandbox (`crates/a2d-core/src/sandbox.rs`), the experiment log
+(`docs/experiments/LOG.md`) and run artifacts (`runs/`) are outside every
+automated actor's reach: arms, enzymes, the evolver and the architect.
+Hidden tests are scored only by the controller. Stopping rules and the
+ledger are not subject to self-modification. Enforced by
+`self_sandbox::PROTECTED_FILES` / `PROTECTED_DIRS`, the controller's
+registration freeze, and a no-tools coder lane.
+
 ## Invariant 5: Irreversible Review Gates
 
 Once any component (human or automated) requires human review of a

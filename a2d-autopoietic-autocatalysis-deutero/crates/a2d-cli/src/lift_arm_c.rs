@@ -22,8 +22,6 @@ use a2d_lift::ArmC;
 use a2d_lift::task::PublicTask;
 use std::time::Duration;
 
-const REFUSAL_MARKER: &str = "lift controller refused invocation";
-
 pub struct MetabolismArm;
 
 /// The metabolism's internal benchmark: public tests in the module name the
@@ -45,20 +43,18 @@ pub fn public_benchmark(task: &PublicTask) -> BenchmarkSuite {
 
 fn code_outputs(report: &CycleReport) -> Vec<String> {
     let code = ArtifactType::from("code");
+    // Same extraction contract as arms A, B and D: no extractable code, no attempt.
     report
         .lineage
         .iter()
         .filter_map(|entry| entry.outputs.get(&code))
-        .map(|bytes| {
-            let text = String::from_utf8_lossy(bytes);
-            extract_rust_code_pub(&text).unwrap_or_else(|| text.into_owned())
-        })
+        .filter_map(|bytes| extract_rust_code_pub(&String::from_utf8_lossy(bytes)))
         .collect()
 }
 
 fn refused(report: &CycleReport) -> bool {
     report.lineage.iter().any(|entry| {
-        matches!(&entry.outcome, WorkcellOutcome::Failed { error } if error.contains(REFUSAL_MARKER))
+        matches!(&entry.outcome, WorkcellOutcome::Failed { error } if error.contains(a2d_lift::meter::REFUSAL_PREFIX))
     })
 }
 
@@ -163,6 +159,10 @@ mod tests {
             arms: vec![Arm::A, Arm::B, Arm::D, Arm::C],
             k: 4,
             replicates: 1,
+            jobs: 2,
+            seed: 0,
+            primary: Some(Arm::B),
+            min_families: 1,
             record_hidden_output: false,
         };
         let outcomes = a2d_lift::run_arms(
@@ -173,7 +173,8 @@ mod tests {
             out.path(),
             Some(&MetabolismArm),
         )
-        .unwrap();
+        .unwrap()
+        .outcomes;
 
         assert_eq!(outcomes.len(), 4);
         for outcome in &outcomes {

@@ -103,6 +103,7 @@ pub fn evaluate_rust_code(code: &str, test_timeout: Duration) -> SandboxResult {
                     stdout,
                     stderr,
                     elapsed,
+                    ..
                 } => {
                     let combined = format!("{stdout}\n{stderr}");
                     let (passed, failed) = parse_test_results(&combined);
@@ -166,84 +167,119 @@ pub fn evaluate_rust_code(code: &str, test_timeout: Duration) -> SandboxResult {
     }
 }
 
-/// Compile `code` as a test harness only and run the tests whose names
+/// Outcome of [`run_isolated_tests`].
+#[derive(Debug, Clone)]
+pub struct IsolatedTestRun {
+    pub compiled: bool,
+    pub passed: usize,
+    pub failed: usize,
+    /// The test binary exited successfully (libtest exits non-zero on any
+    /// failure or panic).
+    pub exit_success: bool,
+    pub timed_out: bool,
+    /// Compiler output if compilation failed, otherwise test output.
+    pub output: String,
+}
+
+/// Compile a crate from two files and run only the tests whose names
 /// contain `filter`.
 ///
-/// Used by the lift controller's public/hidden oracles, which count only their
-/// own module's tests. `compiled` reports the `rustc --test` build. Counts come
-/// from the last `test result:` line, which libtest prints after any captured
-/// test output.
-pub fn run_rust_tests_matching(code: &str, filter: &str, test_timeout: Duration) -> SandboxResult {
-    let not_run = |compile_output: String| SandboxResult {
+/// `root` is the crate root, written as `root_file`; `module` is written next
+/// to it as `module_file` and must be referenced by the root (e.g. a
+/// `#[path]` module holding trusted tests). After compilation both sources
+/// are deleted and the binary runs from a separate empty directory, so code
+/// under test cannot read the sources at run time. Compilation and execution
+/// each have a timeout.
+pub fn run_isolated_tests(
+    root: &str,
+    module: &str,
+    root_file: &str,
+    module_file: &str,
+    filter: &str,
+    compile_timeout: Duration,
+    test_timeout: Duration,
+) -> IsolatedTestRun {
+    let failed = |output: String, timed_out: bool| IsolatedTestRun {
         compiled: false,
-        compile_output,
-        tests_passed: None,
-        tests_failed: None,
-        test_output: String::new(),
-        runtime_output: String::new(),
-        timed_out: false,
-        test_elapsed: None,
+        passed: 0,
+        failed: 0,
+        exit_success: false,
+        timed_out,
+        output,
     };
-    let dir = match tempfile::Builder::new().prefix("a2d-oracle-").tempdir() {
-        Ok(dir) => dir,
-        Err(e) => return not_run(format!("Failed to create temp dir: {e}")),
+    let (Ok(build_dir), Ok(run_dir)) = (
+        tempfile::Builder::new().prefix("a2d-oracle-").tempdir(),
+        tempfile::Builder::new().prefix("a2d-oracle-run-").tempdir(),
+    ) else {
+        return failed("Failed to create temp dirs".to_string(), false);
     };
-    let src_path = dir.path().join("main.rs");
-    if let Err(e) = fs::write(&src_path, code) {
-        return not_run(format!("Failed to write source: {e}"));
+    let harness_path = build_dir.path().join(root_file);
+    let candidate_path = build_dir.path().join(module_file);
+    if fs::write(&harness_path, root).is_err() || fs::write(&candidate_path, module).is_err() {
+        return failed("Failed to write sources".to_string(), false);
     }
 
-    let test_binary = dir.path().join("test_main");
+    let binary = build_dir.path().join("oracle_bin");
     let mut compile = Command::new("rustc");
     compile
         .args(["--test", "--edition", "2024"])
-        .arg(&src_path)
+        .arg(&harness_path)
         .arg("-o")
-        .arg(&test_binary);
+        .arg(&binary)
+        .current_dir(build_dir.path());
     harden_sandbox_child_command(&mut compile);
-    match compile.output() {
-        Ok(output) if output.status.success() => {}
-        Ok(output) => return not_run(String::from_utf8_lossy(&output.stderr).into_owned()),
-        Err(e) => return not_run(format!("rustc --test failed to start: {e}")),
+    match run_with_timeout(compile, compile_timeout) {
+        TimedRun::Completed { success: true, .. } => {}
+        TimedRun::Completed { stderr, .. } => return failed(stderr, false),
+        TimedRun::TimedOut { limit, .. } => {
+            return failed(format!("COMPILE TIMEOUT after {}s", limit.as_secs()), true);
+        }
+        TimedRun::SpawnFailed(e) => return failed(format!("rustc failed to start: {e}"), false),
     }
+    let _ = fs::remove_file(&harness_path);
+    let _ = fs::remove_file(&candidate_path);
 
-    let mut run = Command::new(&test_binary);
-    run.arg(filter);
+    let mut run = Command::new(&binary);
+    run.arg(filter).current_dir(run_dir.path());
     harden_sandbox_child_command(&mut run);
-    let (tests_passed, tests_failed, test_output, timed_out, test_elapsed) =
-        match run_with_timeout(run, test_timeout) {
-            TimedRun::Completed {
-                stdout,
-                stderr,
-                elapsed,
-            } => {
-                let combined = format!("{stdout}\n{stderr}");
-                let (passed, failed) = parse_last_test_results(&combined);
-                (Some(passed), Some(failed), combined, false, Some(elapsed))
+    match run_with_timeout(run, test_timeout) {
+        TimedRun::Completed {
+            stdout,
+            stderr,
+            success,
+            ..
+        } => {
+            let output = format!("{stdout}\n{stderr}");
+            let (passed, failed) = parse_last_test_results(&output);
+            IsolatedTestRun {
+                compiled: true,
+                passed,
+                failed,
+                exit_success: success,
+                timed_out: false,
+                output,
             }
-            TimedRun::TimedOut { limit, elapsed, .. } => (
-                Some(0),
-                Some(1),
-                format!(
-                    "TEST TIMEOUT: test binary exceeded {}s (killed at {:.2}s)",
-                    limit.as_secs_f64(),
-                    elapsed.as_secs_f64()
-                ),
-                true,
-                Some(elapsed),
+        }
+        TimedRun::TimedOut { limit, elapsed, .. } => IsolatedTestRun {
+            compiled: true,
+            passed: 0,
+            failed: 0,
+            exit_success: false,
+            timed_out: true,
+            output: format!(
+                "TEST TIMEOUT: test binary exceeded {}s (killed at {:.2}s)",
+                limit.as_secs_f64(),
+                elapsed.as_secs_f64()
             ),
-            TimedRun::SpawnFailed(e) => (None, None, format!("Test run failed: {e}"), false, None),
-        };
-
-    SandboxResult {
-        compiled: true,
-        compile_output: String::new(),
-        tests_passed,
-        tests_failed,
-        test_output,
-        runtime_output: String::new(),
-        timed_out,
-        test_elapsed,
+        },
+        TimedRun::SpawnFailed(e) => IsolatedTestRun {
+            compiled: true,
+            passed: 0,
+            failed: 0,
+            exit_success: false,
+            timed_out: false,
+            output: format!("Test run failed: {e}"),
+        },
     }
 }
 
@@ -260,6 +296,7 @@ enum TimedRun {
     Completed {
         stdout: String,
         stderr: String,
+        success: bool,
         elapsed: Duration,
     },
     TimedOut {
@@ -271,35 +308,53 @@ enum TimedRun {
     SpawnFailed(std::io::Error),
 }
 
+fn spawn_pipe_reader<R: std::io::Read + Send + 'static>(
+    pipe: Option<R>,
+) -> Option<std::thread::JoinHandle<Vec<u8>>> {
+    pipe.map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            let _ = pipe.read_to_end(&mut buffer);
+            buffer
+        })
+    })
+}
+
+fn join_pipe_reader(reader: Option<std::thread::JoinHandle<Vec<u8>>>) -> String {
+    let bytes = reader
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 /// Run a command with a wall-clock timeout. On timeout, SIGKILL the child and
-/// reap it. Partial stdout/stderr captured when possible.
+/// reap it. Both pipes are drained while waiting, so a child that writes more
+/// than a pipe buffer cannot block and be misreported as timed out.
 fn run_with_timeout(mut cmd: Command, limit: Duration) -> TimedRun {
     let start = Instant::now();
     let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
         Ok(c) => c,
         Err(e) => return TimedRun::SpawnFailed(e),
     };
+    let stdout_reader = spawn_pipe_reader(child.stdout.take());
+    let stderr_reader = spawn_pipe_reader(child.stderr.take());
 
     loop {
         match child.try_wait() {
-            Ok(Some(_status)) => {
-                let elapsed = start.elapsed();
-                return match child.wait_with_output() {
-                    Ok(output) => TimedRun::Completed {
-                        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                        elapsed,
-                    },
-                    Err(e) => TimedRun::SpawnFailed(e),
+            Ok(Some(status)) => {
+                return TimedRun::Completed {
+                    stdout: join_pipe_reader(stdout_reader),
+                    stderr: join_pipe_reader(stderr_reader),
+                    success: status.success(),
+                    elapsed: start.elapsed(),
                 };
             }
             Ok(None) => {
                 if start.elapsed() >= limit {
                     let _ = child.kill();
                     let _ = child.wait();
-                    // wait_with_output consumes the child, but after kill+wait
-                    // we can't call it. Partial output is best-effort via the
-                    // now-dangling pipes the child dropped — in practice empty.
+                    // Readers are not joined: a grandchild may still hold the
+                    // pipes open. Partial output is not reported.
                     return TimedRun::TimedOut {
                         limit,
                         elapsed: start.elapsed(),
@@ -602,57 +657,49 @@ mod tests {{
         );
     }
 
-    #[test]
-    fn filtered_test_run_counts_only_matching_module() {
-        let code = r#"
-fn add(a: i32, b: i32) -> i32 { a + b }
+    fn isolated(harness: &str, candidate: &str, filter: &str) -> IsolatedTestRun {
+        run_isolated_tests(
+            harness,
+            candidate,
+            "h_test.rs",
+            "c_test.rs",
+            filter,
+            Duration::from_secs(120),
+            DEFAULT_TEST_TIMEOUT,
+        )
+    }
 
-#[cfg(test)]
-mod own {
-    #[test]
-    fn candidate_test_fails() { panic!("candidate's own test"); }
-}
+    const HARNESS: &str = "#[cfg(test)]\nmod oracle_x1 {\n    use super::*;\n    #[test]\n    fn adds() { assert_eq!(add(2, 2), 4); }\n    #[test]\n    fn adds_negative() { assert_eq!(add(-1, 1), 0); }\n}\ninclude!(\"c_test.rs\");\n";
 
-#[cfg(test)]
-mod oracle_x1 {
-    use super::*;
     #[test]
-    fn adds() { assert_eq!(add(2, 2), 4); }
-    #[test]
-    fn adds_negative() { assert_eq!(add(-1, 1), 0); }
-}
-"#;
-        let result = run_rust_tests_matching(code, "oracle_x1::", DEFAULT_TEST_TIMEOUT);
-        assert!(result.compiled, "{}", result.compile_output);
-        assert_eq!(result.tests_passed, Some(2), "{}", result.test_output);
-        assert_eq!(result.tests_failed, Some(0), "{}", result.test_output);
+    fn isolated_run_counts_only_matching_module_and_needs_clean_exit() {
+        let candidate = "fn add(a: i32, b: i32) -> i32 { a + b }\n#[cfg(test)]\nmod own {\n    #[test]\n    fn candidate_test_fails() { panic!(\"own\"); }\n}\n";
+        let result = isolated(HARNESS, candidate, "oracle_x1::");
+        assert!(result.compiled, "{}", result.output);
+        assert_eq!((result.passed, result.failed), (2, 0), "{}", result.output);
+        assert!(result.exit_success);
+
+        let wrong = isolated(
+            HARNESS,
+            "fn add(a: i32, b: i32) -> i32 { a - b }\n",
+            "oracle_x1::",
+        );
+        assert_eq!((wrong.passed, wrong.failed), (0, 2), "{}", wrong.output);
+        assert!(!wrong.exit_success);
     }
 
     #[test]
-    fn filtered_test_run_uses_last_result_line() {
-        let code = r#"
-fn answer() -> i32 { 41 }
-
-#[cfg(test)]
-mod oracle_y2 {
-    use super::*;
-    #[test]
-    fn prints_fake_summary_then_fails() {
-        println!("test result: ok. 99 passed; 0 failed; 0 ignored");
-        assert_eq!(answer(), 42);
-    }
-}
-"#;
-        let result = run_rust_tests_matching(code, "oracle_y2::", DEFAULT_TEST_TIMEOUT);
-        assert!(result.compiled, "{}", result.compile_output);
-        assert_eq!(result.tests_passed, Some(0), "{}", result.test_output);
-        assert_eq!(result.tests_failed, Some(1), "{}", result.test_output);
-    }
-
-    #[test]
-    fn filtered_test_run_reports_compile_failure() {
-        let result = run_rust_tests_matching("fn broken( {", "oracle_z3::", DEFAULT_TEST_TIMEOUT);
+    fn isolated_run_reports_compile_failure() {
+        let result = isolated(HARNESS, "fn broken( {", "oracle_x1::");
         assert!(!result.compiled);
-        assert_eq!(result.tests_passed, None);
+        assert!(!result.exit_success);
+    }
+
+    #[test]
+    fn candidate_cannot_read_harness_at_run_time() {
+        let harness = "#[cfg(test)]\nmod oracle_r1 {\n    use super::*;\n    #[test]\n    fn harness_is_gone() { assert!(!probe()); }\n}\ninclude!(\"c_test.rs\");\n";
+        let candidate = "fn probe() -> bool { std::path::Path::new(\"h_test.rs\").exists() || std::fs::read_dir(\".\").map(|d| d.count() > 0).unwrap_or(false) }\n";
+        let result = isolated(harness, candidate, "oracle_r1::");
+        assert_eq!((result.passed, result.failed), (1, 0), "{}", result.output);
     }
 }

@@ -114,6 +114,67 @@ pub fn paired_summary(obs: &[PairedOutcome], iterations: usize, seed: u64) -> Pa
     }
 }
 
+/// Two-sided sign-flip p-value using whole-family summed differences.
+/// Enumerates all assignments for <= 16 families; otherwise uses SplitMix64
+/// draws plus the observed assignment. Empty or all-zero sums return 1.
+pub fn family_sign_flip_p(obs: &[PairedOutcome], iterations: usize, seed: u64) -> f64 {
+    let mut family_ids = HashMap::new();
+    let mut sums: Vec<i64> = Vec::new();
+    for observation in obs {
+        let next = sums.len();
+        let id = *family_ids
+            .entry(observation.family.as_str())
+            .or_insert(next);
+        if id == next {
+            sums.push(0);
+        }
+        sums[id] += i64::from(observation.x_pass) - i64::from(observation.y_pass);
+    }
+    let observed = sums.iter().sum::<i64>().abs();
+    if observed == 0 {
+        return 1.0;
+    }
+    if sums.len() <= 16 {
+        let assignments = 1usize << sums.len();
+        let mut extreme = 0usize;
+        for mask in 0..assignments {
+            let statistic: i64 = sums
+                .iter()
+                .enumerate()
+                .map(|(id, &sum)| if mask & (1 << id) == 0 { sum } else { -sum })
+                .sum();
+            extreme += usize::from(statistic.abs() >= observed);
+        }
+        extreme as f64 / assignments as f64
+    } else {
+        let mut rng = SplitMix64(seed);
+        let mut extreme = 0usize;
+        for _ in 0..iterations {
+            let statistic: i64 = sums
+                .iter()
+                .map(|&sum| if rng.next_u64() & 1 == 0 { sum } else { -sum })
+                .sum();
+            extreme += usize::from(statistic.abs() >= observed);
+        }
+        (1.0 + extreme as f64) / (1.0 + iterations as f64)
+    }
+}
+
+/// Inconclusive below the family floor or without discordance; otherwise classify.
+pub fn classify_guarded(
+    summary: &PairedSummary,
+    min_effect: f64,
+    min_families: usize,
+) -> ResultClass {
+    if summary.families < min_families
+        || (summary.discordant_x_only == 0 && summary.discordant_y_only == 0)
+    {
+        ResultClass::Inconclusive
+    } else {
+        classify(summary, min_effect)
+    }
+}
+
 /// Supported if `ci_low > 0` and `lift >= min_effect`; ruled out if
 /// `ci_high < min_effect`; otherwise inconclusive. Supported takes precedence.
 pub fn classify(summary: &PairedSummary, min_effect: f64) -> ResultClass {
@@ -170,6 +231,50 @@ mod tests {
         let p = mcnemar_exact(900, 1100);
         assert!(p.is_finite() && p > 0.0 && p < 1.0);
         assert!((mcnemar_exact(999, 1001) - 0.9821609888541463).abs() < 1e-10);
+    }
+
+    #[test]
+    fn family_sign_flip_exact() {
+        let strong: Vec<_> = (0..10)
+            .flat_map(|f| (0..3).map(move |t| outcome(f, t, true, false)))
+            .collect();
+        assert_eq!(family_sign_flip_p(&strong, 0, 42), 2.0 / 1024.0);
+        let symmetric: Vec<_> = (0..10).map(|f| outcome(f, 0, f < 5, f >= 5)).collect();
+        assert_eq!(family_sign_flip_p(&symmetric, 1000, 42), 1.0);
+        assert_eq!(family_sign_flip_p(&[], 1000, 42), 1.0);
+        let cancelling = [outcome(0, 0, true, false), outcome(0, 1, false, true)];
+        assert_eq!(family_sign_flip_p(&cancelling, 1000, 42), 1.0);
+    }
+
+    #[test]
+    fn family_sign_flip_monte_carlo() {
+        let strong: Vec<_> = (0..20).map(|f| outcome(f, 0, true, false)).collect();
+        let p = family_sign_flip_p(&strong, 10_000, 42);
+        assert!(p > 0.0 && p < 0.01);
+        assert_eq!(p, family_sign_flip_p(&strong, 10_000, 42));
+        assert_eq!(family_sign_flip_p(&strong, 0, 42), 1.0);
+        let symmetric: Vec<_> = (0..20).map(|f| outcome(f, 0, f < 10, f >= 10)).collect();
+        assert_eq!(family_sign_flip_p(&symmetric, 1000, 42), 1.0);
+    }
+
+    #[test]
+    fn guarded_classification() {
+        let single = paired_summary(&[outcome(0, 0, true, false)], 100, 42);
+        assert_eq!(classify(&single, 0.1), ResultClass::Supported);
+        assert_eq!(
+            classify_guarded(&single, 0.1, 10),
+            ResultClass::Inconclusive
+        );
+        let saturated: Vec<_> = (0..12).map(|f| outcome(f, 0, true, true)).collect();
+        let summary = paired_summary(&saturated, 100, 42);
+        assert_eq!(classify(&summary, 0.1), ResultClass::RuledOut);
+        assert_eq!(
+            classify_guarded(&summary, 0.1, 10),
+            ResultClass::Inconclusive
+        );
+        let strong: Vec<_> = (0..12).map(|f| outcome(f, 0, true, false)).collect();
+        let summary = paired_summary(&strong, 100, 42);
+        assert_eq!(classify_guarded(&summary, 0.1, 10), ResultClass::Supported);
     }
 
     #[test]
