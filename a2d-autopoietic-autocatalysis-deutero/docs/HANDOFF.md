@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-14 (session 142 — direction audit + handoff reset)
+**Last updated:** 2026-10-14 (session 142 — direction audit, handoff reset, lift-first roadmap adopted)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -9,7 +9,8 @@
 - **Hidden holdouts currently leak into selection.** Live runs build the metabolism with `challenge.scoring_benchmark()` (hidden acceptance attached, `crates/a2d-cli/src/main.rs:5377`), and coder-portfolio candidates plus `failure_report` feedback are driven by that score. A²D's numbers are oracle-selected best-of-N; the fair comparison is best-of-N one-shot, and the real fix is to separate the selection oracle (public tests) from the evaluation oracle (hidden tests).
 - **Sessions 2026-06-29 → 07-10 drifted:** ~123 of 197 commits were Senior SWE-Bench / SWE-Bench Pro scaffolding, leak-hardening and evidence records; 2 touched outcome quality. 108 "baseline" fitness-evidence files replay the same hand-written `good-sudoku-artifact.rs` at fitness 1.0, so they certify nothing about the change they are attached to.
 - **The SWE-Bench Pro "access" blocker is mostly self-imposed:** a public 731-task split with a runnable harness exists (verify before use). The sealed-manifest machinery is not required to measure lift.
-- **Direction is pending the owner's decision on the audit.** Recommended: Option A (lift-first minimal loop on a non-saturated benchmark) now, Option B (offline observer test on Third Thoughts data) in parallel. Until decided, do not add SWE-bench/redaction/env-scrub scaffolding.
+- **Active plan: `docs/plans/2026-10-14-lift-first-roadmap.md` (phase P0).** Measure A²D against one-shot, best-of-k and a plain repair loop on a non-saturated Rust suite through a frozen controller; then test whether self-modification adds lift. Decision deadline for the seed result: 2026-11-30. Experiments are pre-registered in `docs/experiments/LOG.md`. Do not add SWE-bench/redaction/env-scrub scaffolding (tripwire T3).
+- **Provider outage (2026-10-14):** only Codex and Claude lanes work; Kimi, GLM, MiniMax, Perplexity, Gemini and DeepSeek-free all fail (roadmap § Blockers). A²D's default coder/evolver lanes are down; P1 picks a coder from working lanes.
 
 ## Session Protocol
 
@@ -55,16 +56,19 @@ Plan: `docs/plans/swe-bench-pro-blind-evaluator-adapter.md`. Slices 1–5 implem
 
 Caveats: baselines used stronger models than A²D's current coders and have no durable artifacts; A²D scores are oracle-selected (see Headline). Several historical claims cite `/tmp` logs that no longer exist.
 
-## Next Moves (recommended by the audit; pending owner decision)
+## Next Moves
 
-1. **Separate the oracles.** Public/visible tests drive portfolio selection and `failure_report`; hidden holdouts score only the final artifact. Without this, no A²D-vs-baseline number is fair.
-2. **Durable cheap baselines.** ~10 one-shot calls per coder model actually used (Kimi k2.6, DeepSeek v4 flash), saved under `runs/` and scored with `a2d score-artifact`.
-3. **Pick a non-saturated benchmark** where one-shot pass@1 is 20–70%: chess perft exactness (e.g. Kiwipete, depth 4–5), larger Rust specs with 50+ hidden property tests, or the public SWE-Bench Pro split. Calibrate first.
-4. **Pre-registered lift test,** n ≥ 20 tasks, matched invocation budget k: (a) one-shot pass@1, (b) best-of-k one-shot selected by public tests, (c) A²D seed with k invocations. Falsifier: (c) fails to beat (b) by ≥10 pp → the cycle is overhead.
-5. **Ablate** evolver, architect, rungs 4–6, portfolio on that benchmark; delete what doesn't move the metric.
-6. **Observer offline:** run `observer::observe` on Third Thoughts / Middens traces and measure failure-prediction AUC (zero provider cost). If no signal, drop the "mechanical cortex" claim.
+Follow `docs/plans/2026-10-14-lift-first-roadmap.md`. P0 in order:
 
-Stop doing: SWE-bench/redaction/env-scrub scaffolding, constant-artifact sudoku replay as a commit gate (use `cargo test` for plumbing; require fitness evidence only when claiming an outcome effect, and it must exercise the change), separate "record evidence" commits.
+1. Split each challenge into public and hidden tests. Only public tests may reach the metabolism, portfolio ranking and `failure_report`. Remove the `scoring_benchmark()` use at `main.rs:5377` from live runs, and add tests that prove the isolation.
+2. Build the `a2d lift` controller: arms A/B/D/C, an append-only ledger, paired cluster-bootstrap confidence intervals and result classes. Load holdouts from `$A2D_HOLDOUT_DIR` and verify their hashes.
+3. Make the controller and oracle paths protected from self-modification.
+4. Run a tiny real arm-A run on about 5 development tasks with a working lane, and record it in the LOG.
+
+Stop doing:
+- SWE-bench/redaction/env-scrub scaffolding.
+- Using constant-artifact replays as evidence.
+- Separate "record evidence" commits.
 
 ## Enzyme Topology
 
@@ -83,7 +87,7 @@ Architect:            {failure_report, fitness_report} → {system_patch}  catal
 
 Scheduling: one ready invocation at a time (highest priority), then the ready set is recomputed. Before code exists the coder goes first; once a `fitness_report` exists (with or without code) feedback runs first: evolver → architect → tester → coder. A successful code-producing or any failed invocation ends the cycle.
 
-## Provider Configuration (as last recorded, 2026-07)
+## Provider Configuration (as last recorded, 2026-07 — currently unavailable, see Headline)
 
 ```
 Coder:     Kimi k2.6 (opencode, kimi-for-coding/k2p6)   race fallback: DeepSeek v4 flash (opencode/deepseek-v4-flash-free)
