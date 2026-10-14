@@ -21,6 +21,20 @@ class ArmOrderTests(unittest.TestCase):
         self.assertNotEqual(first, run.arm_order(sample, 8))
 
 
+class ShardTests(unittest.TestCase):
+    def test_shard_spec(self) -> None:
+        self.assertEqual(run.shard_spec("0/1"), (0, 1))
+        self.assertEqual(run.shard_spec("2/3"), (2, 3))
+        for bad in ("3/3", "-1/2", "0/0"):
+            with self.assertRaises(ValueError):
+                run.shard_spec(bad)
+
+    def test_arm_order_does_not_depend_on_shard(self) -> None:
+        sample = [f"e1-{i:012x}" for i in range(6)]
+        full = run.arm_order(sample, 3)
+        self.assertEqual(full[sample[4]], run.arm_order(sample, 3)[sample[4]])
+
+
 class LeakTests(unittest.TestCase):
     def test_private_marker_in_payload_raises(self) -> None:
         with self.assertRaises(RuntimeError):

@@ -177,6 +177,14 @@ def run_arm(cfg: argparse.Namespace, opaque: str, arm: str, run_dir: Path) -> di
     }
 
 
+def shard_spec(value: str) -> tuple[int, int]:
+    index, _, count = value.partition("/")
+    i, n = int(index), int(count)
+    if n < 1 or not 0 <= i < n:
+        raise ValueError(f"invalid shard {value!r}")
+    return i, n
+
+
 def start_proxy(cfg: argparse.Namespace, run_dir: Path) -> subprocess.Popen:
     port_file = run_dir / "proxy.port"
     port_file.unlink(missing_ok=True)
@@ -207,22 +215,25 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--max-tokens", type=int, default=200_000)
     parser.add_argument("--timeout", type=int, default=1500)
     parser.add_argument("--a2ctl", type=Path, default=REPO_ROOT / "target" / "debug" / "a2ctl")
+    parser.add_argument("--shard", default="0/1", help="i/n: run only tasks whose sample index % n == i")
     cfg = parser.parse_args(argv)
     cfg.endpoint = cfg.endpoint or ["https://api.z.ai"]
     arms = [a for a in cfg.arms.split(",") if a]
     unknown = set(arms) - set(ARMS)
     if unknown:
         raise SystemExit(f"unknown arms: {sorted(unknown)}")
-    sample = json.loads(Path(cfg.sample).read_text())
+    full_sample = json.loads(Path(cfg.sample).read_text())
+    shard_index, shard_count = shard_spec(cfg.shard)
+    sample = [t for i, t in enumerate(full_sample) if i % shard_count == shard_index]
     run_dir = tasks.private_dir() / "runs" / cfg.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    results = run_dir / "results.jsonl"
+    results = run_dir / f"results.shard{shard_index}of{shard_count}.jsonl"
     done = set()
     if results.exists():
         for line in results.read_text().splitlines():
             row = json.loads(line)
             done.add((row["opaque_id"], row["arm"]))
-    order = arm_order(sample, cfg.seed)
+    order = arm_order(full_sample, cfg.seed)
     proxy = start_proxy(cfg, run_dir)
     try:
         for opaque in sample:
