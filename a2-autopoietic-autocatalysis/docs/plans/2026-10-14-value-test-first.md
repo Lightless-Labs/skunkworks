@@ -102,3 +102,12 @@ Local containers are impossible here: the host is a VM without nested virtualiza
 - **AllowList was never loadable.** Seatbelt rejects hostname filters, so AllowList is now enforced through a loopback egress proxy (`67d2bc3`, `bench/e1/egress_proxy.py`). An end-to-end check showed `api.z.ai` reachable via the proxy, GitHub refused, and direct egress blocked.
 - **Install rule.** The first full gate passed 29/68 tasks; 26 failures were date-pinned build-dependency failures for 2019–2021 sdists on arm64. The pre-registered rule is now: a date-pinned install, then the same requirement files unpinned. The mode is recorded per task and the gold/empty gate decides validity. The first gate's results are kept privately for diagnosis and are superseded by the re-run.
 - **Calibration is blocked by provider credit** (`docs/blockers/2026-10-14-provider-credit.md`). The protocol stays uncommitted until a provider is funded, since a TBD provider is not a pre-registration.
+
+### 2026-10-14 — Provider: Codex `gpt-6-luna` (owner direction, before calibration)
+
+The owner disabled Z.ai and MiniMax and directed E1 to Codex `gpt-6-luna`, which resolves the provider-credit blocker. Agents run as `codex exec` under A²'s Seatbelt profile; Codex's own sandbox is bypassed because profiles cannot nest. They use an isolated `CODEX_HOME` (`bench/e1/codex-home.config.toml`):
+- off: web search, ChatGPT apps/connectors (a probe showed `codex_apps` → `github.fetch` on `api.github.com`, server-side and invisible to the proxy), plugins, remote plugins, browser, skill MCP;
+- auth: the operator's `auth.json` symlinked;
+- egress: only `chatgpt.com:443` and `auth.openai.com:443` through the proxy.
+
+Probes confirmed `NO_TOOL` / `NO_SEARCH_TOOL` answers, private-dir reads denied, and GitHub refused. Codex's bundled system skills remain; they are identical across arms and network-confined. The smoke run (`smoke-codex-1`, gate-failed task) produced a diff, visible feedback and a grade, with egress to `chatgpt.com` only. Reasoning effort is A²'s fixed `high` for every arm.
