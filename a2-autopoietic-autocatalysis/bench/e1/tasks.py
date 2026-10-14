@@ -184,6 +184,22 @@ def gate(opaque: str) -> dict:
     return result
 
 
+def split_sample(gate_summary: list[dict], seed: int, calibration: int, max_sample: int) -> dict:
+    """Seeded shuffle of gate-passing tasks: the first `calibration` calibrate, the next `max_sample` form E1."""
+    import random
+
+    passing = sorted(item["opaque_id"] for item in gate_summary if item.get("passed"))
+    random.Random(seed).shuffle(passing)
+    return {
+        "seed": seed,
+        "gate_passed": len(passing),
+        "gate_total": len(gate_summary),
+        "calibration": passing[:calibration],
+        "sample": passing[calibration:calibration + max_sample],
+        "reserve": passing[calibration + max_sample:],
+    }
+
+
 def evict(opaque: str) -> None:
     shutil.rmtree(work_dir(opaque), ignore_errors=True)
     shutil.rmtree(private_dir(opaque) / "venv", ignore_errors=True)
@@ -200,6 +216,12 @@ def main(argv: list[str]) -> int:
     g = sub.add_parser("gate-all")
     g.add_argument("--tasks", required=True, help="task list written by `select`")
     g.add_argument("--out", required=True, help="where to write the gate summary JSON")
+    sp = sub.add_parser("split-sample")
+    sp.add_argument("--gate-summary", required=True)
+    sp.add_argument("--seed", type=int, required=True)
+    sp.add_argument("--calibration", type=int, default=5)
+    sp.add_argument("--max-sample", type=int, default=60)
+    sp.add_argument("--out", required=True)
     args = parser.parse_args(argv)
     if args.cmd == "select":
         select(args)
@@ -209,6 +231,10 @@ def main(argv: list[str]) -> int:
         print(json.dumps(gate(args.task), sort_keys=True))
     elif args.cmd == "evict":
         evict(args.task)
+    elif args.cmd == "split-sample":
+        split = split_sample(json.loads(Path(args.gate_summary).read_text()), args.seed, args.calibration, args.max_sample)
+        Path(args.out).write_text(json.dumps(split, indent=1) + "\n")
+        print(json.dumps({k: (len(v) if isinstance(v, list) else v) for k, v in split.items()}))
     elif args.cmd == "gate-all":
         summary = []
         for item in json.loads(Path(args.tasks).read_text()):

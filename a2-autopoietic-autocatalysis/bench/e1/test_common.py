@@ -97,5 +97,20 @@ class ResolutionTests(unittest.TestCase):
         self.assertIsNone(common.junit_case_to_node_id("nowhere.mod", "t", existing.__contains__))
 
 
+class SplitSampleTests(unittest.TestCase):
+    def test_split_sample_is_seeded_and_disjoint(self) -> None:
+        import tasks
+
+        summary = [{"opaque_id": f"e1-{i:012x}", "passed": i % 4 != 0} for i in range(40)]
+        a = tasks.split_sample(summary, 11, 5, 20)
+        self.assertEqual(a, tasks.split_sample(list(reversed(summary)), 11, 5, 20))
+        self.assertEqual(len(a["calibration"]), 5)
+        self.assertEqual(len(a["sample"]), 20)
+        self.assertEqual(a["gate_passed"], 30)
+        everything = a["calibration"] + a["sample"] + a["reserve"]
+        self.assertEqual(len(everything), len(set(everything)))
+        self.assertTrue(all(int(x[3:], 16) % 4 != 0 for x in everything))
+
+
 if __name__ == "__main__":
     unittest.main()
