@@ -14,7 +14,7 @@ The audit remediation roadmap is [`docs/plans/2026-07-10-a2-remediation-roadmap.
 - Phase 0 not yet complete: `//crates/a2_workcell:a2_workcell_test` is red under Bazel because one pipeline test spawns `cargo` (not on the Bazel test PATH).
 - **Direction (2026-10-14):** roadmap frozen. The active plan is [`docs/plans/2026-10-14-value-test-first.md`](plans/2026-10-14-value-test-first.md) (see its addenda). E1 compares raw / stateless-retry / a2-full on a native-graded SWE-Bench Pro V2 ansible subset. Decision due 2026-11-30; INCONCLUSIVE = NO GO.
 - **E1 build state:** `bench/e1/` (tasks, grading, verifier, egress proxy, driver) and the `a2ctl run` external-repo flags (`2e9d76c`) are landed. AllowList sandbox profiles were invalid under Seatbelt; the loopback egress-proxy fix is in progress. No local containers ([blocker](blockers/2026-10-14-no-container-runtime.md)). The boundary audit's profile parser is stale after `2e9d76c` and is frozen until E1 reports.
-- **Blocked:** calibration needs a funded provider. Z.ai, MiniMax and Kimi are out of credit or access ([blocker](blockers/2026-10-14-provider-credit.md)). AllowList egress-proxy fix landed (`67d2bc3`). Next: once funded, calibrate ~5 tasks with `raw`, then commit `protocol-v1.toml`.
+- **Blocked:** calibration needs a funded provider. Z.ai, MiniMax and Kimi are out of credit or access ([blocker](blockers/2026-10-14-provider-credit.md)). Ready: gate 44/68, seeded split 5/36/3 (`docs/benchmark-results/external-value/e1/sample.json`), protocol draft `bench/external-value/protocol-v1.draft.toml`. Next: once funded, calibrate with `raw`, then commit `protocol-v1.toml`.
 
 ## Current Numbers (test counts refreshed 2026-07-10; benchmark rows are historical unless dated below)
 
