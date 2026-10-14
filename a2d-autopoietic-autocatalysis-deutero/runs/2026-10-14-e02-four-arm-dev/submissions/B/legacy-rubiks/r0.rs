@@ -1,0 +1,286 @@
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Cube {
+    // Faces are ordered U, D, L, R, F, B. Each face is read
+    // row by row, as viewed from outside the cube.
+    faces: [[u8; 9]; 6],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Move {
+    U,
+    UPrime,
+    D,
+    DPrime,
+    L,
+    LPrime,
+    R,
+    RPrime,
+    F,
+    FPrime,
+    B,
+    BPrime,
+}
+
+impl Cube {
+    fn new() -> Self {
+        let mut faces = [[0; 9]; 6];
+        for (face, cells) in faces.iter_mut().enumerate() {
+            cells.fill(face as u8);
+        }
+        Self { faces }
+    }
+}
+
+fn rotate(cube: &mut Cube, mv: Move) {
+    let (face, clockwise) = match mv {
+        Move::U => (0, true),
+        Move::UPrime => (0, false),
+        Move::D => (1, true),
+        Move::DPrime => (1, false),
+        Move::L => (2, true),
+        Move::LPrime => (2, false),
+        Move::R => (3, true),
+        Move::RPrime => (3, false),
+        Move::F => (4, true),
+        Move::FPrime => (4, false),
+        Move::B => (5, true),
+        Move::BPrime => (5, false),
+    };
+
+    let old = cube.faces;
+    let mut next = old;
+    let face_map = if clockwise {
+        [6, 3, 0, 7, 4, 1, 8, 5, 2]
+    } else {
+        [2, 5, 8, 1, 4, 7, 0, 3, 6]
+    };
+    for dst in 0..9 {
+        next[face][dst] = old[face][face_map[dst]];
+    }
+
+    // Each strip is listed in the order it appears around the face.
+    // The cycles below use source-to-destination indices.
+    let (strips, clockwise_cycle): ([[usize; 3]; 4], [usize; 4]) = match face {
+        0 => (
+            [[18, 19, 20], [36, 37, 38], [45, 46, 47], [27, 28, 29]],
+            [0, 1, 2, 3],
+        ),
+        1 => (
+            [[24, 25, 26], [33, 34, 35], [51, 52, 53], [42, 43, 44]],
+            [0, 1, 2, 3],
+        ),
+        2 => (
+            [[0, 3, 6], [45, 48, 51], [9, 12, 15], [44, 41, 38]],
+            [0, 1, 2, 3],
+        ),
+        3 => (
+            [[2, 5, 8], [47, 50, 53], [11, 14, 17], [42, 39, 36]],
+            [0, 1, 2, 3],
+        ),
+        4 => (
+            [[6, 7, 8], [27, 30, 33], [11, 10, 9], [38, 41, 44]],
+            [0, 1, 2, 3],
+        ),
+        _ => (
+            [[0, 1, 2], [36, 39, 42], [17, 16, 15], [53, 50, 47]],
+            [0, 1, 2, 3],
+        ),
+    };
+
+    let flat_old = flatten(&old);
+    let mut flat_next = flatten(&next);
+    let turns = if clockwise { 1 } else { 3 };
+    for _ in 0..turns {
+        let before = flat_next;
+        for i in 0..4 {
+            let src = clockwise_cycle[i];
+            let dst = clockwise_cycle[(i + 1) % 4];
+            for j in 0..3 {
+                flat_next[strips[dst][j]] = before[strips[src][j]];
+            }
+        }
+    }
+
+    // Preserve the face rotation already done above and copy the moved strips.
+    // Flat indices 0..54 include face cells; only the adjacent strips are copied.
+    let mut result = flatten(&next);
+    for strip in strips {
+        for index in strip {
+            result[index] = flat_next[index];
+        }
+    }
+    cube.faces = unflatten(result);
+
+    // Keep the compiler from warning about the snapshot: it also documents that
+    // all transfers are derived from the original state.
+    let _ = flat_old;
+}
+
+fn flatten(faces: &[[u8; 9]; 6]) -> [u8; 54] {
+    let mut out = [0; 54];
+    for f in 0..6 {
+        out[f * 9..f * 9 + 9].copy_from_slice(&faces[f]);
+    }
+    out
+}
+
+fn unflatten(values: [u8; 54]) -> [[u8; 9]; 6] {
+    let mut faces = [[0; 9]; 6];
+    for f in 0..6 {
+        faces[f].copy_from_slice(&values[f * 9..f * 9 + 9]);
+    }
+    faces
+}
+
+fn is_solved(cube: &Cube) -> bool {
+    cube.faces
+        .iter()
+        .all(|face| face.iter().all(|&cell| cell == face[4]))
+}
+
+fn scramble(cube: &mut Cube, len: usize, seed: u64) -> Vec<Move> {
+    const MOVES: [Move; 12] = [
+        Move::U,
+        Move::UPrime,
+        Move::D,
+        Move::DPrime,
+        Move::L,
+        Move::LPrime,
+        Move::R,
+        Move::RPrime,
+        Move::F,
+        Move::FPrime,
+        Move::B,
+        Move::BPrime,
+    ];
+
+    let mut state = seed;
+    let mut moves = Vec::with_capacity(len);
+    for _ in 0..len {
+        // SplitMix64 produces a deterministic, well-distributed sequence.
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+
+        let mv = MOVES[(z as usize) % MOVES.len()];
+        rotate(cube, mv);
+        moves.push(mv);
+    }
+    moves
+}
+
+fn solve(cube: &Cube) -> Option<Vec<Move>> {
+    // Reverse the move history is not available from a state alone. For a
+    // general reachable state, use breadth-first search over the finite cube
+    // state space is impractical. This solver instead searches the subgroup
+    // generated by face turns with iterative deepening, which solves ordinary
+    // shallow scrambles and returns None if no solution is found within the
+    // practical depth bound.
+    if is_solved(cube) {
+        return Some(Vec::new());
+    }
+
+    const MOVES: [Move; 12] = [
+        Move::U,
+        Move::UPrime,
+        Move::D,
+        Move::DPrime,
+        Move::L,
+        Move::LPrime,
+        Move::R,
+        Move::RPrime,
+        Move::F,
+        Move::FPrime,
+        Move::B,
+        Move::BPrime,
+    ];
+
+    let mut path = Vec::new();
+    for depth in 1..=10 {
+        if search(cube, depth, None, &MOVES, &mut path) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn search(
+    cube: &Cube,
+    depth: usize,
+    previous_face: Option<u8>,
+    moves: &[Move; 12],
+    path: &mut Vec<Move>,
+) -> bool {
+    if is_solved(cube) {
+        return true;
+    }
+    if depth == 0 {
+        return false;
+    }
+
+    for &mv in moves {
+        let face = move_face(mv);
+        if previous_face == Some(face) {
+            continue;
+        }
+        let mut next = cube.clone();
+        rotate(&mut next, mv);
+        path.push(mv);
+        if search(&next, depth - 1, Some(face), moves, path) {
+            return true;
+        }
+        path.pop();
+    }
+    false
+}
+
+fn move_face(mv: Move) -> u8 {
+    match mv {
+        Move::U | Move::UPrime => 0,
+        Move::D | Move::DPrime => 1,
+        Move::L | Move::LPrime => 2,
+        Move::R | Move::RPrime => 3,
+        Move::F | Move::FPrime => 4,
+        Move::B | Move::BPrime => 5,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn solved_state_detection() {
+        assert!(is_solved(&Cube::new()));
+    }
+
+    #[test]
+    fn single_rotation_and_inverse_restore_state() {
+        let original = Cube::new();
+        let mut cube = original.clone();
+        rotate(&mut cube, Move::F);
+        assert!(!is_solved(&cube));
+        rotate(&mut cube, Move::FPrime);
+        assert_eq!(cube, original);
+    }
+
+    #[test]
+    fn scramble_changes_state() {
+        let mut cube = Cube::new();
+        scramble(&mut cube, 10, 42);
+        assert!(!is_solved(&cube));
+    }
+
+    #[test]
+    fn basic_solve_works() {
+        let mut cube = Cube::new();
+        rotate(&mut cube, Move::R);
+        let solution = solve(&cube).unwrap();
+        for mv in solution {
+            rotate(&mut cube, mv);
+        }
+        assert!(is_solved(&cube));
+    }
+}

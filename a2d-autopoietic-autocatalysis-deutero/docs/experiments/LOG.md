@@ -48,7 +48,20 @@ Pre-registration and results for `docs/plans/2026-10-14-lift-first-roadmap.md`. 
 - Budget cap: 60 invocations (planned max 48), 3600 s wall-clock
 - Infrastructure exceptions (predefined): tuples voided by the controller (wall-clock or audit failure) are excluded. Provider errors and timeouts count as failures.
 - Result-class rule: descriptive only (development set).
-- Result: pending
+- Result: **descriptive, development.**
+  - Every arm passed 2/3 tasks: chess and sudoku pass, rubiks fails. Every comparison has lift 0, CI [0, 0] and is Inconclusive (3 families, below the floor of 10).
+  - Rubiks partial hidden passes: C 4/6, A 1/6, B 0/6, D 0/6.
+  - Public-green but hidden-fail submissions: B 1, D 1, C 1 (all on rubiks). Its public tests never exercise `solve`, so D stopped after one attempt.
+  - Run integrity: complete; 0 void tuples; 0 coder tool calls; 0 hidden-name hits; 0 suspicious constructs; ledger chain verified (66 records, head e61204d9…).
+  - Cost: 36 invocations, about 312k reported tokens. Per arm:
+    - A: 3 calls, 34k tokens;
+    - B: 15 calls, 129k tokens;
+    - D: 3 calls, 39k tokens;
+    - C: 15 calls (6 coder), 109k tokens.
+  - Provider time 983 s in total.
+- **Arm C's realised schedule at k = 5:** on all three tasks it ran coder → evolver → architect → tester → coder, so 2 code attempts; the 6th call (evolver) was refused for budget.
 - Artifacts: runs/2026-10-14-e02-four-arm-dev/ (ledger: runs/2026-10-14-e02-four-arm-dev/ledger.jsonl)
-- Deviations:
-- Decision rule: if C makes at most 1 coder call per tuple at k = 5, P2 must pre-register a k or schedule that is shown to reach ≥ 2.
+- Deviations: none.
+- Decision:
+  - The seed schedule is one feedback cycle per 4 invocations after the first coder call. P2 must pre-register k ≡ 1 (mod 4): k = 5 gives C 2 code attempts, k = 9 gives 3. k = 4 is ruled out because it gives C a single attempt.
+  - The P1 suite's public tests must exercise every major API item. The rubiks gap shows that weak public tests make B, C and D submit public-green failures and stop D early. This is now a rule in the P1 plan.

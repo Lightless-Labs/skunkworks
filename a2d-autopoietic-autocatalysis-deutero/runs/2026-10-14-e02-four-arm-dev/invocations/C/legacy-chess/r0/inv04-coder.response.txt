@@ -1,0 +1,441 @@
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PieceKind {
+    Pawn,
+    Knight,
+    Bishop,
+    Rook,
+    Queen,
+    King,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Piece {
+    pub kind: PieceKind,
+    pub white: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Move {
+    pub from_rank: usize,
+    pub from_file: usize,
+    pub to_rank: usize,
+    pub to_file: usize,
+    pub promotion: Option<PieceKind>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Board {
+    squares: [[Option<Piece>; 8]; 8],
+    white_king_side: bool,
+    white_queen_side: bool,
+    black_king_side: bool,
+    black_queen_side: bool,
+    en_passant: Option<(usize, usize)>,
+}
+
+impl Board {
+    /// Creates the standard chess starting position.
+    pub fn new() -> Self {
+        let mut board = Self {
+            squares: [[None; 8]; 8],
+            white_king_side: true,
+            white_queen_side: true,
+            black_king_side: true,
+            black_queen_side: true,
+            en_passant: None,
+        };
+        let back = [
+            PieceKind::Rook,
+            PieceKind::Knight,
+            PieceKind::Bishop,
+            PieceKind::Queen,
+            PieceKind::King,
+            PieceKind::Bishop,
+            PieceKind::Knight,
+            PieceKind::Rook,
+        ];
+        for file in 0..8 {
+            board.squares[0][file] = Some(Piece { kind: back[file], white: true });
+            board.squares[1][file] = Some(Piece { kind: PieceKind::Pawn, white: true });
+            board.squares[6][file] = Some(Piece { kind: PieceKind::Pawn, white: false });
+            board.squares[7][file] = Some(Piece { kind: back[file], white: false });
+        }
+        board
+    }
+
+    /// Returns the piece at a rank and file, or `None` for an empty or out-of-range square.
+    pub fn piece_at(&self, rank: usize, file: usize) -> Option<Piece> {
+        if rank < 8 && file < 8 { self.squares[rank][file] } else { None }
+    }
+
+    /// Returns whether the position has no legal moves for the side to move while in check.
+    pub fn is_checkmate(&self, white: bool) -> bool {
+        is_check(self, white) && generate_moves(self, white).is_empty()
+    }
+
+    /// Returns whether the position has no legal moves for the side to move and is not in check.
+    pub fn is_stalemate(&self, white: bool) -> bool {
+        !is_check(self, white) && generate_moves(self, white).is_empty()
+    }
+}
+
+impl Default for Board {
+    fn default() -> Self { Self::new() }
+}
+
+fn make_move(fr: usize, ff: usize, tr: usize, tf: usize, promotion: Option<PieceKind>) -> Move {
+    Move { from_rank: fr, from_file: ff, to_rank: tr, to_file: tf, promotion }
+}
+
+fn inside(rank: isize, file: isize) -> bool {
+    (0..8).contains(&rank) && (0..8).contains(&file)
+}
+
+fn attacked(board: &Board, rank: usize, file: usize, by_white: bool) -> bool {
+    let r = rank as isize;
+    let f = file as isize;
+
+    let pawn_source_rank = r + if by_white { -1 } else { 1 };
+    for df in [-1, 1] {
+        let sf = f + df;
+        if inside(pawn_source_rank, sf)
+            && board.squares[pawn_source_rank as usize][sf as usize]
+                == Some(Piece { kind: PieceKind::Pawn, white: by_white })
+        {
+            return true;
+        }
+    }
+
+    for (dr, df) in [
+        (-2, -1), (-2, 1), (-1, -2), (-1, 2),
+        (1, -2), (1, 2), (2, -1), (2, 1),
+    ] {
+        let sr = r + dr;
+        let sf = f + df;
+        if inside(sr, sf)
+            && board.squares[sr as usize][sf as usize]
+                == Some(Piece { kind: PieceKind::Knight, white: by_white })
+        {
+            return true;
+        }
+    }
+
+    for dr in -1..=1 {
+        for df in -1..=1 {
+            if dr == 0 && df == 0 { continue; }
+            let sr = r + dr;
+            let sf = f + df;
+            if inside(sr, sf)
+                && board.squares[sr as usize][sf as usize]
+                    == Some(Piece { kind: PieceKind::King, white: by_white })
+            {
+                return true;
+            }
+        }
+    }
+
+    for (dr, df, diagonal) in [
+        (-1, 0, false), (1, 0, false), (0, -1, false), (0, 1, false),
+        (-1, -1, true), (-1, 1, true), (1, -1, true), (1, 1, true),
+    ] {
+        let mut sr = r + dr;
+        let mut sf = f + df;
+        while inside(sr, sf) {
+            if let Some(piece) = board.squares[sr as usize][sf as usize] {
+                if piece.white == by_white
+                    && (piece.kind == PieceKind::Queen
+                        || (diagonal && piece.kind == PieceKind::Bishop)
+                        || (!diagonal && piece.kind == PieceKind::Rook))
+                {
+                    return true;
+                }
+                break;
+            }
+            sr += dr;
+            sf += df;
+        }
+    }
+    false
+}
+
+/// Returns whether the given side's king is under attack.
+pub fn is_check(board: &Board, white: bool) -> bool {
+    let king = Piece { kind: PieceKind::King, white };
+    for rank in 0..8 {
+        for file in 0..8 {
+            if board.squares[rank][file] == Some(king) {
+                return attacked(board, rank, file, !white);
+            }
+        }
+    }
+    false
+}
+
+fn pseudo_moves(board: &Board, white: bool) -> Vec<Move> {
+    let mut moves = Vec::new();
+    for rank in 0..8 {
+        for file in 0..8 {
+            let Some(piece) = board.squares[rank][file] else { continue };
+            if piece.white != white { continue; }
+            let r = rank as isize;
+            let f = file as isize;
+            match piece.kind {
+                PieceKind::Pawn => {
+                    let direction = if white { 1 } else { -1 };
+                    let start = if white { 1 } else { 6 };
+                    let promotion_rank = if white { 7 } else { 0 };
+                    let nr = r + direction;
+                    if inside(nr, f) && board.squares[nr as usize][file].is_none() {
+                        let promotion = (nr as usize == promotion_rank).then_some(PieceKind::Queen);
+                        moves.push(make_move(rank, file, nr as usize, file, promotion));
+                        let nr2 = r + 2 * direction;
+                        if rank == start && board.squares[nr2 as usize][file].is_none() {
+                            moves.push(make_move(rank, file, nr2 as usize, file, None));
+                        }
+                    }
+                    for df in [-1, 1] {
+                        let nf = f + df;
+                        if !inside(nr, nf) { continue; }
+                        let target = board.squares[nr as usize][nf as usize];
+                        let en_passant_capture = board.en_passant == Some((nr as usize, nf as usize));
+                        if target.is_some_and(|p| p.white != white) || en_passant_capture {
+                            let promotion = (nr as usize == promotion_rank).then_some(PieceKind::Queen);
+                            moves.push(make_move(rank, file, nr as usize, nf as usize, promotion));
+                        }
+                    }
+                }
+                PieceKind::Knight => {
+                    for (dr, df) in [
+                        (-2, -1), (-2, 1), (-1, -2), (-1, 2),
+                        (1, -2), (1, 2), (2, -1), (2, 1),
+                    ] {
+                        let nr = r + dr;
+                        let nf = f + df;
+                        if inside(nr, nf)
+                            && board.squares[nr as usize][nf as usize].is_none_or(|p| p.white != white)
+                        {
+                            moves.push(make_move(rank, file, nr as usize, nf as usize, None));
+                        }
+                    }
+                }
+                PieceKind::Bishop | PieceKind::Rook | PieceKind::Queen => {
+                    let dirs: &[(isize, isize)] = match piece.kind {
+                        PieceKind::Bishop => &[(-1,-1), (-1,1), (1,-1), (1,1)],
+                        PieceKind::Rook => &[(-1,0), (1,0), (0,-1), (0,1)],
+                        _ => &[(-1,-1), (-1,1), (1,-1), (1,1), (-1,0), (1,0), (0,-1), (0,1)],
+                    };
+                    for &(dr, df) in dirs {
+                        let mut nr = r + dr;
+                        let mut nf = f + df;
+                        while inside(nr, nf) {
+                            match board.squares[nr as usize][nf as usize] {
+                                None => moves.push(make_move(rank, file, nr as usize, nf as usize, None)),
+                                Some(p) if p.white != white => {
+                                    moves.push(make_move(rank, file, nr as usize, nf as usize, None));
+                                    break;
+                                }
+                                _ => break,
+                            }
+                            nr += dr;
+                            nf += df;
+                        }
+                    }
+                }
+                PieceKind::King => {
+                    for dr in -1..=1 {
+                        for df in -1..=1 {
+                            if dr == 0 && df == 0 { continue; }
+                            let nr = r + dr;
+                            let nf = f + df;
+                            if inside(nr, nf)
+                                && board.squares[nr as usize][nf as usize].is_none_or(|p| p.white != white)
+                            {
+                                moves.push(make_move(rank, file, nr as usize, nf as usize, None));
+                            }
+                        }
+                    }
+                    let home = if white { 0 } else { 7 };
+                    let king_right = if white { board.white_king_side } else { board.black_king_side };
+                    let queen_right = if white { board.white_queen_side } else { board.black_queen_side };
+                    if rank == home && file == 4 && !is_check(board, white) {
+                        if king_right
+                            && board.squares[home][5].is_none()
+                            && board.squares[home][6].is_none()
+                            && board.squares[home][7] == Some(Piece { kind: PieceKind::Rook, white })
+                            && !attacked(board, home, 5, !white)
+                            && !attacked(board, home, 6, !white)
+                        {
+                            moves.push(make_move(home, 4, home, 6, None));
+                        }
+                        if queen_right
+                            && board.squares[home][1].is_none()
+                            && board.squares[home][2].is_none()
+                            && board.squares[home][3].is_none()
+                            && board.squares[home][0] == Some(Piece { kind: PieceKind::Rook, white })
+                            && !attacked(board, home, 3, !white)
+                            && !attacked(board, home, 2, !white)
+                        {
+                            moves.push(make_move(home, 4, home, 2, None));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    moves
+}
+
+/// Generates every legal move for the requested side.
+pub fn generate_moves(board: &Board, white: bool) -> Vec<Move> {
+    pseudo_moves(board, white)
+        .into_iter()
+        .filter(|mv| !is_check(&apply_move(board, mv), white))
+        .collect()
+}
+
+/// Applies a move and returns the resulting board position.
+pub fn apply_move(board: &Board, mv: &Move) -> Board {
+    let mut next = board.clone();
+    if mv.from_rank >= 8 || mv.from_file >= 8 || mv.to_rank >= 8 || mv.to_file >= 8 {
+        return next;
+    }
+    let Some(mut piece) = next.squares[mv.from_rank][mv.from_file] else { return next };
+    let captured = next.squares[mv.to_rank][mv.to_file];
+
+    if piece.kind == PieceKind::Pawn
+        && mv.from_file != mv.to_file
+        && captured.is_none()
+        && board.en_passant == Some((mv.to_rank, mv.to_file))
+    {
+        let captured_rank = if piece.white { mv.to_rank - 1 } else { mv.to_rank + 1 };
+        next.squares[captured_rank][mv.to_file] = None;
+    }
+
+    if piece.kind == PieceKind::King && mv.from_file.abs_diff(mv.to_file) == 2 {
+        let rank = mv.from_rank;
+        if mv.to_file == 6 {
+            next.squares[rank][5] = next.squares[rank][7];
+            next.squares[rank][7] = None;
+        } else {
+            next.squares[rank][3] = next.squares[rank][0];
+            next.squares[rank][0] = None;
+        }
+    }
+
+    if piece.kind == PieceKind::King {
+        if piece.white {
+            next.white_king_side = false;
+            next.white_queen_side = false;
+        } else {
+            next.black_king_side = false;
+            next.black_queen_side = false;
+        }
+    }
+    if piece.kind == PieceKind::Rook {
+        update_rook_rights(&mut next, piece.white, mv.from_rank, mv.from_file);
+    }
+    if let Some(cap) = captured {
+        if cap.kind == PieceKind::Rook {
+            update_rook_rights(&mut next, cap.white, mv.to_rank, mv.to_file);
+        }
+    }
+
+    next.en_passant = None;
+    if piece.kind == PieceKind::Pawn && mv.from_rank.abs_diff(mv.to_rank) == 2 {
+        next.en_passant = Some(((mv.from_rank + mv.to_rank) / 2, mv.from_file));
+    }
+    if piece.kind == PieceKind::Pawn && (mv.to_rank == 0 || mv.to_rank == 7) {
+        piece.kind = mv.promotion.unwrap_or(PieceKind::Queen);
+    }
+    next.squares[mv.from_rank][mv.from_file] = None;
+    next.squares[mv.to_rank][mv.to_file] = Some(piece);
+    next
+}
+
+fn update_rook_rights(board: &mut Board, white: bool, rank: usize, file: usize) {
+    let home = if white { 0 } else { 7 };
+    if rank != home { return; }
+    match (white, file) {
+        (true, 0) => board.white_queen_side = false,
+        (true, 7) => board.white_king_side = false,
+        (false, 0) => board.black_queen_side = false,
+        (false, 7) => board.black_king_side = false,
+        _ => {}
+    }
+}
+
+/// Evaluates material balance from White's perspective.
+pub fn evaluate_material(board: &Board) -> i32 {
+    let mut score = 0;
+    for row in board.squares {
+        for piece in row.into_iter().flatten() {
+            let value = match piece.kind {
+                PieceKind::Pawn => 100,
+                PieceKind::Knight => 320,
+                PieceKind::Bishop => 330,
+                PieceKind::Rook => 500,
+                PieceKind::Queen => 900,
+                PieceKind::King => 0,
+            };
+            score += if piece.white { value } else { -value };
+        }
+    }
+    score
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_board_setup_and_middle_ranks() {
+        let board = Board::new();
+        assert_eq!(board.piece_at(0, 4), Some(Piece { kind: PieceKind::King, white: true }));
+        assert_eq!(board.piece_at(7, 4), Some(Piece { kind: PieceKind::King, white: false }));
+        for rank in 2..6 {
+            for file in 0..8 { assert!(board.piece_at(rank, file).is_none()); }
+        }
+    }
+
+    #[test]
+    fn starting_pawns_and_knights_move_legally() {
+        let board = Board::new();
+        let moves = generate_moves(&board, true);
+        assert!(moves.contains(&make_move(1, 4, 2, 4, None)));
+        assert!(moves.contains(&make_move(1, 4, 3, 4, None)));
+        assert!(moves.contains(&make_move(0, 1, 2, 0, None)));
+        assert!(moves.contains(&make_move(0, 1, 2, 2, None)));
+    }
+
+    #[test]
+    fn detects_check_and_filters_illegal_moves() {
+        let mut board = Board::new();
+        board.squares[1][4] = None;
+        board.squares[6][4] = None;
+        board.squares[6][4] = Some(Piece { kind: PieceKind::Rook, white: false });
+        board.squares[7][4] = Some(Piece { kind: PieceKind::King, white: false });
+        assert!(is_check(&board, true));
+        assert!(generate_moves(&board, true).iter().all(|mv| !is_check(&apply_move(&board, mv), true)));
+    }
+
+    #[test]
+    fn applies_move_and_updates_en_passant() {
+        let board = Board::new();
+        let mv = make_move(1, 4, 3, 4, None);
+        let next = apply_move(&board, &mv);
+        assert_eq!(next.piece_at(3, 4), Some(Piece { kind: PieceKind::Pawn, white: true }));
+        assert!(next.piece_at(1, 4).is_none());
+        assert_eq!(next.en_passant, Some((2, 4)));
+    }
+
+    #[test]
+    fn invalid_square_is_empty_and_material_starts_balanced() {
+        let board = Board::new();
+        assert_eq!(board.piece_at(8, 0), None);
+        assert_eq!(evaluate_material(&board), 0);
+    }
+}
+```

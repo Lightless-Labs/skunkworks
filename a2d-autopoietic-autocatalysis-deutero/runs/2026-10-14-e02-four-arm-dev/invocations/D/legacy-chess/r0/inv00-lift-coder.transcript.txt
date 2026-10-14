@@ -1,0 +1,615 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-55107-1791999978733206000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a13b86-0258-7b92-bd38-c6c37a232d92
+--------
+user
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+Implement a chess engine in Rust as a SINGLE source file that compiles with `rustc --edition 2024`.
+
+Requirements:
+1. Board representation (8x8 grid with pieces)
+2. Define `#[derive(Clone, Copy, Debug, PartialEq, Eq)] struct Piece` or equivalent piece type usable in `Option<Piece>` equality checks
+3. Define `pub struct Board` with `pub fn new() -> Self` for the standard starting position and `pub fn piece_at(&self, rank: usize, file: usize) -> Option<Piece>`
+4. Define `pub struct Move { pub from_rank: usize, pub from_file: usize, pub to_rank: usize, pub to_file: usize, ... }`
+5. Define `pub fn generate_moves(board: &Board, white: bool) -> Vec<Move>` returning legal moves only, never moves that leave the moving side's king in check
+6. Define `pub fn apply_move(board: &Board, mv: &Move) -> Board` and update all game state needed for castling rights and en-passant captures
+7. Define `pub fn is_check(board: &Board, white: bool) -> bool`
+8. Include legal pawn movement, knight movement, check detection, castling, en passant, and checkmate/no-escape handling
+9. Include a simple evaluation function (material count)
+10. At least 5 unit tests covering: initial board setup, pawn moves, knight moves, check detection, and move application
+
+Output ONLY the Rust source code inside ```rust fences. The code must compile and all tests must pass.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+#[test]
+fn middle_ranks_start_empty() {
+    let board = Board::new();
+    for rank in 2..6 {
+        for file in 0..8 {
+            assert!(board.piece_at(rank, file).is_none(), "rank {rank} file {file}");
+        }
+    }
+}
+
+#[test]
+fn both_sides_have_twenty_moves_from_start() {
+    let board = Board::new();
+    assert_eq!(generate_moves(&board, true).len(), 20);
+    assert_eq!(generate_moves(&board, false).len(), 20);
+}
+```
+
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-14T17:46:48.744345Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PieceKind {
+    Pawn,
+    Knight,
+    Bishop,
+    Rook,
+    Queen,
+    King,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Piece {
+    pub kind: PieceKind,
+    pub white: bool,
+}
+
+impl Piece {
+    pub const fn new(kind: PieceKind, white: bool) -> Self {
+        Self { kind, white }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Move {
+    pub from_rank: usize,
+    pub from_file: usize,
+    pub to_rank: usize,
+    pub to_file: usize,
+    pub promotion: Option<PieceKind>,
+    pub en_passant: bool,
+    pub castle: bool,
+}
+
+impl Move {
+    pub const fn new(
+        from_rank: usize,
+        from_file: usize,
+        to_rank: usize,
+        to_file: usize,
+    ) -> Self {
+        Self {
+            from_rank,
+            from_file,
+            to_rank,
+            to_file,
+            promotion: None,
+            en_passant: false,
+            castle: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Board {
+    squares: [[Option<Piece>; 8]; 8],
+    white_to_move: bool,
+    castling_rights: [bool; 4], // white king/queen side, black king/queen side
+    en_passant_target: Option<(usize, usize)>,
+}
+
+impl Board {
+    pub fn new() -> Self {
+        let mut board = Self {
+            squares: [[None; 8]; 8],
+            white_to_move: true,
+            castling_rights: [true; 4],
+            en_passant_target: None,
+        };
+
+        let back_rank = [
+            PieceKind::Rook,
+            PieceKind::Knight,
+            PieceKind::Bishop,
+            PieceKind::Queen,
+            PieceKind::King,
+            PieceKind::Bishop,
+            PieceKind::Knight,
+            PieceKind::Rook,
+        ];
+
+        for file in 0..8 {
+            board.squares[0][file] = Some(Piece::new(back_rank[file], false));
+            board.squares[1][file] = Some(Piece::new(PieceKind::Pawn, false));
+            board.squares[6][file] = Some(Piece::new(PieceKind::Pawn, true));
+            board.squares[7][file] = Some(Piece::new(back_rank[file], true));
+        }
+
+        board
+    }
+
+    pub fn piece_at(&self, rank: usize, file: usize) -> Option<Piece> {
+        if rank < 8 && file < 8 {
+            self.squares[rank][file]
+        } else {
+            None
+        }
+    }
+
+    fn find_king(&self, white: bool) -> Option<(usize, usize)> {
+        for rank in 0..8 {
+            for file in 0..8 {
+                if self.squares[rank][file]
+                    == Some(Piece::new(PieceKind::King, white))
+                {
+                    return Some((rank, file));
+                }
+            }
+        }
+        None
+    }
+
+    fn attacked_by(&self, rank: usize, file: usize, by_white: bool) -> bool {
+        let pawn_source_rank = if by_white {
+            rank.checked_add(1)
+        } else {
+            rank.checked_sub(1)
+        };
+        if let Some(source_rank) = pawn_source_rank.filter(|&r| r < 8) {
+            for df in [-1isize, 1] {
+                let source_file = file as isize + df;
+                if (0..8).contains(&source_file)
+                    && self.squares[source_rank][source_file as usize]
+                        == Some(Piece::new(PieceKind::Pawn, by_white))
+                {
+                    return true;
+                }
+            }
+        }
+
+        const KNIGHT_STEPS: [(isize, isize); 8] = [
+            (1, 2), (2, 1), (2, -1), (1, -2),
+            (-1, -2), (-2, -1), (-2, 1), (-1, 2),
+        ];
+        for (dr, df) in KNIGHT_STEPS {
+            let r = rank as isize + dr;
+            let f = file as isize + df;
+            if (0..8).contains(&r)
+                && (0..8).contains(&f)
+                && self.squares[r as usize][f as usize]
+                    == Some(Piece::new(PieceKind::Knight, by_white))
+            {
+                return true;
+            }
+        }
+
+        for dr in -1isize..=1 {
+            for df in -1isize..=1 {
+                if dr == 0 && df == 0 {
+                    continue;
+                }
+                let r = rank as isize + dr;
+                let f = file as isize + df;
+                if (0..8).contains(&r)
+                    && (0..8).contains(&f)
+                    && self.squares[r as usize][f as usize]
+                        == Some(Piece::new(PieceKind::King, by_white))
+                {
+                    return true;
+                }
+            }
+        }
+
+        const DIRECTIONS: [(isize, isize); 8] = [
+            (1, 0), (-1, 0), (0, 1), (0, -1),
+            (1, 1), (1, -1), (-1, 1), (-1, -1),
+        ];
+        for (dr, df) in DIRECTIONS {
+            let mut r = rank as isize + dr;
+            let mut f = file as isize + df;
+            let diagonal = dr != 0 && df != 0;
+            while (0..8).contains(&r) && (0..8).contains(&f) {
+                if let Some(piece) = self.squares[r as usize][f as usize] {
+                    if piece.white == by_white {
+                        let matches = match piece.kind {
+                            PieceKind::Queen => true,
+                            PieceKind::Rook => !diagonal,
+                            PieceKind::Bishop => diagonal,
+                            _ => false,
+                        };
+                        if matches {
+                            return true;
+                        }
+                    }
+                    break;
+                }
+                r += dr;
+                f += df;
+            }
+        }
+
+        false
+    }
+
+    fn pseudo_moves(&self, white: bool) -> Vec<Move> {
+        let mut moves = Vec::new();
+
+        for rank in 0..8 {
+            for file in 0..8 {
+                let Some(piece) = self.squares[rank][file] else {
+                    continue;
+                };
+                if piece.white != white {
+                    continue;
+                }
+
+                match piece.kind {
+                    PieceKind::Pawn => {
+                        let direction: isize = if white { -1 } else { 1 };
+                        let start_rank = if white { 6 } else { 1 };
+                        let next_rank = rank as isize + direction;
+
+                        if (0..8).contains(&next_rank)
+                            && self.squares[next_rank as usize][file].is_none()
+                        {
+                            moves.push(Move::new(rank, file, next_rank as usize, file));
+                            let double_rank = rank as isize + 2 * direction;
+                            if rank == start_rank
+                                && (0..8).contains(&double_rank)
+                                && self.squares[double_rank as usize][file].is_none()
+                            {
+                                moves.push(Move::new(rank, file, double_rank as usize, file));
+                            }
+                        }
+
+                        for df in [-1isize, 1] {
+                            let target_file = file as isize + df;
+                            if !(0..8).contains(&next_rank) || !(0..8).contains(&target_file) {
+                                continue;
+                            }
+                            let tr = next_rank as usize;
+                            let tf = target_file as usize;
+                            if self.squares[tr][tf].is_some_and(|p| p.white != white) {
+                                moves.push(Move::new(rank, file, tr, tf));
+                            } else if self.en_passant_target == Some((tr, tf)) {
+                                let mut mv = Move::new(rank, file, tr, tf);
+                                mv.en_passant = true;
+                                moves.push(mv);
+                            }
+                        }
+                    }
+                    PieceKind::Knight => {
+                        const STEPS: [(isize, isize); 8] = [
+                            (1, 2), (2, 1), (2, -1), (1, -2),
+                            (-1, -2), (-2, -1), (-2, 1), (-1, 2),
+                        ];
+                        for (dr, df) in STEPS {
+                            let r = rank as isize + dr;
+                            let f = file as isize + df;
+                            if (0..8).contains(&r) && (0..8).contains(&f) {
+                                let (tr, tf) = (r as usize, f as usize);
+                                if self.squares[tr][tf].is_none_or(|p| p.white != white) {
+                                    moves.push(Move::new(rank, file, tr, tf));
+                                }
+                            }
+                        }
+                    }
+                    PieceKind::Bishop | PieceKind::Rook | PieceKind::Queen => {
+                        const DIRECTIONS: [(isize, isize); 8] = [
+                            (1, 0), (-1, 0), (0, 1), (0, -1),
+                            (1, 1), (1, -1), (-1, 1), (-1, -1),
+                        ];
+                        for (dr, df) in DIRECTIONS {
+                            let diagonal = dr != 0 && df != 0;
+                            if (piece.kind == PieceKind::Bishop && !diagonal)
+                                || (piece.kind == PieceKind::Rook && diagonal)
+                            {
+                                continue;
+                            }
+                            let mut r = rank as isize + dr;
+                            let mut f = file as isize + df;
+                            while (0..8).contains(&r) && (0..8).contains(&f) {
+                                let (tr, tf) = (r as usize, f as usize);
+                                if let Some(target) = self.squares[tr][tf] {
+                                    if target.white != white {
+                                        moves.push(Move::new(rank, file, tr, tf));
+                                    }
+                                    break;
+                                }
+                                moves.push(Move::new(rank, file, tr, tf));
+                                r += dr;
+                                f += df;
+                            }
+                        }
+                    }
+                    PieceKind::King => {
+                        for dr in -1isize..=1 {
+                            for df in -1isize..=1 {
+                                if dr == 0 && df == 0 {
+                                    continue;
+                                }
+                                let r = rank as isize + dr;
+                                let f = file as isize + df;
+                                if (0..8).contains(&r) && (0..8).contains(&f) {
+                                    let (tr, tf) = (r as usize, f as usize);
+                                    if self.squares[tr][tf].is_none_or(|p| p.white != white) {
+                                        moves.push(Move::new(rank, file, tr, tf));
+                                    }
+                                }
+                            }
+                        }
+
+                        let home_rank = if white { 7 } else { 0 };
+                        let (king_right, queen_right) =
+                            if white { (0, 1) } else { (2, 3) };
+                        if rank == home_rank && file == 4
+                            && !is_check(self, white)
+                        {
+                            if self.castling_rights[king_right]
+                                && self.squares[home_rank][5].is_none()
+                                && self.squares[home_rank][6].is_none()
+                                && self.squares[home_rank][7]
+                                    == Some(Piece::new(PieceKind::Rook, white))
+                            {
+                                let mut transit = self.clone();
+                                transit.squares[home_rank][4] = None;
+                                transit.squares[home_rank][5] =
+                                    Some(Piece::new(PieceKind::King, white));
+                                if !is_check(&transit, white) {
+                                    let mut mv = Move::new(home_rank, 4, home_rank, 6);
+                                    mv.castle = true;
+                                    moves.push(mv);
+                                }
+                            }
+                            if self.castling_rights[queen_right]
+                                && self.squares[home_rank][1].is_none()
+                                && self.squares[home_rank][2].is_none()
+                                && self.squares[home_rank][3].is_none()
+                                && self.squares[home_rank][0]
+                                    == Some(Piece::new(PieceKind::Rook, white))
+                            {
+                                let mut transit = self.clone();
+                                transit.squares[home_rank][4] = None;
+                                transit.squares[home_rank][3] =
+                                    Some(Piece::new(PieceKind::King, white));
+                                if !is_check(&transit, white) {
+                                    let mut mv = Move::new(home_rank, 4, home_rank, 2);
+                                    mv.castle = true;
+                                    moves.push(mv);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        moves
+    }
+
+    fn apply_unchecked(&self, mv: &Move) -> Self {
+        let mut next = self.clone();
+        if mv.from_rank >= 8 || mv.from_file >= 8 || mv.to_rank >= 8 || mv.to_file >= 8 {
+            return next;
+        }
+
+        let Some(mut piece) = next.squares[mv.from_rank][mv.from_file] else {
+            return next;
+        };
+        let original_rank = mv.from_rank;
+        let original_file = mv.from_file;
+        next.squares[original_rank][original_file] = None;
+
+        if mv.en_passant {
+            if mv.to_rank < 8 && mv.to_file < 8 {
+                let captured_rank = if piece.white {
+                    mv.to_rank.saturating_add(1)
+                } else {
+                    mv.to_rank.saturating_sub(1)
+                };
+                if captured_rank < 8 {
+                    next.squares[captured_rank][mv.to_file] = None;
+                }
+            }
+        }
+
+        if mv.castle && piece.kind == PieceKind::King {
+            let home_rank = mv.from_rank;
+            if mv.to_file == 6 {
+                next.squares[home_rank][5] = next.squares[home_rank][7].take();
+            } else if mv.to_file == 2 {
+                next.squares[home_rank][3] = next.squares[home_rank][0].take();
+            }
+        }
+
+        if piece.kind == PieceKind::Pawn
+            && ((piece.white && mv.to_rank == 0) || (!piece.white && mv.to_rank == 7))
+        {
+            piece.kind = mv.promotion.unwrap_or(PieceKind::Queen);
+        }
+        next.squares[mv.to_rank][mv.to_file] = Some(piece);
+
+        if piece.kind == PieceKind::King {
+            if piece.white {
+                next.castling_rights[0] = false;
+                next.castling_rights[1] = false;
+            } else {
+                next.castling_rights[2] = false;
+                next.castling_rights[3] = false;
+            }
+        }
+
+        if original_rank == 7 && original_file == 0 {
+            next.castling_rights[1] = false;
+        } else if original_rank == 7 && original_file == 7 {
+            next.castling_rights[0] = false;
+        } else if original_rank == 0 && original_file == 0 {
+            next.castling_rights[3] = false;
+        } else if original_rank == 0 && original_file == 7 {
+            next.castling_rights[2] = false;
+        }
+
+        if mv.to_rank == 7 && mv.to_file == 0 {
+            next.castling_rights[3] = false;
+        } else if mv.to_rank == 7 && mv.to_file == 7 {
+            next.castling_rights[2] = false;
+        } else if mv.to_rank == 0 && mv.to_file == 0 {
+            next.castling_rights[1] = false;
+        } else if mv.to_rank == 0 && mv.to_file == 7 {
+            next.castling_rights[0] = false;
+        }
+
+        next.en_passant_target = None;
+        if piece.kind == PieceKind::Pawn
+            && (mv.from_rank as isize - mv.to_rank as isize).abs() == 2
+        {
+            next.en_passant_target = Some(((mv.from_rank + mv.to_rank) / 2, mv.from_file));
+        }
+
+        next.white_to_move = !piece.white;
+        next
+    }
+}
+
+impl Default for Board {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub fn is_check(board: &Board, white: bool) -> bool {
+    board
+        .find_king(white)
+        .is_some_and(|(rank, file)| board.attacked_by(rank, file, !white))
+}
+
+pub fn generate_moves(board: &Board, white: bool) -> Vec<Move> {
+    board
+        .pseudo_moves(white)
+        .into_iter()
+        .filter(|mv| {
+            let next = board.apply_unchecked(mv);
+            !is_check(&next, white)
+        })
+        .collect()
+}
+
+pub fn apply_move(board: &Board, mv: &Move) -> Board {
+    board.apply_unchecked(mv)
+}
+
+pub fn is_checkmate(board: &Board, white: bool) -> bool {
+    is_check(board, white) && generate_moves(board, white).is_empty()
+}
+
+pub fn is_stalemate(board: &Board, white: bool) -> bool {
+    !is_check(board, white) && generate_moves(board, white).is_empty()
+}
+
+pub fn evaluate_material(board: &Board) -> i32 {
+    let mut score = 0;
+    for rank in 0..8 {
+        for file in 0..8 {
+            if let Some(piece) = board.squares[rank][file] {
+                let value = match piece.kind {
+                    PieceKind::Pawn => 100,
+                    PieceKind::Knight => 320,
+                    PieceKind::Bishop => 330,
+                    PieceKind::Rook => 500,
+                    PieceKind::Queen => 900,
+                    PieceKind::King => 0,
+                };
+                score += if piece.white { value } else { -value };
+            }
+        }
+    }
+    score
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_board_setup() {
+        let board = Board::new();
+        assert_eq!(board.piece_at(7, 4), Some(Piece::new(PieceKind::King, true)));
+        assert_eq!(board.piece_at(0, 4), Some(Piece::new(PieceKind::King, false)));
+        assert_eq!(board.piece_at(6, 0), Some(Piece::new(PieceKind::Pawn, true)));
+        assert_eq!(board.piece_at(2, 0), None);
+    }
+
+    #[test]
+    fn pawn_moves_from_start() {
+        let moves = generate_moves(&Board::new(), true);
+        assert!(moves.contains(&Move::new(6, 4, 5, 4)));
+        assert!(moves.contains(&Move::new(6, 4, 4, 4)));
+    }
+
+    #[test]
+    fn knight_moves_from_start() {
+        let moves = generate_moves(&Board::new(), true);
+        assert!(moves.contains(&Move::new(7, 1, 5, 0)));
+        assert!(moves.contains(&Move::new(7, 1, 5, 2)));
+    }
+
+    #[test]
+    fn detects_check() {
+        let mut board = Board::new();
+        board.squares[6][5] = None;
+        board.squares[6][6] = None;
+        board.squares[1][4] = None;
+        board.squares[1][5] = None;
+        board.squares[1][6] = None;
+        board.squares[3][4] = Some(Piece::new(PieceKind::Queen, false));
+        assert!(is_check(&board, true));
+    }
+
+    #[test]
+    fn move_application_updates_board() {
+        let board = Board::new();
+        let mv = Move::new(6, 4, 4, 4);
+        let next = apply_move(&board, &mv);
+        assert_eq!(next.piece_at(4, 4), Some(Piece::new(PieceKind::Pawn, true)));
+        assert_eq!(next.piece_at(6, 4), None);
+    }
+
+    #[test]
+    fn middle_ranks_start_empty() {
+        let board = Board::new();
+        for rank in 2..6 {
+            for file in 0..8 {
+                assert!(board.piece_at(rank, file).is_none(), "rank {rank} file {file}");
+            }
+        }
+    }
+
+    #[test]
+    fn both_sides_have_twenty_moves_from_start() {
+        let board = Board::new();
+        assert_eq!(generate_moves(&board, true).len(), 20);
+        assert_eq!(generate_moves(&board, false).len(), 20);
+    }
+}
+```
+tokens used
+12,511

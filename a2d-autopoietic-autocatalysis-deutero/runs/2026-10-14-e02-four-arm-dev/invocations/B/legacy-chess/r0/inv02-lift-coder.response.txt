@@ -1,0 +1,666 @@
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Color {
+    White,
+    Black,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PieceKind {
+    King,
+    Queen,
+    Rook,
+    Bishop,
+    Knight,
+    Pawn,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Piece {
+    pub color: Color,
+    pub kind: PieceKind,
+}
+
+impl Piece {
+    pub const fn new(color: Color, kind: PieceKind) -> Self {
+        Self { color, kind }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Board {
+    squares: [[Option<Piece>; 8]; 8],
+    white_can_castle_kingside: bool,
+    white_can_castle_queenside: bool,
+    black_can_castle_kingside: bool,
+    black_can_castle_queenside: bool,
+    en_passant: Option<(usize, usize)>,
+}
+
+impl Board {
+    pub fn new() -> Self {
+        let mut board = Self {
+            squares: [[None; 8]; 8],
+            white_can_castle_kingside: true,
+            white_can_castle_queenside: true,
+            black_can_castle_kingside: true,
+            black_can_castle_queenside: true,
+            en_passant: None,
+        };
+
+        let back_rank = [
+            PieceKind::Rook,
+            PieceKind::Knight,
+            PieceKind::Bishop,
+            PieceKind::Queen,
+            PieceKind::King,
+            PieceKind::Bishop,
+            PieceKind::Knight,
+            PieceKind::Rook,
+        ];
+
+        for file in 0..8 {
+            board.squares[0][file] = Some(Piece::new(Color::Black, back_rank[file]));
+            board.squares[1][file] = Some(Piece::new(Color::Black, PieceKind::Pawn));
+            board.squares[6][file] = Some(Piece::new(Color::White, PieceKind::Pawn));
+            board.squares[7][file] = Some(Piece::new(Color::White, back_rank[file]));
+        }
+
+        board
+    }
+
+    pub fn piece_at(&self, rank: usize, file: usize) -> Option<Piece> {
+        if rank < 8 && file < 8 {
+            self.squares[rank][file]
+        } else {
+            None
+        }
+    }
+
+    fn king_position(&self, color: Color) -> Option<(usize, usize)> {
+        for rank in 0..8 {
+            for file in 0..8 {
+                if self.squares[rank][file]
+                    == Some(Piece::new(color, PieceKind::King))
+                {
+                    return Some((rank, file));
+                }
+            }
+        }
+        None
+    }
+}
+
+impl Default for Board {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Move {
+    pub from_rank: usize,
+    pub from_file: usize,
+    pub to_rank: usize,
+    pub to_file: usize,
+    pub promotion: Option<PieceKind>,
+}
+
+impl Move {
+    pub const fn new(
+        from_rank: usize,
+        from_file: usize,
+        to_rank: usize,
+        to_file: usize,
+    ) -> Self {
+        Self {
+            from_rank,
+            from_file,
+            to_rank,
+            to_file,
+            promotion: None,
+        }
+    }
+
+    pub const fn with_promotion(
+        from_rank: usize,
+        from_file: usize,
+        to_rank: usize,
+        to_file: usize,
+        promotion: PieceKind,
+    ) -> Self {
+        Self {
+            from_rank,
+            from_file,
+            to_rank,
+            to_file,
+            promotion: Some(promotion),
+        }
+    }
+}
+
+fn color_of(white: bool) -> Color {
+    if white {
+        Color::White
+    } else {
+        Color::Black
+    }
+}
+
+fn on_board(rank: i32, file: i32) -> bool {
+    (0..8).contains(&rank) && (0..8).contains(&file)
+}
+
+fn square_attacked(board: &Board, rank: usize, file: usize, by: Color) -> bool {
+    let r = rank as i32;
+    let f = file as i32;
+
+    // Pawn attacks point diagonally forward, independently of occupancy.
+    let pawn_source_rank = match by {
+        Color::White => r + 1,
+        Color::Black => r - 1,
+    };
+    for df in [-1, 1] {
+        let pawn_source_file = f + df;
+        if on_board(pawn_source_rank, pawn_source_file)
+            && board.squares[pawn_source_rank as usize][pawn_source_file as usize]
+                == Some(Piece::new(by, PieceKind::Pawn))
+        {
+            return true;
+        }
+    }
+
+    for (dr, df) in [
+        (-2, -1),
+        (-2, 1),
+        (-1, -2),
+        (-1, 2),
+        (1, -2),
+        (1, 2),
+        (2, -1),
+        (2, 1),
+    ] {
+        let nr = r + dr;
+        let nf = f + df;
+        if on_board(nr, nf)
+            && board.squares[nr as usize][nf as usize]
+                == Some(Piece::new(by, PieceKind::Knight))
+        {
+            return true;
+        }
+    }
+
+    for dr in -1..=1 {
+        for df in -1..=1 {
+            if dr == 0 && df == 0 {
+                continue;
+            }
+            let nr = r + dr;
+            let nf = f + df;
+            if on_board(nr, nf)
+                && board.squares[nr as usize][nf as usize]
+                    == Some(Piece::new(by, PieceKind::King))
+            {
+                return true;
+            }
+        }
+    }
+
+    for (dr, df, diagonal) in [
+        (-1, 0, false),
+        (1, 0, false),
+        (0, -1, false),
+        (0, 1, false),
+        (-1, -1, true),
+        (-1, 1, true),
+        (1, -1, true),
+        (1, 1, true),
+    ] {
+        let mut nr = r + dr;
+        let mut nf = f + df;
+        let mut distance = 1;
+
+        while on_board(nr, nf) {
+            if let Some(piece) = board.squares[nr as usize][nf as usize] {
+                if piece.color == by {
+                    let matching_slider = match piece.kind {
+                        PieceKind::Queen => true,
+                        PieceKind::Rook => !diagonal,
+                        PieceKind::Bishop => diagonal,
+                        _ => false,
+                    };
+                    if matching_slider || (distance == 1 && piece.kind == PieceKind::King) {
+                        return true;
+                    }
+                }
+                break;
+            }
+            nr += dr;
+            nf += df;
+            distance += 1;
+        }
+    }
+
+    false
+}
+
+pub fn is_check(board: &Board, white: bool) -> bool {
+    let color = color_of(white);
+    match board.king_position(color) {
+        Some((rank, file)) => square_attacked(
+            board,
+            rank,
+            file,
+            if white { Color::Black } else { Color::White },
+        ),
+        // A position without a king is treated as not in check.
+        None => false,
+    }
+}
+
+pub fn apply_move(board: &Board, mv: &Move) -> Board {
+    let mut next = board.clone();
+
+    if mv.from_rank >= 8 || mv.from_file >= 8 || mv.to_rank >= 8 || mv.to_file >= 8 {
+        return next;
+    }
+
+    let Some(mut piece) = next.squares[mv.from_rank][mv.from_file] else {
+        return next;
+    };
+
+    let from_rank = mv.from_rank;
+    let from_file = mv.from_file;
+    let to_rank = mv.to_rank;
+    let to_file = mv.to_file;
+
+    next.en_passant = None;
+
+    // Moving a king revokes both castling rights and may move a rook.
+    if piece.kind == PieceKind::King {
+        match piece.color {
+            Color::White => {
+                next.white_can_castle_kingside = false;
+                next.white_can_castle_queenside = false;
+            }
+            Color::Black => {
+                next.black_can_castle_kingside = false;
+                next.black_can_castle_queenside = false;
+            }
+        }
+
+        if from_file == 4 && to_file == 6 && from_rank == to_rank {
+            next.squares[from_rank][5] = next.squares[from_rank][7];
+            next.squares[from_rank][7] = None;
+        } else if from_file == 4 && to_file == 2 && from_rank == to_rank {
+            next.squares[from_rank][3] = next.squares[from_rank][0];
+            next.squares[from_rank][0] = None;
+        }
+    }
+
+    if piece.kind == PieceKind::Rook {
+        match (piece.color, from_rank, from_file) {
+            (Color::White, 7, 0) => next.white_can_castle_queenside = false,
+            (Color::White, 7, 7) => next.white_can_castle_kingside = false,
+            (Color::Black, 0, 0) => next.black_can_castle_queenside = false,
+            (Color::Black, 0, 7) => next.black_can_castle_kingside = false,
+            _ => {}
+        }
+    }
+
+    // Capturing a rook on its original square removes that side's right.
+    if next.squares[to_rank][to_file].is_some_and(|p| p.kind == PieceKind::Rook) {
+        match (to_rank, to_file) {
+            (7, 0) => next.white_can_castle_queenside = false,
+            (7, 7) => next.white_can_castle_kingside = false,
+            (0, 0) => next.black_can_castle_queenside = false,
+            (0, 7) => next.black_can_castle_kingside = false,
+            _ => {}
+        }
+    }
+
+    // En-passant capture.
+    if piece.kind == PieceKind::Pawn
+        && from_file != to_file
+        && next.squares[to_rank][to_file].is_none()
+    {
+        let captured_rank = match piece.color {
+            Color::White => to_rank.saturating_add(1),
+            Color::Black => to_rank.saturating_sub(1),
+        };
+        if captured_rank < 8 {
+            next.squares[captured_rank][to_file] = None;
+        }
+    }
+
+    next.squares[from_rank][from_file] = None;
+
+    // Set the target square after a two-square pawn advance.
+    if piece.kind == PieceKind::Pawn && from_rank.abs_diff(to_rank) == 2 {
+        next.en_passant = Some(((from_rank + to_rank) / 2, from_file));
+    }
+
+    if piece.kind == PieceKind::Pawn
+        && ((piece.color == Color::White && to_rank == 0)
+            || (piece.color == Color::Black && to_rank == 7))
+    {
+        piece.kind = mv.promotion.unwrap_or(PieceKind::Queen);
+        if !matches!(
+            piece.kind,
+            PieceKind::Queen | PieceKind::Rook | PieceKind::Bishop | PieceKind::Knight
+        ) {
+            piece.kind = PieceKind::Queen;
+        }
+    }
+
+    next.squares[to_rank][to_file] = Some(piece);
+    next
+}
+
+fn pseudo_legal_moves(board: &Board, white: bool) -> Vec<Move> {
+    let color = color_of(white);
+    let mut moves = Vec::new();
+
+    for rank in 0..8 {
+        for file in 0..8 {
+            let Some(piece) = board.squares[rank][file] else {
+                continue;
+            };
+            if piece.color != color {
+                continue;
+            }
+
+            let mut add_if_available = |to_rank: i32, to_file: i32| {
+                if !on_board(to_rank, to_file) {
+                    return;
+                }
+                let target = board.squares[to_rank as usize][to_file as usize];
+                if target.is_none_or(|p| p.color != color) {
+                    moves.push(Move::new(
+                        rank,
+                        file,
+                        to_rank as usize,
+                        to_file as usize,
+                    ));
+                }
+            };
+
+            match piece.kind {
+                PieceKind::Pawn => {
+                    let direction = if white { -1 } else { 1 };
+                    let start_rank = if white { 6 } else { 1 };
+                    let next_rank = rank as i32 + direction;
+
+                    if on_board(next_rank, file as i32)
+                        && board.squares[next_rank as usize][file].is_none()
+                    {
+                        moves.push(Move::new(rank, file, next_rank as usize, file));
+
+                        let double_rank = rank as i32 + 2 * direction;
+                        if rank == start_rank
+                            && board.squares[double_rank as usize][file].is_none()
+                        {
+                            moves.push(Move::new(rank, file, double_rank as usize, file));
+                        }
+                    }
+
+                    for df in [-1, 1] {
+                        let target_file = file as i32 + df;
+                        if !on_board(next_rank, target_file) {
+                            continue;
+                        }
+                        let target = board.squares[next_rank as usize][target_file as usize];
+                        if target.is_some_and(|p| p.color != color)
+                            || board.en_passant == Some((next_rank as usize, target_file as usize))
+                        {
+                            moves.push(Move::new(
+                                rank,
+                                file,
+                                next_rank as usize,
+                                target_file as usize,
+                            ));
+                        }
+                    }
+                }
+                PieceKind::Knight => {
+                    for (dr, df) in [
+                        (-2, -1),
+                        (-2, 1),
+                        (-1, -2),
+                        (-1, 2),
+                        (1, -2),
+                        (1, 2),
+                        (2, -1),
+                        (2, 1),
+                    ] {
+                        add_if_available(rank as i32 + dr, file as i32 + df);
+                    }
+                }
+                PieceKind::Bishop | PieceKind::Rook | PieceKind::Queen => {
+                    let directions: &[(i32, i32)] = match piece.kind {
+                        PieceKind::Bishop => &[(-1, -1), (-1, 1), (1, -1), (1, 1)],
+                        PieceKind::Rook => &[(-1, 0), (1, 0), (0, -1), (0, 1)],
+                        PieceKind::Queen => &[
+                            (-1, -1),
+                            (-1, 1),
+                            (1, -1),
+                            (1, 1),
+                            (-1, 0),
+                            (1, 0),
+                            (0, -1),
+                            (0, 1),
+                        ],
+                        _ => unreachable!(),
+                    };
+                    for &(dr, df) in directions {
+                        let mut nr = rank as i32 + dr;
+                        let mut nf = file as i32 + df;
+                        while on_board(nr, nf) {
+                            let target = board.squares[nr as usize][nf as usize];
+                            if target.is_none() {
+                                moves.push(Move::new(rank, file, nr as usize, nf as usize));
+                            } else {
+                                if target.is_some_and(|p| p.color != color) {
+                                    moves.push(Move::new(rank, file, nr as usize, nf as usize));
+                                }
+                                break;
+                            }
+                            nr += dr;
+                            nf += df;
+                        }
+                    }
+                }
+                PieceKind::King => {
+                    for dr in -1..=1 {
+                        for df in -1..=1 {
+                            if dr != 0 || df != 0 {
+                                add_if_available(rank as i32 + dr, file as i32 + df);
+                            }
+                        }
+                    }
+
+                    let home_rank = if white { 7 } else { 0 };
+                    let (king_side, queen_side) = if white {
+                        (
+                            board.white_can_castle_kingside,
+                            board.white_can_castle_queenside,
+                        )
+                    } else {
+                        (
+                            board.black_can_castle_kingside,
+                            board.black_can_castle_queenside,
+                        )
+                    };
+
+                    if rank == home_rank
+                        && file == 4
+                        && !is_check(board, white)
+                    {
+                        let enemy = if white { Color::Black } else { Color::White };
+                        if king_side
+                            && board.squares[home_rank][5].is_none()
+                            && board.squares[home_rank][6].is_none()
+                            && board.squares[home_rank][7]
+                                == Some(Piece::new(color, PieceKind::Rook))
+                            && !square_attacked(board, home_rank, 5, enemy)
+                            && !square_attacked(board, home_rank, 6, enemy)
+                        {
+                            moves.push(Move::new(home_rank, 4, home_rank, 6));
+                        }
+                        if queen_side
+                            && board.squares[home_rank][1].is_none()
+                            && board.squares[home_rank][2].is_none()
+                            && board.squares[home_rank][3].is_none()
+                            && board.squares[home_rank][0]
+                                == Some(Piece::new(color, PieceKind::Rook))
+                            && !square_attacked(board, home_rank, 3, enemy)
+                            && !square_attacked(board, home_rank, 2, enemy)
+                        {
+                            moves.push(Move::new(home_rank, 4, home_rank, 2));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    moves
+}
+
+pub fn generate_moves(board: &Board, white: bool) -> Vec<Move> {
+    pseudo_legal_moves(board, white)
+        .into_iter()
+        .filter(|mv| {
+            let next = apply_move(board, mv);
+            !is_check(&next, white)
+        })
+        .collect()
+}
+
+pub fn is_checkmate(board: &Board, white: bool) -> bool {
+    is_check(board, white) && generate_moves(board, white).is_empty()
+}
+
+pub fn is_stalemate(board: &Board, white: bool) -> bool {
+    !is_check(board, white) && generate_moves(board, white).is_empty()
+}
+
+pub fn evaluate_material(board: &Board) -> i32 {
+    let mut score = 0;
+    for rank in 0..8 {
+        for file in 0..8 {
+            if let Some(piece) = board.squares[rank][file] {
+                let value = match piece.kind {
+                    PieceKind::Pawn => 100,
+                    PieceKind::Knight | PieceKind::Bishop => 300,
+                    PieceKind::Rook => 500,
+                    PieceKind::Queen => 900,
+                    PieceKind::King => 0,
+                };
+                score += if piece.color == Color::White {
+                    value
+                } else {
+                    -value
+                };
+            }
+        }
+    }
+    score
+}
+
+pub fn evaluate(board: &Board) -> i32 {
+    evaluate_material(board)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_board_setup() {
+        let board = Board::new();
+        assert_eq!(
+            board.piece_at(7, 4),
+            Some(Piece::new(Color::White, PieceKind::King))
+        );
+        assert_eq!(
+            board.piece_at(0, 4),
+            Some(Piece::new(Color::Black, PieceKind::King))
+        );
+        assert_eq!(
+            board.piece_at(6, 3),
+            Some(Piece::new(Color::White, PieceKind::Pawn))
+        );
+        assert_eq!(board.piece_at(3, 3), None);
+    }
+
+    #[test]
+    fn middle_ranks_start_empty() {
+        let board = Board::new();
+        for rank in 2..6 {
+            for file in 0..8 {
+                assert!(board.piece_at(rank, file).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn pawn_moves_from_start() {
+        let board = Board::new();
+        let moves = generate_moves(&board, true);
+        assert!(moves.contains(&Move::new(6, 4, 5, 4)));
+        assert!(moves.contains(&Move::new(6, 4, 4, 4)));
+        assert_eq!(generate_moves(&board, false).len(), 20);
+    }
+
+    #[test]
+    fn knight_moves_from_start() {
+        let board = Board::new();
+        let moves = generate_moves(&board, true);
+        assert!(moves.contains(&Move::new(7, 1, 5, 0)));
+        assert!(moves.contains(&Move::new(7, 1, 5, 2)));
+    }
+
+    #[test]
+    fn detects_check() {
+        let mut board = Board::new();
+        board.squares = [[None; 8]; 8];
+        board.squares[7][4] = Some(Piece::new(Color::White, PieceKind::King));
+        board.squares[0][4] = Some(Piece::new(Color::Black, PieceKind::King));
+        board.squares[6][4] = Some(Piece::new(Color::Black, PieceKind::Rook));
+        assert!(is_check(&board, true));
+        assert!(!is_check(&board, false));
+    }
+
+    #[test]
+    fn applies_move_and_updates_board() {
+        let board = Board::new();
+        let mv = Move::new(6, 4, 4, 4);
+        let next = apply_move(&board, &mv);
+        assert_eq!(next.piece_at(6, 4), None);
+        assert_eq!(
+            next.piece_at(4, 4),
+            Some(Piece::new(Color::White, PieceKind::Pawn))
+        );
+        assert_eq!(next.en_passant, Some((5, 4)));
+    }
+
+    #[test]
+    fn both_sides_have_twenty_moves_from_start() {
+        let board = Board::new();
+        assert_eq!(generate_moves(&board, true).len(), 20);
+        assert_eq!(generate_moves(&board, false).len(), 20);
+    }
+
+    #[test]
+    fn detects_checkmate_and_no_escape() {
+        let mut board = Board::new();
+        board.squares = [[None; 8]; 8];
+        board.squares[0][0] = Some(Piece::new(Color::Black, PieceKind::King));
+        board.squares[2][2] = Some(Piece::new(Color::White, PieceKind::King));
+        board.squares[1][1] = Some(Piece::new(Color::White, PieceKind::Queen));
+        assert!(is_checkmate(&board, false));
+        assert!(generate_moves(&board, false).is_empty());
+    }
+}
+```

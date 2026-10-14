@@ -42,6 +42,7 @@ A task is accepted only if:
 - every mutant fails at least one hidden test (an oracle that passes a mutant is rejected);
 - at least one mutant passes all public tests (hidden tests must add discrimination beyond the public ones);
 - hidden tests are not a copy of public tests (no shared test function names).
+- (authoring rule, reviewed by hand on calibration sets) public tests exercise every major API item. E02's rubiks task showed that public tests which skip `solve` make the selection arms submit public-green failures.
 
 Output: per-task verdict lines and the suite hash only.
 
