@@ -39,6 +39,14 @@ The triage is complete and recorded in the roadmap Addendum "P1 gate":
 
 **E06 is done.** C/D replicate agreement was 0.875, so **Confirmation-1 runs r = 1**. Across the pilots there is no sign of lift: under the latest-tie rule C passed 17 and 14, D 15 and 16.
 
+0. **In flight (2026-10-14 ~22:40):**
+   - **Confirmation-1:** 36 of 37 families (144 tasks) are validated blind, 144/144, hash `553b053c…`. Validation caught 8 rejections, and Codex repaired them blind:
+     - rope-text ×4: my parser misread `pub fn Rope::from_str` (fixed in the validator);
+     - fs-sim-l3: a public-coverage gap;
+     - template-engine ×3: tests using private reference items.
+   - `key-maze` is being re-authored after an OpenAI "model at capacity" failure (log `$SCRATCH/author-holdouts-3b.log`).
+   - **The audit of the 144 tasks is running** (stdout `~/.a2d-holdout/audit/c1-run1.stdout`, which shows task ids and counts only). `key-maze` needs its own small audit run afterwards.
+   - **Confirmation-2 is not yet authored.** Run `SETS=confirmation-2 $SCRATCH/author-holdouts-3.sh` once the audit is done (it is needed before P4, not before P2).
 1. **Holdout authoring is running** (driver `author-holdouts-2.sh`, log `$SCRATCH/author-holdouts-2.log`): the rest of the Confirmation-1 extension, then Confirmation-2. When it finishes:
    - `python3 -I $SCRATCH/assemble-holdout.py confirmation-1`;
    - `a2d lift validate ~/.a2d-holdout/confirmation-1 --jobs 4` (verdict lines only).
