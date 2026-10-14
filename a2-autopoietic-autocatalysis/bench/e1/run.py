@@ -71,6 +71,17 @@ def assert_no_private_leak(text: str, private_markers: list[str]) -> None:
             raise RuntimeError(f"private material marker leaked into agent-visible text: {marker[:40]!r}")
 
 
+def run_arm_with_infra_retry(cfg, opaque: str, arm: str, run_dir, runner=None) -> dict:
+    """Protocol rule: an infrastructure-failed (task, arm) is retried once; the retry's row is kept."""
+    runner = runner or run_arm
+    row = runner(cfg, opaque, arm, run_dir)
+    if row.get("infra_failure"):
+        first = row["infra_failure"]
+        row = runner(cfg, opaque, arm, run_dir)
+        row["infra_retry_of"] = first
+    return row
+
+
 def ensure_codex_home(home: Path, user_auth: Path) -> Path:
     """Isolated CODEX_HOME: the committed config template plus a symlink to the operator's auth.
 
@@ -293,7 +304,7 @@ def main(argv: list[str]) -> int:
             tasks.prepare(opaque)
             try:
                 for arm in pending:
-                    row = run_arm(cfg, opaque, arm, run_dir)
+                    row = run_arm_with_infra_retry(cfg, opaque, arm, run_dir)
                     with results.open("a") as handle:
                         handle.write(json.dumps(row, sort_keys=True) + "\n")
                     print(json.dumps({k: row[k] for k in ("opaque_id", "arm", "attempts_used", "infra_failure")}

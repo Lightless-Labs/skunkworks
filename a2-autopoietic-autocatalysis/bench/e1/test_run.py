@@ -106,6 +106,39 @@ class InfraClassificationTests(unittest.TestCase):
         self.assertEqual(run.classify_infra([dead], [0]), "provider_error")
 
 
+class InfraRetryTests(unittest.TestCase):
+    def test_retries_infra_failure_once_and_records_it(self) -> None:
+        calls = []
+
+        def runner(*args):
+            calls.append(args)
+            return {"infra_failure": "provider_error" if len(calls) == 1 else None, "n": len(calls)}
+
+        row = run.run_arm_with_infra_retry(None, "e1-x", "raw", None, runner=runner)
+        self.assertEqual(len(calls), 2)
+        self.assertIsNone(row["infra_failure"])
+        self.assertEqual(row["infra_retry_of"], "provider_error")
+
+    def test_no_retry_without_infra_failure_and_at_most_one_retry(self) -> None:
+        calls = []
+
+        def ok(*args):
+            calls.append(args)
+            return {"infra_failure": None}
+
+        self.assertNotIn("infra_retry_of", run.run_arm_with_infra_retry(None, "e1-x", "raw", None, runner=ok))
+        self.assertEqual(len(calls), 1)
+
+        def always_bad(*args):
+            calls.append(args)
+            return {"infra_failure": "a2ctl_failed"}
+
+        calls.clear()
+        row = run.run_arm_with_infra_retry(None, "e1-x", "raw", None, runner=always_bad)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(row["infra_failure"], "a2ctl_failed")
+
+
 class LeakTests(unittest.TestCase):
     def test_private_marker_in_payload_raises(self) -> None:
         with self.assertRaises(RuntimeError):
