@@ -130,6 +130,7 @@ struct Submission {
     tokens: usize,
     provider_ms: u64,
     coder_calls: usize,
+    tool_calls: usize,
     void_reason: Option<String>,
 }
 
@@ -143,6 +144,7 @@ pub struct Outcome {
     pub tokens: usize,
     pub provider_ms: u64,
     pub coder_calls: usize,
+    pub tool_calls: usize,
     pub public_green: bool,
     pub void_reason: Option<String>,
     pub suspicious: Vec<String>,
@@ -161,17 +163,19 @@ pub struct RunResult {
     pub scored: bool,
 }
 
+/// Deterministic Fisher-Yates shuffle keyed by `key` (SHA-256 counter stream).
+fn seeded_shuffle<T>(items: &mut [T], key: &str) {
+    for i in (1..items.len()).rev() {
+        let digest = ledger::sha256_hex(format!("{key}:{i}").as_bytes());
+        let draw = u64::from_str_radix(&digest[..16], 16).unwrap_or(0);
+        items.swap(i, (draw % (i as u64 + 1)) as usize);
+    }
+}
+
 /// Seeded permutation of the planned arms for one tuple.
 fn arm_order(plan: &RunPlan, task: &str, replicate: u32) -> Vec<Arm> {
     let mut arms = plan.arms.clone();
-    let digest = ledger::sha256_hex(format!("{}:{task}:{replicate}", plan.seed).as_bytes());
-    let bytes: Vec<u8> = (0..digest.len() / 2)
-        .filter_map(|i| u8::from_str_radix(&digest[2 * i..2 * i + 2], 16).ok())
-        .collect();
-    for i in (1..arms.len()).rev() {
-        let j = bytes[i % bytes.len()] as usize % (i + 1);
-        arms.swap(i, j);
-    }
+    seeded_shuffle(&mut arms, &format!("arms:{}:{task}:{replicate}", plan.seed));
     arms
 }
 
@@ -190,9 +194,12 @@ pub fn run_arms(
     if plan.arms.contains(&Arm::C) && arm_c.is_none() {
         return Err("arm C requested but no A²D runner is wired".to_string());
     }
-    let tuples: Vec<(usize, u32)> = (0..suite.tasks.len())
+    // Tuples run in a seeded random order so families and levels are not
+    // confounded with time (provider drift, contention).
+    let mut tuples: Vec<(usize, u32)> = (0..suite.tasks.len())
         .flat_map(|task| (0..plan.replicates).map(move |replicate| (task, replicate)))
         .collect();
+    seeded_shuffle(&mut tuples, &format!("tuples:{}", plan.seed));
     let next = AtomicUsize::new(0);
     let stop = AtomicBool::new(false);
     let submissions = Mutex::new(Vec::new());
@@ -271,9 +278,18 @@ pub fn score_deferred(
     suite_dir: &Path,
     jobs: usize,
     record_hidden_output: bool,
+    expected_head: Option<&str>,
 ) -> Result<(RunResult, RunPlan, SharedMeter), String> {
     let ledger_path = out_dir.join("ledger.jsonl");
     let ledger = ledger::Ledger::resume(&ledger_path)?;
+    if let Some(expected) = expected_head
+        && ledger.head() != Some(expected)
+    {
+        return Err(format!(
+            "ledger head {} does not match the committed anchor {expected}",
+            ledger.head().unwrap_or("<empty>")
+        ));
+    }
     let records: Vec<Value> = fs::read_to_string(&ledger_path)
         .map_err(|e| e.to_string())?
         .lines()
@@ -357,6 +373,7 @@ pub fn score_deferred(
             tokens: count("tokens") as usize,
             provider_ms: count("provider_ms"),
             coder_calls: count("coder_calls") as usize,
+            tool_calls: count("tool_calls") as usize,
             void_reason: r["void_reason"].as_str().map(str::to_string),
         });
     }
@@ -470,6 +487,7 @@ fn generate(
                 "attempts": attempts.len(),
                 "invocations": scope.used(),
                 "coder_calls": scope.coder_calls(),
+                "tool_calls": scope.tool_calls(),
                 "tokens": scope.tokens(),
                 "provider_ms": scope.provider_ms(),
                 "void_reason": scope.void_reason(),
@@ -489,6 +507,7 @@ fn generate(
         tokens: scope.tokens(),
         provider_ms: scope.provider_ms(),
         coder_calls: scope.coder_calls(),
+        tool_calls: scope.tool_calls(),
         void_reason: scope.void_reason(),
     }))
 }
@@ -501,9 +520,11 @@ fn score_all(
     meter: &SharedMeter,
     out_dir: &Path,
 ) -> Result<Vec<Outcome>, String> {
+    // Score everything first, then append every score record: an
+    // interrupted scoring phase leaves no partial scores in the ledger and
+    // can simply be rerun.
     let next = AtomicUsize::new(0);
     let outcomes = Mutex::new(Vec::new());
-    let error = Mutex::new(None::<String>);
     std::thread::scope(|workers| {
         for _ in 0..plan.jobs.max(1) {
             workers.spawn(|| {
@@ -521,29 +542,6 @@ fn score_all(
                                 .collect()
                         })
                         .unwrap_or_default();
-                    if plan.record_hidden_output {
-                        let path = out_dir
-                            .join("submissions")
-                            .join(sub.arm.label())
-                            .join(&task.id)
-                            .join(format!("r{}.hidden.txt", sub.replicate));
-                        let _ = fs::write(path, &hidden.output);
-                    }
-                    let appended = lock(meter).ledger.append(
-                        "score",
-                        json!({
-                            "arm": sub.arm.label(),
-                            "task": task.id,
-                            "family": task.family,
-                            "replicate": sub.replicate,
-                            "oracle": "hidden",
-                            "result": hidden,
-                            "suspicious": suspicious,
-                        }),
-                    );
-                    if let Err(e) = appended {
-                        error.lock().unwrap().get_or_insert(e.to_string());
-                    }
                     outcomes.lock().unwrap().push(Outcome {
                         arm: sub.arm,
                         task: task.id.clone(),
@@ -553,6 +551,7 @@ fn score_all(
                         tokens: sub.tokens,
                         provider_ms: sub.provider_ms,
                         coder_calls: sub.coder_calls,
+                        tool_calls: sub.tool_calls,
                         public_green: sub.public_green,
                         void_reason: sub.void_reason.clone(),
                         suspicious,
@@ -562,11 +561,34 @@ fn score_all(
             });
         }
     });
-    if let Some(e) = error.into_inner().unwrap() {
-        return Err(e);
-    }
     let mut outcomes = outcomes.into_inner().unwrap();
     outcomes.sort_by(|a, b| (&a.task, a.replicate, a.arm).cmp(&(&b.task, b.replicate, b.arm)));
+    let mut m = lock(meter);
+    for o in &outcomes {
+        if plan.record_hidden_output {
+            let path = out_dir
+                .join("submissions")
+                .join(o.arm.label())
+                .join(&o.task)
+                .join(format!("r{}.hidden.txt", o.replicate));
+            let _ = fs::write(path, &o.hidden.output);
+        }
+        m.ledger
+            .append(
+                "score",
+                json!({
+                    "arm": o.arm.label(),
+                    "task": o.task,
+                    "family": o.family,
+                    "replicate": o.replicate,
+                    "oracle": "hidden",
+                    "result": o.hidden,
+                    "suspicious": o.suspicious,
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    drop(m);
     Ok(outcomes)
 }
 
@@ -641,6 +663,9 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
         .collect();
     let complete =
         !result.aborted && void_tuples.is_empty() && complete_tuples.len() == result.tuples_planned;
+    // Integrity findings block classification until reviewed.
+    let tool_calls: usize = result.outcomes.iter().map(|o| o.tool_calls).sum();
+    let integrity_ok = result.hidden_name_hits.is_empty() && tool_calls == 0;
 
     let per_arm: Vec<Value> = plan
         .arms
@@ -656,6 +681,7 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
                 "rate": if n == 0 { 0.0 } else { passed as f64 / n as f64 },
                 "invocations": arm_rows.iter().map(|o| o.invocations).sum::<usize>(),
                 "coder_calls": arm_rows.iter().map(|o| o.coder_calls).sum::<usize>(),
+                "tool_calls": arm_rows.iter().map(|o| o.tool_calls).sum::<usize>(),
                 "tokens": arm_rows.iter().map(|o| o.tokens).sum::<usize>(),
                 "provider_ms": arm_rows.iter().map(|o| o.provider_ms).sum::<u64>(),
                 "public_green_hidden_fail": arm_rows.iter().filter(|o| o.public_green && !o.hidden.all_passed).count(),
@@ -692,7 +718,9 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
                 })
                 .collect();
             let s = stats::paired_summary(&paired, BOOTSTRAP_ITERATIONS, BOOTSTRAP_SEED);
-            let class = if complete {
+            let class = if !integrity_ok {
+                "IntegrityReview".to_string()
+            } else if complete {
                 format!(
                     "{:?}",
                     stats::classify_guarded(&s, MIN_EFFECT, plan.min_families)
@@ -730,6 +758,8 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
         "tuples_complete": complete_tuples.len(),
         "tuples_void": void_tuples.len(),
         "hidden_name_hits": result.hidden_name_hits,
+        "coder_tool_calls": tool_calls,
+        "integrity_ok": integrity_ok,
         "min_effect": MIN_EFFECT,
         "min_families": plan.min_families,
         "primary_comparator": plan.primary.map(|a| a.label()),

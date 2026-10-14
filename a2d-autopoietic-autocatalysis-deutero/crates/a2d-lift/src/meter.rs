@@ -30,6 +30,7 @@ pub struct Scope {
     tokens: AtomicUsize,
     provider_ms: AtomicU64,
     coder_calls: AtomicUsize,
+    tool_calls: AtomicUsize,
     /// Set when an invocation was refused for a reason other than the arm's
     /// own budget (wall clock, audit failure): the tuple is void.
     void_reason: Mutex<Option<String>>,
@@ -46,6 +47,7 @@ impl Scope {
             tokens: AtomicUsize::new(0),
             provider_ms: AtomicU64::new(0),
             coder_calls: AtomicUsize::new(0),
+            tool_calls: AtomicUsize::new(0),
             void_reason: Mutex::new(None),
         })
     }
@@ -63,6 +65,11 @@ impl Scope {
     /// Invocations made by coder enzymes.
     pub fn coder_calls(&self) -> usize {
         self.coder_calls.load(Ordering::SeqCst)
+    }
+
+    /// Tool calls the coder lane reported (must stay 0 on the no-tools lane).
+    pub fn tool_calls(&self) -> usize {
+        self.tool_calls.load(Ordering::SeqCst)
     }
 
     pub fn void_reason(&self) -> Option<String> {
@@ -296,6 +303,12 @@ impl Provider for MeteredProvider {
             self.scope
                 .tokens
                 .fetch_add(response.usage.total(), Ordering::SeqCst);
+            if let Some(transcript) = &response.transcript {
+                self.scope.tool_calls.fetch_add(
+                    a2d_providers::cli::codex_tool_calls(transcript),
+                    Ordering::SeqCst,
+                );
+            }
         }
         lock(&self.meter).record(
             &self.scope,

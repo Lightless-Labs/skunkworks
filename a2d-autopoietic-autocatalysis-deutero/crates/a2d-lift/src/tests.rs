@@ -475,19 +475,45 @@ fn deferred_scoring_scores_once_after_generation_and_detects_tampering() {
     let submission = dir.path().join("submissions/A/t1/r0.rs");
     let original = fs::read_to_string(&submission).unwrap();
     fs::write(&submission, "fn double(x: i32) -> i32 { x * 2 } // edited").unwrap();
-    let err = score_deferred(dir.path(), suite_dir.path(), 2, false)
+    let err = score_deferred(dir.path(), suite_dir.path(), 2, false, None)
         .err()
         .unwrap();
     assert!(err.contains("ledgered hash"), "{err}");
     fs::write(&submission, original).unwrap();
 
-    let (result, plan, _meter) = score_deferred(dir.path(), suite_dir.path(), 2, false).unwrap();
+    let (result, plan, _meter) =
+        score_deferred(dir.path(), suite_dir.path(), 2, false, None).unwrap();
     assert_eq!(result.outcomes.len(), 4);
     assert!(result.outcomes.iter().all(|o| o.hidden.all_passed));
     assert_eq!(summarize(&result, &plan)["complete"], true);
     assert!(crate::ledger::verify_chain(&dir.path().join("ledger.jsonl")).is_ok());
-    let err = score_deferred(dir.path(), suite_dir.path(), 2, false)
+    let err = score_deferred(dir.path(), suite_dir.path(), 2, false, None)
         .err()
         .unwrap();
     assert!(err.contains("already scored"), "{err}");
+}
+
+#[test]
+fn deferred_scoring_requires_the_committed_ledger_anchor() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::create(&dir.path().join("ledger.jsonl")).unwrap();
+    ledger.append("registration", json!({})).unwrap();
+    drop(ledger);
+    let err = score_deferred(dir.path(), dir.path(), 1, false, Some("not-the-head"))
+        .err()
+        .unwrap();
+    assert!(err.contains("committed anchor"), "{err}");
+}
+
+#[test]
+fn seeded_shuffle_is_a_deterministic_permutation() {
+    let mut a: Vec<usize> = (0..50).collect();
+    let mut b = a.clone();
+    seeded_shuffle(&mut a, "k");
+    seeded_shuffle(&mut b, "k");
+    assert_eq!(a, b);
+    let mut sorted = a.clone();
+    sorted.sort();
+    assert_eq!(sorted, (0..50).collect::<Vec<_>>());
+    assert_ne!(a, (0..50).collect::<Vec<_>>());
 }

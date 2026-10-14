@@ -19,7 +19,8 @@ usage:
   a2d lift hash <suite-dir>
   a2d lift validate <suite-dir> [--jobs <n>]
   a2d lift verify-ledger <ledger.jsonl>
-  a2d lift score --out <run-dir> --suite <dir> [--jobs <n>] [--record-hidden-output]
+  a2d lift manifest <run-dir>        # content-free pre-score anchor (JSON)
+  a2d lift score --out <run-dir> --suite <dir> --expect-head <ledger-head> [--jobs <n>] [--record-hidden-output]
   a2d lift run --experiment <id> --suite <dir> --model codex/<model> --out <dir>
                --max-invocations <n> --max-wall-clock-secs <s>
                (--registered-at <git-sha> --expect-suite-hash <sha256> | --unregistered)
@@ -37,6 +38,12 @@ pub fn cli_main(args: &[String], arm_c: Option<&dyn ArmC>) -> i32 {
         Some("run") => run(&args[1..], arm_c),
         Some("validate") => validate(&args[1..]),
         Some("score") => score(&args[1..]),
+        Some("manifest") => args
+            .get(1)
+            .ok_or_else(|| USAGE.to_string())
+            .and_then(|dir| manifest(Path::new(dir)))
+            .and_then(|m| serde_json::to_string_pretty(&m).map_err(|e| e.to_string()))
+            .map(|text| println!("{text}")),
         Some("verify-ledger") => args
             .get(1)
             .ok_or_else(|| USAGE.to_string())
@@ -184,7 +191,12 @@ fn build_provenance() -> Value {
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-    json!({"exe_sha256": exe_sha256, "rustc": rustc})
+    let codex = Command::new("codex")
+        .arg("--version")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    json!({"exe_sha256": exe_sha256, "rustc": rustc, "codex": codex})
 }
 
 fn parse_arms(spec: &str) -> Result<Vec<Arm>, String> {
@@ -331,13 +343,77 @@ fn score(args: &[String]) -> Result<(), String> {
     let jobs: usize = flags
         .get("jobs")
         .map_or(Ok(1), |_| number(&flags, "jobs"))?;
+    let expected_head = required(&flags, "expect-head")?;
+    // The controller, oracle and treatment stay frozen through scoring.
+    let registration = read_registration(&out_dir.join("ledger.jsonl"))?;
+    let registered_at = registration["git"]["registered_at"].as_str();
+    if registered_at.is_none() && registration["unregistered"] != true {
+        return Err("registration records no commit; cannot verify the freeze".to_string());
+    }
+    registration_git_state(&project_root()?, registered_at)?;
     let (result, plan, meter) = crate::score_deferred(
         &out_dir,
         &suite_dir,
         jobs.max(1),
         flags.contains_key("record-hidden-output"),
+        Some(expected_head),
     )?;
     report(&result, &plan, &meter, &out_dir)
+}
+
+fn ledger_records(path: &Path) -> Result<Vec<Value>, String> {
+    crate::ledger::verify_chain(path)?;
+    fs::read_to_string(path)
+        .map_err(|e| format!("read {}: {e}", path.display()))?
+        .lines()
+        .map(|line| serde_json::from_str(line).map_err(|e| e.to_string()))
+        .collect()
+}
+
+fn read_registration(path: &Path) -> Result<Value, String> {
+    ledger_records(path)?
+        .into_iter()
+        .find(|r| r["kind"] == "registration")
+        .ok_or_else(|| "ledger has no registration".to_string())
+}
+
+/// Content-free anchor of a generated run: registration (minus argv and
+/// paths), ledger head and record count, and one hash per submission.
+/// Committed before scoring; `score --expect-head` checks against it.
+fn manifest(run_dir: &Path) -> Result<Value, String> {
+    let path = run_dir.join("ledger.jsonl");
+    let (records_count, head) = crate::ledger::verify_chain(&path)?;
+    let records = ledger_records(&path)?;
+    if records.iter().any(|r| r["kind"] == "score") {
+        return Err("run already has scores; a manifest anchors an unscored run".to_string());
+    }
+    let mut registration = records
+        .iter()
+        .find(|r| r["kind"] == "registration")
+        .cloned()
+        .ok_or("ledger has no registration")?;
+    if let Some(object) = registration.as_object_mut() {
+        object.remove("argv");
+        object.remove("suite_dir");
+    }
+    let submissions: Vec<Value> = records
+        .iter()
+        .filter(|r| r["kind"] == "submission")
+        .map(|r| {
+            json!({
+                "arm": r["arm"], "task": r["task"], "replicate": r["replicate"],
+                "artifact_sha256": r["artifact_sha256"], "invocations": r["invocations"],
+                "void_reason": r["void_reason"], "tool_calls": r["tool_calls"],
+            })
+        })
+        .collect();
+    Ok(json!({
+        "registration": registration,
+        "ledger_records": records_count,
+        "ledger_head": head,
+        "generation_complete": records.iter().find(|r| r["kind"] == "generation_complete"),
+        "submissions": submissions,
+    }))
 }
 
 /// Print outcomes, write summary.json and append the summary to the ledger.
