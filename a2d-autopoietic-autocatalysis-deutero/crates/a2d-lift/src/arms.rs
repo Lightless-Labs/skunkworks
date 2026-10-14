@@ -137,13 +137,18 @@ fn truncate(text: &str, max: usize) -> String {
 }
 
 /// Frozen submission rule: among attempts with code, the most public tests
-/// passed, then compiled over not compiled, then the earliest attempt.
-/// `None` if no attempt produced code.
+/// passed, then compiled over not compiled, then the **latest** attempt.
+/// For the feedback arms (D, C) a later attempt with an equal public score
+/// has absorbed more feedback, and A²D itself keeps its latest code; for B
+/// the attempts are exchangeable, so the tie order does not change its
+/// distribution. (Changed from "earliest" at the P1 gate, before any
+/// attempt-level hidden results were examined.) `None` if no attempt
+/// produced code.
 pub fn select_submission(attempts: &[Attempt]) -> Option<&Attempt> {
     attempts.iter().filter(|a| a.code.is_some()).fold(
         None,
         |best: Option<&Attempt>, a| match best {
-            Some(b) if b.public_rank() >= a.public_rank() => Some(b),
+            Some(b) if b.public_rank() > a.public_rank() => Some(b),
             _ => Some(a),
         },
     )
@@ -171,16 +176,18 @@ mod tests {
     }
 
     #[test]
-    fn selection_prefers_most_public_passes_then_earliest() {
+    fn selection_prefers_most_public_passes_then_latest() {
         let attempts = [
             att(0, true, 1),
             att(1, true, 2),
             att(2, true, 2),
             att(3, false, 0),
         ];
-        assert_eq!(select_submission(&attempts).unwrap().index, 1);
+        assert_eq!(select_submission(&attempts).unwrap().index, 2);
         let ties = [att(0, true, 0), att(1, true, 0)];
-        assert_eq!(select_submission(&ties).unwrap().index, 0);
+        assert_eq!(select_submission(&ties).unwrap().index, 1);
+        let earlier_better = [att(0, true, 3), att(1, true, 2)];
+        assert_eq!(select_submission(&earlier_better).unwrap().index, 0);
         let mut not_compiled = att(0, true, 0);
         not_compiled.public.as_mut().unwrap().compiled = false;
         let compiled = [not_compiled, att(1, true, 0)];
