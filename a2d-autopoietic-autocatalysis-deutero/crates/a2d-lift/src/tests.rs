@@ -621,3 +621,19 @@ fn small_exclusions_still_classify_but_large_ones_are_invalid() {
     let summary = summarize(&claim_result(2, 2, 4), &plan);
     assert_eq!(summary["claim"], "Invalid", "{summary}");
 }
+
+#[test]
+fn hidden_name_scan_matches_whole_identifiers_only() {
+    assert!(contains_identifier(
+        "fn doubles_negative() {}",
+        "doubles_negative"
+    ));
+    assert!(!contains_identifier(
+        "fn doubles_negative_twice() {}",
+        "doubles_negative"
+    ));
+    assert!(!contains_identifier(
+        "my_doubles_negative",
+        "doubles_negative"
+    ));
+}

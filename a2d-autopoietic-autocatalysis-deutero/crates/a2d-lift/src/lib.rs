@@ -599,9 +599,11 @@ fn score_all(
     Ok(outcomes)
 }
 
-/// Saved invocation files (prompts, responses, transcripts) that mention a
-/// hidden test function name of their own task. Any hit is investigated
-/// before the run's results are used.
+/// Saved prompts that contain a hidden test function name of their own task
+/// as a whole identifier. Prompts are what reaches an arm: hidden content
+/// leaked through candidate output (e.g. public test output) would surface
+/// in a later prompt. Responses are not scanned — a model naming its own
+/// test after a specified behaviour is a false positive (E06).
 fn scan_for_hidden_names(suite: &Suite, invocations_dir: &Path) -> Vec<String> {
     let mut hits = Vec::new();
     for task in &suite.tasks {
@@ -617,8 +619,14 @@ fn scan_for_hidden_names(suite: &Suite, invocations_dir: &Path) -> Vec<String> {
             .flatten()
         {
             for path in files_under(&arm_dir.path().join(&task.id)) {
+                if !path.to_string_lossy().ends_with(".prompt.txt") {
+                    continue;
+                }
                 let text = fs::read_to_string(&path).unwrap_or_default();
-                if names.iter().any(|name| text.contains(name.as_str())) {
+                if names
+                    .iter()
+                    .any(|name| contains_identifier(&text, name.as_str()))
+                {
                     hits.push(path.display().to_string());
                 }
             }
@@ -626,6 +634,16 @@ fn scan_for_hidden_names(suite: &Suite, invocations_dir: &Path) -> Vec<String> {
     }
     hits.sort();
     hits
+}
+
+/// `name` occurs in `text` delimited by non-identifier characters.
+fn contains_identifier(text: &str, name: &str) -> bool {
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    text.match_indices(name).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + name.len()..].chars().next();
+        !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
+    })
 }
 
 fn files_under(dir: &Path) -> Vec<PathBuf> {
