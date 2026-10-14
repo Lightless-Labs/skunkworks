@@ -89,6 +89,29 @@ class CandidateTreeTests(unittest.TestCase):
                 grading.build_candidate_tree(base, root / "cand", diff=bad)
 
 
+class ChangedPathTests(unittest.TestCase):
+    def test_paths_from_diff_headers(self) -> None:
+        diff = (
+            "diff --git a/lib/mod.py b/lib/mod.py\n--- a/lib/mod.py\n+++ b/lib/mod.py\n"
+            "diff --git a/test/old.py b/test/new.py\nsimilarity index 90%\n"
+        )
+        self.assertEqual(grading.paths_in_diff(diff), {"lib/mod.py", "test/old.py", "test/new.py"})
+
+    def test_worktree_changed_paths_include_untracked_and_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = make_base(root)
+            work = root / "agent"
+            subprocess.run(["git", "clone", "-q", str(base), str(work)], check=True)
+            (work / "lib" / "mod.py").write_text("VALUE = 9\n")
+            (work / "test" / "test_mod.py").unlink()
+            (work / "test" / "test_extra.py").write_text("x = 1\n")
+            self.assertEqual(
+                grading.worktree_changed_paths(work),
+                {"lib/mod.py", "test/test_mod.py", "test/test_extra.py"},
+            )
+
+
 class PytestRunTests(unittest.TestCase):
     def test_passed_node_ids_from_junit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

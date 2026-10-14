@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import filecmp
 import os
+import re
 import shutil
+import sys
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
@@ -62,11 +64,44 @@ def _relative_files(root: Path) -> set[str]:
     return files
 
 
-def revert_test_edits(tree: Path, base: Path) -> list[str]:
-    """Restore every test path in `tree` to its `base` state (official test.sh behaviour)."""
+DIFF_GIT_HEADER = re.compile(r"^diff --git a/(.+?) b/(.+)$")
+DIFF_FILE_HEADER = re.compile(r"^(?:---|\+\+\+) (?:a|b)/(.+?)(?:\t.*)?$")
+
+
+def paths_in_diff(diff: str) -> set[str]:
+    paths: set[str] = set()
+    for line in diff.splitlines():
+        match = DIFF_GIT_HEADER.match(line)
+        if match:
+            paths.update(match.groups())
+            continue
+        match = DIFF_FILE_HEADER.match(line)
+        if match:
+            paths.add(match.group(1))
+    return paths
+
+
+def worktree_changed_paths(tree: Path) -> set[str]:
+    """Tracked changes since the root commit (committed or not) plus every untracked file."""
+    root = _git(tree, "rev-list", "--max-parents=0", "HEAD").stdout.split()[0]
+    changed = set(_git(tree, "diff", "--name-only", "--no-renames", root).stdout.split("\n"))
+    changed |= set(_git(tree, "ls-files", "--others").stdout.split("\n"))
+    return {p for p in changed if p}
+
+
+def revert_test_edits(tree: Path, base: Path, candidates: set[str] | None = None) -> list[str]:
+    """Restore test paths in `tree` to their `base` state (official test.sh behaviour).
+
+    With `candidates`, only those paths can differ from base; otherwise both trees are walked.
+    """
     reverted = []
-    tree_tests = {p for p in _relative_files(tree) if is_test_path(p)}
-    base_tests = {p for p in _relative_files(base) if is_test_path(p)}
+    if candidates is None:
+        tree_tests = {p for p in _relative_files(tree) if is_test_path(p)}
+        base_tests = {p for p in _relative_files(base) if is_test_path(p)}
+    else:
+        tests = {p for p in candidates if is_test_path(p)}
+        tree_tests = {p for p in tests if (tree / p).is_file()}
+        base_tests = {p for p in tests if (base / p).is_file()}
     for rel in sorted(tree_tests | base_tests):
         target, original = tree / rel, base / rel
         if rel in base_tests:
@@ -74,10 +109,23 @@ def revert_test_edits(tree: Path, base: Path) -> list[str]:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(original, target)
                 reverted.append(rel)
-        else:
+        elif target.exists():
             target.unlink()
             reverted.append(rel)
     return reverted
+
+
+def _copy_tree(source: Path, dest: Path) -> None:
+    """Copy-on-write clone on macOS (APFS), plain copy elsewhere; never keeps .git."""
+    if sys.platform == "darwin":
+        subprocess.run(["cp", "-cR", str(source), str(dest)], check=True)
+        git_entry = dest / ".git"
+        if git_entry.is_dir():
+            shutil.rmtree(git_entry)
+        elif git_entry.exists():
+            git_entry.unlink()
+    else:
+        shutil.copytree(source, dest, symlinks=True, ignore=_ignore_git)
 
 
 def apply_patch(tree: Path, patch_text: str) -> None:
@@ -100,10 +148,11 @@ def build_candidate_tree(base: Path, dest: Path, diff: str | None = None, source
     """Materialize a candidate as `base`+`diff` or as a copy of `source_tree`, then revert test edits."""
     if dest.exists():
         shutil.rmtree(dest)
-    shutil.copytree(source_tree or base, dest, symlinks=True, ignore=_ignore_git)
+    candidates = worktree_changed_paths(source_tree) if source_tree is not None else paths_in_diff(diff or "")
+    _copy_tree(source_tree or base, dest)
     if source_tree is None and diff:
         apply_patch(dest, diff)
-    return revert_test_edits(dest, base)
+    return revert_test_edits(dest, base, candidates)
 
 
 def run_pytest(
