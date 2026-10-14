@@ -11,7 +11,7 @@
 
 mod maturity;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -1625,6 +1625,24 @@ enum Commands {
     /// Read task descriptions from stdin and run them sequentially.
     /// Accepts plain text lines or JSONL tasks with `problem_statement`.
     Run {
+        /// Git repository in which candidate worktrees are created.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+        /// Lineage SQLite path, or `none` to disable lineage for this run.
+        #[arg(long)]
+        lineage_db: Option<String>,
+        /// Whether benchmark-sensitive verifier feedback is hashed or retained raw.
+        #[arg(long, value_enum, default_value_t = VerifierFeedbackArg::Redacted)]
+        verifier_feedback: VerifierFeedbackArg,
+        /// Append one machine-readable JSON object when each attempt finishes.
+        #[arg(long)]
+        emit_jsonl: Option<PathBuf>,
+        /// Prompt preamble and workspace description used by the worktree catalyst.
+        #[arg(long, value_enum, default_value_t = PromptProfileArg::A2)]
+        prompt_profile: PromptProfileArg,
+        /// Canonical subpath denied to sandboxed providers. May be repeated.
+        #[arg(long)]
+        deny_read: Vec<PathBuf>,
         /// Maximum token budget per task.
         #[arg(long, default_value = "50000")]
         max_tokens: u64,
@@ -1806,12 +1824,78 @@ enum Commands {
     },
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum VerifierFeedbackArg {
+    #[default]
+    Redacted,
+    Raw,
+}
+
+impl From<VerifierFeedbackArg> for a2_workcell::runtime::VerifierFeedback {
+    fn from(value: VerifierFeedbackArg) -> Self {
+        match value {
+            VerifierFeedbackArg::Redacted => Self::Redacted,
+            VerifierFeedbackArg::Raw => Self::Raw,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum PromptProfileArg {
+    #[default]
+    A2,
+    External,
+}
+
+impl From<PromptProfileArg> for a2_workcell::worktree_catalyst::PromptProfile {
+    fn from(value: PromptProfileArg) -> Self {
+        match value {
+            PromptProfileArg::A2 => Self::A2,
+            PromptProfileArg::External => Self::External,
+        }
+    }
+}
+
 struct RunSummaryRow {
     title: String,
     model: String,
     tokens: u64,
     duration_secs: f64,
     decision: String,
+}
+
+const JSONL_TAIL_MAX_BYTES: usize = 20 * 1024;
+
+#[derive(Clone, Debug, Serialize)]
+struct RunAttemptVerificationJsonl {
+    command: String,
+    exit_code: Option<i32>,
+    passed: bool,
+    stdout_tail: String,
+    stderr_tail: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct RunAttemptTestResultsJsonl {
+    passed: u32,
+    failed: u32,
+    skipped: u32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct RunAttemptJsonl {
+    task_id: String,
+    attempt: usize,
+    decision: String,
+    provider: String,
+    model: String,
+    tokens_in: u64,
+    tokens_out: u64,
+    duration_secs: f64,
+    patch_diff: String,
+    worktree_verifications: Vec<RunAttemptVerificationJsonl>,
+    test_results: RunAttemptTestResultsJsonl,
+    retrieved_motifs_count: usize,
 }
 
 struct BenchSummaryRow {
@@ -2210,6 +2294,97 @@ fn parse_network_policy_arg(value: &str) -> Result<a2_core::protocol::NetworkPol
     )
 }
 
+fn validate_run_workspace(path: &Path) -> Result<PathBuf, String> {
+    if !path.exists() {
+        return Err(format!("workspace does not exist: {}", path.display()));
+    }
+    if !path.is_dir() {
+        return Err(format!("workspace is not a directory: {}", path.display()));
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("canonicalize workspace {}: {error}", path.display()))?;
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(&canonical)
+        .output()
+        .map_err(|error| format!("inspect workspace git repository: {error}"))?;
+    if !output.status.success() || String::from_utf8_lossy(&output.stdout).trim() != "true" {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "workspace is not an existing git repository: {}{}",
+            canonical.display(),
+            if detail.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", detail.trim())
+            }
+        ));
+    }
+    Ok(canonical)
+}
+
+fn validate_deny_read_policy(
+    policy: Option<&a2_core::protocol::NetworkPolicy>,
+    deny_read: &[PathBuf],
+) -> Result<(), String> {
+    if deny_read.is_empty() {
+        return Ok(());
+    }
+    if matches!(
+        policy,
+        Some(
+            a2_core::protocol::NetworkPolicy::Isolated
+                | a2_core::protocol::NetworkPolicy::AllowList(_)
+        )
+    ) {
+        Ok(())
+    } else {
+        Err("--deny-read requires --network-policy isolated or allowlist:<endpoint>".into())
+    }
+}
+
+fn canonicalize_deny_read_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let mut canonical = Vec::new();
+    for path in paths {
+        let raw = path
+            .to_str()
+            .ok_or_else(|| format!("--deny-read path must be valid UTF-8: {}", path.display()))?;
+        if raw.contains('"') || raw.contains('\\') {
+            return Err(format!(
+                "--deny-read path must not contain `\"` or `\\`: {}",
+                path.display()
+            ));
+        }
+        let resolved = path
+            .canonicalize()
+            .map_err(|error| format!("canonicalize --deny-read {}: {error}", path.display()))?;
+        let resolved_text = resolved.to_str().ok_or_else(|| {
+            format!(
+                "canonical --deny-read path must be valid UTF-8: {}",
+                resolved.display()
+            )
+        })?;
+        if resolved_text.contains('"') || resolved_text.contains('\\') {
+            return Err(format!(
+                "canonical --deny-read path must not contain `\"` or `\\`: {}",
+                resolved.display()
+            ));
+        }
+        if !canonical.contains(&resolved) {
+            canonical.push(resolved);
+        }
+    }
+    Ok(canonical)
+}
+
+fn open_lineage_store(path: &Path) -> Result<a2_archive::SqliteLineageStore, String> {
+    let connection = rusqlite::Connection::open(path)
+        .map_err(|error| format!("open lineage db {}: {error}", path.display()))?;
+    a2_archive::SqliteLineageStore::new(connection)
+        .map_err(|error| format!("init lineage store {}: {error}", path.display()))
+}
+
 const DEFAULT_STAGNATION_WINDOW: usize = 3;
 const DEFAULT_BENCH_MAX_TOKENS: u64 = 100_000;
 const DEFAULT_BENCH_TIMEOUT_SECS: u64 = 1800;
@@ -2349,6 +2524,12 @@ async fn main() {
             }
         }
         Commands::Run {
+            workspace,
+            lineage_db,
+            verifier_feedback,
+            emit_jsonl,
+            prompt_profile,
+            deny_read,
             max_tokens,
             timeout,
             provider,
@@ -2359,6 +2540,26 @@ async fn main() {
         } => {
             let budget = build_budget(max_tokens, timeout);
             let ingester = a2_sensorium::ingest::Ingester::new(budget.clone());
+
+            let requested_workspace = workspace.unwrap_or_else(workspace_root);
+            let workspace_root = match validate_run_workspace(&requested_workspace) {
+                Ok(workspace) => workspace,
+                Err(error) => {
+                    eprintln!("Invalid --workspace: {error}");
+                    std::process::exit(1);
+                }
+            };
+            if let Err(error) = validate_deny_read_policy(network_policy.as_ref(), &deny_read) {
+                eprintln!("Invalid --deny-read: {error}");
+                std::process::exit(1);
+            }
+            let deny_read = match canonicalize_deny_read_paths(&deny_read) {
+                Ok(paths) => paths,
+                Err(error) => {
+                    eprintln!("Invalid --deny-read: {error}");
+                    std::process::exit(1);
+                }
+            };
 
             let provider_names: Vec<&str> = provider
                 .split(',')
@@ -2374,36 +2575,50 @@ async fn main() {
                 std::process::exit(1);
             }
 
-            let workspace_root = workspace_root();
             let catalyst =
-                a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root.clone());
+                a2_workcell::worktree_catalyst::WorktreeCatalyst::new(workspace_root.clone())
+                    .with_prompt_profile(prompt_profile.into())
+                    .with_deny_read_paths(deny_read);
             let evaluator = a2_eval::seed::SeedEvaluator::new(max_tokens);
-            let lineage_db = workspace_root.join("lineage.sqlite");
-            let governor = match rusqlite::Connection::open(&lineage_db)
-                .map_err(|e| format!("open lineage db: {e}"))
-                .and_then(|conn| {
-                    a2_archive::SqliteLineageStore::new(conn)
-                        .map_err(|e| format!("init lineage store: {e}"))
-                }) {
-                Ok(store) => {
-                    eprintln!("[lineage store: {}]", lineage_db.display());
-                    a2d::Governor::with_stagnation_detector(
-                        a2_core::id::GermlineVersion::new(),
-                        budget,
-                        a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
-                    )
-                    .with_lineage_store(std::sync::Arc::new(store))
+            let governor = a2d::Governor::with_stagnation_detector(
+                a2_core::id::GermlineVersion::new(),
+                budget,
+                a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
+            );
+            let governor = match lineage_db {
+                Some(value) if value.eq_ignore_ascii_case("none") => {
+                    eprintln!("[lineage store: disabled]");
+                    governor
                 }
-                Err(e) => {
-                    eprintln!("[lineage store unavailable: {e}]");
-                    a2d::Governor::with_stagnation_detector(
-                        a2_core::id::GermlineVersion::new(),
-                        budget,
-                        a2d::StagnationDetector::new(DEFAULT_STAGNATION_WINDOW),
-                    )
+                Some(value) => {
+                    let path = PathBuf::from(value);
+                    match open_lineage_store(&path) {
+                        Ok(store) => {
+                            eprintln!("[lineage store: {}]", path.display());
+                            governor.with_lineage_store(std::sync::Arc::new(store))
+                        }
+                        Err(error) => {
+                            eprintln!("Lineage store setup failed: {error}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                None => {
+                    let path = workspace_root.join("lineage.sqlite");
+                    match open_lineage_store(&path) {
+                        Ok(store) => {
+                            eprintln!("[lineage store: {}]", path.display());
+                            governor.with_lineage_store(std::sync::Arc::new(store))
+                        }
+                        Err(error) => {
+                            eprintln!("[lineage store unavailable: {error}]");
+                            governor
+                        }
+                    }
                 }
             }
-            .with_anti_repeat_retry(!disable_anti_repeat_retry);
+            .with_anti_repeat_retry(!disable_anti_repeat_retry)
+            .with_verifier_feedback(verifier_feedback.into());
 
             let mut rows = Vec::new();
             let mut restricted_policy_launch_blocked = false;
@@ -2502,6 +2717,16 @@ async fn main() {
                                     "[restricted network policy blocked provider launch for {title}; no candidate patch produced]"
                                 );
                             }
+                            if let Some(path) = &emit_jsonl {
+                                let row = run_attempt_jsonl_from_outcome(attempt, p, &outcome);
+                                if let Err(error) = append_run_attempt_jsonl(path, &row) {
+                                    eprintln!(
+                                        "Failed to append attempt JSONL {}: {error}",
+                                        path.display()
+                                    );
+                                    std::process::exit(1);
+                                }
+                            }
                             rows.push(run_summary_row(&title, p, &outcome));
                             if task_completed && (!apply || verify_ok) {
                                 if attempts > 1 && attempt < attempts {
@@ -2518,6 +2743,16 @@ async fn main() {
                                 false,
                             ) {
                                 restricted_policy_launch_blocked = true;
+                            }
+                            if let Some(path) = &emit_jsonl {
+                                let row = run_attempt_jsonl_from_error(&task.id, attempt, p, &e);
+                                if let Err(error) = append_run_attempt_jsonl(path, &row) {
+                                    eprintln!(
+                                        "Failed to append attempt JSONL {}: {error}",
+                                        path.display()
+                                    );
+                                    std::process::exit(1);
+                                }
                             }
                             rows.push(RunSummaryRow {
                                 title: title.clone(),
@@ -3573,6 +3808,94 @@ fn format_promotion_decision(decision: &a2_core::protocol::PromotionDecision) ->
         a2_core::protocol::PromotionDecision::Rollback { target, reason } => {
             format!("rollback to {target} ({reason})")
         }
+    }
+}
+
+fn tail_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut start = value.len() - max_bytes;
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    value[start..].to_string()
+}
+
+fn append_run_attempt_jsonl(path: &Path, row: &RunAttemptJsonl) -> io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    serde_json::to_writer(&mut file, row).map_err(io::Error::other)?;
+    file.write_all(b"\n")
+}
+
+fn run_attempt_jsonl_from_outcome(
+    attempt: usize,
+    provider: &dyn a2_core::traits::ModelProvider,
+    outcome: &a2d::GovernorOutcome,
+) -> RunAttemptJsonl {
+    let patch = outcome.result.patch.as_ref();
+    let attribution = patch.map(|patch| &patch.model_attribution);
+    let test_results = patch.map(|patch| &patch.test_results);
+    RunAttemptJsonl {
+        task_id: outcome.task_id.to_string(),
+        attempt,
+        decision: format_promotion_decision(&outcome.decision),
+        provider: attribution
+            .map(|attribution| attribution.provider.clone())
+            .unwrap_or_else(|| provider.provider_id().to_string()),
+        model: attribution
+            .map(|attribution| attribution.model.clone())
+            .unwrap_or_else(|| provider.model_id().to_string()),
+        tokens_in: attribution.map_or(0, |attribution| attribution.tokens_in),
+        tokens_out: attribution.map_or(0, |attribution| attribution.tokens_out),
+        duration_secs: outcome.result.duration_secs,
+        patch_diff: patch.map_or_else(String::new, |patch| patch.diff.clone()),
+        worktree_verifications: patch
+            .into_iter()
+            .flat_map(|patch| patch.worktree_verifications.iter())
+            .map(|verification| RunAttemptVerificationJsonl {
+                command: verification.command.clone(),
+                exit_code: verification.exit_code,
+                passed: verification.passed,
+                stdout_tail: tail_utf8(&verification.stdout_excerpt, JSONL_TAIL_MAX_BYTES),
+                stderr_tail: tail_utf8(&verification.stderr_excerpt, JSONL_TAIL_MAX_BYTES),
+            })
+            .collect(),
+        test_results: RunAttemptTestResultsJsonl {
+            passed: test_results.map_or(0, |results| results.passed),
+            failed: test_results.map_or(0, |results| results.failed),
+            skipped: test_results.map_or(0, |results| results.skipped),
+        },
+        retrieved_motifs_count: outcome.result.retrieved_motifs_count,
+    }
+}
+
+fn run_attempt_jsonl_from_error(
+    task_id: &a2_core::id::TaskId,
+    attempt: usize,
+    provider: &dyn a2_core::traits::ModelProvider,
+    error: &a2_core::error::A2Error,
+) -> RunAttemptJsonl {
+    RunAttemptJsonl {
+        task_id: task_id.to_string(),
+        attempt,
+        decision: format!("error: {error}"),
+        provider: provider.provider_id().to_string(),
+        model: provider.model_id().to_string(),
+        tokens_in: 0,
+        tokens_out: 0,
+        duration_secs: 0.0,
+        patch_diff: String::new(),
+        worktree_verifications: vec![],
+        test_results: RunAttemptTestResultsJsonl {
+            passed: 0,
+            failed: 0,
+            skipped: 0,
+        },
+        retrieved_motifs_count: 0,
     }
 }
 
@@ -6872,6 +7195,209 @@ mod tests {
             _ => panic!("expected run command"),
         }
         assert!(Cli::try_parse_from(["a2ctl", "run", "--attempts", "0"]).is_err());
+    }
+
+    #[test]
+    fn run_cli_accepts_external_experiment_options() {
+        let cli = Cli::try_parse_from([
+            "a2ctl",
+            "run",
+            "--workspace",
+            "/tmp/repository",
+            "--lineage-db",
+            "none",
+            "--verifier-feedback",
+            "raw",
+            "--emit-jsonl",
+            "/tmp/attempts.jsonl",
+            "--prompt-profile",
+            "external",
+            "--network-policy",
+            "isolated",
+            "--deny-read",
+            "/tmp/private-a",
+            "--deny-read",
+            "/tmp/private-b",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Run {
+                workspace,
+                lineage_db,
+                verifier_feedback,
+                emit_jsonl,
+                prompt_profile,
+                deny_read,
+                ..
+            } => {
+                assert_eq!(workspace, Some(PathBuf::from("/tmp/repository")));
+                assert_eq!(lineage_db.as_deref(), Some("none"));
+                assert_eq!(verifier_feedback, VerifierFeedbackArg::Raw);
+                assert_eq!(emit_jsonl, Some(PathBuf::from("/tmp/attempts.jsonl")));
+                assert_eq!(prompt_profile, PromptProfileArg::External);
+                assert_eq!(
+                    deny_read,
+                    vec![
+                        PathBuf::from("/tmp/private-a"),
+                        PathBuf::from("/tmp/private-b")
+                    ]
+                );
+            }
+            _ => panic!("expected run command"),
+        }
+    }
+
+    #[test]
+    fn run_cli_defaults_preserve_existing_execution_configuration() {
+        let cli = Cli::try_parse_from(["a2ctl", "run"]).unwrap();
+        match cli.command {
+            Commands::Run {
+                workspace,
+                lineage_db,
+                verifier_feedback,
+                emit_jsonl,
+                prompt_profile,
+                deny_read,
+                ..
+            } => {
+                assert!(workspace.is_none());
+                assert!(lineage_db.is_none());
+                assert_eq!(verifier_feedback, VerifierFeedbackArg::Redacted);
+                assert!(emit_jsonl.is_none());
+                assert_eq!(prompt_profile, PromptProfileArg::A2);
+                assert!(deny_read.is_empty());
+            }
+            _ => panic!("expected run command"),
+        }
+    }
+
+    #[test]
+    fn run_workspace_must_be_an_existing_git_repository() {
+        let root = std::env::temp_dir().join(format!(
+            "a2-run-workspace-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let repo = root.join("repo");
+        let plain = root.join("plain");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&plain).unwrap();
+        let init = std::process::Command::new("git")
+            .arg("init")
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+
+        assert_eq!(
+            validate_run_workspace(&repo).unwrap(),
+            repo.canonicalize().unwrap()
+        );
+        let error = validate_run_workspace(&plain).unwrap_err();
+        assert!(error.contains("not an existing git repository"));
+        assert!(validate_run_workspace(&root.join("missing")).is_err());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn explicit_lineage_database_open_errors_are_not_suppressed() {
+        let root = std::env::temp_dir().join(format!(
+            "a2-lineage-path-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let valid = root.join("lineage.sqlite");
+        assert!(open_lineage_store(&valid).is_ok());
+        let error = match open_lineage_store(&root) {
+            Ok(_) => panic!("opening a directory as a lineage database must fail"),
+            Err(error) => error,
+        };
+        assert!(error.contains("open lineage db"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn deny_read_requires_restricted_network_policy() {
+        assert!(validate_deny_read_policy(None, &[PathBuf::from("/tmp/private")]).is_err());
+        assert!(
+            validate_deny_read_policy(
+                Some(&a2_core::protocol::NetworkPolicy::Open),
+                &[PathBuf::from("/tmp/private")]
+            )
+            .is_err()
+        );
+        assert!(
+            validate_deny_read_policy(
+                Some(&a2_core::protocol::NetworkPolicy::Isolated),
+                &[PathBuf::from("/tmp/private")]
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn run_attempt_jsonl_appends_unredacted_patch_and_bounded_verifier_tails() {
+        let dir = std::env::temp_dir().join(format!(
+            "a2-run-jsonl-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("attempts.jsonl");
+        let long_stdout = format!("prefix{}tail", "x".repeat(25 * 1024));
+        let row = RunAttemptJsonl {
+            task_id: "task-1".into(),
+            attempt: 1,
+            decision: "discard".into(),
+            provider: "provider".into(),
+            model: "model".into(),
+            tokens_in: 10,
+            tokens_out: 20,
+            duration_secs: 1.5,
+            patch_diff: "SECRET_UNREDACTED_DIFF".into(),
+            worktree_verifications: vec![RunAttemptVerificationJsonl {
+                command: "verify".into(),
+                exit_code: Some(1),
+                passed: false,
+                stdout_tail: tail_utf8(&long_stdout, JSONL_TAIL_MAX_BYTES),
+                stderr_tail: "stderr".into(),
+            }],
+            test_results: RunAttemptTestResultsJsonl {
+                passed: 0,
+                failed: 1,
+                skipped: 0,
+            },
+            retrieved_motifs_count: 2,
+        };
+
+        append_run_attempt_jsonl(&path, &row).unwrap();
+        append_run_attempt_jsonl(&path, &row).unwrap();
+
+        let lines = std::fs::read_to_string(&path).unwrap();
+        let parsed = lines
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0]["patch_diff"], "SECRET_UNREDACTED_DIFF");
+        assert_eq!(parsed[0]["retrieved_motifs_count"], 2);
+        let stdout_tail = parsed[0]["worktree_verifications"][0]["stdout_tail"]
+            .as_str()
+            .unwrap();
+        assert!(stdout_tail.len() <= JSONL_TAIL_MAX_BYTES);
+        assert!(stdout_tail.ends_with("tail"));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[tokio::test]

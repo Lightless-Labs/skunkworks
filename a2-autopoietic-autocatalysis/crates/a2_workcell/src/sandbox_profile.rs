@@ -61,18 +61,48 @@ impl SandboxProfile {
 pub fn sandbox_profile_for_network_policy(
     policy: &NetworkPolicy,
 ) -> Result<SandboxProfile, String> {
-    match policy {
-        NetworkPolicy::Open => Err(
-            "network_policy=Open does not need a sandbox profile; unrestricted provider launch must remain explicit"
-                .into(),
-        ),
-        NetworkPolicy::Isolated => Ok(profile_from_lines(vec![
+    sandbox_profile_for_network_policy_with_denied_paths(policy, &[])
+}
+
+pub fn sandbox_profile_for_network_policy_with_denied_paths(
+    policy: &NetworkPolicy,
+    denied_paths: &[PathBuf],
+) -> Result<SandboxProfile, String> {
+    let mut profile = match policy {
+        NetworkPolicy::Open => {
+            return Err(
+                "network_policy=Open does not need a sandbox profile; unrestricted provider launch must remain explicit"
+                    .into(),
+            );
+        }
+        NetworkPolicy::Isolated => profile_from_lines(vec![
             "(version 1)".into(),
             "(allow default)".into(),
             "(deny network*)".into(),
-        ])),
-        NetworkPolicy::AllowList(endpoints) => provider_allowlist_profile(endpoints),
+        ]),
+        NetworkPolicy::AllowList(endpoints) => provider_allowlist_profile(endpoints)?,
+    };
+
+    if denied_paths.is_empty() {
+        return Ok(profile);
     }
+
+    let deny_lines = denied_paths
+        .iter()
+        .map(|path| {
+            let path = path
+                .to_str()
+                .ok_or_else(|| "deny-read path must be valid UTF-8".to_string())?;
+            if path.contains('"') || path.contains('\\') {
+                return Err("deny-read path must not contain `\"` or `\\`".into());
+            }
+            Ok(format!(
+                "(deny file-read* file-write* (subpath \"{path}\"))"
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    profile.profile_lines.splice(2..2, deny_lines);
+    Ok(profile_from_lines(profile.profile_lines))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,13 +132,34 @@ where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
+    materialize_provider_command_for_network_policy_with_denied_paths(
+        policy,
+        profile_dir,
+        child_program,
+        child_args,
+        &[],
+    )
+}
+
+pub fn materialize_provider_command_for_network_policy_with_denied_paths<I, S>(
+    policy: Option<&NetworkPolicy>,
+    profile_dir: &Path,
+    child_program: impl Into<OsString>,
+    child_args: I,
+    denied_paths: &[PathBuf],
+) -> Result<ProviderCommandMaterialization, String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
     match policy {
         Some(restricted @ (NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))) => {
-            let materialized = materialize_sandbox_exec_command(
+            let materialized = materialize_sandbox_exec_command_with_denied_paths(
                 restricted,
                 profile_dir,
                 child_program,
                 child_args,
+                denied_paths,
             )?;
             Ok(ProviderCommandMaterialization {
                 profile: Some(materialized.profile),
@@ -118,13 +169,21 @@ where
                 sandboxed: true,
             })
         }
-        Some(NetworkPolicy::Open) | None => Ok(ProviderCommandMaterialization {
-            profile: None,
-            profile_path: None,
-            program: child_program.into(),
-            args: child_args.into_iter().map(Into::into).collect(),
-            sandboxed: false,
-        }),
+        Some(NetworkPolicy::Open) | None => {
+            if !denied_paths.is_empty() {
+                return Err(
+                    "deny-read paths require an isolated or allowlist network policy sandbox"
+                        .into(),
+                );
+            }
+            Ok(ProviderCommandMaterialization {
+                profile: None,
+                profile_path: None,
+                program: child_program.into(),
+                args: child_args.into_iter().map(Into::into).collect(),
+                sandboxed: false,
+            })
+        }
     }
 }
 
@@ -138,7 +197,27 @@ where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
-    let profile = sandbox_profile_for_network_policy(policy)?;
+    materialize_sandbox_exec_command_with_denied_paths(
+        policy,
+        profile_dir,
+        child_program,
+        child_args,
+        &[],
+    )
+}
+
+pub fn materialize_sandbox_exec_command_with_denied_paths<I, S>(
+    policy: &NetworkPolicy,
+    profile_dir: &Path,
+    child_program: impl Into<OsString>,
+    child_args: I,
+    denied_paths: &[PathBuf],
+) -> Result<SandboxExecCommandMaterialization, String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let profile = sandbox_profile_for_network_policy_with_denied_paths(policy, denied_paths)?;
     let profile_dir = create_and_canonicalize_profile_dir(profile_dir)?;
     let profile_path = profile_dir.join(format!("a2-sandbox-{}.sb", profile.profile_sha256));
     write_profile_without_following_symlinks(&profile_path, &profile.text())?;
@@ -587,6 +666,103 @@ mod tests {
             "(version 1)\n(allow default)\n(deny network*)\n"
         );
         assert_eq!(profile.profile_sha256, sha256_text(&profile.text()));
+    }
+
+    #[test]
+    fn denied_subpaths_are_added_after_allow_default_and_change_profile_hash() {
+        let denied = PathBuf::from("/private/tmp/external-secret");
+        let original = sandbox_profile_for_network_policy(&NetworkPolicy::Isolated).unwrap();
+        let profile = sandbox_profile_for_network_policy_with_denied_paths(
+            &NetworkPolicy::Isolated,
+            std::slice::from_ref(&denied),
+        )
+        .unwrap();
+
+        assert_eq!(
+            profile.profile_lines,
+            vec![
+                "(version 1)",
+                "(allow default)",
+                "(deny file-read* file-write* (subpath \"/private/tmp/external-secret\"))",
+                "(deny network*)",
+            ]
+        );
+        assert_ne!(profile.profile_sha256, original.profile_sha256);
+        assert_eq!(profile.profile_sha256, sha256_text(&profile.text()));
+    }
+
+    #[test]
+    fn denied_subpaths_reject_sandbox_string_escape_characters() {
+        for denied in [
+            PathBuf::from("/tmp/quote\"path"),
+            PathBuf::from("/tmp/back\\slash"),
+        ] {
+            let error = sandbox_profile_for_network_policy_with_denied_paths(
+                &NetworkPolicy::Isolated,
+                &[denied],
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("must not contain"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn denied_subpath_blocks_file_reads_but_allows_outside_reads() {
+        let temp_dir = PathBuf::from("/private/tmp").join(format!(
+            "a2-sandbox-deny-read-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let denied_dir = temp_dir.join("denied");
+        let allowed_dir = temp_dir.join("allowed");
+        std::fs::create_dir_all(&denied_dir).unwrap();
+        std::fs::create_dir_all(&allowed_dir).unwrap();
+        let denied_file = denied_dir.join("secret.txt");
+        let allowed_file = allowed_dir.join("public.txt");
+        std::fs::write(&denied_file, "secret").unwrap();
+        std::fs::write(&allowed_file, "public").unwrap();
+        let denied_dir = denied_dir.canonicalize().unwrap();
+
+        let probe = materialize_sandbox_exec_command_with_denied_paths(
+            &NetworkPolicy::Isolated,
+            &temp_dir.join("profiles"),
+            "sh",
+            [
+                OsStr::new("-c"),
+                OsStr::new(
+                    "cat \"$1\"; denied_status=$?; cat \"$2\"; allowed_status=$?; test \"$denied_status\" -ne 0 && test \"$allowed_status\" -eq 0",
+                ),
+                OsStr::new("sandbox-file-probe"),
+                denied_file.as_os_str(),
+                allowed_file.as_os_str(),
+            ],
+            std::slice::from_ref(&denied_dir),
+        )
+        .unwrap();
+        let output = std::process::Command::new(&probe.program)
+            .args(&probe.args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "sandbox file probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("Operation not permitted"),
+            "expected file-read denial, got: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "public");
+
+        std::fs::remove_dir_all(&temp_dir).ok();
     }
 
     #[test]

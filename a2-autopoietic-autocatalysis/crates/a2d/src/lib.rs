@@ -7,7 +7,7 @@ use a2_core::error::A2Result;
 use a2_core::id::*;
 use a2_core::protocol::*;
 use a2_core::traits::*;
-use a2_workcell::runtime::{WorkcellConfig, WorkcellResult, run_workcell};
+use a2_workcell::runtime::{VerifierFeedback, WorkcellConfig, WorkcellResult, run_workcell};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -196,6 +196,7 @@ pub struct Governor {
     stagnation_detector: Option<Mutex<StagnationDetector>>,
     lineage_store: Option<Arc<dyn LineageStore>>,
     enable_anti_repeat_retry: bool,
+    verifier_feedback: VerifierFeedback,
 }
 
 impl Governor {
@@ -206,6 +207,7 @@ impl Governor {
             stagnation_detector: None,
             lineage_store: None,
             enable_anti_repeat_retry: true,
+            verifier_feedback: VerifierFeedback::Redacted,
         }
     }
 
@@ -220,6 +222,7 @@ impl Governor {
             stagnation_detector: Some(Mutex::new(stagnation_detector)),
             lineage_store: None,
             enable_anti_repeat_retry: true,
+            verifier_feedback: VerifierFeedback::Redacted,
         }
     }
 
@@ -236,6 +239,11 @@ impl Governor {
     /// acceptance criteria, and candidate-worktree verifiers intact.
     pub fn with_anti_repeat_retry(mut self, enabled: bool) -> Self {
         self.enable_anti_repeat_retry = enabled;
+        self
+    }
+
+    pub fn with_verifier_feedback(mut self, verifier_feedback: VerifierFeedback) -> Self {
+        self.verifier_feedback = verifier_feedback;
         self
     }
 
@@ -280,6 +288,7 @@ impl Governor {
             budget: self.default_budget.clone(),
             prior_lineage,
             enable_anti_repeat_retry: self.enable_anti_repeat_retry,
+            verifier_feedback: self.verifier_feedback,
         };
 
         // Execute.

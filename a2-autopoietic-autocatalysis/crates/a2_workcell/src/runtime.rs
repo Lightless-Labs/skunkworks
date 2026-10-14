@@ -16,6 +16,13 @@ use sha2::{Digest, Sha256};
 
 use crate::budget::BudgetTracker;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VerifierFeedback {
+    #[default]
+    Redacted,
+    Raw,
+}
+
 /// Configuration for a workcell execution.
 pub struct WorkcellConfig {
     pub workcell_id: WorkcellId,
@@ -29,6 +36,9 @@ pub struct WorkcellConfig {
     /// misses verifier-derived source paths. Keep configurable for benchmark
     /// ablations that isolate this strategy from the candidate verifier.
     pub enable_anti_repeat_retry: bool,
+    /// Controls whether benchmark-sensitive verifier and patch payloads are
+    /// hashed before persistence and retry-prompt rendering.
+    pub verifier_feedback: VerifierFeedback,
 }
 
 /// Normalize and bound persisted patch text before putting it into a prompt motif.
@@ -352,7 +362,15 @@ fn task_requires_benchmark_lineage_redaction(task: &TaskContract) -> bool {
         || benchmark_sensitive_runtime_text(&task.description)
 }
 
-fn safe_catalyst_error_focus(error: &A2Error, task: &TaskContract) -> String {
+fn should_redact_lineage(task: &TaskContract, feedback: VerifierFeedback) -> bool {
+    feedback == VerifierFeedback::Redacted && task_requires_benchmark_lineage_redaction(task)
+}
+
+fn safe_catalyst_error_focus(
+    error: &A2Error,
+    task: &TaskContract,
+    feedback: VerifierFeedback,
+) -> String {
     let raw = match error {
         A2Error::CatalystFailure(_, message)
         | A2Error::ProviderError(message)
@@ -368,7 +386,10 @@ fn safe_catalyst_error_focus(error: &A2Error, task: &TaskContract) -> String {
             "catalyst execution failed before producing a candidate patch"
         }
     };
-    if task_requires_benchmark_lineage_redaction(task) || benchmark_sensitive_runtime_text(raw) {
+    if feedback == VerifierFeedback::Redacted
+        && (task_requires_benchmark_lineage_redaction(task)
+            || benchmark_sensitive_runtime_text(raw))
+    {
         "catalyst execution failed before producing a candidate patch; detailed error withheld to avoid leaking benchmark task text".into()
     } else {
         compact_snippet(raw, 600)
@@ -395,11 +416,15 @@ fn summarized_text_hash(label: &str, value: &str) -> String {
     format!("{label}_withheld: sha256={sha256}; bytes={bytes}; lines={lines}")
 }
 
-fn lineage_patch_diff_for_task(patch: &PatchBundle, task: &TaskContract) -> Option<String> {
+fn lineage_patch_diff_for_task(
+    patch: &PatchBundle,
+    task: &TaskContract,
+    feedback: VerifierFeedback,
+) -> Option<String> {
     if patch.diff.trim().is_empty() {
         return None;
     }
-    if task_requires_benchmark_lineage_redaction(task) {
+    if should_redact_lineage(task, feedback) {
         Some(summarized_text_hash(
             "benchmark_candidate_patch_diff",
             &patch.diff,
@@ -409,11 +434,15 @@ fn lineage_patch_diff_for_task(patch: &PatchBundle, task: &TaskContract) -> Opti
     }
 }
 
-fn lineage_patch_rationale_for_task(patch: &PatchBundle, task: &TaskContract) -> Option<String> {
+fn lineage_patch_rationale_for_task(
+    patch: &PatchBundle,
+    task: &TaskContract,
+    feedback: VerifierFeedback,
+) -> Option<String> {
     if patch.rationale.trim().is_empty() {
         return None;
     }
-    if task_requires_benchmark_lineage_redaction(task) {
+    if should_redact_lineage(task, feedback) {
         Some(summarized_text_hash(
             "benchmark_candidate_patch_rationale",
             &patch.rationale,
@@ -426,8 +455,9 @@ fn lineage_patch_rationale_for_task(patch: &PatchBundle, task: &TaskContract) ->
 fn lineage_external_verifications_for_task(
     patch: &PatchBundle,
     task: &TaskContract,
+    feedback: VerifierFeedback,
 ) -> Vec<ExternalVerification> {
-    if !task_requires_benchmark_lineage_redaction(task) {
+    if !should_redact_lineage(task, feedback) {
         return patch.worktree_verifications.clone();
     }
 
@@ -609,6 +639,7 @@ pub struct WorkcellResult {
     pub tokens_used: u64,
     pub calls_used: u32,
     pub duration_secs: f64,
+    pub retrieved_motifs_count: usize,
 }
 
 /// Execute a single workcell: catalyst + evaluation in a budget-bounded context.
@@ -642,6 +673,7 @@ pub async fn run_workcell(
         prior_attempts,
         retrieved_motifs,
     };
+    let retrieved_motifs_count = context.retrieved_motifs.len();
 
     // Execute the catalyst to produce a patch, bounded by the wall-clock budget.
     let timeout_duration = std::time::Duration::from_secs(config.budget.max_duration_secs);
@@ -679,7 +711,7 @@ pub async fn run_workcell(
         Ok(Err(e)) => {
             tracing::error!(workcell = %config.workcell_id, "catalyst failed: {e}");
             no_candidate_verifications.push(catalyst_failure_verification(
-                safe_catalyst_error_focus(&e, &config.task),
+                safe_catalyst_error_focus(&e, &config.task, config.verifier_feedback),
             ));
             None
         }
@@ -710,13 +742,15 @@ pub async fn run_workcell(
             .unwrap_or_else(PatchId::new),
         patch_diff: patch
             .as_ref()
-            .and_then(|p| lineage_patch_diff_for_task(p, &config.task)),
-        patch_rationale: patch
-            .as_ref()
-            .and_then(|p| lineage_patch_rationale_for_task(p, &config.task)),
+            .and_then(|p| lineage_patch_diff_for_task(p, &config.task, config.verifier_feedback)),
+        patch_rationale: patch.as_ref().and_then(|p| {
+            lineage_patch_rationale_for_task(p, &config.task, config.verifier_feedback)
+        }),
         external_verifications: patch
             .as_ref()
-            .map(|p| lineage_external_verifications_for_task(p, &config.task))
+            .map(|p| {
+                lineage_external_verifications_for_task(p, &config.task, config.verifier_feedback)
+            })
             .unwrap_or(no_candidate_verifications),
         parent_germline: config.germline_version,
         model_attributions: patch
@@ -747,6 +781,7 @@ pub async fn run_workcell(
         tokens_used: tracker.tokens_used(),
         calls_used: tracker.calls_used(),
         duration_secs: duration,
+        retrieved_motifs_count,
     })
 }
 
@@ -1048,6 +1083,7 @@ mod tests {
             task,
             prior_lineage: vec![],
             enable_anti_repeat_retry: true,
+            verifier_feedback: VerifierFeedback::Redacted,
         }
     }
 
@@ -1168,6 +1204,7 @@ mod tests {
             },
             prior_lineage: vec![prior],
             enable_anti_repeat_retry: true,
+            verifier_feedback: VerifierFeedback::Redacted,
         };
 
         run_workcell(config, &catalyst, &NoopProvider, &AlwaysPassEvaluator)
@@ -1271,6 +1308,7 @@ mod tests {
             },
             prior_lineage: vec![prior],
             enable_anti_repeat_retry: true,
+            verifier_feedback: VerifierFeedback::Redacted,
         };
 
         run_workcell(config, &catalyst, &NoopProvider, &AlwaysPassEvaluator)
@@ -1379,6 +1417,7 @@ mod tests {
             },
             prior_lineage: vec![prior],
             enable_anti_repeat_retry: false,
+            verifier_feedback: VerifierFeedback::Redacted,
         };
 
         run_workcell(config, &catalyst, &NoopProvider, &AlwaysPassEvaluator)
@@ -1584,6 +1623,7 @@ mod tests {
             },
             prior_lineage: vec![],
             enable_anti_repeat_retry: true,
+            verifier_feedback: VerifierFeedback::Redacted,
         };
         let catalyst = VerifierCatalyst {
             id: CatalystId::new(),
@@ -1786,6 +1826,71 @@ mod tests {
         assert!(!retry_context.contains("SECRET_SOLUTION_SHOULD_NOT_ARCHIVE"));
     }
 
+    #[tokio::test]
+    async fn verifier_feedback_mode_controls_attempt_two_context_payload() {
+        const SECRET_STDOUT: &str = "attempt-one verifier stdout: hidden assertion details";
+        let verification = ExternalVerification {
+            passed: false,
+            command: "python3 private_verifier.py".into(),
+            exit_code: Some(1),
+            failing_tests: vec!["hidden_test".into()],
+            failure_focus: vec!["hidden assertion failed".into()],
+            stdout_excerpt: SECRET_STDOUT.into(),
+            stderr_excerpt: "hidden stderr".into(),
+            verified_at: Utc::now(),
+        };
+
+        for (mode, expects_raw) in [
+            (VerifierFeedback::Redacted, false),
+            (VerifierFeedback::Raw, true),
+        ] {
+            let task_id = TaskId::new();
+            let mut task = test_task(task_id);
+            task.source = TaskSource::External {
+                origin: "swe-bench".into(),
+            };
+            task.no_external_solution_search = true;
+            let mut first_config = test_workcell_config(task.clone());
+            first_config.verifier_feedback = mode;
+            let first = run_workcell(
+                first_config,
+                &VerifierCatalyst {
+                    id: CatalystId::new(),
+                    verification: verification.clone(),
+                },
+                &NoopProvider,
+                &AlwaysPassEvaluator,
+            )
+            .await
+            .unwrap();
+
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let mut second_config = test_workcell_config(task);
+            second_config.verifier_feedback = mode;
+            second_config.prior_lineage = vec![first.lineage];
+            run_workcell(
+                second_config,
+                &CapturingCatalyst {
+                    id: CatalystId::new(),
+                    seen: seen.clone(),
+                },
+                &NoopProvider,
+                &AlwaysPassEvaluator,
+            )
+            .await
+            .unwrap();
+
+            let context = seen.lock().unwrap().clone().unwrap();
+            let rendered = context.retrieved_motifs.join("\n");
+            assert_eq!(rendered.contains(SECRET_STDOUT), expects_raw, "{rendered}");
+            assert_eq!(
+                rendered.contains("benchmark_verifier_stdout_withheld: sha256="),
+                !expects_raw,
+                "{rendered}"
+            );
+        }
+    }
+
     #[test]
     fn no_candidate_catalyst_failure_renders_as_retry_context() {
         let task_id = TaskId::new();
@@ -1866,6 +1971,7 @@ mod tests {
             },
             prior_lineage: vec![],
             enable_anti_repeat_retry: true,
+            verifier_feedback: VerifierFeedback::Redacted,
         };
 
         let catalyst = EchoCatalyst {

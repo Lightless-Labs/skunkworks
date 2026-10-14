@@ -12,8 +12,11 @@
 //! The model does what it's good at (editing code). Git does what it's good
 //! at (computing diffs). The diff quality problem disappears.
 
+#[cfg(test)]
+use crate::sandbox_profile::materialize_provider_command_for_network_policy;
 use crate::sandbox_profile::{
-    materialize_provider_command_for_network_policy, pi_provider_args,
+    ProviderCommandMaterialization,
+    materialize_provider_command_for_network_policy_with_denied_paths, pi_provider_args,
     sandbox_exec_available_on_this_platform,
 };
 use a2_core::error::{A2Error, A2Result};
@@ -26,12 +29,21 @@ use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 /// A catalyst that runs model agents in isolated git worktrees.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PromptProfile {
+    #[default]
+    A2,
+    External,
+}
+
 pub struct WorktreeCatalyst {
     id: CatalystId,
     /// Root of the main workspace (where .git lives).
     workspace_root: PathBuf,
     /// Git ref to branch worktrees from (default: "HEAD").
     base_ref: String,
+    prompt_profile: PromptProfile,
+    deny_read_paths: Vec<PathBuf>,
 }
 
 impl WorktreeCatalyst {
@@ -40,6 +52,8 @@ impl WorktreeCatalyst {
             id: CatalystId::new(),
             workspace_root,
             base_ref: "HEAD".into(),
+            prompt_profile: PromptProfile::A2,
+            deny_read_paths: vec![],
         }
     }
 
@@ -49,7 +63,35 @@ impl WorktreeCatalyst {
             id: CatalystId::new(),
             workspace_root,
             base_ref: base_ref.into(),
+            prompt_profile: PromptProfile::A2,
+            deny_read_paths: vec![],
         }
+    }
+
+    pub fn with_prompt_profile(mut self, prompt_profile: PromptProfile) -> Self {
+        self.prompt_profile = prompt_profile;
+        self
+    }
+
+    pub fn with_deny_read_paths(mut self, deny_read_paths: Vec<PathBuf>) -> Self {
+        self.deny_read_paths = deny_read_paths;
+        self
+    }
+
+    fn materialize_provider_command(
+        &self,
+        network_policy: Option<&NetworkPolicy>,
+        profile_dir: &Path,
+        program: &str,
+        args: Vec<OsString>,
+    ) -> Result<ProviderCommandMaterialization, String> {
+        materialize_provider_command_for_network_policy_with_denied_paths(
+            network_policy,
+            profile_dir,
+            program,
+            args,
+            &self.deny_read_paths,
+        )
     }
 
     /// Create a temporary git worktree and return its path.
@@ -429,15 +471,11 @@ impl WorktreeCatalyst {
             OsString::from("--dangerously-skip-permissions"),
         ];
         let profile_dir = self.workspace_root.join(".a2").join("sandbox-profiles");
-        let materialized = materialize_provider_command_for_network_policy(
-            network_policy,
-            &profile_dir,
-            "claude",
-            provider_args,
-        )
-        .map_err(|error| {
-            A2Error::ProviderError(format!("claude sandbox command materialization: {error}"))
-        })?;
+        let materialized = self
+            .materialize_provider_command(network_policy, &profile_dir, "claude", provider_args)
+            .map_err(|error| {
+                A2Error::ProviderError(format!("claude sandbox command materialization: {error}"))
+            })?;
         let output = Command::new(&materialized.program)
             .args(&materialized.args)
             .current_dir(worktree_path)
@@ -508,15 +546,11 @@ impl WorktreeCatalyst {
             OsString::from("--json"),
         ];
         let profile_dir = self.workspace_root.join(".a2").join("sandbox-profiles");
-        let materialized = materialize_provider_command_for_network_policy(
-            network_policy,
-            &profile_dir,
-            "codex",
-            provider_args,
-        )
-        .map_err(|error| {
-            A2Error::ProviderError(format!("codex sandbox command materialization: {error}"))
-        })?;
+        let materialized = self
+            .materialize_provider_command(network_policy, &profile_dir, "codex", provider_args)
+            .map_err(|error| {
+                A2Error::ProviderError(format!("codex sandbox command materialization: {error}"))
+            })?;
         let output = Command::new(&materialized.program)
             .args(&materialized.args)
             .current_dir(worktree_path)
@@ -586,15 +620,11 @@ impl WorktreeCatalyst {
             OsString::from("text"),
         ];
         let profile_dir = self.workspace_root.join(".a2").join("sandbox-profiles");
-        let materialized = materialize_provider_command_for_network_policy(
-            network_policy,
-            &profile_dir,
-            "gemini",
-            provider_args,
-        )
-        .map_err(|error| {
-            A2Error::ProviderError(format!("gemini sandbox command materialization: {error}"))
-        })?;
+        let materialized = self
+            .materialize_provider_command(network_policy, &profile_dir, "gemini", provider_args)
+            .map_err(|error| {
+                A2Error::ProviderError(format!("gemini sandbox command materialization: {error}"))
+            })?;
         let output = Command::new(&materialized.program)
             .args(&materialized.args)
             .current_dir(worktree_path)
@@ -636,15 +666,11 @@ impl WorktreeCatalyst {
             OsString::from(prompt),
         ];
         let profile_dir = self.workspace_root.join(".a2").join("sandbox-profiles");
-        let materialized = materialize_provider_command_for_network_policy(
-            network_policy,
-            &profile_dir,
-            "opencode",
-            provider_args,
-        )
-        .map_err(|error| {
-            A2Error::ProviderError(format!("opencode sandbox command materialization: {error}"))
-        })?;
+        let materialized = self
+            .materialize_provider_command(network_policy, &profile_dir, "opencode", provider_args)
+            .map_err(|error| {
+                A2Error::ProviderError(format!("opencode sandbox command materialization: {error}"))
+            })?;
         let output = Command::new(&materialized.program)
             .args(&materialized.args)
             .current_dir(worktree_path)
@@ -698,15 +724,11 @@ impl WorktreeCatalyst {
     ) -> A2Result<(String, String, String, u64, u64)> {
         let provider_args = pi_provider_args(model_id, None, prompt);
         let profile_dir = self.workspace_root.join(".a2").join("sandbox-profiles");
-        let materialized = materialize_provider_command_for_network_policy(
-            network_policy,
-            &profile_dir,
-            "pi",
-            provider_args,
-        )
-        .map_err(|error| {
-            A2Error::ProviderError(format!("pi sandbox command materialization: {error}"))
-        })?;
+        let materialized = self
+            .materialize_provider_command(network_policy, &profile_dir, "pi", provider_args)
+            .map_err(|error| {
+                A2Error::ProviderError(format!("pi sandbox command materialization: {error}"))
+            })?;
         let output = Command::new(&materialized.program)
             .args(&materialized.args)
             .current_dir(worktree_path)
@@ -801,18 +823,32 @@ impl WorktreeCatalyst {
     }
 
     fn build_prompt(&self, task: &TaskContract, context: &ContextPack) -> String {
-        let mut prompt = format!(
-            "You are working on the A² project.\n\n\
-             # Task: {}\n\n\
-             {}\n\n\
-             ## Instructions\n\n\
-             Read the relevant files, make the necessary changes directly, and run \
-             `cargo check` plus relevant `cargo test` commands. A² may run additional \
-             task-specific verifier commands after your changes before accepting the \
-             patch. Do not produce a diff — edit the files directly.\n\n\
-             Keep changes minimal and focused on the task.",
-            task.title, task.description
-        );
+        let mut prompt = match self.prompt_profile {
+            PromptProfile::A2 => format!(
+                "You are working on the A² project.\n\n\
+                 # Task: {}\n\n\
+                 {}\n\n\
+                 ## Instructions\n\n\
+                 Read the relevant files, make the necessary changes directly, and run \
+                 `cargo check` plus relevant `cargo test` commands. A² may run additional \
+                 task-specific verifier commands after your changes before accepting the \
+                 patch. Do not produce a diff — edit the files directly.\n\n\
+                 Keep changes minimal and focused on the task.",
+                task.title, task.description
+            ),
+            PromptProfile::External => format!(
+                "You are working in a software repository at its current directory.\n\n\
+                 # Task: {}\n\n\
+                 {}\n\n\
+                 ## Instructions\n\n\
+                 Read the relevant files and implement the task described below. You \
+                 must not modify, delete, or add tests. Run appropriate existing \
+                 verification commands when practical. Do not produce a diff — edit \
+                 the files directly.\n\n\
+                 Keep changes minimal and focused on the task.",
+                task.title, task.description
+            ),
+        };
 
         if !task.acceptance_criteria.is_empty() {
             prompt.push_str("\n\n## Acceptance Criteria\n\n");
@@ -834,7 +870,13 @@ impl WorktreeCatalyst {
         }
 
         prompt.push_str("\n\n## Workspace Structure\n\n");
-        prompt.push_str(self.workspace_structure());
+        match self.prompt_profile {
+            PromptProfile::A2 => prompt.push_str(self.workspace_structure()),
+            PromptProfile::External => prompt.push_str(
+                "- The current directory is the repository root.\n\
+                 - Inspect the repository to understand its structure and conventions.\n",
+            ),
+        }
 
         if !context.relevant_files.is_empty() {
             prompt.push_str("\n## Relevant Files\n\n");
@@ -981,6 +1023,28 @@ mod tests {
     struct MockModelProvider {
         provider_id: &'static str,
         model_id: &'static str,
+    }
+
+    fn test_task_contract() -> TaskContract {
+        TaskContract {
+            id: TaskId::new(),
+            title: "Fix the behavior".into(),
+            description: "Implement the requested change.".into(),
+            acceptance_criteria: vec![],
+            verification_commands: vec![],
+            budget: Budget {
+                max_tokens: 10_000,
+                max_duration_secs: 60,
+                max_calls: 4,
+            },
+            priority: Priority::Normal,
+            source: TaskSource::External {
+                origin: "test".into(),
+            },
+            no_external_solution_search: false,
+            network_policy: None,
+            created_at: Utc::now(),
+        }
     }
 
     #[async_trait::async_trait]
@@ -1227,6 +1291,32 @@ mod tests {
     }
 
     #[test]
+    fn external_prompt_profile_is_repository_neutral_and_preserves_retry_sections() {
+        let repo_dir =
+            std::env::temp_dir().join(format!("external-prompt-{}", uuid::Uuid::now_v7()));
+        let catalyst = WorktreeCatalyst::new(repo_dir).with_prompt_profile(PromptProfile::External);
+        let mut task = test_task_contract();
+        task.acceptance_criteria = vec!["The requested behavior works".into()];
+        let context = ContextPack {
+            germline_version: GermlineVersion::new(),
+            relevant_files: vec![],
+            prior_attempts: vec![LineageId::new()],
+            retrieved_motifs: vec!["attempt 1 verifier stdout".into()],
+        };
+
+        let prompt = catalyst.build_prompt(&task, &context);
+
+        assert!(prompt.contains("software repository at its current directory"));
+        assert!(prompt.contains("must not modify, delete, or add tests"));
+        assert!(prompt.contains("## Acceptance Criteria\n\n- The requested behavior works"));
+        assert!(prompt.contains("## Prior Attempts on This Task"));
+        assert!(prompt.contains("attempt 1 verifier stdout"));
+        assert!(!prompt.contains("A²"));
+        assert!(!prompt.contains("crates/"));
+        assert!(!prompt.to_ascii_lowercase().contains("cargo"));
+    }
+
+    #[test]
     fn prompt_includes_benchmark_integrity_guard_when_requested() {
         let repo_dir = std::env::temp_dir().join(format!("a2-prompt-{}", uuid::Uuid::now_v7()));
         let catalyst = WorktreeCatalyst::new(repo_dir);
@@ -1323,6 +1413,36 @@ mod tests {
             vec!["(version 1)", "(allow default)", "(deny network*)"]
         );
 
+        let _ = std::fs::remove_dir_all(repo_dir);
+    }
+
+    #[test]
+    fn catalyst_provider_materialization_includes_configured_denied_paths() {
+        let repo_dir = std::env::temp_dir().join(format!("a2-prompt-{}", uuid::Uuid::now_v7()));
+        let denied = PathBuf::from("/private/tmp/competitor-checkout");
+        let catalyst =
+            WorktreeCatalyst::new(repo_dir.clone()).with_deny_read_paths(vec![denied.clone()]);
+
+        let materialized = catalyst
+            .materialize_provider_command(
+                Some(&NetworkPolicy::Isolated),
+                &repo_dir.join("profiles"),
+                "provider",
+                vec![OsString::from("--json")],
+            )
+            .unwrap();
+
+        let expected = format!(
+            "(deny file-read* file-write* (subpath \"{}\"))",
+            denied.display()
+        );
+        assert!(
+            materialized
+                .profile
+                .unwrap()
+                .profile_lines
+                .contains(&expected)
+        );
         let _ = std::fs::remove_dir_all(repo_dir);
     }
 
