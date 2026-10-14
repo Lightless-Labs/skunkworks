@@ -126,7 +126,7 @@ def run_a2ctl(cfg: argparse.Namespace, workspace: Path, payload: dict, attempts:
     with log.open("a") as handle:
         handle.write(json.dumps({"argv": argv[1:], "task_id": payload["task_id"]}) + "\n")
         handle.flush()
-        env = {**os.environ, "CODEX_HOME": str(cfg.codex_home)}
+        env = {**os.environ, "CODEX_HOME": str(cfg.codex_home), "A2_CODEX_REASONING_EFFORT": cfg.reasoning_effort}
         proc = subprocess.run(argv, input=json.dumps(payload) + "\n", text=True, stdout=handle, stderr=handle,
                               cwd=REPO_ROOT, env=env, timeout=cfg.timeout * attempts + 900)
     return proc.returncode
@@ -199,6 +199,8 @@ def run_arm(cfg: argparse.Namespace, opaque: str, arm: str, run_dir: Path) -> di
         "opaque_id": opaque,
         "arm": arm,
         "run_id": cfg.run_id,
+        "provider": cfg.provider,
+        "reasoning_effort": cfg.reasoning_effort,
         "attempts_used": len(attempts),
         "visible_passed_attempt": next((i + 1 for i, r in enumerate(attempts) if verifier_passed(r)), None),
         "tokens_in": sum(int(r.get("tokens_in") or 0) for r in attempts),
@@ -247,7 +249,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--attempts", type=int, default=3)
     parser.add_argument("--provider", default="codex/gpt-6-luna")
     parser.add_argument("--endpoint", action="append", default=None, help="model endpoint https URL (repeatable)")
-    parser.add_argument("--max-tokens", type=int, default=200_000)
+    # Non-binding ceiling: Codex input counts include cached context; the per-attempt timeout is the real limit.
+    parser.add_argument("--max-tokens", type=int, default=2_000_000)
+    parser.add_argument("--reasoning-effort", default="high",
+                        choices=["none", "minimal", "low", "medium", "high", "xhigh"])
     parser.add_argument("--timeout", type=int, default=1500)
     parser.add_argument("--a2ctl", type=Path, default=REPO_ROOT / "target" / "debug" / "a2ctl")
     parser.add_argument("--shard", default="0/1", help="i/n: run only tasks whose sample index % n == i")
