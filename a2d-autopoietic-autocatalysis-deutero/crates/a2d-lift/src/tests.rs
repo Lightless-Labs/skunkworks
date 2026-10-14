@@ -134,6 +134,7 @@ fn hidden_tests_never_reach_any_arm_and_are_scored_once() {
         seed: 0,
         primary: Some(Arm::B),
         min_families: 1,
+        max_excluded_share: 0.0,
         record_hidden_output: false,
         defer_scoring: false,
     };
@@ -242,6 +243,7 @@ fn arm_c_budget_is_enforced_across_all_enzymes() {
         seed: 0,
         primary: None,
         min_families: 1,
+        max_excluded_share: 0.0,
         record_hidden_output: false,
         defer_scoring: false,
     };
@@ -285,6 +287,7 @@ fn repair_loop_feeds_back_public_failures_and_stops_when_green() {
         seed: 0,
         primary: None,
         min_families: 1,
+        max_excluded_share: 0.0,
         record_hidden_output: false,
         defer_scoring: false,
     };
@@ -321,6 +324,7 @@ fn run_aborts_before_exceeding_global_cap() {
         seed: 0,
         primary: None,
         min_families: 1,
+        max_excluded_share: 0.0,
         record_hidden_output: false,
         defer_scoring: false,
     };
@@ -348,6 +352,7 @@ fn arm_c_without_runner_is_an_error() {
         seed: 0,
         primary: None,
         min_families: 1,
+        max_excluded_share: 0.0,
         record_hidden_output: false,
         defer_scoring: false,
     };
@@ -364,6 +369,7 @@ fn arm_order_is_a_seeded_permutation_per_tuple() {
         seed: 7,
         primary: Some(Arm::B),
         min_families: 1,
+        max_excluded_share: 0.0,
         record_hidden_output: false,
         defer_scoring: false,
     };
@@ -401,6 +407,7 @@ fn wall_clock_refusal_mid_arm_voids_the_tuple() {
         seed: 0,
         primary: None,
         min_families: 1,
+        max_excluded_share: 0.0,
         record_hidden_output: false,
         defer_scoring: false,
     };
@@ -459,6 +466,7 @@ fn deferred_scoring_scores_once_after_generation_and_detects_tampering() {
         seed: 0,
         primary: None,
         min_families: 1,
+        max_excluded_share: 0.0,
         record_hidden_output: false,
         defer_scoring: true,
     };
@@ -516,4 +524,100 @@ fn seeded_shuffle_is_a_deterministic_permutation() {
     sorted.sort();
     assert_eq!(sorted, (0..50).collect::<Vec<_>>());
     assert_ne!(a, (0..50).collect::<Vec<_>>());
+}
+
+fn outcome(arm: Arm, family: usize, task: usize, pass: bool) -> Outcome {
+    Outcome {
+        arm,
+        task: format!("t{family}-{task}"),
+        family: format!("f{family}"),
+        replicate: 0,
+        invocations: 1,
+        tokens: 0,
+        provider_ms: 0,
+        coder_calls: 1,
+        tool_calls: 0,
+        public_green: pass,
+        void_reason: None,
+        suspicious: Vec::new(),
+        hidden: crate::oracle::TestScore {
+            compiled: true,
+            passed: if pass { 4 } else { 2 },
+            failed: if pass { 0 } else { 2 },
+            expected: 4,
+            timed_out: false,
+            exit_success: pass,
+            all_passed: pass,
+            output: String::new(),
+        },
+    }
+}
+
+fn claim_plan() -> RunPlan {
+    RunPlan {
+        arms: vec![Arm::B, Arm::D, Arm::C],
+        k: 5,
+        replicates: 1,
+        jobs: 1,
+        seed: 0,
+        primary: Some(Arm::D),
+        min_families: 10,
+        max_excluded_share: 0.05,
+        record_hidden_output: false,
+        defer_scoring: false,
+    }
+}
+
+/// 12 families × 4 tasks; C passes everything, the comparators pass
+/// `b_pass` / `d_pass` of every family's tasks.
+fn claim_result(b_pass: usize, d_pass: usize, drop_tuples: usize) -> RunResult {
+    let mut outcomes = Vec::new();
+    for family in 0..12 {
+        for task in 0..4 {
+            if family * 4 + task < drop_tuples {
+                continue;
+            }
+            outcomes.push(outcome(Arm::C, family, task, true));
+            outcomes.push(outcome(Arm::B, family, task, task < b_pass));
+            outcomes.push(outcome(Arm::D, family, task, task < d_pass));
+        }
+    }
+    RunResult {
+        outcomes,
+        tuples_planned: 48,
+        aborted: false,
+        hidden_name_hits: Vec::new(),
+        scored: true,
+    }
+}
+
+#[test]
+fn overall_claim_needs_primary_and_secondary_supported() {
+    let plan = claim_plan();
+    // C beats D and B by 50 pp in every family.
+    let summary = summarize(&claim_result(2, 2, 0), &plan);
+    assert_eq!(summary["claim"], "SUPPORTED", "{summary}");
+    let roles: Vec<&str> = summary["comparisons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["treatment"] == "C")
+        .map(|c| c["role"].as_str().unwrap())
+        .collect();
+    assert!(roles.contains(&"primary") && roles.contains(&"secondary"));
+    // C ties B everywhere: the secondary fails, so no overall SUPPORTED.
+    let summary = summarize(&claim_result(4, 2, 0), &plan);
+    assert_eq!(summary["claim"], "INCONCLUSIVE", "{summary}");
+}
+
+#[test]
+fn small_exclusions_still_classify_but_large_ones_are_invalid() {
+    let plan = claim_plan();
+    // 2 of 48 tuples missing (4.2%): still classified.
+    let summary = summarize(&claim_result(2, 2, 2), &plan);
+    assert_eq!(summary["complete"], false);
+    assert_eq!(summary["claim"], "SUPPORTED", "{summary}");
+    // 4 of 48 missing (8.3%): Invalid.
+    let summary = summarize(&claim_result(2, 2, 4), &plan);
+    assert_eq!(summary["claim"], "Invalid", "{summary}");
 }

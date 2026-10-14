@@ -163,6 +163,7 @@ mod tests {
             seed: 0,
             primary: Some(Arm::B),
             min_families: 1,
+            max_excluded_share: 0.0,
             record_hidden_output: false,
             defer_scoring: false,
         };

@@ -38,6 +38,7 @@ pub const CONTROLLER_PATHS: &[&str] = &["crates", "Cargo.toml", "Cargo.lock"];
 
 pub const MIN_EFFECT: f64 = 0.10;
 pub const DEFAULT_MIN_FAMILIES: usize = 10;
+pub const DEFAULT_MAX_EXCLUDED_SHARE: f64 = 0.05;
 const BOOTSTRAP_ITERATIONS: usize = 10_000;
 const BOOTSTRAP_SEED: u64 = 0x5eed_a2d0;
 
@@ -112,6 +113,9 @@ pub struct RunPlan {
     /// The comparator for C fixed before the run (B or D), if C runs.
     pub primary: Option<Arm>,
     pub min_families: usize,
+    /// Classify only if at most this share of planned tuples is excluded
+    /// (voided, aborted or missing an arm); otherwise the run is Invalid.
+    pub max_excluded_share: f64,
     pub record_hidden_output: bool,
     /// Stop after generation; score later with [`score_deferred`] once the
     /// submissions are committed (confirmation protocol).
@@ -328,6 +332,9 @@ pub fn score_deferred(
             .map(Arm::parse)
             .transpose()?,
         min_families: number("min_families")? as usize,
+        max_excluded_share: registration["max_excluded_share"]
+            .as_f64()
+            .unwrap_or(DEFAULT_MAX_EXCLUDED_SHARE),
         record_hidden_output,
         defer_scoring: false,
     };
@@ -663,6 +670,19 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
         .collect();
     let complete =
         !result.aborted && void_tuples.is_empty() && complete_tuples.len() == result.tuples_planned;
+    let excluded_share = if result.tuples_planned == 0 {
+        1.0
+    } else {
+        1.0 - complete_tuples.len() as f64 / result.tuples_planned as f64
+    };
+    let classifiable = excluded_share <= plan.max_excluded_share + 1e-12;
+    let fraction = |o: &Outcome| {
+        if o.hidden.expected == 0 {
+            0.0
+        } else {
+            o.hidden.passed as f64 / o.hidden.expected as f64
+        }
+    };
     // Integrity findings block classification until reviewed.
     let tool_calls: usize = result.outcomes.iter().map(|o| o.tool_calls).sum();
     let integrity_ok = result.hidden_name_hits.is_empty() && tool_calls == 0;
@@ -685,6 +705,8 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
                 "tokens": arm_rows.iter().map(|o| o.tokens).sum::<usize>(),
                 "provider_ms": arm_rows.iter().map(|o| o.provider_ms).sum::<u64>(),
                 "public_green_hidden_fail": arm_rows.iter().filter(|o| o.public_green && !o.hidden.all_passed).count(),
+                "hidden_fraction_mean": if n == 0 { 0.0 } else { arm_rows.iter().map(|o| fraction(o)).sum::<f64>() / n as f64 },
+                "hidden_compile_failures": arm_rows.iter().filter(|o| !o.hidden.compiled).count(),
                 "suspicious_submissions": arm_rows.iter().filter(|o| !o.suspicious.is_empty()).count(),
             })
         })
@@ -718,18 +740,36 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
                 })
                 .collect();
             let s = stats::paired_summary(&paired, BOOTSTRAP_ITERATIONS, BOOTSTRAP_SEED);
+            let fraction_diffs: Vec<f64> = rows
+                .iter()
+                .filter(|o| o.arm == x)
+                .filter_map(|ox| {
+                    rows.iter()
+                        .find(|oy| oy.arm == y && oy.task == ox.task && oy.replicate == ox.replicate)
+                        .map(|oy| fraction(ox) - fraction(oy))
+                })
+                .collect();
+            let fraction_lift = if fraction_diffs.is_empty() {
+                0.0
+            } else {
+                fraction_diffs.iter().sum::<f64>() / fraction_diffs.len() as f64
+            };
             let class = if !integrity_ok {
                 "IntegrityReview".to_string()
-            } else if complete {
+            } else if !classifiable {
+                "Invalid".to_string()
+            } else {
                 format!(
                     "{:?}",
                     stats::classify_guarded(&s, MIN_EFFECT, plan.min_families)
                 )
-            } else {
-                "Incomplete".to_string()
             };
+            // Primary: C vs the pre-registered comparator. Secondary: C vs
+            // the other of B and D (the overall SUPPORTED claim needs both).
             let role = if x == Arm::C && plan.primary == Some(y) {
                 "primary"
+            } else if x == Arm::C && plan.primary.is_some() && matches!(y, Arm::B | Arm::D) {
+                "secondary"
             } else {
                 "exploratory"
             };
@@ -747,11 +787,35 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
                 "discordant_treatment_only": s.discordant_x_only,
                 "discordant_comparator_only": s.discordant_y_only,
                 "mcnemar_exact_p_descriptive": s.mcnemar_exact_p,
+                "hidden_fraction_lift": fraction_lift,
                 "class": class,
             })
         })
         .collect();
+    // Overall claim (roadmap Addendum 2026-10-14, P1 gate): SUPPORTED needs
+    // the primary AND the secondary comparison SUPPORTED; RULED OUT
+    // (falsification) is decided by the primary comparison alone.
+    let class_of = |role: &str| {
+        comparisons
+            .iter()
+            .find(|c| c["role"] == role)
+            .and_then(|c| c["class"].as_str())
+            .map(str::to_string)
+    };
+    let claim = match (
+        class_of("primary").as_deref(),
+        class_of("secondary").as_deref(),
+    ) {
+        (None, _) => "NoPrimary".to_string(),
+        (Some("Supported"), None | Some("Supported")) => "SUPPORTED".to_string(),
+        (Some("RuledOut"), _) => "RULED OUT".to_string(),
+        (Some(c @ ("IntegrityReview" | "Invalid")), _) => c.to_string(),
+        _ => "INCONCLUSIVE".to_string(),
+    };
     json!({
+        "claim": claim,
+        "excluded_share": excluded_share,
+        "max_excluded_share": plan.max_excluded_share,
         "complete": complete,
         "aborted": result.aborted,
         "tuples_planned": result.tuples_planned,

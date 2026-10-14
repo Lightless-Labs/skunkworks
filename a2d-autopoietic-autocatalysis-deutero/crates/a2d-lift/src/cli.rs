@@ -25,7 +25,8 @@ usage:
                --max-invocations <n> --max-wall-clock-secs <s>
                (--registered-at <git-sha> --expect-suite-hash <sha256> | --unregistered)
                [--arms A,B,D,C] [--k <n>] [--replicates <n>] [--jobs <n>]
-               [--primary B|D] [--seed <n>] [--min-families <n>] [--effort <level>]
+               [--primary B|D] [--seed <n>] [--min-families <n>] [--max-excluded-share <f>]
+               [--effort <level>]
                [--record-hidden-output] [--defer-scoring]";
 
 pub fn cli_main(args: &[String], arm_c: Option<&dyn ArmC>) -> i32 {
@@ -237,6 +238,11 @@ fn run(args: &[String], arm_c: Option<&dyn ArmC>) -> Result<(), String> {
         .map_or(Ok(crate::DEFAULT_MIN_FAMILIES), |_| {
             number(&flags, "min-families")
         })?;
+    let max_excluded_share: f64 = flags
+        .get("max-excluded-share")
+        .map_or(Ok(crate::DEFAULT_MAX_EXCLUDED_SHARE), |_| {
+            number(&flags, "max-excluded-share")
+        })?;
     if k == 0 || replicates == 0 || jobs == 0 {
         return Err("--k, --replicates and --jobs must be at least 1".to_string());
     }
@@ -287,6 +293,7 @@ fn run(args: &[String], arm_c: Option<&dyn ArmC>) -> Result<(), String> {
                 "jobs": jobs,
                 "seed": seed,
                 "min_families": min_families,
+                "max_excluded_share": max_excluded_share,
                 "model": model,
                 "effort": effort,
                 "max_invocations": max_invocations,
@@ -312,6 +319,7 @@ fn run(args: &[String], arm_c: Option<&dyn ArmC>) -> Result<(), String> {
         seed,
         primary,
         min_families,
+        max_excluded_share,
         record_hidden_output: flags.contains_key("record-hidden-output"),
         defer_scoring: flags.contains_key("defer-scoring"),
     };
