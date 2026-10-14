@@ -191,7 +191,7 @@ Rules:
 - Never pause for direction. If blocked on something external (quota, credentials, access), log it under the roadmap's Blockers, switch to an unblocked track and keep going. Never build scaffolding around a blocker.
 - Tripwires: a new LOG result at least every 2 sessions or 10 commits. No new redaction/sandbox/scrub work without an incident in a run artifact. Evidence must exercise the change. Budget caps on every run. At most 5 P4 hypotheses.
 - Hidden tests never reach any arm or enzyme. Confirmation sets never reach you and are scored once.
-- Phase gates and key designs get independent review from at least 2 non-Claude providers when available. Run reviewers in an empty temp dir, never with the repo as cwd, and record who was consulted.
+- Phase gates and key designs get independent review: Codex (Sol) plus a fresh-context Claude subagent, and other model families if they become available. Run reviewers in an empty temp dir, never with the repo as cwd, and record who was consulted.
 - Deutero: at each phase gate, compute process diagnostics (results per session, cost per result, tripwire hits), get them reviewed, and amend the roadmap with a dated Addendum. The loop that builds A²D is held to the same standard as A²D.
 - Deadline: if the P2 seed result is not recorded by 2026-11-30, record it as not measured by deadline (a non-result, not a falsification) and complete per the roadmap.
 ```
