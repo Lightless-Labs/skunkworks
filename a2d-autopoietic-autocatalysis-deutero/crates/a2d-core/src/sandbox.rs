@@ -283,6 +283,61 @@ pub fn run_isolated_tests(
     }
 }
 
+/// Compile `library` as a separate rlib crate named `lib_name`, then
+/// compile `tests` (a crate root that should `use lib_name::*;`) as a test
+/// crate linked against it. Only the library's public items are reachable,
+/// unlike the oracle's child-module layout. Nothing is run. `Err` carries
+/// the compiler output.
+pub fn compile_tests_against_library(
+    library: &str,
+    tests: &str,
+    lib_name: &str,
+    compile_timeout: Duration,
+) -> Result<(), String> {
+    let dir = tempfile::Builder::new()
+        .prefix("a2d-api-")
+        .tempdir()
+        .map_err(|e| format!("temp dir: {e}"))?;
+    let lib_path = dir.path().join("lib.rs");
+    let tests_path = dir.path().join("tests.rs");
+    fs::write(&lib_path, library).map_err(|e| e.to_string())?;
+    fs::write(&tests_path, tests).map_err(|e| e.to_string())?;
+    let rlib = dir.path().join(format!("lib{lib_name}.rlib"));
+    let compile = |mut command: Command| -> Result<(), String> {
+        harden_sandbox_child_command(&mut command);
+        match run_with_timeout(command, compile_timeout) {
+            TimedRun::Completed { success: true, .. } => Ok(()),
+            TimedRun::Completed { stderr, .. } => Err(stderr),
+            TimedRun::TimedOut { limit, .. } => {
+                Err(format!("compile timeout after {}s", limit.as_secs()))
+            }
+            TimedRun::SpawnFailed(e) => Err(format!("rustc failed to start: {e}")),
+        }
+    };
+    let mut lib = Command::new("rustc");
+    lib.args([
+        "--edition",
+        "2024",
+        "--crate-type",
+        "lib",
+        "--crate-name",
+        lib_name,
+    ])
+    .arg(&lib_path)
+    .arg("-o")
+    .arg(&rlib)
+    .current_dir(dir.path());
+    compile(lib).map_err(|e| format!("library: {e}"))?;
+    let mut test = Command::new("rustc");
+    test.args(["--test", "--edition", "2024", "--extern"])
+        .arg(format!("{lib_name}={}", rlib.display()))
+        .arg(&tests_path)
+        .arg("-o")
+        .arg(dir.path().join("tests_bin"))
+        .current_dir(dir.path());
+    compile(test)
+}
+
 fn parse_last_test_results(output: &str) -> (usize, usize) {
     output
         .lines()

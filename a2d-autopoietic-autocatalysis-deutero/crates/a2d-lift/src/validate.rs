@@ -9,19 +9,22 @@
 
 use crate::oracle::{score_hidden, score_public};
 use crate::task::{Task, load_suite};
+use a2d_core::sandbox::compile_tests_against_library;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 pub const REFERENCE_FILE: &str = "reference.rs";
 pub const MUTANTS_DIR: &str = "mutants";
 /// Authoring-spec minimums (P1 authoring spec v2).
 pub const MIN_MUTANTS: usize = 4;
 pub const MIN_PUBLIC_GREEN_MUTANTS: usize = 2;
-pub const MIN_HIDDEN_TESTS: usize = 12;
+pub const MIN_HIDDEN_TESTS: usize = 20;
+pub const MIN_PUBLIC_TESTS: usize = 3;
 
 #[derive(Debug, Clone)]
 pub struct TaskVerdict {
@@ -88,9 +91,12 @@ pub fn validate_task(task: &Task) -> TaskVerdict {
         mutants_public_green: 0,
     };
     let public = task.public();
-    let has_public = crate::task::count_tests(&public.public_tests) > 0;
-    if !has_public {
-        verdict.problems.push("no public tests".to_string());
+    let public_count = crate::task::count_tests(&public.public_tests);
+    let has_public = public_count > 0;
+    if public_count < MIN_PUBLIC_TESTS {
+        verdict.problems.push(format!(
+            "only {public_count} public tests (minimum {MIN_PUBLIC_TESTS})"
+        ));
     }
     let hidden_count = crate::task::count_tests(task.hidden_tests());
     if hidden_count < MIN_HIDDEN_TESTS {
@@ -109,6 +115,29 @@ pub fn validate_task(task: &Task) -> TaskVerdict {
                     "reference fails public ({}/{})",
                     score.passed, score.expected
                 ));
+            }
+            // API surface: tests must compile against the reference as a
+            // separate crate, i.e. through its public items only, or every
+            // candidate that keeps helpers private fails to compile.
+            for (label, tests) in [
+                ("public", &public.public_tests),
+                ("hidden", &task.hidden_tests().to_string()),
+            ] {
+                if crate::task::count_tests(tests) > 0
+                    && compile_tests_against_library(
+                        &reference,
+                        &format!(
+                            "#![allow(unused_imports, dead_code)]\nuse a2d_reference::*;\n{tests}"
+                        ),
+                        "a2d_reference",
+                        Duration::from_secs(120),
+                    )
+                    .is_err()
+                {
+                    verdict.problems.push(format!(
+                        "{label} tests need non-public reference items (fail against a separate crate)"
+                    ));
+                }
             }
             let hidden = score_hidden(task, Some(&reference));
             // A second run must agree: flaky references make every score noise.
@@ -232,6 +261,14 @@ pub(crate) fn test_names(source: &str) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     let mut armed = false;
     for line in source.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("#[test]")
+            && let Some(rest) = rest.trim_start().strip_prefix("fn ")
+        {
+            if let Some(name) = rest.split(['(', '<', ' ']).next() {
+                names.insert(name.to_string());
+            }
+            continue;
+        }
         if line == "#[test]" {
             armed = true;
         } else if armed && let Some(rest) = line.strip_prefix("fn ") {
@@ -251,19 +288,20 @@ mod tests {
     use super::*;
 
     const REFERENCE: &str =
-        "fn clamp_add(a: u8, b: u8) -> u8 { a.saturating_add(b) }\nfn main() {}\n";
-    const WRAPPING: &str = "fn clamp_add(a: u8, b: u8) -> u8 { a.wrapping_add(b) }\nfn main() {}\n";
-    const PUBLIC: &str = "#[test]\nfn adds_small() { assert_eq!(clamp_add(1, 2), 3); }\n";
+        "pub fn clamp_add(a: u8, b: u8) -> u8 { a.saturating_add(b) }\nfn main() {}\n";
+    const WRAPPING: &str =
+        "pub fn clamp_add(a: u8, b: u8) -> u8 { a.wrapping_add(b) }\nfn main() {}\n";
+    const PUBLIC: &str = "#[test]\nfn adds_small() { assert_eq!(clamp_add(1, 2), 3); }\n#[test]\nfn adds_zero() { assert_eq!(clamp_add(0, 0), 0); }\n#[test] fn adds_ten() { assert_eq!(clamp_add(7, 3), 10); }\n";
     const CLAMPED: &str =
-        "fn clamp_add(a: u8, b: u8) -> u8 { a.saturating_add(b).min(254) }\nfn main() {}\n";
+        "pub fn clamp_add(a: u8, b: u8) -> u8 { a.saturating_add(b).min(254) }\nfn main() {}\n";
     const SUBTRACTS: &str =
-        "fn clamp_add(a: u8, b: u8) -> u8 { a.saturating_sub(b) }\nfn main() {}\n";
-    const ZERO: &str = "fn clamp_add(_a: u8, _b: u8) -> u8 { 0 }\nfn main() {}\n";
+        "pub fn clamp_add(a: u8, b: u8) -> u8 { a.saturating_sub(b) }\nfn main() {}\n";
+    const ZERO: &str = "pub fn clamp_add(_a: u8, _b: u8) -> u8 { 0 }\nfn main() {}\n";
 
     fn hidden() -> String {
         let mut tests =
             String::from("#[test]\nfn saturates() { assert_eq!(clamp_add(250, 10), 255); }\n");
-        for i in 0..11u8 {
+        for i in 0..19u8 {
             tests.push_str(&format!(
                 "#[test]\nfn adds_{i}() {{ assert_eq!(clamp_add({i}, 3), {i} + 3); }}\n"
             ));
@@ -350,7 +388,30 @@ mod tests {
     }
 
     #[test]
+    fn rejects_tests_that_need_private_reference_items() {
+        let root = tempfile::tempdir().unwrap();
+        write_task(root.path(), &mutants(), &hidden());
+        // Reference keeps the function private: compiles under the oracle's
+        // child module, but not through a separate crate.
+        fs::write(
+            root.path().join("clamp").join(REFERENCE_FILE),
+            REFERENCE.replace("pub fn", "fn"),
+        )
+        .unwrap();
+        let text = validate_suite(root.path(), 1).unwrap().verdicts[0].to_string();
+        assert!(
+            text.contains("hidden tests need non-public reference items"),
+            "{text}"
+        );
+        assert!(
+            text.contains("public tests need non-public reference items"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn test_names_reads_only_test_functions() {
+        assert!(test_names("#[test] fn one_line() {}\n").contains("one_line"));
         let names = test_names(
             "fn helper() {}\n#[test]\n#[should_panic]\nfn panics() {}\n#[test]\nfn plain() {}\n",
         );
