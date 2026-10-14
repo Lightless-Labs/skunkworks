@@ -1,8 +1,9 @@
 # Plan: SWE-Bench Pro Blind Evaluator Adapter
 
 **Created:** 2026-07-09
-**Status:** Sealed evaluator scaffold implemented with redacted evidence export; operator manifest template added; blocked on real reviewed SWE-Bench Pro evaluator artifact
+**Status:** Slices 1–5 implemented against synthetic sealed evaluators (redacted evidence export, operator manifest template, retry feedback boundary); blocked on real reviewed SWE-Bench Pro evaluator artifact for slice 6
 **Enhanced:** 2026-07-10 — added operator-only access manifest template/checklist for trusted external evaluator handoff
+**Addendum:** 2026-10-14 — slice 5 landed (`507183c`): `swe-bench-pro-cycle-input`, `swe-bench-pro-cycle-input-feedback`, and `cycle-input --swe-bench-pro-evaluation` pressure mode with pinned-evaluator re-evaluation binding; sealed evaluator gained executable-hash pinning, exit-code classification (passed/failed/infrastructure_error) and an aggregate-metrics contract. Gap: the provider-invoking pressure-mode cycle has no hermetic test (no stub provider hook); trust-binding rejections are covered.
 
 ## Objective
 
@@ -27,7 +28,7 @@ The access-manifest inspection slice now defines and validates a synthetic/revie
 2. **Reviewed Pro manifest schema (implemented for inspection, operator template added, awaiting real artifact):** define a minimal `a2d.swe-bench-pro-access-manifest.v1` containing benchmark identity, instance id, public context path/hash, sealed evaluator command/adapter path, hidden-holdout declaration, and no-solution-search policy. The manifest must not contain sources, hidden tests, solution patches, or credentials. The committed template/checklist is deliberately not a reviewed or active manifest; filled manifests must stay outside git and A²D-visible prompts/artifacts.
 3. **Blind evaluator adapter scaffold (implemented for synthetic sealed evaluators, awaiting real artifact):** run the sealed evaluator in an isolated process/checkout, provide candidate patch by hash/path, persist only pass/fail/metrics and opaque hashes/IDs, and emit local evaluation JSON with hidden output redacted by default.
 4. **Fitness evidence export (implemented for sealed scaffold):** convert successful sealed evaluator output to `a2d.fitness-evidence.v1`; require `fitness-evidence-inspect --require-all-tests-pass` before persistence or self-improvement claims. Pro evidence validation rejects path/command-bearing optional fields and official Senior SWE-Bench provenance on `sealed_swe_bench_pro` evidence.
-5. **Retry feedback boundary:** transform failed sealed evaluations into bounded next-cycle feedback that contains no hidden test names/output and no solution references.
+5. **Retry feedback boundary (implemented for synthetic sealed evaluators):** transform failed sealed evaluations into bounded next-cycle feedback that contains no hidden test names/output and no solution references.
 6. **Live Pro smoke:** only after a reviewed manifest exists, run one instance end-to-end and document limitations honestly.
 
 ## Acceptance criteria
