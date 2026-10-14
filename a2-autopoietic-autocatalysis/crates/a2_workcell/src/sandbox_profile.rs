@@ -17,6 +17,32 @@ const SANDBOX_EXEC_PROGRAM: &str = "/usr/bin/sandbox-exec";
 pub const PI_AMBIENT_RESOURCE_ISOLATION_ARGS: [&str; 3] =
     ["--no-extensions", "--no-skills", "--no-prompt-templates"];
 
+/// Builds the argv for every A2-owned `codex exec` launch.
+///
+/// Inside an A2 Seatbelt profile (`outer_sandboxed`), Codex's own sandbox is bypassed: Seatbelt
+/// profiles cannot nest, and the outer profile already confines the whole process tree. Without
+/// an outer sandbox, Codex keeps its own workspace-write sandbox.
+pub fn codex_provider_args(model_id: &str, prompt: &str, outer_sandboxed: bool) -> Vec<OsString> {
+    let mut args: Vec<OsString> = [
+        "exec",
+        prompt,
+        "-m",
+        model_id,
+        "-c",
+        "model_reasoning_effort=\"high\"",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect();
+    args.push(OsString::from(if outer_sandboxed {
+        "--dangerously-bypass-approvals-and-sandbox"
+    } else {
+        "--approve-for-me"
+    }));
+    args.extend(["--ephemeral", "--skip-git-repo-check", "--json"].map(OsString::from));
+    args
+}
+
 /// Builds the argv for every A2-owned `pi` provider launch.
 pub fn pi_provider_args(model_id: &str, system: Option<&str>, prompt: &str) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
@@ -776,6 +802,28 @@ mod tests {
             .unwrap();
         assert_eq!(args[system_index + 1], "system text");
         assert_eq!(args.last(), Some(&"do the task"));
+    }
+
+    #[test]
+    fn codex_provider_args_bypass_inner_sandbox_only_inside_a2_sandbox() {
+        let inside: Vec<String> = codex_provider_args("gpt-6-luna", "do it", true)
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(&inside[..4], ["exec", "do it", "-m", "gpt-6-luna"]);
+        assert!(inside.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(!inside.contains(&"--approve-for-me".to_string()));
+        for flag in ["--ephemeral", "--skip-git-repo-check", "--json"] {
+            assert!(inside.contains(&flag.to_string()), "missing {flag}");
+        }
+        assert!(!inside.contains(&"--full-auto".to_string()));
+
+        let outside: Vec<String> = codex_provider_args("gpt-6-luna", "do it", false)
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(outside.contains(&"--approve-for-me".to_string()));
+        assert!(!outside.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
     }
 
     #[test]

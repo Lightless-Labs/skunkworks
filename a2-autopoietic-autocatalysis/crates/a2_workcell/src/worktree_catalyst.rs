@@ -4,7 +4,7 @@
 //! because models can't count whitespace), this catalyst:
 //!
 //! 1. Creates a git worktree from the current germline
-//! 2. Points a full coding agent (claude/codex/gemini) at it with --full-auto
+//! 2. Points a full coding agent (claude/codex/gemini/opencode/pi) at it non-interactively
 //! 3. Lets the agent edit files directly
 //! 4. Captures the diff from `git diff` in the worktree
 //! 5. Cleans up the worktree
@@ -15,7 +15,7 @@
 #[cfg(test)]
 use crate::sandbox_profile::materialize_provider_command_for_network_policy;
 use crate::sandbox_profile::{
-    ProviderCommandMaterialization,
+    ProviderCommandMaterialization, codex_provider_args,
     materialize_provider_command_for_network_policy_with_denied_paths_and_egress_proxy,
     pi_provider_args, sandbox_exec_available_on_this_platform,
 };
@@ -545,16 +545,11 @@ impl WorktreeCatalyst {
         worktree_path: &Path,
         network_policy: Option<&NetworkPolicy>,
     ) -> A2Result<(String, String, String, u64, u64)> {
-        let provider_args = vec![
-            OsString::from("exec"),
-            OsString::from(prompt),
-            OsString::from("-m"),
-            OsString::from(model_id),
-            OsString::from("-c"),
-            OsString::from("model_reasoning_effort=\"high\""),
-            OsString::from("--full-auto"),
-            OsString::from("--json"),
-        ];
+        let outer_sandboxed = matches!(
+            network_policy,
+            Some(NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))
+        );
+        let provider_args = codex_provider_args(model_id, prompt, outer_sandboxed);
         let profile_dir = self.workspace_root.join(".a2").join("sandbox-profiles");
         let materialized = self
             .materialize_provider_command(network_policy, &profile_dir, "codex", provider_args)

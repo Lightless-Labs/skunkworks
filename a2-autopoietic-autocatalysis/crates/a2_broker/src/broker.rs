@@ -1,7 +1,7 @@
 use a2_core::error::{A2Error, A2Result};
 use a2_core::protocol::NetworkPolicy;
 use a2_workcell::sandbox_profile::{
-    ProviderCommandMaterialization,
+    ProviderCommandMaterialization, codex_provider_args,
     materialize_provider_command_for_network_policy_with_egress_proxy, pi_provider_args,
     sandbox_exec_available_on_this_platform,
 };
@@ -754,19 +754,14 @@ impl ModelProvider for CodexProvider {
                 .as_micros()
         ));
 
-        let provider_args = vec![
-            OsString::from("exec"),
-            OsString::from(&combined_prompt),
-            OsString::from("-m"),
-            OsString::from(&self.model_id),
-            OsString::from("-c"),
-            OsString::from("model_reasoning_effort=\"high\""),
-            OsString::from("--full-auto"),
-            OsString::from("--skip-git-repo-check"),
-            OsString::from("--json"),
-            OsString::from("-o"),
-            out_path.clone().into_os_string(),
-        ];
+        let outer_sandboxed = matches!(
+            network_policy,
+            Some(NetworkPolicy::Isolated | NetworkPolicy::AllowList(_))
+        );
+        let mut provider_args =
+            codex_provider_args(&self.model_id, &combined_prompt, outer_sandboxed);
+        provider_args.push(OsString::from("-o"));
+        provider_args.push(out_path.clone().into_os_string());
         let mut cmd = broker_provider_command_with_network_policy(
             "codex",
             &self.binary_path,
