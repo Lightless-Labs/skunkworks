@@ -289,6 +289,47 @@ fn isolated_provider_cwd(command: &str) -> Result<std::path::PathBuf, ProviderEr
     Ok(dir)
 }
 
+fn spawn_pipe_reader<R: std::io::Read + Send + 'static>(
+    pipe: Option<R>,
+) -> Option<std::thread::JoinHandle<Vec<u8>>> {
+    pipe.map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            let _ = pipe.read_to_end(&mut buffer);
+            buffer
+        })
+    })
+}
+
+fn join_pipe_reader(reader: Option<std::thread::JoinHandle<Vec<u8>>>) -> Vec<u8> {
+    reader
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default()
+}
+
+/// The Codex CLI ends its stderr log with `tokens used` and the total on the
+/// next line (e.g. `7,477`).
+fn codex_usage(stderr: &str) -> TokenUsage {
+    let lines: Vec<&str> = stderr.lines().collect();
+    let reported_total = lines
+        .iter()
+        .rposition(|line| line.trim() == "tokens used")
+        .and_then(|index| lines.get(index + 1))
+        .and_then(|line| line.trim().replace(',', "").parse().ok());
+    TokenUsage {
+        reported_total,
+        ..TokenUsage::default()
+    }
+}
+
+/// Tool calls in a Codex CLI stderr log: each is announced by a line `exec`.
+pub fn codex_tool_calls(transcript: &str) -> usize {
+    transcript
+        .lines()
+        .filter(|line| line.trim() == "exec")
+        .count()
+}
+
 impl Provider for CliProvider {
     fn name(&self) -> &str {
         &self.name
@@ -354,6 +395,12 @@ impl Provider for CliProvider {
             ))
         })?;
 
+        // Drain both pipes while waiting: a child that fills the stderr pipe
+        // buffer (Codex echoes the prompt and response there) would otherwise
+        // block forever and surface as a timeout.
+        let stdout_reader = spawn_pipe_reader(child.stdout.take());
+        let stderr_reader = spawn_pipe_reader(child.stderr.take());
+
         // Provider timeout — no invocation should silently hang.
         // GLM is often slow-but-productive; give it a longer default window.
         // Override with A2D_PROVIDER_TIMEOUT_SECS env var for explicit experiments.
@@ -389,33 +436,40 @@ impl Provider for CliProvider {
             }
         }
 
-        let output = child.wait_with_output().map_err(|e| {
+        let status = child.wait().map_err(|e| {
             let _ = std::fs::remove_dir_all(&sandbox_dir);
             ProviderError::InvocationFailed(format!("{} output read failed: {e}", self.command))
         })?;
+        let stdout = join_pipe_reader(stdout_reader);
+        let stderr = String::from_utf8_lossy(&join_pipe_reader(stderr_reader)).into_owned();
         let _ = std::fs::remove_dir_all(&sandbox_dir);
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        if !status.success() {
             return Err(ProviderError::InvocationFailed(format!(
-                "{} exited with {}: {stderr}",
-                self.command, output.status
+                "{} exited with {status}: {stderr}",
+                self.command
             )));
         }
 
-        let raw = String::from_utf8_lossy(&output.stdout).to_string();
+        let raw = String::from_utf8_lossy(&stdout).to_string();
         let (text, thinking) = (self.output_parser)(&raw);
 
-        // CLI providers don't give us fine-grained tool events,
-        // so we produce a minimal trace: one Think + one Text
+        // CLI providers don't give us fine-grained tool events, so the
+        // observer sees a minimal constant trace: one Think + one Text.
         let tool_events = vec![ToolEvent::Think, ToolEvent::Text];
+        let (usage, transcript) = if self.command == "codex" {
+            (codex_usage(&stderr), Some(stderr))
+        } else {
+            (TokenUsage::default(), None)
+        };
 
         Ok(InvocationResponse {
             text,
             raw_output: Some(raw),
             tool_events,
+            transcript,
             thinking,
-            usage: TokenUsage::default(), // CLI doesn't report token usage
+            usage,
         })
     }
 
@@ -427,6 +481,41 @@ impl Provider for CliProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_usage_reads_reported_total() {
+        let stderr = "codex\nPONG\ntokens used\n48,034\n";
+        assert_eq!(codex_usage(stderr).reported_total, Some(48_034));
+        assert_eq!(codex_usage("no total").reported_total, None);
+        assert_eq!(codex_tool_calls("exec\n/bin/zsh -lc ls\nexec\ncat x\n"), 2);
+    }
+
+    #[test]
+    fn large_stderr_output_does_not_block_the_provider() {
+        let provider = CliProvider {
+            name: "test/noisy".to_string(),
+            command: "sh".to_string(),
+            args_builder: Box::new(|_| {
+                vec![
+                    "-c".to_string(),
+                    "head -c 300000 /dev/zero | tr '\\0' x >&2; echo done".to_string(),
+                ]
+            }),
+            output_parser: Box::new(|output: &str| (output.to_string(), None)),
+        };
+        let request = InvocationRequest {
+            enzyme_id: a2d_core::types::EnzymeId::from("coder"),
+            system: String::new(),
+            prompt: String::new(),
+            max_tokens: 10,
+        };
+        let start = std::time::Instant::now();
+        let response = provider
+            .invoke(&request)
+            .expect("noisy provider should succeed");
+        assert_eq!(response.text.trim(), "done");
+        assert!(start.elapsed() < std::time::Duration::from_secs(30));
+    }
 
     fn provider_args(provider: &CliProvider) -> Vec<String> {
         let request = InvocationRequest {

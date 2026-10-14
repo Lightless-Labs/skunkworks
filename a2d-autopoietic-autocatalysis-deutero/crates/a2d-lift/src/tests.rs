@@ -43,6 +43,7 @@ impl Provider for RecordingMock {
             text: (self.respond)(request, index),
             raw_output: None,
             tool_events: Vec::new(),
+            transcript: None,
             thinking: None,
             usage: TokenUsage::default(),
         })

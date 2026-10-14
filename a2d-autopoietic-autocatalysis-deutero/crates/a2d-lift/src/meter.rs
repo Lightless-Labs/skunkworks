@@ -152,8 +152,16 @@ impl Meter {
                 "prompt_tokens": r.usage.prompt_tokens,
                 "completion_tokens": r.usage.completion_tokens,
                 "thinking_tokens": r.usage.thinking_tokens,
+                "reported_total": r.usage.reported_total,
             })
         });
+        // Provider transcript (Codex stderr): saved for audit; its tool-call
+        // count shows whether the coder ran commands (e.g. read files).
+        let transcript = result.as_ref().ok().and_then(|r| r.transcript.as_deref());
+        if let Some(transcript) = transcript {
+            let _ = fs::write(dir.join(format!("{stem}.transcript.txt")), transcript);
+        }
+        let tool_calls = transcript.map(a2d_providers::cli::codex_tool_calls);
         let _ = self.ledger.append(
             "invocation",
             json!({
@@ -171,6 +179,7 @@ impl Meter {
                 "prompt_path": prompt_path.display().to_string(),
                 "response_path": response_path.display().to_string(),
                 "usage": usage,
+                "tool_calls": tool_calls,
             }),
         );
     }

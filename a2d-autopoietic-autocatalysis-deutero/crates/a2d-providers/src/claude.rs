@@ -117,11 +117,13 @@ impl Provider for ClaudeProvider {
             text,
             raw_output: None,
             tool_events,
+            transcript: None,
             thinking,
             usage: TokenUsage {
                 prompt_tokens: api_response.usage.input_tokens,
                 completion_tokens: api_response.usage.output_tokens,
                 thinking_tokens: 0, // TODO: extract from usage when available
+                reported_total: None,
             },
         })
     }

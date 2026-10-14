@@ -2638,6 +2638,7 @@ mod tests {
             text: text.to_string(),
             raw_output: None,
             tool_events,
+            transcript: None,
             thinking: None,
             usage: TokenUsage::default(),
         }
@@ -3756,6 +3757,7 @@ mod tests {
                     r#"{"type":"message","content":"wrote nothing useful"}"#.to_string(),
                 ),
                 tool_events: vec![ToolEvent::Think, ToolEvent::Text],
+                transcript: None,
                 thinking: None,
                 usage: TokenUsage::default(),
             }],

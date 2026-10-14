@@ -56,6 +56,9 @@ pub struct InvocationResponse {
     /// Tool events observed during generation (for the structural observer).
     /// Populated by the provider from the model's tool use trace.
     pub tool_events: Vec<ToolEvent>,
+    /// Provider-side log for audit (Codex CLI: stderr with tool calls and the
+    /// token count). Never routed to enzymes.
+    pub transcript: Option<String>,
     /// Thinking block content, if available. The 93% of reasoning
     /// that's normally suppressed — the richest signal source.
     pub thinking: Option<String>,
@@ -69,11 +72,19 @@ pub struct TokenUsage {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
     pub thinking_tokens: usize,
+    /// Provider-reported total when no breakdown is available (the Codex
+    /// CLI prints only "tokens used").
+    pub reported_total: Option<usize>,
 }
 
 impl TokenUsage {
     pub fn total(&self) -> usize {
-        self.prompt_tokens + self.completion_tokens + self.thinking_tokens
+        let sum = self.prompt_tokens + self.completion_tokens + self.thinking_tokens;
+        if sum == 0 {
+            self.reported_total.unwrap_or(0)
+        } else {
+            sum
+        }
     }
 }
 
@@ -498,11 +509,13 @@ mod tests {
                 text: self.response.clone(),
                 raw_output: None,
                 tool_events: vec![ToolEvent::Read, ToolEvent::Think, ToolEvent::Execute],
+                transcript: None,
                 thinking: self.thinking.clone(),
                 usage: TokenUsage {
                     prompt_tokens: 100,
                     completion_tokens: 50,
                     thinking_tokens: if self.thinking.is_some() { 200 } else { 0 },
+                    reported_total: None,
                 },
             })
         }
@@ -581,8 +594,14 @@ mod tests {
             prompt_tokens: 100,
             completion_tokens: 50,
             thinking_tokens: 200,
+            reported_total: None,
         };
         assert_eq!(usage.total(), 350);
+        let reported = TokenUsage {
+            reported_total: Some(7_477),
+            ..TokenUsage::default()
+        };
+        assert_eq!(reported.total(), 7_477);
     }
 
     #[test]
