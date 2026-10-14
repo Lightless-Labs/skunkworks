@@ -10,7 +10,7 @@
 - **Sessions 2026-06-29 → 07-10 drifted:** ~123 of 197 commits were Senior SWE-Bench / SWE-Bench Pro scaffolding, leak-hardening and evidence records; 2 touched outcome quality. 108 "baseline" fitness-evidence files replay the same hand-written `good-sudoku-artifact.rs` at fitness 1.0, so they certify nothing about the change they are attached to.
 - **The SWE-Bench Pro "access" blocker is mostly self-imposed:** a public 731-task split with a runnable harness exists (verify before use). The sealed-manifest machinery is not required to measure lift.
 - **Active plan: `docs/plans/2026-10-14-lift-first-roadmap.md` (phase P0).** Measure A²D against one-shot, best-of-k and a plain repair loop on a non-saturated Rust suite through a frozen controller; then test whether self-modification adds lift. Decision deadline for the seed result: 2026-11-30. Experiments are pre-registered in `docs/experiments/LOG.md`. Do not add SWE-bench/redaction/env-scrub scaffolding (tripwire T3).
-- **Provider outage (2026-10-14):** only Codex and Claude lanes work; Kimi, GLM, MiniMax, Perplexity, Gemini and DeepSeek-free all fail (roadmap § Blockers). A²D's default coder/evolver lanes are down; P1 picks a coder from working lanes.
+- **Providers (2026-10-14):** the Kimi, Z.ai, MiniMax and Gemini subscriptions were stopped on purpose. Working lanes are Codex and Claude. The planned coder is **Luna via Codex, `gpt-6-luna`** (verified; `gpt-6.1-luna` is not offered on this account). The CLI has no Codex provider or coder override yet, so wiring them is part of P0 (`a2d lift --model`).
 
 ## Session Protocol
 
@@ -87,7 +87,7 @@ Architect:            {failure_report, fitness_report} → {system_patch}  catal
 
 Scheduling: one ready invocation at a time (highest priority), then the ready set is recomputed. Before code exists the coder goes first; once a `fitness_report` exists (with or without code) feedback runs first: evolver → architect → tester → coder. A successful code-producing or any failed invocation ends the cycle.
 
-## Provider Configuration (as last recorded, 2026-07 — currently unavailable, see Headline)
+## Provider Configuration (legacy 2026-07 defaults; these lanes are retired, see Headline)
 
 ```
 Coder:     Kimi k2.6 (opencode, kimi-for-coding/k2p6)   race fallback: DeepSeek v4 flash (opencode/deepseek-v4-flash-free)

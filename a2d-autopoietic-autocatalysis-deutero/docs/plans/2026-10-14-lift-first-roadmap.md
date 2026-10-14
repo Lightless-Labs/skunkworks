@@ -3,6 +3,7 @@
 **Created:** 2026-10-14
 **Status:** Active — phase P0
 **Reviewed:** 2026-10-14 (independent review, Codex gpt-6.1-sol xhigh). The other non-Claude lanes were unavailable; see Blockers. Changes adopted: repair-loop comparator, three-way result classification, pilot/development/confirmation split, frozen controller, B-headroom calibration, harness-first P4, process metrics as diagnostics only.
+**Addendum:** 2026-10-14 — coder lane: the owner stopped the Kimi, Z.ai, MiniMax and Gemini subscriptions on purpose and suggested Luna via Codex or Pi. `gpt-6-luna` works through Codex with A²D's provider flags. `gpt-6.1-luna` is not offered on this ChatGPT account (Codex model list fetched 2026-10-14 has 6.1 only as Sol). Pi's `openai-codex` provider is not authenticated. P0/P1 updated accordingly.
 **Supersedes as primary goal:** `swe-bench-pro-blind-evaluator-adapter.md` (parked), the Senior SWE-Bench retry chain (parked)
 **Grounding:** `docs/research/2026-10-14-direction-audit.md`, `docs/research/2026-10-14-dgm-rqgm-relevance.md`
 **Decision deadline:** P2 confirmation result recorded by **2026-11-30**. Missing it is a non-result, not a falsification: record "not measured by deadline", stop adding seed-cycle complexity, and continue per Completion.
@@ -98,7 +99,7 @@ These are **diagnostics, not gates**: commit counts are editable, and fewer trip
 ### P0 — Oracles, controller, first real baseline
 
 1. Split each challenge into `public_tests` and `hidden_tests`. The live metabolism, portfolio ranking and `failure_report` see only public tests. Today they see `scoring_benchmark()` (`crates/a2d-cli/src/main.rs:5377`). Unit tests must prove hidden tests cannot reach any arm.
-2. Build `a2d lift`: arms A, B, D and C, plus `--k`, `--model`, the ledger, a summary with paired confidence intervals, and result classification.
+2. Build `a2d lift`: arms A, B, D and C, plus `--k`, `--model` (must accept a Codex-backed model such as `codex/gpt-6-luna`; the CLI registry has no Codex provider and no coder override today, only `A2D_TESTER_PROVIDER` and `A2D_ARCHITECT_PROVIDER`), the ledger, a summary with paired confidence intervals, and result classification.
 3. Add holdout loading from `$A2D_HOLDOUT_DIR` with hash verification.
 4. Extend the protected paths to cover the controller and oracles.
 5. **Tiny real run:** arm A on about 5 development tasks with a live, available model. Mocks miss extraction and provider failures.
@@ -109,7 +110,7 @@ You may move `lift` and the oracle code into a module or crate if `main.rs` buil
 
 ### P1 — Calibrate a non-saturated suite
 
-- **Model:** pick a coder from lanes that actually work (see Blockers). Pin the version and settings.
+- **Model:** Luna via Codex, `gpt-6-luna`, with reasoning effort pinned in the pre-registration. If `gpt-6.1-luna` appears in Codex's model list, re-register with it rather than switching mid-experiment. If Luna saturates the pilot (B above 85%), drop to `gpt-5.6-luna` or a lower reasoning effort, recorded as a suite or model redesign under T7.
 - **Suite:** fresh, bounded, std-only Rust micro-crate task families. Examples: streaming codecs and parsers, dependency resolution, a transactional key-value store, schedulers, and seeded bug-repair variants of reference crates.
 - **Oracles:** validate each oracle against an independent reference implementation and against deliberately faulty mutants (an oracle that passes a mutant is rejected).
 - **Plumbing and pilot only:** the Polyglot Rust subset has 30 exercises and high contamination risk, so it is not used for confirmation.
@@ -163,38 +164,9 @@ You may move `lift` and the oracle code into a module or crate if `main.rs` buil
 
 ## Blockers
 
-- **2026-10-14 — provider lanes.** Probed from the developer machine:
-  - Kimi Code subscription inactive (Pi: 403 `permission_error`).
-  - Z.ai GLM balance exhausted (429, code 1113).
-  - MiniMax balance exhausted (1008).
-  - Perplexity agent quota exceeded.
-  - Gemini CLI fails during account setup.
-  - OpenCode reports "Model not found" for `kimi-for-coding/k2p6` and `opencode/deepseek-v4-flash-free`.
-  - **Works:** Codex (`gpt-6.1-sol`) and Claude.
+None open.
 
-  A²D's configured default coder and evolver lanes are therefore unavailable. **Mitigation (T2):** proceed with lanes that work. For P1, choose a coder with headroom among OpenAI models via Codex and Claude Haiku/Sonnet 5.5 via the Claude provider. Re-probe the other lanes at each phase gate. Restoring subscriptions is the owner's choice and is not on the critical path.
-
-## Appendix — goal prompt
-
-The standing goal that drives this plan. If you change it, add a dated Addendum explaining why.
-
-```text
-A²D (skunkworks/a2d-autopoietic-autocatalysis-deutero): establish, with pre-registered controller-scored evidence, whether A²D builds working software more reliably than its own coder model used directly (one-shot, best-of-k, plain repair loop) at the same budget — and whether A²D's self-modification widens that margin.
-
-Done only when docs/plans/2026-10-14-lift-first-roadmap.md is marked Completed in one of its outcomes (success / lift without autopoiesis / falsified / not measured by deadline), each backed by confirmation results in docs/experiments/LOG.md. Infrastructure is never "done" on its own.
-
-Each session:
-1. Read docs/HANDOFF.md and the roadmap. Run cargo test. Probe provider lanes (trivial prompt, short timeout).
-2. Take the next experiment of the current phase. Pre-register it in LOG.md before any live run.
-3. Make the smallest change that lets it run, tests first. Delegate bounded implementation to Codex. Run independent work in parallel subagents.
-4. Run it through `a2d lift`, with durable artifacts under runs/. Record the result class with its CI. Negative and inconclusive results count.
-5. Decide by the metric. Commit atomically with a [P<n>] tag. Overwrite HANDOFF (≤250 lines). Compound non-obvious learnings.
-
-Rules:
-- Never pause for direction. If blocked on something external (quota, credentials, access), log it under the roadmap's Blockers, switch to an unblocked track and keep going. Never build scaffolding around a blocker.
-- Tripwires: a new LOG result at least every 2 sessions or 10 commits. No new redaction/sandbox/scrub work without an incident in a run artifact. Evidence must exercise the change. Budget caps on every run. At most 5 P4 hypotheses.
-- Hidden tests never reach any arm or enzyme. Confirmation sets never reach you and are scored once.
-- Phase gates and key designs get independent review from at least 2 non-Claude providers when available. Run reviewers in an empty temp dir, never with the repo as cwd, and record who was consulted.
-- Deutero: at each phase gate, compute process diagnostics (results per session, cost per result, tripwire hits), get them reviewed, and amend the roadmap with a dated Addendum. The loop that builds A²D is held to the same standard as A²D.
-- Deadline: if the P2 seed result is not recorded by 2026-11-30, record it as not measured by deadline (a non-result, not a falsification) and complete per the roadmap.
-```
+- **2026-10-14 — provider lanes (resolved by owner decision).** Kimi, Z.ai/GLM, MiniMax and Gemini subscriptions were stopped intentionally, so don't re-probe or plan around them. Perplexity's agent quota is also exhausted. Working lanes: Codex (`gpt-6.1-sol`, `gpt-6-luna`, `gpt-6-sol`, `gpt-6-astra`, `gpt-5.6-*`) and Claude.
+- **Coder:** `codex/gpt-6-luna` (see Addendum).
+- **Reviews:** the "≥2 non-Claude providers" rule cannot be met with one non-Claude family. Use Codex Sol plus a fresh-context Claude subagent, and record the reduced diversity.
+- **Pi:** using Luna via Pi needs the `openai-codex` provider authenticated in `pi`. That's optional, because Codex already serves Luna.
