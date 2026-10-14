@@ -494,6 +494,9 @@ impl Metabolism {
                 break;
             }
 
+            // Deliberately runs only the highest-priority invocation, then
+            // recomputes the ready set, so new artifacts can reprioritize work.
+            #[allow(clippy::never_loop)]
             'ready_batch: for scheduled in ready {
                 if self.cycle_wall_clock_exceeded(cycle_start) {
                     trace("cycle wall-clock cap reached — advancing to next cycle");
