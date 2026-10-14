@@ -1,0 +1,336 @@
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Version {
+    pub major: u64,
+    pub minor: u64,
+    pub patch: u64,
+    pub pre: Vec<String>,
+    pub build: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VersionError {
+    Empty,
+    MissingCore { at: usize },
+    LeadingZero { at: usize },
+    Overflow { at: usize },
+    EmptyIdentifier { at: usize },
+    InvalidChar { at: usize },
+}
+
+fn is_core_missing_byte(byte: u8) -> bool {
+    matches!(byte, b'.' | b'-' | b'+')
+}
+
+fn parse_core_field(bytes: &[u8], pos: &mut usize) -> Result<u64, VersionError> {
+    let start = *pos;
+    while *pos < bytes.len() && bytes[*pos].is_ascii_digit() {
+        *pos += 1;
+    }
+
+    if *pos == start {
+        if start == bytes.len() || is_core_missing_byte(bytes[start]) {
+            return Err(VersionError::MissingCore { at: start });
+        }
+        return Err(VersionError::InvalidChar { at: start });
+    }
+
+    if *pos - start > 1 && bytes[start] == b'0' {
+        return Err(VersionError::LeadingZero { at: start });
+    }
+
+    let mut value = 0u64;
+    for &digit in &bytes[start..*pos] {
+        value = value
+            .checked_mul(10)
+            .and_then(|n| n.checked_add((digit - b'0') as u64))
+            .ok_or(VersionError::Overflow { at: start })?;
+    }
+    Ok(value)
+}
+
+fn parse_identifiers(
+    s: &str,
+    base: usize,
+    reject_numeric_leading_zero: bool,
+) -> Result<Vec<String>, VersionError> {
+    let bytes = s.as_bytes();
+    let mut identifiers = Vec::new();
+    let mut start = 0usize;
+
+    loop {
+        let mut end = start;
+        while end < bytes.len() && bytes[end] != b'.' {
+            let byte = bytes[end];
+            if !(byte.is_ascii_alphanumeric() || byte == b'-') {
+                return Err(VersionError::InvalidChar { at: base + end });
+            }
+            end += 1;
+        }
+
+        if end == start {
+            return Err(VersionError::EmptyIdentifier { at: base + start });
+        }
+
+        let identifier = &s[start..end];
+        if reject_numeric_leading_zero
+            && identifier.len() > 1
+            && identifier.as_bytes()[0] == b'0'
+            && identifier.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Err(VersionError::LeadingZero { at: base + start });
+        }
+        identifiers.push(identifier.to_owned());
+
+        if end == bytes.len() {
+            break;
+        }
+        start = end + 1;
+        if start == bytes.len() {
+            return Err(VersionError::EmptyIdentifier { at: base + start });
+        }
+    }
+
+    Ok(identifiers)
+}
+
+pub fn parse_version(s: &str) -> Result<Version, VersionError> {
+    if s.is_empty() {
+        return Err(VersionError::Empty);
+    }
+
+    let bytes = s.as_bytes();
+    let mut pos = 0usize;
+
+    let major = parse_core_field(bytes, &mut pos)?;
+    for _ in 0..2 {
+        if pos >= bytes.len() || bytes[pos] != b'.' {
+            if pos >= bytes.len() || is_core_missing_byte(bytes[pos]) {
+                return Err(VersionError::MissingCore { at: pos });
+            }
+            return Err(VersionError::InvalidChar { at: pos });
+        }
+        pos += 1;
+
+        if _ == 0 {
+            break;
+        }
+    }
+
+    let minor = parse_core_field(bytes, &mut pos)?;
+
+    if pos >= bytes.len() || bytes[pos] != b'.' {
+        if pos >= bytes.len() || is_core_missing_byte(bytes[pos]) {
+            return Err(VersionError::MissingCore { at: pos });
+        }
+        return Err(VersionError::InvalidChar { at: pos });
+    }
+    pos += 1;
+
+    let patch = parse_core_field(bytes, &mut pos)?;
+
+    let mut pre = Vec::new();
+    let mut build = Vec::new();
+
+    if pos < bytes.len() {
+        match bytes[pos] {
+            b'-' => {
+                let pre_start = pos + 1;
+                let tail = &s[pre_start..];
+                if let Some(plus_relative) = tail.find('+') {
+                    let pre_text = &tail[..plus_relative];
+                    pre = parse_identifiers(pre_text, pre_start, true)?;
+                    let build_start = pre_start + plus_relative + 1;
+                    build = parse_identifiers(&s[build_start..], build_start, false)?;
+                } else {
+                    pre = parse_identifiers(tail, pre_start, true)?;
+                }
+            }
+            b'+' => {
+                let build_start = pos + 1;
+                build = parse_identifiers(&s[build_start..], build_start, false)?;
+            }
+            _ => return Err(VersionError::InvalidChar { at: pos }),
+        }
+    }
+
+    Ok(Version {
+        major,
+        minor,
+        patch,
+        pre,
+        build,
+    })
+}
+
+fn is_numeric_identifier(identifier: &str) -> bool {
+    !identifier.is_empty() && identifier.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn compare_numeric_identifiers(a: &str, b: &str) -> std::cmp::Ordering {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+
+    match a.len().cmp(&b.len()) {
+        std::cmp::Ordering::Equal => a.cmp(b),
+        ordering => ordering,
+    }
+}
+
+pub fn compare_versions(a: &Version, b: &Version) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    let core_order = (a.major, a.minor, a.patch).cmp(&(b.major, b.minor, b.patch));
+    if core_order != Ordering::Equal {
+        return core_order;
+    }
+
+    match (a.pre.is_empty(), b.pre.is_empty()) {
+        (true, true) => return Ordering::Equal,
+        (true, false) => return Ordering::Greater,
+        (false, true) => return Ordering::Less,
+        (false, false) => {}
+    }
+
+    for (left, right) in a.pre.iter().zip(&b.pre) {
+        let left_numeric = is_numeric_identifier(left);
+        let right_numeric = is_numeric_identifier(right);
+
+        let ordering = match (left_numeric, right_numeric) {
+            (true, true) => compare_numeric_identifiers(left, right),
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => left.as_bytes().cmp(right.as_bytes()),
+        };
+
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+
+    a.pre.len().cmp(&b.pre.len())
+}
+
+#[derive(Clone, Debug)]
+struct Comparator {
+    op: CompareOp,
+    version: Version,
+}
+
+#[derive(Clone, Debug)]
+enum CompareOp {
+    Eq,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+#[derive(Clone, Debug)]
+pub struct Range {
+    arms: Vec<Vec<Comparator>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RangeError {
+    Empty { at: usize },
+    Syntax { at: usize },
+    Version { at: usize, error: VersionError },
+}
+
+fn is_range_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\r' | b'\n')
+}
+
+pub fn parse_range(s: &str) -> Result<Range, RangeError> {
+    let bytes = s.as_bytes();
+    let mut pos = 0usize;
+    let mut comparators = Vec::new();
+
+    while pos < bytes.len() {
+        while pos < bytes.len() && is_range_whitespace(bytes[pos]) {
+            pos += 1;
+        }
+        if pos == bytes.len() {
+            break;
+        }
+
+        let token_start = pos;
+        while pos < bytes.len() && !is_range_whitespace(bytes[pos]) {
+            pos += 1;
+        }
+        let token_end = pos;
+
+        let mut operand_start = token_start;
+        let op = match bytes[token_start] {
+            b'=' => {
+                operand_start += 1;
+                CompareOp::Eq
+            }
+            b'<' => {
+                operand_start += 1;
+                if operand_start < token_end && bytes[operand_start] == b'=' {
+                    operand_start += 1;
+                    CompareOp::Le
+                } else {
+                    CompareOp::Lt
+                }
+            }
+            b'>' => {
+                operand_start += 1;
+                if operand_start < token_end && bytes[operand_start] == b'=' {
+                    operand_start += 1;
+                    CompareOp::Ge
+                } else {
+                    CompareOp::Gt
+                }
+            }
+            b'0'..=b'9' => CompareOp::Eq,
+            _ => return Err(RangeError::Syntax { at: token_start }),
+        };
+
+        if operand_start >= token_end || !bytes[operand_start].is_ascii_digit() {
+            return Err(RangeError::Syntax { at: token_start });
+        }
+
+        let operand = &s[operand_start..token_end];
+        let version =
+            parse_version(operand).map_err(|error| RangeError::Version {
+                at: operand_start,
+                error,
+            })?;
+        comparators.push(Comparator { op, version });
+    }
+
+    if comparators.is_empty() {
+        return Err(RangeError::Empty { at: 0 });
+    }
+
+    Ok(Range {
+        arms: vec![comparators],
+    })
+}
+
+pub fn matches(v: &Version, r: &Range) -> bool {
+    r.arms.iter().any(|arm| {
+        let prerelease_admitted = v.pre.is_empty()
+            || arm.iter().any(|comparator| {
+                !comparator.version.pre.is_empty()
+                    && (comparator.version.major, comparator.version.minor, comparator.version.patch)
+                        == (v.major, v.minor, v.patch)
+            });
+
+        prerelease_admitted
+            && arm.iter().all(|comparator| {
+                let ordering = compare_versions(v, &comparator.version);
+                match comparator.op {
+                    CompareOp::Eq => ordering == std::cmp::Ordering::Equal,
+                    CompareOp::Lt => ordering == std::cmp::Ordering::Less,
+                    CompareOp::Le => ordering != std::cmp::Ordering::Greater,
+                    CompareOp::Gt => ordering == std::cmp::Ordering::Greater,
+                    CompareOp::Ge => ordering != std::cmp::Ordering::Less,
+                }
+            })
+    })
+}
+```

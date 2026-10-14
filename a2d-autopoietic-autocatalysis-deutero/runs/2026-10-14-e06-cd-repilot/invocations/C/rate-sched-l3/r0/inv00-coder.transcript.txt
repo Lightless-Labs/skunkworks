@@ -1,0 +1,404 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-9954-1792013308255247000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a13c51-16aa-7393-86d6-a21db596c42e
+--------
+user
+You are a programmer. You receive three complementary artifacts:
+- design: concrete structure or reference implementation details
+- plan: the intended architecture or implementation steps
+- requirements: the user-visible contract to satisfy
+
+Prefer the most specific, most constrained instructions when the artifacts differ.
+Default deliverable: synthesize all three into a SINGLE complete Rust source file.
+If the requirements, design, or plan explicitly require another artifact format (for example, a unified diff candidate patch), follow that explicit deliverable instead.
+Benchmark integrity rule: if the requirements, design, or plan say not to search GitHub, issues, pull requests, commits, forks, public web pages, or solution writeups for benchmark answers, obey that restriction strictly. Solve from the provided context and local tests only.
+For Rust-source deliverables, the file MUST:
+1. Contain a main() function
+2. Include the exact Rust test module header `#[cfg(test)] mod tests` with at least 3 test cases; omitting this fails the mechanical `has_tests` fitness gate even if the solution code works
+3. Use Result<T, E> for error handling where appropriate
+4. Include /// doc comments on public functions
+5. Compile with `rustc --edition 2024`
+6. Do NOT define a module named `a2d_acceptance` — that module will be appended by the system. If you define it, compilation will fail with a duplicate definition error.
+7. Place all your tests in a module named `tests` (i.e. `#[cfg(test)] mod tests { ... }`), NOT `a2d_acceptance`.
+8. Test the normal path, at least one edge/invalid input, and one end-to-end behavior so the tests are meaningful rather than placeholder assertions.
+
+For unified diff deliverables, output raw unified diff text without markdown fences so evaluators can apply and hash the patch bytes directly.
+Output ONLY the requested artifact. No explanation.
+
+{"design":"Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. All listed API items and fields must be pub. Derive Debug, Clone, PartialEq, Eq for data/error enums and records (engine structs need not implement these). No main function is required. \n\nExact public API:\n```rust\npub struct Job { pub id: String, pub priority: u8, pub dependencies: Vec<String>, pub max_attempts: u8 }\npub enum State { Waiting { ready_at: u64 }, Running { attempt: u8 }, Succeeded, Failed, Blocked }\npub struct Ticket { pub id: String, pub attempt: u8 }\npub enum Error { Config, BadId(usize), BadPriority(usize), BadAttempts(usize), Duplicate(usize), DuplicateDependency(usize, usize), MissingDependency(usize, usize), Cycle, TimeReversed, Busy, NoCycle, Unknown, NotRunning }\npub struct Runner { /* private fields */ }\nimpl Runner {\n pub fn new(jobs: Vec<Job>, aging_ms: u64, retry_base: u64, retry_cap: u64) -> Result<Self, Error>;\n pub fn begin_cycle(&mut self, now: u64) -> Result<(), Error>;\n pub fn next_ready(&mut self, now: u64) -> Result<Option<Ticket>, Error>;\n pub fn complete(&mut self, now: u64, id: &str, success: bool) -> Result<(), Error>;\n pub fn status(&self, id: &str) -> Result<State, Error>;\n}\n```\n\nR1. A Runner holds a fixed dependency graph and reuses it across explicit cycles. Time is u64 milliseconds, initially 0; no wall clock is read.\nR2. new first validates retry_base>0 and retry_cap>=retry_base, else Config. aging_ms may be zero. Empty job input is valid.\nR3. Validate jobs in input order, with per-job precedence BadId(index), BadPriority(index), BadAttempts(index), Duplicate(index). Indices are zero-based; Duplicate identifies the later job.\nR4. IDs contain 1..=16 ASCII lowercase-letter/digit/hyphen bytes. Priority is 0..=9; max_attempts is 1..=32, counting the initial attempt.\nR5. After all local job validation succeeds, validate dependencies in job order and then list order. For each dependency check repeated spelling first (DuplicateDependency(job index, dependency index)), then exact existence (MissingDependency with those indices). No separate dependency-ID syntax check applies.\nR6. After dependency validation reject any directed cycle, including a self-edge, with Cycle. Forward references are allowed.\nR7. All failed calls are atomic: no state, time, attempt counters, or ordering changes.\nR8. begin_cycle, next_ready and complete check now less than last successful timed call first and return TimeReversed. Equal timestamps are allowed. A successful timed call, including Ok(None), records now.\nR9. Before any cycle, next_ready and complete return NoCycle after the time check. status returns NoCycle before looking up its ID.\nR10. begin_cycle is Busy when any job in the previous cycle is Waiting or Running; this check follows the time check.\nR11. begin_cycle otherwise resets every job to Waiting { ready_at: now } and attempts to zero. It also clears all previous success/failure/blocked results.\nR12. An empty cycle is immediately terminal. begin_cycle may immediately begin another empty cycle.\nR13. status after a cycle begins uses exact ID lookup; unknown gives Unknown. It returns an owned State snapshot and changes nothing.\nR14. next_ready can dispatch a Waiting job only when ready_at<=now and all dependencies have Succeeded in this same cycle.\nR15. Waiting includes jobs held by unsatisfied dependencies. Running jobs never dispatch again until completed.\nR16. Effective priority is base priority if aging_ms=0, else min(9, base priority + floor((now-ready_at)/aging_ms)), with overflow-safe arithmetic.\nR17. Aging starts at the job waiting-state ready_at, even while dependencies prevent dispatch. After a retry, aging instead starts at the retry ready_at.\nR18. Pick highest effective priority; ties use original job input order, independent of dependency-list order or ID spelling.\nR19. On dispatch increment that job attempt count, set Running { attempt: count }, and return Ticket with ID and count.\nR20. No eligible job yields Ok(None); next_ready never advances time beyond its argument and never auto-completes work.\nR21. Any number of independent jobs may be Running simultaneously. There is no worker-capacity constraint in this level.\nR22. complete checks time, then NoCycle, then exact lookup (Unknown), then state (NotRunning unless Running). Do not validate ID syntax here.\nR23. complete(success=true) sets Succeeded, regardless of attempt number.\nR24. complete(success=false) when attempt count equals max_attempts sets Failed.\nR25. Otherwise a failed completion schedules Waiting { ready_at: now + delay }; addition saturates at u64::MAX.\nR26. Delay after failed attempt a is min(retry_cap, retry_base * 2^(a-1)), computed mathematically without overflow.\nR27. Failed attempts do not satisfy dependencies. Retrying a parent must succeed before its dependents become dispatchable.\nR28. After terminal failure, repeatedly mark any Waiting job Blocked if any dependency is Failed or Blocked. Propagate transitively through the entire graph, including jobs with future ready_at.\nR29. Propagation does not increment blocked jobs attempts, and does not block unrelated jobs.\nR30. Failed and Blocked are terminal within a cycle; only begin_cycle can reset them. Succeeded is also terminal.\nR31. Once every job is Succeeded, Failed or Blocked, a later or equal begin_cycle is allowed, reusing exactly the same graph and job order.\nR32. All state returned by status refers to the current cycle only. Previously returned snapshots remain unchanged.\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\n// R11 R19 R23 R31\n#[test]\nfn public_cycle() {\n    let mut r = Runner::new(\n        vec![Job {\n            id: \"pub-a\".into(),\n            priority: 1,\n            dependencies: vec![],\n            max_attempts: 2,\n        }],\n        0,\n        5,\n        20,\n    )\n    .unwrap();\n    r.begin_cycle(0).unwrap();\n    assert_eq!(\n        r.next_ready(0).unwrap(),\n        Some(Ticket {\n            id: \"pub-a\".into(),\n            attempt: 1\n        })\n    );\n    r.complete(1, \"pub-a\", true).unwrap();\n    assert_eq!(r.status(\"pub-a\"), Ok(State::Succeeded));\n    r.begin_cycle(2).unwrap();\n}\n\n// R14 R27\n#[test]\nfn public_dependency() {\n    let mut r = Runner::new(\n        vec![\n            Job {\n                id: \"pub-child\".into(),\n                priority: 9,\n                dependencies: vec![\"pub-root\".into()],\n                max_attempts: 2,\n            },\n            Job {\n                id: \"pub-root\".into(),\n                priority: 1,\n                dependencies: vec![],\n                max_attempts: 2,\n            },\n        ],\n        0,\n        5,\n        20,\n    )\n    .unwrap();\n    r.begin_cycle(0).unwrap();\n    assert_eq!(r.next_ready(0).unwrap().unwrap().id, \"pub-root\");\n    r.complete(0, \"pub-root\", true).unwrap();\n    assert_eq!(r.next_ready(0).unwrap().unwrap().id, \"pub-child\");\n}\n\n// R25 R26\n#[test]\nfn public_retry() {\n    let mut r = Runner::new(\n        vec![Job {\n            id: \"pub-a\".into(),\n            priority: 1,\n            dependencies: vec![],\n            max_attempts: 2,\n        }],\n        0,\n        5,\n        20,\n    )\n    .unwrap();\n    r.begin_cycle(0).unwrap();\n    r.next_ready(0).unwrap();\n    r.complete(1, \"pub-a\", false).unwrap();\n    assert_eq!(r.status(\"pub-a\"), Ok(State::Waiting { ready_at: 6 }));\n    assert_eq!(r.next_ready(5), Ok(None));\n    assert_eq!(r.next_ready(6).unwrap().unwrap().attempt, 2);\n}\n\n// R24 R28\n#[test]\nfn public_failure() {\n    let mut r = Runner::new(\n        vec![\n            Job {\n                id: \"pub-root\".into(),\n                priority: 1,\n                dependencies: vec![],\n                max_attempts: 1,\n            },\n            Job {\n                id: \"pub-leaf\".into(),\n                priority: 1,\n                dependencies: vec![\"pub-root\".into()],\n                max_attempts: 2,\n            },\n        ],\n        0,\n        5,\n        20,\n    )\n    .unwrap();\n    r.begin_cycle(0).unwrap();\n    r.next_ready(0).unwrap();\n    r.complete(0, \"pub-root\", false).unwrap();\n    assert_eq!(r.status(\"pub-root\"), Ok(State::Failed));\n    assert_eq!(r.status(\"pub-leaf\"), Ok(State::Blocked));\n}\n```\n","enzyme_defs":"[{\"id\":\"architect\",\"reactants\":[\"failure_report\",\"fitness_report\"],\"products\":[\"system_patch\"],\"catalysts\":[\"provider_health_report\",\"provider_policy\",\"system_code\"]},{\"id\":\"coder\",\"reactants\":[\"design\",\"plan\",\"requirements\"],\"products\":[\"code\"],\"catalysts\":[\"enzyme_defs\",\"failure_report\"],\"prompt_template\":\"You are a programmer. You receive three complementary artifacts:\\n- design: concrete structure or reference implementation details\\n- plan: the intended architecture or implementation steps\\n- requirements: the user-visible contract to satisfy\\n\\nPrefer the most specific, most constrained instructions when the artifacts differ.\\nDefault deliverable: synthesize all three into a SINGLE complete Rust source file.\\nIf the requirements, design, or plan explicitly require another artifact format (for example, a unified diff candidate patch), follow that explicit deliverable instead.\\nBenchmark integrity rule: if the requirements, design, or plan say not to search GitHub, issues, pull requests, commits, forks, public web pages, or solution writeups for benchmark answers, obey that restriction strictly. Solve from the provided context and local tests only.\\nFor Rust-source deliverables, the file MUST:\\n1. Contain a main() function\\n2. Include the exact Rust test module header `#[cfg(test)] mod tests` with at least 3 test cases; omitting this fails the mechanical `has_tests` fitness gate even if the solution code works\\n3. Use Result<T, E> for error handling where appropriate\\n4. Include /// doc comments on public functions\\n5. Compile with `rustc --edition 2024`\\n6. Do NOT define a module named `a2d_acceptance` — that module will be appended by the system. If you define it, compilation will fail with a duplicate definition error.\\n7. Place all your tests in a module named `tests` (i.e. `#[cfg(test)] mod tests { ... }`), NOT `a2d_acceptance`.\\n8. Test the normal path, at least one edge/invalid input, and one end-to-end behavior so the tests are meaningful rather than placeholder assertions.\\n\\nFor unified diff deliverables, output raw unified diff text without markdown fences so evaluators can apply and hash the patch bytes directly.\\nOutput ONLY the requested artifact. No explanation.\"},{\"id\":\"evolver\",\"reactants\":[\"fitness_report\"],\"products\":[\"enzyme_defs\"],\"catalysts\":[\"enzyme_defs\",\"failure_report\",\"fitness_report\",\"provider_health_report\",\"provider_policy\"]},{\"id\":\"tester\",\"reactants\":[\"code\"],\"products\":[\"test_results\"],\"catalysts\":[\"code\"],\"prompt_template\":\"You are a code reviewer. Given Rust code, evaluate it.\\nCheck: does it compile? Are there tests? Do the tests cover edge cases?\\nOutput a brief assessment with pass/fail for each check.\"}]","failure_report":"","plan":"Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. All listed API items and fields must be pub. Derive Debug, Clone, PartialEq, Eq for data/error enums and records (engine structs need not implement these). No main function is required. \n\nExact public API:\n```rust\npub struct Job { pub id: String, pub priority: u8, pub dependencies: Vec<String>, pub max_attempts: u8 }\npub enum State { Waiting { ready_at: u64 }, Running { attempt: u8 }, Succeeded, Failed, Blocked }\npub struct Ticket { pub id: String, pub attempt: u8 }\npub enum Error { Config, BadId(usize), BadPriority(usize), BadAttempts(usize), Duplicate(usize), DuplicateDependency(usize, usize), MissingDependency(usize, usize), Cycle, TimeReversed, Busy, NoCycle, Unknown, NotRunning }\npub struct Runner { /* private fields */ }\nimpl Runner {\n pub fn new(jobs: Vec<Job>, aging_ms: u64, retry_base: u64, retry_cap: u64) -> Result<Self, Error>;\n pub fn begin_cycle(&mut self, now: u64) -> Result<(), Error>;\n pub fn next_ready(&mut self, now: u64) -> Result<Option<Ticket>, Error>;\n pub fn complete(&mut self, now: u64, id: &str, success: bool) -> Result<(), Error>;\n pub fn status(&self, id: &str) -> Result<State, Error>;\n}\n```\n\nR1. A Runner holds a fixed dependency graph and reuses it across explicit cycles. Time is u64 milliseconds, initially 0; no wall clock is read.\nR2. new first validates retry_base>0 and retry_cap>=retry_base, else Config. aging_ms may be zero. Empty job input is valid.\nR3. Validate jobs in input order, with per-job precedence BadId(index), BadPriority(index), BadAttempts(index), Duplicate(index). Indices are zero-based; Duplicate identifies the later job.\nR4. IDs contain 1..=16 ASCII lowercase-letter/digit/hyphen bytes. Priority is 0..=9; max_attempts is 1..=32, counting the initial attempt.\nR5. After all local job validation succeeds, validate dependencies in job order and then list order. For each dependency check repeated spelling first (DuplicateDependency(job index, dependency index)), then exact existence (MissingDependency with those indices). No separate dependency-ID syntax check applies.\nR6. After dependency validation reject any directed cycle, including a self-edge, with Cycle. Forward references are allowed.\nR7. All failed calls are atomic: no state, time, attempt counters, or ordering changes.\nR8. begin_cycle, next_ready and complete check now less than last successful timed call first and return TimeReversed. Equal timestamps are allowed. A successful timed call, including Ok(None), records now.\nR9. Before any cycle, next_ready and complete return NoCycle after the time check. status returns NoCycle before looking up its ID.\nR10. begin_cycle is Busy when any job in the previous cycle is Waiting or Running; this check follows the time check.\nR11. begin_cycle otherwise resets every job to Waiting { ready_at: now } and attempts to zero. It also clears all previous success/failure/blocked results.\nR12. An empty cycle is immediately terminal. begin_cycle may immediately begin another empty cycle.\nR13. status after a cycle begins uses exact ID lookup; unknown gives Unknown. It returns an owned State snapshot and changes nothing.\nR14. next_ready can dispatch a Waiting job only when ready_at<=now and all dependencies have Succeeded in this same cycle.\nR15. Waiting includes jobs held by unsatisfied dependencies. Running jobs never dispatch again until completed.\nR16. Effective priority is base priority if aging_ms=0, else min(9, base priority + floor((now-ready_at)/aging_ms)), with overflow-safe arithmetic.\nR17. Aging starts at the job waiting-state ready_at, even while dependencies prevent dispatch. After a retry, aging instead starts at the retry ready_at.\nR18. Pick highest effective priority; ties use original job input order, independent of dependency-list order or ID spelling.\nR19. On dispatch increment that job attempt count, set Running { attempt: count }, and return Ticket with ID and count.\nR20. No eligible job yields Ok(None); next_ready never advances time beyond its argument and never auto-completes work.\nR21. Any number of independent jobs may be Running simultaneously. There is no worker-capacity constraint in this level.\nR22. complete checks time, then NoCycle, then exact lookup (Unknown), then state (NotRunning unless Running). Do not validate ID syntax here.\nR23. complete(success=true) sets Succeeded, regardless of attempt number.\nR24. complete(success=false) when attempt count equals max_attempts sets Failed.\nR25. Otherwise a failed completion schedules Waiting { ready_at: now + delay }; addition saturates at u64::MAX.\nR26. Delay after failed attempt a is min(retry_cap, retry_base * 2^(a-1)), computed mathematically without overflow.\nR27. Failed attempts do not satisfy dependencies. Retrying a parent must succeed before its dependents become dispatchable.\nR28. After terminal failure, repeatedly mark any Waiting job Blocked if any dependency is Failed or Blocked. Propagate transitively through the entire graph, including jobs with future ready_at.\nR29. Propagation does not increment blocked jobs attempts, and does not block unrelated jobs.\nR30. Failed and Blocked are terminal within a cycle; only begin_cycle can reset them. Succeeded is also terminal.\nR31. Once every job is Succeeded, Failed or Blocked, a later or equal begin_cycle is allowed, reusing exactly the same graph and job order.\nR32. All state returned by status refers to the current cycle only. Previously returned snapshots remain unchanged.\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\n// R11 R19 R23 R31\n#[test]\nfn public_cycle() {\n    let mut r = Runner::new(\n        vec![Job {\n            id: \"pub-a\".into(),\n            priority: 1,\n            dependencies: vec![],\n            max_attempts: 2,\n        }],\n        0,\n        5,\n        20,\n    )\n    .unwrap();\n    r.begin_cycle(0).unwrap();\n    assert_eq!(\n        r.next_ready(0).unwrap(),\n        Some(Ticket {\n            id: \"pub-a\".into(),\n            attempt: 1\n        })\n    );\n    r.complete(1, \"pub-a\", true).unwrap();\n    assert_eq!(r.status(\"pub-a\"), Ok(State::Succeeded));\n    r.begin_cycle(2).unwrap();\n}\n\n// R14 R27\n#[test]\nfn public_dependency() {\n    let mut r = Runner::new(\n        vec![\n            Job {\n                id: \"pub-child\".into(),\n                priority: 9,\n                dependencies: vec![\"pub-root\".into()],\n                max_attempts: 2,\n            },\n            Job {\n                id: \"pub-root\".into(),\n                priority: 1,\n                dependencies: vec![],\n                max_attempts: 2,\n            },\n        ],\n        0,\n        5,\n        20,\n    )\n    .unwrap();\n    r.begin_cycle(0).unwrap();\n    assert_eq!(r.next_ready(0).unwrap().unwrap().id, \"pub-root\");\n    r.complete(0, \"pub-root\", true).unwrap();\n    assert_eq!(r.next_ready(0).unwrap().unwrap().id, \"pub-child\");\n}\n\n// R25 R26\n#[test]\nfn public_retry() {\n    let mut r = Runner::new(\n        vec![Job {\n            id: \"pub-a\".into(),\n            priority: 1,\n            dependencies: vec![],\n            max_attempts: 2,\n        }],\n        0,\n        5,\n        20,\n    )\n    .unwrap();\n    r.begin_cycle(0).unwrap();\n    r.next_ready(0).unwrap();\n    r.complete(1, \"pub-a\", false).unwrap();\n    assert_eq!(r.status(\"pub-a\"), Ok(State::Waiting { ready_at: 6 }));\n    assert_eq!(r.next_ready(5), Ok(None));\n    assert_eq!(r.next_ready(6).unwrap().unwrap().attempt, 2);\n}\n\n// R24 R28\n#[test]\nfn public_failure() {\n    let mut r = Runner::new(\n        vec![\n            Job {\n                id: \"pub-root\".into(),\n                priority: 1,\n                dependencies: vec![],\n                max_attempts: 1,\n            },\n            Job {\n                id: \"pub-leaf\".into(),\n                priority: 1,\n                dependencies: vec![\"pub-root\".into()],\n                max_attempts: 2,\n            },\n        ],\n        0,\n        5,\n        20,\n    )\n    .unwrap();\n    r.begin_cycle(0).unwrap();\n    r.next_ready(0).unwrap();\n    r.complete(0, \"pub-root\", false).unwrap();\n    assert_eq!(r.status(\"pub-root\"), Ok(State::Failed));\n    assert_eq!(r.status(\"pub-leaf\"), Ok(State::Blocked));\n}\n```\n","requirements":"Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. All listed API items and fields must be pub. Derive Debug, Clone, PartialEq, Eq for data/error enums and records (engine structs need not implement these). No main function is required. \n\nExact public API:\n```rust\npub struct Job { pub id: String, pub priority: u8, pub dependencies: Vec<String>, pub max_attempts: u8 }\npub enum State { Waiting { ready_at: u64 }, Running { attempt: u8 }, Succeeded, Failed, Blocked }\npub struct Ticket { pub id: String, pub attempt: u8 }\npub enum Error { Config, BadId(usize), BadPriority(usize), BadAttempts(usize), Duplicate(usize), DuplicateDependency(usize, usize), MissingDependency(usize, usize), Cycle, TimeReversed, Busy, NoCycle, Unknown, NotRunning }\npub struct Runner { /* private fields */ }\nimpl Runner {\n pub fn new(jobs: Vec<Job>, aging_ms: u64, retry_base: u64, retry_cap: u64) -> Result<Self, Error>;\n pub fn begin_cycle(&mut self, now: u64) -> Result<(), Error>;\n pub fn next_ready(&mut self, now: u64) -> Result<Option<Ticket>, Error>;\n pub fn complete(&mut self, now: u64, id: &str, success: bool) -> Result<(), Error>;\n pub fn status(&self, id: &str) -> Result<State, Error>;\n}\n```\n\nR1. A Runner holds a fixed dependency graph and reuses it across explicit cycles. Time is u64 milliseconds, initially 0; no wall clock is read.\nR2. new first validates retry_base>0 and retry_cap>=retry_base, else Config. aging_ms may be zero. Empty job input is valid.\nR3. Validate jobs in input order, with per-job precedence BadId(index), BadPriority(index), BadAttempts(index), Duplicate(index). Indices are zero-based; Duplicate identifies the later job.\nR4. IDs contain 1..=16 ASCII lowercase-letter/digit/hyphen bytes. Priority is 0..=9; max_attempts is 1..=32, counting the initial attempt.\nR5. After all local job validation succeeds, validate dependencies in job order and then list order. For each dependency check repeated spelling first (DuplicateDependency(job index, dependency index)), then exact existence (MissingDependency with those indices). No separate dependency-ID syntax check applies.\nR6. After dependency validation reject any directed cycle, including a self-edge, with Cycle. Forward references are allowed.\nR7. All failed calls are atomic: no state, time, attempt counters, or ordering changes.\nR8. begin_cycle, next_ready and complete check now less than last successful timed call first and return TimeReversed. Equal timestamps are allowed. A successful timed call, including Ok(None), records now.\nR9. Before any cycle, next_ready and complete return NoCycle after the time check. status returns NoCycle before looking up its ID.\nR10. begin_cycle is Busy when any job in the previous cycle is Waiting or Running; this check follows the time check.\nR11. begin_cycle otherwise resets every job to Waiting { ready_at: now } and attempts to zero. It also clears all previous success/failure/blocked results.\nR12. An empty cycle is immediately terminal. begin_cycle may immediately begin another empty cycle.\nR13. status after a cycle begins uses exact ID lookup; unknown gives Unknown. It returns an owned State snapshot and changes nothing.\nR14. next_ready can dispatch a Waiting job only when ready_at<=now and all dependencies have Succeeded in this same cycle.\nR15. Waiting includes jobs held by unsatisfied dependencies. Running jobs never dispatch again until completed.\nR16. Effective priority is base priority if aging_ms=0, else min(9, base priority + floor((now-ready_at)/aging_ms)), with overflow-safe arithmetic.\nR17. Aging starts at the job waiting-state ready_at, even while dependencies prevent dispatch. After a retry, aging instead starts at the retry ready_at.\nR18. Pick highest effective priority; ties use original job input order, independent of dependency-list order or ID spelling.\nR19. On dispatch increment that job attempt count, set Running { attempt: count }, and return Ticket with ID and count.\nR20. No eligible job yields Ok(None); next_ready never advances time beyond its argument and never auto-completes work.\nR21. Any number of independent jobs may be Running simultaneously. There is no worker-capacity constraint in this level.\nR22. complete checks time, then NoCycle, then exact lookup (Unknown), then state (NotRunning unless Running). Do not validate ID syntax here.\nR23. complete(success=true) sets Succeeded, regardless of attempt number.\nR24. complete(success=false) when attempt count equals max_attempts sets Failed.\nR25. Otherwise a failed completion schedules Waiting { ready_at: now + delay }; addition saturates at u64::MAX.\nR26. Delay after failed attempt a is min(retry_cap, retry_base * 2^(a-1)), computed mathematically without overflow.\nR27. Failed attempts do not satisfy dependencies. Retrying a parent must succeed before its dependents become dispatchable.\nR28. After terminal failure, repeatedly mark any Waiting job Blocked if any dependency is Failed or Blocked. Propagate transitively through the entire graph, including jobs with future ready_at.\nR29. Propagation does not increment blocked jobs attempts, and does not block unrelated jobs.\nR30. Failed and Blocked are terminal within a cycle; only begin_cycle can reset them. Succeeded is also terminal.\nR31. Once every job is Succeeded, Failed or Blocked, a later or equal begin_cycle is allowed, reusing exactly the same graph and job order.\nR32. All state returned by status refers to the current cycle only. Previously returned snapshots remain unchanged.\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\n// R11 R19 R23 R31\n#[test]\nfn public_cycle() {\n    let mut r = Runner::new(\n        vec![Job {\n            id: \"pub-a\".into(),\n            priority: 1,\n            dependencies: vec![],\n            max_attempts: 2,\n        }],\n        0,\n        5,\n        20,\n    )\n    .unwrap();\n    r.begin_cycle(0).unwrap();\n    assert_eq!(\n        r.next_ready(0).unwrap(),\n        Some(Ticket {\n            id: \"pub-a\".into(),\n            attempt: 1\n        })\n    );\n    r.complete(1, \"pub-a\", true).unwrap();\n    assert_eq!(r.status(\"pub-a\"), Ok(State::Succeeded));\n    r.begin_cycle(2).unwrap();\n}\n\n// R14 R27\n#[test]\nfn public_dependency() {\n    let mut r = Runner::new(\n        vec![\n            Job {\n                id: \"pub-child\".into(),\n                priority: 9,\n                dependencies: vec![\"pub-root\".into()],\n                max_attempts: 2,\n            },\n            Job {\n                id: \"pub-root\".into(),\n                priority: 1,\n                dependencies: vec![],\n                max_attempts: 2,\n            },\n        ],\n        0,\n        5,\n        20,\n    )\n    .unwrap();\n    r.begin_cycle(0).unwrap();\n    assert_eq!(r.next_ready(0).unwrap().unwrap().id, \"pub-root\");\n    r.complete(0, \"pub-root\", true).unwrap();\n    assert_eq!(r.next_ready(0).unwrap().unwrap().id, \"pub-child\");\n}\n\n// R25 R26\n#[test]\nfn public_retry() {\n    let mut r = Runner::new(\n        vec![Job {\n            id: \"pub-a\".into(),\n            priority: 1,\n            dependencies: vec![],\n            max_attempts: 2,\n        }],\n        0,\n        5,\n        20,\n    )\n    .unwrap();\n    r.begin_cycle(0).unwrap();\n    r.next_ready(0).unwrap();\n    r.complete(1, \"pub-a\", false).unwrap();\n    assert_eq!(r.status(\"pub-a\"), Ok(State::Waiting { ready_at: 6 }));\n    assert_eq!(r.next_ready(5), Ok(None));\n    assert_eq!(r.next_ready(6).unwrap().unwrap().attempt, 2);\n}\n\n// R24 R28\n#[test]\nfn public_failure() {\n    let mut r = Runner::new(\n        vec![\n            Job {\n                id: \"pub-root\".into(),\n                priority: 1,\n                dependencies: vec![],\n                max_attempts: 1,\n            },\n            Job {\n                id: \"pub-leaf\".into(),\n                priority: 1,\n                dependencies: vec![\"pub-root\".into()],\n                max_attempts: 2,\n            },\n        ],\n        0,\n        5,\n        20,\n    )\n    .unwrap();\n    r.begin_cycle(0).unwrap();\n    r.next_ready(0).unwrap();\n    r.complete(0, \"pub-root\", false).unwrap();\n    assert_eq!(r.status(\"pub-root\"), Ok(State::Failed));\n    assert_eq!(r.status(\"pub-leaf\"), Ok(State::Blocked));\n}\n```\n"}
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-14T21:28:30.979836Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+use std::collections::{HashMap, HashSet};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Job {
+    pub id: String,
+    pub priority: u8,
+    pub dependencies: Vec<String>,
+    pub max_attempts: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum State {
+    Waiting { ready_at: u64 },
+    Running { attempt: u8 },
+    Succeeded,
+    Failed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ticket {
+    pub id: String,
+    pub attempt: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    Config,
+    BadId(usize),
+    BadPriority(usize),
+    BadAttempts(usize),
+    Duplicate(usize),
+    DuplicateDependency(usize, usize),
+    MissingDependency(usize, usize),
+    Cycle,
+    TimeReversed,
+    Busy,
+    NoCycle,
+    Unknown,
+    NotRunning,
+}
+
+pub struct Runner {
+    jobs: Vec<Job>,
+    dependency_indices: Vec<Vec<usize>>,
+    states: Vec<State>,
+    attempts: Vec<u8>,
+    aging_ms: u64,
+    retry_base: u64,
+    retry_cap: u64,
+    last_time: u64,
+    cycle_started: bool,
+}
+
+impl Runner {
+    /// Creates a runner after validating jobs, dependencies, and retry settings.
+    pub fn new(
+        jobs: Vec<Job>,
+        aging_ms: u64,
+        retry_base: u64,
+        retry_cap: u64,
+    ) -> Result<Self, Error> {
+        if retry_base == 0 || retry_cap < retry_base {
+            return Err(Error::Config);
+        }
+
+        let mut ids = HashMap::new();
+        for (i, job) in jobs.iter().enumerate() {
+            let valid_id = (1..=16).contains(&job.id.len())
+                && job
+                    .id
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            if !valid_id {
+                return Err(Error::BadId(i));
+            }
+            if job.priority > 9 {
+                return Err(Error::BadPriority(i));
+            }
+            if !(1..=32).contains(&job.max_attempts) {
+                return Err(Error::BadAttempts(i));
+            }
+            if ids.insert(job.id.as_str(), i).is_some() {
+                return Err(Error::Duplicate(i));
+            }
+        }
+
+        let mut dependency_indices = Vec::with_capacity(jobs.len());
+        for (job_index, job) in jobs.iter().enumerate() {
+            let mut seen = HashSet::new();
+            let mut deps = Vec::with_capacity(job.dependencies.len());
+            for (dependency_index, dep) in job.dependencies.iter().enumerate() {
+                if !seen.insert(dep.as_str()) {
+                    return Err(Error::DuplicateDependency(job_index, dependency_index));
+                }
+                match ids.get(dep.as_str()) {
+                    Some(&index) => deps.push(index),
+                    None => {
+                        return Err(Error::MissingDependency(job_index, dependency_index));
+                    }
+                }
+            }
+            dependency_indices.push(deps);
+        }
+
+        fn has_cycle(graph: &[Vec<usize>]) -> bool {
+            fn visit(node: usize, graph: &[Vec<usize>], marks: &mut [u8]) -> bool {
+                if marks[node] == 1 {
+                    return true;
+                }
+                if marks[node] == 2 {
+                    return false;
+                }
+                marks[node] = 1;
+                for &next in &graph[node] {
+                    if visit(next, graph, marks) {
+                        return true;
+                    }
+                }
+                marks[node] = 2;
+                false
+            }
+
+            let mut marks = vec![0; graph.len()];
+            (0..graph.len()).any(|node| visit(node, graph, &mut marks))
+        }
+
+        if has_cycle(&dependency_indices) {
+            return Err(Error::Cycle);
+        }
+
+        let count = jobs.len();
+        Ok(Self {
+            jobs,
+            dependency_indices,
+            states: vec![State::Waiting { ready_at: 0 }; count],
+            attempts: vec![0; count],
+            aging_ms,
+            retry_base,
+            retry_cap,
+            last_time: 0,
+            cycle_started: false,
+        })
+    }
+
+    /// Starts a fresh cycle if the previous cycle has no active jobs.
+    pub fn begin_cycle(&mut self, now: u64) -> Result<(), Error> {
+        if now < self.last_time {
+            return Err(Error::TimeReversed);
+        }
+        if self
+            .states
+            .iter()
+            .any(|state| matches!(state, State::Waiting { .. } | State::Running { .. }))
+        {
+            return Err(Error::Busy);
+        }
+
+        self.states.fill(State::Waiting { ready_at: now });
+        self.attempts.fill(0);
+        self.last_time = now;
+        self.cycle_started = true;
+        Ok(())
+    }
+
+    /// Dispatches the highest-priority eligible waiting job, if one is ready.
+    pub fn next_ready(&mut self, now: u64) -> Result<Option<Ticket>, Error> {
+        if now < self.last_time {
+            return Err(Error::TimeReversed);
+        }
+        if !self.cycle_started {
+            return Err(Error::NoCycle);
+        }
+
+        let mut best: Option<(usize, u8)> = None;
+        for index in 0..self.jobs.len() {
+            let ready_at = match self.states[index] {
+                State::Waiting { ready_at } if ready_at <= now => ready_at,
+                _ => continue,
+            };
+            if !self.dependency_indices[index]
+                .iter()
+                .all(|&dep| matches!(self.states[dep], State::Succeeded))
+            {
+                continue;
+            }
+
+            let base = self.jobs[index].priority;
+            let effective = if self.aging_ms == 0 {
+                base
+            } else {
+                let age = (now - ready_at) / self.aging_ms;
+                (u64::from(base) + age).min(9) as u8
+            };
+
+            if best.is_none_or(|(_, priority)| effective > priority) {
+                best = Some((index, effective));
+            }
+        }
+
+        self.last_time = now;
+        let Some((index, _)) = best else {
+            return Ok(None);
+        };
+
+        self.attempts[index] += 1;
+        let attempt = self.attempts[index];
+        self.states[index] = State::Running { attempt };
+        Ok(Some(Ticket {
+            id: self.jobs[index].id.clone(),
+            attempt,
+        }))
+    }
+
+    /// Completes a running job, scheduling a retry or propagating terminal failure.
+    pub fn complete(&mut self, now: u64, id: &str, success: bool) -> Result<(), Error> {
+        if now < self.last_time {
+            return Err(Error::TimeReversed);
+        }
+        if !self.cycle_started {
+            return Err(Error::NoCycle);
+        }
+        let index = self
+            .jobs
+            .iter()
+            .position(|job| job.id == id)
+            .ok_or(Error::Unknown)?;
+        if !matches!(self.states[index], State::Running { .. }) {
+            return Err(Error::NotRunning);
+        }
+
+        self.last_time = now;
+        if success {
+            self.states[index] = State::Succeeded;
+            return Ok(());
+        }
+
+        let attempt = self.attempts[index];
+        if attempt == self.jobs[index].max_attempts {
+            self.states[index] = State::Failed;
+            self.propagate_blocked();
+        } else {
+            let delay = retry_delay(self.retry_base, self.retry_cap, attempt);
+            self.states[index] = State::Waiting {
+                ready_at: now.saturating_add(delay),
+            };
+        }
+        Ok(())
+    }
+
+    /// Returns an owned snapshot of a job's state in the current cycle.
+    pub fn status(&self, id: &str) -> Result<State, Error> {
+        if !self.cycle_started {
+            return Err(Error::NoCycle);
+        }
+        let index = self
+            .jobs
+            .iter()
+            .position(|job| job.id == id)
+            .ok_or(Error::Unknown)?;
+        Ok(self.states[index].clone())
+    }
+
+    fn propagate_blocked(&mut self) {
+        loop {
+            let mut changed = false;
+            for index in 0..self.jobs.len() {
+                if !matches!(self.states[index], State::Waiting { .. }) {
+                    continue;
+                }
+                if self.dependency_indices[index].iter().any(|&dep| {
+                    matches!(self.states[dep], State::Failed | State::Blocked)
+                }) {
+                    self.states[index] = State::Blocked;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+}
+
+fn retry_delay(base: u64, cap: u64, attempt: u8) -> u64 {
+    let mut delay = base;
+    for _ in 1..attempt {
+        if delay >= cap || delay > cap / 2 {
+            return cap;
+        }
+        delay *= 2;
+    }
+    delay.min(cap)
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job(id: &str, priority: u8, dependencies: &[&str], max_attempts: u8) -> Job {
+        Job {
+            id: id.into(),
+            priority,
+            dependencies: dependencies.iter().map(|s| (*s).into()).collect(),
+            max_attempts,
+        }
+    }
+
+    #[test]
+    fn dispatch_and_complete_cycle() {
+        let mut runner = Runner::new(vec![job("task", 2, &[], 1)], 0, 5, 20).unwrap();
+        runner.begin_cycle(0).unwrap();
+        assert_eq!(
+            runner.next_ready(0).unwrap(),
+            Some(Ticket {
+                id: "task".into(),
+                attempt: 1
+            })
+        );
+        runner.complete(0, "task", true).unwrap();
+        assert_eq!(runner.status("task"), Ok(State::Succeeded));
+    }
+
+    #[test]
+    fn rejects_invalid_configuration_and_dependencies() {
+        assert_eq!(Runner::new(vec![], 0, 0, 1).err(), Some(Error::Config));
+        assert_eq!(
+            Runner::new(vec![job("Bad", 0, &[], 1)], 0, 1, 1).err(),
+            Some(Error::BadId(0))
+        );
+        assert_eq!(
+            Runner::new(vec![job("task", 0, &["missing"], 1)], 0, 1, 1).err(),
+            Some(Error::MissingDependency(0, 0))
+        );
+    }
+
+    #[test]
+    fn dependencies_retry_and_blocking_work_end_to_end() {
+        let mut runner = Runner::new(
+            vec![job("child", 9, &["root"], 2), job("root", 1, &[], 2)],
+            0,
+            5,
+            20,
+        )
+        .unwrap();
+        runner.begin_cycle(0).unwrap();
+
+        assert_eq!(runner.next_ready(0).unwrap().unwrap().id, "root");
+        runner.complete(0, "root", false).unwrap();
+        assert_eq!(runner.status("root"), Ok(State::Waiting { ready_at: 5 }));
+        assert_eq!(runner.next_ready(4).unwrap(), None);
+
+        assert_eq!(runner.next_ready(5).unwrap().unwrap().id, "root");
+        runner.complete(5, "root", false).unwrap();
+        assert_eq!(runner.status("root"), Ok(State::Failed));
+        assert_eq!(runner.status("child"), Ok(State::Blocked));
+    }
+}
+```
+tokens used
+11,505

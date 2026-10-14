@@ -1,0 +1,414 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-9954-1792012545873539000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a13c45-a8c4-7290-a523-f2992f9667e7
+--------
+user
+You are a programmer. You receive three complementary artifacts:
+- design: concrete structure or reference implementation details
+- plan: the intended architecture or implementation steps
+- requirements: the user-visible contract to satisfy
+
+Prefer the most specific, most constrained instructions when the artifacts differ.
+Default deliverable: synthesize all three into a SINGLE complete Rust source file.
+If the requirements, design, or plan explicitly require another artifact format (for example, a unified diff candidate patch), follow that explicit deliverable instead.
+Benchmark integrity rule: if the requirements, design, or plan say not to search GitHub, issues, pull requests, commits, forks, public web pages, or solution writeups for benchmark answers, obey that restriction strictly. Solve from the provided context and local tests only.
+For Rust-source deliverables, the file MUST:
+1. Contain a main() function
+2. Include the exact Rust test module header `#[cfg(test)] mod tests` with at least 3 test cases; omitting this fails the mechanical `has_tests` fitness gate even if the solution code works
+3. Use Result<T, E> for error handling where appropriate
+4. Include /// doc comments on public functions
+5. Compile with `rustc --edition 2024`
+6. Do NOT define a module named `a2d_acceptance` — that module will be appended by the system. If you define it, compilation will fail with a duplicate definition error.
+7. Place all your tests in a module named `tests` (i.e. `#[cfg(test)] mod tests { ... }`), NOT `a2d_acceptance`.
+8. Test the normal path, at least one edge/invalid input, and one end-to-end behavior so the tests are meaningful rather than placeholder assertions.
+
+For unified diff deliverables, output raw unified diff text without markdown fences so evaluators can apply and hash the patch bytes directly.
+Output ONLY the requested artifact. No explanation.
+
+{"design":"Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. All listed API items and fields must be pub. Derive Debug, Clone, PartialEq, Eq for data/error enums and records (engine structs need not implement these). No main function is required. \n\nExact public API:\n```rust\npub enum CronError { Layout(usize), Syntax(usize), Number(usize), Bounds(usize), Descending(usize), Step(usize) }\npub struct Cron { /* private fields */ }\nimpl Cron {\n pub fn parse(text: &str) -> Result<Self, CronError>;\n pub fn matches(&self, minute: u64) -> bool;\n}\npub enum Policy { Skip, Once, All }\npub struct Occurrence { pub id: String, pub at: u64 }\npub enum Error { TimeReversed, TimeRange, BadId, BadPriority, Duplicate, Cron(CronError) }\npub struct Calendar { /* private fields */ }\nimpl Calendar {\n pub fn new() -> Self;\n pub fn add(&mut self, id: &str, expression: &str, priority: u8, policy: Policy) -> Result<(), Error>;\n pub fn poll(&mut self, now: u64) -> Result<Vec<Occurrence>, Error>;\n}\n```\n\nR1. All API time arguments and Occurrence.at are u64 milliseconds. Cron.matches alone receives an absolute minute number. A minute is 60000 ms; a day is 1440 minutes, with no time zones.\nR2. Cron text has exactly two nonempty fields, minute then hour, separated by exactly one ASCII space. First check layout over the entire string: any ASCII whitespace other than space yields Layout at its first byte offset; otherwise no spaces yields Layout(text.len()), multiple spaces yields Layout at the second space, and a sole leading/trailing space yields Layout at that space. This layout check precedes field parsing.\nR3. Fields are comma-separated nonempty items. Allowed items are n, a-b, *, */s, a-b/s. No other syntax is valid. A bare n/s reports Syntax at the slash. Lists may overlap, repeat, or appear out of numeric order; they are unions.\nR4. All offsets in CronError are zero-based UTF-8 byte offsets in the complete input. Parse minute items left-to-right, then hour items left-to-right; return the first error under that order.\nR5. Parse an item base before its optional step. A numeric fragment must be nonempty ASCII digits; otherwise Syntax points at its first non-digit byte (or fragment start if empty). A multi-digit fragment starting with zero gives Number(fragment start), after the digit-syntax check. Arbitrarily long digit fragments are allowed to be rejected by Bounds or Step, never panic.\nR6. Minute numbers are 0..=59, hour numbers 0..=23. An out-of-range base number gives Bounds at its start. Validate a range left endpoint, then right endpoint, then its order; descending gives Descending at the dash.\nR7. An item may have at most one slash; a second slash gives Syntax at that slash before checking the base. Only * or a range can have a step; otherwise Syntax at the first slash before numeric validation. Within a range only the first dash separates numeric fragments, so a second dash is a non-digit in the right fragment.\nR8. Step fragments obey the numeric syntax/canonical rules in R5; their value must be 1..=60 for minute, 1..=24 for hour, else Step at the step start. Validate base bounds/order before step syntax/value.\nR9. An empty list item gives Syntax at its start, including trailing comma (which can point at field end). A * base means the whole field; all other nondigit text follows the numeric-fragment Syntax rule.\nR10. A range includes both endpoints. A step selects start, start+s, ... <= end, anchored at range start; * has start 0. Unstepped ranges and * use step 1.\nR11. Cron.matches(m) is true exactly when minute m%60 is selected AND hour (m/60)%24 is selected. It works for every u64 minute, including u64::MAX.\nR12. Calendar initially has no jobs and no successful poll. add reserves an ID permanently, and records insertion order.\nR13. IDs have 1..=16 ASCII lowercase-letter/digit/hyphen bytes. Priorities are 0..=9; larger means higher.\nR14. add error precedence is BadId, then BadPriority, then Duplicate, then Cron(parser error). Failed add changes nothing.\nR15. The first successful poll considers matching minute boundaries from time 0 through now inclusive. Later polls consider only boundaries strictly greater than the previous successful poll time and <= now.\nR16. Jobs added after a poll participate only in later poll intervals; they never recover occurrences at or before the most recent successful poll.\nR17. poll accepts now <= 604800000 (exactly seven days). It checks TimeReversed (now less than last successful poll) before TimeRange. Initially only TimeRange can apply.\nR18. Failed poll changes nothing, including the last successful poll time.\nR19. Policy::All emits every matching boundary in the current interval.\nR20. Policy::Once emits only the latest matching boundary in the current interval, if any.\nR21. Policy::Skip emits only a matching boundary exactly equal to now; if now is not a minute boundary it emits nothing. All older boundaries in the interval are discarded.\nR22. All policies consume the entire interval even when they emit nothing. Repeated poll at identical now emits an empty vector.\nR23. Merge emitted occurrences by ascending at, then descending job priority, then insertion order; ID spelling never breaks ties.\nR24. Occurrence.at is the original scheduled boundary, even for catch-up. Return one occurrence per selected boundary per job, deduplicating overlapping cron items.\nR25. Each Calendar and Cron is independent; no wall clock is read.\nR26. Zero is a valid first occurrence. Empty calendars still advance their poll watermark.\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\n// R3 R10 R11\n#[test]\nfn public_parse() {\n    let c = Cron::parse(\"5-15/5 2,4\").unwrap();\n    assert!(c.matches(130));\n    assert!(!c.matches(131));\n}\n\n// R15 R19 R24\n#[test]\nfn public_all() {\n    let mut c = Calendar::new();\n    c.add(\"ticks\", \"*/1 0-23\", 1, Policy::All).unwrap();\n    assert_eq!(\n        c.poll(60000).unwrap(),\n        vec![\n            Occurrence {\n                id: \"ticks\".into(),\n                at: 0\n            },\n            Occurrence {\n                id: \"ticks\".into(),\n                at: 60000\n            }\n        ]\n    );\n}\n\n// R20 R21\n#[test]\nfn public_policies() {\n    let mut c = Calendar::new();\n    c.add(\"late\", \"*/1 0-23\", 1, Policy::Once).unwrap();\n    c.add(\"skip\", \"*/1 0-23\", 2, Policy::Skip).unwrap();\n    assert_eq!(\n        c.poll(90000).unwrap(),\n        vec![Occurrence {\n            id: \"late\".into(),\n            at: 60000\n        }]\n    );\n}\n\n// R23\n#[test]\nfn public_ordering() {\n    let mut c = Calendar::new();\n    c.add(\"low\", \"0-0 0-0\", 0, Policy::All).unwrap();\n    c.add(\"high\", \"0-0 0-0\", 9, Policy::All).unwrap();\n    assert_eq!(\n        c.poll(0)\n            .unwrap()\n            .iter()\n            .map(|o| o.id.as_str())\n            .collect::<Vec<_>>(),\n        vec![\"high\", \"low\"]\n    );\n}\n```\n","enzyme_defs":"[{\"id\":\"architect\",\"reactants\":[\"failure_report\",\"fitness_report\"],\"products\":[\"system_patch\"],\"catalysts\":[\"provider_health_report\",\"provider_policy\",\"system_code\"]},{\"id\":\"coder\",\"reactants\":[\"design\",\"plan\",\"requirements\"],\"products\":[\"code\"],\"catalysts\":[\"enzyme_defs\",\"failure_report\"],\"prompt_template\":\"You are a programmer. You receive three complementary artifacts:\\n- design: concrete structure or reference implementation details\\n- plan: the intended architecture or implementation steps\\n- requirements: the user-visible contract to satisfy\\n\\nPrefer the most specific, most constrained instructions when the artifacts differ.\\nDefault deliverable: synthesize all three into a SINGLE complete Rust source file.\\nIf the requirements, design, or plan explicitly require another artifact format (for example, a unified diff candidate patch), follow that explicit deliverable instead.\\nBenchmark integrity rule: if the requirements, design, or plan say not to search GitHub, issues, pull requests, commits, forks, public web pages, or solution writeups for benchmark answers, obey that restriction strictly. Solve from the provided context and local tests only.\\nFor Rust-source deliverables, the file MUST:\\n1. Contain a main() function\\n2. Include the exact Rust test module header `#[cfg(test)] mod tests` with at least 3 test cases; omitting this fails the mechanical `has_tests` fitness gate even if the solution code works\\n3. Use Result<T, E> for error handling where appropriate\\n4. Include /// doc comments on public functions\\n5. Compile with `rustc --edition 2024`\\n6. Do NOT define a module named `a2d_acceptance` — that module will be appended by the system. If you define it, compilation will fail with a duplicate definition error.\\n7. Place all your tests in a module named `tests` (i.e. `#[cfg(test)] mod tests { ... }`), NOT `a2d_acceptance`.\\n8. Test the normal path, at least one edge/invalid input, and one end-to-end behavior so the tests are meaningful rather than placeholder assertions.\\n\\nFor unified diff deliverables, output raw unified diff text without markdown fences so evaluators can apply and hash the patch bytes directly.\\nOutput ONLY the requested artifact. No explanation.\"},{\"id\":\"evolver\",\"reactants\":[\"fitness_report\"],\"products\":[\"enzyme_defs\"],\"catalysts\":[\"enzyme_defs\",\"failure_report\",\"fitness_report\",\"provider_health_report\",\"provider_policy\"]},{\"id\":\"tester\",\"reactants\":[\"code\"],\"products\":[\"test_results\"],\"catalysts\":[\"code\"],\"prompt_template\":\"You are a code reviewer. Given Rust code, evaluate it.\\nCheck: does it compile? Are there tests? Do the tests cover edge cases?\\nOutput a brief assessment with pass/fail for each check.\"}]","failure_report":"","plan":"Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. All listed API items and fields must be pub. Derive Debug, Clone, PartialEq, Eq for data/error enums and records (engine structs need not implement these). No main function is required. \n\nExact public API:\n```rust\npub enum CronError { Layout(usize), Syntax(usize), Number(usize), Bounds(usize), Descending(usize), Step(usize) }\npub struct Cron { /* private fields */ }\nimpl Cron {\n pub fn parse(text: &str) -> Result<Self, CronError>;\n pub fn matches(&self, minute: u64) -> bool;\n}\npub enum Policy { Skip, Once, All }\npub struct Occurrence { pub id: String, pub at: u64 }\npub enum Error { TimeReversed, TimeRange, BadId, BadPriority, Duplicate, Cron(CronError) }\npub struct Calendar { /* private fields */ }\nimpl Calendar {\n pub fn new() -> Self;\n pub fn add(&mut self, id: &str, expression: &str, priority: u8, policy: Policy) -> Result<(), Error>;\n pub fn poll(&mut self, now: u64) -> Result<Vec<Occurrence>, Error>;\n}\n```\n\nR1. All API time arguments and Occurrence.at are u64 milliseconds. Cron.matches alone receives an absolute minute number. A minute is 60000 ms; a day is 1440 minutes, with no time zones.\nR2. Cron text has exactly two nonempty fields, minute then hour, separated by exactly one ASCII space. First check layout over the entire string: any ASCII whitespace other than space yields Layout at its first byte offset; otherwise no spaces yields Layout(text.len()), multiple spaces yields Layout at the second space, and a sole leading/trailing space yields Layout at that space. This layout check precedes field parsing.\nR3. Fields are comma-separated nonempty items. Allowed items are n, a-b, *, */s, a-b/s. No other syntax is valid. A bare n/s reports Syntax at the slash. Lists may overlap, repeat, or appear out of numeric order; they are unions.\nR4. All offsets in CronError are zero-based UTF-8 byte offsets in the complete input. Parse minute items left-to-right, then hour items left-to-right; return the first error under that order.\nR5. Parse an item base before its optional step. A numeric fragment must be nonempty ASCII digits; otherwise Syntax points at its first non-digit byte (or fragment start if empty). A multi-digit fragment starting with zero gives Number(fragment start), after the digit-syntax check. Arbitrarily long digit fragments are allowed to be rejected by Bounds or Step, never panic.\nR6. Minute numbers are 0..=59, hour numbers 0..=23. An out-of-range base number gives Bounds at its start. Validate a range left endpoint, then right endpoint, then its order; descending gives Descending at the dash.\nR7. An item may have at most one slash; a second slash gives Syntax at that slash before checking the base. Only * or a range can have a step; otherwise Syntax at the first slash before numeric validation. Within a range only the first dash separates numeric fragments, so a second dash is a non-digit in the right fragment.\nR8. Step fragments obey the numeric syntax/canonical rules in R5; their value must be 1..=60 for minute, 1..=24 for hour, else Step at the step start. Validate base bounds/order before step syntax/value.\nR9. An empty list item gives Syntax at its start, including trailing comma (which can point at field end). A * base means the whole field; all other nondigit text follows the numeric-fragment Syntax rule.\nR10. A range includes both endpoints. A step selects start, start+s, ... <= end, anchored at range start; * has start 0. Unstepped ranges and * use step 1.\nR11. Cron.matches(m) is true exactly when minute m%60 is selected AND hour (m/60)%24 is selected. It works for every u64 minute, including u64::MAX.\nR12. Calendar initially has no jobs and no successful poll. add reserves an ID permanently, and records insertion order.\nR13. IDs have 1..=16 ASCII lowercase-letter/digit/hyphen bytes. Priorities are 0..=9; larger means higher.\nR14. add error precedence is BadId, then BadPriority, then Duplicate, then Cron(parser error). Failed add changes nothing.\nR15. The first successful poll considers matching minute boundaries from time 0 through now inclusive. Later polls consider only boundaries strictly greater than the previous successful poll time and <= now.\nR16. Jobs added after a poll participate only in later poll intervals; they never recover occurrences at or before the most recent successful poll.\nR17. poll accepts now <= 604800000 (exactly seven days). It checks TimeReversed (now less than last successful poll) before TimeRange. Initially only TimeRange can apply.\nR18. Failed poll changes nothing, including the last successful poll time.\nR19. Policy::All emits every matching boundary in the current interval.\nR20. Policy::Once emits only the latest matching boundary in the current interval, if any.\nR21. Policy::Skip emits only a matching boundary exactly equal to now; if now is not a minute boundary it emits nothing. All older boundaries in the interval are discarded.\nR22. All policies consume the entire interval even when they emit nothing. Repeated poll at identical now emits an empty vector.\nR23. Merge emitted occurrences by ascending at, then descending job priority, then insertion order; ID spelling never breaks ties.\nR24. Occurrence.at is the original scheduled boundary, even for catch-up. Return one occurrence per selected boundary per job, deduplicating overlapping cron items.\nR25. Each Calendar and Cron is independent; no wall clock is read.\nR26. Zero is a valid first occurrence. Empty calendars still advance their poll watermark.\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\n// R3 R10 R11\n#[test]\nfn public_parse() {\n    let c = Cron::parse(\"5-15/5 2,4\").unwrap();\n    assert!(c.matches(130));\n    assert!(!c.matches(131));\n}\n\n// R15 R19 R24\n#[test]\nfn public_all() {\n    let mut c = Calendar::new();\n    c.add(\"ticks\", \"*/1 0-23\", 1, Policy::All).unwrap();\n    assert_eq!(\n        c.poll(60000).unwrap(),\n        vec![\n            Occurrence {\n                id: \"ticks\".into(),\n                at: 0\n            },\n            Occurrence {\n                id: \"ticks\".into(),\n                at: 60000\n            }\n        ]\n    );\n}\n\n// R20 R21\n#[test]\nfn public_policies() {\n    let mut c = Calendar::new();\n    c.add(\"late\", \"*/1 0-23\", 1, Policy::Once).unwrap();\n    c.add(\"skip\", \"*/1 0-23\", 2, Policy::Skip).unwrap();\n    assert_eq!(\n        c.poll(90000).unwrap(),\n        vec![Occurrence {\n            id: \"late\".into(),\n            at: 60000\n        }]\n    );\n}\n\n// R23\n#[test]\nfn public_ordering() {\n    let mut c = Calendar::new();\n    c.add(\"low\", \"0-0 0-0\", 0, Policy::All).unwrap();\n    c.add(\"high\", \"0-0 0-0\", 9, Policy::All).unwrap();\n    assert_eq!(\n        c.poll(0)\n            .unwrap()\n            .iter()\n            .map(|o| o.id.as_str())\n            .collect::<Vec<_>>(),\n        vec![\"high\", \"low\"]\n    );\n}\n```\n","requirements":"Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. All listed API items and fields must be pub. Derive Debug, Clone, PartialEq, Eq for data/error enums and records (engine structs need not implement these). No main function is required. \n\nExact public API:\n```rust\npub enum CronError { Layout(usize), Syntax(usize), Number(usize), Bounds(usize), Descending(usize), Step(usize) }\npub struct Cron { /* private fields */ }\nimpl Cron {\n pub fn parse(text: &str) -> Result<Self, CronError>;\n pub fn matches(&self, minute: u64) -> bool;\n}\npub enum Policy { Skip, Once, All }\npub struct Occurrence { pub id: String, pub at: u64 }\npub enum Error { TimeReversed, TimeRange, BadId, BadPriority, Duplicate, Cron(CronError) }\npub struct Calendar { /* private fields */ }\nimpl Calendar {\n pub fn new() -> Self;\n pub fn add(&mut self, id: &str, expression: &str, priority: u8, policy: Policy) -> Result<(), Error>;\n pub fn poll(&mut self, now: u64) -> Result<Vec<Occurrence>, Error>;\n}\n```\n\nR1. All API time arguments and Occurrence.at are u64 milliseconds. Cron.matches alone receives an absolute minute number. A minute is 60000 ms; a day is 1440 minutes, with no time zones.\nR2. Cron text has exactly two nonempty fields, minute then hour, separated by exactly one ASCII space. First check layout over the entire string: any ASCII whitespace other than space yields Layout at its first byte offset; otherwise no spaces yields Layout(text.len()), multiple spaces yields Layout at the second space, and a sole leading/trailing space yields Layout at that space. This layout check precedes field parsing.\nR3. Fields are comma-separated nonempty items. Allowed items are n, a-b, *, */s, a-b/s. No other syntax is valid. A bare n/s reports Syntax at the slash. Lists may overlap, repeat, or appear out of numeric order; they are unions.\nR4. All offsets in CronError are zero-based UTF-8 byte offsets in the complete input. Parse minute items left-to-right, then hour items left-to-right; return the first error under that order.\nR5. Parse an item base before its optional step. A numeric fragment must be nonempty ASCII digits; otherwise Syntax points at its first non-digit byte (or fragment start if empty). A multi-digit fragment starting with zero gives Number(fragment start), after the digit-syntax check. Arbitrarily long digit fragments are allowed to be rejected by Bounds or Step, never panic.\nR6. Minute numbers are 0..=59, hour numbers 0..=23. An out-of-range base number gives Bounds at its start. Validate a range left endpoint, then right endpoint, then its order; descending gives Descending at the dash.\nR7. An item may have at most one slash; a second slash gives Syntax at that slash before checking the base. Only * or a range can have a step; otherwise Syntax at the first slash before numeric validation. Within a range only the first dash separates numeric fragments, so a second dash is a non-digit in the right fragment.\nR8. Step fragments obey the numeric syntax/canonical rules in R5; their value must be 1..=60 for minute, 1..=24 for hour, else Step at the step start. Validate base bounds/order before step syntax/value.\nR9. An empty list item gives Syntax at its start, including trailing comma (which can point at field end). A * base means the whole field; all other nondigit text follows the numeric-fragment Syntax rule.\nR10. A range includes both endpoints. A step selects start, start+s, ... <= end, anchored at range start; * has start 0. Unstepped ranges and * use step 1.\nR11. Cron.matches(m) is true exactly when minute m%60 is selected AND hour (m/60)%24 is selected. It works for every u64 minute, including u64::MAX.\nR12. Calendar initially has no jobs and no successful poll. add reserves an ID permanently, and records insertion order.\nR13. IDs have 1..=16 ASCII lowercase-letter/digit/hyphen bytes. Priorities are 0..=9; larger means higher.\nR14. add error precedence is BadId, then BadPriority, then Duplicate, then Cron(parser error). Failed add changes nothing.\nR15. The first successful poll considers matching minute boundaries from time 0 through now inclusive. Later polls consider only boundaries strictly greater than the previous successful poll time and <= now.\nR16. Jobs added after a poll participate only in later poll intervals; they never recover occurrences at or before the most recent successful poll.\nR17. poll accepts now <= 604800000 (exactly seven days). It checks TimeReversed (now less than last successful poll) before TimeRange. Initially only TimeRange can apply.\nR18. Failed poll changes nothing, including the last successful poll time.\nR19. Policy::All emits every matching boundary in the current interval.\nR20. Policy::Once emits only the latest matching boundary in the current interval, if any.\nR21. Policy::Skip emits only a matching boundary exactly equal to now; if now is not a minute boundary it emits nothing. All older boundaries in the interval are discarded.\nR22. All policies consume the entire interval even when they emit nothing. Repeated poll at identical now emits an empty vector.\nR23. Merge emitted occurrences by ascending at, then descending job priority, then insertion order; ID spelling never breaks ties.\nR24. Occurrence.at is the original scheduled boundary, even for catch-up. Return one occurrence per selected boundary per job, deduplicating overlapping cron items.\nR25. Each Calendar and Cron is independent; no wall clock is read.\nR26. Zero is a valid first occurrence. Empty calendars still advance their poll watermark.\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\n// R3 R10 R11\n#[test]\nfn public_parse() {\n    let c = Cron::parse(\"5-15/5 2,4\").unwrap();\n    assert!(c.matches(130));\n    assert!(!c.matches(131));\n}\n\n// R15 R19 R24\n#[test]\nfn public_all() {\n    let mut c = Calendar::new();\n    c.add(\"ticks\", \"*/1 0-23\", 1, Policy::All).unwrap();\n    assert_eq!(\n        c.poll(60000).unwrap(),\n        vec![\n            Occurrence {\n                id: \"ticks\".into(),\n                at: 0\n            },\n            Occurrence {\n                id: \"ticks\".into(),\n                at: 60000\n            }\n        ]\n    );\n}\n\n// R20 R21\n#[test]\nfn public_policies() {\n    let mut c = Calendar::new();\n    c.add(\"late\", \"*/1 0-23\", 1, Policy::Once).unwrap();\n    c.add(\"skip\", \"*/1 0-23\", 2, Policy::Skip).unwrap();\n    assert_eq!(\n        c.poll(90000).unwrap(),\n        vec![Occurrence {\n            id: \"late\".into(),\n            at: 60000\n        }]\n    );\n}\n\n// R23\n#[test]\nfn public_ordering() {\n    let mut c = Calendar::new();\n    c.add(\"low\", \"0-0 0-0\", 0, Policy::All).unwrap();\n    c.add(\"high\", \"0-0 0-0\", 9, Policy::All).unwrap();\n    assert_eq!(\n        c.poll(0)\n            .unwrap()\n            .iter()\n            .map(|o| o.id.as_str())\n            .collect::<Vec<_>>(),\n        vec![\"high\", \"low\"]\n    );\n}\n```\n"}
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-14T21:16:04.429104Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+use std::collections::HashSet;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CronError {
+    Layout(usize),
+    Syntax(usize),
+    Number(usize),
+    Bounds(usize),
+    Descending(usize),
+    Step(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cron {
+    minutes: [bool; 60],
+    hours: [bool; 24],
+}
+
+fn parse_number(text: &str, start: usize, limit: usize, step: bool) -> Result<usize, CronError> {
+    if text.is_empty() {
+        return Err(CronError::Syntax(start));
+    }
+
+    if let Some((i, _)) = text.bytes().enumerate().find(|(_, b)| !b.is_ascii_digit()) {
+        return Err(CronError::Syntax(start + i));
+    }
+
+    if text.len() > 1 && text.starts_with('0') {
+        return Err(CronError::Number(start));
+    }
+
+    let mut value = 0usize;
+    for b in text.bytes() {
+        value = match value
+            .checked_mul(10)
+            .and_then(|n| n.checked_add((b - b'0') as usize))
+        {
+            Some(n) => n,
+            None => return Err(if step { CronError::Step(start) } else { CronError::Bounds(start) }),
+        };
+    }
+
+    if step {
+        if value == 0 || value > limit {
+            return Err(CronError::Step(start));
+        }
+    } else if value > limit {
+        return Err(CronError::Bounds(start));
+    }
+
+    Ok(value)
+}
+
+fn parse_field<const N: usize>(
+    field: &str,
+    offset: usize,
+    max: usize,
+    step_max: usize,
+) -> Result<[bool; N], CronError> {
+    let mut selected = [false; N];
+    let mut item_start = 0;
+
+    loop {
+        let item_end = field[item_start..]
+            .find(',')
+            .map(|i| item_start + i)
+            .unwrap_or(field.len());
+        let item = &field[item_start..item_end];
+        let absolute_start = offset + item_start;
+
+        let slash_positions: Vec<usize> = item
+            .bytes()
+            .enumerate()
+            .filter_map(|(i, b)| if b == b'/' { Some(i) } else { None })
+            .collect();
+        if slash_positions.len() > 1 {
+            return Err(CronError::Syntax(absolute_start + slash_positions[1]));
+        }
+
+        let slash = slash_positions.first().copied();
+        let base_end = slash.unwrap_or(item.len());
+        let base = &item[..base_end];
+
+        if let Some(slash_pos) = slash {
+            if base != "*" && !base.contains('-') {
+                return Err(CronError::Syntax(absolute_start + slash_pos));
+            }
+        }
+
+        let (start, end, dash_pos) = if base == "*" {
+            (0, max, None)
+        } else if let Some(dash) = base.find('-') {
+            let left = &base[..dash];
+            let right = &base[dash + 1..];
+            let left_value = parse_number(left, absolute_start, max, false)?;
+            let right_value = parse_number(right, absolute_start + dash + 1, max, false)?;
+            if left_value > right_value {
+                return Err(CronError::Descending(absolute_start + dash));
+            }
+            (left_value, right_value, Some(dash))
+        } else {
+            let n = parse_number(base, absolute_start, max, false)?;
+            (n, n, None)
+        };
+
+        let step = if let Some(slash_pos) = slash {
+            let step_text = &item[slash_pos + 1..];
+            parse_number(
+                step_text,
+                absolute_start + slash_pos + 1,
+                step_max,
+                true,
+            )?
+        } else {
+            1
+        };
+
+        let _ = dash_pos;
+        let mut value = start;
+        while value <= end {
+            selected[value] = true;
+            match value.checked_add(step) {
+                Some(next) => value = next,
+                None => break,
+            }
+        }
+
+        if item_end == field.len() {
+            break;
+        }
+        item_start = item_end + 1;
+    }
+
+    Ok(selected)
+}
+
+impl Cron {
+    /// Parses a two-field minute and hour cron expression.
+    pub fn parse(text: &str) -> Result<Self, CronError> {
+        for (i, b) in text.bytes().enumerate() {
+            if b.is_ascii_whitespace() && b != b' ' {
+                return Err(CronError::Layout(i));
+            }
+        }
+
+        let spaces: Vec<usize> = text
+            .bytes()
+            .enumerate()
+            .filter_map(|(i, b)| if b == b' ' { Some(i) } else { None })
+            .collect();
+
+        if spaces.is_empty() {
+            return Err(CronError::Layout(text.len()));
+        }
+        if spaces.len() > 1 {
+            return Err(CronError::Layout(spaces[1]));
+        }
+
+        let split = spaces[0];
+        if split == 0 || split + 1 == text.len() {
+            return Err(CronError::Layout(split));
+        }
+
+        let minute_text = &text[..split];
+        let hour_text = &text[split + 1..];
+        let minutes = parse_field::<60>(minute_text, 0, 59, 60)?;
+        let hours = parse_field::<24>(hour_text, split + 1, 23, 24)?;
+        Ok(Self { minutes, hours })
+    }
+
+    /// Returns whether the absolute minute matches this cron expression.
+    pub fn matches(&self, minute: u64) -> bool {
+        self.minutes[(minute % 60) as usize] && self.hours[((minute / 60) % 24) as usize]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Policy {
+    Skip,
+    Once,
+    All,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Occurrence {
+    pub id: String,
+    pub at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    TimeReversed,
+    TimeRange,
+    BadId,
+    BadPriority,
+    Duplicate,
+    Cron(CronError),
+}
+
+struct Job {
+    id: String,
+    cron: Cron,
+    priority: u8,
+    policy: Policy,
+    insertion: usize,
+}
+
+pub struct Calendar {
+    jobs: Vec<Job>,
+    ids: HashSet<String>,
+    last_poll: Option<u64>,
+}
+
+impl Calendar {
+    /// Creates an empty calendar with no successful poll.
+    pub fn new() -> Self {
+        Self {
+            jobs: Vec::new(),
+            ids: HashSet::new(),
+            last_poll: None,
+        }
+    }
+
+    /// Adds a uniquely named cron job.
+    pub fn add(
+        &mut self,
+        id: &str,
+        expression: &str,
+        priority: u8,
+        policy: Policy,
+    ) -> Result<(), Error> {
+        if id.is_empty()
+            || id.len() > 16
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err(Error::BadId);
+        }
+        if priority > 9 {
+            return Err(Error::BadPriority);
+        }
+        if self.ids.contains(id) {
+            return Err(Error::Duplicate);
+        }
+
+        let cron = Cron::parse(expression).map_err(Error::Cron)?;
+        let owned_id = id.to_string();
+        self.ids.insert(owned_id.clone());
+        self.jobs.push(Job {
+            id: owned_id,
+            cron,
+            priority,
+            policy,
+            insertion: self.jobs.len(),
+        });
+        Ok(())
+    }
+
+    /// Emits scheduled occurrences through the given millisecond timestamp.
+    pub fn poll(&mut self, now: u64) -> Result<Vec<Occurrence>, Error> {
+        if let Some(previous) = self.last_poll {
+            if now < previous {
+                return Err(Error::TimeReversed);
+            }
+        }
+        if now > 604_800_000 {
+            return Err(Error::TimeRange);
+        }
+
+        let lower_exclusive = self.last_poll;
+        let last_minute = now / 60_000;
+        let mut emitted: Vec<(Occurrence, u8, usize)> = Vec::new();
+
+        for job in &self.jobs {
+            let mut matching = Vec::new();
+            for minute in 0..=last_minute {
+                let at = minute * 60_000;
+                let in_interval = match lower_exclusive {
+                    None => at <= now,
+                    Some(previous) => at > previous && at <= now,
+                };
+                if in_interval && job.cron.matches(minute) {
+                    matching.push(at);
+                }
+            }
+
+            let chosen: Vec<u64> = match job.policy {
+                Policy::All => matching,
+                Policy::Once => matching.last().copied().into_iter().collect(),
+                Policy::Skip => matching
+                    .into_iter()
+                    .filter(|at| *at == now)
+                    .collect(),
+            };
+
+            for at in chosen {
+                emitted.push((
+                    Occurrence {
+                        id: job.id.clone(),
+                        at,
+                    },
+                    job.priority,
+                    job.insertion,
+                ));
+            }
+        }
+
+        emitted.sort_by(|a, b| {
+            a.0.at
+                .cmp(&b.0.at)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+
+        self.last_poll = Some(now);
+        Ok(emitted.into_iter().map(|entry| entry.0).collect())
+    }
+}
+
+impl Default for Calendar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_ranges_and_steps() {
+        let cron = Cron::parse("5-15/5 2,4").unwrap();
+        assert!(cron.matches(130));
+        assert!(!cron.matches(131));
+    }
+
+    #[test]
+    fn rejects_layout_and_bad_number() {
+        assert_eq!(Cron::parse("1  2"), Err(CronError::Layout(2)));
+        assert_eq!(Cron::parse("01 2"), Err(CronError::Number(0)));
+    }
+
+    #[test]
+    fn calendar_emits_and_advances_interval() {
+        let mut calendar = Calendar::new();
+        calendar.add("tick", "*/1 0-23", 1, Policy::All).unwrap();
+        assert_eq!(
+            calendar.poll(60_000).unwrap(),
+            vec![
+                Occurrence { id: "tick".into(), at: 0 },
+                Occurrence { id: "tick".into(), at: 60_000 },
+            ]
+        );
+        assert!(calendar.poll(60_000).unwrap().is_empty());
+    }
+
+    #[test]
+    fn policies_and_priority_ordering() {
+        let mut calendar = Calendar::new();
+        calendar.add("low", "0-0 0-0", 0, Policy::All).unwrap();
+        calendar.add("high", "0-0 0-0", 9, Policy::All).unwrap();
+        assert_eq!(
+            calendar.poll(0).unwrap().iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+            vec!["high", "low"]
+        );
+    }
+}
+```
+tokens used
+23,651

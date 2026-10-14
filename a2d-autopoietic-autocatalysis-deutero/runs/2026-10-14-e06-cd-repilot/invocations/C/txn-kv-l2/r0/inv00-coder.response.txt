@@ -1,0 +1,263 @@
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    KeyEmpty,
+    NameEmpty,
+    NameInvalid { at: usize },
+    SnapshotLimit,
+    NoTransaction,
+    DepthLimit,
+    SnapshotMissing(String),
+    TimeBackwards { previous: u64, now: u64 },
+    DeadlineOverflow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Entry {
+    value: String,
+    deadline: Option<u64>,
+}
+
+type Data = BTreeMap<String, Entry>;
+
+pub struct Store {
+    committed: Data,
+    scopes: Vec<Data>,
+    snapshots: BTreeMap<String, Data>,
+    clock: u64,
+}
+
+impl Store {
+    /// Creates an empty store with its logical clock set to zero.
+    pub fn new() -> Self {
+        Self {
+            committed: BTreeMap::new(),
+            scopes: Vec::new(),
+            snapshots: BTreeMap::new(),
+            clock: 0,
+        }
+    }
+
+    fn admit(&mut self, now: u64) -> Result<(), Error> {
+        if now < self.clock {
+            return Err(Error::TimeBackwards {
+                previous: self.clock,
+                now,
+            });
+        }
+        self.clock = now;
+        Self::purge(Self::visible_mut(self), now);
+        Ok(())
+    }
+
+    fn visible(&self) -> &Data {
+        self.scopes.last().unwrap_or(&self.committed)
+    }
+
+    fn visible_mut(store: &mut Self) -> &mut Data {
+        store.scopes.last_mut().unwrap_or(&mut store.committed)
+    }
+
+    fn purge(data: &mut Data, now: u64) {
+        data.retain(|_, entry| entry.deadline.map_or(true, |deadline| deadline > now));
+    }
+
+    fn validate_key(key: &str) -> Result<(), Error> {
+        if key.is_empty() {
+            Err(Error::KeyEmpty)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_name(name: &str) -> Result<(), Error> {
+        if name.is_empty() {
+            return Err(Error::NameEmpty);
+        }
+        for (offset, ch) in name.char_indices() {
+            let valid = if offset == 0 {
+                ch.is_ascii_lowercase()
+            } else {
+                ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'
+            };
+            if !valid {
+                return Err(Error::NameInvalid { at: offset });
+            }
+        }
+        Ok(())
+    }
+
+    /// Opens a working scope initialized from the current visible data.
+    pub fn begin(&mut self, now: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        if self.scopes.len() >= 4 {
+            return Err(Error::DepthLimit);
+        }
+        self.scopes.push(self.visible().clone());
+        Ok(())
+    }
+
+    /// Commits the innermost working scope into its parent.
+    pub fn commit(&mut self, now: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        let data = self.scopes.pop().ok_or(Error::NoTransaction)?;
+        if let Some(parent) = self.scopes.last_mut() {
+            *parent = data;
+        } else {
+            self.committed = data;
+        }
+        Ok(())
+    }
+
+    /// Discards the innermost working scope.
+    pub fn rollback(&mut self, now: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        if self.scopes.pop().is_none() {
+            return Err(Error::NoTransaction);
+        }
+        Self::purge(Self::visible_mut(self), now);
+        Ok(())
+    }
+
+    /// Sets a key to a value, optionally expiring it after the given duration.
+    pub fn set(
+        &mut self,
+        now: u64,
+        key: &str,
+        value: &str,
+        ttl: Option<u64>,
+    ) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_key(key)?;
+        let deadline = match ttl {
+            Some(0) => {
+                Self::visible_mut(self).remove(key);
+                return Ok(());
+            }
+            Some(duration) => Some(now.checked_add(duration).ok_or(Error::DeadlineOverflow)?),
+            None => None,
+        };
+        Self::visible_mut(self).insert(
+            key.to_owned(),
+            Entry {
+                value: value.to_owned(),
+                deadline,
+            },
+        );
+        Ok(())
+    }
+
+    /// Deletes a key and reports whether it was present.
+    pub fn delete(&mut self, now: u64, key: &str) -> Result<bool, Error> {
+        self.admit(now)?;
+        Self::validate_key(key)?;
+        Ok(Self::visible_mut(self).remove(key).is_some())
+    }
+
+    /// Returns an owned copy of a key's value, if present.
+    pub fn get(&mut self, now: u64, key: &str) -> Result<Option<String>, Error> {
+        self.admit(now)?;
+        Self::validate_key(key)?;
+        Ok(self.visible().get(key).map(|entry| entry.value.clone()))
+    }
+
+    /// Counts keys whose complete value equals the supplied value.
+    pub fn count(&mut self, now: u64, value: &str) -> Result<usize, Error> {
+        self.admit(now)?;
+        Ok(self
+            .visible()
+            .values()
+            .filter(|entry| entry.value == value)
+            .count())
+    }
+
+    /// Returns the number of open working scopes.
+    pub fn depth(&mut self, now: u64) -> Result<usize, Error> {
+        self.admit(now)?;
+        Ok(self.scopes.len())
+    }
+
+    /// Saves a copy of the current visible data under a validated name.
+    pub fn snapshot(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        if !self.snapshots.contains_key(name) && self.snapshots.len() >= 3 {
+            return Err(Error::SnapshotLimit);
+        }
+        self.snapshots.insert(name.to_owned(), self.visible().clone());
+        Ok(())
+    }
+
+    /// Replaces the visible data with a copy of a named snapshot.
+    pub fn restore(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        let mut data = self
+            .snapshots
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::SnapshotMissing(name.to_owned()))?;
+        Self::purge(&mut data, now);
+        *Self::visible_mut(self) = data;
+        Ok(())
+    }
+
+    /// Removes a named snapshot.
+    pub fn forget(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        self.snapshots
+            .remove(name)
+            .map(|_| ())
+            .ok_or_else(|| Error::SnapshotMissing(name.to_owned()))
+    }
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normal_set_get_count_delete() {
+        let mut store = Store::new();
+        store.set(1, "a", "", None).unwrap();
+        store.set(1, "b", "", None).unwrap();
+        assert_eq!(store.count(1, ""), Ok(2));
+        assert_eq!(store.get(1, "a"), Ok(Some(String::new())));
+        assert_eq!(store.delete(1, "a"), Ok(true));
+        assert_eq!(store.delete(1, "a"), Ok(false));
+    }
+
+    #[test]
+    fn invalid_inputs_and_snapshot_capacity() {
+        let mut store = Store::new();
+        assert_eq!(store.get(1, ""), Err(Error::KeyEmpty));
+        assert_eq!(
+            store.snapshot(1, "Ab"),
+            Err(Error::NameInvalid { at: 0 })
+        );
+        store.snapshot(1, "one").unwrap();
+        store.snapshot(1, "two").unwrap();
+        store.snapshot(1, "three").unwrap();
+        assert_eq!(store.snapshot(1, "four"), Err(Error::SnapshotLimit));
+    }
+
+    #[test]
+    fn scopes_and_snapshots_work_end_to_end() {
+        let mut store = Store::new();
+        store.set(1, "key", "original", Some(10)).unwrap();
+        store.begin(2).unwrap();
+        store.set(2, "key", "changed", None).unwrap();
+        store.snapshot(2, "saved").unwrap();
+        store.rollback(3).unwrap();
+        assert_eq!(store.get(3, "key"), Ok(Some("original".to_owned())));
+        store.delete(4, "key").unwrap();
+        store.restore(4, "saved").unwrap();
+        assert_eq!(store.get(4, "key"), Ok(Some("changed".to_owned())));
+    }
+}
+```

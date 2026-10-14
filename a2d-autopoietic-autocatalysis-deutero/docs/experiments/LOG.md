@@ -174,10 +174,20 @@ Pre-registration and results for `docs/plans/2026-10-14-lift-first-roadmap.md`. 
 - **Decision rule, pre-registered.** Agreement is the per-arm share of tasks with the same hidden outcome as E05 (C: against E05 re-selected under the new rule; D: against E05 directly).
   - If the mean of C's and D's agreement is **≤ 0.85**, Confirmation-1 runs **r = 2** replicates.
   - Otherwise it runs r = 1, and the one allowed extension (a second replicate pass) stays in reserve.
-- Result: pending
+- Result: **descriptive pilot.**
+  - D 16/24 (66.7%), C 14/24 (58.3%). C vs D −8.3 pp, CI [−16.7, 0], discordant 0/2. Six families, so no class.
+  - Hidden-pass fraction: D 0.96, C 0.87. Hidden compile failures: C 2, D 0.
+  - Cost: D 31 invocations and 317k tokens; C 120 invocations (48 coder) and 1.29M tokens.
+  - Public-green but hidden-fail: D 8, C 7.
+  - **Replicate agreement:** C 19/24 = 0.79 (against E05 re-selected under the new rule), D 23/24 = 0.96, mean **0.875**.
+  - Combined with E05, under the latest-tie rule C passed 17 and 14 against D's 15 and 16: no sign of lift.
+  - Run integrity:
+    - complete; 0 provider errors; 0 coder tool calls; ledger verified (274 records, head 2e779d61…);
+    - **the integrity gate fired.** One hidden test name appeared in C's own response for lru-repair-l4. The coder named its unit test `clean_replacement_flushes_old_value_before_storing`, which contains the hidden name `clean_replacement_flushes_old_value`. The name appears in no prompt and not in the requirements, so this is a false positive from substring matching on responses.
+    - The scan now checks prompts only and matches whole identifiers (commit after 63af96f). Review outcome: no leak.
 - Artifacts: runs/2026-10-14-e06-cd-repilot/ (ledger: runs/2026-10-14-e06-cd-repilot/ledger.jsonl)
-- Deviations:
-- Decision:
+- Deviations: none. Authoring was paused for the whole run, which averaged 18.8 s per call.
+- Decision: mean agreement 0.875 > 0.85, so by the pre-registered rule **Confirmation-1 runs r = 1**. The single allowed extension, a second replicate pass, stays in reserve. The submission tie-break is now piloted. Next: resume holdout authoring, then the independent-solve audit of Confirmation-1, then E07.
 
 E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - Per-attempt hidden passes: A 14; B attempts 10, 13, 12, 10, 14; C first attempt 13, second attempt 15.

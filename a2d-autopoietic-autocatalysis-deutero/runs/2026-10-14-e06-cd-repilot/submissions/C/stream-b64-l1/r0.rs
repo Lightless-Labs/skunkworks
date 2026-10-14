@@ -1,0 +1,163 @@
+const ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+}
+
+/// Encodes bytes using the standard six-bit alphabet and `=` padding.
+pub fn encode(input: &[u8]) -> String {
+    let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
+
+    for chunk in input.chunks(3) {
+        let a = chunk[0];
+        let b = *chunk.get(1).unwrap_or(&0);
+        let c = *chunk.get(2).unwrap_or(&0);
+
+        output.push(ALPHABET[(a >> 2) as usize] as char);
+        output.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+
+        if chunk.len() > 1 {
+            output.push(ALPHABET[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char);
+        } else {
+            output.push('=');
+        }
+
+        if chunk.len() > 2 {
+            output.push(ALPHABET[(c & 0x3f) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+
+    output
+}
+
+fn digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+/// Decodes bytes from the six-bit alphabet, returning an error with its input offset.
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut output = Vec::with_capacity(input.len() / 4 * 3);
+    let mut group = [0u8; 4];
+    let mut offsets = [0usize; 4];
+    let mut len = 0usize;
+    let mut pending_padding = None;
+    let mut terminal_padding = false;
+
+    for (offset, &byte) in input.iter().enumerate() {
+        if terminal_padding {
+            return Err(Error::BadPadding { offset });
+        }
+
+        if let Some(padding_offset) = pending_padding {
+            if byte != b'=' {
+                return Err(Error::BadPadding { offset });
+            }
+            pending_padding = None;
+            terminal_padding = true;
+            output.push((group[0] << 2) | (group[1] >> 4));
+            let _ = padding_offset;
+            len = 0;
+            continue;
+        }
+
+        let position = len;
+        if byte == b'=' {
+            match position {
+                0 | 1 => return Err(Error::BadPadding { offset }),
+                2 => {
+                    pending_padding = Some(offset);
+                    group[position] = 0;
+                    offsets[position] = offset;
+                    len += 1;
+                }
+                3 => {
+                    if digit(input[0..offset].last().copied().unwrap_or_default()).is_none()
+                        || len != 3
+                    {
+                        return Err(Error::BadPadding { offset });
+                    }
+                    terminal_padding = true;
+                    output.push((group[0] << 2) | (group[1] >> 4));
+                    output.push((group[1] << 4) | (group[2] >> 2));
+                    len = 0;
+                }
+                _ => unreachable!(),
+            }
+            continue;
+        }
+
+        let value = digit(byte).ok_or(Error::InvalidByte { offset, byte })?;
+        group[position] = value;
+        offsets[position] = offset;
+        len += 1;
+
+        if len == 4 {
+            output.push((group[0] << 2) | (group[1] >> 4));
+            output.push((group[1] << 4) | (group[2] >> 2));
+            output.push((group[2] << 6) | group[3]);
+            len = 0;
+        }
+    }
+
+    if let Some(offset) = pending_padding {
+        return Err(Error::BadPadding { offset });
+    }
+    if len != 0 {
+        return Err(Error::Truncated {
+            offset: offsets[0],
+        });
+    }
+
+    Ok(output)
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encodes_and_decodes_normal_inputs() {
+        assert_eq!(encode(b"Cat"), "Q2F0");
+        assert_eq!(decode(b"YWJj"), Ok(b"abc".to_vec()));
+    }
+
+    #[test]
+    fn handles_empty_and_padded_edges() {
+        assert_eq!(encode(b""), "");
+        assert_eq!(decode(b""), Ok(Vec::new()));
+        assert_eq!(decode(b"Zh=="), Ok(b"f".to_vec()));
+        assert_eq!(decode(b"Zm9="), Ok(b"fo".to_vec()));
+    }
+
+    #[test]
+    fn reports_invalid_and_truncated_inputs() {
+        assert_eq!(
+            decode(b"Q?=="),
+            Err(Error::InvalidByte {
+                offset: 1,
+                byte: b'?'
+            })
+        );
+        assert_eq!(decode(b"YW"), Err(Error::Truncated { offset: 0 }));
+    }
+
+    #[test]
+    fn rejects_bytes_after_padding() {
+        assert_eq!(decode(b"T2s=x"), Err(Error::BadPadding { offset: 4 }));
+    }
+}

@@ -1,0 +1,322 @@
+```rust
+const ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+    AlreadyFinished,
+}
+
+fn value(byte: u8) -> Option<u8> {
+    ALPHABET.iter().position(|&b| b == byte).map(|n| n as u8)
+}
+
+fn encode_group(a: u8, b: u8, c: u8) -> [u8; 4] {
+    [
+        ALPHABET[(a >> 2) as usize],
+        ALPHABET[(((a & 3) << 4) | (b >> 4)) as usize],
+        ALPHABET[(((b & 15) << 2) | (c >> 6)) as usize],
+        ALPHABET[(c & 63) as usize],
+    ]
+}
+
+fn encode_tail(bytes: &[u8]) -> String {
+    match bytes.len() {
+        0 => String::new(),
+        1 => {
+            let a = bytes[0];
+            String::from_utf8(vec![
+                ALPHABET[(a >> 2) as usize],
+                ALPHABET[((a & 3) << 4) as usize],
+                b'=',
+                b'=',
+            ])
+            .expect("base64 alphabet is UTF-8")
+        }
+        _ => {
+            let a = bytes[0];
+            let b = bytes[1];
+            String::from_utf8(vec![
+                ALPHABET[(a >> 2) as usize],
+                ALPHABET[(((a & 3) << 4) | (b >> 4)) as usize],
+                ALPHABET[((b & 15) << 2) as usize],
+                b'=',
+            ])
+            .expect("base64 alphabet is UTF-8")
+        }
+    }
+}
+
+/// Encodes bytes using the standard Base64 alphabet.
+pub fn encode(input: &[u8]) -> String {
+    let mut output = Vec::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks_exact(3) {
+        output.extend_from_slice(&encode_group(chunk[0], chunk[1], chunk[2]));
+    }
+    output.extend_from_slice(encode_tail(input.chunks_exact(3).remainder()).as_bytes());
+    String::from_utf8(output).expect("base64 alphabet is UTF-8")
+}
+
+#[derive(Clone, Copy)]
+struct Symbol {
+    byte: u8,
+    offset: usize,
+}
+
+#[derive(Default)]
+struct DecodeState {
+    group: Vec<Symbol>,
+    terminal: bool,
+    next_offset: usize,
+}
+
+impl DecodeState {
+    fn scan(&mut self, input: &[u8]) -> Result<Vec<u8>, Error> {
+        let mut output = Vec::new();
+
+        for &byte in input {
+            let offset = self.next_offset;
+            self.next_offset += 1;
+
+            if self.terminal {
+                return Err(Error::BadPadding { offset });
+            }
+
+            if self.group.len() == 3 && self.group[2].byte == b'=' && byte != b'=' {
+                return Err(Error::BadPadding { offset });
+            }
+
+            let pos = self.group.len();
+            if byte == b'=' && pos < 2 {
+                return Err(Error::BadPadding { offset });
+            }
+            if byte != b'=' && value(byte).is_none() {
+                return Err(Error::InvalidByte { offset, byte });
+            }
+
+            self.group.push(Symbol { byte, offset });
+            if self.group.len() == 4 {
+                let g = &self.group;
+                let a = value(g[0].byte).expect("validated alphabet digit");
+                let b = value(g[1].byte).expect("validated alphabet digit");
+
+                if g[2].byte == b'=' {
+                    if g[3].byte != b'=' {
+                        return Err(Error::BadPadding {
+                            offset: g[3].offset,
+                        });
+                    }
+                    output.push((a << 2) | (b >> 4));
+                    self.terminal = true;
+                } else {
+                    let c = value(g[2].byte).expect("validated alphabet digit");
+                    output.push((a << 2) | (b >> 4));
+                    output.push((b << 4) | (c >> 2));
+                    if g[3].byte == b'=' {
+                        self.terminal = true;
+                    } else {
+                        let d = value(g[3].byte).expect("validated alphabet digit");
+                        output.push((c << 6) | d);
+                    }
+                }
+                self.group.clear();
+            }
+        }
+
+        Ok(output)
+    }
+
+    fn finish(&self) -> Result<Vec<u8>, Error> {
+        if self.group.len() == 3 && self.group[2].byte == b'=' {
+            return Err(Error::BadPadding {
+                offset: self.group[2].offset,
+            });
+        }
+        if let Some(first) = self.group.first() {
+            return Err(Error::Truncated {
+                offset: first.offset,
+            });
+        }
+        Ok(Vec::new())
+    }
+}
+
+/// Decodes Base64 bytes, returning an error for invalid framing or symbols.
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut decoder = Decoder::new();
+    let mut output = decoder.push(input)?;
+    output.extend(decoder.finish()?);
+    Ok(output)
+}
+
+#[derive(Default)]
+struct EncoderState {
+    tail: Vec<u8>,
+    closed: bool,
+}
+
+/// Incrementally encodes bytes as Base64.
+pub struct Encoder {
+    state: EncoderState,
+}
+
+impl Encoder {
+    /// Creates a new open encoder.
+    pub fn new() -> Self {
+        Self {
+            state: EncoderState::default(),
+        }
+    }
+
+    /// Encodes complete three-byte groups from this input.
+    pub fn push(&mut self, input: &[u8]) -> Result<String, Error> {
+        if self.state.closed {
+            return Err(Error::AlreadyFinished);
+        }
+        let mut data = std::mem::take(&mut self.state.tail);
+        data.extend_from_slice(input);
+        let complete_len = data.len() / 3 * 3;
+        let mut output = Vec::with_capacity(complete_len / 3 * 4);
+        for chunk in data[..complete_len].chunks_exact(3) {
+            output.extend_from_slice(&encode_group(chunk[0], chunk[1], chunk[2]));
+        }
+        self.state.tail.extend_from_slice(&data[complete_len..]);
+        Ok(String::from_utf8(output).expect("base64 alphabet is UTF-8"))
+    }
+
+    /// Encodes any buffered tail and closes the encoder.
+    pub fn finish(&mut self) -> Result<String, Error> {
+        if self.state.closed {
+            return Err(Error::AlreadyFinished);
+        }
+        self.state.closed = true;
+        Ok(encode_tail(&self.state.tail))
+    }
+}
+
+/// Incrementally decodes Base64 bytes.
+pub struct Decoder {
+    state: DecodeState,
+    closed: bool,
+    sticky_error: Option<Error>,
+}
+
+impl Decoder {
+    /// Creates a new open decoder.
+    pub fn new() -> Self {
+        Self {
+            state: DecodeState::default(),
+            closed: false,
+            sticky_error: None,
+        }
+    }
+
+    /// Scans input and returns bytes from newly completed groups.
+    pub fn push(&mut self, input: &[u8]) -> Result<Vec<u8>, Error> {
+        if let Some(error) = &self.sticky_error {
+            return Err(error.clone());
+        }
+        if self.closed {
+            let error = Error::AlreadyFinished;
+            self.sticky_error = Some(error.clone());
+            return Err(error);
+        }
+
+        match self.state.scan(input) {
+            Ok(output) => Ok(output),
+            Err(error) => {
+                self.sticky_error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    /// Validates the final group and closes the decoder.
+    pub fn finish(&mut self) -> Result<Vec<u8>, Error> {
+        if let Some(error) = &self.sticky_error {
+            return Err(error.clone());
+        }
+        if self.closed {
+            let error = Error::AlreadyFinished;
+            self.sticky_error = Some(error.clone());
+            return Err(error);
+        }
+
+        match self.state.finish() {
+            Ok(output) => {
+                self.closed = true;
+                Ok(output)
+            }
+            Err(error) => {
+                self.sticky_error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normal_one_shot_paths() {
+        assert_eq!(encode(b"Cat"), "Q2F0");
+        assert_eq!(decode(b"T2s=").unwrap(), b"Ok");
+        assert_eq!(decode(b"YWJj").unwrap(), b"abc");
+    }
+
+    #[test]
+    fn invalid_and_truncated_inputs() {
+        assert_eq!(
+            decode(b"YWJj$"),
+            Err(Error::InvalidByte {
+                offset: 4,
+                byte: b'$'
+            })
+        );
+        assert_eq!(decode(b"YW"), Err(Error::Truncated { offset: 0 }));
+        assert_eq!(decode(b"YW="), Err(Error::BadPadding { offset: 2 }));
+    }
+
+    #[test]
+    fn streaming_round_trip_and_sticky_error() {
+        let mut encoder = Encoder::new();
+        let joined = format!(
+            "{}{}{}",
+            encoder.push(b"C").unwrap(),
+            encoder.push(b"at").unwrap(),
+            encoder.finish().unwrap()
+        );
+        assert_eq!(joined, encode(b"Cat"));
+
+        let mut decoder = Decoder::new();
+        assert_eq!(decoder.push(b"YWJj").unwrap(), b"abc");
+        assert_eq!(decoder.finish().unwrap(), Vec::<u8>::new());
+
+        let mut broken = Decoder::new();
+        let error = broken.push(b"YW=").unwrap_err();
+        assert_eq!(broken.finish(), Err(error.clone()));
+        assert_eq!(broken.push(b"").unwrap_err(), error);
+    }
+
+    #[test]
+    fn padding_precedence_and_noncanonical_bits() {
+        assert_eq!(decode(b"Zh==").unwrap(), b"f");
+        assert_eq!(decode(b"Zm9=").unwrap(), b"fo");
+        assert_eq!(
+            decode(b"Zg==!"),
+            Err(Error::BadPadding { offset: 4 })
+        );
+        assert_eq!(
+            decode(b"Zg=A"),
+            Err(Error::BadPadding { offset: 3 })
+        );
+    }
+}
+```

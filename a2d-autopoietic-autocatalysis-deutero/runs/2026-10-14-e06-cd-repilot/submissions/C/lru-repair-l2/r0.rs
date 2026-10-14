@@ -1,0 +1,233 @@
+use std::collections::{BTreeMap, VecDeque};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroPeriod,
+    Disabled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub key: u64,
+    pub value: i64,
+    pub frequency: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct Cache {
+    capacity: usize,
+    period: u32,
+    pending: u32,
+    entries: BTreeMap<u64, Entry>,
+    recency: VecDeque<u64>,
+}
+
+impl Cache {
+    /// Creates an empty cache with the supplied capacity and aging period.
+    pub fn new(capacity: usize, period: u32) -> Result<Self, Error> {
+        if period == 0 {
+            return Err(Error::ZeroPeriod);
+        }
+        Ok(Self {
+            capacity,
+            period,
+            pending: 0,
+            entries: BTreeMap::new(),
+            recency: VecDeque::new(),
+        })
+    }
+
+    /// Returns the cache's entry-count capacity.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Returns the number of counted operations since the last automatic aging.
+    pub fn pending(&self) -> u32 {
+        self.pending
+    }
+
+    /// Returns cloned entries in eviction priority order.
+    pub fn snapshot(&self) -> Vec<Entry> {
+        let mut entries = self.entries_by_recency();
+        entries.sort_by_key(|entry| entry.frequency);
+        entries
+    }
+
+    /// Reads a value, crediting and touching the key on a hit.
+    pub fn get(&mut self, key: u64) -> Option<i64> {
+        self.begin();
+        let value = self.entries.get(&key).map(|entry| entry.value);
+        if value.is_some() {
+            self.credit(key);
+        }
+        value
+    }
+
+    /// Inserts or updates a value and returns any evicted key.
+    pub fn put(&mut self, key: u64, value: i64) -> Result<Vec<u64>, Error> {
+        if self.capacity == 0 {
+            return Err(Error::Disabled);
+        }
+
+        self.begin();
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.value = value;
+            entry.frequency = (entry.frequency + 1).min(7);
+            self.touch(key);
+            return Ok(Vec::new());
+        }
+
+        let mut evicted = Vec::new();
+        if self.entries.len() >= self.capacity {
+            if let Some(victim) = self.victim() {
+                self.erase(victim);
+                evicted.push(victim);
+            }
+        }
+
+        self.entries.insert(
+            key,
+            Entry {
+                key,
+                value,
+                frequency: 1,
+            },
+        );
+        self.touch(key);
+        Ok(evicted)
+    }
+
+    /// Removes a key and returns its value if it was resident.
+    pub fn remove(&mut self, key: u64) -> Option<i64> {
+        self.begin();
+        self.erase(key).map(|entry| entry.value)
+    }
+
+    /// Applies the requested number of aging rounds to all resident entries.
+    pub fn age(&mut self, rounds: u8) {
+        for _ in 0..rounds {
+            self.halve();
+        }
+    }
+
+    /// Sets the capacity and returns evicted keys in eviction priority order.
+    pub fn resize(&mut self, capacity: usize) -> Vec<u64> {
+        self.capacity = capacity;
+        let mut evicted = Vec::new();
+        while self.entries.len() > capacity {
+            if let Some(victim) = self.victim() {
+                self.erase(victim);
+                evicted.push(victim);
+            } else {
+                break;
+            }
+        }
+        evicted
+    }
+
+    fn entries_by_recency(&self) -> Vec<Entry> {
+        self.recency
+            .iter()
+            .filter_map(|key| self.entries.get(key).cloned())
+            .collect()
+    }
+
+    fn halve(&mut self) {
+        for entry in self.entries.values_mut() {
+            entry.frequency = (entry.frequency + 1) / 2;
+        }
+    }
+
+    fn begin(&mut self) {
+        if self.pending + 1 == self.period {
+            self.halve();
+            self.pending = 0;
+        } else {
+            self.pending += 1;
+        }
+    }
+
+    fn touch(&mut self, key: u64) {
+        self.recency.retain(|resident| *resident != key);
+        self.recency.push_back(key);
+    }
+
+    fn credit(&mut self, key: u64) {
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.frequency = (entry.frequency + 1).min(7);
+        }
+        self.touch(key);
+    }
+
+    fn erase(&mut self, key: u64) -> Option<Entry> {
+        let entry = self.entries.remove(&key)?;
+        self.recency.retain(|resident| *resident != key);
+        Some(entry)
+    }
+
+    fn victim(&self) -> Option<u64> {
+        self.recency
+            .iter()
+            .min_by_key(|key| self.entries.get(key).map(|entry| entry.frequency).unwrap_or(7))
+            .copied()
+    }
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lfu_basic_path() {
+        let mut cache = Cache::new(2, 100).unwrap();
+        cache.put(1, 10).unwrap();
+        cache.put(2, 20).unwrap();
+        assert_eq!(cache.get(1), Some(10));
+        assert_eq!(cache.put(3, 30), Ok(vec![2]));
+        assert_eq!(
+            cache.snapshot().iter().map(|entry| entry.key).collect::<Vec<_>>(),
+            vec![3, 1]
+        );
+    }
+
+    #[test]
+    fn aging_rounds_and_pending() {
+        let mut cache = Cache::new(3, 10).unwrap();
+        cache.put(4, 40).unwrap();
+        cache.get(4);
+        cache.get(4);
+        cache.get(4);
+        assert_eq!(cache.pending(), 4);
+        cache.age(1);
+        assert_eq!(cache.snapshot()[0].frequency, 2);
+        assert_eq!(cache.pending(), 4);
+    }
+
+    #[test]
+    fn update_remove_resize() {
+        let mut cache = Cache::new(4, 100).unwrap();
+        cache.put(8, 80).unwrap();
+        assert_eq!(cache.put(8, 81), Ok(vec![]));
+        assert_eq!(cache.remove(8), Some(81));
+        cache.put(9, 90).unwrap();
+        cache.put(10, 100).unwrap();
+        assert_eq!(cache.resize(1), vec![9]);
+        assert_eq!(cache.get(10), Some(100));
+    }
+
+    #[test]
+    fn disabled_and_boundary_aging() {
+        assert!(matches!(Cache::new(0, 0), Err(Error::ZeroPeriod)));
+        let mut disabled = Cache::new(0, 3).unwrap();
+        assert_eq!(disabled.put(1, 0), Err(Error::Disabled));
+        assert_eq!(disabled.pending(), 0);
+
+        let mut cache = Cache::new(1, 1).unwrap();
+        cache.put(1, i64::MIN).unwrap();
+        assert_eq!(cache.pending(), 0);
+        assert_eq!(cache.snapshot()[0].frequency, 1);
+    }
+}

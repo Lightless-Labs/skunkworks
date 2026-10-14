@@ -1,0 +1,328 @@
+const ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+    AlreadyFinished,
+}
+
+#[derive(Debug)]
+pub struct Encoder {
+    tail: Vec<u8>,
+    finished: bool,
+}
+
+impl Encoder {
+    /// Creates an open encoder with no buffered input.
+    pub fn new() -> Self {
+        Self {
+            tail: Vec::new(),
+            finished: false,
+        }
+    }
+
+    /// Encodes complete three-byte groups, retaining any remaining bytes.
+    pub fn push(&mut self, input: &[u8]) -> Result<String, Error> {
+        if self.finished {
+            return Err(Error::AlreadyFinished);
+        }
+
+        let mut data = std::mem::take(&mut self.tail);
+        data.extend_from_slice(input);
+        let complete_len = data.len() / 3 * 3;
+        let output = encode_complete(&data[..complete_len]);
+        self.tail.extend_from_slice(&data[complete_len..]);
+        Ok(output)
+    }
+
+    /// Encodes any buffered tail and closes this encoder.
+    pub fn finish(&mut self) -> Result<String, Error> {
+        if self.finished {
+            return Err(Error::AlreadyFinished);
+        }
+        self.finished = true;
+        Ok(encode_tail(&self.tail))
+    }
+}
+
+impl Default for Encoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug)]
+pub struct Decoder {
+    group: Vec<(u8, usize)>,
+    offset: usize,
+    padded: bool,
+    finished: bool,
+    error: Option<Error>,
+}
+
+impl Decoder {
+    /// Creates an open decoder with no buffered input.
+    pub fn new() -> Self {
+        Self {
+            group: Vec::new(),
+            offset: 0,
+            padded: false,
+            finished: false,
+            error: None,
+        }
+    }
+
+    /// Decodes newly completed groups, retaining an incomplete group.
+    pub fn push(&mut self, input: &[u8]) -> Result<Vec<u8>, Error> {
+        if let Some(error) = &self.error {
+            return Err(error.clone());
+        }
+        if self.finished {
+            let error = Error::AlreadyFinished;
+            self.error = Some(error.clone());
+            return Err(error);
+        }
+
+        let mut output = Vec::new();
+        for &byte in input {
+            let current_offset = self.offset;
+            self.offset += 1;
+
+            if self.padded {
+                return self.fail(Error::BadPadding {
+                    offset: current_offset,
+                });
+            }
+
+            if self.group.len() == 3 && self.group[2].0 == b'=' && byte != b'=' {
+                return self.fail(Error::BadPadding {
+                    offset: current_offset,
+                });
+            }
+
+            let position = self.group.len();
+            if byte == b'=' {
+                if position < 2 {
+                    return self.fail(Error::BadPadding {
+                        offset: current_offset,
+                    });
+                }
+            } else if value(byte).is_none() {
+                return self.fail(Error::InvalidByte {
+                    offset: current_offset,
+                    byte,
+                });
+            }
+
+            self.group.push((byte, current_offset));
+            if self.group.len() == 4 {
+                match decode_group(&self.group) {
+                    Ok((bytes, was_padded)) => {
+                        output.extend(bytes);
+                        self.group.clear();
+                        self.padded = was_padded;
+                    }
+                    Err(error) => return self.fail(error),
+                }
+            }
+        }
+
+        Ok(output)
+    }
+
+    /// Completes decoding if the buffered framing is valid, then closes the decoder.
+    pub fn finish(&mut self) -> Result<Vec<u8>, Error> {
+        if let Some(error) = &self.error {
+            return Err(error.clone());
+        }
+        if self.finished {
+            let error = Error::AlreadyFinished;
+            self.error = Some(error.clone());
+            return Err(error);
+        }
+
+        if self.group.len() == 3 && self.group[2].0 == b'=' {
+            return self.fail(Error::BadPadding {
+                offset: self.group[2].1,
+            });
+        }
+        if !self.group.is_empty() {
+            return self.fail(Error::Truncated {
+                offset: self.group[0].1,
+            });
+        }
+
+        self.finished = true;
+        Ok(Vec::new())
+    }
+
+    fn fail<T>(&mut self, error: Error) -> Result<T, Error> {
+        self.error = Some(error.clone());
+        Err(error)
+    }
+}
+
+impl Default for Decoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Encodes bytes using the standard six-bit alphabet and padding.
+pub fn encode(input: &[u8]) -> String {
+    let complete_len = input.len() / 3 * 3;
+    let mut output = encode_complete(&input[..complete_len]);
+    output.push_str(&encode_tail(&input[complete_len..]));
+    output
+}
+
+/// Decodes bytes using the standard six-bit alphabet and padding rules.
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut decoder = Decoder::new();
+    let mut output = decoder.push(input)?;
+    output.extend(decoder.finish()?);
+    Ok(output)
+}
+
+fn encode_complete(input: &[u8]) -> String {
+    let mut output = String::with_capacity(input.len() / 3 * 4);
+    for chunk in input.chunks_exact(3) {
+        let a = chunk[0];
+        let b = chunk[1];
+        let c = chunk[2];
+        output.push(ALPHABET[(a >> 2) as usize] as char);
+        output.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+        output.push(ALPHABET[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char);
+        output.push(ALPHABET[(c & 0x3f) as usize] as char);
+    }
+    output
+}
+
+fn encode_tail(input: &[u8]) -> String {
+    let mut output = String::new();
+    match input {
+        [] => {}
+        [a] => {
+            output.push(ALPHABET[(a >> 2) as usize] as char);
+            output.push(ALPHABET[((a & 0x03) << 4) as usize] as char);
+            output.push_str("==");
+        }
+        [a, b] => {
+            output.push(ALPHABET[(a >> 2) as usize] as char);
+            output.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+            output.push(ALPHABET[((b & 0x0f) << 2) as usize] as char);
+            output.push('=');
+        }
+        _ => unreachable!(),
+    }
+    output
+}
+
+fn value(byte: u8) -> Option<u8> {
+    ALPHABET.iter().position(|&b| b == byte).map(|v| v as u8)
+}
+
+fn decode_group(group: &[(u8, usize)]) -> Result<(Vec<u8>, bool), Error> {
+    let (a, _) = group[0];
+    let (b, _) = group[1];
+    let (c, c_offset) = group[2];
+    let (d, d_offset) = group[3];
+
+    let av = value(a).expect("validated alphabet byte");
+    let bv = value(b).expect("validated alphabet byte");
+
+    if c == b'=' {
+        if d != b'=' {
+            return Err(Error::BadPadding { offset: d_offset });
+        }
+        return Ok((vec![(av << 2) | (bv >> 4)], true));
+    }
+
+    let cv = value(c).expect("validated alphabet byte");
+    if d == b'=' {
+        return Ok((
+            vec![(av << 2) | (bv >> 4), (bv << 4) | (cv >> 2)],
+            true,
+        ));
+    }
+
+    let dv = value(d).ok_or(Error::InvalidByte {
+        offset: d_offset,
+        byte: d,
+    })?;
+    let _ = c_offset;
+    Ok((
+        vec![
+            (av << 2) | (bv >> 4),
+            (bv << 4) | (cv >> 2),
+            (cv << 6) | dv,
+        ],
+        false,
+    ))
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normal_one_shot_paths() {
+        assert_eq!(encode(b"Cat"), "Q2F0");
+        assert_eq!(decode(b"T2s=").unwrap(), b"Ok");
+        assert_eq!(decode(&[]).unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn invalid_and_truncated_inputs() {
+        assert_eq!(
+            decode(b"YWJ!"),
+            Err(Error::InvalidByte {
+                offset: 3,
+                byte: b'!'
+            })
+        );
+        assert_eq!(decode(b"YW"), Err(Error::Truncated { offset: 0 }));
+        assert_eq!(decode(b"YW="), Err(Error::BadPadding { offset: 2 }));
+    }
+
+    #[test]
+    fn padding_precedence_and_noncanonical_bits() {
+        assert_eq!(decode(b"Zh==").unwrap(), b"f");
+        assert_eq!(decode(b"Zm9=").unwrap(), b"fo");
+        assert_eq!(decode(b"Zg==!"), Err(Error::BadPadding { offset: 4 }));
+    }
+
+    #[test]
+    fn streaming_round_trip_and_sticky_error() {
+        let bytes = [0, 1, 2, 127, 128, 255];
+        let mut encoder = Encoder::new();
+        let mut encoded = encoder.push(&bytes[..1]).unwrap();
+        encoded.push_str(&encoder.push(&bytes[1..4]).unwrap());
+        encoded.push_str(&encoder.push(&bytes[4..]).unwrap());
+        encoded.push_str(&encoder.finish().unwrap());
+        assert_eq!(encoded, encode(&bytes));
+
+        let mut decoder = Decoder::new();
+        let mut decoded = decoder.push(&encoded.as_bytes()[..3]).unwrap();
+        decoded.extend(decoder.push(&encoded.as_bytes()[3..]).unwrap());
+        decoded.extend(decoder.finish().unwrap());
+        assert_eq!(decoded, bytes);
+
+        let mut bad = Decoder::new();
+        let first = bad.push(b"YWJ!").unwrap_err();
+        assert_eq!(
+            first,
+            Error::InvalidByte {
+                offset: 3,
+                byte: b'!'
+            }
+        );
+        assert_eq!(bad.push(b"").unwrap_err(), first);
+        assert_eq!(bad.finish().unwrap_err(), first);
+    }
+}

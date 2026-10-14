@@ -1,0 +1,372 @@
+```rust
+use std::collections::HashSet;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CronError {
+    Layout(usize),
+    Syntax(usize),
+    Number(usize),
+    Bounds(usize),
+    Descending(usize),
+    Step(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cron {
+    minutes: [bool; 60],
+    hours: [bool; 24],
+}
+
+fn parse_number(text: &str, start: usize, limit: usize, step: bool) -> Result<usize, CronError> {
+    if text.is_empty() {
+        return Err(CronError::Syntax(start));
+    }
+
+    if let Some((i, _)) = text.bytes().enumerate().find(|(_, b)| !b.is_ascii_digit()) {
+        return Err(CronError::Syntax(start + i));
+    }
+
+    if text.len() > 1 && text.starts_with('0') {
+        return Err(CronError::Number(start));
+    }
+
+    let mut value = 0usize;
+    for b in text.bytes() {
+        value = match value
+            .checked_mul(10)
+            .and_then(|n| n.checked_add((b - b'0') as usize))
+        {
+            Some(n) => n,
+            None => return Err(if step { CronError::Step(start) } else { CronError::Bounds(start) }),
+        };
+    }
+
+    if step {
+        if value == 0 || value > limit {
+            return Err(CronError::Step(start));
+        }
+    } else if value > limit {
+        return Err(CronError::Bounds(start));
+    }
+
+    Ok(value)
+}
+
+fn parse_field<const N: usize>(
+    field: &str,
+    offset: usize,
+    max: usize,
+    step_max: usize,
+) -> Result<[bool; N], CronError> {
+    let mut selected = [false; N];
+    let mut item_start = 0;
+
+    loop {
+        let item_end = field[item_start..]
+            .find(',')
+            .map(|i| item_start + i)
+            .unwrap_or(field.len());
+        let item = &field[item_start..item_end];
+        let absolute_start = offset + item_start;
+
+        let slash_positions: Vec<usize> = item
+            .bytes()
+            .enumerate()
+            .filter_map(|(i, b)| if b == b'/' { Some(i) } else { None })
+            .collect();
+        if slash_positions.len() > 1 {
+            return Err(CronError::Syntax(absolute_start + slash_positions[1]));
+        }
+
+        let slash = slash_positions.first().copied();
+        let base_end = slash.unwrap_or(item.len());
+        let base = &item[..base_end];
+
+        if let Some(slash_pos) = slash {
+            if base != "*" && !base.contains('-') {
+                return Err(CronError::Syntax(absolute_start + slash_pos));
+            }
+        }
+
+        let (start, end, dash_pos) = if base == "*" {
+            (0, max, None)
+        } else if let Some(dash) = base.find('-') {
+            let left = &base[..dash];
+            let right = &base[dash + 1..];
+            let left_value = parse_number(left, absolute_start, max, false)?;
+            let right_value = parse_number(right, absolute_start + dash + 1, max, false)?;
+            if left_value > right_value {
+                return Err(CronError::Descending(absolute_start + dash));
+            }
+            (left_value, right_value, Some(dash))
+        } else {
+            let n = parse_number(base, absolute_start, max, false)?;
+            (n, n, None)
+        };
+
+        let step = if let Some(slash_pos) = slash {
+            let step_text = &item[slash_pos + 1..];
+            parse_number(
+                step_text,
+                absolute_start + slash_pos + 1,
+                step_max,
+                true,
+            )?
+        } else {
+            1
+        };
+
+        let _ = dash_pos;
+        let mut value = start;
+        while value <= end {
+            selected[value] = true;
+            match value.checked_add(step) {
+                Some(next) => value = next,
+                None => break,
+            }
+        }
+
+        if item_end == field.len() {
+            break;
+        }
+        item_start = item_end + 1;
+    }
+
+    Ok(selected)
+}
+
+impl Cron {
+    /// Parses a two-field minute and hour cron expression.
+    pub fn parse(text: &str) -> Result<Self, CronError> {
+        for (i, b) in text.bytes().enumerate() {
+            if b.is_ascii_whitespace() && b != b' ' {
+                return Err(CronError::Layout(i));
+            }
+        }
+
+        let spaces: Vec<usize> = text
+            .bytes()
+            .enumerate()
+            .filter_map(|(i, b)| if b == b' ' { Some(i) } else { None })
+            .collect();
+
+        if spaces.is_empty() {
+            return Err(CronError::Layout(text.len()));
+        }
+        if spaces.len() > 1 {
+            return Err(CronError::Layout(spaces[1]));
+        }
+
+        let split = spaces[0];
+        if split == 0 || split + 1 == text.len() {
+            return Err(CronError::Layout(split));
+        }
+
+        let minute_text = &text[..split];
+        let hour_text = &text[split + 1..];
+        let minutes = parse_field::<60>(minute_text, 0, 59, 60)?;
+        let hours = parse_field::<24>(hour_text, split + 1, 23, 24)?;
+        Ok(Self { minutes, hours })
+    }
+
+    /// Returns whether the absolute minute matches this cron expression.
+    pub fn matches(&self, minute: u64) -> bool {
+        self.minutes[(minute % 60) as usize] && self.hours[((minute / 60) % 24) as usize]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Policy {
+    Skip,
+    Once,
+    All,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Occurrence {
+    pub id: String,
+    pub at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    TimeReversed,
+    TimeRange,
+    BadId,
+    BadPriority,
+    Duplicate,
+    Cron(CronError),
+}
+
+struct Job {
+    id: String,
+    cron: Cron,
+    priority: u8,
+    policy: Policy,
+    insertion: usize,
+}
+
+pub struct Calendar {
+    jobs: Vec<Job>,
+    ids: HashSet<String>,
+    last_poll: Option<u64>,
+}
+
+impl Calendar {
+    /// Creates an empty calendar with no successful poll.
+    pub fn new() -> Self {
+        Self {
+            jobs: Vec::new(),
+            ids: HashSet::new(),
+            last_poll: None,
+        }
+    }
+
+    /// Adds a uniquely named cron job.
+    pub fn add(
+        &mut self,
+        id: &str,
+        expression: &str,
+        priority: u8,
+        policy: Policy,
+    ) -> Result<(), Error> {
+        if id.is_empty()
+            || id.len() > 16
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err(Error::BadId);
+        }
+        if priority > 9 {
+            return Err(Error::BadPriority);
+        }
+        if self.ids.contains(id) {
+            return Err(Error::Duplicate);
+        }
+
+        let cron = Cron::parse(expression).map_err(Error::Cron)?;
+        let owned_id = id.to_string();
+        self.ids.insert(owned_id.clone());
+        self.jobs.push(Job {
+            id: owned_id,
+            cron,
+            priority,
+            policy,
+            insertion: self.jobs.len(),
+        });
+        Ok(())
+    }
+
+    /// Emits scheduled occurrences through the given millisecond timestamp.
+    pub fn poll(&mut self, now: u64) -> Result<Vec<Occurrence>, Error> {
+        if let Some(previous) = self.last_poll {
+            if now < previous {
+                return Err(Error::TimeReversed);
+            }
+        }
+        if now > 604_800_000 {
+            return Err(Error::TimeRange);
+        }
+
+        let lower_exclusive = self.last_poll;
+        let last_minute = now / 60_000;
+        let mut emitted: Vec<(Occurrence, u8, usize)> = Vec::new();
+
+        for job in &self.jobs {
+            let mut matching = Vec::new();
+            for minute in 0..=last_minute {
+                let at = minute * 60_000;
+                let in_interval = match lower_exclusive {
+                    None => at <= now,
+                    Some(previous) => at > previous && at <= now,
+                };
+                if in_interval && job.cron.matches(minute) {
+                    matching.push(at);
+                }
+            }
+
+            let chosen: Vec<u64> = match job.policy {
+                Policy::All => matching,
+                Policy::Once => matching.last().copied().into_iter().collect(),
+                Policy::Skip => matching
+                    .into_iter()
+                    .filter(|at| *at == now)
+                    .collect(),
+            };
+
+            for at in chosen {
+                emitted.push((
+                    Occurrence {
+                        id: job.id.clone(),
+                        at,
+                    },
+                    job.priority,
+                    job.insertion,
+                ));
+            }
+        }
+
+        emitted.sort_by(|a, b| {
+            a.0.at
+                .cmp(&b.0.at)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+
+        self.last_poll = Some(now);
+        Ok(emitted.into_iter().map(|entry| entry.0).collect())
+    }
+}
+
+impl Default for Calendar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_ranges_and_steps() {
+        let cron = Cron::parse("5-15/5 2,4").unwrap();
+        assert!(cron.matches(130));
+        assert!(!cron.matches(131));
+    }
+
+    #[test]
+    fn rejects_layout_and_bad_number() {
+        assert_eq!(Cron::parse("1  2"), Err(CronError::Layout(2)));
+        assert_eq!(Cron::parse("01 2"), Err(CronError::Number(0)));
+    }
+
+    #[test]
+    fn calendar_emits_and_advances_interval() {
+        let mut calendar = Calendar::new();
+        calendar.add("tick", "*/1 0-23", 1, Policy::All).unwrap();
+        assert_eq!(
+            calendar.poll(60_000).unwrap(),
+            vec![
+                Occurrence { id: "tick".into(), at: 0 },
+                Occurrence { id: "tick".into(), at: 60_000 },
+            ]
+        );
+        assert!(calendar.poll(60_000).unwrap().is_empty());
+    }
+
+    #[test]
+    fn policies_and_priority_ordering() {
+        let mut calendar = Calendar::new();
+        calendar.add("low", "0-0 0-0", 0, Policy::All).unwrap();
+        calendar.add("high", "0-0 0-0", 9, Policy::All).unwrap();
+        assert_eq!(
+            calendar.poll(0).unwrap().iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+            vec!["high", "low"]
+        );
+    }
+}
+```
