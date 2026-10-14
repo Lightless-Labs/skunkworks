@@ -2,6 +2,7 @@
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -93,6 +94,18 @@ class FreshWorkspaceTests(unittest.TestCase):
                 self.assertEqual((again / "f.txt").read_text(), "base\n")
             finally:
                 del os.environ["A2_E1_HOME"]
+
+
+class LineageTests(unittest.TestCase):
+    def test_fresh_lineage_removes_prior_db_and_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            for suffix in ("", "-wal", "-shm"):
+                (run_dir / f"e1-x.a2-full.lineage.sqlite{suffix}").write_text("stale")
+            path = run.fresh_lineage(run_dir, "e1-x", "a2-full")
+            self.assertEqual(path, str(run_dir / "e1-x.a2-full.lineage.sqlite"))
+            self.assertEqual(list(run_dir.iterdir()), [])
+        self.assertEqual(run.fresh_lineage(Path("/nonexistent"), "e1-x", "raw"), "none")
 
 
 class InfraClassificationTests(unittest.TestCase):

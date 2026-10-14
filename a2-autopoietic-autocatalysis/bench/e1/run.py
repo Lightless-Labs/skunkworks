@@ -127,6 +127,16 @@ def fresh_workspace(opaque: str, arm: str) -> Path:
     return dest
 
 
+def fresh_lineage(run_dir: Path, opaque: str, arm: str) -> str:
+    """An empty lineage DB per arm run: an infra retry or resume must not inherit a failed try."""
+    if arm == "raw":
+        return "none"
+    path = run_dir / f"{opaque}.{arm}.lineage.sqlite"
+    for suffix in ("", "-wal", "-shm"):
+        Path(f"{path}{suffix}").unlink(missing_ok=True)
+    return str(path)
+
+
 def run_a2ctl(cfg: argparse.Namespace, workspace: Path, payload: dict, attempts: int, lineage: str,
               emit: Path, log: Path) -> int:
     argv = [
@@ -193,7 +203,7 @@ def run_arm(cfg: argparse.Namespace, opaque: str, arm: str, run_dir: Path) -> di
         key = f"{opaque}:{arm}:{cfg.run_id}"
         payload = task_payload(opaque, instruction, key, cfg.endpoint)
         assert_no_private_leak(json.dumps(payload), markers)
-        lineage = "none" if arm == "raw" else str(run_dir / f"{opaque}.{arm}.lineage.sqlite")
+        lineage = fresh_lineage(run_dir, opaque, arm)
         emit = run_dir / f"{opaque}.{arm}.attempts.jsonl"
         emit.unlink(missing_ok=True)
         returncodes.append(run_a2ctl(cfg, workspace, payload, 1 if arm == "raw" else cfg.attempts, lineage, emit, log))
