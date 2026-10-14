@@ -871,7 +871,9 @@ impl Metabolism {
             .contains_key(&ArtifactType::from("fitness_report"));
 
         if enzyme.products.contains(&ArtifactType::from("code")) {
-            if has_code { 5 } else { 0 }
+            // A seeded fitness_report without code (externally evaluated
+            // candidate) is feedback to metabolize first, not a cold start.
+            if has_code || has_fitness_report { 5 } else { 0 }
         } else if enzyme.products.contains(&ArtifactType::from("enzyme_defs")) {
             if has_fitness_report { 0 } else { 2 }
         } else if enzyme
@@ -3696,6 +3698,50 @@ mod tests {
             .map(|scheduled| scheduled.enzyme.id.0.as_str())
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["evolver", "architect", "tester", "coder"]);
+    }
+
+    #[test]
+    fn seeded_fitness_without_code_runs_feedback_before_coder() {
+        let enzymes = vec![
+            enzyme("coder", &["requirements"], &["code"], &["failure_report"]),
+            enzyme("tester", &["code"], &["test_results"], &[]),
+            enzyme(
+                "evolver",
+                &["fitness_report"],
+                &["enzyme_defs"],
+                &["enzyme_defs", "failure_report"],
+            ),
+            enzyme(
+                "architect",
+                &["failure_report", "fitness_report"],
+                &["system_patch"],
+                &["system_code"],
+            ),
+        ];
+        let germline = Germline::new(
+            enzymes,
+            food(&[
+                "requirements",
+                "failure_report",
+                "fitness_report",
+                "system_code",
+            ]),
+        );
+        let registry = ProviderRegistry::new(Box::new(MockProvider::new("default", vec![])));
+        let mut metabolism = Metabolism::new(germline, registry);
+        metabolism.seed_artifact(art("requirements"), b"build sudoku".to_vec());
+        metabolism.seed_artifact(art("failure_report"), b"try again".to_vec());
+        metabolism.seed_artifact(art("fitness_report"), b"fitness: 0.83".to_vec());
+        metabolism.seed_artifact(art("system_code"), b"metabolism snapshot".to_vec());
+        metabolism.seed_artifact(art("enzyme_defs"), b"[]".to_vec());
+
+        let ready = metabolism.ready_invocations();
+
+        let ids = ready
+            .iter()
+            .map(|scheduled| scheduled.enzyme.id.0.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["evolver", "architect", "coder"]);
     }
 
     #[test]
