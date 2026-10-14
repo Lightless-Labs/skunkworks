@@ -18,9 +18,12 @@ import contextlib
 import io
 import json
 import re
+import shlex
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from typing import Any
@@ -34,10 +37,12 @@ FOUNDRY_TEAM = FOUNDRY_REPO / "extensions/pi-foundry-team/index.ts"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 A2_WORKTREE_CATALYST = REPO_ROOT / "crates/a2_workcell/src/worktree_catalyst.rs"
 A2_GENERALIST_CATALYST = REPO_ROOT / "crates/a2_workcell/src/catalyst.rs"
+A2_SANDBOX_PROFILE = REPO_ROOT / "crates/a2_workcell/src/sandbox_profile.rs"
 A2_BROKER = REPO_ROOT / "crates/a2_broker/src/broker.rs"
 HANDOFF_DOC = REPO_ROOT / "docs/HANDOFF.md"
 SELF_CORRECTION_TODO = REPO_ROOT / "todos/self-correction-loop.md"
 SANDBOX_RUNTIME_PACKAGE = "@anthropic-ai/sandbox-runtime"
+SANDBOX_EXEC_PATH = "/usr/bin/sandbox-exec"
 
 
 def _strip_subprocess_output(value: str | bytes | None) -> str:
@@ -1851,6 +1856,178 @@ def audit_boundary_docs(
     }
 
 
+def audit_a2_pi_ambient_resource_isolation(
+    sandbox_profile_path: Path = A2_SANDBOX_PROFILE,
+    worktree_path: Path = A2_WORKTREE_CATALYST,
+    broker_path: Path = A2_BROKER,
+) -> dict[str, Any]:
+    """Check that A2-launched pi cannot load settings-package extensions such as Foundry teams."""
+    result: dict[str, Any] = {
+        "isolation_args_disable_extensions": False,
+        "pi_provider_args_applies_isolation_args": False,
+        "launch_sites": {"worktree_catalyst.run_pi": False, "broker.pi": False},
+        "isolated": False,
+    }
+    if not all(path.exists() for path in (sandbox_profile_path, worktree_path, broker_path)):
+        result["reason"] = "file_not_found"
+        return result
+    profile_text = sandbox_profile_path.read_text(encoding="utf-8")
+    profile_code = strip_rust_comments(profile_text)
+    const_match = re.search(
+        r"\bconst\s+PI_AMBIENT_RESOURCE_ISOLATION_ARGS\s*:[^=]*=\s*\[([^\]]*)\]",
+        profile_code,
+    )
+    if const_match is not None:
+        literals = re.findall(r'"([^"\\]*)"', const_match.group(1))
+        result["isolation_args"] = literals
+        result["isolation_args_disable_extensions"] = "--no-extensions" in literals
+    args_body = extract_rust_function_body(profile_text, "pi_provider_args")
+    result["pi_provider_args_applies_isolation_args"] = args_body is not None and bool(
+        re.search(r"\bPI_AMBIENT_RESOURCE_ISOLATION_ARGS\b", strip_rust_comments(args_body, strip_strings=True))
+    )
+
+    def calls_pi_provider_args(body: str | None) -> bool:
+        return body is not None and re.search(
+            r"\bpi_provider_args\s*\(", strip_rust_comments(body, strip_strings=True)
+        ) is not None
+
+    worktree_text = worktree_path.read_text(encoding="utf-8")
+    result["launch_sites"]["worktree_catalyst.run_pi"] = calls_pi_provider_args(
+        extract_rust_function_body(worktree_text, "run_pi")
+    )
+    broker_impl = extract_rust_impl_body(broker_path.read_text(encoding="utf-8"), "PiProvider")
+    result["launch_sites"]["broker.pi"] = calls_pi_provider_args(
+        extract_rust_function_body(broker_impl, "generate_with_network_policy") if broker_impl else None
+    )
+    result["isolated"] = (
+        result["isolation_args_disable_extensions"]
+        and result["pi_provider_args_applies_isolation_args"]
+        and all(result["launch_sites"].values())
+    )
+    return result
+
+
+def a2_isolated_sandbox_profile_lines(sandbox_profile_path: Path = A2_SANDBOX_PROFILE) -> list[str] | None:
+    """Read the exact Isolated profile lines A2 materializes, so the probe tests A2's profile."""
+    if not sandbox_profile_path.exists():
+        return None
+    code = strip_rust_comments(sandbox_profile_path.read_text(encoding="utf-8"))
+    match = re.search(
+        r"NetworkPolicy::Isolated\s*=>\s*Ok\(\s*profile_from_lines\(\s*vec!\[(.*?)\]\s*\)\s*\)",
+        code,
+        flags=re.DOTALL,
+    )
+    if match is None:
+        return None
+    return re.findall(r'"((?:[^"\\]|\\.)*)"', match.group(1))
+
+
+def probe_inherited_sandbox_network_denial(sandbox_profile_path: Path = A2_SANDBOX_PROFILE) -> dict[str, Any]:
+    """Run a local no-provider probe: a grandchild of sandbox-exec must not reach a loopback listener."""
+    result: dict[str, Any] = {
+        "ran": False,
+        "control_connected": False,
+        "sandboxed_grandchild_connected": None,
+        "passed": False,
+    }
+    lines = a2_isolated_sandbox_profile_lines(sandbox_profile_path)
+    result["profile_lines"] = lines
+    if not lines:
+        result["reason"] = "isolated_profile_not_found"
+        return result
+    if not Path(SANDBOX_EXEC_PATH).exists():
+        result["reason"] = "sandbox_exec_unavailable"
+        return result
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    listener.settimeout(0.2)
+    port = listener.getsockname()[1]
+    stop = threading.Event()
+
+    def accept_until_stopped() -> None:
+        while not stop.is_set():
+            with contextlib.suppress(OSError):
+                connection, _ = listener.accept()
+                connection.close()
+
+    acceptor = threading.Thread(target=accept_until_stopped, daemon=True)
+    acceptor.start()
+    connect = f"import socket; socket.create_connection(('127.0.0.1', {port}), timeout=3); print('CONNECTED')"
+    grandchild = f"sh -c {shlex.quote(shlex.join([sys.executable, '-I', '-c', connect]))}"
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile = Path(tmpdir) / "a2-isolated.sb"
+            profile.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            control = subprocess.run(["sh", "-c", grandchild], capture_output=True, text=True, timeout=20)
+            sandboxed = subprocess.run(
+                [SANDBOX_EXEC_PATH, "-f", str(profile), "sh", "-c", grandchild],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+    finally:
+        stop.set()
+        acceptor.join(timeout=2)
+        listener.close()
+
+    result["ran"] = True
+    result["control_connected"] = control.returncode == 0 and "CONNECTED" in control.stdout
+    result["sandboxed_grandchild_connected"] = "CONNECTED" in sandboxed.stdout
+    result["sandboxed_returncode"] = sandboxed.returncode
+    result["sandboxed_stderr_tail"] = _strip_subprocess_output(sandboxed.stderr)[-400:]
+    result["passed"] = bool(
+        result["control_connected"]
+        and not result["sandboxed_grandchild_connected"]
+        and sandboxed.returncode != 0
+        and "Operation not permitted" in sandboxed.stderr
+    )
+    return result
+
+
+def audit_inherited_process_tree_containment(a2_boundary: dict[str, Any]) -> dict[str, Any]:
+    """Child agents spawned by an A2-launched pi are contained when every A2 pi launch is
+    sandbox-exec wrapped for restricted policies (Seatbelt is inherited by descendants),
+    pi cannot load ambient extensions, and a live probe confirms descendant denial."""
+    isolation = audit_a2_pi_ambient_resource_isolation()
+    probe = probe_inherited_sandbox_network_denial()
+    wrapped = a2_boundary.get("a2_owned_restricted_policy_boundaries_covered") is True
+    return {
+        "a2_owned_pi_launches_sandbox_wrapped": wrapped,
+        "pi_ambient_resource_isolation": isolation,
+        "grandchild_network_denial_probe": probe,
+        "contained": bool(wrapped and isolation["isolated"] and probe["passed"]),
+        "residual_risk": (
+            "macOS Seatbelt does not confine work handed to launchd/LaunchServices "
+            "(e.g. `open`, `launchctl submit`); the Isolated/AllowList profiles do not yet deny those mach services."
+        ),
+    }
+
+
+def child_agent_containment_mechanism(result: dict[str, Any]) -> str | None:
+    if result.get("sandbox_runtime", {}).get("available") and result.get("launch_sandbox_enforced"):
+        return "launch_site_sandbox"
+    inherited = result.get("inherited_process_tree_containment")
+    if isinstance(inherited, dict) and inherited.get("contained") is True:
+        return "inherited_process_tree_sandbox"
+    return None
+
+
+def missing_inherited_containment_parts(result: dict[str, Any]) -> list[str]:
+    inherited = result.get("inherited_process_tree_containment")
+    if not isinstance(inherited, dict):
+        return ["not_audited"]
+    missing = []
+    if inherited.get("a2_owned_pi_launches_sandbox_wrapped") is not True:
+        missing.append("a2_owned_pi_launches_sandbox_wrapped")
+    if not (inherited.get("pi_ambient_resource_isolation") or {}).get("isolated"):
+        missing.append("pi_ambient_resource_isolation")
+    if not (inherited.get("grandchild_network_denial_probe") or {}).get("passed"):
+        missing.append("grandchild_network_denial_probe")
+    return missing
+
+
 def fresh_provider_backed_evidence_blockers(result: dict[str, Any]) -> list[str]:
     """Return machine-readable reasons this audit is not fresh loop evidence."""
     blockers: list[str] = []
@@ -1864,12 +2041,17 @@ def fresh_provider_backed_evidence_blockers(result: dict[str, Any]) -> list[str]
             "A2-owned restricted-policy provider boundaries are not fully covered by sandbox command wrapping or policy-aware model APIs"
             f"{suffix}"
         )
-    if not result.get("sandbox_runtime", {}).get("available"):
-        blockers.append("@anthropic-ai/sandbox-runtime is not installed globally")
-    if not result.get("launch_sandbox_enforced"):
-        missing = missing_child_agent_sandbox_surfaces(result)
-        suffix = f": {', '.join(missing)}" if missing else ""
-        blockers.append(f"actual child-agent launch functions do not show sandbox enforcement{suffix}")
+    if child_agent_containment_mechanism(result) is None:
+        if not result.get("sandbox_runtime", {}).get("available"):
+            blockers.append("@anthropic-ai/sandbox-runtime is not installed globally")
+        if not result.get("launch_sandbox_enforced"):
+            missing = missing_child_agent_sandbox_surfaces(result)
+            suffix = f": {', '.join(missing)}" if missing else ""
+            blockers.append(f"actual child-agent launch functions do not show sandbox enforcement{suffix}")
+        blockers.append(
+            "inherited process-tree containment is incomplete: "
+            + ", ".join(missing_inherited_containment_parts(result))
+        )
     if not result.get("usable_sandbox_provider_allowlist_enforced"):
         blockers.append(
             "usable audited sandbox/provider allowlist enforcement is not implemented or recorded in fresh rows"
@@ -1927,6 +2109,10 @@ def audit() -> dict[str, Any]:
     boundary_docs = audit_boundary_docs()
 
     a2_owned_fail_closed = a2_owned_provider_launch_boundary["fail_closed_restricted_policies"]
+    inherited_process_tree_containment = audit_inherited_process_tree_containment(a2_owned_provider_launch_boundary)
+    child_agents_contained = bool(
+        (sandbox_runtime["available"] and launch_sandbox_enforced) or inherited_process_tree_containment["contained"]
+    )
 
     sandbox_launch_surfaces_detected = bool(
         sandbox_runtime["available"]
@@ -1972,12 +2158,17 @@ def audit() -> dict[str, Any]:
         "sandbox_example": sandbox_checks,
         "sandbox_runtime": sandbox_runtime,
         "actual_launch_sandbox_enforcement": actual_launch_sandbox_enforcement,
+        "inherited_process_tree_containment": inherited_process_tree_containment,
         "a2_owned_provider_launch_boundary": a2_owned_provider_launch_boundary,
         "boundary_docs": boundary_docs,
         "conclusion": (
             "A2-owned provider launch paths visibly fail closed for restricted policies, and child pi launch boundaries are identifiable, but sandbox runtime is not available globally and actual child-agent launch functions do not show sandbox enforcement; "
             "benchmark child-agent network isolation remains unenforced until a sandbox/provider allowlist is wired at these spawn points."
-            if a2_owned_fail_closed and (not sandbox_runtime["available"] or not launch_sandbox_enforced)
+            if a2_owned_fail_closed and not child_agents_contained
+            else "A2-owned provider launch paths fail closed, restricted-policy pi launches are sandbox-exec wrapped with ambient pi extensions disabled, "
+            "and a local probe confirms sandbox-exec descendants cannot reach the network; child agents are contained by the inherited sandbox. "
+            "This is not provider-backed benchmark evidence."
+            if a2_owned_fail_closed and inherited_process_tree_containment["contained"]
             else "Child pi launch boundaries, a global sandbox runtime, and sandbox-wrapped spawn paths are present; next step is to run an end-to-end enforcement probe."
             if a2_owned_fail_closed
             else "A2-owned provider launch paths do not visibly fail closed before provider launch; fix the A2 launch gate before treating restricted-policy benchmark evidence as uncontaminated."
@@ -1996,8 +2187,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--require-sandbox-runtime",
         action="store_true",
         help=(
-            "fail unless @anthropic-ai/sandbox-runtime is available globally and actual child-agent "
-            "launch functions connect sandbox wrapping to their spawned command"
+            "fail unless child agents are contained: either @anthropic-ai/sandbox-runtime is available "
+            "globally and child-agent launch functions wrap their spawned command, or every A2 pi launch "
+            "is sandbox-exec wrapped with ambient extensions disabled and a descendant network probe is denied"
         ),
     )
     return parser.parse_args(argv)
@@ -2054,12 +2246,19 @@ def require_sandbox_runtime_failures(result: dict[str, Any]) -> list[str]:
             "A2-owned provider launch paths do not cover every restricted-policy provider boundary with sandbox-exec command wrapping or a policy-aware model boundary"
             f"{suffix}"
         )
-    if not result["sandbox_runtime"]["available"]:
-        failures.append("@anthropic-ai/sandbox-runtime not installed globally")
-    if not result["launch_sandbox_enforced"]:
-        missing = missing_child_agent_sandbox_surfaces(result)
-        suffix = f": {', '.join(missing)}" if missing else ""
-        failures.append(f"actual child-agent launch functions do not show sandbox enforcement{suffix}")
+    if child_agent_containment_mechanism(result) is None:
+        # Neither mechanism contains child agents: report both so the operator can pick one.
+        if not result["sandbox_runtime"]["available"]:
+            failures.append("@anthropic-ai/sandbox-runtime not installed globally")
+        if not result["launch_sandbox_enforced"]:
+            missing = missing_child_agent_sandbox_surfaces(result)
+            suffix = f": {', '.join(missing)}" if missing else ""
+            failures.append(f"actual child-agent launch functions do not show sandbox enforcement{suffix}")
+        if "inherited_process_tree_containment" in result:
+            failures.append(
+                "inherited process-tree containment is incomplete: "
+                + ", ".join(missing_inherited_containment_parts(result))
+            )
     return failures
 
 
@@ -2070,11 +2269,12 @@ def attach_required_sandbox_runtime_gate(result: dict[str, Any]) -> dict[str, An
     result_with_gate["required_sandbox_runtime_gate"] = {
         "passed": not failures,
         "failures": failures,
+        "child_agent_containment_mechanism": child_agent_containment_mechanism(result) if not failures else None,
         "command": "python3 bench/agent_network_boundary_check.py --require-sandbox-runtime --json",
         "interpretation": (
             "fresh provider-backed or uncontaminated Senior SWE Bench evidence remains blocked until this gate passes"
             if failures
-            else "sandbox runtime and launch-boundary enforcement prerequisites are visible"
+            else "child-agent containment and launch-boundary enforcement prerequisites are visible"
         ),
     }
     return result_with_gate
@@ -3663,6 +3863,155 @@ let unsandboxed = Command::new("pi")
             require_sandbox_runtime_failures(result),
             ["A2-owned provider launch paths do not visibly fail closed for restricted policies"],
         )
+
+    def _write_pi_isolation_fixtures(self, root: Path, *, run_pi_body: str, broker_body: str, isolation_args: str) -> tuple[Path, Path, Path]:
+        profile = root / "sandbox_profile.rs"
+        profile.write_text(
+            f"pub const PI_AMBIENT_RESOURCE_ISOLATION_ARGS: [&str; 3] = [{isolation_args}];\n"
+            "pub fn pi_provider_args(model_id: &str, system: Option<&str>, prompt: &str) -> Vec<OsString> {\n"
+            "    args.extend(PI_AMBIENT_RESOURCE_ISOLATION_ARGS.iter().map(OsString::from));\n"
+            "}\n"
+            "pub fn sandbox_profile_for_network_policy(policy: &NetworkPolicy) -> Result<SandboxProfile, String> {\n"
+            "    match policy {\n"
+            "        NetworkPolicy::Isolated => Ok(profile_from_lines(vec![\n"
+            '            "(version 1)".into(),\n'
+            '            "(allow default)".into(),\n'
+            '            "(deny network*)".into(),\n'
+            "        ])),\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        worktree = root / "worktree_catalyst.rs"
+        worktree.write_text(f"async fn run_pi() {{ {run_pi_body} }}\n", encoding="utf-8")
+        broker = root / "broker.rs"
+        broker.write_text(
+            "impl ModelProvider for PiProvider {\n"
+            f"    async fn generate_with_network_policy(&self) {{ {broker_body} }}\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        return profile, worktree, broker
+
+    def test_pi_ambient_resource_isolation_requires_no_extensions_at_both_a2_pi_launch_sites(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = self._write_pi_isolation_fixtures(
+                Path(tmpdir),
+                run_pi_body="let provider_args = pi_provider_args(model_id, None, prompt);",
+                broker_body="let provider_args = pi_provider_args(&self.model_id, system, prompt);",
+                isolation_args='"--no-extensions", "--no-skills", "--no-prompt-templates"',
+            )
+            result = audit_a2_pi_ambient_resource_isolation(*paths)
+
+        self.assertTrue(result["isolated"])
+        self.assertTrue(result["isolation_args_disable_extensions"])
+        self.assertEqual(result["launch_sites"], {"worktree_catalyst.run_pi": True, "broker.pi": True})
+
+    def test_pi_ambient_resource_isolation_rejects_launch_site_building_raw_args(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = self._write_pi_isolation_fixtures(
+                Path(tmpdir),
+                run_pi_body='let provider_args = vec!["--print"]; // pi_provider_args(model_id, None, prompt)',
+                broker_body="let provider_args = pi_provider_args(&self.model_id, system, prompt);",
+                isolation_args='"--no-extensions", "--no-skills", "--no-prompt-templates"',
+            )
+            result = audit_a2_pi_ambient_resource_isolation(*paths)
+
+        self.assertFalse(result["isolated"])
+        self.assertEqual(result["launch_sites"]["worktree_catalyst.run_pi"], False)
+
+    def test_pi_ambient_resource_isolation_rejects_args_without_no_extensions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = self._write_pi_isolation_fixtures(
+                Path(tmpdir),
+                run_pi_body="let provider_args = pi_provider_args(model_id, None, prompt);",
+                broker_body="let provider_args = pi_provider_args(&self.model_id, system, prompt);",
+                isolation_args='"--no-skills", "--no-prompt-templates", "/* --no-extensions */"',
+            )
+            result = audit_a2_pi_ambient_resource_isolation(*paths)
+
+        self.assertFalse(result["isolation_args_disable_extensions"])
+        self.assertFalse(result["isolated"])
+
+    def test_isolated_profile_lines_are_read_from_a2_rust_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile, _, _ = self._write_pi_isolation_fixtures(
+                Path(tmpdir), run_pi_body="", broker_body="", isolation_args='"--no-extensions"'
+            )
+            lines = a2_isolated_sandbox_profile_lines(profile)
+
+        self.assertEqual(lines, ["(version 1)", "(allow default)", "(deny network*)"])
+
+    @unittest.skipUnless(Path("/usr/bin/sandbox-exec").exists(), "requires macOS sandbox-exec")
+    def test_grandchild_network_denial_probe_passes_for_a2_isolated_profile(self) -> None:
+        probe = probe_inherited_sandbox_network_denial()
+
+        self.assertTrue(probe["ran"])
+        self.assertTrue(probe["control_connected"])
+        self.assertFalse(probe["sandboxed_grandchild_connected"])
+        self.assertTrue(probe["passed"])
+
+    def test_grandchild_network_denial_probe_fails_when_profile_allows_network(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile = Path(tmpdir) / "sandbox_profile.rs"
+            profile.write_text(
+                "NetworkPolicy::Isolated => Ok(profile_from_lines(vec![\n"
+                '    "(version 1)".into(),\n'
+                '    "(allow default)".into(),\n'
+                "])),\n",
+                encoding="utf-8",
+            )
+            probe = probe_inherited_sandbox_network_denial(profile)
+
+        self.assertFalse(probe["passed"])
+
+    def _inherited_containment_result(self, *, contained: bool) -> dict[str, Any]:
+        return {
+            "a2_owned_provider_launch_boundary": {
+                "fail_closed_restricted_policies": True,
+                "a2_owned_restricted_policy_boundaries_covered": True,
+            },
+            "actual_launch_sandbox_enforcement": {
+                "subagent": {"spawn_present": True, "found": False},
+                "foundry_team": {"spawn_present": True, "found": False},
+                "required_in_actual_launch_code_not_examples": True,
+            },
+            "sandbox_runtime": {"available": False},
+            "launch_sandbox_enforced": False,
+            "inherited_process_tree_containment": {
+                "contained": contained,
+                "a2_owned_pi_launches_sandbox_wrapped": True,
+                "pi_ambient_resource_isolation": {"isolated": contained},
+                "grandchild_network_denial_probe": {"passed": True},
+            },
+        }
+
+    def test_required_gate_passes_through_inherited_process_tree_containment(self) -> None:
+        gate = attach_required_sandbox_runtime_gate(self._inherited_containment_result(contained=True))[
+            "required_sandbox_runtime_gate"
+        ]
+
+        self.assertTrue(gate["passed"], gate["failures"])
+        self.assertEqual(gate["child_agent_containment_mechanism"], "inherited_process_tree_sandbox")
+
+    def test_required_gate_fails_when_inherited_containment_is_incomplete(self) -> None:
+        gate = attach_required_sandbox_runtime_gate(self._inherited_containment_result(contained=False))[
+            "required_sandbox_runtime_gate"
+        ]
+
+        self.assertFalse(gate["passed"])
+        self.assertIsNone(gate["child_agent_containment_mechanism"])
+        self.assertIn("@anthropic-ai/sandbox-runtime not installed globally", gate["failures"])
+        self.assertTrue(
+            any("inherited process-tree containment is incomplete: pi_ambient_resource_isolation" in failure for failure in gate["failures"])
+        )
+
+    def test_fresh_evidence_blockers_accept_inherited_containment_but_keep_provider_blockers(self) -> None:
+        blockers = fresh_provider_backed_evidence_blockers(self._inherited_containment_result(contained=True))
+
+        self.assertNotIn("@anthropic-ai/sandbox-runtime is not installed globally", blockers)
+        self.assertFalse(any("child-agent launch functions" in blocker for blocker in blockers))
+        self.assertIn("this audit did not execute a fresh provider-backed benchmark", blockers)
 
 
 if __name__ == "__main__":

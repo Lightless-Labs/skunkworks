@@ -13,7 +13,8 @@
 //! at (computing diffs). The diff quality problem disappears.
 
 use crate::sandbox_profile::{
-    materialize_provider_command_for_network_policy, sandbox_exec_available_on_this_platform,
+    materialize_provider_command_for_network_policy, pi_provider_args,
+    sandbox_exec_available_on_this_platform,
 };
 use a2_core::error::{A2Error, A2Result};
 use a2_core::id::*;
@@ -695,15 +696,7 @@ impl WorktreeCatalyst {
         worktree_path: &Path,
         network_policy: Option<&NetworkPolicy>,
     ) -> A2Result<(String, String, String, u64, u64)> {
-        let provider_args = vec![
-            OsString::from("--model"),
-            OsString::from(model_id),
-            OsString::from("--no-session"),
-            OsString::from("--mode"),
-            OsString::from("json"),
-            OsString::from("--print"),
-            OsString::from(prompt),
-        ];
+        let provider_args = pi_provider_args(model_id, None, prompt);
         let profile_dir = self.workspace_root.join(".a2").join("sandbox-profiles");
         let materialized = materialize_provider_command_for_network_policy(
             network_policy,

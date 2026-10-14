@@ -10,6 +10,39 @@ const BLOCKED_PUBLIC_SOLUTION_HOSTS: [&str; 3] =
     ["github.com", "githubusercontent.com", "github.io"];
 const SANDBOX_EXEC_PROGRAM: &str = "/usr/bin/sandbox-exec";
 
+/// Stops `pi` from loading the operator's ambient settings packages, skills, and prompt
+/// templates. Settings packages such as Foundry register extensions that spawn child
+/// agents; A2-launched pi must not inherit them. Context files (AGENTS.md) stay enabled
+/// because they are part of the task worktree.
+pub const PI_AMBIENT_RESOURCE_ISOLATION_ARGS: [&str; 3] =
+    ["--no-extensions", "--no-skills", "--no-prompt-templates"];
+
+/// Builds the argv for every A2-owned `pi` provider launch.
+pub fn pi_provider_args(model_id: &str, system: Option<&str>, prompt: &str) -> Vec<OsString> {
+    let mut args: Vec<OsString> = [
+        "--model",
+        model_id,
+        "--no-session",
+        "--mode",
+        "json",
+        "--print",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect();
+    args.extend(
+        PI_AMBIENT_RESOURCE_ISOLATION_ARGS
+            .iter()
+            .map(OsString::from),
+    );
+    if let Some(system) = system {
+        args.push(OsString::from("--append-system-prompt"));
+        args.push(OsString::from(system));
+    }
+    args.push(OsString::from(prompt));
+    args
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SandboxProfile {
     pub engine: &'static str,
@@ -445,6 +478,99 @@ mod tests {
 
     fn sha256_text(value: &str) -> String {
         format!("{:x}", Sha256::digest(value.as_bytes()))
+    }
+
+    #[test]
+    fn pi_provider_args_disable_ambient_pi_resources_before_prompt() {
+        let args = pi_provider_args("zai/glm-5.1", Some("system text"), "do the task");
+        let args: Vec<&str> = args.iter().map(|arg| arg.to_str().unwrap()).collect();
+
+        for flag in PI_AMBIENT_RESOURCE_ISOLATION_ARGS {
+            let index = args.iter().position(|arg| *arg == flag);
+            assert!(index.is_some(), "missing {flag} in {args:?}");
+            assert!(
+                index.unwrap() < args.len() - 1,
+                "{flag} must precede the prompt"
+            );
+        }
+        assert_eq!(
+            &args[..6],
+            [
+                "--model",
+                "zai/glm-5.1",
+                "--no-session",
+                "--mode",
+                "json",
+                "--print"
+            ]
+        );
+        let system_index = args
+            .iter()
+            .position(|arg| *arg == "--append-system-prompt")
+            .unwrap();
+        assert_eq!(args[system_index + 1], "system text");
+        assert_eq!(args.last(), Some(&"do the task"));
+    }
+
+    #[test]
+    fn pi_provider_args_omit_system_prompt_when_absent() {
+        let args = pi_provider_args("zai/glm-5.1", None, "do the task");
+
+        assert!(!args.iter().any(|arg| arg == "--append-system-prompt"));
+        assert_eq!(
+            args.last().map(OsString::as_os_str),
+            Some(OsStr::new("do the task"))
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn isolated_profile_denies_network_to_grandchild_processes() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let probe = format!(
+            "sh -c 'python3 -c \"import socket; socket.create_connection((\\\"127.0.0.1\\\", {port}), timeout=3)\"'"
+        );
+        let control = std::process::Command::new("sh")
+            .args(["-c", &probe])
+            .output()
+            .unwrap();
+        assert!(
+            control.status.success(),
+            "unsandboxed control probe must connect: {}",
+            String::from_utf8_lossy(&control.stderr)
+        );
+
+        let profile_dir = std::env::temp_dir().join(format!(
+            "a2-sandbox-grandchild-inheritance-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let materialized = materialize_sandbox_exec_command(
+            &NetworkPolicy::Isolated,
+            &profile_dir,
+            "sh",
+            ["-c", probe.as_str()],
+        )
+        .unwrap();
+        let sandboxed = std::process::Command::new(&materialized.program)
+            .args(&materialized.args)
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(&profile_dir).ok();
+
+        assert!(
+            !sandboxed.status.success(),
+            "sandboxed grandchild must not reach the network"
+        );
+        assert!(
+            String::from_utf8_lossy(&sandboxed.stderr).contains("Operation not permitted"),
+            "expected a sandbox denial, got: {}",
+            String::from_utf8_lossy(&sandboxed.stderr)
+        );
     }
 
     #[test]

@@ -1,7 +1,8 @@
 use a2_core::error::{A2Error, A2Result};
 use a2_core::protocol::NetworkPolicy;
 use a2_workcell::sandbox_profile::{
-    materialize_provider_command_for_network_policy, sandbox_exec_available_on_this_platform,
+    materialize_provider_command_for_network_policy, pi_provider_args,
+    sandbox_exec_available_on_this_platform,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -807,19 +808,7 @@ impl ModelProvider for PiProvider {
         system: Option<&str>,
         network_policy: Option<&NetworkPolicy>,
     ) -> A2Result<GenerateResponse> {
-        let mut provider_args = vec![
-            OsString::from("--model"),
-            OsString::from(&self.model_id),
-            OsString::from("--no-session"),
-            OsString::from("--mode"),
-            OsString::from("json"),
-            OsString::from("--print"),
-        ];
-        if let Some(sys) = system {
-            provider_args.push(OsString::from("--append-system-prompt"));
-            provider_args.push(OsString::from(sys));
-        }
-        provider_args.push(OsString::from(prompt));
+        let provider_args = pi_provider_args(&self.model_id, system, prompt);
         let mut cmd = broker_provider_command_with_network_policy(
             "pi",
             &self.binary_path,
