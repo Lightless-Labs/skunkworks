@@ -70,6 +70,31 @@ class CodexHomeTests(unittest.TestCase):
                 ambient.rmdir() if ambient.is_dir() else ambient.unlink()
 
 
+class FreshWorkspaceTests(unittest.TestCase):
+    def test_fresh_workspace_is_independent_copy_with_git(self) -> None:
+        import os
+        import subprocess
+        import tempfile
+
+        import tasks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["A2_E1_HOME"] = tmp
+            try:
+                base = tasks.work_dir("e1-000000000000") / "repo"
+                base.mkdir(parents=True)
+                (base / "f.txt").write_text("base\n")
+                subprocess.run(["git", "init", "-q"], cwd=base, check=True)
+                dest = run.fresh_workspace("e1-000000000000", "raw")
+                self.assertTrue((dest / ".git").is_dir())
+                (dest / "f.txt").write_text("changed\n")
+                self.assertEqual((base / "f.txt").read_text(), "base\n")
+                again = run.fresh_workspace("e1-000000000000", "raw")
+                self.assertEqual((again / "f.txt").read_text(), "base\n")
+            finally:
+                del os.environ["A2_E1_HOME"]
+
+
 class LeakTests(unittest.TestCase):
     def test_private_marker_in_payload_raises(self) -> None:
         with self.assertRaises(RuntimeError):

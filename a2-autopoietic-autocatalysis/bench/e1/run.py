@@ -98,7 +98,11 @@ def fresh_workspace(opaque: str, arm: str) -> Path:
     dest = tasks.work_dir(opaque) / f"arm-{arm}" / "repo"
     shutil.rmtree(dest.parent, ignore_errors=True)
     dest.parent.mkdir(parents=True)
-    shutil.copytree(base, dest, symlinks=True)
+    if sys.platform == "darwin":
+        # APFS copy-on-write clone, including .git (worktrees are created from it).
+        subprocess.run(["cp", "-cR", str(base), str(dest)], check=True)
+    else:
+        shutil.copytree(base, dest, symlinks=True)
     return dest
 
 
