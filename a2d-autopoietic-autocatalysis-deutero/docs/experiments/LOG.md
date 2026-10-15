@@ -641,7 +641,19 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **If it fails,** no further base change. P4 stops and the residual gap is recorded as a finding about the metabolism carrier.
 - **If it passes,** E11 launches from H0 v6, with G0 = E10b's C arm.
 - Budget: ≤ 700 invocations, 10,800 s. P4 spend so far: E10 372.
-- Result: pending
+- Result (`runs/2026-10-15-e10b-g0-h0v6/summary.json`; 0 void, integrity OK): **PASS. E11 launches.**
+  - **D 103/140 = 73.6%; C(H0 v6) 107/140 = 76.4%.** Lift +2.9 pp, CI [−2.9, +8.6]; discordant pairs 14 vs 10.
+  - Criteria, all met:
+    - never-green C 1 vs D 1;
+    - rate within ±5 pp;
+    - zero evolver calls, zero consultations, 0 E0601.
+  - The early check had passed: C's first-prompt bodies were identical to D's (5/5), and its repair prompts used D's format.
+  - First-attempt green: C 120 vs D 111. Repair conversion: C 19/20 vs D 28/29. The repair gap has closed.
+  - Spend: C 171 invocations / 1.38M tokens; D 186 / 1.58M.
+  - **D test-retest on train-all** (E10 D vs E10b D, same harness and suite): flip rate **0.229** (32/140), with 105 vs 103 passes. This is the resampling null for the ratchet.
+    - It is higher than c1-train's 0.162, so the ≥ 4-net acceptance will admit noise more often than the gate review's estimate (about 33% per comparison at flip 0.16).
+    - That is what the paired uninformed control (U1, U2) calibrates.
+  - P4 spend: E10 372 + E10b 357 = 729 invocations.
 
 
 ### E11 — P4 searches: self-written lessons (I1, I2) vs uninformed control (U1, U2)  [phase P4, development lane]

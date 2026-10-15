@@ -1,0 +1,145 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Task {
+    pub duration: u64,
+    pub deps: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Timing {
+    pub start: u64,
+    pub finish: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Plan {
+    pub order: Vec<usize>,
+    pub times: Vec<Timing>,
+    pub makespan: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    BadDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    SelfDependency {
+        task: usize,
+        position: usize,
+    },
+    DuplicateDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    Cycle {
+        blocked: Vec<usize>,
+    },
+    Overflow {
+        task: usize,
+    },
+}
+
+pub fn earliest(tasks: &[Task]) -> Result<Plan, Error> {
+    let count = tasks.len();
+
+    // Validate every dependency before doing any scheduling work.
+    for (task_id, task) in tasks.iter().enumerate() {
+        for (position, &value) in task.deps.iter().enumerate() {
+            if value >= count {
+                return Err(Error::BadDependency {
+                    task: task_id,
+                    position,
+                    value,
+                });
+            }
+            if value == task_id {
+                return Err(Error::SelfDependency {
+                    task: task_id,
+                    position,
+                });
+            }
+            if task.deps[..position].contains(&value) {
+                return Err(Error::DuplicateDependency {
+                    task: task_id,
+                    position,
+                    value,
+                });
+            }
+        }
+    }
+
+    // Build predecessor counts and child lists.
+    let mut indegree: Vec<usize> = tasks.iter().map(|task| task.deps.len()).collect();
+    let mut children = vec![Vec::new(); count];
+    for (task_id, task) in tasks.iter().enumerate() {
+        for &predecessor in &task.deps {
+            children[predecessor].push(task_id);
+        }
+    }
+
+    // Keep available task IDs sorted so each step removes the smallest ID,
+    // including when a newly unblocked ID is smaller than one already queued.
+    let mut available = Vec::new();
+    for (task_id, &degree) in indegree.iter().enumerate() {
+        if degree == 0 {
+            available.push(task_id);
+        }
+    }
+
+    let mut order = Vec::with_capacity(count);
+    while !available.is_empty() {
+        let task_id = available.remove(0);
+        order.push(task_id);
+
+        for &child in &children[task_id] {
+            indegree[child] -= 1;
+            if indegree[child] == 0 {
+                let insertion = available.partition_point(|&id| id < child);
+                available.insert(insertion, child);
+            }
+        }
+    }
+
+    if order.len() != count {
+        let removed = {
+            let mut removed = vec![false; count];
+            for &task_id in &order {
+                removed[task_id] = true;
+            }
+            removed
+        };
+        let blocked = (0..count).filter(|&id| !removed[id]).collect();
+        return Err(Error::Cycle { blocked });
+    }
+
+    let mut starts = vec![0u64; count];
+    let mut finishes = vec![0u64; count];
+    let mut times = vec![Timing { start: 0, finish: 0 }; count];
+    let mut makespan = 0u64;
+
+    for &task_id in &order {
+        let start = tasks[task_id]
+            .deps
+            .iter()
+            .map(|&predecessor| finishes[predecessor])
+            .max()
+            .unwrap_or(0);
+
+        let finish = start
+            .checked_add(tasks[task_id].duration)
+            .ok_or(Error::Overflow { task: task_id })?;
+
+        starts[task_id] = start;
+        finishes[task_id] = finish;
+        times[task_id] = Timing { start, finish };
+        makespan = makespan.max(finish);
+    }
+
+    Ok(Plan {
+        order,
+        times,
+        makespan,
+    })
+}

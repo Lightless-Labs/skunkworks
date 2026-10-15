@@ -1,0 +1,515 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+PROMPT:
+Implement a deterministic round-robin CPU scheduler in Rust as a SINGLE source file that compiles with rustc --edition 2024, using std only. Output ONLY the Rust source code inside ```rust fences.
+
+The entire public API is below. Every listed type, field, and function must be public; every listed type must derive Clone, Debug, PartialEq, Eq. Do not add required arguments or change field types. Time intervals are half-open [start,end). There is no textual input/output protocol.
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job { pub id: u32, pub arrival: u32, pub bursts: Vec<u32>, pub level: usize }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run { pub id: u32, pub start: u64, pub end: u64, pub finished: bool, pub level: usize }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule { pub runs: Vec<Run>, pub idle: Vec<(u64, u64)>, pub stats: Vec<Stat>, pub mean_waiting_x100: u64, pub mean_turnaround_x100: u64, pub end: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error { LevelCount, Quantum { level: usize }, SwitchCost, TooManyJobs, DuplicateId { index: usize }, Arrival { index: usize }, InitialLevel { index: usize }, BurstCount { index: usize }, Burst { index: usize, position: usize } }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stat { pub id: u32, pub completion: u64, pub turnaround: u64, pub waiting: u64 }
+pub fn schedule(jobs: &[Job], quanta: &[u32], switch_cost: u32) -> Result<Schedule, Error>;
+```
+
+R1. Use exactly the public API above. Calls are independent and must not modify jobs. IDs may be any u32, including 0 and u32::MAX.
+
+R2. Validate all input before simulation, returning only the first error in the order described by the following validation clauses. Even empty jobs do not bypass parameter validation.
+
+R3. First quanta.len() must be 1..=8, otherwise Error::LevelCount.
+
+R4. Next inspect quanta in ascending index order. Each must be 1..=1000; return Error::Quantum { level } for the first invalid element.
+
+R5. Next switch_cost must be 0..=1000, otherwise Error::SwitchCost.
+
+R6. Next jobs.len() must be at most 64, otherwise Error::TooManyJobs.
+
+R7. Next inspect job rows in input order. At each row the first check is whether id equals any earlier row id; if so return Error::DuplicateId { index }.
+
+R8. At that row next require arrival in 0..=1000; otherwise Error::Arrival { index }.
+
+R9. At that row next require level < quanta.len(); otherwise Error::InitialLevel { index }. Level 0 is the highest priority.
+
+R10. At that row next require bursts.len() odd and in 1..=31; otherwise Error::BurstCount { index }.
+
+R11. At that row then inspect burst positions from 0 upward: even positions are CPU lengths in 1..=1000, odd positions are I/O delays in 0..=1000. Return Error::Burst { index, position } at the first invalid position. Earlier row errors win over any later row errors.
+
+R12. The alternating vector starts and ends with CPU. I/O may have zero duration; CPU may not. The arrival describes when the first CPU burst becomes ready.
+
+R13. Start at time 0. External arrivals are admitted by increasing (arrival, input index), regardless of input sorting or id values.
+
+R14. There is one FIFO ready queue for each level. An external arrival joins the tail of its initial level queue.
+
+R15. Choose the head of the lowest numbered nonempty queue whenever a dispatch is needed. Neither a higher-priority arrival nor a wake interrupts a selected dispatch.
+
+R16. At the start of each scheduling iteration, admit every pending event whose timestamp is at most the current time before selecting a job. Events retain their own timestamp even when processed later.
+
+R17. Remove the selected head before charging any cost. This choice is locked: events during a dispatch cost may join queues but cannot replace the selected job.
+
+R18. Before executing the selected job, add switch_cost to time exactly when a last positive-work dispatch id exists and differs from the selected id. The first dispatch is free.
+
+R19. Admit events through the time after that cost. Then execute uninterrupted for min(remaining CPU work, selected quantum). Cost does not consume quantum.
+
+R20. The selected quantum is quanta at the job's level when selected. Run.level is that level, before any demotion or promotion.
+
+R21. Advance time by consumed CPU ticks. Emit exactly one Run, with start after cost, end after execution, and finished true exactly when the entire job completes. Never merge Runs, including adjacent Runs of the same id.
+
+R22. After execution, admit all pending events through the Run.end, including events exactly at Run.end, before requeuing the running job. Arrivals during execution are never delayed until its next dispatch.
+
+R23. If CPU work remains in the current burst, demote one level capped at the last level and requeue at that level's tail after events at Run.end. Each dispatch starts with a fresh quantum; no quantum balance carries across bursts or dispatches.
+
+R24. If a CPU burst ends, burst completion takes precedence over quantum exhaustion, including equality. Do not demote. If it is the final CPU burst, record completion at Run.end.
+
+R25. If that burst has a following I/O delay, block immediately at Run.end until Run.end + that delay, and advance to the next CPU burst. Blocked jobs are not in any ready queue.
+
+R26. On waking, set the job's level to max(0, level of the dispatch that started that I/O minus 1), then append to that level's tail. Promotion occurs even for a zero-delay I/O.
+
+R27. The wake generated by the just-finished burst is included when admitting events through Run.end. A zero-delay wake therefore competes immediately at that endpoint.
+
+R28. Order pending events by (timestamp, kind, input index), with external arrivals kind 0 and I/O wakes kind 1. At a tie all external arrivals precede all wakes, and each kind follows input index, not id or blocking order.
+
+R29. External arrivals and wakes never incur CPU time themselves. Once all events at a timestamp are admitted, FIFO order within each queue persists until selection or later tail insertions.
+
+R30. After execution, remember its id as the last dispatched id. Same-id consecutive dispatches have no cost even across zero-duration I/O; different levels do not affect this comparison.
+
+R31. If no ready job exists but an event remains, advance to the next event timestamp. Any positive time skipped is idle: append that half-open interval and clear the last dispatched id. The next dispatch after positive idle is free.
+
+R32. Merge adjacent idle intervals into one pair when the old end equals the new start. Never include dispatch costs in idle, never emit zero-length idle, and emit no trailing idle after the last completion.
+
+R33. Schedule.end is the time all jobs have completed. Initial idle begins at 0 when needed. For no jobs, end is 0 and all vectors are empty.
+
+R34. Schedule.stats contains one Stat per input job in input order, regardless of completion order.
+
+R35. Stat.completion is the end of the final CPU Run. Stat.turnaround = completion - arrival.
+
+R36. Stat.waiting = turnaround minus the sum of that job's CPU lengths minus the sum of its I/O delays. Thus waiting includes time in ready queues and its own dispatch costs, excludes blocked time, and never counts time before arrival.
+
+R37. mean_waiting_x100 and mean_turnaround_x100 are the arithmetic means of the corresponding Stat fields multiplied by 100 and rounded to nearest integer, with exact halves rounded upward. Use exact integer arithmetic, not per-job rounding. For example total 1 over 8 jobs yields 13; total 1 over 3 yields 33.
+
+R38. Both mean fields are 0 for no jobs; otherwise every input job contributes once, including jobs initially at lower levels.
+
+R39. All time and statistics calculations are exact u64. The stated bounds guarantee no overflow; no wall-clock, randomness, threads, global state, or external services affect the result.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R20-R24, R34-R38
+#[test]
+fn cpu_only_demotion() {
+    assert_eq!(schedule(&[Job { id: 1, arrival: 0, bursts: vec![6], level: 0 }, Job { id: 2, arrival: 0, bursts: vec![2], level: 0 }], &[2, 4], 0), Ok(Schedule {
+        runs: vec![Run { id: 1, start: 0, end: 2, finished: false, level: 0 }, Run { id: 2, start: 2, end: 4, finished: true, level: 0 }, Run { id: 1, start: 4, end: 8, finished: true, level: 1 }],
+        idle: vec![],
+        stats: vec![Stat { id: 1, completion: 8, turnaround: 8, waiting: 2 }, Stat { id: 2, completion: 4, turnaround: 4, waiting: 2 }],
+        mean_waiting_x100: 200, mean_turnaround_x100: 600,
+        end: 8
+    }));
+}
+
+// R25-R26, R31-R36
+#[test]
+fn io_idle_and_promotion() {
+    assert_eq!(schedule(&[Job { id: 5, arrival: 2, bursts: vec![1, 3, 2], level: 1 }], &[3, 4], 0), Ok(Schedule {
+        runs: vec![Run { id: 5, start: 2, end: 3, finished: false, level: 1 }, Run { id: 5, start: 6, end: 8, finished: true, level: 0 }],
+        idle: vec![(0, 2), (3, 6)],
+        stats: vec![Stat { id: 5, completion: 8, turnaround: 6, waiting: 0 }],
+        mean_waiting_x100: 0, mean_turnaround_x100: 600,
+        end: 8
+    }));
+}
+
+// R33, R38
+#[test]
+fn empty_statistics() {
+    assert_eq!(schedule(&[], &[1], 0), Ok(Schedule {
+        runs: vec![],
+        idle: vec![],
+        stats: vec![],
+        mean_waiting_x100: 0, mean_turnaround_x100: 0,
+        end: 0
+    }));
+}
+
+// R11
+#[test]
+fn invalid_cpu_burst() {
+    assert_eq!(schedule(&[Job { id: 1, arrival: 0, bursts: vec![0], level: 0 }], &[2], 0), Err(Error::Burst { index: 0, position: 0 }));
+}
+```
+
+
+## Previous attempt
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: u32,
+    pub arrival: u32,
+    pub bursts: Vec<u32>,
+    pub level: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub id: u32,
+    pub start: u64,
+    pub end: u64,
+    pub finished: bool,
+    pub level: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub idle: Vec<(u64, u64)>,
+    pub stats: Vec<Stat>,
+    pub mean_waiting_x100: u64,
+    pub mean_turnaround_x100: u64,
+    pub end: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    LevelCount,
+    Quantum { level: usize },
+    SwitchCost,
+    TooManyJobs,
+    DuplicateId { index: usize },
+    Arrival { index: usize },
+    InitialLevel { index: usize },
+    BurstCount { index: usize },
+    Burst { index: usize, position: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stat {
+    pub id: u32,
+    pub completion: u64,
+    pub turnaround: u64,
+    pub waiting: u64,
+}
+
+#[derive(Clone, Debug)]
+struct Process {
+    id: u32,
+    arrival: u64,
+    bursts: Vec<u32>,
+    burst_position: usize,
+    remaining: u32,
+    level: usize,
+    completion: Option<u64>,
+    cpu_total: u64,
+    io_total: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum EventKind {
+    Arrival,
+    Wake { job: usize, level: usize },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Event {
+    time: u64,
+    kind_order: u8,
+    input_index: usize,
+    kind: EventKind,
+}
+
+fn rounded_mean_x100(total: u64, count: usize) -> u64 {
+    if count == 0 {
+        0
+    } else {
+        (total * 100 + count as u64 / 2) / count as u64
+    }
+}
+
+fn admit_events(
+    events: &[Event],
+    event_cursor: &mut usize,
+    time: u64,
+    processes: &mut [Process],
+    queues: &mut [std::collections::VecDeque<usize>],
+) {
+    while *event_cursor < events.len() && events[*event_cursor].time <= time {
+        let event = events[*event_cursor];
+        match event.kind {
+            EventKind::Arrival => {
+                let job = event.input_index;
+                let level = processes[job].level;
+                queues[level].push_back(job);
+            }
+            EventKind::Wake { job, level } => {
+                processes[job].level = level;
+                queues[level].push_back(job);
+            }
+        }
+        *event_cursor += 1;
+    }
+}
+
+pub fn schedule(jobs: &[Job], quanta: &[u32], switch_cost: u32) -> Result<Schedule, Error> {
+    if !(1..=8).contains(&quanta.len()) {
+        return Err(Error::LevelCount);
+    }
+    for (level, &quantum) in quanta.iter().enumerate() {
+        if !(1..=1000).contains(&quantum) {
+            return Err(Error::Quantum { level });
+        }
+    }
+    if switch_cost > 1000 {
+        return Err(Error::SwitchCost);
+    }
+    if jobs.len() > 64 {
+        return Err(Error::TooManyJobs);
+    }
+
+    for (index, job) in jobs.iter().enumerate() {
+        if jobs[..index].iter().any(|previous| previous.id == job.id) {
+            return Err(Error::DuplicateId { index });
+        }
+        if job.arrival > 1000 {
+            return Err(Error::Arrival { index });
+        }
+        if job.level >= quanta.len() {
+            return Err(Error::InitialLevel { index });
+        }
+        if job.bursts.is_empty() || job.bursts.len() > 31 || job.bursts.len() % 2 == 0 {
+            return Err(Error::BurstCount { index });
+        }
+        for (position, &burst) in job.bursts.iter().enumerate() {
+            let valid = if position % 2 == 0 {
+                (1..=1000).contains(&burst)
+            } else {
+                burst <= 1000
+            };
+            if !valid {
+                return Err(Error::Burst { index, position });
+            }
+        }
+    }
+
+    if jobs.is_empty() {
+        return Ok(Schedule {
+            runs: Vec::new(),
+            idle: Vec::new(),
+            stats: Vec::new(),
+            mean_waiting_x100: 0,
+            mean_turnaround_x100: 0,
+            end: 0,
+        });
+    }
+
+    let mut processes: Vec<Process> = jobs
+        .iter()
+        .map(|job| Process {
+            id: job.id,
+            arrival: job.arrival as u64,
+            bursts: job.bursts.clone(),
+            burst_position: 0,
+            remaining: job.bursts[0],
+            level: job.level,
+            completion: None,
+            cpu_total: job
+                .bursts
+                .iter()
+                .step_by(2)
+                .map(|&value| value as u64)
+                .sum(),
+            io_total: job
+                .bursts
+                .iter()
+                .skip(1)
+                .step_by(2)
+                .map(|&value| value as u64)
+                .sum(),
+        })
+        .collect();
+
+    let mut events: Vec<Event> = jobs
+        .iter()
+        .enumerate()
+        .map(|(index, job)| Event {
+            time: job.arrival as u64,
+            kind_order: 0,
+            input_index: index,
+            kind: EventKind::Arrival,
+        })
+        .collect();
+    events.sort_by_key(|event| (event.time, event.kind_order, event.input_index));
+
+    let mut event_cursor = 0usize;
+    let mut queues: Vec<std::collections::VecDeque<usize>> =
+        (0..quanta.len()).map(|_| std::collections::VecDeque::new()).collect();
+    let mut runs = Vec::new();
+    let mut idle = Vec::new();
+    let mut time = 0u64;
+    let mut last_dispatch_id: Option<u32> = None;
+    let mut completed_count = 0usize;
+
+    while completed_count < jobs.len() {
+        admit_events(
+            &events,
+            &mut event_cursor,
+            time,
+            &mut processes,
+            &mut queues,
+        );
+
+        let Some(level) = queues.iter().position(|queue| !queue.is_empty()) else {
+            if event_cursor >= events.len() {
+                break;
+            }
+
+            let next_time = events[event_cursor].time;
+            if next_time > time {
+                if let Some(last) = idle.last_mut() {
+                    if last.1 == time {
+                        last.1 = next_time;
+                    } else {
+                        idle.push((time, next_time));
+                    }
+                } else {
+                    idle.push((time, next_time));
+                }
+                time = next_time;
+                last_dispatch_id = None;
+            }
+            continue;
+        };
+
+        let job_index = queues[level].pop_front().unwrap();
+        let selected_id = processes[job_index].id;
+
+        if last_dispatch_id.is_some_and(|last_id| last_id != selected_id) {
+            time += switch_cost as u64;
+        }
+
+        admit_events(
+            &events,
+            &mut event_cursor,
+            time,
+            &mut processes,
+            &mut queues,
+        );
+
+        let run_level = processes[job_index].level;
+        let consumed = processes[job_index]
+            .remaining
+            .min(quanta[run_level]);
+        let start = time;
+        time += consumed as u64;
+        let end = time;
+        processes[job_index].remaining -= consumed;
+
+        let burst_finished = processes[job_index].remaining == 0;
+        let job_finished = burst_finished
+            && processes[job_index].burst_position + 1
+                == processes[job_index].bursts.len() - 1;
+
+        runs.push(Run {
+            id: selected_id,
+            start,
+            end,
+            finished: job_finished,
+            level: run_level,
+        });
+
+        admit_events(
+            &events,
+            &mut event_cursor,
+            end,
+            &mut processes,
+            &mut queues,
+        );
+
+        if job_finished {
+            processes[job_index].completion = Some(end);
+            completed_count += 1;
+        } else if burst_finished {
+            let io_position = processes[job_index].burst_position + 1;
+            let io_delay = processes[job_index].bursts[io_position] as u64;
+            processes[job_index].burst_position += 2;
+            processes[job_index].remaining =
+                processes[job_index].bursts[processes[job_index].burst_position];
+
+            let promoted_level = run_level.saturating_sub(1);
+            events.push(Event {
+                time: end + io_delay,
+                kind_order: 1,
+                input_index: job_index,
+                kind: EventKind::Wake {
+                    job: job_index,
+                    level: promoted_level,
+                },
+            });
+            events[event_cursor..]
+                .sort_by_key(|event| (event.time, event.kind_order, event.input_index));
+        } else {
+            let demoted_level = (run_level + 1).min(quanta.len() - 1);
+            processes[job_index].level = demoted_level;
+            queues[demoted_level].push_back(job_index);
+        }
+
+        last_dispatch_id = Some(selected_id);
+    }
+
+    let stats: Vec<Stat> = processes
+        .iter()
+        .map(|process| {
+            let completion = process.completion.unwrap();
+            let turnaround = completion - process.arrival;
+            Stat {
+                id: process.id,
+                completion,
+                turnaround,
+                waiting: turnaround - process.cpu_total - process.io_total,
+            }
+        })
+        .collect();
+
+    let total_waiting: u64 = stats.iter().map(|stat| stat.waiting).sum();
+    let total_turnaround: u64 = stats.iter().map(|stat| stat.turnaround).sum();
+
+    Ok(Schedule {
+        runs,
+        idle,
+        stats,
+        mean_waiting_x100: rounded_mean_x100(total_waiting, jobs.len()),
+        mean_turnaround_x100: rounded_mean_x100(total_turnaround, jobs.len()),
+        end: time,
+    })
+}
+```
+
+## Public test results
+
+error[E0282]: type annotations needed for `Vec<_>`
+   --> /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-oracle-F0h9H9/c_3c118dfa58e47e71.rs:207:9
+    |
+207 |     let mut idle = Vec::new();
+    |         ^^^^^^^^
+...
+229 |                     if last.1 == time {
+    |                        ------ type must be known at this point
+    |
+help: consider giving `idle` an explicit type, where the type for type parameter `T` is specified
+    |
+207 |     let mut idle: Vec<T> = Vec::new();
+    |                 ++++++++
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0282`.
+
+
+Fix the file. Respond with the whole corrected file in a single ```rust block.

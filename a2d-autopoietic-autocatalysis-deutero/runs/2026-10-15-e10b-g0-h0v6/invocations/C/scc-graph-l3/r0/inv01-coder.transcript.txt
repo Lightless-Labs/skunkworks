@@ -1,0 +1,806 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-46106-1792069352667297000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a13fa8-677a-7a10-ad04-43f58ec61e80
+--------
+user
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else. Include an empty `fn main() {}` (the file is compiled as a program).
+
+Build a deterministic directed graph analyzer.
+
+R1. Implement in Rust as a SINGLE source file that compiles with `rustc --edition 2024`, std only. Do not use inner attributes (`#![...]`) or inner documentation (`//!`). Output ONLY the Rust source code inside ```rust fences.
+
+R2. Expose exactly the following public API (field types, variant fields and derives are part of the contract). Function bodies and private helpers/state are yours to implement:
+```rust
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+    BadQuery { side: u8, vertex: usize },
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arc {
+    pub from: usize, pub to: usize,
+    pub multiplicity: usize, pub first_edge: usize,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Relation { Cycle, Trivial, Forward, Backward, Separate }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Query { pub kind: Relation, pub route: Vec<usize> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+    pub internal_edges: Vec<usize>,
+    pub arcs: Vec<Arc>,
+    pub topo: Vec<usize>,
+    pub depth: Vec<usize>,
+}
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError>;
+impl Graph { pub fn query(&self, from: usize, to: usize) -> Result<Query, GraphError>; }
+```
+
+R3. `analyze(n, edges)` analyzes vertices numbered 0 through n-1. Every tuple is a directed edge (source, target). All outputs are owned values. There is no persistent state in analyze.
+
+R4. Validate before analyzing. First, if n > MAX_VERTICES return TooManyVertices { count: n, limit: MAX_VERTICES }, even if the edge list is too long or invalid. n = MAX_VERTICES is allowed.
+
+R5. Next, if edges.len() > MAX_EDGES return TooManyEdges { limit: MAX_EDGES }, before inspecting endpoints. Exactly MAX_EDGES edges is allowed.
+
+R6. Next scan input edges in their original order. Return BadEndpoint for the first edge with an endpoint >= n; edge is its zero-based input index. Check source (side: 0) before target (side: 1) within that edge. vertex is the offending value, unmodified.
+
+R7. All endpoint errors use the position in the original slice, including preceding duplicate edges, internal edges and self-loops; do not deduplicate before validating. Values as large as usize::MAX are ordinary invalid endpoints, not special sentinels.
+
+R8. Reachability means a directed path, allowing a zero-length path from a vertex to itself.
+
+R9. The components partition all vertices into maximal sets of mutually reachable vertices; isolated vertices appear too. Edges are directed, not undirected.
+
+R10. Each component is a nonempty vector of its distinct vertex numbers sorted ascending.
+
+R11. Sort components by DECREASING number of vertices, then INCREASING smallest member on equal sizes. A component ID is its zero-based index in this sorted vector, not its minimum vertex or traversal number.
+
+R12. component_of has length n; component_of[v] is the canonical component ID of v.
+
+R13. cyclic has one entry per component: true exactly when that component has at least two vertices OR it contains a self-loop edge. A singleton without a self-loop has false, even if it has incoming or outgoing edges.
+
+R14. Duplicate edges and self-loops are legal and count toward the edge limit. Duplicates do not change SCC membership or cyclic flags.
+
+R15. For n = 0 the empty edge list succeeds with all Graph vector fields empty; any nonempty edge list within the edge limit fails at its first source endpoint.
+
+R16. For n > 0 with no edges the components are [0], [1], ..., [n-1], component_of[v] = v, and every cyclic flag is false.
+
+R17. For a valid graph, permuting the input edges cannot change components, component_of or cyclic. Any fields expressly defined by input position in later clauses may change.
+
+R18. All inputs within the stated limits must be supported, including disconnected graphs, long directed paths, and a component containing all vertices. Valid calls return normally without panics. No particular SCC algorithm is required.
+
+R19. internal_edges has one entry per component. Its entry counts original edge occurrences whose two endpoints both belong to that component.
+
+R20. Each self-loop and each duplicate internal edge contributes one to internal_edges; thus an acyclic singleton has zero internal edges.
+
+R21. arcs is the condensation DAG: only edges between different components appear. Never emit an arc with from == to.
+
+R22. Exactly one Arc appears for each distinct ordered pair of components joined by at least one original edge, even when different vertex pairs connect those same components.
+
+R23. Arc.multiplicity counts all original occurrences from that source component to that target component, including duplicate vertex pairs.
+
+R24. Arc.first_edge is the smallest zero-based index in the original input slice of any occurrence represented by that arc.
+
+R25. Sort arcs by INCREASING from component ID, then DECREASING to component ID. Multiplicity and witness position do not participate in sorting.
+
+R26. Witness indices include every original position, including internal edges, self-loops and duplicates. They are never indices in a filtered list. Every original occurrence contributes to exactly one internal_edges count or arc multiplicity.
+
+R27. topo lists every component ID exactly once in a topological order of the condensation. Parallel original edges act as a single condensation arc for indegrees.
+
+R28. Use priority Kahn traversal. At every step, among all currently zero-indegree un-emitted components choose the one with the GREATEST internal_edges count; break ties by the GREATEST smallest original vertex in the component. Do not use component ID as the tie-break.
+
+R29. After emitting a component, remove all its outgoing condensation arcs and immediately admit newly zero-indegree components to the same priority competition; do not finish a previously saved wave first.
+
+R30. depth is indexed by component ID, not topo position. Sources have depth 0; every other component has one plus the maximum depth of its condensation predecessors (longest path in arc count).
+
+R31. Graph::query(from,to) takes ORIGINAL VERTEX numbers. First reject from >= n as BadQuery { side: 0, vertex: from }; only then reject to >= n as BadQuery { side: 1, vertex: to }. The two endpoints are checked even if equal. Query does not mutate Graph.
+
+R32. Let a = component_of[from], b = component_of[to]. If a == b and cyclic[a] is true, return Query { kind: Cycle, route: [a,a] }, including when from == to. If a == b and cyclic[a] is false, return Trivial with route [a]. These routes are prescribed encodings, not graph edge lists.
+
+R33. If a != b and a can reach b in the condensation, return Forward with a shortest route of component IDs from a to b, inclusive.
+
+R34. Otherwise, if b can reach a, return Backward. First select a shortest route from b to a by the same tie-break as a Forward route, then REVERSE that selected vector so the reported route starts at a and ends at b. Its arcs therefore point backward.
+
+R35. If neither component can reach the other, return Separate with an empty route.
+
+R36. For either reachable direction, shortest means fewest condensation arcs, ignoring multiplicity, internal_edges, depth and topo order. Among equal-length routes choose the lexicographically smallest complete vector of COMPONENT IDs in the reachable direction, before any Backward reversal. Use numeric ascending ID comparisons.
+
+R37. Queries on the successful empty graph always return BadQuery with side 0. Requirements for query apply to Graph values returned by this API (and unchanged clones); no behavior is specified after callers manually corrupt public fields.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R19-R30
+#[test]
+fn public_topology_chain() {
+    let edges:Vec<_>=(1..10).map(|v|(v-1,v)).collect();
+    let g=analyze(10,&edges).unwrap();
+    assert_eq!(g.components,(0..10).map(|v|vec![v]).collect::<Vec<_>>());
+    assert_eq!(g.topo,(0..10).collect::<Vec<_>>());assert_eq!(g.depth,(0..10).collect::<Vec<_>>());
+    assert_eq!(g.arcs.len(),9);assert_eq!(g.arcs[0],Arc{from:0,to:1,multiplicity:1,first_edge:0});
+}
+
+// R33,R34
+#[test]
+fn public_query_directions() {
+    let edges:Vec<_>=(1..10).map(|v|(v-1,v)).collect();
+    let g=analyze(10,&edges).unwrap();
+    assert_eq!(g.query(0,2).unwrap(),Query{kind:Relation::Forward,route:vec![0,1,2]});
+    assert_eq!(g.query(2,0).unwrap(),Query{kind:Relation::Backward,route:vec![2,1,0]});
+}
+
+// R32,R35
+#[test]
+fn public_cycle_and_separate_query() {
+    let g=analyze(4,&[(0,1),(1,0)]).unwrap();
+    assert_eq!(g.query(0,1).unwrap(),Query{kind:Relation::Cycle,route:vec![0,0]});
+    assert_eq!(g.query(2,2).unwrap(),Query{kind:Relation::Trivial,route:vec![1]});
+    assert_eq!(g.query(0,3).unwrap(),Query{kind:Relation::Separate,route:vec![]});
+}
+
+// R6,R31
+#[test]
+fn public_query_error() {
+    assert_eq!(analyze(1,&[(0,1)]),Err(GraphError::BadEndpoint{edge:0,side:1,vertex:1}));
+    assert_eq!(analyze(2,&[]).unwrap().query(0,2),Err(GraphError::BadQuery{side:1,vertex:2}));
+}
+```
+
+## Previous attempt
+
+```rust
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, VecDeque};
+
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+    BadQuery { side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arc {
+    pub from: usize,
+    pub to: usize,
+    pub multiplicity: usize,
+    pub first_edge: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Relation {
+    Cycle,
+    Trivial,
+    Forward,
+    Backward,
+    Separate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Query {
+    pub kind: Relation,
+    pub route: Vec<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+    pub internal_edges: Vec<usize>,
+    pub arcs: Vec<Arc>,
+    pub topo: Vec<usize>,
+    pub depth: Vec<usize>,
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges { limit: MAX_EDGES });
+    }
+    for (i, &(from, to)) in edges.iter().enumerate() {
+        if from >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 0,
+                vertex: from,
+            });
+        }
+        if to >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 1,
+                vertex: to,
+            });
+        }
+    }
+
+    let mut adj = vec![Vec::new(); n];
+    let mut rev = vec![Vec::new(); n];
+    for &(from, to) in edges {
+        adj[from].push(to);
+        rev[to].push(from);
+    }
+
+    // Iterative Kosaraju, with explicit DFS exit order.
+    let mut seen = vec![false; n];
+    let mut finish = Vec::with_capacity(n);
+    for start in 0..n {
+        if seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        let mut stack = vec![(start, 0usize)];
+        while let Some((v, next)) = stack.last_mut() {
+            if *next < adj[*v].len() {
+                let w = adj[*v][*next];
+                *next += 1;
+                if !seen[w] {
+                    seen[w] = true;
+                    stack.push((w, 0));
+                }
+            } else {
+                finish.push(*v);
+                stack.pop();
+            }
+        }
+    }
+
+    let mut assigned = vec![false; n];
+    let mut raw_components = Vec::new();
+    for &start in finish.iter().rev() {
+        if assigned[start] {
+            continue;
+        }
+        let mut component = Vec::new();
+        let mut stack = vec![start];
+        assigned[start] = true;
+        while let Some(v) = stack.pop() {
+            component.push(v);
+            for &w in &rev[v] {
+                if !assigned[w] {
+                    assigned[w] = true;
+                    stack.push(w);
+                }
+            }
+        }
+        component.sort_unstable();
+        raw_components.push(component);
+    }
+
+    raw_components.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0])));
+    let components = raw_components;
+    let mut component_of = vec![0; n];
+    for (id, component) in components.iter().enumerate() {
+        for &v in component {
+            component_of[v] = id;
+        }
+    }
+
+    let count = components.len();
+    let mut cyclic = components.iter().map(|c| c.len() > 1).collect::<Vec<_>>();
+    let mut internal_edges = vec![0usize; count];
+    let mut pairs = std::collections::BTreeMap::<(usize, usize), (usize, usize)>::new();
+
+    for (i, &(from, to)) in edges.iter().enumerate() {
+        let a = component_of[from];
+        let b = component_of[to];
+        if a == b {
+            internal_edges[a] += 1;
+            if from == to {
+                cyclic[a] = true;
+            }
+        } else {
+            let entry = pairs.entry((a, b)).or_insert((0, i));
+            entry.0 += 1;
+            if i < entry.1 {
+                entry.1 = i;
+            }
+        }
+    }
+
+    let mut arcs = pairs
+        .into_iter()
+        .map(|((from, to), (multiplicity, first_edge))| Arc {
+            from,
+            to,
+            multiplicity,
+            first_edge,
+        })
+        .collect::<Vec<_>>();
+    arcs.sort_by(|a, b| a.from.cmp(&b.from).then_with(|| b.to.cmp(&a.to)));
+
+    let mut outgoing = vec![Vec::new(); count];
+    let mut indegree = vec![0usize; count];
+    for arc in &arcs {
+        outgoing[arc.from].push(arc.to);
+        indegree[arc.to] += 1;
+    }
+
+    let mut ready = BinaryHeap::new();
+    for id in 0..count {
+        if indegree[id] == 0 {
+            ready.push((internal_edges[id], components[id][0], Reverse(id)));
+        }
+    }
+    let mut topo = Vec::with_capacity(count);
+    let mut depth = vec![0usize; count];
+    while let Some((_, _, Reverse(id))) = ready.pop() {
+        topo.push(id);
+        for &to in &outgoing[id] {
+            depth[to] = depth[to].max(depth[id] + 1);
+            indegree[to] -= 1;
+            if indegree[to] == 0 {
+                ready.push((internal_edges[to], components[to][0], Reverse(to)));
+            }
+        }
+    }
+
+    Ok(Graph {
+        components,
+        component_of,
+        cyclic,
+        internal_edges,
+        arcs,
+        topo,
+        depth,
+    })
+}
+
+impl Graph {
+    pub fn query(&self, from: usize, to: usize) -> Result<Query, GraphError> {
+        if from >= self.component_of.len() {
+            return Err(GraphError::BadQuery {
+                side: 0,
+                vertex: from,
+            });
+        }
+        if to >= self.component_of.len() {
+            return Err(GraphError::BadQuery {
+                side: 1,
+                vertex: to,
+            });
+        }
+
+        let a = self.component_of[from];
+        let b = self.component_of[to];
+        if a == b {
+            if self.cyclic[a] {
+                return Ok(Query {
+                    kind: Relation::Cycle,
+                    route: vec![a, a],
+                });
+            }
+            return Ok(Query {
+                kind: Relation::Trivial,
+                route: vec![a],
+            });
+        }
+
+        let mut outgoing = vec![Vec::new(); self.components.len()];
+        for arc in &self.arcs {
+            outgoing[arc.from].push(arc.to);
+        }
+        for neighbors in &mut outgoing {
+            neighbors.sort_unstable();
+            neighbors.dedup();
+        }
+
+        fn shortest(
+            start: usize,
+            goal: usize,
+            outgoing: &[Vec<usize>],
+        ) -> Option<Vec<usize>> {
+            let mut distance = vec![usize::MAX; outgoing.len()];
+            let mut queue = VecDeque::new();
+            distance[start] = 0;
+            queue.push_back(start);
+            while let Some(v) = queue.pop_front() {
+                for &w in &outgoing[v] {
+                    if distance[w] == usize::MAX {
+                        distance[w] = distance[v] + 1;
+                        queue.push_back(w);
+                    }
+                }
+            }
+            if distance[goal] == usize::MAX {
+                return None;
+            }
+
+            let mut route = vec![start];
+            let mut current = start;
+            while current != goal {
+                let next = *outgoing[current]
+                    .iter()
+                    .filter(|&&w| distance[w] + 1 == distance[current] + 1)
+                    .filter(|&&w| distance[w] == distance[current] + 1)
+                    .min()?;
+                route.push(next);
+                current = next;
+            }
+            Some(route)
+        }
+
+        if let Some(route) = shortest(a, b, &outgoing) {
+            return Ok(Query {
+                kind: Relation::Forward,
+                route,
+            });
+        }
+        if let Some(mut route) = shortest(b, a, &outgoing) {
+            route.reverse();
+            return Ok(Query {
+                kind: Relation::Backward,
+                route,
+            });
+        }
+        Ok(Query {
+            kind: Relation::Separate,
+            route: Vec::new(),
+        })
+    }
+}
+
+fn main() {}
+```
+
+## Public test results
+
+TESTS: 3 passed, 1 failed
+TEST OUTPUT:
+
+running 4 tests
+test a2d_acceptance::public_cycle_and_separate_query ... ok
+test a2d_acceptance::public_query_error ... ok
+test a2d_acceptance::public_topology_chain ... ok
+test a2d_acceptance::public_query_directions ... FAILED
+
+failures:
+
+---- a2d_acceptance::public_query_directions stdout ----
+
+thread 'a2d_acceptance::public_query_directions' (84335677) panicked at /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpHTHS4c/main.rs:324:5:
+assertion `left == right` failed
+  left: Query { kind: Separate, route: [] }
+ right: Query { kind: Forward, route: [0, 1, 2] }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a2d_acceptance::public_query_directions
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+Fix the file. Respond with the whole corrected file in a single ```rust block.
+
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-15T13:02:53.905523Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, VecDeque};
+
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+    BadQuery { side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arc {
+    pub from: usize,
+    pub to: usize,
+    pub multiplicity: usize,
+    pub first_edge: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Relation {
+    Cycle,
+    Trivial,
+    Forward,
+    Backward,
+    Separate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Query {
+    pub kind: Relation,
+    pub route: Vec<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+    pub internal_edges: Vec<usize>,
+    pub arcs: Vec<Arc>,
+    pub topo: Vec<usize>,
+    pub depth: Vec<usize>,
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges { limit: MAX_EDGES });
+    }
+
+    for (i, &(from, to)) in edges.iter().enumerate() {
+        if from >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 0,
+                vertex: from,
+            });
+        }
+        if to >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 1,
+                vertex: to,
+            });
+        }
+    }
+
+    let mut adj = vec![Vec::new(); n];
+    let mut rev = vec![Vec::new(); n];
+    for &(from, to) in edges {
+        adj[from].push(to);
+        rev[to].push(from);
+    }
+
+    let mut seen = vec![false; n];
+    let mut finish = Vec::with_capacity(n);
+    for start in 0..n {
+        if seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        let mut stack = vec![(start, 0usize)];
+        while let Some((v, next)) = stack.last_mut() {
+            if *next < adj[*v].len() {
+                let w = adj[*v][*next];
+                *next += 1;
+                if !seen[w] {
+                    seen[w] = true;
+                    stack.push((w, 0));
+                }
+            } else {
+                finish.push(*v);
+                stack.pop();
+            }
+        }
+    }
+
+    let mut assigned = vec![false; n];
+    let mut components = Vec::new();
+    for &start in finish.iter().rev() {
+        if assigned[start] {
+            continue;
+        }
+        let mut component = Vec::new();
+        let mut stack = vec![start];
+        assigned[start] = true;
+        while let Some(v) = stack.pop() {
+            component.push(v);
+            for &w in &rev[v] {
+                if !assigned[w] {
+                    assigned[w] = true;
+                    stack.push(w);
+                }
+            }
+        }
+        component.sort_unstable();
+        components.push(component);
+    }
+
+    components.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0])));
+    let mut component_of = vec![0; n];
+    for (id, component) in components.iter().enumerate() {
+        for &v in component {
+            component_of[v] = id;
+        }
+    }
+
+    let count = components.len();
+    let mut cyclic = components.iter().map(|c| c.len() > 1).collect::<Vec<_>>();
+    let mut internal_edges = vec![0usize; count];
+    let mut pairs = BTreeMap::<(usize, usize), (usize, usize)>::new();
+
+    for (i, &(from, to)) in edges.iter().enumerate() {
+        let a = component_of[from];
+        let b = component_of[to];
+        if a == b {
+            internal_edges[a] += 1;
+            if from == to {
+                cyclic[a] = true;
+            }
+        } else {
+            let entry = pairs.entry((a, b)).or_insert((0, i));
+            entry.0 += 1;
+            entry.1 = entry.1.min(i);
+        }
+    }
+
+    let mut arcs = pairs
+        .into_iter()
+        .map(|((from, to), (multiplicity, first_edge))| Arc {
+            from,
+            to,
+            multiplicity,
+            first_edge,
+        })
+        .collect::<Vec<_>>();
+    arcs.sort_by(|a, b| a.from.cmp(&b.from).then_with(|| b.to.cmp(&a.to)));
+
+    let mut outgoing = vec![Vec::new(); count];
+    let mut indegree = vec![0usize; count];
+    for arc in &arcs {
+        outgoing[arc.from].push(arc.to);
+        indegree[arc.to] += 1;
+    }
+
+    let mut ready = BinaryHeap::new();
+    for id in 0..count {
+        if indegree[id] == 0 {
+            ready.push((internal_edges[id], components[id][0], Reverse(id)));
+        }
+    }
+
+    let mut topo = Vec::with_capacity(count);
+    let mut depth = vec![0usize; count];
+    while let Some((_, _, Reverse(id))) = ready.pop() {
+        topo.push(id);
+        for &to in &outgoing[id] {
+            depth[to] = depth[to].max(depth[id] + 1);
+            indegree[to] -= 1;
+            if indegree[to] == 0 {
+                ready.push((internal_edges[to], components[to][0], Reverse(to)));
+            }
+        }
+    }
+
+    Ok(Graph {
+        components,
+        component_of,
+        cyclic,
+        internal_edges,
+        arcs,
+        topo,
+        depth,
+    })
+}
+
+impl Graph {
+    pub fn query(&self, from: usize, to: usize) -> Result<Query, GraphError> {
+        if from >= self.component_of.len() {
+            return Err(GraphError::BadQuery {
+                side: 0,
+                vertex: from,
+            });
+        }
+        if to >= self.component_of.len() {
+            return Err(GraphError::BadQuery {
+                side: 1,
+                vertex: to,
+            });
+        }
+
+        let a = self.component_of[from];
+        let b = self.component_of[to];
+        if a == b {
+            if self.cyclic[a] {
+                return Ok(Query {
+                    kind: Relation::Cycle,
+                    route: vec![a, a],
+                });
+            }
+            return Ok(Query {
+                kind: Relation::Trivial,
+                route: vec![a],
+            });
+        }
+
+        let mut outgoing = vec![Vec::new(); self.components.len()];
+        for arc in &self.arcs {
+            outgoing[arc.from].push(arc.to);
+        }
+        for neighbors in &mut outgoing {
+            neighbors.sort_unstable();
+            neighbors.dedup();
+        }
+
+        fn shortest(start: usize, goal: usize, outgoing: &[Vec<usize>]) -> Option<Vec<usize>> {
+            let mut distance = vec![usize::MAX; outgoing.len()];
+            let mut queue = VecDeque::new();
+            distance[start] = 0;
+            queue.push_back(start);
+
+            while let Some(v) = queue.pop_front() {
+                for &w in &outgoing[v] {
+                    if distance[w] == usize::MAX {
+                        distance[w] = distance[v] + 1;
+                        queue.push_back(w);
+                    }
+                }
+            }
+
+            if distance[goal] == usize::MAX {
+                return None;
+            }
+
+            let mut route = vec![start];
+            let mut current = start;
+            while current != goal {
+                let next = outgoing[current]
+                    .iter()
+                    .copied()
+                    .filter(|&w| distance[w] == distance[current] + 1)
+                    .min()?;
+                route.push(next);
+                current = next;
+            }
+            Some(route)
+        }
+
+        if let Some(route) = shortest(a, b, &outgoing) {
+            return Ok(Query {
+                kind: Relation::Forward,
+                route,
+            });
+        }
+        if let Some(mut route) = shortest(b, a, &outgoing) {
+            route.reverse();
+            return Ok(Query {
+                kind: Relation::Backward,
+                route,
+            });
+        }
+        Ok(Query {
+            kind: Relation::Separate,
+            route: Vec::new(),
+        })
+    }
+}
+
+fn main() {}
+```
+tokens used
+7,826

@@ -1,0 +1,750 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+PROMPT:
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner documentation comments.
+
+R2. The public API is pub fn normalize(path: &str) -> Result<String, PathError>. Define pub enum PathError with variants Empty, Nul { at: usize }, Backslash { at: usize }, Control { at: usize }, Escape { at: usize }. Derive Debug, Clone, PartialEq, Eq for PathError. Later clauses, if present, add variants and APIs to this same enum.
+
+R3. Paths use POSIX slash separators. All offsets are zero-based UTF-8 byte offsets in the original string supplying the offending component or character, never character indices.
+
+R4. Validate the entire raw path before reducing any component. An empty string returns Empty.
+
+R5. After the empty check, any NUL byte returns Nul at its first occurrence, even if an earlier backslash, control, or root escape exists.
+
+R6. If no NUL exists, any backslash byte returns Backslash at its first occurrence, even if an earlier control or root escape exists.
+
+R7. If neither NUL nor backslash exists, ASCII bytes 1 through 31 and 127 are forbidden: return Control at the first such byte, even if a root escape occurs earlier.
+
+R8. All other bytes in a valid UTF-8 input are allowed literally. Do not trim whitespace, decode percent escapes, fold case, or normalize Unicode. A tilde is literal for normalize.
+
+R9. A path is absolute exactly when its first byte is slash. Collapse every run of slashes, including two or more leading slashes, to ordinary POSIX separators; there is only one root.
+
+R10. Process nonempty components left to right. Discard components equal to dot (.). Dots inside any other name are ordinary characters.
+
+R11. A parent component (..) removes the previous ordinary component, if one exists. It must never cancel a preceding retained parent component.
+
+R12. For an absolute path, a parent with no component to remove returns Escape at the first byte of that parent. The earliest such event in traversal order wins.
+
+R13. For a relative path, a parent with no ordinary component to remove is retained. Leading retained parents may grow without limit.
+
+R14. Join components with single slashes and prefix one slash only for an absolute path. An empty absolute result is /; an empty relative result is dot (.).
+
+R15. Directory intent is true when the raw path ends in slash OR its last nonempty component is dot or parent. Otherwise it is false.
+
+R16. Append a single trailing slash to a nonempty component result exactly when directory intent is true. Never append to root / or the empty-relative result dot. In particular, normalize("..") is "../", normalize("a/..") is ".", and normalize("a/.") is "a/".
+
+R17. normalize is lexical and deterministic, reads no filesystem or environment, and is idempotent on every successful output.
+
+R18. Add PathError variants InvalidCwd, InvalidHome, MissingHome, UnsupportedTilde { at: usize }. Add pub fn resolve(path: &str, cwd: &str, home: Option<&str>) -> Result<String, PathError>. normalize retains exactly its earlier behavior.
+
+R19. For resolve, validate cwd first, even for an absolute requested path: it must start with slash and normalize successfully. Otherwise return InvalidCwd, hiding its underlying error. Use its normalized components as a directory, ignoring its trailing slash.
+
+R20. Next validate home whenever Some, even if the request will not use it: it must start with slash and normalize successfully, or return InvalidHome. None is allowed. Ignore trailing slash in a valid home.
+
+R21. Only after cwd and home validation, validate the entire raw requested path by the earlier empty/NUL/backslash/control precedence. These lexical errors precede tilde errors and traversal errors.
+
+R22. In resolve only, a leading tilde is special. Exactly "~" or a prefix "~/" expands the validated home; None returns MissingHome. A leading tilde followed by any other byte returns UnsupportedTilde { at: 1 }, even when home is None. No other tilde expands.
+
+R23. An absolute requested path starts at root; an ordinary relative request starts at normalized cwd; an expanded tilde request starts at normalized home and consumes the initial tilde and at most the immediately following slash. Repeated slashes in the remainder are ignored.
+
+R24. Reduce the request components against that starting directory using the earlier dot/parent rules, always producing an absolute result. An attempted parent above root returns Escape at that parent in the ORIGINAL requested path, including the tilde prefix in the offset.
+
+R25. Use directory intent from the ORIGINAL requested path only, ignoring cwd/home spelling. Bare tilde has no directory intent; tilde followed by slash does. Dot and parent requests carry directory intent by the earlier rule.
+
+R26. Context validation is purely lexical, does not expand tildes, and rejects root escapes. resolve performs no I/O and does not depend on the process current directory or home.
+
+R27. Add PathError variants InvalidLink { index: usize }, DuplicateLink { first: usize, second: usize }, Loop { index: usize }, Limit { index: usize }. Define pub struct Link { pub path: String, pub target: String } deriving Debug, Clone, PartialEq, Eq. Add pub fn resolve_links(path: &str, cwd: &str, home: Option<&str>, links: &[Link], max_expansions: usize) -> Result<String, PathError>. Existing normalize and resolve ignore links and retain earlier behavior.
+
+R28. For resolve_links validate cwd then home as for resolve, then the entire link table, then the requested path. Process link entries in slice order with zero-based indices. Table validation occurs even for an otherwise invalid or unrelated requested path.
+
+R29. A link path must be a canonical absolute non-root path: normalize(path) must succeed and equal path exactly, path must start with slash, and path must not end in slash. A link target must pass raw empty/NUL/backslash/control validation; it need not be normalized or absolute. Any violation in either field returns InvalidLink at this entry index.
+
+R30. After both fields of an entry are valid, reject an exact duplicate path with DuplicateLink containing the first index and this index. An earlier table error beats all later errors; invalid fields in the same entry beat duplication. No sorting of the table is permitted.
+
+R31. After table validation, expand leading requested tilde exactly as for resolve. Traverse all normalized starting-directory components (cwd or home) from root before the raw request components. An absolute request ignores cwd/home components. A context component has offset zero; request components retain their original offsets.
+
+R32. On pushing any ordinary component, immediately compare the resulting absolute path with link keys. If it matches, expand before processing ANY following component, including dot or parent. Thus a link followed by parent uses the link target parent, not the lexical link parent. Dot and parent themselves never trigger a lookup.
+
+R33. A relative link target starts at the matched link parent, removing the just-pushed link name; an absolute target clears the stack and starts at root. Process raw target components before resuming the remaining request. Target tildes are literal. Repeated slashes and dot/parent follow the earlier rules.
+
+R34. Errors while traversing a target use offsets local to that raw target string; errors in the remaining request use offsets in the original request. Directory intent and the final trailing slash come ONLY from the original requested path, never from a target.
+
+R35. A link is active until ALL components of its target, including recursively expanded targets, finish; it becomes inactive before traversal resumes after that target. Matching an already active link returns Loop at the matched table index. This is active-stack cycle detection, not a global visited set.
+
+R36. Count every expansion across a single resolve_links call. Before expanding a matched link, check active membership first (Loop wins), then return Limit at its index if the count is already max_expansions; otherwise increment and expand. A zero limit allows paths that encounter no link. Repeated completed expansions consume budget again.
+
+R37. Target errors occur in traversal order and there is no pre-normalization or speculative resolution of targets. Unreachable cyclic or root-escaping targets are permitted by table validation. Each call has fresh active state and budget; there is no filesystem access.
+
+R38. Add pub fn relative_to(base: &str, target: &str, cwd: &str, home: Option<&str>, links: &[Link], max_expansions: usize) -> Result<String, PathError>. All earlier APIs and error variants retain their behavior.
+
+R39. First call resolve_links semantics on base with the supplied cwd, home, table and budget; propagate any error. Then independently resolve target with the SAME original cwd, home, table and a fresh budget, NOT against base. Propagate its error. Resolved base is treated as a directory regardless of trailing slash.
+
+R40. In the rules below, components of canonical absolute results exclude the leading slash and any trailing slash. B and T are the resolved base and target component sequences. Two sequences match component-wise, never by string-prefix alone.
+
+R41. Define route(B, X) by removing the longest common component prefix, outputting one parent component for each remaining component of B followed by the remaining components of X. If this has no components, its spelling is dot. This helper is a specification concept, not a required public API.
+
+R42. The finite candidate set starts with route(B, T). For each table entry independently, resolve its absolute link path using cwd="/", home=None, the SAME table, and a fresh max_expansions budget. If this probe returns ANY error, silently skip this entry. Never propagate probe errors.
+
+R43. If a successful probe yields a component sequence A that is a prefix of T (including empty/root or all of T), form one candidate from route(B, components of the original link KEY), followed by the suffix of T after A. When appending a nonempty suffix to a dot route, replace dot with that suffix. Do not recursively combine shortcuts or invent any other candidates.
+
+R44. Before ranking, prefix ./ to any candidate whose spelling begins with tilde, preventing home expansion; this is the ONLY permitted leading ./. Then preserve target directory intent as represented in the resolved target: append one slash to each candidate other than dot exactly when the resolved target ends in slash (including root). Otherwise do not append a slash. Dot always remains dot, even for a directory target. The protective ./ prefix counts in the byte length used for ranking.
+
+R45. Validate every candidate by resolving it with cwd equal to the resolved base, home as supplied, the same table and a fresh max_expansions budget. Discard candidates that error or whose resolved COMPONENTS differ from T. Ignore trailing slash during this equality check. This validation also applies to the direct candidate.
+
+R46. Return the valid candidate with the fewest UTF-8 BYTES, counting separators and a trailing slash. Break equal-length ties by lexicographically smallest UTF-8 byte sequence, independent of table order, expansion count, or component count. Duplicate candidates do not change the result.
+
+R47. The direct candidate always provides a valid result under these rules. Equal base/target components may return dot or a shorter alternative only as dictated by ranking; dot itself has length one and is ordinarily the minimum. relative_to returns no absolute paths.
+
+R48. The result round-trips: resolving it against the resolved base produces the resolved target components. Except for dot, its trailing slash exactly matches whether the resolved target ends in slash. Base, target, each probe and each candidate validation use independent expansion counters and active stacks; no state leaks between them.
+
+R49. All path lengths, numbers of components and link-table sizes are unrestricted by an artificial fixed cap. Only max_expansions restricts traversal. Use deterministic, exact string/component comparison throughout.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R1-R37
+#[test]
+fn public_retained_apis() {
+    assert_eq!(normalize("//p/./q"), Ok("/p/q".into()));
+    assert_eq!(resolve("~/x", "/cwd", Some("/home")), Ok("/home/x".into()));
+    let links = vec![Link { path: "/short".into(), target: "/real".into() }];
+    assert_eq!(resolve_links("/short/file", "/", None, &links, 2), Ok("/real/file".into()));
+}
+
+// R38-R41
+#[test]
+fn public_relative_direct() {
+    assert_eq!(relative_to("/work/code", "/work/docs/readme", "/", None, &[], 0), Ok("../docs/readme".into()));
+    assert_eq!(relative_to("/same", "/same", "/", None, &[], 0), Ok(".".into()));
+}
+
+// R42-R46
+#[test]
+fn public_relative_shortcut() {
+    let links = vec![Link { path: "/s".into(), target: "/long/destination".into() }];
+    assert_eq!(relative_to("/", "/long/destination/file", "/", None, &links, 2), Ok("s/file".into()));
+}
+
+// R44, R47-R48
+#[test]
+fn public_relative_directory() {
+    assert_eq!(relative_to("/a/b", "/a/c/", "/", None, &[], 0), Ok("../c/".into()));
+}
+```
+
+
+## Previous attempt
+
+```rust
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+    InvalidLink { index: usize },
+    DuplicateLink { first: usize, second: usize },
+    Loop { index: usize },
+    Limit { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    pub path: String,
+    pub target: String,
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+    Ok(())
+}
+
+fn directory_intent(path: &str) -> bool {
+    path.ends_with('/')
+        || path
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .last()
+            .is_some_and(|part| part == "." || part == "..")
+}
+
+fn components(path: &str) -> Vec<String> {
+    path.split('/')
+        .filter(|part| !part.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn reduce_component_stack(
+    stack: &mut Vec<String>,
+    part: &str,
+    absolute: bool,
+    at: usize,
+) -> Result<(), PathError> {
+    match part {
+        "." => {}
+        ".." => {
+            if stack.last().is_some_and(|last| last != "..") {
+                stack.pop();
+            } else if absolute {
+                return Err(PathError::Escape { at });
+            } else {
+                stack.push("..".to_owned());
+            }
+        }
+        _ => stack.push(part.to_owned()),
+    }
+    Ok(())
+}
+
+fn render(stack: &[String], absolute: bool, want_dir: bool) -> String {
+    let mut result = if absolute {
+        if stack.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{}", stack.join("/"))
+        }
+    } else if stack.is_empty() {
+        ".".to_owned()
+    } else {
+        stack.join("/")
+    };
+
+    if want_dir && result != "/" && result != "." {
+        result.push('/');
+    }
+    result
+}
+
+fn normalize_parts(path: &str) -> Result<Vec<String>, PathError> {
+    let absolute = path.starts_with('/');
+    let mut stack = Vec::new();
+
+    for (start, part) in path
+        .split_inclusive('/')
+        .scan(0usize, |offset, piece| {
+            let start = *offset;
+            *offset += piece.len();
+            Some((start, piece.strip_suffix('/').unwrap_or(piece)))
+        })
+    {
+        if !part.is_empty() {
+            reduce_component_stack(&mut stack, part, absolute, start)?;
+        }
+    }
+
+    Ok(stack)
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+    let absolute = path.starts_with('/');
+    let want_dir = directory_intent(path);
+    let stack = normalize_parts(path)?;
+    Ok(render(&stack, absolute, want_dir))
+}
+
+fn validate_context(path: &str) -> Result<Vec<String>, ()> {
+    if !path.starts_with('/') {
+        return Err(());
+    }
+    let normalized = normalize(path).map_err(|_| ())?;
+    let stack = components(&normalized);
+    if stack.iter().any(|part| part == "..") {
+        return Err(());
+    }
+    Ok(stack)
+}
+
+fn request_start<'a>(
+    path: &'a str,
+    home: Option<&'a str>,
+) -> Result<(bool, Vec<String>, usize, bool), PathError> {
+    let want_dir = directory_intent(path);
+    if path.starts_with('~') {
+        let bytes = path.as_bytes();
+        let remainder_start = if path == "~" {
+            1
+        } else if bytes.get(1) == Some(&b'/') {
+            2
+        } else {
+            return Err(PathError::UnsupportedTilde { at: 1 });
+        };
+
+        let home = home.ok_or(PathError::MissingHome)?;
+        Ok((
+            true,
+            components(home),
+            remainder_start,
+            want_dir,
+        ))
+    } else if path.starts_with('/') {
+        Ok((true, Vec::new(), 0, want_dir))
+    } else {
+        unreachable!("relative request start is supplied by caller")
+    }
+}
+
+fn resolve_core(path: &str, cwd: &[String], home: Option<&[String]>) -> Result<String, PathError> {
+    validate_raw(path)?;
+
+    let (absolute, mut stack, start, want_dir) = if path.starts_with('~') {
+        let (absolute, stack, start, want_dir) = request_start(path, None)?;
+        (absolute, stack, start, want_dir)
+    } else if path.starts_with('/') {
+        (true, Vec::new(), 0, directory_intent(path))
+    } else {
+        (true, cwd.to_vec(), 0, directory_intent(path))
+    };
+
+    let _ = absolute;
+    let request_home = if path.starts_with('~') {
+        Some(home.ok_or(PathError::MissingHome)?)
+    } else {
+        None
+    };
+    if let Some(home_stack) = request_home {
+        stack = home_stack.to_vec();
+    }
+
+    let raw_remainder = &path[start..];
+    let offset_base = start;
+    let mut offset = offset_base;
+    for piece in raw_remainder.split_inclusive('/') {
+        let part = piece.strip_suffix('/').unwrap_or(piece);
+        if !part.is_empty() {
+            reduce_component_stack(&mut stack, part, true, offset)?;
+        }
+        offset += piece.len();
+    }
+
+    Ok(render(&stack, true, want_dir))
+}
+
+pub fn resolve(
+    path: &str,
+    cwd: &str,
+    home: Option<&str>,
+) -> Result<String, PathError> {
+    let cwd_stack = validate_context(cwd).map_err(|_| PathError::InvalidCwd)?;
+    let home_stack = match home {
+        Some(value) => Some(validate_context(value).map_err(|_| PathError::InvalidHome)?),
+        None => None,
+    };
+    resolve_core(path, &cwd_stack, home_stack.as_deref())
+}
+
+fn link_table(links: &[Link]) -> Result<HashMap<String, (usize, String)>, PathError> {
+    let mut table = HashMap::new();
+
+    for (index, link) in links.iter().enumerate() {
+        if !link.path.starts_with('/')
+            || link.path == "/"
+            || link.path.ends_with('/')
+            || normalize(&link.path).as_deref() != Ok(link.path.as_str())
+            || validate_raw(&link.target).is_err()
+        {
+            return Err(PathError::InvalidLink { index });
+        }
+
+        if let Some((first, _)) = table.get(&link.path) {
+            return Err(PathError::DuplicateLink {
+                first: *first,
+                second: index,
+            });
+        }
+        table.insert(link.path.clone(), (index, link.target.clone()));
+    }
+
+    Ok(table)
+}
+
+#[derive(Clone)]
+struct Work {
+    text: String,
+    offset_base: usize,
+    request: bool,
+    target_link: Option<usize>,
+}
+
+fn stack_path(stack: &[String]) -> String {
+    if stack.is_empty() {
+        "/".to_owned()
+    } else {
+        format!("/{}", stack.join("/"))
+    }
+}
+
+fn traverse_with_links(
+    mut stack: Vec<String>,
+    initial: Vec<Work>,
+    table: &HashMap<String, (usize, String)>,
+    max_expansions: usize,
+) -> Result<Vec<String>, PathError> {
+    let mut work = initial;
+    let mut active = Vec::<usize>::new();
+    let mut expansions = 0usize;
+
+    while let Some(mut current) = work.pop() {
+        let mut offset = current.offset_base;
+        let mut parts: Vec<(String, usize)> = Vec::new();
+        for piece in current.text.split_inclusive('/') {
+            let part = piece.strip_suffix('/').unwrap_or(piece);
+            if !part.is_empty() {
+                parts.push((part.to_owned(), offset));
+            }
+            offset += piece.len();
+        }
+
+        if let Some(link_index) = current.target_link.take() {
+            // The target is active through its full recursive traversal. The
+            // marker is placed below its components, so it is popped after them.
+            work.push(Work {
+                text: String::new(),
+                offset_base: 0,
+                request: false,
+                target_link: Some(usize::MAX - link_index),
+            });
+        }
+
+        for (part, at) in parts.into_iter().rev() {
+            work.push(Work {
+                text: part,
+                offset_base: at,
+                request: current.request,
+                target_link: None,
+            });
+        }
+
+        // Process one component at a time by converting it into a tiny raw path.
+        let Some(item) = work.pop() else {
+            continue;
+        };
+        if item.target_link.is_some() {
+            if let Some(encoded) = item.target_link {
+                if encoded >= usize::MAX / 2 {
+                    let index = usize::MAX - encoded;
+                    if active.last() == Some(&index) {
+                        active.pop();
+                    }
+                    continue;
+                }
+            }
+        }
+
+        let part = item.text;
+        if part.is_empty() {
+            continue;
+        }
+        match part.as_str() {
+            "." => continue,
+            ".." => {
+                if stack.pop().is_none() {
+                    return Err(PathError::Escape {
+                        at: item.offset_base,
+                    });
+                }
+            }
+            _ => {
+                stack.push(part);
+                let matched = stack
+                    .last()
+                    .map(|_| stack_path(&stack))
+                    .and_then(|key| table.get(&key).map(|(index, target)| (*index, target.clone())));
+
+                if let Some((index, target)) = matched {
+                    if active.contains(&index) {
+                        return Err(PathError::Loop { index });
+                    }
+                    if expansions >= max_expansions {
+                        return Err(PathError::Limit { index });
+                    }
+                    expansions += 1;
+                    active.push(index);
+
+                    // Relative targets begin at the link parent.
+                    stack.pop();
+                    let target_absolute = target.starts_with('/');
+                    if target_absolute {
+                        stack.clear();
+                    }
+
+                    let target_work = Work {
+                        text: target,
+                        offset_base: 0,
+                        request: false,
+                        target_link: Some(index),
+                    };
+                    // Push target components ahead of the remaining work.
+                    let mut target_parts = Vec::new();
+                    let mut target_offset = 0usize;
+                    for piece in target_work.text.split_inclusive('/') {
+                        let component = piece.strip_suffix('/').unwrap_or(piece);
+                        if !component.is_empty() {
+                            target_parts.push((component.to_owned(), target_offset));
+                        }
+                        target_offset += piece.len();
+                    }
+                    work.push(Work {
+                        text: String::new(),
+                        offset_base: 0,
+                        request: false,
+                        target_link: Some(index),
+                    });
+                    for (component, target_at) in target_parts.into_iter().rev() {
+                        work.push(Work {
+                            text: component,
+                            offset_base: target_at,
+                            request: false,
+                            target_link: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(stack)
+}
+
+pub fn resolve_links(
+    path: &str,
+    cwd: &str,
+    home: Option<&str>,
+    links: &[Link],
+    max_expansions: usize,
+) -> Result<String, PathError> {
+    let cwd_stack = validate_context(cwd).map_err(|_| PathError::InvalidCwd)?;
+    let home_stack = match home {
+        Some(value) => Some(validate_context(value).map_err(|_| PathError::InvalidHome)?),
+        None => None,
+    };
+    let table = link_table(links)?;
+    validate_raw(path)?;
+
+    let (mut stack, start, want_dir) = if path.starts_with('~') {
+        let bytes = path.as_bytes();
+        let start = if path == "~" {
+            1
+        } else if bytes.get(1) == Some(&b'/') {
+            2
+        } else {
+            return Err(PathError::UnsupportedTilde { at: 1 });
+        };
+        (
+            home_stack.clone().ok_or(PathError::MissingHome)?,
+            start,
+            directory_intent(path),
+        )
+    } else if path.starts_with('/') {
+        (Vec::new(), 0, directory_intent(path))
+    } else {
+        (cwd_stack.clone(), 0, directory_intent(path))
+    };
+
+    let remainder = &path[start..];
+    let mut initial = Vec::new();
+    let mut offset = start;
+    for piece in remainder.split_inclusive('/') {
+        let part = piece.strip_suffix('/').unwrap_or(piece);
+        if !part.is_empty() {
+            initial.push(Work {
+                text: part.to_owned(),
+                offset_base: offset,
+                request: true,
+                target_link: None,
+            });
+        }
+        offset += piece.len();
+    }
+
+    // Traverse context components first, so links in cwd/home expand too.
+    let context = if path.starts_with('/') {
+        Vec::new()
+    } else if path.starts_with('~') {
+        home_stack.unwrap_or_default()
+    } else {
+        cwd_stack
+    };
+    stack.clear();
+
+    let mut combined = Vec::new();
+    for component in context {
+        combined.push(Work {
+            text: component,
+            offset_base: 0,
+            request: false,
+            target_link: None,
+        });
+    }
+    combined.extend(initial);
+
+    let result = traverse_with_links(stack, combined, &table, max_expansions)?;
+    Ok(render(&result, true, want_dir))
+}
+
+fn split_absolute(path: &str) -> Vec<String> {
+    components(path)
+}
+
+fn route(base: &[String], target: &[String]) -> String {
+    let common = base
+        .iter()
+        .zip(target.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let mut parts = vec!["..".to_owned(); base.len() - common];
+    parts.extend_from_slice(&target[common..]);
+    if parts.is_empty() {
+        ".".to_owned()
+    } else {
+        parts.join("/")
+    }
+}
+
+pub fn relative_to(
+    base: &str,
+    target: &str,
+    cwd: &str,
+    home: Option<&str>,
+    links: &[Link],
+    max_expansions: usize,
+) -> Result<String, PathError> {
+    let resolved_base = resolve_links(base, cwd, home, links, max_expansions)?;
+    let resolved_target = resolve_links(target, cwd, home, links, max_expansions)?;
+
+    let base_parts = split_absolute(&resolved_base);
+    let target_parts = split_absolute(&resolved_target);
+    let target_is_dir = resolved_target.ends_with('/');
+
+    let mut candidates = vec![route(&base_parts, &target_parts)];
+
+    for link in links {
+        if let Ok(probe) = resolve_links(&link.path, "/", None, links, max_expansions) {
+            let probe_parts = split_absolute(&probe);
+            if target_parts.starts_with(&probe_parts) {
+                let mut candidate = route(&base_parts, &components(&link.path));
+                let suffix = &target_parts[probe_parts.len()..];
+                if !suffix.is_empty() {
+                    if candidate == "." {
+                        candidate = suffix.join("/");
+                    } else {
+                        candidate.push('/');
+                        candidate.push_str(&suffix.join("/"));
+                    }
+                }
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    let mut valid = Vec::new();
+    for mut candidate in candidates {
+        if candidate.starts_with('~') {
+            candidate = format!("./{candidate}");
+        }
+        if target_is_dir && candidate != "." {
+            candidate.push('/');
+        }
+
+        if let Ok(resolved) = resolve_links(
+            &candidate,
+            &resolved_base,
+            home,
+            links,
+            max_expansions,
+        ) {
+            if split_absolute(&resolved) == target_parts {
+                valid.push(candidate);
+            }
+        }
+    }
+
+    valid.sort_by(|a, b| {
+        a.len()
+            .cmp(&b.len())
+            .then_with(|| a.as_bytes().cmp(b.as_bytes()))
+    });
+    valid.into_iter().next().ok_or(PathError::Escape { at: 0 })
+}
+```
+
+## Public test results
+
+
+running 4 tests
+test a2d_public_0746e26c3d9b99b2::public_retained_apis ... FAILED
+test a2d_public_0746e26c3d9b99b2::public_relative_shortcut ... FAILED
+test a2d_public_0746e26c3d9b99b2::public_relative_directory ... FAILED
+test a2d_public_0746e26c3d9b99b2::public_relative_direct ... FAILED
+
+failures:
+
+---- a2d_public_0746e26c3d9b99b2::public_retained_apis stdout ----
+
+thread 'a2d_public_0746e26c3d9b99b2::public_retained_apis' (84258182) panicked at /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-oracle-GKamZU/t_0746e26c3d9b99b2.rs:9:5:
+assertion `left == right` failed
+  left: Err(MissingHome)
+ right: Ok("/home/x")
+
+---- a2d_public_0746e26c3d9b99b2::public_relative_shortcut stdout ----
+
+thread 'a2d_public_0746e26c3d9b99b2::public_relative_shortcut' (84258181) panicked at /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-oracle-GKamZU/t_0746e26c3d9b99b2.rs:25:5:
+assertion `left == right` failed
+  left: Err(Escape { at: 0 })
+ right: Ok("s/file")
+
+---- a2d_public_0746e26c3d9b99b2::public_relative_directory stdout ----
+
+thread 'a2d_public_0746e26c3d9b99b2::public_relative_directory' (84258180) panicked at /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-oracle-GKamZU/t_0746e26c3d9b99b2.rs:31:5:
+assertion `left == right` failed
+  left: Err(Escape { at: 0 })
+ right: Ok("../c/")
+
+---- a2d_public_0746e26c3d9b99b2::public_relative_direct stdout ----
+
+thread 'a2d_public_0746e26c3d9b99b2::public_relative_direct' (84258179) panicked at /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-oracle-GKamZU/t_0746e26c3d9b99b2.rs:17:5:
+assertion `left == right` failed
+  left: Err(Escape { at: 0 })
+ right: Ok("../docs/readme")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a2d_public_0746e26c3d9b99b2::public_relative_direct
+    a2d_public_0746e26c3d9b99b2::public_relative_directory
+    a2d_public_0746e26c3d9b99b2::public_relative_shortcut
+    a2d_public_0746e26c3d9b99b2::public_retained_apis
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+
+
+Fix the file. Respond with the whole corrected file in a single ```rust block.

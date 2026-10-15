@@ -1,0 +1,986 @@
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Version {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Constraint {
+    Exact(Version),
+    AtLeast(Version),
+    Before(Version),
+    Caret(Version),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Selection {
+    pub package: String,
+    pub version: Version,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Package {
+    pub name: String,
+    pub releases: Vec<Release>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    Linux,
+    Mac,
+    Windows,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Platform {
+    Any,
+    Linux,
+    Mac,
+    Windows,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Requirement {
+    pub package: String,
+    pub constraint: Constraint,
+    pub features: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dependency {
+    pub package: String,
+    pub constraint: Constraint,
+    pub features: Vec<String>,
+    pub gate: Option<String>,
+    pub platform: Platform,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Feature {
+    pub name: String,
+    pub enables: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Release {
+    pub version: Version,
+    pub deps: Vec<Dependency>,
+    pub features: Vec<Feature>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Evidence {
+    pub constraint: Constraint,
+    pub path: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Lock {
+    pub package: String,
+    pub version: Version,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChangeReason {
+    Added,
+    Removed,
+    Unavailable,
+    Rejected,
+    Rebalanced,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Change {
+    pub package: String,
+    pub before: Option<Version>,
+    pub after: Option<Version>,
+    pub reason: ChangeReason,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resolution {
+    pub selected: Vec<Selection>,
+    pub changes: Vec<Change>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResolveError {
+    InvalidName {
+        site: String,
+        name: String,
+    },
+    DuplicatePackage {
+        package: String,
+    },
+    DuplicateVersion {
+        package: String,
+        version: Version,
+    },
+    DuplicateFeature {
+        package: String,
+        version: Version,
+        feature: String,
+    },
+    DuplicateLock {
+        package: String,
+    },
+    Missing {
+        package: String,
+        evidence: Vec<Evidence>,
+    },
+    NoMatch {
+        package: String,
+        requirements: Vec<Constraint>,
+        evidence: Vec<Evidence>,
+    },
+    Conflict {
+        package: String,
+        selected: Version,
+        requirements: Vec<Constraint>,
+        evidence: Vec<Evidence>,
+    },
+    MissingFeature {
+        package: String,
+        selected: Version,
+        feature: String,
+        path: Vec<String>,
+    },
+    Limit {
+        attempts: usize,
+    },
+}
+
+fn valid_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes.len() > 24 || !bytes[0].is_ascii_lowercase() {
+        return false;
+    }
+    if bytes[bytes.len() - 1] == b'-' {
+        return false;
+    }
+    bytes
+        .iter()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+}
+
+fn version_text(v: Version) -> String {
+    format!("{}.{}.{}", v.major, v.minor, v.patch)
+}
+
+fn constraint_rank(c: &Constraint) -> u8 {
+    match c {
+        Constraint::Exact(_) => 0,
+        Constraint::AtLeast(_) => 1,
+        Constraint::Before(_) => 2,
+        Constraint::Caret(_) => 3,
+    }
+}
+
+fn constraint_cmp(a: &Constraint, b: &Constraint) -> std::cmp::Ordering {
+    constraint_rank(a)
+        .cmp(&constraint_rank(b))
+        .then_with(|| match (a, b) {
+            (Constraint::Exact(x), Constraint::Exact(y))
+            | (Constraint::AtLeast(x), Constraint::AtLeast(y))
+            | (Constraint::Before(x), Constraint::Before(y))
+            | (Constraint::Caret(x), Constraint::Caret(y)) => x.cmp(y),
+            _ => std::cmp::Ordering::Equal,
+        })
+}
+
+fn canonical_constraints(mut cs: Vec<Constraint>) -> Vec<Constraint> {
+    cs.sort_by(constraint_cmp);
+    cs.dedup();
+    cs
+}
+
+fn constraint_text(c: Constraint) -> String {
+    match c {
+        Constraint::Exact(v) => format!("={}", version_text(v)),
+        Constraint::AtLeast(v) => format!(">={}", version_text(v)),
+        Constraint::Before(v) => format!("<{}", version_text(v)),
+        Constraint::Caret(v) => format!("^{}", version_text(v)),
+    }
+}
+
+fn constraints_text(cs: &[Constraint]) -> String {
+    canonical_constraints(cs.to_vec())
+        .iter()
+        .map(|c| constraint_text(*c))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn matches(c: Constraint, v: Version) -> bool {
+    match c {
+        Constraint::Exact(x) => v == x,
+        Constraint::AtLeast(x) => v >= x,
+        Constraint::Before(x) => v < x,
+        Constraint::Caret(x) => {
+            if v < x {
+                false
+            } else if x.major > 0 {
+                v.major == x.major
+            } else if x.minor > 0 {
+                v.major == 0 && v.minor == x.minor
+            } else {
+                v == x
+            }
+        }
+    }
+}
+
+fn encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(*b, b'.' | b'_' | b'-') {
+            out.push(*b as char);
+        } else {
+            out.push_str(&format!("%{:02X}", b));
+        }
+    }
+    out
+}
+
+fn evidence_cmp(a: &Evidence, b: &Evidence) -> std::cmp::Ordering {
+    constraint_cmp(&a.constraint, &b.constraint).then_with(|| a.path.cmp(&b.path))
+}
+
+pub fn error_text(error: &ResolveError) -> String {
+    match error {
+        ResolveError::InvalidName { site, name } => {
+            format!("invalid-name|site={}|name={}", encode(site), encode(name))
+        }
+        ResolveError::DuplicatePackage { package } => {
+            format!("duplicate-package|package={}", encode(package))
+        }
+        ResolveError::DuplicateVersion { package, version } => format!(
+            "duplicate-version|package={}|version={}",
+            encode(package),
+            version_text(*version)
+        ),
+        ResolveError::DuplicateFeature {
+            package,
+            version,
+            feature,
+        } => format!(
+            "duplicate-feature|package={}|version={}|feature={}",
+            encode(package),
+            version_text(*version),
+            encode(feature)
+        ),
+        ResolveError::DuplicateLock { package } => {
+            format!("duplicate-lock|package={}", encode(package))
+        }
+        ResolveError::Missing { package, evidence } => {
+            let mut out = format!("missing|package={}", encode(package));
+            let mut ev = evidence.clone();
+            ev.sort_by(evidence_cmp);
+            for e in ev {
+                out.push_str(&format!(
+                    "\n  C:{} via {}",
+                    constraint_text(e.constraint),
+                    e.path.join(" -> ")
+                ));
+            }
+            out
+        }
+        ResolveError::NoMatch {
+            package,
+            requirements,
+            evidence,
+        } => {
+            let mut out = format!(
+                "no-match|package={}|constraints={}",
+                encode(package),
+                constraints_text(requirements)
+            );
+            let mut ev = evidence.clone();
+            ev.sort_by(evidence_cmp);
+            for e in ev {
+                out.push_str(&format!(
+                    "\n  C:{} via {}",
+                    constraint_text(e.constraint),
+                    e.path.join(" -> ")
+                ));
+            }
+            out
+        }
+        ResolveError::Conflict {
+            package,
+            selected,
+            requirements,
+            evidence,
+        } => {
+            let mut out = format!(
+                "conflict|package={}|selected={}|constraints={}",
+                encode(package),
+                version_text(*selected),
+                constraints_text(requirements)
+            );
+            let mut ev = evidence.clone();
+            ev.sort_by(evidence_cmp);
+            for e in ev {
+                out.push_str(&format!(
+                    "\n  C:{} via {}",
+                    constraint_text(e.constraint),
+                    e.path.join(" -> ")
+                ));
+            }
+            out
+        }
+        ResolveError::MissingFeature {
+            package,
+            selected,
+            feature,
+            path,
+        } => format!(
+            "missing-feature|package={}|selected={}|feature={}\n  F:{} via {}",
+            encode(package),
+            version_text(*selected),
+            encode(feature),
+            encode(feature),
+            path.join(" -> ")
+        ),
+        ResolveError::Limit { attempts } => format!("limit|attempts={}", attempts),
+    }
+}
+
+#[derive(Clone)]
+struct Origin {
+    constraint: Constraint,
+    path: Vec<String>,
+}
+
+#[derive(Clone, Default)]
+struct Active {
+    origins: BTreeMap<String, Vec<Origin>>,
+    requests: BTreeMap<String, BTreeSet<String>>,
+    enabled: BTreeMap<String, BTreeSet<String>>,
+    paths: BTreeMap<String, Vec<String>>,
+}
+
+use std::collections::{BTreeMap, BTreeSet};
+
+fn target_text(p: Platform) -> &'static str {
+    match p {
+        Platform::Any => "any",
+        Platform::Linux => "linux",
+        Platform::Mac => "mac",
+        Platform::Windows => "windows",
+    }
+}
+
+fn platform_active(p: Platform, t: Target) -> bool {
+    matches!(p, Platform::Any)
+        || matches!(
+            (p, t),
+            (Platform::Linux, Target::Linux)
+                | (Platform::Mac, Target::Mac)
+                | (Platform::Windows, Target::Windows)
+        )
+}
+
+fn feature_map(release: &Release) -> BTreeMap<String, &Feature> {
+    release
+        .features
+        .iter()
+        .map(|f| (f.name.clone(), f))
+        .collect()
+}
+
+fn canonical_paths(active: &mut Active) {
+    for (name, origins) in &active.origins {
+        if let Some(best) = origins.iter().map(|o| o.path.clone()).min_by(|a, b| {
+            a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+        }) {
+            active.paths.insert(name.clone(), best);
+        }
+    }
+}
+
+fn active_state(
+    catalog: &[Package],
+    roots: &[Requirement],
+    assigned: &BTreeMap<String, Version>,
+    target: Target,
+) -> Active {
+    let mut state = Active::default();
+    let mut queue = Vec::<(String, String, Vec<String>)>::new();
+
+    for (i, root) in roots.iter().enumerate() {
+        let mut fs = root.features.clone();
+        fs.sort();
+        fs.dedup();
+        let ftext = fs.join(",");
+        let token = format!(
+            "root[{}]:{}@{}+{{{}}}",
+            i,
+            root.package,
+            constraint_text(root.constraint),
+            ftext
+        );
+        state
+            .origins
+            .entry(root.package.clone())
+            .or_default()
+            .push(Origin {
+                constraint: root.constraint,
+                path: vec![token.clone()],
+            });
+        state
+            .requests
+            .entry(root.package.clone())
+            .or_default()
+            .extend(root.features.iter().cloned());
+    }
+    canonical_paths(&mut state);
+
+    let mut processed_features = BTreeSet::<(String, String)>::new();
+    let mut processed_deps = BTreeSet::<(String, usize)>::new();
+
+    loop {
+        let mut changed = false;
+        let selected_names: Vec<String> = assigned.keys().cloned().collect();
+        for package_name in selected_names {
+            let Some(pkg) = catalog.iter().find(|p| p.name == package_name) else {
+                continue;
+            };
+            let version = assigned[&package_name];
+            let Some(release) = pkg.releases.iter().find(|r| r.version == version) else {
+                continue;
+            };
+            let fmap = feature_map(release);
+            let requests: Vec<String> = state
+                .requests
+                .get(&package_name)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+
+            for feature_name in requests {
+                if !processed_features.insert((package_name.clone(), feature_name.clone())) {
+                    continue;
+                }
+                state
+                    .enabled
+                    .entry(package_name.clone())
+                    .or_default()
+                    .insert(feature_name.clone());
+                if let Some(feature) = fmap.get(&feature_name) {
+                    let set = state
+                        .requests
+                        .entry(package_name.clone())
+                        .or_default();
+                    for enabled in &feature.enables {
+                        if set.insert(enabled.clone()) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            let Some(source_path) = state.paths.get(&package_name).cloned() else {
+                continue;
+            };
+            for (j, dep) in release.deps.iter().enumerate() {
+                if !platform_active(dep.platform, target) {
+                    continue;
+                }
+                if let Some(gate) = &dep.gate {
+                    if !state
+                        .enabled
+                        .get(&package_name)
+                        .is_some_and(|s| s.contains(gate))
+                    {
+                        continue;
+                    }
+                }
+                if !processed_deps.insert((package_name.clone(), j)) {
+                    continue;
+                }
+                let mut fs = dep.features.clone();
+                fs.sort();
+                fs.dedup();
+                let token = format!(
+                    "{}@{}/deps[{}]:{}@{}+{{{}}};gate={};platform={}",
+                    package_name,
+                    version_text(version),
+                    j,
+                    dep.package,
+                    constraint_text(dep.constraint),
+                    fs.join(","),
+                    dep.gate.as_deref().unwrap_or("*"),
+                    target_text(dep.platform)
+                );
+                let mut path = source_path.clone();
+                path.push(token);
+                state
+                    .origins
+                    .entry(dep.package.clone())
+                    .or_default()
+                    .push(Origin {
+                        constraint: dep.constraint,
+                        path,
+                    });
+                let dest = state.requests.entry(dep.package.clone()).or_default();
+                for f in &dep.features {
+                    if dest.insert(f.clone()) {
+                        changed = true;
+                    }
+                }
+                changed = true;
+            }
+        }
+
+        let old_paths = state.paths.clone();
+        canonical_paths(&mut state);
+        if state.paths != old_paths {
+            changed = true;
+        }
+
+        if !changed {
+            break;
+        }
+    }
+    state
+}
+
+struct Search<'a> {
+    catalog: &'a [Package],
+    roots: &'a [Requirement],
+    locks: &'a [Lock],
+    target: Target,
+    max_attempts: usize,
+    attempts: usize,
+    best: Option<(usize, BTreeMap<String, Version>)>,
+    first_error: Option<ResolveError>,
+}
+
+impl<'a> Search<'a> {
+    fn inspect(&mut self, assigned: &BTreeMap<String, Version>) -> Result<(), ResolveError> {
+        let state = active_state(self.catalog, self.roots, assigned, self.target);
+
+        if let Some(name) = state
+            .origins
+            .keys()
+            .find(|n| !self.catalog.iter().any(|p| p.name == **n))
+            .cloned()
+        {
+            return Err(ResolveError::Missing {
+                evidence: evidence_for(&state, &name),
+                package: name,
+            });
+        }
+
+        for (name, version) in assigned {
+            let Some(origins) = state.origins.get(name) else {
+                continue;
+            };
+            let requirements = canonical_constraints(origins.iter().map(|o| o.constraint).collect());
+            if !requirements.iter().all(|c| matches(*c, *version)) {
+                return Err(ResolveError::Conflict {
+                    package: name.clone(),
+                    selected: *version,
+                    requirements,
+                    evidence: evidence_for(&state, name),
+                });
+            }
+        }
+
+        for (name, origins) in &state.origins {
+            if assigned.contains_key(name) {
+                continue;
+            }
+            let requirements =
+                canonical_constraints(origins.iter().map(|o| o.constraint).collect());
+            let pkg = self.catalog.iter().find(|p| p.name == *name).unwrap();
+            if !pkg.releases.iter().any(|r| {
+                requirements.iter().all(|c| matches(*c, r.version))
+            }) {
+                return Err(ResolveError::NoMatch {
+                    package: name.clone(),
+                    requirements,
+                    evidence: evidence_for(&state, name),
+                });
+            }
+        }
+
+        for (name, version) in assigned {
+            let Some(origins) = state.origins.get(name) else {
+                continue;
+            };
+            let Some(path) = state.paths.get(name) else {
+                continue;
+            };
+            let requests = state.requests.get(name).cloned().unwrap_or_default();
+            let release = self
+                .catalog
+                .iter()
+                .find(|p| p.name == *name)
+                .and_then(|p| p.releases.iter().find(|r| r.version == *version))
+                .unwrap();
+            let declared: BTreeSet<String> =
+                release.features.iter().map(|f| f.name.clone()).collect();
+            if let Some(feature) = requests.into_iter().find(|f| !declared.contains(f)) {
+                return Err(ResolveError::MissingFeature {
+                    package: name.clone(),
+                    selected: *version,
+                    feature,
+                    path: path.clone(),
+                });
+            }
+            let _ = origins;
+        }
+
+        Ok(())
+    }
+
+    fn recurse(&mut self, assigned: &mut BTreeMap<String, Version>) -> Result<(), ResolveError> {
+        let state = match self.inspect(assigned) {
+            Ok(()) => active_state(self.catalog, self.roots, assigned, self.target),
+            Err(e) => {
+                if !matches!(e, ResolveError::Limit { .. }) && self.first_error.is_none() {
+                    self.first_error = Some(e.clone());
+                }
+                return Err(e);
+            }
+        };
+
+        let next = state
+            .origins
+            .keys()
+            .find(|name| !assigned.contains_key(*name))
+            .cloned();
+
+        let Some(name) = next else {
+            let cost = self
+                .locks
+                .iter()
+                .filter(|lock| assigned.get(&lock.package) != Some(&lock.version))
+                .count();
+            let replace = match &self.best {
+                None => true,
+                Some((best_cost, best_map)) if cost < *best_cost => true,
+                Some((best_cost, best_map)) if cost == *best_cost => {
+                    compare_vectors(self.catalog, assigned, best_map).is_gt()
+                }
+                _ => false,
+            };
+            if replace {
+                self.best = Some((cost, assigned.clone()));
+            }
+            return Ok(());
+        };
+
+        let origins = state.origins.get(&name).unwrap();
+        let requirements = canonical_constraints(origins.iter().map(|o| o.constraint).collect());
+        let pkg = self.catalog.iter().find(|p| p.name == name).unwrap();
+        let mut candidates: Vec<Version> = pkg
+            .releases
+            .iter()
+            .map(|r| r.version)
+            .filter(|v| requirements.iter().all(|c| matches(*c, *v)))
+            .collect();
+        candidates.sort_by(|a, b| b.cmp(a));
+        candidates.dedup();
+        if let Some(lock) = self
+            .locks
+            .iter()
+            .find(|l| l.package == name && candidates.contains(&l.version))
+        {
+            candidates.retain(|v| *v != lock.version);
+            candidates.insert(0, lock.version);
+        }
+
+        for version in candidates {
+            if self.attempts == self.max_attempts {
+                return Err(ResolveError::Limit {
+                    attempts: self.max_attempts,
+                });
+            }
+            self.attempts += 1;
+            assigned.insert(name.clone(), version);
+            let result = self.recurse(assigned);
+            assigned.remove(&name);
+            if matches!(result, Err(ResolveError::Limit { .. })) {
+                return result;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn evidence_for(state: &Active, name: &str) -> Vec<Evidence> {
+    let mut result: Vec<Evidence> = state
+        .origins
+        .get(name)
+        .into_iter()
+        .flatten()
+        .map(|o| Evidence {
+            constraint: o.constraint,
+            path: o.path.clone(),
+        })
+        .collect();
+    result.sort_by(evidence_cmp);
+    result
+}
+
+fn compare_vectors(
+    catalog: &[Package],
+    a: &BTreeMap<String, Version>,
+    b: &BTreeMap<String, Version>,
+) -> std::cmp::Ordering {
+    let mut names: Vec<String> = catalog.iter().map(|p| p.name.clone()).collect();
+    names.sort();
+    names.dedup();
+    for name in names {
+        match (a.get(&name), b.get(&name)) {
+            (Some(x), Some(y)) => {
+                let c = x.cmp(y);
+                if !c.is_eq() {
+                    return c;
+                }
+            }
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (None, None) => {}
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+pub fn resolve(
+    catalog: &[Package],
+    roots: &[Requirement],
+    locks: &[Lock],
+    target: Target,
+    max_attempts: usize,
+) -> Result<Resolution, ResolveError> {
+    for (i, root) in roots.iter().enumerate() {
+        if !valid_name(&root.package) {
+            return Err(ResolveError::InvalidName {
+                site: format!("root[{}]", i),
+                name: root.package.clone(),
+            });
+        }
+        for (f, feature) in root.features.iter().enumerate() {
+            if !valid_name(feature) {
+                return Err(ResolveError::InvalidName {
+                    site: format!("root[{}].feature[{}]", i, f),
+                    name: feature.clone(),
+                });
+            }
+        }
+    }
+
+    for (i, package) in catalog.iter().enumerate() {
+        if !valid_name(&package.name) {
+            return Err(ResolveError::InvalidName {
+                site: format!("catalog[{}]", i),
+                name: package.name.clone(),
+            });
+        }
+        for (j, release) in package.releases.iter().enumerate() {
+            for (k, dep) in release.deps.iter().enumerate() {
+                let base = format!("catalog[{}].release[{}].dep[{}]", i, j, k);
+                if !valid_name(&dep.package) {
+                    return Err(ResolveError::InvalidName {
+                        site: base.clone(),
+                        name: dep.package.clone(),
+                    });
+                }
+                if let Some(gate) = &dep.gate {
+                    if !valid_name(gate) {
+                        return Err(ResolveError::InvalidName {
+                            site: format!("{}.gate", base),
+                            name: gate.clone(),
+                        });
+                    }
+                }
+                for (f, feature) in dep.features.iter().enumerate() {
+                    if !valid_name(feature) {
+                        return Err(ResolveError::InvalidName {
+                            site: format!("{}.feature[{}]", base, f),
+                            name: feature.clone(),
+                        });
+                    }
+                }
+            }
+            for (f, feature) in release.features.iter().enumerate() {
+                if !valid_name(&feature.name) {
+                    return Err(ResolveError::InvalidName {
+                        site: format!("catalog[{}].release[{}].feature[{}]", i, j, f),
+                        name: feature.name.clone(),
+                    });
+                }
+                for (e, enabled) in feature.enables.iter().enumerate() {
+                    if !valid_name(enabled) {
+                        return Err(ResolveError::InvalidName {
+                            site: format!(
+                                "catalog[{}].release[{}].feature[{}].enable[{}]",
+                                i, j, f, e
+                            ),
+                            name: enabled.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let mut seen_packages = BTreeSet::new();
+    for package in catalog {
+        if !seen_packages.insert(package.name.clone()) {
+            return Err(ResolveError::DuplicatePackage {
+                package: package.name.clone(),
+            });
+        }
+    }
+
+    for package in catalog {
+        let mut versions = BTreeSet::new();
+        for release in &package.releases {
+            if !versions.insert(release.version) {
+                return Err(ResolveError::DuplicateVersion {
+                    package: package.name.clone(),
+                    version: release.version,
+                });
+            }
+        }
+    }
+
+    for package in catalog {
+        for release in &package.releases {
+            let mut names = BTreeSet::new();
+            for feature in &release.features {
+                if !names.insert(feature.name.clone()) {
+                    return Err(ResolveError::DuplicateFeature {
+                        package: package.name.clone(),
+                        version: release.version,
+                        feature: feature.name.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    for (i, lock) in locks.iter().enumerate() {
+        if !valid_name(&lock.package) {
+            return Err(ResolveError::InvalidName {
+                site: format!("lock[{}]", i),
+                name: lock.package.clone(),
+            });
+        }
+    }
+    let mut seen_locks = BTreeSet::new();
+    for lock in locks {
+        if !seen_locks.insert(lock.package.clone()) {
+            return Err(ResolveError::DuplicateLock {
+                package: lock.package.clone(),
+            });
+        }
+    }
+
+    let mut search = Search {
+        catalog,
+        roots,
+        locks,
+        target,
+        max_attempts,
+        attempts: 0,
+        best: None,
+        first_error: None,
+    };
+    let mut assigned = BTreeMap::new();
+    match search.recurse(&mut assigned) {
+        Err(e @ ResolveError::Limit { .. }) => return Err(e),
+        _ => {}
+    }
+
+    let Some((_, selected_map)) = search.best else {
+        return Err(search.first_error.unwrap_or_else(|| {
+            let state = active_state(catalog, roots, &BTreeMap::new(), target);
+            if let Some(name) = state
+                .origins
+                .keys()
+                .find(|n| !catalog.iter().any(|p| p.name == **n))
+            {
+                ResolveError::Missing {
+                    package: name.clone(),
+                    evidence: evidence_for(&state, name),
+                }
+            } else {
+                ResolveError::NoMatch {
+                    package: String::new(),
+                    requirements: vec![],
+                    evidence: vec![],
+                }
+            }
+        }));
+    };
+
+    let selected: Vec<Selection> = selected_map
+        .iter()
+        .map(|(package, version)| Selection {
+            package: package.clone(),
+            version: *version,
+        })
+        .collect();
+    let final_state = active_state(catalog, roots, &selected_map, target);
+    let before: BTreeMap<String, Version> = locks
+        .iter()
+        .map(|l| (l.package.clone(), l.version))
+        .collect();
+    let mut names: BTreeSet<String> = before.keys().cloned().collect();
+    names.extend(selected_map.keys().cloned());
+    let mut changes = Vec::new();
+
+    for package in names {
+        let old = before.get(&package).copied();
+        let new = selected_map.get(&package).copied();
+        if old == new {
+            continue;
+        }
+        let reason = match (old, new) {
+            (None, Some(_)) => ChangeReason::Added,
+            (Some(_), None) => ChangeReason::Removed,
+            (Some(old_version), Some(_)) => {
+                let exists = catalog
+                    .iter()
+                    .find(|p| p.name == package)
+                    .is_some_and(|p| p.releases.iter().any(|r| r.version == old_version));
+                if !exists {
+                    ChangeReason::Unavailable
+                } else {
+                    let constraints = final_state
+                        .origins
+                        .get(&package)
+                        .into_iter()
+                        .flatten()
+                        .map(|o| o.constraint);
+                    if !constraints.into_iter().all(|c| matches(c, old_version)) {
+                        ChangeReason::Rejected
+                    } else {
+                        ChangeReason::Rebalanced
+                    }
+                }
+            }
+            (None, None) => continue,
+        };
+        changes.push(Change {
+            package,
+            before: old,
+            after: new,
+            reason,
+        });
+    }
+
+    Ok(Resolution { selected, changes })
+}
+
+fn main() {}
+```

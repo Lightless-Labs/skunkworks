@@ -1,0 +1,133 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else. Include an empty `fn main() {}` (the file is compiled as a program).
+
+PROMPT:
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences.
+
+R2. Use exactly this public API; all listed items, variants and fields are public. All types derive Debug, Clone, PartialEq, Eq. Extra private helpers are allowed.
+```rust
+pub struct Customer { pub id: u32, pub arrival: u64, pub service: u64 }
+pub enum Kind { Arrive, Start { finish: u64, wake: bool }, Finish }
+pub struct Event { pub time: u64, pub customer: u32, pub kind: Kind }
+pub enum Error { ZeroId { index: usize }, DuplicateId { index: usize, id: u32 }, TimeOverflow { customer: u32, time: u64 } }
+pub fn simulate(customers: &[Customer], wake_cost: u64) -> Result<Vec<Event>, Error>;
+```
+
+R3. Times and service durations are nonnegative integer ticks (u64); IDs are u32. The input may be unsorted and may be empty. Empty input returns Ok with no events, regardless of wake_cost.
+
+R4. Validate the entire customer slice before simulating. Scan original indices from 0 upward, at each row checking id == 0 first, then whether that ID appeared earlier. Return ZeroId or DuplicateId at that row. Do not validate arrival + service or wake_cost arithmetic upfront. Validation errors take precedence over every runtime overflow.
+
+R5. Sort arrivals by ascending arrival time, then descending ID. FIFO waiting order is this arrival order, including customers who arrived while the server was occupied.
+
+R6. The server is initially idle at time 0. It can occupy at most one customer at once. Never start a customer before arrival; never idle when there is a waiting customer.
+
+R7. At a tick with a scheduled completion, append its Finish event first and free the server. An arrival at precisely that finish time does not delay or precede this Finish.
+
+R8. Next append Arrive events for ALL customers arriving at that tick, in descending ID order, adding each to the back of the FIFO. Do not dispatch between these arrivals.
+
+R9. After the completion and full arrival cohort, dispatch the oldest waiting customer if idle; append Start at the dispatch tick. Arrive records are emitted exactly once even for a customer that starts immediately.
+
+R10. Start.wake is true for the first dispatch, and for a subsequent dispatch at time strictly greater than the previous Finish time. It is false at a contiguous boundary, including when the old queue was empty but an arrival occurs exactly at the previous Finish.
+
+R11. Occupation starts at Start.time. If wake is true, the wake surcharge is part of that occupation. Start.finish = Start.time + service + (wake ? wake_cost : 0). There is no separate wake event and arrivals during the surcharge merely join the FIFO.
+
+R12. At each dispatch check Start.time + service first and then add the applicable surcharge, using checked u64 arithmetic. If either addition overflows, return TimeOverflow { customer: the dispatched ID, time: Start.time }. Return only Err, not a partial trace.
+
+R13. If finish equals the dispatch tick, append Finish immediately after that Start, then continue FIFO dispatch at the same tick. This inline Finish occurs after the entire arrival cohort and before the next Start. Each subsequent same-tick start has wake = false.
+
+R14. Positive occupation is never interrupted. Arrivals before its finish generate Arrive events at their own times; they do not alter its finish.
+
+R15. The simulation terminates only after every customer finishes. Do not append idle events or events at time 0 unless an arrival/start/finish actually occurs at 0.
+
+R16. The returned events are in nondecreasing time order and the exact phase/inline order stated above. Emit precisely one Arrive, one Start, and one Finish per customer.
+
+R17. A time equal to u64::MAX and a finish equal to u64::MAX are legal; an addition of zero at this boundary succeeds.
+
+R18. Customer identifiers never determine service length, wake eligibility, or idle duration; they break arrival ties only. Preserve original IDs in all events and errors.
+
+R19. Repeated simulate calls are independent, have no shared state, and do not mutate the input slice.
+
+R20. Runtime overflow is detected in actual chronological dispatch order, even if a later-arriving row occurs earlier in the input slice.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+fn c(id: u32, arrival: u64, service: u64) -> Customer {
+    Customer {
+        id,
+        arrival,
+        service,
+    }
+}
+fn e(time: u64, customer: u32, kind: Kind) -> Event {
+    Event {
+        time,
+        customer,
+        kind,
+    }
+}
+#[test]
+fn public_one_customer() {
+    assert_eq!(
+        simulate(&[c(1, 2, 3)], 0),
+        Ok(vec![
+            e(2, 1, Kind::Arrive),
+            e(
+                2,
+                1,
+                Kind::Start {
+                    finish: 5,
+                    wake: true
+                }
+            ),
+            e(5, 1, Kind::Finish)
+        ])
+    );
+}
+#[test]
+fn public_fifo_queue() {
+    let v = simulate(&[c(2, 1, 2), c(1, 0, 4)], 0).unwrap();
+    assert_eq!(
+        v,
+        vec![
+            e(0, 1, Kind::Arrive),
+            e(
+                0,
+                1,
+                Kind::Start {
+                    finish: 4,
+                    wake: true
+                }
+            ),
+            e(1, 2, Kind::Arrive),
+            e(4, 1, Kind::Finish),
+            e(
+                4,
+                2,
+                Kind::Start {
+                    finish: 6,
+                    wake: false
+                }
+            ),
+            e(6, 2, Kind::Finish)
+        ]
+    );
+}
+#[test]
+fn public_wake_and_empty() {
+    assert!(simulate(&[], 9).unwrap().is_empty());
+    assert_eq!(
+        simulate(&[c(5, 3, 2)], 4).unwrap()[1],
+        e(
+            3,
+            5,
+            Kind::Start {
+                finish: 9,
+                wake: true
+            }
+        )
+    );
+}
+```

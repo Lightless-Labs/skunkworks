@@ -1,0 +1,106 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableError {
+    EmptyRow { row: usize },
+    Ragged {
+        row: usize,
+        expected: usize,
+        actual: usize,
+    },
+    InvalidChar {
+        row: usize,
+        column: usize,
+        byte: usize,
+    },
+    TooWide { column: usize, width: usize },
+}
+
+pub fn render(rows: &[Vec<String>]) -> Result<String, TableError> {
+    if rows.is_empty() {
+        return Ok(String::new());
+    }
+
+    for (row_index, row) in rows.iter().enumerate() {
+        if row.is_empty() {
+            return Err(TableError::EmptyRow { row: row_index });
+        }
+    }
+
+    let expected = rows[0].len();
+    for (row_index, row) in rows.iter().enumerate() {
+        if row.len() != expected {
+            return Err(TableError::Ragged {
+                row: row_index,
+                expected,
+                actual: row.len(),
+            });
+        }
+    }
+
+    for (row_index, row) in rows.iter().enumerate() {
+        for (column_index, cell) in row.iter().enumerate() {
+            for (byte_index, byte) in cell.bytes().enumerate() {
+                if !(0x20..=0x7e).contains(&byte) {
+                    return Err(TableError::InvalidChar {
+                        row: row_index,
+                        column: column_index,
+                        byte: byte_index,
+                    });
+                }
+            }
+        }
+    }
+
+    let trimmed: Vec<Vec<&str>> = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.trim_end_matches(' '))
+                .collect()
+        })
+        .collect();
+
+    let mut widths = vec![1usize; expected];
+    for row in &trimmed {
+        for (column, cell) in row.iter().enumerate() {
+            widths[column] = widths[column].max(cell.len());
+        }
+    }
+
+    for (column, &width) in widths.iter().enumerate() {
+        if width > 32 {
+            return Err(TableError::TooWide { column, width });
+        }
+    }
+
+    let mut output = String::new();
+
+    let append_border = |output: &mut String| {
+        output.push('+');
+        for &width in &widths {
+            for _ in 0..(width + 2) {
+                output.push('-');
+            }
+            output.push('+');
+        }
+        output.push('\n');
+    };
+
+    append_border(&mut output);
+
+    for row in &trimmed {
+        output.push('|');
+        for (column, cell) in row.iter().enumerate() {
+            output.push(' ');
+            output.push_str(cell);
+            for _ in cell.len()..widths[column] {
+                output.push(' ');
+            }
+            output.push(' ');
+            output.push('|');
+        }
+        output.push('\n');
+    }
+
+    append_border(&mut output);
+    Ok(output)
+}
