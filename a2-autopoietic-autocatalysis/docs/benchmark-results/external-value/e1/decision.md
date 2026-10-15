@@ -86,3 +86,9 @@ What E1 settles:
 - The E1 apparatus works as a fitness function, with known noise. Single-attempt variance alone produced 2 of a2-full's 3 wins.
 
 The next direction is to make that loop the system: an agent proposes harness variants and E1-style evaluation keeps or discards them.
+
+## Addendum: 2026-10-15 — limitation found in review (grading boundary)
+
+The plan review for the harness-evolution loop found an integrity gap. E1's visible verifier and final grader ran candidate code under pytest **without a sandbox**. That code ran in a tree containing the full test patch, hidden tests included, under the private directory. Agent-written code could therefore have read evaluator files, or altered pytest reporting through configuration or a plugin, during verification.
+
+E1's agents were not optimised against the evaluator. The scan of every recorded feedback text (188 attempt rows) found no hidden id and no gold-patch content, and that scan covers the only route by which such a read could reach a later attempt. The result is not changed. The gap is closed in the evolution loop's evaluator before any run (see `docs/plans/2026-10-15-harness-evolution-loop.md`).
