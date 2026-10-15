@@ -23,7 +23,7 @@ use a2d_core::provider::Provider;
 use meter::{MeteredProvider, Scope, SharedMeter, lock};
 use oracle::{TestScore, score_hidden, score_public};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -57,21 +57,25 @@ const SUSPICIOUS_CONSTRUCTS: &[&str] = &[
     "env::var",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Arm {
     A,
     B,
     D,
     C,
+    CVariant(String),
+    DNote(String),
 }
 
 impl Arm {
-    pub fn label(self) -> &'static str {
+    pub fn label(&self) -> String {
         match self {
-            Arm::A => "A",
-            Arm::B => "B",
-            Arm::D => "D",
-            Arm::C => "C",
+            Arm::A => "A".to_string(),
+            Arm::B => "B".to_string(),
+            Arm::D => "D".to_string(),
+            Arm::C => "C".to_string(),
+            Arm::CVariant(name) => format!("C:{name}"),
+            Arm::DNote(name) => format!("D:{name}"),
         }
     }
 
@@ -81,12 +85,45 @@ impl Arm {
             "B" | "b" => Ok(Arm::B),
             "D" | "d" => Ok(Arm::D),
             "C" | "c" => Ok(Arm::C),
-            other => Err(format!("unknown arm {other:?} (expected A, B, D or C)")),
+            other => match other.split_once(':') {
+                Some((family, name)) if matches!(family, "C" | "D") => {
+                    Self::validate_name(name)?;
+                    Ok(if family == "C" {
+                        Arm::CVariant(name.to_string())
+                    } else {
+                        Arm::DNote(name.to_string())
+                    })
+                }
+                _ => Err(format!(
+                    "unknown arm {other:?} (expected A, B, D, C, C:<name> or D:<name>)"
+                )),
+            },
         }
     }
 
+    fn validate_name(name: &str) -> Result<(), String> {
+        let alphanumeric = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+        if name.bytes().next().is_some_and(alphanumeric)
+            && name.bytes().all(|b| alphanumeric(b) || b == b'-')
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "invalid variant name {name:?}; expected [a-z0-9][a-z0-9-]*"
+            ))
+        }
+    }
+
+    fn is_c(&self) -> bool {
+        matches!(self, Arm::C | Arm::CVariant(_))
+    }
+
+    fn disk_label(&self) -> String {
+        self.label().replace(':', "-")
+    }
+
     /// Provider invocations this arm may spend on one task.
-    pub fn budget(self, k: usize) -> usize {
+    pub fn budget(&self, k: usize) -> usize {
         match self {
             Arm::A => 1,
             _ => k,
@@ -132,6 +169,11 @@ pub struct RunPlan {
     pub record_hidden_output: bool,
     /// Arm C harness (harness-as-data, P3/P4); `{}` = seed.
     pub harness: Value,
+    /// Named arm-C harnesses and arm-D prompt notes.
+    pub harnesses: BTreeMap<String, Value>,
+    pub d_notes: BTreeMap<String, String>,
+    /// Ordered comparisons required for an all-supported claim.
+    pub claim: Option<Vec<(Arm, Arm)>>,
     /// Stop after generation; score later with [`score_deferred`] once the
     /// submissions are committed (confirmation protocol).
     pub defer_scoring: bool,
@@ -210,7 +252,7 @@ pub fn run_arms(
     out_dir: &Path,
     arm_c: Option<&dyn ArmC>,
 ) -> Result<RunResult, String> {
-    if plan.arms.contains(&Arm::C) && arm_c.is_none() {
+    if plan.arms.iter().any(Arm::is_c) && arm_c.is_none() {
         return Err("arm C requested but no A²D runner is wired".to_string());
     }
     // Tuples run in a seeded random order so families and levels are not
@@ -233,9 +275,17 @@ pub fn run_arms(
                         break;
                     };
                     let order = arm_order(plan, &suite.tasks[task].id, replicate);
-                    for (position, &arm) in order.iter().enumerate() {
+                    for (position, arm) in order.iter().enumerate() {
                         let result = generate(
-                            plan, suite, task, replicate, arm, position, &provider, meter, out_dir,
+                            plan,
+                            suite,
+                            task,
+                            replicate,
+                            arm.clone(),
+                            position,
+                            &provider,
+                            meter,
+                            out_dir,
                             arm_c,
                         );
                         match result {
@@ -288,7 +338,7 @@ pub fn run_arms(
     })
 }
 
-/// Registration and scored outcomes of one run (replicate 0), from its
+/// Registration and scored outcomes of one run, from its
 /// verified ledger.
 pub fn load_scored(path: &Path) -> Result<(Value, Vec<Outcome>), String> {
     let (result, _) = pool_ledgers_inner(&[path.to_path_buf()])?;
@@ -302,9 +352,10 @@ pub fn load_scored(path: &Path) -> Result<(Value, Vec<Outcome>), String> {
 }
 
 /// Pool scored runs of the same registered design as replicates (the
-/// roadmap's single sample extension): ledger `i` becomes replicate `i`.
+/// roadmap's single sample extension). Replicate IDs are offset so each
+/// ledger retains its within-run pairing.
 /// Every ledger must verify, be scored, and share suite hash, arms, k,
-/// model, effort and primary comparator with the first. Classification
+/// model, effort, variants and claim with the first. Classification
 /// then runs over all pooled tuples with the first registration's rules.
 pub fn pool_ledgers(ledgers: &[PathBuf]) -> Result<(RunResult, RunPlan), String> {
     if ledgers.len() < 2 {
@@ -319,7 +370,9 @@ fn pool_ledgers_inner(ledgers: &[PathBuf]) -> Result<(RunResult, RunPlan), Strin
     let mut aborted = false;
     let mut first: Option<Value> = None;
     let mut tasks = 0usize;
-    for (replicate, path) in ledgers.iter().enumerate() {
+    let mut replicates = 0u32;
+    let mut tuples_planned = 0usize;
+    for path in ledgers {
         ledger::verify_chain(path)?;
         let records: Vec<Value> = fs::read_to_string(path)
             .map_err(|e| format!("read {}: {e}", path.display()))?
@@ -344,8 +397,24 @@ fn pool_ledgers_inner(ledgers: &[PathBuf]) -> Result<(RunResult, RunPlan), Strin
                     "model",
                     "effort",
                     "primary_comparator",
+                    "harnesses",
+                    "d_notes",
+                    "claim",
                 ] {
-                    if reference[key] != registration[key] {
+                    // Older registrations predate the empty variant maps.
+                    let empty = json!({});
+                    let variant_map = matches!(key, "harnesses" | "d_notes");
+                    let x = if variant_map && reference[key].is_null() {
+                        &empty
+                    } else {
+                        &reference[key]
+                    };
+                    let y = if variant_map && registration[key].is_null() {
+                        &empty
+                    } else {
+                        &registration[key]
+                    };
+                    if x != y {
                         return Err(format!(
                             "{}: '{key}' differs from the first ledger; not the same design",
                             path.display()
@@ -354,6 +423,8 @@ fn pool_ledgers_inner(ledgers: &[PathBuf]) -> Result<(RunResult, RunPlan), Strin
                 }
             }
         }
+        let local_replicates = registration["replicates"].as_u64().unwrap_or(1) as u32;
+        tuples_planned += tasks * local_replicates as usize;
         aborted |= records
             .iter()
             .find(|r| r["kind"] == "generation_complete")
@@ -380,7 +451,12 @@ fn pool_ledgers_inner(ledgers: &[PathBuf]) -> Result<(RunResult, RunPlan), Strin
             let task = score["task"].as_str().unwrap_or("").to_string();
             let submission = submissions
                 .iter()
-                .find(|s| s["arm"] == score["arm"] && s["task"] == score["task"])
+                .find(|s| {
+                    s["arm"] == score["arm"]
+                        && s["task"] == score["task"]
+                        && s["replicate"].as_u64().unwrap_or(0)
+                            == score["replicate"].as_u64().unwrap_or(0)
+                })
                 .ok_or(format!(
                     "{}: score without submission for {task}",
                     path.display()
@@ -392,7 +468,7 @@ fn pool_ledgers_inner(ledgers: &[PathBuf]) -> Result<(RunResult, RunPlan), Strin
                 arm,
                 task,
                 family: score["family"].as_str().unwrap_or("").to_string(),
-                replicate: replicate as u32,
+                replicate: replicates + score["replicate"].as_u64().unwrap_or(0) as u32,
                 invocations: count("invocations") as usize,
                 tokens: count("tokens") as usize,
                 provider_ms: count("provider_ms"),
@@ -411,6 +487,7 @@ fn pool_ledgers_inner(ledgers: &[PathBuf]) -> Result<(RunResult, RunPlan), Strin
                 hidden,
             });
         }
+        replicates += local_replicates;
     }
     let registration = first.expect("at least one ledger");
     let arms: Vec<Arm> = registration["arms"]
@@ -422,7 +499,7 @@ fn pool_ledgers_inner(ledgers: &[PathBuf]) -> Result<(RunResult, RunPlan), Strin
     let plan = RunPlan {
         arms,
         k: registration["k"].as_u64().unwrap_or(0) as usize,
-        replicates: ledgers.len() as u32,
+        replicates,
         jobs: 1,
         seed: registration["seed"].as_u64().unwrap_or(0),
         primary: registration["primary_comparator"]
@@ -437,13 +514,16 @@ fn pool_ledgers_inner(ledgers: &[PathBuf]) -> Result<(RunResult, RunPlan), Strin
             .unwrap_or(DEFAULT_MAX_EXCLUDED_SHARE),
         record_hidden_output: false,
         harness: registration["harness"].clone(),
+        harnesses: registered_harnesses(&registration)?,
+        d_notes: BTreeMap::new(),
+        claim: registered_claim(&registration)?,
         defer_scoring: false,
     };
     hidden_name_hits.sort();
     hidden_name_hits.dedup();
     let result = RunResult {
         outcomes,
-        tuples_planned: tasks * ledgers.len(),
+        tuples_planned,
         aborted,
         hidden_name_hits,
         scored: true,
@@ -515,6 +595,9 @@ pub fn score_deferred(
             .unwrap_or(DEFAULT_MAX_EXCLUDED_SHARE),
         record_hidden_output,
         harness: registration["harness"].clone(),
+        harnesses: registered_harnesses(&registration)?,
+        d_notes: BTreeMap::new(),
+        claim: registered_claim(&registration)?,
         defer_scoring: false,
     };
     let suite = task::load_suite(suite_dir, registration["suite_hash"].as_str())?;
@@ -534,7 +617,7 @@ pub fn score_deferred(
             Some(expected) => {
                 let path = out_dir
                     .join("submissions")
-                    .join(arm.label())
+                    .join(arm.disk_label())
                     .join(task_id)
                     .join(format!("r{replicate}.rs"));
                 let code = fs::read_to_string(&path)
@@ -617,21 +700,28 @@ fn generate(
         }
     }
     let public = task.public();
-    let scope = Scope::new(arm.label(), &task.id, replicate, budget);
+    let scope = Scope::new(&arm.label(), &task.id, replicate, budget);
     let metered = MeteredProvider::new(provider.clone(), meter.clone(), scope.clone());
-    let attempts = match arm {
+    let attempts = match &arm {
         Arm::A => arms::one_shot(&metered, &public),
         Arm::B => arms::best_of_k(&metered, &public, plan.k),
         Arm::D => arms::repair_loop(&metered, &public, plan.k),
-        Arm::C => {
+        Arm::DNote(name) => {
+            arms::repair_loop_with_note(&metered, &public, plan.k, Some(&plan.d_notes[name]))
+        }
+        Arm::C | Arm::CVariant(_) => {
+            let harness = match &arm {
+                Arm::CVariant(name) => &plan.harnesses[name],
+                _ => &plan.harness,
+            };
             let runner = arm_c.expect("checked by run_arms");
             let codes = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                runner.run(Box::new(metered), &public, plan.k, &plan.harness)
+                runner.run(Box::new(metered), &public, plan.k, harness)
             }))
             .unwrap_or_else(|_| {
                 let _ = lock(meter).ledger.append(
                     "arm_panic",
-                    json!({"arm": "C", "task": task.id, "replicate": replicate}),
+                    json!({"arm": arm.label(), "task": task.id, "replicate": replicate}),
                 );
                 Vec::new()
             });
@@ -653,7 +743,10 @@ fn generate(
         .and_then(|a| a.public.as_ref())
         .is_some_and(|s| s.all_passed);
 
-    let dir = out_dir.join("submissions").join(arm.label()).join(&task.id);
+    let dir = out_dir
+        .join("submissions")
+        .join(arm.disk_label())
+        .join(&task.id);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("r{replicate}.rs"));
     if let Some(code) = &code {
@@ -729,7 +822,7 @@ fn score_all(
                         })
                         .unwrap_or_default();
                     outcomes.lock().unwrap().push(Outcome {
-                        arm: sub.arm,
+                        arm: sub.arm.clone(),
                         task: task.id.clone(),
                         family: task.family.clone(),
                         replicate: sub.replicate,
@@ -748,13 +841,13 @@ fn score_all(
         }
     });
     let mut outcomes = outcomes.into_inner().unwrap();
-    outcomes.sort_by(|a, b| (&a.task, a.replicate, a.arm).cmp(&(&b.task, b.replicate, b.arm)));
+    outcomes.sort_by(|a, b| (&a.task, a.replicate, &a.arm).cmp(&(&b.task, b.replicate, &b.arm)));
     let mut m = lock(meter);
     for o in &outcomes {
         if plan.record_hidden_output {
             let path = out_dir
                 .join("submissions")
-                .join(o.arm.label())
+                .join(o.arm.disk_label())
                 .join(&o.task)
                 .join(format!("r{}.hidden.txt", o.replicate));
             let _ = fs::write(path, &o.hidden.output);
@@ -838,6 +931,79 @@ fn files_under(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+fn comparison_pairs(arms: &[Arm]) -> Vec<(Arm, Arm)> {
+    let mut pairs: Vec<_> = [
+        (Arm::C, Arm::B),
+        (Arm::C, Arm::D),
+        (Arm::C, Arm::A),
+        (Arm::B, Arm::A),
+        (Arm::D, Arm::A),
+        (Arm::D, Arm::B),
+    ]
+    .into_iter()
+    .filter(|(x, y)| arms.contains(x) && arms.contains(y))
+    .collect();
+    for (i, x) in arms.iter().enumerate().filter(|(_, a)| a.is_c()) {
+        for y in arms
+            .iter()
+            .filter(|a| !a.is_c())
+            .chain(arms[i + 1..].iter().filter(|a| a.is_c()))
+        {
+            let pair = (x.clone(), y.clone());
+            if !pairs.contains(&pair) {
+                pairs.push(pair);
+            }
+        }
+    }
+    pairs
+}
+
+fn registered_harnesses(registration: &Value) -> Result<BTreeMap<String, Value>, String> {
+    let mut harnesses = BTreeMap::new();
+    if let Some(entries) = registration["harnesses"].as_object() {
+        for (name, entry) in entries {
+            Arm::validate_name(name)?;
+            harnesses.insert(name.clone(), entry["harness"].clone());
+        }
+    }
+    Ok(harnesses)
+}
+
+fn registered_claim(registration: &Value) -> Result<Option<Vec<(Arm, Arm)>>, String> {
+    registration["claim"]
+        .as_str()
+        .map(|spec| {
+            parse_claim(
+                spec,
+                &registration["arms"]
+                    .as_array()
+                    .ok_or("registration lacks arms")?
+                    .iter()
+                    .map(|a| Arm::parse(a.as_str().unwrap_or("")))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        })
+        .transpose()
+}
+
+fn parse_claim(spec: &str, arms: &[Arm]) -> Result<Vec<(Arm, Arm)>, String> {
+    let computed = comparison_pairs(arms);
+    spec.split(',')
+        .map(|pair| {
+            let (x, y) = pair.split_once('>').ok_or("--claim expects x>y pairs")?;
+            let pair = (Arm::parse(x)?, Arm::parse(y)?);
+            if !computed.contains(&pair) {
+                return Err(format!(
+                    "--claim {}>{} is not a computed comparison",
+                    pair.0.label(),
+                    pair.1.label()
+                ));
+            }
+            Ok(pair)
+        })
+        .collect()
+}
+
 /// Per-arm results and paired comparisons over complete tuples only: a
 /// tuple counts when every planned arm produced a non-void outcome.
 pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
@@ -850,11 +1016,11 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
     }
     for o in &result.outcomes {
         let key = (o.task.clone(), o.replicate);
-        let all_arms = plan.arms.iter().all(|&arm| {
+        let all_arms = plan.arms.iter().all(|arm| {
             result
                 .outcomes
                 .iter()
-                .any(|x| x.arm == arm && x.task == o.task && x.replicate == o.replicate)
+                .any(|x| &x.arm == arm && x.task == o.task && x.replicate == o.replicate)
         });
         if all_arms && !void_tuples.contains(&key) {
             complete_tuples.insert(key);
@@ -887,8 +1053,8 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
     let per_arm: Vec<Value> = plan
         .arms
         .iter()
-        .map(|&arm| {
-            let arm_rows: Vec<&&Outcome> = rows.iter().filter(|o| o.arm == arm).collect();
+        .map(|arm| {
+            let arm_rows: Vec<&&Outcome> = rows.iter().filter(|o| &o.arm == arm).collect();
             let n = arm_rows.len();
             let passed = arm_rows.iter().filter(|o| o.hidden.all_passed).count();
             json!({
@@ -909,24 +1075,17 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
         })
         .collect();
 
-    let pairs = [
-        (Arm::C, Arm::B),
-        (Arm::C, Arm::D),
-        (Arm::C, Arm::A),
-        (Arm::B, Arm::A),
-        (Arm::D, Arm::A),
-        (Arm::D, Arm::B),
-    ];
+    let pairs = comparison_pairs(&plan.arms);
     let comparisons: Vec<Value> = pairs
         .iter()
         .filter(|(x, y)| plan.arms.contains(x) && plan.arms.contains(y))
-        .map(|&(x, y)| {
+        .map(|(x, y)| {
             let paired: Vec<stats::PairedOutcome> = rows
                 .iter()
-                .filter(|o| o.arm == x)
+                .filter(|o| &o.arm == x)
                 .filter_map(|ox| {
                     rows.iter()
-                        .find(|oy| oy.arm == y && oy.task == ox.task && oy.replicate == ox.replicate)
+                        .find(|oy| &oy.arm == y && oy.task == ox.task && oy.replicate == ox.replicate)
                         .map(|oy| stats::PairedOutcome {
                             family: ox.family.clone(),
                             task: ox.task.clone(),
@@ -939,10 +1098,10 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
             let s = stats::paired_summary(&paired, BOOTSTRAP_ITERATIONS, BOOTSTRAP_SEED);
             let fraction_diffs: Vec<f64> = rows
                 .iter()
-                .filter(|o| o.arm == x)
+                .filter(|o| &o.arm == x)
                 .filter_map(|ox| {
                     rows.iter()
-                        .find(|oy| oy.arm == y && oy.task == ox.task && oy.replicate == ox.replicate)
+                        .find(|oy| &oy.arm == y && oy.task == ox.task && oy.replicate == ox.replicate)
                         .map(|oy| fraction(ox) - fraction(oy))
                 })
                 .collect();
@@ -963,9 +1122,9 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
             };
             // Primary: C vs the pre-registered comparator. Secondary: C vs
             // the other of B and D (the overall SUPPORTED claim needs both).
-            let role = if x == Arm::C && plan.primary == Some(y) {
+            let role = if *x == Arm::C && plan.primary.as_ref() == Some(y) {
                 "primary"
-            } else if x == Arm::C && plan.primary.is_some() && matches!(y, Arm::B | Arm::D) {
+            } else if *x == Arm::C && plan.primary.is_some() && matches!(y, Arm::B | Arm::D) {
                 "secondary"
             } else {
                 "exploratory"
@@ -1009,7 +1168,7 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
         (Some(c @ ("IntegrityReview" | "Invalid")), _) => c.to_string(),
         _ => "INCONCLUSIVE".to_string(),
     };
-    json!({
+    let mut summary = json!({
         "claim": claim,
         "excluded_share": excluded_share,
         "max_excluded_share": plan.max_excluded_share,
@@ -1023,10 +1182,38 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
         "integrity_ok": integrity_ok,
         "min_effect": MIN_EFFECT,
         "min_families": plan.min_families,
-        "primary_comparator": plan.primary.map(|a| a.label()),
+        "primary_comparator": plan.primary.as_ref().map(|a| a.label()),
         "arms": per_arm,
         "comparisons": comparisons,
-    })
+    });
+    if let Some(pairs) = &plan.claim {
+        let claims: Vec<Value> = pairs
+            .iter()
+            .map(|(x, y)| {
+                let comparison = comparisons
+                    .iter()
+                    .find(|c| c["treatment"] == x.label() && c["comparator"] == y.label());
+                json!({"treatment": x.label(), "comparator": y.label(),
+                   "class": comparison.map(|c| c["class"].clone()).unwrap_or(json!("Invalid"))})
+            })
+            .collect();
+        summary["claim_rule"] = json!("all-supported");
+        // Integrity and validity failures dominate, as for the primary claim.
+        let any = |class: &str| claims.iter().any(|c| c["class"] == class);
+        summary["claim"] = json!(if any("IntegrityReview") {
+            "IntegrityReview"
+        } else if any("Invalid") {
+            "Invalid"
+        } else if !claims.is_empty() && claims.iter().all(|c| c["class"] == "Supported") {
+            "SUPPORTED"
+        } else if claims.first().is_some_and(|c| c["class"] == "RuledOut") {
+            "RULED OUT"
+        } else {
+            "INCONCLUSIVE"
+        });
+        summary["claim_comparisons"] = json!(claims);
+    }
+    summary
 }
 
 #[cfg(test)]

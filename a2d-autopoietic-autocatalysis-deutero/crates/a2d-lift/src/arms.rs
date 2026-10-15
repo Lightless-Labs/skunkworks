@@ -85,11 +85,25 @@ pub fn best_of_k(provider: &dyn Provider, task: &PublicTask, k: usize) -> Vec<At
 /// Arm D: up to k attempts; each retry sees the previous file and its public
 /// test output. Stops early once public tests are green.
 pub fn repair_loop(provider: &dyn Provider, task: &PublicTask, k: usize) -> Vec<Attempt> {
+    repair_loop_with_note(provider, task, k, None)
+}
+
+pub fn repair_loop_with_note(
+    provider: &dyn Provider,
+    task: &PublicTask,
+    k: usize,
+    note: Option<&str>,
+) -> Vec<Attempt> {
+    let mut base = task_prompt(task);
+    if let Some(note) = note {
+        base.push_str("\n\n");
+        base.push_str(note);
+    }
     let mut attempts: Vec<Attempt> = Vec::new();
     for index in 0..k {
         let prompt = match attempts.last() {
-            None => task_prompt(task),
-            Some(previous) => repair_prompt(task, previous),
+            None => base.clone(),
+            Some(previous) => repair_prompt(previous, base.clone()),
         };
         let current = attempt(provider, task, index, prompt);
         let green = current.public_green();
@@ -101,8 +115,7 @@ pub fn repair_loop(provider: &dyn Provider, task: &PublicTask, k: usize) -> Vec<
     attempts
 }
 
-fn repair_prompt(task: &PublicTask, previous: &Attempt) -> String {
-    let mut prompt = task_prompt(task);
+fn repair_prompt(previous: &Attempt, mut prompt: String) -> String {
     match &previous.code {
         None => prompt.push_str(
             "\n\n## Previous attempt\n\nYour previous response contained no ```rust code block.\n",

@@ -28,7 +28,11 @@ usage:
                [--arms A,B,D,C] [--k <n>] [--replicates <n>] [--jobs <n>]
                [--primary B|D] [--seed <n>] [--min-families <n>] [--max-excluded-share <f>]
                [--effort <level>]
-               [--record-hidden-output] [--defer-scoring] [--harness <harness.json>]
+               [--record-hidden-output] [--defer-scoring]
+               [--harness <path> | --harness <name>=<path> ...]  # C or C:<name>
+               [--d-note <name>=<path> ...]                   # D:<name>
+               [--claim <x>><y>,<x>><y>,...]                  # all pairs supported
+               # variant names: [a-z0-9][a-z0-9-]*; list each in --arms
   a2d lift compare --out <file> <ledger>:<arm> <ledger>:<arm>   # paired, across runs";
 
 pub fn cli_main(args: &[String], arm_c: Option<&dyn ArmC>) -> i32 {
@@ -71,7 +75,11 @@ pub fn cli_main(args: &[String], arm_c: Option<&dyn ArmC>) -> i32 {
 }
 
 fn parse_flags(args: &[String]) -> Result<BTreeMap<String, String>, String> {
-    let mut flags = BTreeMap::new();
+    Ok(parse_options(args)?.into_iter().collect())
+}
+
+fn parse_options(args: &[String]) -> Result<Vec<(String, String)>, String> {
+    let mut flags = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let name = arg
@@ -81,13 +89,13 @@ fn parse_flags(args: &[String]) -> Result<BTreeMap<String, String>, String> {
             name,
             "record-hidden-output" | "unregistered" | "defer-scoring"
         ) {
-            flags.insert(name.to_string(), "true".to_string());
+            flags.push((name.to_string(), "true".to_string()));
             continue;
         }
         let value = iter
             .next()
             .ok_or_else(|| format!("--{name} needs a value"))?;
-        flags.insert(name.to_string(), value.clone());
+        flags.push((name.to_string(), value.clone()));
     }
     Ok(flags)
 }
@@ -207,14 +215,24 @@ fn build_provenance() -> Value {
 fn parse_arms(spec: &str) -> Result<Vec<Arm>, String> {
     let arms: Vec<Arm> = spec.split(',').map(Arm::parse).collect::<Result<_, _>>()?;
     let mut seen = std::collections::BTreeSet::new();
-    if let Some(dup) = arms.iter().find(|arm| !seen.insert(**arm)) {
+    if let Some(dup) = arms.iter().find(|arm| !seen.insert((*arm).clone())) {
         return Err(format!("arm {} listed twice", dup.label()));
     }
     Ok(arms)
 }
 
 fn run(args: &[String], arm_c: Option<&dyn ArmC>) -> Result<(), String> {
-    let flags = parse_flags(args)?;
+    run_with_provider(args, arm_c, &project_root()?, None)
+}
+
+pub(super) fn run_with_provider(
+    args: &[String],
+    arm_c: Option<&dyn ArmC>,
+    root: &Path,
+    provider: Option<Arc<dyn Provider>>,
+) -> Result<(), String> {
+    let options = parse_options(args)?;
+    let flags: BTreeMap<String, String> = options.iter().cloned().collect();
     let experiment = required(&flags, "experiment")?;
     let suite_dir = PathBuf::from(required(&flags, "suite")?);
     let model = required(&flags, "model")?;
@@ -223,7 +241,7 @@ fn run(args: &[String], arm_c: Option<&dyn ArmC>) -> Result<(), String> {
     let max_wall_clock_secs: u64 = number(&flags, "max-wall-clock-secs")?;
     let effort = flags.get("effort").map(String::as_str);
     let arms = parse_arms(flags.get("arms").map(String::as_str).unwrap_or("A"))?;
-    let k: usize = if arms.iter().any(|&a| a != Arm::A) {
+    let k: usize = if arms.iter().any(|a| *a != Arm::A) {
         number(&flags, "k").map_err(|e| format!("{e} (required with arms B, C or D)"))?
     } else {
         flags.get("k").map_or(Ok(1), |_| number(&flags, "k"))?
@@ -251,14 +269,15 @@ fn run(args: &[String], arm_c: Option<&dyn ArmC>) -> Result<(), String> {
         return Err("--k, --replicates and --jobs must be at least 1".to_string());
     }
     let primary = flags.get("primary").map(|p| Arm::parse(p)).transpose()?;
-    if let Some(p) = primary
+    if let Some(p) = &primary
         && !matches!(p, Arm::B | Arm::D)
     {
         return Err("--primary must be B or D".to_string());
     }
-    if arms.contains(&Arm::C)
+    if !flags.contains_key("claim")
+        && arms.iter().any(Arm::is_c)
         && (arms.contains(&Arm::B) || arms.contains(&Arm::D))
-        && primary.is_none_or(|p| !arms.contains(&p))
+        && primary.as_ref().is_none_or(|p| !arms.contains(p))
     {
         return Err("--primary B|D (one of the arms run) is required when C runs".to_string());
     }
@@ -272,28 +291,93 @@ fn run(args: &[String], arm_c: Option<&dyn ArmC>) -> Result<(), String> {
         );
     }
 
-    let (harness, harness_sha256) = match flags.get("harness") {
-        None => (json!({}), None),
-        Some(path) => {
-            let bytes = fs::read(path).map_err(|e| format!("read harness {path}: {e}"))?;
+    let mut harness = json!({});
+    let mut harness_sha256 = None;
+    let mut harnesses = BTreeMap::new();
+    let mut registered_harnesses = BTreeMap::new();
+    let mut d_notes = BTreeMap::new();
+    let mut registered_notes = BTreeMap::new();
+    for (flag, spec) in &options {
+        if !matches!(flag.as_str(), "harness" | "d-note") {
+            continue;
+        }
+        let (name, path) = match spec.split_once('=') {
+            Some((name, path)) => {
+                Arm::validate_name(name)?;
+                (Some(name), path)
+            }
+            None if flag == "harness" => (None, spec.as_str()),
+            None => return Err("--d-note expects <name>=<path>".to_string()),
+        };
+        let arm = match (flag.as_str(), name) {
+            ("harness", Some(name)) => Arm::CVariant(name.to_string()),
+            ("harness", None) => Arm::C,
+            (_, Some(name)) => Arm::DNote(name.to_string()),
+            _ => unreachable!(),
+        };
+        if !arms.contains(&arm) {
+            return Err(format!("{} defined but not listed in --arms", arm.label()));
+        }
+        let bytes = fs::read(path).map_err(|e| format!("read {flag} {path}: {e}"))?;
+        let sha256 = crate::ledger::sha256_hex(&bytes);
+        if flag == "harness" {
             let value: Value = serde_json::from_slice(&bytes)
                 .map_err(|e| format!("harness {path} is not JSON: {e}"))?;
-            (value, Some(crate::ledger::sha256_hex(&bytes)))
+            arm_c
+                .ok_or("arm C is not wired")?
+                .validate_harness(&value)
+                .map_err(|e| format!("harness {} rejected: {e}", arm.label()))?;
+            if let Some(name) = name {
+                if harnesses.insert(name.to_string(), value.clone()).is_some() {
+                    return Err(format!("harness {name} defined twice"));
+                }
+                registered_harnesses.insert(
+                    name.to_string(),
+                    json!({"harness": value, "harness_sha256": sha256}),
+                );
+            } else {
+                if harness_sha256.is_some() {
+                    return Err("plain C harness defined twice".to_string());
+                }
+                harness = value;
+                harness_sha256 = Some(sha256);
+            }
+        } else {
+            let name = name.expect("notes are named");
+            let text = String::from_utf8(bytes.clone())
+                .map_err(|e| format!("note {path} is not UTF-8: {e}"))?;
+            if d_notes.insert(name.to_string(), text).is_some() {
+                return Err(format!("D note {name} defined twice"));
+            }
+            registered_notes.insert(
+                name.to_string(),
+                json!({"sha256": sha256, "bytes": bytes.len()}),
+            );
         }
-    };
-    if harness != json!({}) {
-        if !arms.contains(&Arm::C) {
-            return Err("--harness only applies to arm C".to_string());
-        }
-        arm_c
-            .ok_or("arm C is not wired")?
-            .validate_harness(&harness)
-            .map_err(|e| format!("harness rejected: {e}"))?;
     }
-    let root = project_root()?;
-    let git_state = registration_git_state(&root, registered_at)?;
+    for arm in &arms {
+        let defined = match arm {
+            Arm::CVariant(name) => harnesses.contains_key(name),
+            Arm::DNote(name) => d_notes.contains_key(name),
+            _ => true,
+        };
+        if !defined {
+            return Err(format!("undefined variant {}", arm.label()));
+        }
+    }
+    if arms.iter().any(Arm::is_c) && arm_c.is_none() {
+        return Err("arm C is not wired".to_string());
+    }
+    let claim = flags
+        .get("claim")
+        .map(|spec| crate::parse_claim(spec, &arms))
+        .transpose()?;
+    let git_state = registration_git_state(root, registered_at)?;
     let suite = load_suite(&suite_dir, expected_hash)?;
-    let provider = model_provider(model, effort)?;
+    let provider = match provider {
+        Some(provider) => provider,
+        None => model_provider(model, effort)?,
+    };
 
     fs::create_dir_all(&out_dir).map_err(|e| format!("create {}: {e}", out_dir.display()))?;
     let mut ledger = Ledger::create(&out_dir.join("ledger.jsonl"))
@@ -309,7 +393,7 @@ fn run(args: &[String], arm_c: Option<&dyn ArmC>) -> Result<(), String> {
                 "tasks": suite.tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
                 "families": suite.families(),
                 "arms": arms.iter().map(|a| a.label()).collect::<Vec<_>>(),
-                "primary_comparator": primary.map(|a| a.label()),
+                "primary_comparator": primary.as_ref().map(|a| a.label()),
                 "k": k,
                 "replicates": replicates,
                 "jobs": jobs,
@@ -318,6 +402,9 @@ fn run(args: &[String], arm_c: Option<&dyn ArmC>) -> Result<(), String> {
                 "max_excluded_share": max_excluded_share,
                 "harness": harness,
                 "harness_sha256": harness_sha256,
+                "harnesses": registered_harnesses,
+                "d_notes": registered_notes,
+                "claim": flags.get("claim"),
                 "model": model,
                 "effort": effort,
                 "max_invocations": max_invocations,
@@ -345,7 +432,10 @@ fn run(args: &[String], arm_c: Option<&dyn ArmC>) -> Result<(), String> {
         min_families,
         max_excluded_share,
         record_hidden_output: flags.contains_key("record-hidden-output"),
-        harness: harness.clone(),
+        harness,
+        harnesses,
+        d_notes,
+        claim,
         defer_scoring: flags.contains_key("defer-scoring"),
     };
     println!(
@@ -482,9 +572,9 @@ fn compare(args: &[String]) -> Result<(), String> {
     };
     let side = |spec: &str| -> Result<(PathBuf, Arm), String> {
         let (path, arm) = spec
-            .rsplit_once(':')
+            .split_once(".jsonl:")
             .ok_or(format!("expected <ledger>:<arm>, got {spec}"))?;
-        Ok((PathBuf::from(path), Arm::parse(arm)?))
+        Ok((PathBuf::from(format!("{path}.jsonl")), Arm::parse(arm)?))
     };
     let ((x_path, x_arm), (y_path, y_arm)) = (side(x)?, side(y)?);
     let (x_reg, x_out) = crate::load_scored(&x_path)?;
@@ -515,25 +605,25 @@ fn compare(args: &[String]) -> Result<(), String> {
         .collect();
     let s = crate::stats::paired_summary(&paired, 10_000, 0x5eed_a2d0);
     let min_families = x_reg["min_families"].as_u64().unwrap_or(10) as usize;
-    let tokens = |outcomes: &[crate::Outcome], arm: Arm| {
+    let tokens = |outcomes: &[crate::Outcome], arm: &Arm| {
         outcomes
             .iter()
-            .filter(|o| o.arm == arm)
+            .filter(|o| &o.arm == arm)
             .map(|o| o.tokens)
             .sum::<usize>()
     };
-    let invocations = |outcomes: &[crate::Outcome], arm: Arm| {
+    let invocations = |outcomes: &[crate::Outcome], arm: &Arm| {
         outcomes
             .iter()
-            .filter(|o| o.arm == arm)
+            .filter(|o| &o.arm == arm)
             .map(|o| o.invocations)
             .sum::<usize>()
     };
     let result = json!({
-        "x": {"ledger": x_path.display().to_string(), "arm": x_arm.label(), "harness": x_reg["harness"],
-              "tokens": tokens(&x_out, x_arm), "invocations": invocations(&x_out, x_arm)},
-        "y": {"ledger": y_path.display().to_string(), "arm": y_arm.label(), "harness": y_reg["harness"],
-              "tokens": tokens(&y_out, y_arm), "invocations": invocations(&y_out, y_arm)},
+        "x": {"ledger": x_path.display().to_string(), "arm": x_arm.label(), "harness": comparison_harness(&x_reg, &x_arm),
+              "tokens": tokens(&x_out, &x_arm), "invocations": invocations(&x_out, &x_arm)},
+        "y": {"ledger": y_path.display().to_string(), "arm": y_arm.label(), "harness": comparison_harness(&y_reg, &y_arm),
+              "tokens": tokens(&y_out, &y_arm), "invocations": invocations(&y_out, &y_arm)},
         "n": s.n, "families": s.families, "x_rate": s.x_rate, "y_rate": s.y_rate,
         "lift": s.lift, "ci95": [s.ci_low, s.ci_high],
         "discordant_x_only": s.discordant_x_only, "discordant_y_only": s.discordant_y_only,
@@ -544,6 +634,13 @@ fn compare(args: &[String]) -> Result<(), String> {
     fs::write(&out, format!("{pretty}\n")).map_err(|e| e.to_string())?;
     println!("{pretty}");
     Ok(())
+}
+
+fn comparison_harness(registration: &Value, arm: &Arm) -> Value {
+    match arm {
+        Arm::CVariant(name) => registration["harnesses"][name]["harness"].clone(),
+        _ => registration["harness"].clone(),
+    }
 }
 
 /// Print outcomes, write summary.json and append the summary to the ledger.

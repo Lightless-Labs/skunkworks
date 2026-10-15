@@ -15,6 +15,16 @@ const GOOD: &str = "```rust\nfn double(x: i32) -> i32 { x * 2 }\nfn main() {}\n`
 const WRONG: &str = "```rust\nfn double(x: i32) -> i32 { x + 1 }\nfn main() {}\n```";
 const PUBLIC: &str = "#[test]\nfn doubles_two() { assert_eq!(double(2), 4); }\n";
 
+#[test]
+fn variant_labels_accept_safe_names_and_preserve_identity() {
+    for label in ["C:a", "C:h0-v5", "D:lessons", "D:0"] {
+        assert_eq!(Arm::parse(label).unwrap().label(), label);
+    }
+    for label in ["C:", "D:", "C:-a", "C:A", "D:a_b", "C:a/b", "A:a", "C:a:b"] {
+        assert!(Arm::parse(label).is_err(), "{label}");
+    }
+}
+
 fn hidden() -> String {
     format!(
         "#[test]\nfn doubles_negative() {{\n    // {SENTINEL}\n    assert_eq!(double(-3), -6);\n}}\n"
@@ -143,6 +153,9 @@ fn hidden_tests_never_reach_any_arm_and_are_scored_once() {
         max_excluded_share: 0.0,
         record_hidden_output: false,
         harness: json!({}),
+        harnesses: Default::default(),
+        d_notes: Default::default(),
+        claim: None,
         defer_scoring: false,
     };
     let arm_c = MockArmC { attempts_wanted: 4 };
@@ -253,6 +266,9 @@ fn arm_c_budget_is_enforced_across_all_enzymes() {
         max_excluded_share: 0.0,
         record_hidden_output: false,
         harness: json!({}),
+        harnesses: Default::default(),
+        d_notes: Default::default(),
+        claim: None,
         defer_scoring: false,
     };
     let greedy = MockArmC {
@@ -298,6 +314,9 @@ fn repair_loop_feeds_back_public_failures_and_stops_when_green() {
         max_excluded_share: 0.0,
         record_hidden_output: false,
         harness: json!({}),
+        harnesses: Default::default(),
+        d_notes: Default::default(),
+        claim: None,
         defer_scoring: false,
     };
     let outcomes = run_arms(&plan, &suite(), provider, &meter, dir.path(), None)
@@ -336,6 +355,9 @@ fn run_aborts_before_exceeding_global_cap() {
         max_excluded_share: 0.0,
         record_hidden_output: false,
         harness: json!({}),
+        harnesses: Default::default(),
+        d_notes: Default::default(),
+        claim: None,
         defer_scoring: false,
     };
     let result = run_arms(&plan, &suite(), provider, &meter, dir.path(), None).unwrap();
@@ -365,6 +387,9 @@ fn arm_c_without_runner_is_an_error() {
         max_excluded_share: 0.0,
         record_hidden_output: false,
         harness: json!({}),
+        harnesses: Default::default(),
+        d_notes: Default::default(),
+        claim: None,
         defer_scoring: false,
     };
     assert!(run_arms(&plan, &suite(), provider, &meter, dir.path(), None).is_err());
@@ -383,6 +408,9 @@ fn arm_order_is_a_seeded_permutation_per_tuple() {
         max_excluded_share: 0.0,
         record_hidden_output: false,
         harness: json!({}),
+        harnesses: Default::default(),
+        d_notes: Default::default(),
+        claim: None,
         defer_scoring: false,
     };
     let orders: Vec<Vec<Arm>> = (0..20)
@@ -422,6 +450,9 @@ fn wall_clock_refusal_mid_arm_voids_the_tuple() {
         max_excluded_share: 0.0,
         record_hidden_output: false,
         harness: json!({}),
+        harnesses: Default::default(),
+        d_notes: Default::default(),
+        claim: None,
         defer_scoring: false,
     };
     let one_task = Suite {
@@ -482,6 +513,9 @@ fn deferred_scoring_scores_once_after_generation_and_detects_tampering() {
         max_excluded_share: 0.0,
         record_hidden_output: false,
         harness: json!({}),
+        harnesses: Default::default(),
+        d_notes: Default::default(),
+        claim: None,
         defer_scoring: true,
     };
     let generated = run_arms(&plan, &suite, provider, &meter, dir.path(), None).unwrap();
@@ -579,6 +613,9 @@ fn claim_plan() -> RunPlan {
         max_excluded_share: 0.05,
         record_hidden_output: false,
         harness: json!({}),
+        harnesses: Default::default(),
+        d_notes: Default::default(),
+        claim: None,
         defer_scoring: false,
     }
 }
@@ -731,4 +768,495 @@ fn pooling_treats_each_ledger_as_a_replicate() {
     drop(other);
     let err = pool_ledgers(&[a, c]).err().unwrap();
     assert!(err.contains("'k' differs"), "{err}");
+}
+
+#[derive(Default)]
+struct HarnessMock {
+    seen: Mutex<Vec<(Value, usize)>>,
+}
+
+impl ArmC for HarnessMock {
+    fn validate_harness(&self, harness: &Value) -> Result<(), String> {
+        if harness["invalid"] == true {
+            return Err("invalid mock harness".to_string());
+        }
+        Ok(())
+    }
+
+    fn run(
+        &self,
+        provider: Box<dyn Provider>,
+        task: &PublicTask,
+        budget: usize,
+        harness: &Value,
+    ) -> Vec<String> {
+        self.seen.lock().unwrap().push((harness.clone(), budget));
+        MockArmC {
+            attempts_wanted: 10,
+        }
+        .run(provider, task, budget, harness)
+    }
+}
+
+fn variant_args(dir: &Path, arms: &str) -> Vec<String> {
+    let task = dir.join("suite/t1");
+    fs::create_dir_all(&task).unwrap();
+    fs::write(
+        task.join("task.json"),
+        r#"{"id":"t1","family":"fam-a","requirements":"Implement double."}"#,
+    )
+    .unwrap();
+    fs::write(task.join("public_tests.rs"), PUBLIC).unwrap();
+    fs::write(task.join("hidden_tests.rs"), hidden()).unwrap();
+    fs::write(dir.join("a.json"), r#"{"name":"alpha"}"#).unwrap();
+    fs::write(dir.join("b.json"), r#"{"name":"beta"}"#).unwrap();
+    fs::write(dir.join("bad.json"), r#"{"invalid":true}"#).unwrap();
+    fs::write(dir.join("note.txt"), "NOTE_SENTINEL_é\nCheck edge cases.\n").unwrap();
+    let mut args: Vec<String> = [
+        "--experiment",
+        "variants",
+        "--model",
+        "codex/mock",
+        "--unregistered",
+        "--max-invocations",
+        "100",
+        "--max-wall-clock-secs",
+        "600",
+        "--k",
+        "2",
+        "--primary",
+        "D",
+        "--min-families",
+        "1",
+        "--seed",
+        "7",
+        "--arms",
+        arms,
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    args.extend([
+        "--suite".to_string(),
+        dir.join("suite").display().to_string(),
+        "--out".to_string(),
+        dir.join("run").display().to_string(),
+    ]);
+    args
+}
+
+fn add_variant(args: &mut Vec<String>, flag: &str, name: &str, path: &Path) {
+    args.extend([flag.to_string(), format!("{name}={}", path.display())]);
+}
+
+fn run_mock(args: &[String], runner: &dyn ArmC, provider: Arc<dyn Provider>) -> Result<(), String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    crate::cli::run_with_provider(args, Some(runner), &root, Some(provider))
+}
+
+#[test]
+fn named_variants_route_harnesses_notes_budgets_and_disk_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut args = variant_args(dir.path(), "C:a,C:b,D,D:lessons");
+    add_variant(&mut args, "--harness", "a", &dir.path().join("a.json"));
+    add_variant(&mut args, "--harness", "b", &dir.path().join("b.json"));
+    add_variant(
+        &mut args,
+        "--d-note",
+        "lessons",
+        &dir.path().join("note.txt"),
+    );
+    args.push("--record-hidden-output".to_string());
+    let runner = HarnessMock::default();
+    let (provider, _) = mock(|r, _| {
+        if r.prompt.contains("Previous attempt") {
+            GOOD
+        } else {
+            WRONG
+        }
+        .to_string()
+    });
+    run_mock(&args, &runner, provider).unwrap();
+    let received = runner.seen.lock().unwrap();
+    assert_eq!(received.len(), 2);
+    for name in ["alpha", "beta"] {
+        assert!(received.contains(&(json!({"name": name}), 2)));
+    }
+    let records = ledger_records(&dir.path().join("run"));
+    let registration = &records[0];
+    for name in ["a", "b"] {
+        let bytes = fs::read(dir.path().join(format!("{name}.json"))).unwrap();
+        assert_eq!(
+            registration["harnesses"][name]["harness"],
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        );
+        assert_eq!(
+            registration["harnesses"][name]["harness_sha256"],
+            ledger::sha256_hex(&bytes)
+        );
+    }
+    let note = fs::read(dir.path().join("note.txt")).unwrap();
+    assert_eq!(
+        registration["d_notes"]["lessons"]["sha256"],
+        ledger::sha256_hex(&note)
+    );
+    assert_eq!(registration["d_notes"]["lessons"]["bytes"], note.len());
+    for label in ["C:a", "C:b", "D", "D:lessons"] {
+        let submission = records
+            .iter()
+            .find(|r| r["kind"] == "submission" && r["arm"] == label)
+            .unwrap();
+        assert_eq!(submission["invocations"], 2);
+        let disk = label.replace(':', "-");
+        assert!(
+            dir.path()
+                .join(format!("run/submissions/{disk}/t1/r0.rs"))
+                .is_file()
+        );
+        assert!(
+            dir.path()
+                .join(format!("run/submissions/{disk}/t1/r0.hidden.txt"))
+                .is_file()
+        );
+        assert!(
+            dir.path()
+                .join(format!("run/invocations/{disk}/t1/r0"))
+                .is_dir()
+        );
+        let calls: Vec<_> = records
+            .iter()
+            .filter(|r| r["kind"] == "invocation" && r["arm"] == label)
+            .collect();
+        assert_eq!(calls.len(), 2);
+    }
+    for label in ["D", "D-lessons"] {
+        let prompts: Vec<_> = walk(&dir.path().join(format!("run/invocations/{label}")))
+            .into_iter()
+            .filter(|p| p.to_string_lossy().contains("prompt"))
+            .collect();
+        assert_eq!(prompts.len(), 2);
+        for path in prompts {
+            let prompt = fs::read_to_string(path).unwrap();
+            assert_eq!(prompt.contains("NOTE_SENTINEL_é"), label == "D-lessons");
+            if label == "D-lessons" {
+                assert!(
+                    prompt.contains("\n```\n\n\nNOTE_SENTINEL_é\nCheck edge cases.\n"),
+                    "{prompt}"
+                );
+            }
+        }
+    }
+    let summary: Value =
+        serde_json::from_slice(&fs::read(dir.path().join("run/summary.json")).unwrap()).unwrap();
+    for (x, y) in [
+        ("C:a", "C:b"),
+        ("C:a", "D"),
+        ("C:b", "D"),
+        ("C:a", "D:lessons"),
+    ] {
+        assert!(
+            summary["comparisons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["treatment"] == x && c["comparator"] == y)
+        );
+    }
+    assert!(ledger::verify_chain(&dir.path().join("run/ledger.jsonl")).is_ok());
+}
+
+#[test]
+fn variants_and_claims_are_validated_before_registration() {
+    for (arms, definitions, claim, expected) in [
+        ("D,C:a", vec![], None, "undefined"),
+        ("D", vec![("--harness", "a", "a.json")], None, "not listed"),
+        ("D,D:lessons", vec![], None, "undefined"),
+        (
+            "D",
+            vec![("--d-note", "lessons", "note.txt")],
+            None,
+            "not listed",
+        ),
+        (
+            "D,C:a,C:b",
+            vec![("--harness", "a", "a.json"), ("--harness", "b", "bad.json")],
+            None,
+            "invalid mock harness",
+        ),
+        (
+            "D,C:a",
+            vec![("--harness", "a", "a.json"), ("--harness", "a", "b.json")],
+            None,
+            "twice",
+        ),
+        (
+            "D,C:a",
+            vec![("--harness", "a", "a.json")],
+            Some("D>C:a"),
+            "computed comparison",
+        ),
+        (
+            "D,C:a",
+            vec![("--harness", "a", "a.json")],
+            Some("C:a>C:missing"),
+            "computed comparison",
+        ),
+        (
+            "D,C:a",
+            vec![("--harness", "a", "a.json")],
+            Some(""),
+            "claim",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut args = variant_args(dir.path(), arms);
+        for (flag, name, path) in definitions {
+            add_variant(&mut args, flag, name, &dir.path().join(path));
+        }
+        if let Some(claim) = claim {
+            args.extend(["--claim".to_string(), claim.to_string()]);
+        }
+        let (provider, seen) = mock(|_, _| GOOD.to_string());
+        let error = run_mock(&args, &HarnessMock::default(), provider).unwrap_err();
+        assert!(error.contains(expected), "{error} (expected {expected})");
+        assert!(!dir.path().join("run/ledger.jsonl").exists());
+        assert!(seen.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn multi_comparison_claim_requires_all_pairs_and_uses_first_for_falsification() {
+    let a = Arm::parse("C:a").unwrap();
+    let b = Arm::parse("C:b").unwrap();
+    let mut plan = claim_plan();
+    plan.arms = vec![a.clone(), b.clone(), Arm::D];
+    plan.claim = Some(vec![(a.clone(), b.clone()), (a.clone(), Arm::D)]);
+    let result = |a_pass: bool, b_pass: bool, d_pass: bool| RunResult {
+        outcomes: (0..12)
+            .flat_map(|f| {
+                [
+                    outcome(a.clone(), f, 0, a_pass),
+                    outcome(b.clone(), f, 0, b_pass),
+                    outcome(Arm::D, f, 0, d_pass),
+                ]
+            })
+            .collect(),
+        tuples_planned: 12,
+        aborted: false,
+        hidden_name_hits: Vec::new(),
+        scored: true,
+    };
+    let supported = summarize(&result(true, false, false), &plan);
+    // An integrity failure dominates even when every pair would be Supported.
+    let mut flagged = result(true, false, false);
+    flagged.hidden_name_hits = vec!["h_secret".to_string()];
+    assert_eq!(summarize(&flagged, &plan)["claim"], "IntegrityReview");
+    assert_eq!(supported["claim_rule"], "all-supported");
+    assert_eq!(supported["claim"], "SUPPORTED");
+    assert_eq!(supported["claim_comparisons"][0]["class"], "Supported");
+    assert_eq!(
+        summarize(&result(true, false, true), &plan)["claim"],
+        "INCONCLUSIVE"
+    );
+    assert_eq!(
+        summarize(&result(false, true, false), &plan)["claim"],
+        "RULED OUT"
+    );
+    assert_eq!(
+        summarize(&result(true, true, false), &plan)["claim"],
+        "INCONCLUSIVE"
+    );
+    plan.min_families = 13;
+    assert_eq!(
+        summarize(&result(true, false, false), &plan)["claim"],
+        "INCONCLUSIVE"
+    );
+    plan.min_families = 10;
+    let mut invalid = result(true, false, false);
+    invalid.outcomes[0].tool_calls = 1;
+    assert_eq!(summarize(&invalid, &plan)["claim"], "IntegrityReview");
+    invalid.outcomes[0].tool_calls = 0;
+    invalid.tuples_planned = 20;
+    assert_eq!(summarize(&invalid, &plan)["claim"], "Invalid");
+}
+
+#[test]
+fn variant_registration_survives_manifest_scoring_pooling_and_compare() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut args = variant_args(dir.path(), "C:a,C:b,D,D:lessons");
+    add_variant(&mut args, "--harness", "a", &dir.path().join("a.json"));
+    add_variant(&mut args, "--harness", "b", &dir.path().join("b.json"));
+    add_variant(
+        &mut args,
+        "--d-note",
+        "lessons",
+        &dir.path().join("note.txt"),
+    );
+    let primary = args.iter().position(|a| a == "--primary").unwrap();
+    args.drain(primary..primary + 2);
+    args.extend(["--replicates".to_string(), "2".to_string()]);
+    args.extend([
+        "--defer-scoring".to_string(),
+        "--claim".to_string(),
+        "C:a>C:b,C:a>D".to_string(),
+    ]);
+    let (provider, _) = mock(|_, _| GOOD.to_string());
+    run_mock(&args, &HarnessMock::default(), provider).unwrap();
+    let run = dir.path().join("run");
+    assert_eq!(
+        cli_main(&vec!["manifest".into(), run.display().to_string()], None),
+        0
+    );
+    let (result, plan, _) =
+        score_deferred(&run, &dir.path().join("suite"), 1, false, None).unwrap();
+    assert_eq!(result.outcomes.len(), 8);
+    assert!(result.outcomes.iter().all(|o| o.hidden.all_passed));
+    assert_eq!(plan.claim.as_ref().unwrap().len(), 2);
+    assert_eq!(plan.harnesses["b"], json!({"name":"beta"}));
+    let ledger = run.join("ledger.jsonl");
+    let (pooled, pooled_plan) = pool_ledgers(&[ledger.clone(), ledger.clone()]).unwrap();
+    assert_eq!(pooled.outcomes.len(), 16);
+    assert_eq!(pooled_plan.replicates, 4);
+    assert_eq!(pooled.tuples_planned, 4);
+    assert_eq!(summarize(&pooled, &pooled_plan)["complete"], true);
+    assert_eq!(
+        summarize(&pooled, &pooled_plan)["claim_rule"],
+        "all-supported"
+    );
+    for key in ["harnesses", "d_notes", "claim"] {
+        let path = dir.path().join(format!("changed-{key}.jsonl"));
+        let mut changed = Ledger::create(&path).unwrap();
+        let mut registration = ledger_records(&run)[0].clone();
+        registration[key] = json!(null);
+        changed.append("registration", registration).unwrap();
+        let error = pool_ledgers(&[ledger.clone(), path]).unwrap_err();
+        assert!(error.contains(&format!("'{key}' differs")), "{error}");
+    }
+    let out = dir.path().join("comparison.json");
+    assert_eq!(
+        cli_main(
+            &vec![
+                "compare".into(),
+                "--out".into(),
+                out.display().to_string(),
+                format!("{}:C:a", ledger.display()),
+                format!("{}:C:b", ledger.display())
+            ],
+            None
+        ),
+        0
+    );
+    let comparison: Value = serde_json::from_slice(&fs::read(out).unwrap()).unwrap();
+    assert_eq!(comparison["x"]["arm"], "C:a");
+    assert_eq!(comparison["x"]["harness"], json!({"name":"alpha"}));
+    assert_eq!(comparison["y"]["arm"], "C:b");
+    assert_eq!(comparison["n"], 2);
+}
+
+#[test]
+fn plain_harness_registration_and_legacy_claim_are_preserved() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut args = variant_args(dir.path(), "C,D");
+    args.extend([
+        "--harness".to_string(),
+        dir.path().join("a.json").display().to_string(),
+    ]);
+    let (provider, _) = mock(|_, _| GOOD.to_string());
+    let runner = HarnessMock::default();
+    run_mock(&args, &runner, provider).unwrap();
+    assert_eq!(runner.seen.lock().unwrap()[0].0, json!({"name":"alpha"}));
+    let records = ledger_records(&dir.path().join("run"));
+    assert_eq!(records[0]["harness"], json!({"name":"alpha"}));
+    assert_eq!(
+        records[0]["harness_sha256"],
+        ledger::sha256_hex(&fs::read(dir.path().join("a.json")).unwrap())
+    );
+    let summary = records.iter().find(|r| r["kind"] == "summary").unwrap();
+    assert!(summary.get("claim_rule").is_none());
+    assert_eq!(summary["comparisons"][0]["role"], "primary");
+}
+
+#[test]
+fn variant_orders_cover_all_arms_and_comparisons_keep_c_pair_direction() {
+    let mut plan = claim_plan();
+    plan.arms = ["C:b", "D:notes", "B", "C", "A", "D", "C:a"]
+        .into_iter()
+        .map(|s| Arm::parse(s).unwrap())
+        .collect();
+    let mut expected = plan.arms.clone();
+    expected.sort();
+    let orders: Vec<_> = (0..20)
+        .map(|i| arm_order(&plan, &format!("task-{i}"), 1))
+        .collect();
+    for order in &orders {
+        let mut sorted = order.clone();
+        sorted.sort();
+        assert_eq!(sorted, expected);
+    }
+    assert_eq!(orders[3], arm_order(&plan, "task-3", 1));
+    assert!(orders.iter().any(|o| o != &orders[0]));
+    let pairs = comparison_pairs(&plan.arms);
+    assert_eq!(pairs.len(), 18);
+    let c_pairs: Vec<_> = pairs
+        .iter()
+        .filter(|(x, y)| x.is_c() && y.is_c())
+        .map(|(x, y)| (x.label(), y.label()))
+        .collect();
+    assert_eq!(
+        c_pairs,
+        [("C:b", "C"), ("C:b", "C:a"), ("C", "C:a")].map(|(x, y)| (x.to_string(), y.to_string()))
+    );
+}
+
+#[test]
+fn named_c_variants_share_the_global_invocation_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut plan = claim_plan();
+    plan.arms = ["C:a", "C:b"]
+        .into_iter()
+        .map(|s| Arm::parse(s).unwrap())
+        .collect();
+    plan.harnesses = [("a".to_string(), json!({})), ("b".to_string(), json!({}))]
+        .into_iter()
+        .collect();
+    plan.k = 2;
+    let meter = meter_in(dir.path(), 3);
+    let (provider, seen) = mock(|_, _| GOOD.to_string());
+    let result = run_arms(
+        &plan,
+        &suite(),
+        provider,
+        &meter,
+        dir.path(),
+        Some(&HarnessMock::default()),
+    )
+    .unwrap();
+    assert!(result.aborted);
+    assert_eq!(result.outcomes.len(), 1);
+    assert_eq!(seen.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn pooling_accepts_legacy_registration_without_variant_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let legacy = dir.path().join("legacy.jsonl");
+    let current = dir.path().join("current.jsonl");
+    synthetic_ledger(&legacy, 7, 4);
+    let mut ledger = Ledger::create(&current).unwrap();
+    for line in fs::read_to_string(&legacy).unwrap().lines() {
+        let mut record: Value = serde_json::from_str(line).unwrap();
+        if record["kind"] == "registration" {
+            record["harnesses"] = json!({});
+            record["d_notes"] = json!({});
+            record["claim"] = Value::Null;
+        }
+        let kind = record["kind"].as_str().unwrap().to_string();
+        ledger.append(&kind, record).unwrap();
+    }
+    let (result, plan) = pool_ledgers(&[legacy, current]).unwrap();
+    assert_eq!(result.outcomes.len(), 16);
+    assert_eq!(plan.replicates, 2);
 }

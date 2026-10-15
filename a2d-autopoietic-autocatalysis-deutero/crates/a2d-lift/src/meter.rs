@@ -189,7 +189,7 @@ impl Meter {
     ) {
         let dir = self
             .artifacts_dir
-            .join(&scope.arm)
+            .join(scope.arm.replace(':', "-"))
             .join(&scope.task)
             .join(format!("r{}", scope.replicate));
         let stem = format!("inv{:02}-{}", index, file_safe(&request.enzyme_id.0));
