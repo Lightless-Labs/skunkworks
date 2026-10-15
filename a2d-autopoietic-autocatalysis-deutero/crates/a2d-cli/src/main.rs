@@ -40,6 +40,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod challenges;
 mod lift_arm_c;
+mod lift_distill;
 mod senior_swe_bench;
 
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -56,6 +57,9 @@ fn main() {
         }
         "cycle-input" => {
             run_cycle_input(&args[2..]);
+        }
+        "distill" => {
+            std::process::exit(lift_distill::main(&args[2..]));
         }
         "lift" => {
             std::process::exit(a2d_lift::cli_main(

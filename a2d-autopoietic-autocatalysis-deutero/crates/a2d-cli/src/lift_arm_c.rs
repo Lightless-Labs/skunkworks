@@ -174,6 +174,11 @@ fn harness_germline(harness: &Value) -> Result<Germline, String> {
     Ok(germline)
 }
 
+/// Validate a harness without running it (used by `a2d distill`).
+pub fn validate(harness: &Value) -> Result<(), String> {
+    harness_germline(harness).map(|_| ())
+}
+
 fn harness_input(task: &PublicTask, harness: &Value) -> String {
     let mut input = a2d_lift::arms::task_prompt(task);
     if let Some(note) = harness["coder_note"].as_str() {
