@@ -103,6 +103,37 @@ Consequences:
 - C vs D +1.4 pp, 95% CI [−5.4, +8.8]. C vs B +3.4 pp, CI [−2.7, +9.8].
 - C used 3.7× D's invocations and tokens.
 - That is half of "Completed (falsified)". Completion now depends on P4. Next: P3, the outer research loop, then P4.
+**Addendum:** 2026-10-15 — **P2 gate.**
+
+**Reviewers.** Codex `gpt-6.1-sol` (high) and a fresh-context Claude subagent, each in an empty temp dir with copied inputs. P2 is accepted with the narrow claim wording and the robustness checks recorded under LOG E07b. Decisions:
+
+1. **Confirmation-1 becomes development data.** Its single registered scoring, including the one allowed extension, is spent.
+   - Split by a committed seeded hash of family names (`docs/experiments/c1-split.json`): 17 train families (68 tasks) go to `tasks/c1-train/` (visible, committed); 20 validation families (80 tasks) go to `$A2D_HOLDOUT_DIR/c1-validation/`.
+   - Validation is read only through run `summary.json`. Per-task and per-family validation statistics are never computed.
+   - Limitation: Confirmation-1 and Confirmation-2 share an author and a template.
+2. **P3 is rewritten as the autoresearch loop** (`docs/plans/2026-10-15-p3-research-loop.md`), and supersedes `2026-10-14-p3-ablation.md`.
+   - **Base harness:** D's behaviour, because D is what must be beaten.
+   - **Mechanisms are ranked by whether they add a signal beyond the public tests.** 92% of D's remaining failures are public-green, so only a non-public signal can help.
+   - **Offline falsification on frozen candidate pools comes first.** Inertness is shown by unit test, not by live ablation.
+3. **Harness = fixed interpreter + evolvable JSON configuration.** Every step's output must have a declared consumer, and that reachability is checked at registration. Prompt changes that also apply to D are reported with a "D + same prompt" control.
+4. **Hidden-test boundary (clarifying the standing goal rule).** Hidden-test *content* never reaches any arm or enzyme. In P4 only, *aggregate pass/fail labels on train families* may reach the proposer. Validation and confirmation outcomes never reach any enzyme.
+5. **Confirmation-2 is extended blind now** towards 37 families × 4, before any candidate is evaluated on it.
+   - The final P3/P4 confirmation is one registered run (D, B, the best P3 harness, the P4 harness), scored once.
+   - SUPPORTED must hold against both B and D.
+   - Power is planned by simulating the joint decision with the new harness's development discordance.
+6. **Development fast lane.** Development runs use `--unregistered`, a one-row LOG pre-registration (id, mechanism, kill threshold, budget) and the ledger. The full ceremony (freeze, manifest, deferred scoring) applies only to confirmation.
+7. **Shared Codex account (standing condition).** The sibling A² session shares the account. This is pre-registered as a run condition, mitigated by seeded tuple and arm order, and no longer logged as a deviation per run. Holdout authoring by this session never overlaps a registered run.
+8. **Budget envelope** for the remaining ≈ 15k invocations: P3 ≤ 3k, P4 ≤ 5k, Confirmation-2 run ≈ 5k, reserve ≈ 2k.
+9. **Completion reporting** keeps three outcomes separate: the seed threshold is excluded (P2, done); an improved harness is found (P3); the self-improvement process is supported, inconclusive or ruled out (P4).
+
+The consolidated current rules are in `docs/PROTOCOL.md`.
+
+Process diagnostics:
+- About 4.4k experiment invocations, plus about 200 audit invocations.
+- 8 results.
+- Spend: the P2 confirmation was 82% of experiment spend, justified as the falsification.
+
+Lesson: never spend confirmation data without development evidence at the claim threshold.
 **Supersedes as primary goal:** `swe-bench-pro-blind-evaluator-adapter.md` (parked), the Senior SWE-Bench retry chain (parked)
 **Grounding:** `docs/research/2026-10-14-direction-audit.md`, `docs/research/2026-10-14-dgm-rqgm-relevance.md`
 **Decision deadline:** P2 confirmation result recorded by **2026-11-30**. Missing it is a non-result, not a falsification: record "not measured by deadline", stop adding seed-cycle complexity, and continue per Completion.

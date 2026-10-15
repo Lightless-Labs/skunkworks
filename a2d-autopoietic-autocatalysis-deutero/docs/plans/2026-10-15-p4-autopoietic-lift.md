@@ -2,6 +2,13 @@
 
 **Created:** 2026-10-15 (drafted while E07b runs; executes after P3)
 **Status:** Draft
+**Addendum:** 2026-10-15 — P2 gate fixes:
+- **Train-label rule:** train-family aggregate pass/fail labels may reach the proposer; test content never does; validation and confirmation outcomes reach no enzyme.
+- **Acceptance** uses train mechanism metrics with a fixed threshold. Validation is used only at the end.
+- **A random-edit proposer** over the same grammar, at equal search budget, is the control.
+- **At least 2 independent searches** from H0 (≤ 5 generations each), and every search is reported.
+- **New slots:** a post-green action and a capped 'lessons' list the architect can append to.
+- **Budget** (full accounting): ≤ 5k invocations.
 **Parent:** `docs/plans/2026-10-14-lift-first-roadmap.md` § P4
 **Grounding:** `docs/research/2026-10-14-dgm-rqgm-relevance.md`; E07: the seed metabolism ≈ the plain repair loop (+2.7 pp, CI [−4.7, +11.5]) at 3.7× the tokens.
 
