@@ -1,0 +1,92 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    RowTooLong { len: usize },
+    InvalidTile { index: usize, value: u32 },
+    MergeOverflow { first: usize, second: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Merge {
+    pub from: [usize; 2],
+    pub to: usize,
+    pub value: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowResult {
+    pub cells: Vec<u32>,
+    pub score: u64,
+    pub changed: bool,
+    pub merges: Vec<Merge>,
+}
+
+pub fn slide_row(row: &[u32], side: Side) -> Result<RowResult, Error> {
+    if row.len() > 32 {
+        return Err(Error::RowTooLong { len: row.len() });
+    }
+
+    for (index, &value) in row.iter().enumerate() {
+        if value != 0 && (value < 2 || value > 2_147_483_648 || !value.is_power_of_two()) {
+            return Err(Error::InvalidTile { index, value });
+        }
+    }
+
+    let indices: Vec<usize> = match side {
+        Side::Left => (0..row.len()).collect(),
+        Side::Right => (0..row.len()).rev().collect(),
+    };
+    let nonempty: Vec<usize> = indices.into_iter().filter(|&i| row[i] != 0).collect();
+
+    let mut outputs: Vec<u32> = Vec::with_capacity(nonempty.len());
+    let mut merges = Vec::new();
+    let mut score = 0u64;
+    let mut i = 0;
+
+    while i < nonempty.len() {
+        let first = nonempty[i];
+        if i + 1 < nonempty.len() && row[first] == row[nonempty[i + 1]] {
+            let second = nonempty[i + 1];
+            let Some(value) = row[first].checked_mul(2) else {
+                return Err(Error::MergeOverflow { first, second });
+            };
+            outputs.push(value);
+            score += u64::from(value);
+            merges.push(Merge {
+                from: [first, second],
+                to: 0,
+                value,
+            });
+            i += 2;
+        } else {
+            outputs.push(row[first]);
+            i += 1;
+        }
+    }
+
+    let mut cells = vec![0; row.len()];
+    let output_indices: Vec<usize> = match side {
+        Side::Left => (0..row.len()).collect(),
+        Side::Right => (0..row.len()).rev().collect(),
+    };
+
+    for (merge, &to) in merges.iter_mut().zip(output_indices.iter()) {
+        merge.to = to;
+    }
+    for (&value, &index) in outputs.iter().zip(output_indices.iter()) {
+        cells[index] = value;
+    }
+
+    let changed = cells != row;
+    Ok(RowResult {
+        cells,
+        score,
+        changed,
+        merges,
+    })
+}

@@ -1,0 +1,174 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    UnexpectedClose { pos: usize },
+    Unclosed { pos: usize },
+    NestedOpen { pos: usize },
+    EmptyExpression { pos: usize },
+    UnsupportedOperator { pos: usize },
+    EmptyVariable { pos: usize },
+    InvalidName { pos: usize },
+    DuplicateVariable { pos: usize },
+}
+
+#[derive(Debug)]
+struct Variable {
+    name: String,
+    pos: usize,
+}
+
+#[derive(Debug)]
+enum Part {
+    Literal(String),
+    Expression(Vec<Variable>),
+}
+
+pub fn expand(template: &str, vars: &[(&str, &str)]) -> Result<String, Error> {
+    let mut parts = Vec::new();
+    let mut literal_start = 0;
+    let mut cursor = 0;
+
+    while cursor < template.len() {
+        let ch = template[cursor..].chars().next().unwrap();
+        match ch {
+            '}' => return Err(Error::UnexpectedClose { pos: cursor }),
+            '{' => {
+                if literal_start < cursor {
+                    parts.push(Part::Literal(template[literal_start..cursor].to_owned()));
+                }
+
+                let open = cursor;
+                let content_start = open + 1;
+                let Some(relative_close) = template[content_start..].find('}') else {
+                    return Err(Error::Unclosed { pos: open });
+                };
+                let close = content_start + relative_close;
+
+                if let Some(relative_open) = template[content_start..close].find('{') {
+                    return Err(Error::NestedOpen {
+                        pos: content_start + relative_open,
+                    });
+                }
+
+                let content = &template[content_start..close];
+                let mut spec_start = content_start;
+                let mut body_start = content_start;
+
+                if let Some(first) = content.chars().next() {
+                    if matches!(first, '+' | '#' | '.' | '/' | ';' | '?' | '&') {
+                        return Err(Error::UnsupportedOperator { pos: content_start });
+                    }
+                }
+
+                if content.is_empty() {
+                    return Err(Error::EmptyExpression { pos: close });
+                }
+
+                let mut parsed = Vec::new();
+                let mut seen: Vec<String> = Vec::new();
+                for spec in content.split(',') {
+                    if spec.is_empty() {
+                        return Err(Error::EmptyVariable { pos: spec_start });
+                    }
+
+                    let bytes = spec.as_bytes();
+                    let valid_first = |b: u8| b.is_ascii_alphabetic() || b == b'_';
+                    let valid_rest = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+
+                    let invalid_index = if !valid_first(bytes[0]) {
+                        Some(0)
+                    } else {
+                        bytes.iter().enumerate().skip(1).find_map(|(i, b)| {
+                            if valid_rest(*b) { None } else { Some(i) }
+                        })
+                    };
+
+                    if let Some(i) = invalid_index {
+                        return Err(Error::InvalidName { pos: spec_start + i });
+                    }
+
+                    if seen.iter().any(|name| name == spec) {
+                        return Err(Error::DuplicateVariable { pos: spec_start });
+                    }
+
+                    seen.push(spec.to_owned());
+                    parsed.push(Variable {
+                        name: spec.to_owned(),
+                        pos: spec_start,
+                    });
+
+                    spec_start += spec.len() + 1;
+                    body_start += spec.len() + 1;
+                }
+
+                let _ = body_start;
+                parts.push(Part::Expression(parsed));
+                cursor = close + 1;
+                literal_start = cursor;
+            }
+            _ => cursor += ch.len_utf8(),
+        }
+    }
+
+    if literal_start < template.len() {
+        parts.push(Part::Literal(template[literal_start..].to_owned()));
+    }
+
+    let mut output = String::new();
+    for part in parts {
+        match part {
+            Part::Literal(text) => output.push_str(&text),
+            Part::Expression(variables) => {
+                let mut first = true;
+                for variable in variables {
+                    let _ = variable.pos;
+                    if let Some(value) = vars.iter().rev().find(|(name, _)| *name == variable.name).map(|(_, value)| *value) {
+                        if !first {
+                            output.push(',');
+                        }
+                        first = false;
+                        encode_value(value, &mut output);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(output)
+}
+
+fn encode_value(value: &str, output: &mut String) {
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'%' && i + 2 < bytes.len() && is_hex(bytes[i + 1]) && is_hex(bytes[i + 2]) {
+            output.push('%');
+            output.push((bytes[i + 1] as char).to_ascii_uppercase());
+            output.push((bytes[i + 2] as char).to_ascii_uppercase());
+            i += 3;
+        } else if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            output.push(b as char);
+            i += 1;
+        } else {
+            output.push('%');
+            output.push(hex(b >> 4));
+            output.push(hex(b & 0x0f));
+            i += 1;
+        }
+    }
+}
+
+fn is_hex(b: u8) -> bool {
+    b.is_ascii_hexdigit()
+}
+
+fn hex(n: u8) -> char {
+    match n {
+        0..=9 => (b'0' + n) as char,
+        _ => (b'A' + n - 10) as char,
+    }
+}
+
+fn main() {}
+```

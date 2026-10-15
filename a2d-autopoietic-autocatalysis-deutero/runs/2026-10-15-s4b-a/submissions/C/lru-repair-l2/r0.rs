@@ -1,0 +1,238 @@
+use std::collections::{BTreeMap, VecDeque};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroPeriod,
+    Disabled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub key: u64,
+    pub value: i64,
+    pub frequency: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct Cache {
+    capacity: usize,
+    period: u32,
+    pending: u32,
+    entries: BTreeMap<u64, Entry>,
+    recency: VecDeque<u64>,
+}
+
+impl Cache {
+    pub fn new(capacity: usize, period: u32) -> Result<Self, Error> {
+        if period == 0 {
+            return Err(Error::ZeroPeriod);
+        }
+        Ok(Self {
+            capacity,
+            period,
+            pending: 0,
+            entries: BTreeMap::new(),
+            recency: VecDeque::new(),
+        })
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn pending(&self) -> u32 {
+        self.pending
+    }
+
+    pub fn snapshot(&self) -> Vec<Entry> {
+        let mut result = self.entries_by_recency();
+        result.sort_by_key(|entry| entry.frequency);
+        result
+    }
+
+    pub fn get(&mut self, key: u64) -> Option<i64> {
+        self.begin();
+        let value = self.entries.get(&key).map(|entry| entry.value);
+        if value.is_some() {
+            self.credit(key);
+        }
+        value
+    }
+
+    pub fn put(&mut self, key: u64, value: i64) -> Result<Vec<u64>, Error> {
+        if self.capacity == 0 {
+            return Err(Error::Disabled);
+        }
+
+        self.begin();
+
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.value = value;
+            self.credit(key);
+            return Ok(Vec::new());
+        }
+
+        let mut removed = Vec::new();
+        if self.entries.len() >= self.capacity {
+            if let Some(victim) = self.victim() {
+                self.erase(victim);
+                removed.push(victim);
+            }
+        }
+
+        self.entries.insert(
+            key,
+            Entry {
+                key,
+                value,
+                frequency: 1,
+            },
+        );
+        self.touch(key);
+        Ok(removed)
+    }
+
+    pub fn remove(&mut self, key: u64) -> Option<i64> {
+        self.begin();
+        self.erase(key).map(|entry| entry.value)
+    }
+
+    pub fn age(&mut self, rounds: u8) {
+        for _ in 0..rounds {
+            self.halve();
+        }
+    }
+
+    pub fn resize(&mut self, capacity: usize) -> Vec<u64> {
+        self.capacity = capacity;
+        let mut removed = Vec::new();
+        while self.entries.len() > capacity {
+            if let Some(victim) = self.victim() {
+                self.erase(victim);
+                removed.push(victim);
+            } else {
+                break;
+            }
+        }
+        removed
+    }
+
+    fn begin(&mut self) {
+        self.pending += 1;
+        if self.pending == self.period {
+            self.halve();
+            self.pending = 0;
+        }
+    }
+
+    fn halve(&mut self) {
+        for entry in self.entries.values_mut() {
+            entry.frequency = (entry.frequency + 1) / 2;
+        }
+    }
+
+    fn touch(&mut self, key: u64) {
+        self.recency.retain(|&current| current != key);
+        self.recency.push_back(key);
+    }
+
+    fn credit(&mut self, key: u64) {
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.frequency = (entry.frequency + 1).min(7);
+        }
+        self.touch(key);
+    }
+
+    fn erase(&mut self, key: u64) -> Option<Entry> {
+        self.recency.retain(|&current| current != key);
+        self.entries.remove(&key)
+    }
+
+    fn victim(&self) -> Option<u64> {
+        self.recency
+            .iter()
+            .find(|&&key| {
+                let frequency = self.entries[&key].frequency;
+                self.recency
+                    .iter()
+                    .take_while(|&&other| other != key)
+                    .all(|&other| self.entries[&other].frequency > frequency)
+            })
+            .copied()
+    }
+
+    fn entries_by_recency(&self) -> Vec<Entry> {
+        self.recency
+            .iter()
+            .filter_map(|key| self.entries.get(key).cloned())
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lfu_lru_ties_and_snapshot_order() {
+        let mut cache = Cache::new(2, 100).unwrap();
+        cache.put(1, 10).unwrap();
+        cache.put(2, 20).unwrap();
+        assert_eq!(cache.get(1), Some(10));
+        assert_eq!(cache.put(3, 30), Ok(vec![2]));
+        assert_eq!(
+            cache.snapshot().iter().map(|entry| entry.key).collect::<Vec<_>>(),
+            vec![3, 1]
+        );
+    }
+
+    #[test]
+    fn aging_and_pending() {
+        let mut cache = Cache::new(2, 10).unwrap();
+        cache.put(4, 40).unwrap();
+        cache.get(4);
+        cache.get(4);
+        cache.get(4);
+        assert_eq!(cache.pending(), 4);
+        cache.age(1);
+        assert_eq!(cache.snapshot()[0].frequency, 2);
+        assert_eq!(cache.pending(), 4);
+    }
+
+    #[test]
+    fn boundary_ages_before_operation_and_new_entries_are_not_aged() {
+        let mut cache = Cache::new(2, 1).unwrap();
+        cache.put(1, 10).unwrap();
+        assert_eq!(cache.snapshot()[0].frequency, 1);
+        cache.get(1);
+        assert_eq!(cache.snapshot()[0].frequency, 2);
+    }
+
+    #[test]
+    fn update_remove_resize_and_disabled_put() {
+        let mut cache = Cache::new(3, 100).unwrap();
+        cache.put(8, 80).unwrap();
+        assert_eq!(cache.put(8, 81), Ok(vec![]));
+        assert_eq!(cache.remove(8), Some(81));
+        cache.put(9, 90).unwrap();
+        cache.put(10, 100).unwrap();
+        assert_eq!(cache.resize(1), vec![9]);
+        assert_eq!(cache.get(10), Some(100));
+
+        let pending = cache.pending();
+        assert_eq!(cache.resize(0), vec![10]);
+        assert_eq!(cache.put(1, 1), Err(Error::Disabled));
+        assert_eq!(cache.pending(), pending);
+    }
+
+    #[test]
+    fn constructor_validation_precedence_and_extreme_values() {
+        assert_eq!(Cache::new(0, 0).unwrap_err(), Error::ZeroPeriod);
+        let mut cache = Cache::new(1, u32::MAX).unwrap();
+        assert_eq!(cache.put(u64::MAX, i64::MIN), Ok(vec![]));
+        assert_eq!(cache.get(u64::MAX), Some(i64::MIN));
+        assert_eq!(cache.pending(), 2);
+    }
+}
+
+fn main() {}

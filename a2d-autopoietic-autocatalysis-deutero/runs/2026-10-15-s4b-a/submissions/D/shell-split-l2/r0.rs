@@ -1,0 +1,322 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitError {
+    Nul { pos: usize },
+    TrailingEscape { pos: usize },
+    UnterminatedSingle { pos: usize },
+    UnterminatedDouble { pos: usize },
+    UnterminatedExpansion { pos: usize },
+    InvalidExpansion { pos: usize },
+}
+
+pub fn split(input: &str, env: &[(&str, &str)]) -> Result<Vec<String>, SplitError> {
+    if let Some(pos) = input.find('\0') {
+        return Err(SplitError::Nul { pos });
+    }
+
+    let mut parser = Parser {
+        input,
+        env,
+        pos: 0,
+        words: Vec::new(),
+        word: String::new(),
+        active: false,
+    };
+
+    parser.parse()?;
+    if parser.active {
+        parser.words.push(parser.word);
+    }
+    Ok(parser.words)
+}
+
+struct Parser<'a> {
+    input: &'a str,
+    env: &'a [(&'a str, &'a str)],
+    pos: usize,
+    words: Vec<String>,
+    word: String,
+    active: bool,
+}
+
+impl Parser<'_> {
+    fn parse(&mut self) -> Result<(), SplitError> {
+        while self.pos < self.input.len() {
+            let ch = self.peek().expect("position is within input");
+            match ch {
+                ' ' | '\t' | '\r' | '\n' => {
+                    self.pos += ch.len_utf8();
+                    self.finish_word();
+                }
+                '\'' => self.parse_single()?,
+                '"' => self.parse_double()?,
+                '\\' => self.parse_bare_escape()?,
+                '$' => self.parse_expansion_or_dollar()?,
+                _ => self.push_char(ch),
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_single(&mut self) -> Result<(), SplitError> {
+        let opening = self.pos;
+        self.activate();
+        self.pos += 1;
+
+        while self.pos < self.input.len() {
+            let ch = self.peek().expect("position is within input");
+            if ch == '\'' {
+                self.pos += 1;
+                return Ok(());
+            }
+            self.word.push(ch);
+            self.pos += ch.len_utf8();
+        }
+
+        Err(SplitError::UnterminatedSingle { pos: opening })
+    }
+
+    fn parse_double(&mut self) -> Result<(), SplitError> {
+        let opening = self.pos;
+        self.activate();
+        self.pos += 1;
+
+        while self.pos < self.input.len() {
+            let ch = self.peek().expect("position is within input");
+            match ch {
+                '"' => {
+                    self.pos += 1;
+                    return Ok(());
+                }
+                '\\' => {
+                    let slash = self.pos;
+                    self.pos += 1;
+                    if self.pos == self.input.len() {
+                        return Err(SplitError::TrailingEscape { pos: slash });
+                    }
+                    let next = self.peek().expect("position is within input");
+                    match next {
+                        '"' | '\\' | '$' => {
+                            self.word.push(next);
+                            self.pos += next.len_utf8();
+                        }
+                        '\n' => self.pos += 1,
+                        _ => self.word.push('\\'),
+                    }
+                }
+                '$' => self.parse_expansion_or_dollar()?,
+                _ => {
+                    self.word.push(ch);
+                    self.pos += ch.len_utf8();
+                }
+            }
+        }
+
+        Err(SplitError::UnterminatedDouble { pos: opening })
+    }
+
+    fn parse_bare_escape(&mut self) -> Result<(), SplitError> {
+        let slash = self.pos;
+        self.pos += 1;
+        if self.pos == self.input.len() {
+            return Err(SplitError::TrailingEscape { pos: slash });
+        }
+
+        let next = self.peek().expect("position is within input");
+        if next == '\n' {
+            self.pos += 1;
+        } else {
+            self.activate();
+            self.word.push(next);
+            self.pos += next.len_utf8();
+        }
+        Ok(())
+    }
+
+    fn parse_expansion_or_dollar(&mut self) -> Result<(), SplitError> {
+        let dollar = self.pos;
+        let after_dollar = dollar + 1;
+
+        if after_dollar == self.input.len() {
+            self.activate();
+            self.word.push('$');
+            self.pos = after_dollar;
+            return Ok(());
+        }
+
+        let next = self.input[after_dollar..]
+            .chars()
+            .next()
+            .expect("position is within input");
+
+        if next == '{' {
+            return self.parse_braced_expansion(dollar);
+        }
+
+        if is_name_start(next) {
+            let mut end = after_dollar;
+            while end < self.input.len() {
+                let ch = self.input[end..]
+                    .chars()
+                    .next()
+                    .expect("position is within input");
+                if !is_name_continue(ch) {
+                    break;
+                }
+                end += ch.len_utf8();
+            }
+
+            let name = &self.input[after_dollar..end];
+            let value = self.lookup(name).unwrap_or("").to_owned();
+            self.activate();
+            self.word.push_str(&value);
+            self.pos = end;
+            return Ok(());
+        }
+
+        self.activate();
+        self.word.push('$');
+        self.pos = after_dollar;
+        Ok(())
+    }
+
+    fn parse_braced_expansion(&mut self, dollar: usize) -> Result<(), SplitError> {
+        let contents_start = dollar + 2;
+        let mut cursor = contents_start;
+
+        let close = loop {
+            if cursor >= self.input.len() {
+                return Err(SplitError::UnterminatedExpansion { pos: dollar });
+            }
+
+            let ch = self.input[cursor..]
+                .chars()
+                .next()
+                .expect("position is within input");
+
+            if ch == '}' {
+                break cursor;
+            }
+
+            if ch == '\\' {
+                cursor += 1;
+                if cursor < self.input.len() {
+                    let skipped = self.input[cursor..]
+                        .chars()
+                        .next()
+                        .expect("position is within input");
+                    cursor += skipped.len_utf8();
+                }
+            } else {
+                cursor += ch.len_utf8();
+            }
+        };
+
+        let contents = &self.input[contents_start..close];
+        let (name, default) = match find_unescaped_default_separator(contents) {
+            Some(sep) => (&contents[..sep], Some(&contents[sep + 2..])),
+            None => (contents, None),
+        };
+
+        if !valid_name(name) {
+            return Err(SplitError::InvalidExpansion { pos: dollar });
+        }
+
+        let env_value = self.lookup(name).unwrap_or("");
+        let selected = match default {
+            Some(text) if env_value.is_empty() => decode_default(text),
+            _ => env_value.to_owned(),
+        };
+
+        self.activate();
+        self.word.push_str(&selected);
+        self.pos = close + 1;
+        Ok(())
+    }
+
+    fn lookup(&self, name: &str) -> Option<&str> {
+        self.env
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| *value)
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.input.get(self.pos..)?.chars().next()
+    }
+
+    fn activate(&mut self) {
+        self.active = true;
+    }
+
+    fn push_char(&mut self, ch: char) {
+        self.activate();
+        self.word.push(ch);
+        self.pos += ch.len_utf8();
+    }
+
+    fn finish_word(&mut self) {
+        if self.active {
+            self.words.push(std::mem::take(&mut self.word));
+            self.active = false;
+        }
+    }
+}
+
+fn is_name_start(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+
+fn is_name_continue(ch: char) -> bool {
+    is_name_start(ch) || ch.is_ascii_digit()
+}
+
+fn valid_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(ch) if is_name_start(ch)) && chars.all(is_name_continue)
+}
+
+fn find_unescaped_default_separator(contents: &str) -> Option<usize> {
+    let bytes = contents.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 1;
+            if i < bytes.len() {
+                let ch = contents[i..].chars().next()?;
+                i += ch.len_utf8();
+            }
+        } else if bytes[i..].starts_with(b":-") {
+            return Some(i);
+        } else {
+            let ch = contents[i..].chars().next()?;
+            i += ch.len_utf8();
+        }
+    }
+
+    None
+}
+
+fn decode_default(text: &str) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+
+    while i < text.len() {
+        let ch = text[i..].chars().next().expect("position is within text");
+        if ch == '\\' {
+            i += 1;
+            if i < text.len() {
+                let next = text[i..].chars().next().expect("position is within text");
+                out.push(next);
+                i += next.len_utf8();
+            } else {
+                out.push('\\');
+            }
+        } else {
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+
+    out
+}

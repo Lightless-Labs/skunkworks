@@ -1,0 +1,77 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    let absolute = path.as_bytes()[0] == b'/';
+    let components: Vec<(usize, &str)> = path
+        .split('/')
+        .scan(0usize, |offset, component| {
+            let start = *offset;
+            *offset += component.len() + 1;
+            Some((start, component))
+        })
+        .filter(|(_, component)| !component.is_empty())
+        .collect();
+
+    let directory_intent = path.ends_with('/')
+        || components
+            .last()
+            .is_some_and(|(_, component)| *component == "." || *component == "..");
+
+    let mut result_components: Vec<&str> = Vec::new();
+    for (at, component) in components {
+        match component {
+            "." => {}
+            ".." => {
+                if result_components.last().is_some_and(|last| *last != "..") {
+                    result_components.pop();
+                } else if absolute {
+                    return Err(PathError::Escape { at });
+                } else {
+                    result_components.push("..");
+                }
+            }
+            ordinary => result_components.push(ordinary),
+        }
+    }
+
+    let mut result = String::new();
+    if absolute {
+        result.push('/');
+    }
+    result.push_str(&result_components.join("/"));
+
+    if result.is_empty() {
+        result.push('.');
+    } else if directory_intent && result != "/" && result != "." {
+        result.push('/');
+    }
+
+    Ok(result)
+}
+
+fn main() {}

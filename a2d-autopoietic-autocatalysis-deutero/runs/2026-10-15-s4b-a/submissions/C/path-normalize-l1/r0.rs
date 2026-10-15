@@ -1,0 +1,103 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&byte| byte == 0) {
+        return Err(PathError::Nul { at });
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&byte| byte == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&byte| (1..=31).contains(&byte) || byte == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    let absolute = path.as_bytes()[0] == b'/';
+    let directory_intent = path.ends_with('/');
+    let mut components: Vec<(&str, usize)> = Vec::new();
+    let mut last_nonempty_component = None;
+
+    let mut start = 0;
+    for (index, byte) in path.bytes().enumerate() {
+        if byte == b'/' {
+            if start < index {
+                let component = &path[start..index];
+                last_nonempty_component = Some(component);
+                if component == "." {
+                    // Discard dot components.
+                } else if component == ".." {
+                    if components.last().is_some_and(|(value, _)| *value != "..") {
+                        components.pop();
+                    } else if absolute {
+                        return Err(PathError::Escape { at: start });
+                    } else {
+                        components.push((component, start));
+                    }
+                } else {
+                    components.push((component, start));
+                }
+            }
+            start = index + 1;
+        }
+    }
+
+    if start < path.len() {
+        let component = &path[start..];
+        last_nonempty_component = Some(component);
+        if component == "." {
+            // Discard dot components.
+        } else if component == ".." {
+            if components.last().is_some_and(|(value, _)| *value != "..") {
+                components.pop();
+            } else if absolute {
+                return Err(PathError::Escape { at: start });
+            } else {
+                components.push((component, start));
+            }
+        } else {
+            components.push((component, start));
+        }
+    }
+
+    let directory_intent = directory_intent
+        || matches!(last_nonempty_component, Some(".") | Some(".."));
+
+    let mut result = String::new();
+    if absolute {
+        result.push('/');
+    }
+    for (index, (component, _)) in components.iter().enumerate() {
+        if index > 0 {
+            result.push('/');
+        }
+        result.push_str(component);
+    }
+
+    if result.is_empty() {
+        result.push('.');
+    }
+
+    if directory_intent && result != "/" && result != "." {
+        result.push('/');
+    }
+
+    Ok(result)
+}
+
+fn main() {}

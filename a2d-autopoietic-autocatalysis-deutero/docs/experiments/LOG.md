@@ -529,7 +529,28 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **If C(H0 v4) < D − 5 pp,** check the S4b-A ledger and prompts for E0601, hidden compile failures, and evolver rewrites of the coder template mid-task. S4b is void and rerun once only if a defect is demonstrated. Otherwise the result stands.
   - Survival authorises P4 spend only and supports no claim.
   - The evolver's call share is reported beside every C result.
-- Result: pending
+- Result (`runs/2026-10-15-s4b-{a,b}/summary.json`, `runs/2026-10-15-s4b-b/compare-*.json`; 0 void, integrity OK in both):
+  - **D 52/72 = 72.2%; C(H0 v4) 48/72 = 66.7%; C(H0 v4 + 4 lessons) 56/72 = 77.8%.**
+  - **Primary, C(lessons) vs C(H0 v4): +11.1 pp, net +8 (10 vs 2), 95% CI [+2.8, +19.4], family sign-flip p = 0.038, 18 families.**
+    - Under the amended rule, net ≥ 8 means **S4b SURVIVES** (the original rule needed ≥ 4).
+    - By the clarification, survival authorises P4 spend only and supports no claim.
+  - **Binding, C(lessons) − D: +5.6 pp ≥ 0. Met** (CI [−5.6, +15.3], discordant pairs 10 vs 6).
+  - **Warning: C(H0 v4) − D = −5.6 pp, CI [−15.3, +5.6], below D − 5 pp.** The required checks:
+    - one E0601 prompt (semver-l3; the coder omitted `main` once and recovered);
+    - hidden compile failures: C 2, D 1;
+    - the evolver rewrote the coder template in all 11 multi-call C tasks; `main()` was never lost.
+    - **No harness defect was demonstrated, so the result stands.**
+  - The warning is real performance, consistent across runs. **C's base reaches public-green less often than D:**
+    - E08r: C 3 vs D 0 never-green;
+    - S4: 8 vs 2;
+    - S4b-A: 6 vs 1.
+    - On S4b-A's 6 never-green C tasks, D was green after 1–2 calls every time. C's coder failed to repair its own compile errors in 3 attempts (uri-template-l3 repeated the same type error).
+  - **Lessons-vs-H0 v4 is therefore partly a weak-base effect.** Lessons vs D (+5.6 pp) is the cleaner reading.
+  - Spend:
+    - C(lessons): 128 invocations, 100 coder calls (evolver 22%), 1.08M tokens;
+    - C(H0 v4): 110 invocations, 91 coder calls (evolver 17%), 0.84M tokens;
+    - D: 98 invocations, 0.77M tokens.
+  - P3 validation looks used: 1 of 4. P3 spend: about 1,450 invocations.
 
 
 ### P4-0 — label-only bug diagnosis probe (Luna-low)  [P4 groundwork, development lane, descriptive]

@@ -1,0 +1,299 @@
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: u32,
+    pub arrival: u32,
+    pub ticks: u32,
+    pub level: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub id: u32,
+    pub start: u64,
+    pub end: u64,
+    pub finished: bool,
+    pub level: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub idle: Vec<(u64, u64)>,
+    pub completion: Vec<(u32, u64)>,
+    pub end: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    LevelCount,
+    Quantum { level: usize },
+    SwitchCost,
+    TooManyJobs,
+    DuplicateId { index: usize },
+    Arrival { index: usize },
+    InitialLevel { index: usize },
+    Ticks { index: usize },
+}
+
+pub fn schedule(jobs: &[Job], quanta: &[u32], switch_cost: u32) -> Result<Schedule, Error> {
+    if !(1..=8).contains(&quanta.len()) {
+        return Err(Error::LevelCount);
+    }
+    for (level, &quantum) in quanta.iter().enumerate() {
+        if !(1..=1000).contains(&quantum) {
+            return Err(Error::Quantum { level });
+        }
+    }
+    if switch_cost > 1000 {
+        return Err(Error::SwitchCost);
+    }
+    if jobs.len() > 64 {
+        return Err(Error::TooManyJobs);
+    }
+    for (index, job) in jobs.iter().enumerate() {
+        if jobs[..index].iter().any(|earlier| earlier.id == job.id) {
+            return Err(Error::DuplicateId { index });
+        }
+        if job.arrival > 1000 {
+            return Err(Error::Arrival { index });
+        }
+        if job.level >= quanta.len() {
+            return Err(Error::InitialLevel { index });
+        }
+        if job.ticks > 1000 {
+            return Err(Error::Ticks { index });
+        }
+    }
+
+    use std::collections::VecDeque;
+
+    let mut events: Vec<usize> = (0..jobs.len()).collect();
+    events.sort_by_key(|&index| (jobs[index].arrival, index));
+
+    let mut queues: Vec<VecDeque<usize>> =
+        (0..quanta.len()).map(|_| VecDeque::new()).collect();
+    let mut remaining: Vec<u32> = jobs.iter().map(|job| job.ticks).collect();
+    let mut completion_times: Vec<Option<u64>> = vec![None; jobs.len()];
+    let mut runs: Vec<Run> = Vec::new();
+    let mut idle: Vec<(u64, u64)> = Vec::new();
+
+    let mut time: u64 = 0;
+    let mut event_cursor: usize = 0;
+    let mut last_dispatched_id: Option<u32> = None;
+    let mut completed_count: usize = 0;
+
+    fn admit(
+        jobs: &[Job],
+        events: &[usize],
+        cursor: &mut usize,
+        time: u64,
+        queues: &mut [std::collections::VecDeque<usize>],
+        completion_times: &mut [Option<u64>],
+        completed_count: &mut usize,
+    ) {
+        while *cursor < events.len() && u64::from(jobs[events[*cursor]].arrival) <= time {
+            let index = events[*cursor];
+            *cursor += 1;
+            if jobs[index].ticks == 0 {
+                completion_times[index] = Some(u64::from(jobs[index].arrival));
+                *completed_count += 1;
+            } else {
+                queues[jobs[index].level].push_back(index);
+            }
+        }
+    }
+
+    while completed_count < jobs.len() {
+        admit(
+            jobs,
+            &events,
+            &mut event_cursor,
+            time,
+            &mut queues,
+            &mut completion_times,
+            &mut completed_count,
+        );
+
+        let selected: Option<usize> = queues.iter_mut().find_map(|queue| queue.pop_front());
+
+        if let Some(index) = selected {
+            let job_id = jobs[index].id;
+            if last_dispatched_id.is_some_and(|last_id| last_id != job_id) {
+                time += u64::from(switch_cost);
+            }
+
+            admit(
+                jobs,
+                &events,
+                &mut event_cursor,
+                time,
+                &mut queues,
+                &mut completion_times,
+                &mut completed_count,
+            );
+
+            let level = queues
+                .iter()
+                .position(|queue| queue.contains(&index))
+                .unwrap_or(jobs[index].level);
+            let consumed = remaining[index].min(quanta[level]);
+            let start = time;
+            time += u64::from(consumed);
+            remaining[index] -= consumed;
+            let finished = remaining[index] == 0;
+
+            runs.push(Run {
+                id: job_id,
+                start,
+                end: time,
+                finished,
+                level,
+            });
+
+            admit(
+                jobs,
+                &events,
+                &mut event_cursor,
+                time,
+                &mut queues,
+                &mut completion_times,
+                &mut completed_count,
+            );
+
+            if finished {
+                completion_times[index] = Some(time);
+                completed_count += 1;
+            } else {
+                let next_level = (level + 1).min(quanta.len() - 1);
+                queues[next_level].push_back(index);
+            }
+
+            last_dispatched_id = Some(job_id);
+        } else if event_cursor < events.len() {
+            let next_time = u64::from(jobs[events[event_cursor]].arrival);
+            if next_time > time {
+                if let Some(last) = idle.last_mut() {
+                    if last.1 == time {
+                        last.1 = next_time;
+                    } else {
+                        idle.push((time, next_time));
+                    }
+                } else {
+                    idle.push((time, next_time));
+                }
+                time = next_time;
+                last_dispatched_id = None;
+            }
+        }
+    }
+
+    let completion: Vec<(u32, u64)> = jobs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, job)| {
+            completion_times[index].map(|completion_time| (job.id, completion_time))
+        })
+        .collect();
+
+    Ok(Schedule {
+        runs,
+        idle,
+        completion,
+        end: time,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn demotion_changes_level_and_completion_stays_in_input_order() {
+        let result = schedule(
+            &[
+                Job {
+                    id: 1,
+                    arrival: 0,
+                    ticks: 7,
+                    level: 0,
+                },
+                Job {
+                    id: 2,
+                    arrival: 0,
+                    ticks: 2,
+                    level: 0,
+                },
+            ],
+            &[2, 4],
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            result.runs,
+            vec![
+                Run { id: 1, start: 0, end: 2, finished: false, level: 0 },
+                Run { id: 2, start: 2, end: 4, finished: true, level: 0 },
+                Run { id: 1, start: 4, end: 8, finished: false, level: 1 },
+                Run { id: 1, start: 8, end: 9, finished: true, level: 1 },
+            ]
+        );
+        assert_eq!(result.completion, vec![(1, 9), (2, 4)]);
+        assert_eq!(result.end, 9);
+    }
+
+    #[test]
+    fn zero_work_and_empty_input() {
+        let result = schedule(
+            &[Job {
+                id: u32::MAX,
+                arrival: 5,
+                ticks: 0,
+                level: 0,
+            }],
+            &[1],
+            0,
+        )
+        .unwrap();
+        assert!(result.runs.is_empty());
+        assert!(result.idle.is_empty());
+        assert_eq!(result.completion, vec![(u32::MAX, 5)]);
+        assert_eq!(result.end, 5);
+
+        let empty = schedule(&[], &[1], 0).unwrap();
+        assert_eq!(
+            empty,
+            Schedule {
+                runs: vec![],
+                idle: vec![],
+                completion: vec![],
+                end: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn validation_precedence_and_duplicate_ids() {
+        assert_eq!(schedule(&[], &[], 1001), Err(Error::LevelCount));
+        assert_eq!(
+            schedule(
+                &[
+                    Job { id: 0, arrival: 0, ticks: 1, level: 0 },
+                    Job { id: 0, arrival: 1001, ticks: 1001, level: 0 },
+                ],
+                &[1],
+                0,
+            ),
+            Err(Error::DuplicateId { index: 1 })
+        );
+        assert_eq!(
+            schedule(
+                &[Job { id: 5, arrival: 0, ticks: 1, level: 2 }],
+                &[2, 3],
+                0
+            ),
+            Err(Error::InitialLevel { index: 0 })
+        );
+    }
+}
+
+fn main() {}
