@@ -1,7 +1,8 @@
 # Plan: P4 — Autopoietic Lift (self-written lessons)
 
 **Created:** 2026-10-15
-**Status:** Active. v3, adopted at the P3 → P4 gate.
+**Status:** Completed 2026-10-15 — no-go at validation (E12). Confirmation-2 not spent. v3, adopted at the P3 → P4 gate; base amended to H0 v6 (Addendum).
+**Completed:** 2026-10-15 (no-go: C(H\*) − D = −1.2 pp on validation, below the +10 pp go bar; control tied, so the "learning from failures" wording is withdrawn).
 **Reviewed:** 2026-10-15, P3 → P4 gate. Codex `gpt-6.1-sol` (high) and a fresh-context Claude subagent, each in a copies-only temp dir. Every item has a disposition in § Review dispositions.
 **Addendum:** 2026-10-15 — the v2 draft (cross-fit ratchet from H0 v3) was superseded at the gate. v3 changes:
 - the base is H0 v5 (evolver-free, plain rendering);

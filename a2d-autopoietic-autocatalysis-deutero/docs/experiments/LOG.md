@@ -651,7 +651,8 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - First-attempt green: C 120 vs D 111. Repair conversion: C 19/20 vs D 28/29. The repair gap has closed.
   - Spend: C 171 invocations / 1.38M tokens; D 186 / 1.58M.
   - **D test-retest on train-all** (E10 D vs E10b D, same harness and suite): flip rate **0.229** (32/140), with 105 vs 103 passes. This is the resampling null for the ratchet.
-    - It is higher than c1-train's 0.162, so the ≥ 4-net acceptance will admit noise more often than the gate review's estimate (about 33% per comparison at flip 0.16).
+    - It is higher than c1-train's 0.162, so the ≥ 4-net acceptance will admit noise more often than estimated earlier.
+    - *Correction (closing gate):* the "about 33% per comparison at flip 0.16" quoted here was a two-sided figure. The one-sided figure for this rule is about 15% at flip 0.16 and **0.19 at flip 0.229**, which makes P(≥ 4 of 12 accepted) = 0.18.
     - That is what the paired uninformed control (U1, U2) calibrates.
   - P4 spend: E10 372 + E10b 357 = 729 invocations.
 
@@ -745,3 +746,19 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **Within ±5 pp:** the clause is not the cause. Any carrier gap is attributed to the metabolism path (sandbox or wrapper), or to noise.
 - Budget: ≤ 400 invocations from the reserve, 10,800 s.
 - Result: pending
+
+### Roadmap close — Completed (falsified)  [2026-10-15]
+- **Label:** Completed (falsified). The seed was RULED OUT on Confirmation-1 (E07 + E07b). Self-modification was not supported at the development screen, is unconfirmed, and is not ruled out.
+- **Report:** `docs/reports/2026-10-15-lift-first-outcome.md`.
+- **Closing gate:** Codex `gpt-6.1-sol` (high) and a fresh Claude subagent, copies-only. Both approved subject to wording corrections, all applied:
+  - the carrier inference softened;
+  - the control tie stated as observational;
+  - the durable claims narrowed;
+  - adaptive decisions separated from prospective rules (S4's rule was not honoured as written);
+  - the defect-hunt asymmetry disclosed;
+  - the T7 tally disclosed;
+  - the Confirmation-2 integrity statement corrected;
+  - the C vs H0 comparisons reported (C:i1 − C:h0 +11.2 pp [+1.2, +22.5] and C:u1 − C:h0 +11.2 pp [+3.8, +20.0], both exploratory);
+  - the E10b null figure corrected.
+- **Instrument fix:** the classifier boundary tolerance. The E12 exploratory classes C:i1 vs D and C:i1 vs C:u1 become Inconclusive; no registered decision changes.
+- **Open:** E13 (pending; it does not affect the label). Confirmation-2 is unspent.

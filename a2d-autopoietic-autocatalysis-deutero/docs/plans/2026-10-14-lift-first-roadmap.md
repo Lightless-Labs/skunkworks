@@ -1,7 +1,8 @@
 # Plan: Lift-First Roadmap
 
 **Created:** 2026-10-14
-**Status:** Active — phase P4 (P0 and P1 exit 2026-10-14; P2 exit 2026-10-15: seed lift RULED OUT; P3 exit 2026-10-15: not promoted)
+**Status:** Completed (falsified) — 2026-10-15. The seed was RULED OUT on Confirmation-1 (LOG E07 + E07b). Self-modification was not supported at the development screen and is unconfirmed. Report: `docs/reports/2026-10-15-lift-first-outcome.md`.
+**Completed:** 2026-10-15 (falsified)
 **Reviewed:** 2026-10-14 (independent review, Codex gpt-6.1-sol xhigh). The other non-Claude lanes were unavailable; see Blockers. Changes adopted: repair-loop comparator, three-way result classification, pilot/development/confirmation split, frozen controller, B-headroom calibration, harness-first P4, process metrics as diagnostics only.
 **Addendum:** 2026-10-14 — coder lane: the owner stopped the Kimi, Z.ai, MiniMax and Gemini subscriptions on purpose and suggested Luna via Codex or Pi. `gpt-6-luna` works through Codex with A²D's provider flags. `gpt-6.1-luna` is not offered on this ChatGPT account (Codex model list fetched 2026-10-14 has 6.1 only as Sol). Pi's `openai-codex` provider is not authenticated. P0/P1 updated accordingly.
 **Addendum:** 2026-10-14 — P0 gate. Exit criteria met (isolation tests, four arms end to end on mocks, E01). Reviewed by Codex `gpt-6.1-sol` (high) and a fresh-context Claude subagent, each in an empty temp dir with copied inputs. Diversity reduced to one non-Claude family (see Blockers). Adopted (commits `e8e7fa3`, `2eefa0d`):
@@ -153,6 +154,28 @@ Lesson: never spend confirmation data without development evidence at the claim 
   - **Confirmation-2:** one registered multi-harness run at r = 2. Completion requires C(H\*) to be SUPPORTED against C(H0 v5), D and B separately.
   - **Arms:** a researcher-lessons arm and a D + lessons arm, both descriptive only.
 - **Completion wording:** if P4 is a no-go at validation, Confirmation-2 is not spent, and P4 is reported as "not supported at the development screen", never as "ruled out".
+**Addendum:** 2026-10-15 — **P4 exit and closing gate: Completed (falsified).**
+- **P4**, from the LOG:
+  - E10 failed its never-green criterion. H0 v6 is parity with D; E10b passed.
+  - E11: 4 searches × 3 generations. 4 of 12 candidates were accepted (2 informed, 2 uninformed control), about the rate under the null.
+  - E12 (validation): H\* = i1, 68.8% vs D 70.0% (−1.2 pp [−12.5, +10.0]). **This is the pre-registered no-go.** The control tied (u1 68.8%), so the "learning from failures" attribution is withdrawn.
+  - Confirmation-2 (144 tasks, `cb7cb496…`) **was not spent and stays unopened** apart from the disclosed `spreadsheet-eval` exclusion.
+- **Completion:** the falsified condition is met.
+  - The seed is RULED OUT on confirmation under the registered analysis: E07 + E07b, +1.4 pp [−5.4, +8.8]; two-look upper bound +9.8.
+  - No P4 hypothesis is SUPPORTED within T7.
+  - Disclosure: T7 used 1 of 5 slots, on a narrowed hypothesis 1. Hypotheses 2 and 3 were never run.
+- **Three outcomes, kept separate:**
+  - **seed:** ruled out;
+  - **improved harness:** none promoted. The parity base's parity on fresh families is not established (C:h0 −12.5 pp on validation, exploratory);
+  - **self-improvement process:** failed its development screen, unconfirmed, and not ruled out.
+- **Closing gate:** reviewed by Codex `gpt-6.1-sol` (high) and a fresh Claude subagent in copies-only temp dirs. Both approved the label subject to wording corrections, which were applied.
+  - The fresh Claude reviewer found a classifier boundary bug (floating point at exactly 10 pp). It is fixed with a test; no registered decision changes.
+- **Process diagnostics** (deutero): in the report § Process diagnostics. They cover spend by phase, decisions made by rule vs adaptively, forking paths, and the asymmetry of defect hunts.
+- **Pivot:** report § Recommended pivot. In order:
+  1. check the carrier at zero calls;
+  2. calibrate measurement (about 700 tuples per decision for ±5 pp; A/A and uninformed controls);
+  3. one "D + X vs D" hypothesis in a stated regime;
+  4. an owner decision on the instrument as a product.
 **Supersedes as primary goal:** `swe-bench-pro-blind-evaluator-adapter.md` (parked), the Senior SWE-Bench retry chain (parked)
 **Grounding:** `docs/research/2026-10-14-direction-audit.md`, `docs/research/2026-10-14-dgm-rqgm-relevance.md`
 **Decision deadline:** P2 confirmation result recorded by **2026-11-30**. Missing it is a non-result, not a falsification: record "not measured by deadline", stop adding seed-cycle complexity, and continue per Completion.

@@ -2,8 +2,13 @@
 
 **Date:** 2026-10-15
 **Plan:** `docs/plans/2026-10-14-lift-first-roadmap.md`
-**Outcome:** Completed (falsified), subject to the closing gate review. The three outcomes are kept separate, as the roadmap requires.
-**Evidence:** `docs/experiments/LOG.md` (every entry pre-registered before its run).
+**Outcome:** **Completed (falsified: seed RULED OUT on Confirmation-1; self-modification not supported at the development screen, unconfirmed).**
+- Under the registered analysis, the frozen seed's ≥ 10 pp lift was ruled out on confirmation, and bounded development found no promotable successor.
+- P4 failed its development screen and was not tested on Confirmation-2.
+- This closes the roadmap. It is not a verdict on the A²D programme or on autoresearch in general.
+
+**Reviewed:** 2026-10-15, closing gate. Codex `gpt-6.1-sol` (high) and a fresh-context Claude subagent, each in a copies-only temp dir. Both approved the label subject to the wording corrections made here.
+**Evidence:** `docs/experiments/LOG.md` (every entry pre-registered before its run; adaptive decisions are listed in § Process diagnostics).
 
 ## The question
 
@@ -16,40 +21,59 @@ Does A²D build working software more reliably than its own coder model used dir
 
 ## Answer
 
-1. **Seed threshold — RULED OUT** (confirmation-backed).
-   - The seed A²D metabolism does not deliver ≥ 10 pp over its coder used as a plain repair loop at an equal invocation cap.
+1. **Seed threshold — RULED OUT under the registered analysis** (confirmation-backed).
+   - The seed A²D metabolism, as built, does not deliver ≥ 10 pp over its coder used as a plain repair loop at an equal invocation cap.
+     - "As built" means with the defects found later: no previous-code routing, input rendered three times, JSON rendering, and an evolver rewriting prompts.
    - Confirmation-1: E07 + E07b, 296 tuples, 37 families. C − D = **+1.4 pp, 95% CI [−5.4, +8.8]**, at 3.7× D's tokens.
-2. **Improved harness (P3 and the P4 base) — none found.**
-   - Within-task self-signals (spec tests, clause review, agreement selection) failed their pre-registered rules.
-   - A repaired base, H0 v6, is the seed coder enzyme with D's exact prompts. It matched D on train (+2.9 pp; never-green 1 vs 1).
-   - **On fresh validation families it fell below D: −12.5 pp, CI [−26.2, 0.0], discordant 5 vs 15, never-green 4 vs 0.**
-   - **So the configured A²D carrier is not reliably at its coder's level, even with D's prompts.** The cause is open (see E13).
-3. **Self-improvement process (P4) — not supported at the development screen; not tested on Confirmation-2; not ruled out.**
-   - Lessons written by A²D's architect from its own train failures did not lift it above D on validation: the best informed search, i1, scored −1.2 pp, CI [−12.5, +10.0].
-   - That look cannot tell a −10 pp effect from a +10 pp one.
-   - **Failure-informed lessons did no better than generic, requirements-derived lessons** (i1 = u1 = 68.8%), so the wording "learning from failures" is withdrawn.
-   - By the pre-registered go/no-go (≥ +10 pp over D on validation), Confirmation-2 was not spent.
+   - Sensitivity (LOG E07b): the two-look 97.5% upper bound is +9.8 pp, and the stacked worst case is about 10.5 pp. The registered rule governs. The result establishes neither equivalence nor zero benefit.
+2. **Improved harness (P3 and the P4 base) — none promoted.**
+   - The tested within-task self-signal configurations (Luna-low spec tests, clause review, agreement selection) failed their registered screens. Some showed small development gains over weak bases; S2, for example, had an offline point estimate of +2.2 pp.
+   - **The P4 base, H0 v6,** dropped every A²D-specific component except the metabolism carrier.
+     - What is left is the seed coder enzyme with D's prompts plus a `main()` clause, running on the metabolism's own sandbox (it compiles a program) and feedback wrapper (`TESTS:`).
+     - It passed the train parity screen: +2.9 pp, never-green 1 vs 1.
+     - In the validation run it scored −12.5 pp, CI [−26.2, 0.0]: discordant pairs 5 vs 15, family sign-flip p = 0.12 (the task-level p of about 0.04 ignores clustering), and never-green 4 vs 0. D's own draw varies too: it scored 52/80 in S4 and 56/80 in E12 on the same tasks.
+     - **Parity on fresh families is not established, and neither is the size of any deficit.**
+   - The sharper signal is never-green. It is above D's in every C arm:
+     - validation: 4, 1, 1, 2 and 3 across the five C arms, against 0 for D;
+     - train: 1.8% across all 1,696 E11 C-arm submissions, against 1.1% for D (E10 and E10b);
+     - earlier runs: E08r, S4, S4b-A and E10 also had more never-green tasks in C than in D.
 
-The roadmap's falsified condition is: the seed or minimal configuration is RULED OUT on confirmation, and no P4 hypothesis is SUPPORTED within T7. That condition is met. The confirmation backing is LOG E07 + E07b.
+     That suggests a small carrier-wide repair cost, not a lessons effect.
+3. **Self-improvement process (P4) — failed its development screen; not tested on Confirmation-2; not ruled out.**
+   - **Against D:** lessons written by A²D's architect from its own train failures did not lift it above D on validation. The best informed search, i1, scored −1.2 pp, CI [−12.5, +10.0], with selection biased in its favour. That was enough for the operational no-go (≥ +10 pp required), not for a confirmatory conclusion.
+   - **Against its own base (exploratory, selection-biased):**
+     - C:i1 − C:h0 = +11.2 pp, CI [+1.2, +22.5];
+     - C:u1 − C:h0 = +11.2 pp, CI [+3.8, +20.0].
+
+     Every lessons arm beat C:h0 and none beat D. As in S4b, lessons show gains only against an under-performing A²D carrier, never against D on held-out data.
+   - **Control:** the best informed and uninformed searches tied (55/80 each, differing on 18 tasks; exploratory CI about ±10 pp). The pre-registered consequence followed: **the "learning from failures" attribution is withdrawn.** An advantage from failure information was not demonstrated. The uninformed lessons were requirements-derived and selected by the same label-based ratchet, so they are not "generic advice".
+
+**Completion condition.** The roadmap's falsified condition is that the seed or minimal configuration is RULED OUT on confirmation (LOG E07 + E07b) and that no P4 hypothesis is SUPPORTED within T7. That condition is met, with this disclosure:
+- P4 used 1 of T7's 5 hypothesis slots, on a narrowed form of roadmap § P4 hypothesis 1. Only `lessons` could evolve; prompt templates and candidate generation or ranking were not tried.
+- Hypotheses 2 (archive vs ratchet) and 3 (co-evolved evaluator) were never run.
+- Nothing reached confirmation.
 
 ## Evidence
 
 | Phase | Experiment (LOG) | Result |
 |---|---|---|
 | P2 | E07 + E07b: seed C vs D, Confirmation-1 (296 tuples, 37 families) | **+1.4 pp [−5.4, +8.8], RULED OUT**; C 3.7× tokens |
-| P3 | S1 / S1b: blind spec tests; S2: clause review; S3: agreement selection | killed offline (AUC 0.63 / 0.64; conversion 0.19; 0.73 vs D 0.74) |
+| P3 | S1 / S1b: blind spec tests; S2: clause review; S3: agreement selection | failed their screens (AUC 0.63 / 0.64; conversion 0.19; 0.73 vs D 0.74) |
 | P3 | T0 (Sol taxonomy); P4-0 (Luna label-only diagnosis) | failures concentrate; Luna names the violated clause from labels at 0.56 (chance 0.25) |
 | P3 | S4: researcher lessons, validation | +2.5 pp, below its +5 pp rule |
 | P3 | S4b: researcher lessons on a repaired base, clean train | +11.1 pp vs its base (net +8 of 72); **+5.6 pp vs D**; development screen only |
-| P4 | E10 / E10b (G0) | H0 v5 failed never-green (5 vs 2). **H0 v6 (parity with D) passed: +2.9 pp, 1 vs 1** |
-| P4 | E11: 4 searches × 3 generations (2 informed, 2 uninformed control) | 4/12 candidates accepted (2 informed, 2 control), about the noise rate (D retest flip 0.229) |
+| P4 | E10 / E10b (G0) | H0 v5 failed never-green (5 vs 2). H0 v6 passed: +2.9 pp, 1 vs 1 |
+| P4 | E11: 4 searches × 3 generations (2 informed, 2 uninformed) | 4/12 candidates accepted (2 informed, 2 control). Under a null at flip 0.229: P(net ≥ 4) = 0.19 per comparison; P(≥ 4 of 12) = 0.18 |
 | P4 | E12: validation look (80 tasks) | D 70.0%; C:h0 57.5%; i1 68.8%; i2 62.5%; u1 68.8%; u2 61.3%. **NO-GO** |
-| close | E13: D vs D + `main()` clause, train | {{E13}} |
+
+**E13** (D vs D + `main()` clause, train) was still running at close. It is a diagnostic only; its result is appended as a dated addendum.
+
+**Instrument fix found at the gate:** the classifier compared boundaries in floating point, so a CI upper bound of exactly 10.0 pp (8/80) was classed RuledOut. It now uses a tolerance (`stats::classify`, unit-tested). Two exploratory E12 comparisons change to Inconclusive. No registered decision depended on them.
 
 ## What was learned (durable)
 
 1. **A plain repair loop is a strong baseline.** At k = 5 it reaches public-green on about 99% of tasks. Its remaining failures are almost all public-green but hidden-fail: wrong behaviour on clauses the public tests do not exercise.
-2. **Within-task self-signals do not beat it.** The model's own tests, reviews and majority votes share its misreadings (`docs/solutions/architectural-insights/self-signals-dont-beat-repair-loop-2026-10-15.md`).
+2. **The tested within-task self-signal configurations failed their screens.** In those Luna-low configurations, the model's own tests, reviews and majority votes shared its misreadings (`docs/solutions/architectural-insights/self-signals-dont-beat-repair-loop-2026-10-15.md`). This is not a claim about every self-signal.
 3. **Plumbing dominated the readings:**
    - a missing `main()` clause;
    - the task input rendered three times;
@@ -58,14 +82,15 @@ The roadmap's falsified condition is: the seed or minimal configuration is RULED
    - same-model escalation calls costing repairs.
 
    Each looked like a mechanism result until the first prompts were read (`docs/solutions/best-practices/inspect-first-prompts-of-a-new-harness-2026-10-15.md`).
-4. **The equal-budget uninformed control prevented a false positive.**
-   - The two informed searches each accepted a candidate. Read alone, that looks like learning.
-   - The paired control accepted as often, and scored as well on validation.
-   - Any self-improvement search needs a control at the same budget, with the same acceptance rule.
+4. **Equal-budget controls stop gains against one's own base from being read as learning.**
+   - The go/no-go against D was already a no-go, so the uninformed control did not change that decision.
+   - What it prevented was reading the four E11 acceptances, and the +11 pp of lessons over C:h0, as learning from failures. The control matched both.
+   - Any self-improvement search needs a control at the same budget, with the same acceptance rule. Better still, add an A/A arm that runs the incumbent as its own candidate, to measure false acceptance directly.
 5. **The decision noise is larger than the effects sought.**
    - D's test-retest flip rate on 140 train tasks is 0.229. Two runs of one identical harness on the same 68-task half differed by 5 tasks.
-   - A ±5 pp effect cannot be resolved with 70-task decisions. Effects of that size need about 4× larger evaluations per decision, or variance reduction.
-6. **Train parity does not guarantee parity on fresh families.** H0 v6 matched D on 140 train tasks and fell 12.5 pp below it on 80 validation tasks. A base must be checked on the data it will be judged on.
+   - At that flip rate, even 280 paired tuples give a half-width of about 5.6 pp. Power 0.8 at +5 pp needs about 700, before family clustering.
+   - Replicates reduce sampling noise, not task-sampling variance.
+6. **Train parity did not carry over to fresh families** in this case (H0 v6: +2.9 pp on train, −12.5 pp on validation; exploratory). Check a base on representative development families before freezing it, at a size able to detect the gap that matters. Outcome-driven repair on evaluation data would consume that data's independence.
 
 ## Process diagnostics (deutero)
 
@@ -73,39 +98,68 @@ The roadmap's falsified condition is: the seed or minimal configuration is RULED
   - P0–P2 about 4.4k, plus about 200 audit;
   - P3 about 1.45k, plus 64 probe calls;
   - P4 about 3.8k (G0 and retry 0.73k, searches 2.18k plus 224 distill calls, validation 0.65k);
-  - E13 about 0.4k from the reserve;
-  - Confirmation-2 extension authoring and audit: 25 families, 104 audit invocations, 1 adjudication.
-- **Results:** P3 10 entries (1 aborted); P4 7 (1 stopped).
-- **Decisions by pre-registered rule:** 13. These are the kills of S1, S1b, S2 and S3; S4 deprioritised; S4b survived; E10 fail; E10b pass; 12 ratchet decisions counted as one rule; E12 no-go; the control consequence; T0; P4-0; E08r sanity.
-- **Decisions by judgement (all logged):**
-  - the choice of mechanisms;
-  - S4 relabelled as mechanism 5 after its result (forking path, disclosed);
-  - the H0 chain v2 → v3 → v4 → v5 → v6 (each step with a disclosed defect or diagnosis);
-  - dropping the evolver (gate);
-  - the E13 diagnostic.
-- **Pre-result amendments:** 3. The S4b clarification and the stricter S4b amendment were made before the primary comparison existed. The E12 no-look clause was made before any search finished.
-- **Defects found:** 5 by inspecting prompts or code (`main()`, triplication, JSON rendering, evolver rewrites, the variant-arm path), and 0 by noticing an outcome first.
-- **Deviations:** 2. The Confirmation-2 exposure led to `spreadsheet-eval` being excluded. Aggregate counts were read from validation prompts during the S4 diagnosis.
+  - E13 capped at 0.4k from the reserve (the realised spend is in its addendum);
+  - Confirmation-2 extension: 25 families authored, 104 audit invocations, 1 adjudication.
+- **Results:** P3 10 entries (1 aborted); P4 7 (P4-0, E09 stopped, E10, E10b, E11, E12, and E13 pending).
+- **Decisions made by a prospectively registered rule** (11):
+  - the kills of S1, S1b, S2 and S3;
+  - T0 and P4-0 by their use rules;
+  - the E08r sanity check;
+  - the E10 fail and E10b pass;
+  - the 12 E11 ratchet decisions, counted as one rule (all match net ≥ 4 and 0 voids);
+  - the E12 no-go and the control consequence (one rule).
+- **Adaptive decisions and forking paths** (all logged; not fixed before experimentation began):
+  - **S4's rule was not honoured as written.** It said the lessons slot would be deprioritised in P4. Instead S4 was relabelled as P3's mechanism 5 after its result, and its revision S4b made lessons P4's only lever.
+  - The S4b clarification and stricter amendment came before the primary comparison existed, but during generation; one arm's scores existed on disk unread.
+  - The E12 no-look amendment was interim-informed: it was made after all four generation-1 rejections were visible. It ended up inactive.
+  - The base chain H0 v2 → v6 was a series of registered adaptations, each after a diagnosed defect or a failed G0. H0 v6 is not the originally frozen base.
+  - Also: the choice of mechanisms, dropping the evolver (gate), and the E13 diagnostic.
+- **Asymmetry, disclosed:** defect hunts ran after disappointing results (S4, E10), never after favourable ones (S4b, E10b).
+- **How defects were found.** 5 were identified by inspecting prompts or code (`main()`, triplication, JSON rendering, evolver rewrites, the variant-arm path). Each investigation was prompted by something else:
+  - an outcome in three cases: S4's arm-level breakdown (triplication), E10's FAIL (the repair-path parity), and a crash (the variant-arm path);
+  - a review in one: the gate review, for the evolver;
+  - an interim public-green read in one: E08's `main()`.
+- **Deviations:**
+  - the shared-account condition during E07 and E07b, later made a standing condition;
+  - the Confirmation-2 argv exposure (`spreadsheet-eval` excluded before hashing and before any scoring);
+  - aggregate counts read from validation prompts during the S4 diagnosis.
 
 ## What is not shown
-- Nothing here rules out the A²D architecture in general, other models or efforts, larger budgets, or tasks whose public tests carry more signal.
-- P4 was not tested on confirmation. Its development-screen result is uninformative at ±10 pp.
+- Nothing here rules out:
+  - the A²D architecture in general;
+  - other models or efforts, or larger budgets;
+  - tasks whose public tests carry more signal;
+  - the untested P4 hypotheses: evolving prompt templates or candidate ranking, archive vs ratchet, and a co-evolved evaluator.
+- P4 was not tested on confirmation. Its validation look (i1 vs D −1.2 pp [−12.5, +10.0], with selection favouring i1) supported the operational no-go, not a confirmatory conclusion.
 
 ## Assets left for future work
-- **Confirmation-2:** 144 tasks, 36 families, hash `cb7cb496…`. **Never opened, unspent.**
-- **c1-validation:** 2 of 4 looks used (S4 and E12).
+- **Confirmation-2:** 144 tasks, 36 families, hash `cb7cb496…`, unspent.
+  - One family (`spreadsheet-eval`) was excluded after an argv exposure, before the hash was taken.
+  - The remaining 36 families were never opened.
+- **c1-validation:** held out from P4 training; looked at twice (S4 in P3, E12 in P4); 2 of 4 looks remain. It is no longer untouched.
 - **Train:** `tasks/train-all` (140 tasks, 35 families) and its symlink halves.
 - **The instrument** (`docs/PROTOCOL.md`):
-  - `a2d lift` (multi-harness, `--claim`, deferred scoring, hash-chained ledger);
+  - `a2d lift` (multi-harness, `--claim`, deferred scoring, hash-chained ledger, boundary-tolerant classifier);
   - the blind holdout pipeline;
   - `a2d distill`;
   - harnesses H0 v6, S4b and `p4-*`.
 
-## Recommended pivot (each step can be pre-registered)
-1. **Close the carrier question first** (cheap).
-   - Use E13 to settle whether the `main()` clause costs hidden passes.
-   - If it does not, run C(H0 v6) vs D at r = 2 on `tasks/train-all` (about 750 invocations) to tell noise from structure.
-   - Then make the metabolism's sandbox accept library files, so the carrier needs no prompt difference at all.
-2. **Fix the measurement before searching again.** A harness search needs about 280 tuples per decision (r = 2 on full train), or paired-seed variance reduction, to resolve ±5 pp. Calibrate the acceptance rule against the uninformed control and a no-change control at that size.
-3. **Move to a regime where the repair loop is not saturated.** The frontier here is spec misreadings that same-model signals cannot see. Candidates are a signal from beyond the coder (a different-family reviewer, a portfolio claim), higher effort, or tasks with richer public tests. Confirmation-2 is reserved for one registered claim in that regime.
-4. **Treat the instrument as a product** (the research-instrument direction from `docs/research/2026-10-14-direction-audit.md`). The controller, blind holdouts, gates and pre-registration discipline are reusable for evaluating any coding-agent harness.
+## Recommended pivot (in order)
+1. **Check the carrier at zero model calls first,** on visible train artefacts:
+   - byte-diff the coder-visible repair prompts of C:h0 and D for identical (task, code, test-output) states;
+   - mine the 24 E11 C-arm runs (1,696 submissions) against D in E10 and E10b for never-green and repair conversion, by failure type;
+   - read E13 (the `main()` clause) with its limits: a train run cannot explain a validation gap, and E10b already measured "D + clause + carrier" at +2.9 pp on train;
+   - only if still needed, a pre-registered C:h0 vs D look on c1-validation (2 looks remain), aggregates only.
+
+   Ship a library-file sandbox fix either way, so the carrier needs no prompt difference. Future harness changes are best run as "D + X vs D", since the carrier adds nothing.
+2. **Calibrate measurement before any further search.**
+   - Simulate the implemented acceptance rule and classifier with the family structure (35 train families) and repeated-run discordance (flip 0.229).
+   - Pre-register the target effect, error rates, sample size (expect about 700 tuples for 0.8 power at +5 pp), budget and an inconclusive outcome.
+   - Include an A/A arm and an uninformed control at equal budget.
+3. **Name one next hypothesis as "D + X vs D", with X's information source stated.**
+   - The frontier is spec misreadings that same-model signals cannot see.
+   - A different-family reviewer runs into the available lanes (Codex and Claude only) and the equal-resource rule: D must be offered the same signal.
+   - Higher effort changes cost per call.
+   - Tasks with richer public tests change the task distribution, so Confirmation-2, authored in the current regime, could not serve as the claim set there.
+   - **Keep Confirmation-2 unspent** until a frozen candidate meets a prospectively specified development gate in its own regime.
+4. **The instrument as a product** (the research-instrument direction in `docs/research/2026-10-14-direction-audit.md`) needs a success criterion and an owner decision. The classifier fix above is its first hardening step.

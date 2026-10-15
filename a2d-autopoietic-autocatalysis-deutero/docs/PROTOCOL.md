@@ -39,7 +39,9 @@ This file gathers the rules **currently in force**. History and rationale live i
 - **Harness:** `--harness <json>`, validated, hashed and recorded. Every harness step's output must have a declared consumer. A `coder_prompt` must keep the seed's `main()` clause, because the metabolism's sandbox compiles the file as a program (E08). Check a new harness's first feedback prompts early in its first run.
 - **Shared account:** the A² session shares the Codex account. This is a standing condition, mitigated by seeded tuple and arm order. This session never runs holdout authoring alongside a registered run.
 - **Budget envelope** (≈ 15k at the P2 gate): P3 used about 1.45k of its 3k; P4 ≤ 5k (plan about 4.0k); Confirmation-2 about 3.5k (r = 2, multi-harness); reserve ≈ 2k.
-- **Frozen P4 base:** `harnesses/h0-v5.json`. Every search starts from empty `lessons`.
+- **P4 base (final):** `harnesses/h0-v6.json` (parity with D). Every search started from empty `lessons`.
+- **Status (2026-10-15):** the lift-first roadmap is Completed (falsified). **Confirmation-2 (144 tasks, `cb7cb496…`) is unspent and unopened** apart from the disclosed `spreadsheet-eval` exclusion. It is reserved for one registered claim, by a frozen candidate that meets a prospectively specified development gate in its own regime.
+- **Classifier:** boundaries are compared with a tolerance of 1e-9 (`stats::classify`). Rates are ratios of counts, and an exact 10 pp could otherwise read as below 10.
 
 ## Process
 - Phase gates are reviewed by Codex `gpt-6.1-sol` plus a fresh Claude subagent, in empty temp dirs. Record who was consulted.
