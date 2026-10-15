@@ -504,3 +504,12 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
     - finishing ready work before advancing time.
   - Most misses still yield a sensible general lesson (typically validation precedence).
   - Contrast pairs remain an optional upgrade, not a requirement.
+
+### E09 — H0 v3 live check on all train (also P4's G0)  [phase P3 → P4, development lane]
+- Registered: 2026-10-15, one-row development pre-registration.
+- H0 v3 = `harnesses/h0-v3.json` (sha256 `d0f530ef005b08c510718d6070a53a1cdaec161b17924b3957654623f925c2fd`), which is H0 v2 + `stop_at_public_green`. This is the P4 baseline, and it has not been run live before.
+- Suite: `tasks/train-all` (relative symlinks to calibration-v2, dev-v2 and c1-train; 140 tasks, 35 families; suite hash `bf75b130cf7d924101fbc49da1cfc6467e259578aed0716f5061c5aabeb68196`).
+- Arms D and C(H0 v3); k = 5; `--primary D`; seed 13; jobs 4; `--unregistered`. Out: `runs/2026-10-15-e09-h0v3-train`.
+- Expectation (**sanity, not a claim**): C(H0 v3) within ±5 pp of D, and C's invocations per task within 1.5× of D's. C's public-green-but-hidden-fail submissions are the G0 failure dossiers for P4.
+- Budget: ≤ 700 invocations, 10,800 s. Launched after S4 completes.
+- Result: pending
