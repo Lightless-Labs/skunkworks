@@ -301,7 +301,7 @@ def enforce_required_ids(cases: dict[str, list[str]], node_ids: list[str]) -> di
 
 def run_pytest_hardened(tree: str | Path, venv: str | Path, node_ids: list[str], pythonpath: list[str],
                         frozen_ini: str | Path, plugins: list[str], timeout: int, home: str | Path,
-                        select: list[str] | None = None) -> HardenedResult:
+                        select: list[str] | None = None, extra_env: dict | None = None) -> HardenedResult:
     """Run pytest on `select` (default: `node_ids`) and report each required `node_ids` entry exactly once."""
     tree, venv = Path(tree).resolve(), Path(venv).resolve()
     guard_dir = Path(__file__).resolve().parent / "guard"
@@ -314,6 +314,7 @@ def run_pytest_hardened(tree: str | Path, venv: str | Path, node_ids: list[str],
         env = {"PATH": f"{venv / 'bin'}:/usr/bin:/bin", "HOME": str(tmp), "TMPDIR": str(tmp),
                "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": os.pathsep.join(map(str, py_path)),
                "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "EVOLVE_VENV": str(venv), "LANG": "C.UTF-8"}
+        env = {**(extra_env or {}), **env}  # repo profile env (e.g. QT_QPA_PLATFORM) never overrides ours
         pytest_args = ["-q", "-rfE", "--tb=short", "-c", str(frozen_ini),
                        "--rootdir", str(tree), "-p", "no:cacheprovider", "-p", "evolve_guard"]
         for plugin in plugins:
@@ -376,7 +377,7 @@ def verify_structured(opaque: str, diff: str) -> dict:
             node_ids = sorted(set(visible_ids) | set(keep_ids))
             ini = frozen_pytest_config(base, _frozen_dir(tree))
             result = run_pytest_hardened(tree, priv / "venv", node_ids, profile["pythonpath"], ini,
-                                         venv_pytest_plugins(priv / "venv"), 1200, Path.home())
+                                         venv_pytest_plugins(priv / "venv"), 1200, Path.home(), extra_env=tasks.profile_env(manifest))
         except grading.CandidateError as exc:
             return {"passed": False, "rejected": [], "tests": [], "error": str(exc)[:1500]}
         except OSError:
@@ -423,7 +424,7 @@ def grade_hardened(opaque: str, diff: str | None) -> dict:
             # Official selection (whole selected files), as E1's grader ran it: node-id subsets can
             # change test order and expose order-dependent tests.
             result = run_pytest_hardened(tree, priv / "venv", node_ids, profile["pythonpath"], ini,
-                                         venv_pytest_plugins(priv / "venv"), 1200, Path.home(),
+                                         venv_pytest_plugins(priv / "venv"), 1200, Path.home(), extra_env=tasks.profile_env(manifest),
                                          select=manifest["selected_test_files"])
         except grading.CandidateError as exc:
             return {"applied": False, "rejected": [], "resolved": False, "hidden_resolved": False, "error": str(exc)}
