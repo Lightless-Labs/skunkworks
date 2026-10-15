@@ -214,6 +214,11 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - Validation: 48/48 accepted on the first pass.
 - **Independent-solve audit:** Codex `gpt-6.1-sol` (medium), arm D, k = 3. **48/48 pass every hidden test** (49 invocations; one task needed a repair attempt). 0 public-green but hidden-fail; integrity OK.
 - Reserved for the final P4 claim. Power planning for P4 happens at the P3 → P4 gate; any extension families are authored blind before any P4 result.
+- **Deviation (2026-10-15): accidental exposure of one extension family's requirements.**
+  - While stopping E08, I listed processes with full command lines. A Codex `exec` call of the in-flight AUDIT-C2EXT run carries its task prompt in argv, so about 2 KB of one extension task's requirements (family `spreadsheet-eval`, clauses R1–R4) were printed into my context.
+  - Hidden tests were not exposed. The saved full output was deleted unread.
+  - **Response, fixed before any Confirmation-2 scoring and before any P4 harness is written: family `spreadsheet-eval` is excluded from Confirmation-2.** Its tasks are removed from the set before the final hash.
+  - Rule added to `docs/PROTOCOL.md`: never print process command lines while a holdout or confirmation job runs.
 
 ### E07 — P2 seed lift confirmation on Confirmation-1  [phase P2]
 - Registered: 2026-10-15 (frozen paths at commit e1915c89). Since E06 (eeaa7e7) only controller and validator files have changed: `crates/a2d-lift/src/{lib,tests,validate}.rs`. The arm-C treatment is the one piloted in E06.
@@ -410,4 +415,18 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - Expectation (**sanity, not a claim**): C(H0) within ±5 pp of D. If C(H0) is much lower, the routing did not take and P4 has no baseline.
 - Budget: ≤ 450 invocations, 7,200 s.
 - P3 validation looks used so far: 0.
+- Result: **ABORTED at 23 of 68 C tuples** (159 invocations; no hidden scores computed). Artefacts: `runs/2026-10-15-e08-h0-check-aborted/`.
+  - **H0 defect.** The cleaned coder prompt dropped the seed's "contain a main() function" clause. The metabolism's internal sandbox compiles the file as a *program* before it runs tests.
+  - So the first attempt of almost every task failed with a spurious `E0601: main function not found` (24 coder prompts), the second call was spent adding `fn main`, and the public-test output of the first attempt never reached the coder.
+  - Public-green so far: C 15/19, D 19/20. In E05/E06 the seed coder included `main` in 48 of 48 submissions, so P2's C was not affected.
+  - **Fix:** H0 v2 adds "Include an empty `fn main() {}`"; `validate_harness` now rejects a `coder_prompt` without `main()`, so a P4 proposer cannot reintroduce the defect. Tests: `coder_prompt_must_keep_the_sandbox_main_contract`, `metabolism_benchmark_requires_a_main_function`.
+  - Lesson: a harness slot is coupled to implicit contracts of the machinery behind it, so check a new harness's first feedback prompts before trusting a run (see E08r).
+
+### E08r — H0 v2 live check: D vs C(H0 v2) on c1-train  [phase P3, development lane]
+- Registered: 2026-10-15, one-row development pre-registration. This re-runs E08 with the defect fixed; everything else is identical.
+- H0 v2 = `harnesses/h0.json` (sha256 `867a616b01efc5472488678dc85d62b099d0bf4134ce3d8a09c1acf640cecfa6`).
+- Arms D and C(H0 v2); k = 5; `tasks/c1-train` (68 tasks); `--unregistered`; seed 9; jobs 4. Out: `runs/2026-10-15-e08r-h0-check`.
+- **Early check (before the run completes):** the first five C tasks' second coder prompts must carry public-test output or an empty failure report, with no `E0601`. Otherwise abort.
+- Expectation (**sanity, not a claim**): C(H0 v2) within ±5 pp of D. If C is much lower, H0 is not a usable P4 baseline.
+- Budget: ≤ 450 invocations, 7,200 s. P3 spend so far, including E08: about 360 invocations.
 - Result: pending

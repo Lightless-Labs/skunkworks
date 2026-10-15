@@ -25,6 +25,7 @@ This file gathers the rules **currently in force**. History and rationale live i
 - **Development data:**
   - `tasks/calibration-v2`, `tasks/dev-v2`, `tasks/c1-train`: fully visible.
   - `$A2D_HOLDOUT_DIR/c1-validation`: metric only, read through `summary.json`; per-task and per-family statistics are never computed.
+- **No command lines while holdout jobs run:** Codex `exec` carries the task prompt in argv. Use `pgrep -f '<pattern>'` (pids only), never `ps -o command` or `pgrep -fl` (Confirmation-2 deviation, 2026-10-15).
 - **Hidden-test boundary:** test *content* never reaches an arm or enzyme. In P4 only, train-family aggregate pass/fail labels may reach the proposer.
 
 ## Runs
@@ -34,7 +35,7 @@ This file gathers the rules **currently in force**. History and rationale live i
   2. `--defer-scoring`;
   3. `a2d lift manifest`, committed;
   4. `a2d lift score --expect-head`.
-- **Harness:** `--harness <json>`, validated, hashed and recorded. Every harness step's output must have a declared consumer.
+- **Harness:** `--harness <json>`, validated, hashed and recorded. Every harness step's output must have a declared consumer. A `coder_prompt` must keep the seed's `main()` clause, because the metabolism's sandbox compiles the file as a program (E08). Check a new harness's first feedback prompts early in its first run.
 - **Shared account:** the A² session shares the Codex account. This is a standing condition, mitigated by seeded tuple and arm order. This session never runs holdout authoring alongside a registered run.
 - **Budget envelope** (remaining ≈ 15k): P3 ≤ 3k, P4 ≤ 5k, Confirmation-2 ≈ 5k, reserve ≈ 2k.
 

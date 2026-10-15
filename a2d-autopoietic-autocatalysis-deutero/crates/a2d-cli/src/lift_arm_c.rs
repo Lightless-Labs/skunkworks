@@ -16,7 +16,9 @@
 //! - `drop_enzymes`: remove seed enzymes (RAF closure must hold), freeing
 //!   their invocations for the remaining schedule;
 //! - `coder_note`: append text to the task input every enzyme sees;
-//! - `coder_prompt`: replace the coder enzyme's prompt template;
+//! - `coder_prompt`: replace the coder enzyme's prompt template (it must
+//!   keep the seed's `main()` clause: the metabolism's sandbox compiles the
+//!   file as a program);
 //! - `route_previous_code`: give the coder its previous file (a
 //!   `previous_attempt` food artifact, updated after every cycle, as a coder
 //!   catalyst). The seed coder never sees its own code (LOG S0).
@@ -103,6 +105,12 @@ fn harness_germline(harness: &Value) -> Result<Germline, String> {
     let prompt = harness["coder_prompt"].as_str();
     if harness.get("coder_prompt").is_some() && prompt.is_none() {
         return Err("coder_prompt must be a string".to_string());
+    }
+    // The metabolism's sandbox compiles the file as a program before running
+    // tests; without this clause the first attempt of every task is a
+    // spurious E0601 (LOG E08).
+    if prompt.is_some_and(|p| !p.contains("main()")) {
+        return Err("coder_prompt must ask for a main() function".to_string());
     }
     if route || prompt.is_some() {
         let mut enzymes: Vec<_> = germline.enzymes().into_iter().cloned().collect();
@@ -378,7 +386,7 @@ mod tests {
         };
         let h0 = serde_json::json!({
             "name": "h0", "drop_enzymes": ["architect", "tester"],
-            "route_previous_code": true, "coder_prompt": "CUSTOM_CODER_PROMPT_e1 Output a ```rust block."
+            "route_previous_code": true, "coder_prompt": "CUSTOM_CODER_PROMPT_e1 Include fn main(). Output a ```rust block."
         });
         let seen = Arc::new(Mutex::new(Vec::new()));
         MetabolismArm.run(Box::new(MarkerMock { seen: seen.clone() }), &task, 5, &h0);
@@ -416,6 +424,38 @@ mod tests {
         assert!(harness_germline(&serde_json::json!({"drop": []})).is_err());
         assert!(harness_germline(&serde_json::json!({"drop_enzymes": ["nope"]})).is_err());
         assert!(harness_germline(&serde_json::json!({})).is_ok());
+    }
+
+    #[test]
+    fn coder_prompt_must_keep_the_sandbox_main_contract() {
+        // The metabolism's sandbox compiles the file as a program before it
+        // runs tests. A prompt that drops the seed's `main()` clause costs
+        // every task a spurious E0601 attempt (E08 aborted).
+        let no_main = serde_json::json!({"coder_prompt": "Write the file."});
+        assert!(harness_germline(&no_main).unwrap_err().contains("main()"));
+        let with_main =
+            serde_json::json!({"coder_prompt": "Write the file. Include an empty `fn main() {}`."});
+        assert!(harness_germline(&with_main).is_ok());
+        let h0: Value =
+            serde_json::from_str(include_str!("../../../harnesses/h0.json")).unwrap();
+        assert!(harness_germline(&h0).is_ok());
+    }
+
+    #[test]
+    fn metabolism_benchmark_requires_a_main_function() {
+        let task = PublicTask {
+            id: "t".into(),
+            family: "f".into(),
+            requirements: "Do it.".into(),
+            public_tests: "#[test]\nfn doubles_two() { assert_eq!(double(2), 4); }\n".into(),
+            test_timeout_secs: 10,
+        };
+        let suite = public_benchmark(&task);
+        let library = suite.evaluate("```rust\npub fn double(x: i32) -> i32 { x * 2 }\n```");
+        assert!(library.diagnostic.unwrap_or_default().contains("E0601"));
+        let program = suite
+            .evaluate("```rust\npub fn double(x: i32) -> i32 { x * 2 }\nfn main() {}\n```");
+        assert_eq!(program.fitness, 1.0);
     }
 
     #[test]
