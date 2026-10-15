@@ -744,6 +744,8 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Reading (fixed now):**
   - **D:main − D ≤ −5 pp:** the clause costs hidden passes. It would explain part of the carrier gap, and the sandbox should accept library files.
   - **Within ±5 pp:** the clause is not the cause. Any carrier gap is attributed to the metabolism path (sandbox or wrapper), or to noise.
+  - **D:main − D ≥ +5 pp** (added at the closing gate, before any E13 score existed): the clause helps on train. It cannot explain the validation deficit, so it is recorded as a prompt effect for any "D + X" follow-up.
+  - **Limit, for every case:** a train result cannot explain a validation gap. E10b already measured "D + clause + carrier" at +2.9 pp on train.
 - Budget: ≤ 400 invocations from the reserve, 10,800 s.
 - Result: pending
 
