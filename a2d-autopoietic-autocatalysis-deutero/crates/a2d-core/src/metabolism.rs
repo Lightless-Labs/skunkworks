@@ -1860,6 +1860,7 @@ fn evolver_system_prompt(
     )
 }
 
+#[cfg(test)]
 fn build_request(
     enzyme: &EnzymeDef,
     inputs: &ArtifactStore,

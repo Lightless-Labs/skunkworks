@@ -24,6 +24,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// The only suites a proposal may read (`tasks/<name>`, symlinks resolved).
+const TRAIN_SUITES: [&str; 3] = ["c1-train", "dev-v2", "calibration-v2"];
+
 const ARCHITECT_SYSTEM: &str = "You are the architect of a coding harness. You study a programmer's failures on training tasks and write short, general lessons that help on future, different tasks.";
 
 const DIAGNOSE: &str = "This Rust file passes every visible test, but it FAILS at least one hidden acceptance test that checks the requirements below.\nFind the bug. Reply with ONE JSON object and nothing else:\n{\"suspect_clauses\": [up to 3 clause ids such as \"R7\", most likely first], \"bug\": \"one sentence\", \"lesson\": \"a TASK-AGNOSTIC instruction to a programmer (no names from this task, at most 25 words) that would have prevented this bug\"}";
@@ -131,6 +134,8 @@ pub fn uninformed_dossiers(
         }
     }
     picks.sort();
+    let mut seen = BTreeSet::new();
+    picks.retain(|(_, task, _)| seen.insert(task.clone()));
     picks
         .into_iter()
         .take(n)
@@ -143,6 +148,61 @@ pub fn uninformed_dossiers(
             })
         })
         .collect()
+}
+
+/// Keep only dossiers of the proposal half's families (`None`: all).
+pub fn restrict_families(dossiers: Vec<Dossier>, families: Option<&BTreeSet<String>>) -> Vec<Dossier> {
+    match families {
+        None => dossiers,
+        Some(allowed) => dossiers.into_iter().filter(|d| allowed.contains(&d.family)).collect(),
+    }
+}
+
+/// Every dossier's task must resolve (through symlinks) under an allowed
+/// train root, so a validation or confirmation run can never feed a proposal.
+pub fn check_train_tasks(suite: &Path, dossiers: &[Dossier], roots: &[PathBuf]) -> Result<(), String> {
+    let roots: Vec<PathBuf> = roots.iter().filter_map(|r| r.canonicalize().ok()).collect();
+    for d in dossiers {
+        let path = suite
+            .join(&d.task)
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", d.task))?;
+        if !roots.iter().any(|root| path.starts_with(root)) {
+            return Err(format!("{} is not a train task ({})", d.task, path.display()));
+        }
+    }
+    Ok(())
+}
+
+/// Every task directory of `suite` must resolve under an allowed train root.
+/// Checked before any task file is read.
+pub fn check_train_suite(suite: &Path, roots: &[PathBuf]) -> Result<(), String> {
+    let roots: Vec<PathBuf> = roots.iter().filter_map(|r| r.canonicalize().ok()).collect();
+    let entries = fs::read_dir(suite).map_err(|e| format!("{}: {e}", suite.display()))?;
+    for entry in entries {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let resolved = path.canonicalize().map_err(|e| format!("{}: {e}", path.display()))?;
+        if resolved.is_dir() && !roots.iter().any(|root| resolved.starts_with(root)) {
+            // The path is not printed: it may name a holdout task.
+            return Err(format!("{} is not a train suite", suite.display()));
+        }
+    }
+    Ok(())
+}
+
+/// At most `max` dossiers, sampled deterministically, in task order.
+pub fn cap_dossiers(dossiers: Vec<Dossier>, max: usize, seed: u64) -> Vec<Dossier> {
+    if dossiers.len() <= max {
+        return dossiers;
+    }
+    let mut keyed: Vec<(u64, Dossier)> = dossiers
+        .into_iter()
+        .map(|d| (sample_key(seed, &d.task, 0), d))
+        .collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.task.cmp(&b.1.task)));
+    let mut kept: Vec<Dossier> = keyed.into_iter().take(max).map(|(_, d)| d).collect();
+    kept.sort_by(|a, b| a.task.cmp(&b.task));
+    kept
 }
 
 pub fn uninformed_prompt(dossier: &Dossier) -> String {
@@ -226,9 +286,10 @@ pub struct Distilled {
     pub diagnoses: Vec<Diagnosis>,
     pub dropped: Vec<String>,
     pub calls: usize,
+    pub tokens: usize,
 }
 
-fn invoke(provider: &dyn Provider, enzyme: &str, prompt: String) -> String {
+fn invoke(provider: &dyn Provider, enzyme: &str, prompt: String) -> (String, usize) {
     let request = InvocationRequest {
         enzyme_id: EnzymeId::from(enzyme),
         system: ARCHITECT_SYSTEM.to_string(),
@@ -236,10 +297,13 @@ fn invoke(provider: &dyn Provider, enzyme: &str, prompt: String) -> String {
         max_tokens: 4096,
     };
     match provider.invoke(&request) {
-        Ok(response) => response.text,
+        Ok(response) => {
+            let tokens = response.usage.total();
+            (response.text, tokens)
+        }
         Err(error) => {
             eprintln!("distill: {enzyme} call failed: {error}");
-            String::new()
+            (String::new(), 0)
         }
     }
 }
@@ -253,8 +317,9 @@ pub fn distill(
     jobs: usize,
 ) -> Distilled {
     let mut diagnoses = Vec::new();
+    let mut tokens = 0;
     for chunk in dossiers.chunks(jobs.max(1)) {
-        let answers: Vec<(String, String)> = std::thread::scope(|scope| {
+        let answers: Vec<(String, (String, usize))> = std::thread::scope(|scope| {
             let handles: Vec<_> = chunk
                 .iter()
                 .map(|d| {
@@ -275,7 +340,8 @@ pub fn distill(
                 .collect();
             handles.into_iter().filter_map(|h| h.join().ok()).collect()
         });
-        for (task, text) in answers {
+        for (task, (text, used)) in answers {
+            tokens += used;
             let Some(value) = first_json(&text) else {
                 continue;
             };
@@ -298,11 +364,12 @@ pub fn distill(
         .map(|d| d.lesson.clone())
         .filter(|l| !l.trim().is_empty() && !names_any(l, &ids))
         .collect();
-    let merged = invoke(
+    let (merged, used) = invoke(
         provider.as_ref(),
         "architect-merge",
         merge_prompt(current, &proposed, max),
     );
+    tokens += used;
     let mut lessons = Vec::new();
     let mut dropped = Vec::new();
     for lesson in first_json(&merged)
@@ -329,10 +396,11 @@ pub fn distill(
         diagnoses,
         dropped,
         calls: dossiers.len() + 1,
+        tokens,
     }
 }
 
-const USAGE: &str = "usage: a2d distill --from <run-dir>=<suite-dir> [--from ...] --harness <in.json> --out <out.json> --log <provenance.json> --name <name> [--arm C] [--model codex/gpt-6-luna] [--effort low] [--max-lessons 8] [--jobs 4] [--mode informed|uninformed] [--seed <n>]";
+const USAGE: &str = "usage: a2d distill --from <run-dir>=<suite-dir> [--from ...] --harness <in.json> --out <out.json> --log <provenance.json> --name <name> [--arm C] [--model codex/gpt-6-luna] [--effort low] [--max-lessons 8] [--jobs 4] [--mode informed|uninformed] [--seed <n>] [--families <families.json>] [--max-dossiers 40]";
 
 pub fn main(args: &[String]) -> i32 {
     match run(args) {
@@ -381,9 +449,30 @@ fn run(args: &[String]) -> Result<(), String> {
         .flatten()
         .filter_map(|l| l.as_str().map(str::to_string))
         .collect();
+    // Proposal-half families (JSON list), and the train roots every dossier
+    // must resolve under (validation and confirmation runs are refused).
+    let families: Option<BTreeSet<String>> = match flags.get("families") {
+        None => None,
+        Some(path) => Some(
+            serde_json::from_str(&read(Path::new(path))?)
+                .map_err(|e| format!("--families {path}: {e}"))?,
+        ),
+    };
+    let tasks_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tasks");
+    let roots: Vec<PathBuf> = TRAIN_SUITES.iter().map(|s| tasks_root.join(s)).collect();
+    let max_dossiers: usize = flags
+        .get("max-dossiers")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40);
+    let seed: u64 = flags.get("seed").and_then(|v| v.parse().ok()).unwrap_or(0);
+    for (_, suite) in &from {
+        check_train_suite(suite, &roots)?;
+    }
     let mut dossiers = Vec::new();
     for (run_dir, suite) in &from {
-        dossiers.extend(failure_dossiers(run_dir, suite, &arm)?);
+        let found = restrict_families(failure_dossiers(run_dir, suite, &arm)?, families.as_ref());
+        check_train_tasks(suite, &found, &roots)?;
+        dossiers.extend(found);
     }
     let mode = flags.get("mode").cloned().unwrap_or_else(|| "informed".to_string());
     match mode.as_str() {
@@ -391,10 +480,14 @@ fn run(args: &[String]) -> Result<(), String> {
         "uninformed" => {
             // Control at equal size: as many dossiers as there are failures,
             // sampled from every submission regardless of outcome.
-            let seed: u64 = flags.get("seed").and_then(|v| v.parse().ok()).unwrap_or(0);
             let mut pool = Vec::new();
             for (run_dir, suite) in &from {
-                for d in uninformed_dossiers(run_dir, suite, &arm, usize::MAX, seed)? {
+                let found = restrict_families(
+                    uninformed_dossiers(run_dir, suite, &arm, usize::MAX, seed)?,
+                    families.as_ref(),
+                );
+                check_train_tasks(suite, &found, &roots)?;
+                for d in found {
                     pool.push((sample_key(seed, &d.task, 0), d));
                 }
             }
@@ -403,6 +496,7 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         other => return Err(format!("--mode must be informed or uninformed, not {other:?}")),
     }
+    let dossiers = cap_dossiers(dossiers, max_dossiers, seed);
     let model = flags
         .get("model")
         .cloned()
@@ -426,6 +520,10 @@ fn run(args: &[String]) -> Result<(), String> {
         "from": from.iter().map(|(r, s)| json!({"run": r, "suite": s})).collect::<Vec<_>>(),
         "dossiers": dossiers.iter().map(|d| &d.task).collect::<Vec<_>>(),
         "calls": distilled.calls,
+        "tokens": distilled.tokens,
+        "families": families,
+        "max_dossiers": max_dossiers,
+        "seed": seed,
         "diagnoses": distilled.diagnoses,
         "dropped": distilled.dropped,
         "previous_lessons": current,
@@ -437,9 +535,10 @@ fn run(args: &[String]) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     println!(
-        "distill: {} dossiers, {} calls, {} lessons ({} dropped)",
+        "distill: {} dossiers, {} calls, {} tokens, {} lessons ({} dropped)",
         dossiers.len(),
         distilled.calls,
+        distilled.tokens,
         distilled.lessons.len(),
         distilled.dropped.len()
     );
@@ -567,6 +666,34 @@ mod tests {
             2,
             "samples from every submission of the arm, pass or fail"
         );
+    }
+
+    #[test]
+    fn selection_restricts_families_requires_train_roots_caps_and_dedupes() {
+        let (root, run, suite) = fixture();
+        let informed = failure_dossiers(&run, &suite, "C").unwrap();
+        // Family allowlist: an unlisted family yields nothing.
+        let only_other: BTreeSet<String> = ["other".to_string()].into();
+        assert!(restrict_families(informed.clone(), Some(&only_other)).is_empty());
+        let fam: BTreeSet<String> = ["fam-x".to_string()].into();
+        assert_eq!(restrict_families(informed.clone(), Some(&fam)).len(), 1);
+        // Train roots: the suite must resolve under an allowed root.
+        assert!(check_train_tasks(&suite, &informed, &[root.path().to_path_buf()]).is_ok());
+        let elsewhere = tempfile::tempdir().unwrap();
+        assert!(check_train_tasks(&suite, &informed, &[elsewhere.path().to_path_buf()]).is_err());
+        assert!(check_train_suite(&suite, &[root.path().to_path_buf()]).is_ok());
+        assert!(check_train_suite(&suite, &[elsewhere.path().to_path_buf()]).is_err());
+        // Cap: deterministic subsample.
+        let pool = uninformed_dossiers(&run, &suite, "C", usize::MAX, 3).unwrap();
+        assert_eq!(cap_dossiers(pool.clone(), 1, 3).len(), 1);
+        assert_eq!(cap_dossiers(pool.clone(), 1, 3)[0].task, cap_dossiers(pool, 1, 3)[0].task);
+        // Uninformed pool: one dossier per task even with duplicate submissions.
+        let tasks: BTreeSet<String> = uninformed_dossiers(&run, &suite, "C", usize::MAX, 3)
+            .unwrap()
+            .iter()
+            .map(|d| d.task.clone())
+            .collect();
+        assert_eq!(tasks.len(), 2);
     }
 
     #[test]
