@@ -1,0 +1,254 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    Minute,
+    Hour,
+    DayOfMonth,
+    Month,
+    DayOfWeek,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseError {
+    FieldCount { found: usize },
+    InvalidCharacter { field: Field, offset: usize },
+    EmptyItem { field: Field, offset: usize },
+    InvalidSyntax { field: Field, offset: usize },
+    LeadingZero { field: Field, offset: usize },
+    NumberOverflow { field: Field, offset: usize },
+    OutOfRange { field: Field, offset: usize },
+    ReversedRange { field: Field, offset: usize },
+    BadStep { field: Field, offset: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cron {
+    values: [Vec<u8>; 5],
+    day_of_month_is_exact_star: bool,
+    day_of_week_is_exact_star: bool,
+}
+
+fn field_info(field: Field) -> (u8, u8, u8) {
+    match field {
+        Field::Minute => (0, 59, 60),
+        Field::Hour => (0, 23, 24),
+        Field::DayOfMonth => (1, 31, 31),
+        Field::Month => (1, 12, 12),
+        Field::DayOfWeek => (0, 6, 7),
+    }
+}
+
+fn field_index(field: Field) -> usize {
+    match field {
+        Field::Minute => 0,
+        Field::Hour => 1,
+        Field::DayOfMonth => 2,
+        Field::Month => 3,
+        Field::DayOfWeek => 4,
+    }
+}
+
+fn parse_number(
+    bytes: &[u8],
+    field: Field,
+    offset: usize,
+    is_step: bool,
+) -> Result<u32, ParseError> {
+    if bytes.len() > 1 && bytes[0] == b'0' {
+        return Err(ParseError::LeadingZero { field, offset });
+    }
+
+    let mut value: u32 = 0;
+    for &byte in bytes {
+        value = value
+            .checked_mul(10)
+            .and_then(|v| v.checked_add((byte - b'0') as u32))
+            .ok_or(ParseError::NumberOverflow { field, offset })?;
+    }
+
+    let (min, max, width) = field_info(field);
+    if is_step {
+        if value < 1 || value > width as u32 {
+            return Err(ParseError::BadStep { field, offset });
+        }
+    } else if value < min as u32 || value > max as u32 {
+        return Err(ParseError::OutOfRange { field, offset });
+    }
+
+    Ok(value)
+}
+
+fn parse_field(text: &str, field: Field, selected: &mut [bool; 60]) -> Result<(), ParseError> {
+    let bytes = text.as_bytes();
+
+    for (offset, &byte) in bytes.iter().enumerate() {
+        if !byte.is_ascii_digit() && !matches!(byte, b'*' | b'-' | b'/' | b',') {
+            return Err(ParseError::InvalidCharacter { field, offset });
+        }
+    }
+
+    let (domain_min, domain_max, _) = field_info(field);
+
+    let mut item_start = 0;
+    loop {
+        let item_end = bytes[item_start..]
+            .iter()
+            .position(|&b| b == b',')
+            .map(|relative| item_start + relative)
+            .unwrap_or(bytes.len());
+
+        let item = &bytes[item_start..item_end];
+        if item.is_empty() {
+            return Err(ParseError::EmptyItem {
+                field,
+                offset: item_start,
+            });
+        }
+
+        let slash_positions: Vec<usize> = item
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &b)| (b == b'/').then_some(i))
+            .collect();
+        if slash_positions.len() > 1 {
+            return Err(ParseError::InvalidSyntax {
+                field,
+                offset: item_start,
+            });
+        }
+
+        let (base, step_part, step_offset) = if let Some(&slash) = slash_positions.first() {
+            (&item[..slash], Some(&item[slash + 1..]), item_start + slash + 1)
+        } else {
+            (item, None, 0)
+        };
+
+        let (base_kind, first_part, second_part, second_offset) =
+            if base == b"*" {
+                (0, &[][..], &[][..], 0)
+            } else if base.iter().all(u8::is_ascii_digit) {
+                (1, base, &[][..], item_start)
+            } else {
+                let hyphens: Vec<usize> = base
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, &b)| (b == b'-').then_some(i))
+                    .collect();
+
+                if hyphens.len() == 1 {
+                    let hyphen = hyphens[0];
+                    let start = &base[..hyphen];
+                    let end = &base[hyphen + 1..];
+                    if start.is_empty() || end.is_empty() {
+                        return Err(ParseError::InvalidSyntax {
+                            field,
+                            offset: item_start,
+                        });
+                    }
+                    if !start.iter().all(u8::is_ascii_digit)
+                        || !end.iter().all(u8::is_ascii_digit)
+                    {
+                        return Err(ParseError::InvalidSyntax {
+                            field,
+                            offset: item_start,
+                        });
+                    }
+                    (2, start, end, item_start + hyphen + 1)
+                } else {
+                    return Err(ParseError::InvalidSyntax {
+                        field,
+                        offset: item_start,
+                    });
+                }
+            };
+
+        if let Some(step_bytes) = step_part {
+            if step_bytes.is_empty() || !step_bytes.iter().all(u8::is_ascii_digit) {
+                return Err(ParseError::InvalidSyntax {
+                    field,
+                    offset: item_start,
+                });
+            }
+        }
+
+        let (start, end) = match base_kind {
+            0 => (domain_min as u32, domain_max as u32),
+            1 => {
+                let value = parse_number(first_part, field, item_start, false)?;
+                (value, if step_part.is_some() { domain_max as u32 } else { value })
+            }
+            _ => {
+                let start = parse_number(first_part, field, item_start, false)?;
+                let end = parse_number(second_part, field, second_offset, false)?;
+                if start > end {
+                    return Err(ParseError::ReversedRange {
+                        field,
+                        offset: second_offset,
+                    });
+                }
+                (start, end)
+            }
+        };
+
+        let step = if let Some(step_bytes) = step_part {
+            parse_number(step_bytes, field, step_offset, true)?
+        } else {
+            1
+        };
+
+        let mut value = start;
+        while value <= end {
+            selected[value as usize] = true;
+            match value.checked_add(step) {
+                Some(next) => value = next,
+                None => break,
+            }
+        }
+
+        if item_end == bytes.len() {
+            break;
+        }
+        item_start = item_end + 1;
+    }
+
+    Ok(())
+}
+
+pub fn parse_cron(input: &str) -> Result<Cron, ParseError> {
+    let parts: Vec<&str> = input.split(' ').collect();
+    if parts.len() != 5 {
+        return Err(ParseError::FieldCount { found: parts.len() });
+    }
+
+    let fields = [
+        Field::Minute,
+        Field::Hour,
+        Field::DayOfMonth,
+        Field::Month,
+        Field::DayOfWeek,
+    ];
+    let mut selected = [[false; 60]; 5];
+
+    for (index, (&text, &field)) in parts.iter().zip(fields.iter()).enumerate() {
+        parse_field(text, field, &mut selected[index])?;
+    }
+
+    let values = std::array::from_fn(|index| {
+        let field = fields[index];
+        let (min, max, _) = field_info(field);
+        (min..=max)
+            .filter(|&value| selected[index][value as usize])
+            .collect()
+    });
+
+    Ok(Cron {
+        values,
+        day_of_month_is_exact_star: parts[2] == "*",
+        day_of_week_is_exact_star: parts[4] == "*",
+    })
+}
+
+impl Cron {
+    pub fn allowed(&self, field: Field) -> Vec<u8> {
+        self.values[field_index(field)].clone()
+    }
+}

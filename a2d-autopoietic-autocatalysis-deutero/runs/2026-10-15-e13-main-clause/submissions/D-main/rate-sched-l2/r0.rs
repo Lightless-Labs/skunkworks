@@ -1,0 +1,377 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CronError {
+    Layout(usize),
+    Syntax(usize),
+    Number(usize),
+    Bounds(usize),
+    Descending(usize),
+    Step(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cron {
+    minutes: [bool; 60],
+    hours: [bool; 24],
+}
+
+impl Cron {
+    pub fn parse(text: &str) -> Result<Self, CronError> {
+        let bytes = text.as_bytes();
+
+        for (i, &b) in bytes.iter().enumerate() {
+            if b.is_ascii_whitespace() && b != b' ' {
+                return Err(CronError::Layout(i));
+            }
+        }
+
+        let spaces: Vec<usize> = bytes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &b)| (b == b' ').then_some(i))
+            .collect();
+
+        if spaces.is_empty() {
+            return Err(CronError::Layout(text.len()));
+        }
+        if spaces.len() > 1 {
+            return Err(CronError::Layout(spaces[1]));
+        }
+
+        let separator = spaces[0];
+        if separator == 0 || separator + 1 == bytes.len() {
+            return Err(CronError::Layout(separator));
+        }
+
+        let mut minutes = [false; 60];
+        let mut hours = [false; 24];
+
+        parse_field(&text[..separator], 0, 60, &mut minutes)?;
+        parse_field(
+            &text[separator + 1..],
+            separator + 1,
+            24,
+            &mut hours,
+        )?;
+
+        Ok(Self { minutes, hours })
+    }
+
+    pub fn matches(&self, minute: u64) -> bool {
+        self.minutes[(minute % 60) as usize]
+            && self.hours[((minute / 60) % 24) as usize]
+    }
+}
+
+fn parse_field(
+    field: &str,
+    offset: usize,
+    limit: usize,
+    selected: &mut [bool],
+) -> Result<(), CronError> {
+    let mut start = 0;
+    loop {
+        let end = field[start..]
+            .find(',')
+            .map(|i| start + i)
+            .unwrap_or(field.len());
+
+        if start == end {
+            return Err(CronError::Syntax(offset + start));
+        }
+
+        parse_item(&field[start..end], offset + start, limit, selected)?;
+
+        if end == field.len() {
+            break;
+        }
+        start = end + 1;
+    }
+    Ok(())
+}
+
+fn parse_item(
+    item: &str,
+    offset: usize,
+    limit: usize,
+    selected: &mut [bool],
+) -> Result<(), CronError> {
+    let bytes = item.as_bytes();
+
+    let mut slash = None;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'/' {
+            if slash.is_some() {
+                return Err(CronError::Syntax(offset + i));
+            }
+            slash = Some(i);
+        }
+    }
+
+    let (base_end, step_start) = match slash {
+        Some(i) => (i, Some(i + 1)),
+        None => (bytes.len(), None),
+    };
+
+    let base = &item[..base_end];
+    let step_value = if let Some(slash_pos) = slash {
+        if base != "*" && !base.contains('-') {
+            return Err(CronError::Syntax(offset + slash_pos));
+        }
+        let step_start = step_start.unwrap();
+        Some(parse_number(
+            &item[step_start..],
+            offset + step_start,
+            limit,
+            true,
+        )?)
+    } else {
+        None
+    };
+
+    let (range_start, range_end, dash_pos) = if base == "*" {
+        (0, limit - 1, None)
+    } else if let Some(dash) = base.find('-') {
+        let left = parse_number(&base[..dash], offset, limit, false)?;
+        let right_start = dash + 1;
+        let right = parse_number(&base[right_start..], offset + right_start, limit, false)?;
+        if left > right {
+            return Err(CronError::Descending(offset + dash));
+        }
+        (left, right, Some(dash))
+    } else {
+        let n = parse_number(base, offset, limit, false)?;
+        (n, n, None)
+    };
+
+    let step = step_value.unwrap_or(1);
+    if step == 0 || step > limit {
+        let step_offset = offset + slash.unwrap_or(0) + 1;
+        return Err(CronError::Step(step_offset));
+    }
+
+    let _ = dash_pos;
+    let mut n = range_start;
+    while n <= range_end {
+        selected[n] = true;
+        match n.checked_add(step) {
+            Some(next) => n = next,
+            None => break,
+        }
+    }
+    Ok(())
+}
+
+fn parse_number(
+    fragment: &str,
+    offset: usize,
+    limit: usize,
+    is_step: bool,
+) -> Result<usize, CronError> {
+    let bytes = fragment.as_bytes();
+    if bytes.is_empty() {
+        return Err(CronError::Syntax(offset));
+    }
+
+    if let Some((i, _)) = bytes.iter().enumerate().find(|(_, b)| !b.is_ascii_digit()) {
+        return Err(CronError::Syntax(offset + i));
+    }
+
+    if bytes.len() > 1 && bytes[0] == b'0' {
+        return Err(CronError::Number(offset));
+    }
+
+    let mut value = 0usize;
+    for &b in bytes {
+        value = match value
+            .checked_mul(10)
+            .and_then(|v| v.checked_add((b - b'0') as usize))
+        {
+            Some(v) => v,
+            None => {
+                return Err(if is_step {
+                    CronError::Step(offset)
+                } else {
+                    CronError::Bounds(offset)
+                });
+            }
+        };
+    }
+
+    if is_step {
+        if value == 0 || value > limit {
+            return Err(CronError::Step(offset));
+        }
+    } else if value >= limit {
+        return Err(CronError::Bounds(offset));
+    }
+
+    Ok(value)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Policy {
+    Skip,
+    Once,
+    All,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Occurrence {
+    pub id: String,
+    pub at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    TimeReversed,
+    TimeRange,
+    BadId,
+    BadPriority,
+    Duplicate,
+    Cron(CronError),
+}
+
+struct Job {
+    id: String,
+    cron: Cron,
+    priority: u8,
+    policy: Policy,
+    insertion: usize,
+}
+
+pub struct Calendar {
+    jobs: Vec<Job>,
+    last_poll: Option<u64>,
+    next_insertion: usize,
+}
+
+impl Calendar {
+    pub fn new() -> Self {
+        Self {
+            jobs: Vec::new(),
+            last_poll: None,
+            next_insertion: 0,
+        }
+    }
+
+    pub fn add(
+        &mut self,
+        id: &str,
+        expression: &str,
+        priority: u8,
+        policy: Policy,
+    ) -> Result<(), Error> {
+        if id.is_empty()
+            || id.len() > 16
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err(Error::BadId);
+        }
+        if priority > 9 {
+            return Err(Error::BadPriority);
+        }
+        if self.jobs.iter().any(|job| job.id == id) {
+            return Err(Error::Duplicate);
+        }
+        let cron = Cron::parse(expression).map_err(Error::Cron)?;
+        let insertion = self.next_insertion;
+        self.next_insertion += 1;
+        self.jobs.push(Job {
+            id: id.to_owned(),
+            cron,
+            priority,
+            policy,
+            insertion,
+        });
+        Ok(())
+    }
+
+    pub fn poll(&mut self, now: u64) -> Result<Vec<Occurrence>, Error> {
+        if let Some(last) = self.last_poll {
+            if now < last {
+                return Err(Error::TimeReversed);
+            }
+        }
+        if now > 604_800_000 {
+            return Err(Error::TimeRange);
+        }
+
+        const MINUTE_MS: u64 = 60_000;
+        let lower_exclusive = self.last_poll;
+        let mut emitted: Vec<(Occurrence, u8, usize)> = Vec::new();
+
+        for job in &self.jobs {
+            let first_minute = match lower_exclusive {
+                Some(last) => last / MINUTE_MS + 1,
+                None => 0,
+            };
+            let last_minute = now / MINUTE_MS;
+            if first_minute > last_minute {
+                continue;
+            }
+
+            match job.policy {
+                Policy::All => {
+                    let mut minute = first_minute;
+                    while minute <= last_minute {
+                        if job.cron.matches(minute) {
+                            emitted.push((
+                                Occurrence {
+                                    id: job.id.clone(),
+                                    at: minute * MINUTE_MS,
+                                },
+                                job.priority,
+                                job.insertion,
+                            ));
+                        }
+                        minute += 1;
+                    }
+                }
+                Policy::Once => {
+                    if let Some(minute) = (first_minute..=last_minute)
+                        .rev()
+                        .find(|&minute| job.cron.matches(minute))
+                    {
+                        emitted.push((
+                            Occurrence {
+                                id: job.id.clone(),
+                                at: minute * MINUTE_MS,
+                            },
+                            job.priority,
+                            job.insertion,
+                        ));
+                    }
+                }
+                Policy::Skip => {
+                    if now % MINUTE_MS == 0 {
+                        let minute = now / MINUTE_MS;
+                        if minute >= first_minute && job.cron.matches(minute) {
+                            emitted.push((
+                                Occurrence {
+                                    id: job.id.clone(),
+                                    at: now,
+                                },
+                                job.priority,
+                                job.insertion,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        emitted.sort_by(|a, b| {
+            a.0.at
+                .cmp(&b.0.at)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+
+        self.last_poll = Some(now);
+        Ok(emitted.into_iter().map(|entry| entry.0).collect())
+    }
+}
+
+fn main() {}

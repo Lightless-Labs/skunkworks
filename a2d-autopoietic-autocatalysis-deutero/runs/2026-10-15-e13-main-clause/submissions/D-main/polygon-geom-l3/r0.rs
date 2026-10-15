@@ -1,0 +1,328 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Point {
+    pub x: i64,
+    pub y: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Clockwise,
+    Degenerate,
+    CounterClockwise,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Measures {
+    pub signed_area2: i128,
+    pub area2: u128,
+    pub orientation: Orientation,
+    pub edge_milli: Vec<u64>,
+    pub perimeter_milli: u64,
+    pub longest_edge: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeomError {
+    TooManyVertices { len: usize },
+    OutOfRange { index: usize },
+    TooFewVertices { len: usize },
+    TooManyQueries { len: usize },
+    QueryOutOfRange { index: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Location {
+    Outside,
+    Inside,
+    Boundary { edge: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Collinear {
+    Exclude,
+    Include,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hull {
+    pub vertices: Vec<Point>,
+    pub source_indices: Vec<usize>,
+    pub area2: u128,
+    pub perimeter_milli: u64,
+}
+
+const MAX_COORD: i64 = 1_000_000_000;
+const MAX_VERTICES: usize = 4096;
+
+fn in_range(p: Point) -> bool {
+    (-MAX_COORD..=MAX_COORD).contains(&p.x) && (-MAX_COORD..=MAX_COORD).contains(&p.y)
+}
+
+fn prepare_polygon(points: &[Point]) -> Result<Vec<Point>, GeomError> {
+    if points.len() > MAX_VERTICES {
+        return Err(GeomError::TooManyVertices { len: points.len() });
+    }
+    for (index, &point) in points.iter().enumerate() {
+        if !in_range(point) {
+            return Err(GeomError::OutOfRange { index });
+        }
+    }
+
+    let mut effective = points.to_vec();
+    if effective.len() >= 2 && effective.first() == effective.last() {
+        effective.pop();
+    }
+    if effective.len() < 3 {
+        return Err(GeomError::TooFewVertices {
+            len: effective.len(),
+        });
+    }
+    Ok(effective)
+}
+
+fn cross(a: Point, b: Point, c: Point) -> i128 {
+    (b.x as i128 - a.x as i128) * (c.y as i128 - a.y as i128)
+        - (b.y as i128 - a.y as i128) * (c.x as i128 - a.x as i128)
+}
+
+fn integer_sqrt(n: u128) -> u128 {
+    if n < 2 {
+        return n;
+    }
+    let mut lo = 1u128;
+    let mut hi = 1u128 << 32;
+    while lo + 1 < hi {
+        let mid = lo + (hi - lo) / 2;
+        if mid <= n / mid {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+fn edge_length_milli(a: Point, b: Point) -> u64 {
+    let dx = b.x as i128 - a.x as i128;
+    let dy = b.y as i128 - a.y as i128;
+    let d2 = (dx * dx + dy * dy) as u128;
+    let scaled = d2 * 1_000_000;
+    let root = integer_sqrt(scaled);
+    let rounded = if scaled - root * root >= 2 * root + 1 {
+        root + 1
+    } else {
+        root
+    };
+    rounded as u64
+}
+
+fn signed_area2(points: &[Point]) -> i128 {
+    let mut area = 0i128;
+    for i in 0..points.len() {
+        let a = points[i];
+        let b = points[(i + 1) % points.len()];
+        area += a.x as i128 * b.y as i128 - a.y as i128 * b.x as i128;
+    }
+    area
+}
+
+fn perimeter_milli(points: &[Point]) -> u64 {
+    if points.is_empty() {
+        return 0;
+    }
+    (0..points.len())
+        .map(|i| edge_length_milli(points[i], points[(i + 1) % points.len()]))
+        .sum()
+}
+
+pub fn measure(points: &[Point]) -> Result<Measures, GeomError> {
+    let polygon = prepare_polygon(points)?;
+    let signed = signed_area2(&polygon);
+    let edge_milli: Vec<u64> = (0..polygon.len())
+        .map(|i| edge_length_milli(polygon[i], polygon[(i + 1) % polygon.len()]))
+        .collect();
+    let perimeter_milli = edge_milli.iter().copied().sum();
+
+    let longest_edge = edge_milli.iter().enumerate().fold(None, |best, item| {
+        let (index, &length) = item;
+        match best {
+            None => Some(index),
+            Some(old) => {
+                let old_length = edge_milli[old];
+                let pair = {
+                    let a = polygon[index];
+                    let b = polygon[(index + 1) % polygon.len()];
+                    if a <= b { (a, b) } else { (b, a) }
+                };
+                let old_pair = {
+                    let a = polygon[old];
+                    let b = polygon[(old + 1) % polygon.len()];
+                    if a <= b { (a, b) } else { (b, a) }
+                };
+                if length > old_length
+                    || (length == old_length
+                        && (pair < old_pair || (pair == old_pair && index < old)))
+                {
+                    Some(index)
+                } else {
+                    Some(old)
+                }
+            }
+        }
+    });
+
+    Ok(Measures {
+        signed_area2: signed,
+        area2: signed.unsigned_abs(),
+        orientation: if signed > 0 {
+            Orientation::CounterClockwise
+        } else if signed < 0 {
+            Orientation::Clockwise
+        } else {
+            Orientation::Degenerate
+        },
+        edge_milli,
+        perimeter_milli,
+        longest_edge,
+    })
+}
+
+fn on_segment(a: Point, b: Point, q: Point) -> bool {
+    cross(a, b, q) == 0
+        && q.x >= a.x.min(b.x)
+        && q.x <= a.x.max(b.x)
+        && q.y >= a.y.min(b.y)
+        && q.y <= a.y.max(b.y)
+}
+
+pub fn classify(points: &[Point], queries: &[Point]) -> Result<Vec<Location>, GeomError> {
+    let polygon = prepare_polygon(points)?;
+    if queries.len() > MAX_VERTICES {
+        return Err(GeomError::TooManyQueries { len: queries.len() });
+    }
+    for (index, &query) in queries.iter().enumerate() {
+        if !in_range(query) {
+            return Err(GeomError::QueryOutOfRange { index });
+        }
+    }
+
+    Ok(queries
+        .iter()
+        .map(|&query| {
+            for i in 0..polygon.len() {
+                if on_segment(polygon[i], polygon[(i + 1) % polygon.len()], query) {
+                    return Location::Boundary { edge: i };
+                }
+            }
+
+            let mut inside = false;
+            for i in 0..polygon.len() {
+                let a = polygon[i];
+                let b = polygon[(i + 1) % polygon.len()];
+                if (a.y > query.y) != (b.y > query.y) {
+                    let determinant = cross(a, b, query);
+                    if (b.y > a.y && determinant > 0) || (b.y < a.y && determinant < 0) {
+                        inside = !inside;
+                    }
+                }
+            }
+            if inside {
+                Location::Inside
+            } else {
+                Location::Outside
+            }
+        })
+        .collect())
+}
+
+fn point_cloud(points: &[Point]) -> Result<Vec<(Point, usize)>, GeomError> {
+    if points.len() > MAX_VERTICES {
+        return Err(GeomError::TooManyVertices { len: points.len() });
+    }
+    for (index, &point) in points.iter().enumerate() {
+        if !in_range(point) {
+            return Err(GeomError::OutOfRange { index });
+        }
+    }
+
+    let mut unique: Vec<(Point, usize)> = Vec::new();
+    for (index, &point) in points.iter().enumerate() {
+        if !unique.iter().any(|(existing, _)| *existing == point) {
+            unique.push((point, index));
+        }
+    }
+    unique.sort_by_key(|&(point, _)| point);
+    Ok(unique)
+}
+
+fn hull_chain(points: &[(Point, usize)], include_collinear: bool) -> Vec<(Point, usize)> {
+    let mut lower: Vec<(Point, usize)> = Vec::new();
+    for &item in points {
+        while lower.len() >= 2 {
+            let turn = cross(lower[lower.len() - 2].0, lower[lower.len() - 1].0, item.0);
+            if turn > 0 || (include_collinear && turn == 0) {
+                break;
+            }
+            lower.pop();
+        }
+        lower.push(item);
+    }
+
+    let mut upper: Vec<(Point, usize)> = Vec::new();
+    for &item in points.iter().rev() {
+        while upper.len() >= 2 {
+            let turn = cross(upper[upper.len() - 2].0, upper[upper.len() - 1].0, item.0);
+            if turn > 0 || (include_collinear && turn == 0) {
+                break;
+            }
+            upper.pop();
+        }
+        upper.push(item);
+    }
+
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
+pub fn convex_hull(points: &[Point], mode: Collinear) -> Result<Hull, GeomError> {
+    let unique = point_cloud(points)?;
+    let include = mode == Collinear::Include;
+
+    let output = match unique.len() {
+        0 => Vec::new(),
+        1 | 2 => unique.clone(),
+        _ => {
+            let all_collinear = unique
+                .windows(2)
+                .all(|pair| cross(unique[0].0, unique[1].0, pair[1].0) == 0);
+            if all_collinear {
+                if include {
+                    unique.clone()
+                } else {
+                    vec![unique[0], *unique.last().unwrap()]
+                }
+            } else {
+                hull_chain(&unique, include)
+            }
+        }
+    };
+
+    let vertices: Vec<Point> = output.iter().map(|&(point, _)| point).collect();
+    let source_indices: Vec<usize> = output.iter().map(|&(_, index)| index).collect();
+    let area2 = if vertices.len() < 3 {
+        0
+    } else {
+        signed_area2(&vertices).unsigned_abs()
+    };
+
+    Ok(Hull {
+        perimeter_milli: perimeter_milli(&vertices),
+        vertices,
+        source_indices,
+        area2,
+    })
+}
+
+fn main() {}

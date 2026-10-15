@@ -1,0 +1,213 @@
+use std::collections::BinaryHeap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Task {
+    pub duration: u64,
+    pub deps: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Timing {
+    pub start: u64,
+    pub finish: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Analysis {
+    pub order: Vec<usize>,
+    pub earliest: Vec<Timing>,
+    pub latest: Vec<Timing>,
+    pub slack: Vec<u64>,
+    pub critical: Vec<usize>,
+    pub path: Vec<usize>,
+    pub makespan: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    BadDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    SelfDependency {
+        task: usize,
+        position: usize,
+    },
+    DuplicateDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    Cycle {
+        blocked: Vec<usize>,
+    },
+    Overflow {
+        task: usize,
+    },
+    TargetTooSmall {
+        minimum: u64,
+    },
+}
+
+pub fn analyze(tasks: &[Task], target: u64) -> Result<Analysis, Error> {
+    let n = tasks.len();
+
+    // Validate all dependency entries before constructing the graph or doing
+    // any scheduling computations.
+    for (task_id, task) in tasks.iter().enumerate() {
+        let mut seen = vec![false; n];
+        for (position, &value) in task.deps.iter().enumerate() {
+            if value >= n {
+                return Err(Error::BadDependency {
+                    task: task_id,
+                    position,
+                    value,
+                });
+            }
+            if value == task_id {
+                return Err(Error::SelfDependency {
+                    task: task_id,
+                    position,
+                });
+            }
+            if seen[value] {
+                return Err(Error::DuplicateDependency {
+                    task: task_id,
+                    position,
+                    value,
+                });
+            }
+            seen[value] = true;
+        }
+    }
+
+    let mut indegree: Vec<usize> = tasks.iter().map(|task| task.deps.len()).collect();
+    let mut successors = vec![Vec::new(); n];
+    for (task_id, task) in tasks.iter().enumerate() {
+        for &predecessor in &task.deps {
+            successors[predecessor].push(task_id);
+        }
+    }
+
+    // BinaryHeap is a max-heap, so store Reverse-like IDs as usize::MAX - id.
+    let mut available = BinaryHeap::new();
+    for (id, &degree) in indegree.iter().enumerate() {
+        if degree == 0 {
+            available.push(usize::MAX - id);
+        }
+    }
+
+    let mut order = Vec::with_capacity(n);
+    let mut earliest_start = vec![0u64; n];
+    let mut earliest_finish = vec![0u64; n];
+
+    while let Some(key) = available.pop() {
+        let id = usize::MAX - key;
+        let finish = earliest_start[id]
+            .checked_add(tasks[id].duration)
+            .ok_or(Error::Overflow { task: id })?;
+        earliest_finish[id] = finish;
+        order.push(id);
+
+        for &child in &successors[id] {
+            earliest_start[child] = earliest_start[child].max(finish);
+            indegree[child] -= 1;
+            if indegree[child] == 0 {
+                available.push(usize::MAX - child);
+            }
+        }
+    }
+
+    if order.len() != n {
+        let removed = {
+            let mut set = vec![false; n];
+            for &id in &order {
+                set[id] = true;
+            }
+            set
+        };
+        let blocked = (0..n).filter(|&id| !removed[id]).collect();
+        return Err(Error::Cycle { blocked });
+    }
+
+    let makespan = earliest_finish.iter().copied().max().unwrap_or(0);
+
+    if target < makespan {
+        return Err(Error::TargetTooSmall { minimum: makespan });
+    }
+
+    let mut latest_start = vec![0u64; n];
+    let mut latest_finish = vec![0u64; n];
+
+    for &id in order.iter().rev() {
+        let finish = if successors[id].is_empty() {
+            target
+        } else {
+            successors[id]
+                .iter()
+                .map(|&child| latest_start[child])
+                .min()
+                .unwrap_or(target)
+        };
+        latest_finish[id] = finish;
+        latest_start[id] = finish - tasks[id].duration;
+    }
+
+    let earliest: Vec<Timing> = (0..n)
+        .map(|id| Timing {
+            start: earliest_start[id],
+            finish: earliest_finish[id],
+        })
+        .collect();
+
+    let latest: Vec<Timing> = (0..n)
+        .map(|id| Timing {
+            start: latest_start[id],
+            finish: latest_finish[id],
+        })
+        .collect();
+
+    let slack: Vec<u64> = (0..n)
+        .map(|id| latest_start[id] - earliest_start[id])
+        .collect();
+
+    let baseline = target - makespan;
+    let critical = (0..n).filter(|&id| slack[id] == baseline).collect();
+
+    let path = if n == 0 {
+        Vec::new()
+    } else {
+        let sink = (0..n)
+            .filter(|&id| successors[id].is_empty() && earliest_finish[id] == makespan)
+            .max()
+            .unwrap();
+
+        let mut reversed_path = vec![sink];
+        let mut current = sink;
+        while !tasks[current].deps.is_empty() {
+            let predecessor = tasks[current]
+                .deps
+                .iter()
+                .copied()
+                .max_by_key(|&id| (earliest_finish[id], id))
+                .unwrap();
+            reversed_path.push(predecessor);
+            current = predecessor;
+        }
+        reversed_path.reverse();
+        reversed_path
+    };
+
+    Ok(Analysis {
+        order,
+        earliest,
+        latest,
+        slack,
+        critical,
+        path,
+        makespan,
+    })
+}
+
+fn main() {}

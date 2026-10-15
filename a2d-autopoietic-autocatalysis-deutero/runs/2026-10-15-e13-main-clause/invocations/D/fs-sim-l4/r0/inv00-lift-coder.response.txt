@@ -1,0 +1,522 @@
+```rust
+use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    File,
+    Link,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidPath(usize),
+    Missing(String),
+    NotDir(String),
+    IsDir(String),
+    Exists(String),
+    Root,
+    Busy(String),
+    Cycle(String),
+    NotEmpty(String),
+    InvalidTarget(usize),
+    Loop(String),
+    Depth(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Entry {
+    Dir,
+    File(Vec<u8>),
+    Link(String),
+}
+
+impl Entry {
+    fn kind(&self) -> Kind {
+        match self {
+            Entry::Dir => Kind::Dir,
+            Entry::File(_) => Kind::File,
+            Entry::Link(_) => Kind::Link,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Fs {
+    entries: BTreeMap<String, Entry>,
+    cwd: String,
+}
+
+impl Default for Fs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Fs {
+    pub fn new() -> Self {
+        let mut entries = BTreeMap::new();
+        entries.insert("/".to_string(), Entry::Dir);
+        Self {
+            entries,
+            cwd: "/".to_string(),
+        }
+    }
+
+    fn validate(path: &str) -> Result<(), Error> {
+        if let Some(i) = path.as_bytes().iter().position(|&b| b == 0) {
+            return Err(Error::InvalidPath(i));
+        }
+        if path.is_empty() {
+            return Err(Error::InvalidPath(0));
+        }
+        Ok(())
+    }
+
+    fn normalize_from(base: &str, path: &str) -> String {
+        let mut parts: Vec<&str> = if path.starts_with('/') {
+            Vec::new()
+        } else {
+            base.split('/').filter(|s| !s.is_empty()).collect()
+        };
+        for part in path.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                p => parts.push(p),
+            }
+        }
+        if parts.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", parts.join("/"))
+        }
+    }
+
+    fn normalize(&self, path: &str) -> Result<String, Error> {
+        Self::validate(path)?;
+        Ok(Self::normalize_from(&self.cwd, path))
+    }
+
+    fn components(path: &str) -> Vec<&str> {
+        path.split('/').filter(|s| !s.is_empty()).collect()
+    }
+
+    fn join_components(parts: &[String]) -> String {
+        if parts.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", parts.join("/"))
+        }
+    }
+
+    fn parent_and_name(path: &str) -> (String, String) {
+        let mut parts: Vec<&str> = Self::components(path);
+        let name = parts.pop().unwrap_or("").to_string();
+        let parent = if parts.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", parts.join("/"))
+        };
+        (parent, name)
+    }
+
+    fn append_suffix(base: &str, suffix: &[String]) -> String {
+        let mut parts: Vec<String> = Self::components(base).into_iter().map(str::to_string).collect();
+        parts.extend(suffix.iter().cloned());
+        Self::join_components(&parts)
+    }
+
+    fn is_descendant_or_same(path: &str, ancestor: &str) -> bool {
+        if path == ancestor {
+            return true;
+        }
+        if ancestor == "/" {
+            return path.starts_with('/');
+        }
+        path.strip_prefix(ancestor)
+            .is_some_and(|rest| rest.starts_with('/'))
+    }
+
+    fn child_paths(&self, dir: &str) -> Vec<String> {
+        self.entries
+            .keys()
+            .filter(|p| *p != dir && Self::parent_and_name(p).0 == dir)
+            .cloned()
+            .collect()
+    }
+
+    fn resolve(&self, path: &str, follow_final: bool, create_missing_final: bool) -> Result<String, Error> {
+        let mut pending: Vec<String> = Self::components(path).into_iter().map(str::to_string).collect();
+        let mut physical: Vec<String> = Vec::new();
+        let mut visited = BTreeSet::new();
+        let mut expansions = 0usize;
+
+        while !pending.is_empty() {
+            let component = pending.remove(0);
+            let candidate_parts = {
+                let mut p = physical.clone();
+                p.push(component);
+                p
+            };
+            let candidate = Self::join_components(&candidate_parts);
+            let is_final = pending.is_empty();
+
+            let parent_path = Self::join_components(&physical);
+            if !matches!(self.entries.get(&parent_path), Some(Entry::Dir)) {
+                if self.entries.contains_key(&parent_path) {
+                    return Err(Error::NotDir(parent_path));
+                }
+                return Err(Error::Missing(parent_path));
+            }
+
+            let Some(entry) = self.entries.get(&candidate) else {
+                if create_missing_final && is_final {
+                    return Ok(candidate);
+                }
+                return Err(Error::Missing(candidate));
+            };
+
+            let should_follow = matches!(entry, Entry::Link(_)) && (follow_final || !is_final);
+            if should_follow {
+                if !visited.insert(candidate.clone()) {
+                    return Err(Error::Loop(candidate));
+                }
+                if expansions >= 8 {
+                    return Err(Error::Depth(candidate));
+                }
+                expansions += 1;
+
+                let Entry::Link(target) = entry else { unreachable!() };
+                let target_path = Self::normalize_from(&parent_path, target);
+                let target_parts: Vec<String> =
+                    Self::components(&target_path).into_iter().map(str::to_string).collect();
+                let mut expanded = target_parts;
+                expanded.extend(pending.into_iter());
+                let expanded_path = Self::join_components(&expanded);
+                pending = Self::components(&expanded_path)
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect();
+                physical.clear();
+            } else {
+                if !is_final && !matches!(entry, Entry::Dir) {
+                    return Err(Error::NotDir(candidate));
+                }
+                physical.push(component);
+            }
+        }
+
+        Ok(Self::join_components(&physical))
+    }
+
+    fn resolve_parent(&self, path: &str) -> Result<(String, String), Error> {
+        let (parent, name) = Self::parent_and_name(path);
+        let resolved_parent = self.resolve(&parent, true, false)?;
+        if !matches!(self.entries.get(&resolved_parent), Some(Entry::Dir)) {
+            return Err(Error::NotDir(resolved_parent));
+        }
+        Ok((resolved_parent, name))
+    }
+
+    pub fn mkdir(&mut self, path: &str) -> Result<(), Error> {
+        let normalized = self.normalize(path)?;
+        if normalized == "/" {
+            return Err(Error::Exists("/".to_string()));
+        }
+        let (parent, name) = self.resolve_parent(&normalized)?;
+        let final_path = if parent == "/" {
+            format!("/{}", name)
+        } else {
+            format!("{}/{}", parent, name)
+        };
+        if self.entries.contains_key(&final_path) {
+            return Err(Error::Exists(final_path));
+        }
+        self.entries.insert(final_path, Entry::Dir);
+        Ok(())
+    }
+
+    pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Error> {
+        let normalized = self.normalize(path)?;
+        let resolved = self.resolve(&normalized, true, true)?;
+        match self.entries.get(&resolved) {
+            Some(Entry::Dir) => Err(Error::IsDir(resolved)),
+            Some(Entry::File(_)) => {
+                self.entries.insert(resolved, Entry::File(data.to_vec()));
+                Ok(())
+            }
+            Some(Entry::Link(_)) => unreachable!(),
+            None => {
+                let (parent, _) = Self::parent_and_name(&resolved);
+                let parent_resolved = self.resolve(&parent, true, false)?;
+                if !matches!(self.entries.get(&parent_resolved), Some(Entry::Dir)) {
+                    return Err(Error::NotDir(parent_resolved));
+                }
+                self.entries.insert(resolved, Entry::File(data.to_vec()));
+                Ok(())
+            }
+        }
+    }
+
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let normalized = self.normalize(path)?;
+        let resolved = self.resolve(&normalized, true, false)?;
+        match self.entries.get(&resolved) {
+            Some(Entry::File(data)) => Ok(data.clone()),
+            Some(Entry::Dir) => Err(Error::IsDir(resolved)),
+            Some(Entry::Link(_)) | None => unreachable!(),
+        }
+    }
+
+    pub fn ls(&self, path: &str) -> Result<Vec<(String, Kind)>, Error> {
+        let normalized = self.normalize(path)?;
+        let resolved = self.resolve(&normalized, true, false)?;
+        if !matches!(self.entries.get(&resolved), Some(Entry::Dir)) {
+            return Err(Error::NotDir(resolved));
+        }
+        let mut out = Vec::new();
+        for child in self.child_paths(&resolved) {
+            let (_, name) = Self::parent_and_name(&child);
+            if let Some(entry) = self.entries.get(&child) {
+                out.push((name, entry.kind()));
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
+    }
+
+    pub fn cwd(&self) -> String {
+        self.cwd.clone()
+    }
+
+    pub fn chdir(&mut self, path: &str) -> Result<(), Error> {
+        let normalized = self.normalize(path)?;
+        let resolved = self.resolve(&normalized, true, false)?;
+        if !matches!(self.entries.get(&resolved), Some(Entry::Dir)) {
+            return Err(Error::NotDir(resolved));
+        }
+        self.cwd = resolved;
+        Ok(())
+    }
+
+    pub fn rename(&mut self, from: &str, to: &str, overwrite: bool) -> Result<(), Error> {
+        let source = self.normalize(from)?;
+        let destination = self.normalize(to)?;
+        if source == "/" || destination == "/" {
+            return Err(Error::Root);
+        }
+
+        let (source_parent, source_name) = self.resolve_parent(&source)?;
+        let source_path = if source_parent == "/" {
+            format!("/{}", source_name)
+        } else {
+            format!("{}/{}", source_parent, source_name)
+        };
+        let Some(source_entry) = self.entries.get(&source_path).cloned() else {
+            return Err(Error::Missing(source_path));
+        };
+
+        if matches!(source_entry, Entry::Dir) && Self::is_descendant_or_same(&self.cwd, &source_path) {
+            return Err(Error::Busy(source_path));
+        }
+
+        let (destination_parent, destination_name) = self.resolve_parent(&destination)?;
+        let destination_path = if destination_parent == "/" {
+            format!("/{}", destination_name)
+        } else {
+            format!("{}/{}", destination_parent, destination_name)
+        };
+
+        if matches!(self.entries.get(&destination_path), Some(Entry::Dir))
+            && Self::is_descendant_or_same(&self.cwd, &destination_path)
+        {
+            return Err(Error::Busy(destination_path));
+        }
+
+        if source_path == destination_path {
+            return Ok(());
+        }
+
+        if matches!(source_entry, Entry::Dir) && Self::is_descendant_or_same(&destination_path, &source_path) {
+            return Err(Error::Cycle(destination_path));
+        }
+
+        let destination_entry = self.entries.get(&destination_path).cloned();
+        if destination_entry.is_some() && !overwrite {
+            return Err(Error::Exists(destination_path));
+        }
+
+        if let Some(ref dst) = destination_entry {
+            match (&source_entry, dst) {
+                (Entry::Dir, Entry::Dir) => {
+                    if !self.child_paths(&destination_path).is_empty() {
+                        return Err(Error::NotEmpty(destination_path));
+                    }
+                }
+                (Entry::Dir, _) => return Err(Error::NotDir(destination_path)),
+                (_, Entry::Dir) => return Err(Error::IsDir(destination_path)),
+                _ => {}
+            }
+        }
+
+        let moving: Vec<(String, Entry)> = self
+            .entries
+            .iter()
+            .filter(|(p, _)| **p == source_path || Self::is_descendant_or_same(p, &source_path))
+            .map(|(p, e)| (p.clone(), e.clone()))
+            .collect();
+
+        if destination_entry.is_some() {
+            let remove_paths: Vec<String> = self
+                .entries
+                .keys()
+                .filter(|p| **p == destination_path || Self::is_descendant_or_same(p, &destination_path))
+                .cloned()
+                .collect();
+            for p in remove_paths {
+                self.entries.remove(&p);
+            }
+        }
+
+        for (old, _) in &moving {
+            self.entries.remove(old);
+        }
+        for (old, entry) in moving {
+            let suffix = old.strip_prefix(&source_path).unwrap_or("");
+            let new_path = format!("{}{}", destination_path, suffix);
+            self.entries.insert(new_path, entry);
+        }
+        Ok(())
+    }
+
+    pub fn remove(&mut self, path: &str, recursive: bool) -> Result<(), Error> {
+        let normalized = self.normalize(path)?;
+        if normalized == "/" {
+            return Err(Error::Root);
+        }
+        let (parent, name) = self.resolve_parent(&normalized)?;
+        let resolved = if parent == "/" {
+            format!("/{}", name)
+        } else {
+            format!("{}/{}", parent, name)
+        };
+        let Some(entry) = self.entries.get(&resolved) else {
+            return Err(Error::Missing(resolved));
+        };
+
+        if matches!(entry, Entry::Dir) && Self::is_descendant_or_same(&self.cwd, &resolved) {
+            return Err(Error::Busy(resolved));
+        }
+        if matches!(entry, Entry::Dir) && !recursive && !self.child_paths(&resolved).is_empty() {
+            return Err(Error::NotEmpty(resolved));
+        }
+
+        let paths: Vec<String> = self
+            .entries
+            .keys()
+            .filter(|p| **p == resolved || (recursive && Self::is_descendant_or_same(p, &resolved)))
+            .cloned()
+            .collect();
+        for p in paths {
+            self.entries.remove(&p);
+        }
+        Ok(())
+    }
+
+    pub fn symlink(&mut self, target: &str, link: &str) -> Result<(), Error> {
+        let normalized_link = self.normalize(link)?;
+        Self::validate_target(target)?;
+        if normalized_link == "/" {
+            return Err(Error::Exists("/".to_string()));
+        }
+        let (parent, name) = self.resolve_parent(&normalized_link)?;
+        let resolved = if parent == "/" {
+            format!("/{}", name)
+        } else {
+            format!("{}/{}", parent, name)
+        };
+        if self.entries.contains_key(&resolved) {
+            return Err(Error::Exists(resolved));
+        }
+        self.entries.insert(resolved, Entry::Link(target.to_string()));
+        Ok(())
+    }
+
+    fn validate_target(target: &str) -> Result<(), Error> {
+        if target.is_empty() {
+            return Err(Error::InvalidTarget(0));
+        }
+        if let Some(i) = target.as_bytes().iter().position(|&b| b == 0) {
+            return Err(Error::InvalidTarget(i));
+        }
+        Ok(())
+    }
+
+    pub fn read_link(&self, path: &str) -> Result<String, Error> {
+        let normalized = self.normalize(path)?;
+        if normalized == "/" {
+            return Err(Error::InvalidTarget(0));
+        }
+        let (parent, name) = Self::parent_and_name(&normalized);
+        let resolved_parent = self.resolve(&parent, true, false)?;
+        if !matches!(self.entries.get(&resolved_parent), Some(Entry::Dir)) {
+            return Err(Error::NotDir(resolved_parent));
+        }
+        let resolved = if resolved_parent == "/" {
+            format!("/{}", name)
+        } else {
+            format!("{}/{}", resolved_parent, name)
+        };
+        match self.entries.get(&resolved) {
+            Some(Entry::Link(target)) => Ok(target.clone()),
+            Some(_) => Err(Error::InvalidTarget(0)),
+            None => Err(Error::Missing(resolved)),
+        }
+    }
+
+    pub fn du(&self, path: &str) -> Result<Vec<(String, u64)>, Error> {
+        let normalized = self.normalize(path)?;
+        let resolved = self.resolve(&normalized, true, false)?;
+        let Some(entry) = self.entries.get(&resolved) else {
+            return Err(Error::Missing(resolved));
+        };
+
+        let mut paths: Vec<String> = self
+            .entries
+            .keys()
+            .filter(|p| **p == resolved || Self::is_descendant_or_same(p, &resolved))
+            .cloned()
+            .collect();
+        paths.sort();
+
+        let mut sizes = BTreeMap::new();
+        for p in &paths {
+            let size = match self.entries.get(p).unwrap() {
+                Entry::Dir => 0,
+                Entry::File(bytes) => bytes.len() as u64,
+                Entry::Link(target) => target.len() as u64,
+            };
+            sizes.insert(p.clone(), size);
+        }
+
+        let mut rows = Vec::new();
+        for p in paths {
+            let total = if matches!(self.entries.get(&p), Some(Entry::Dir)) {
+                sizes
+                    .iter()
+                    .filter(|(child, _)| **child != p && Self::is_descendant_or_same(child, &p))
+                    .map(|(_, size)| *size)
+                    .sum()
+            } else {
+                *sizes.get(&p).unwrap_or(&0)
+            };
+            rows.push((p, total));
+        }
+        let _ = entry;
+        Ok(rows)
+    }
+}
+```

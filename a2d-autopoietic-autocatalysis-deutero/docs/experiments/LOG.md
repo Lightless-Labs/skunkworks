@@ -747,7 +747,13 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **D:main − D ≥ +5 pp** (added at the closing gate, before any E13 score existed): the clause helps on train. It cannot explain the validation deficit, so it is recorded as a prompt effect for any "D + X" follow-up.
   - **Limit, for every case:** a train result cannot explain a validation gap. E10b already measured "D + clause + carrier" at +2.9 pp on train.
 - Budget: ≤ 400 invocations from the reserve, 10,800 s.
-- Result: pending
+- Result (`runs/2026-10-15-e13-main-clause/summary.json`, `compare-dmain-vs-d.json`; 0 void, integrity OK):
+  - **D 104/140 = 74.3%; D:main 103/140 = 73.6%.** Lift −0.7 pp, CI [−7.1, +5.7]; discordant pairs 14 vs 15; family sign-flip p = 1.0.
+  - **Reading: within ±5 pp, so the `main()` clause is not the cause** (with the registered limit: a train run cannot explain a validation gap).
+  - Never-green: D 4, D:main 1. Spend: 353 invocations / 2.69M tokens.
+  - **Correction to the closing report.** Plain D's never-green on train varies from run to run: 2 (E10), 1 (E10b), 4 (E13). Pooled, D is 7/420 = 1.7%, against 1.8% across the E11 C-arm submissions.
+    - The train-side "carrier-wide never-green excess" therefore **does not hold**.
+    - The validation never-green gap (C arms 1–4 vs D 0) and C:h0's −12.5 pp stay exploratory and within the range of run-to-run variation at this size.
 
 ### Roadmap close — Completed (falsified)  [2026-10-15]
 - **Label:** Completed (falsified). The seed was RULED OUT on Confirmation-1 (E07 + E07b). Self-modification was not supported at the development screen, is unconfirmed, and is not ruled out.
@@ -763,4 +769,4 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - the C vs H0 comparisons reported (C:i1 − C:h0 +11.2 pp [+1.2, +22.5] and C:u1 − C:h0 +11.2 pp [+3.8, +20.0], both exploratory);
   - the E10b null figure corrected.
 - **Instrument fix:** the classifier boundary tolerance. The E12 exploratory classes C:i1 vs D and C:i1 vs C:u1 become Inconclusive; no registered decision changes.
-- **Open:** E13 (pending; it does not affect the label). Confirmation-2 is unspent.
+- **Open:** none. E13 is recorded: the clause is not the cause, and the train-side never-green excess does not hold. Confirmation-2 is unspent.

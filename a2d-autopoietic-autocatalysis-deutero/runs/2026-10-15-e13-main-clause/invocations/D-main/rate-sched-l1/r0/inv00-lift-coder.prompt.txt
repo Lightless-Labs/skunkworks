@@ -1,0 +1,127 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+PROMPT:
+Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. All listed API items and fields must be pub. Derive Debug, Clone, PartialEq, Eq for data/error enums and records (engine structs need not implement these). No main function is required. 
+
+Exact public API:
+```rust
+pub struct Job { pub id: String, pub ready_at: u64, pub priority: u8 }
+pub struct Dispatch { pub id: String, pub effective_priority: u8 }
+pub enum Error { TimeReversed, BadId, BadPriority, Duplicate, Unknown, Cancelled, Completed }
+pub struct Scheduler { /* private fields */ }
+impl Scheduler {
+ pub fn new(aging_ms: u64) -> Self;
+ pub fn insert(&mut self, now: u64, job: Job) -> Result<(), Error>;
+ pub fn cancel(&mut self, now: u64, id: &str) -> Result<(), Error>;
+ pub fn next_ready(&mut self, now: u64) -> Result<Option<Dispatch>, Error>;
+}
+```
+
+R1. Time starts at 0. Every successful operation records now, even next_ready returning None. A call with now less than the last successful time returns TimeReversed before any other checks.
+R2. An error changes nothing, including the clock, queue, and insertion sequence.
+R3. Job IDs contain 1 through 16 ASCII bytes, each a lowercase letter, digit, or hyphen. insert validates ID before priority before duplication.
+R4. Priorities must be in 0..=9; otherwise insert returns BadPriority.
+R5. An ID is reserved forever after insertion; inserting it again returns Duplicate, even after cancellation or dispatch.
+R6. insert accepts any ready_at, including past times and u64::MAX. Successful insert assigns a strictly increasing FIFO sequence.
+R7. cancel checks time first, then looks up the exact ID without validating its syntax; an absent ID returns Unknown.
+R8. Cancelling a queued job succeeds, including a job whose ready_at is in the future.
+R9. Cancelling an already cancelled job returns Cancelled.
+R10. Cancelling an already dispatched job returns Completed.
+R11. next_ready considers only queued jobs with ready_at <= now.
+R12. With aging_ms=0, effective priority equals original priority.
+R13. Otherwise effective priority is min(9, original priority + floor((now-ready_at)/aging_ms)). Compute this mathematically without integer overflow.
+R14. Choose highest effective priority. On ties choose earliest successful insertion, regardless of ready_at or original priority.
+R15. Dispatch removes the selected job from the queue permanently and returns its ID and effective priority.
+R16. When no eligible job exists return Ok(None); cancelled jobs never become eligible.
+R17. Future jobs gain no aging before readiness; aging is based on ready_at, not insertion time.
+R18. Each scheduler is independent. There is no background clock or implicit time advance.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R4 R6 R11 R15
+#[test]
+fn public_dispatch() {
+    let mut s = Scheduler::new(0);
+    s.insert(
+        0,
+        Job {
+            id: "pub-a".into(),
+            ready_at: 0,
+            priority: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        s.next_ready(0).unwrap().unwrap(),
+        Dispatch {
+            id: "pub-a".into(),
+            effective_priority: 1
+        }
+    );
+}
+
+// R7 R8 R16
+#[test]
+fn public_cancel() {
+    let mut s = Scheduler::new(10);
+    s.insert(
+        0,
+        Job {
+            id: "pub-a".into(),
+            ready_at: 0,
+            priority: 1,
+        },
+    )
+    .unwrap();
+    s.cancel(1, "pub-a").unwrap();
+    assert_eq!(s.next_ready(2), Ok(None));
+}
+
+// R12 R14
+#[test]
+fn public_priority() {
+    let mut s = Scheduler::new(0);
+    s.insert(
+        0,
+        Job {
+            id: "pub-a".into(),
+            ready_at: 0,
+            priority: 1,
+        },
+    )
+    .unwrap();
+    s.insert(
+        0,
+        Job {
+            id: "pub-b".into(),
+            ready_at: 0,
+            priority: 7,
+        },
+    )
+    .unwrap();
+    assert_eq!(s.next_ready(0).unwrap().unwrap().id, "pub-b");
+}
+
+// R13 R17
+#[test]
+fn public_aging() {
+    let mut s = Scheduler::new(10);
+    s.insert(
+        0,
+        Job {
+            id: "pub-a".into(),
+            ready_at: 10,
+            priority: 2,
+        },
+    )
+    .unwrap();
+    assert_eq!(s.next_ready(40).unwrap().unwrap().effective_priority, 5);
+}
+```
+
+
+Include an empty `fn main() {}` (the file is compiled as a program).

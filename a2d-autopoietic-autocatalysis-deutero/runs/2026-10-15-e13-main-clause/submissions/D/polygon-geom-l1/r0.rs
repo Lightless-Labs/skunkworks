@@ -1,0 +1,132 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Point {
+    pub x: i64,
+    pub y: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Clockwise,
+    Degenerate,
+    CounterClockwise,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Measures {
+    pub signed_area2: i128,
+    pub area2: u128,
+    pub orientation: Orientation,
+    pub edge_milli: Vec<u64>,
+    pub perimeter_milli: u64,
+    pub longest_edge: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeomError {
+    TooManyVertices { len: usize },
+    OutOfRange { index: usize },
+    TooFewVertices { len: usize },
+}
+
+const MAX_VERTICES: usize = 4096;
+const COORD_LIMIT: i64 = 1_000_000_000;
+
+fn rounded_edge_length_milli(a: Point, b: Point) -> u64 {
+    let dx = (i128::from(a.x) - i128::from(b.x)).unsigned_abs();
+    let dy = (i128::from(a.y) - i128::from(b.y)).unsigned_abs();
+    let squared_distance_milli2 = (dx * dx + dy * dy) * 1_000_000;
+
+    // Find floor(sqrt(squared_distance_milli2)) using division to avoid
+    // overflowing when comparing candidate squares.
+    let mut low = 0_u128;
+    let mut high = squared_distance_milli2 + 1;
+    while low + 1 < high {
+        let mid = low + (high - low) / 2;
+        if mid <= squared_distance_milli2 / mid {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+
+    // sqrt(target) rounds up when target - low^2 >= low + 1:
+    // (low + 1/2)^2 = low^2 + low + 1/4, and target is an integer.
+    let remainder = squared_distance_milli2 - low * low;
+    if remainder > low {
+        (low + 1) as u64
+    } else {
+        low as u64
+    }
+}
+
+pub fn measure(points: &[Point]) -> Result<Measures, GeomError> {
+    if points.len() > MAX_VERTICES {
+        return Err(GeomError::TooManyVertices { len: points.len() });
+    }
+
+    for (index, point) in points.iter().enumerate() {
+        if point.x < -COORD_LIMIT
+            || point.x > COORD_LIMIT
+            || point.y < -COORD_LIMIT
+            || point.y > COORD_LIMIT
+        {
+            return Err(GeomError::OutOfRange { index });
+        }
+    }
+
+    let effective_len = points.len()
+        - usize::from(points.len() >= 2 && points.first() == points.last());
+    if effective_len < 3 {
+        return Err(GeomError::TooFewVertices { len: effective_len });
+    }
+
+    let polygon = &points[..effective_len];
+    let mut signed_area2 = 0_i128;
+    let mut edge_milli = Vec::with_capacity(effective_len);
+    let mut perimeter_milli = 0_u64;
+    let mut longest_edge: Option<usize> = None;
+
+    for i in 0..effective_len {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % effective_len];
+
+        signed_area2 += i128::from(a.x) * i128::from(b.y)
+            - i128::from(a.y) * i128::from(b.x);
+
+        let length = rounded_edge_length_milli(a, b);
+        edge_milli.push(length);
+        perimeter_milli += length;
+
+        let current_pair = (a.min(b), a.max(b));
+        let replace_longest = match longest_edge {
+            None => true,
+            Some(best) => {
+                let best_a = polygon[best];
+                let best_b = polygon[(best + 1) % effective_len];
+                let best_pair = (best_a.min(best_b), best_a.max(best_b));
+                length > edge_milli[best]
+                    || (length == edge_milli[best]
+                        && (current_pair < best_pair
+                            || (current_pair == best_pair && i < best)))
+            }
+        };
+        if replace_longest {
+            longest_edge = Some(i);
+        }
+    }
+
+    let orientation = match signed_area2.cmp(&0) {
+        std::cmp::Ordering::Less => Orientation::Clockwise,
+        std::cmp::Ordering::Equal => Orientation::Degenerate,
+        std::cmp::Ordering::Greater => Orientation::CounterClockwise,
+    };
+
+    Ok(Measures {
+        signed_area2,
+        area2: signed_area2.unsigned_abs(),
+        orientation,
+        edge_milli,
+        perimeter_milli,
+        longest_edge,
+    })
+}

@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-15 (session 144: the lift-first roadmap is **Completed (falsified)** after the closing gate; E13 diagnostic pending)
+**Last updated:** 2026-10-15 (session 144: the lift-first roadmap is **Completed (falsified)** after the closing gate; E13 recorded)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -11,7 +11,6 @@
   2. **Improved harness: none promoted.**
      - Within-task self-signal configurations failed their screens.
      - The parity base, H0 v6 (D's prompts plus a `main()` clause on the metabolism carrier), was +2.9 pp on train but −12.5 pp on validation (exploratory). Its parity on fresh families is not established.
-     - The C arms show a small, carrier-wide never-green excess.
   3. **Self-modification (P4): failed its development screen, unconfirmed, and not ruled out.**
      - Self-written lessons: E12 H\* = i1, 68.8% vs D 70.0%. That is the pre-registered **no-go**.
      - The uninformed control tied, so the "learning from failures" attribution is withdrawn.
@@ -19,12 +18,7 @@
 - **Confirmation-2** (144 tasks, 36 families, `cb7cb496…`) is **unspent and unopened** apart from the disclosed `spreadsheet-eval` exclusion. It is reserved for one registered claim in a future regime.
 
 ## Open
-1. **E13** (D vs D + `main()` clause on `tasks/train-all`): out `runs/2026-10-15-e13-main-clause`, stdout `$SCRATCH/e13.out`. It is slow because of account contention.
-   - When it completes:
-     - record the result in the LOG with the registered reading;
-     - append a dated addendum to the report's Evidence section;
-     - commit the run.
-   - It does not affect the completion label.
+1. **E13 is recorded.** D + `main()` clause vs D: −0.7 pp [−7.1, +5.7], so the clause is not the cause. D's own never-green varies 1–4 per train run, so the carrier never-green excess does not hold on train; the report is corrected.
 2. **No new roadmap is active.** The report's § Recommended pivot is the proposed next step, pending an owner decision:
    1. check the carrier at zero model calls: byte-diff C:h0 vs D repair prompts on train, and mine the E11 C-arm runs for never-green;
    2. calibrate measurement (about 700 tuples per decision for ±5 pp; A/A and uninformed controls);

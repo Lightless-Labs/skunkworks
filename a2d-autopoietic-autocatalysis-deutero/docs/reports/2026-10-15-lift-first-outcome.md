@@ -33,12 +33,7 @@ Does A²D build working software more reliably than its own coder model used dir
      - It passed the train parity screen: +2.9 pp, never-green 1 vs 1.
      - In the validation run it scored −12.5 pp, CI [−26.2, 0.0]: discordant pairs 5 vs 15, family sign-flip p = 0.12 (the task-level p of about 0.04 ignores clustering), and never-green 4 vs 0. D's own draw varies too: it scored 52/80 in S4 and 56/80 in E12 on the same tasks.
      - **Parity on fresh families is not established, and neither is the size of any deficit.**
-   - The sharper signal is never-green. It is above D's in every C arm:
-     - validation: 4, 1, 1, 2 and 3 across the five C arms, against 0 for D;
-     - train: 1.8% across all 1,696 E11 C-arm submissions, against 1.1% for D (E10 and E10b);
-     - earlier runs: E08r, S4, S4b-A and E10 also had more never-green tasks in C than in D.
-
-     That suggests a small carrier-wide repair cost, not a lessons effect.
+   - On validation, never-green was 4, 1, 1, 2 and 3 across the five C arms, against 0 for D. On train it does not hold up: pooled over E10, E10b and E13, D's own never-green is 7/420 = 1.7%, against 1.8% across the E11 C-arm submissions. **No carrier-wide never-green excess is established** (corrected by E13; see the addendum).
 3. **Self-improvement process (P4) — failed its development screen; not tested on Confirmation-2; not ruled out.**
    - **Against D:** lessons written by A²D's architect from its own train failures did not lift it above D on validation. The best informed search, i1, scored −1.2 pp, CI [−12.5, +10.0], with selection biased in its favour. That was enough for the operational no-go (≥ +10 pp required), not for a confirmatory conclusion.
    - **Against its own base (exploratory, selection-biased):**
@@ -66,7 +61,10 @@ Does A²D build working software more reliably than its own coder model used dir
 | P4 | E11: 4 searches × 3 generations (2 informed, 2 uninformed) | 4/12 candidates accepted (2 informed, 2 control). Under a null at flip 0.229: P(net ≥ 4) = 0.19 per comparison; P(≥ 4 of 12) = 0.18 |
 | P4 | E12: validation look (80 tasks) | D 70.0%; C:h0 57.5%; i1 68.8%; i2 62.5%; u1 68.8%; u2 61.3%. **NO-GO** |
 
-**E13** (D vs D + `main()` clause, train) was still running at close. It is a diagnostic only; its result is appended as a dated addendum.
+**Addendum (2026-10-15, after close): E13** (D vs D + `main()` clause, `tasks/train-all`). This is a diagnostic only; it does not affect the label.
+- D 74.3% vs D:main 73.6%: −0.7 pp, CI [−7.1, +5.7], discordant 14 vs 15. **The clause is not the cause.**
+- D's own never-green varied from 1 to 4 across three train runs, so the train-side never-green excess claimed in the first version of this report does not hold. It has been corrected in § Answer.
+- What remains of the carrier question is C:h0's exploratory −12.5 pp on validation, which is within the range of run-to-run variation at this size.
 
 **Instrument fix found at the gate:** the classifier compared boundaries in floating point, so a CI upper bound of exactly 10.0 pp (8/80) was classed RuledOut. It now uses a tolerance (`stats::classify`, unit-tested). Two exploratory E12 comparisons change to Inconclusive. No registered decision depended on them.
 
@@ -145,7 +143,7 @@ Does A²D build working software more reliably than its own coder model used dir
   - harnesses H0 v6, S4b and `p4-*`.
 
 ## Recommended pivot (in order)
-1. **Check the carrier at zero model calls first,** on visible train artefacts:
+1. **Check the carrier at zero model calls first,** on visible train artefacts (E13 has already shown that the `main()` clause is not the cause):
    - byte-diff the coder-visible repair prompts of C:h0 and D for identical (task, code, test-output) states;
    - mine the 24 E11 C-arm runs (1,696 submissions) against D in E10 and E10b for never-green and repair conversion, by failure type;
    - read E13 (the `main()` clause) with its limits: a train run cannot explain a validation gap, and E10b already measured "D + clause + carrier" at +2.9 pp on train;
