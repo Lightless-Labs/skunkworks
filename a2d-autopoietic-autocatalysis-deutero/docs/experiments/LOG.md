@@ -517,6 +517,16 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - C(H0 v4) below D − 5 pp is a **performance warning**. It invalidates or repeats nothing unless a defect is independently demonstrated.
   - The paired family interval, discordance, conv and regr are reported descriptively. None is an alternative way to pass.
   - Under an independent symmetric null with flip rate 0.162, a net gain of ≥ 4 on 72 occurs about 15% of the time. This is a screening rule, not evidence of improvement.
+- **Amendment (11:14 UTC, 2026-10-15; from the fresh Claude gate reviewer). It is strictly stricter, and the original kill threshold is unchanged.**
+  - Timing: S4b-B's hidden scores existed on disk, unread. S4b-A was still generating, so the primary comparison did not yet exist. No S4b result had been seen.
+  - Net gain of C(lessons) over C(H0 v4) on 72 tasks:
+    - **≤ 3:** kill, as originally registered;
+    - **≥ 8:** survive;
+    - **4–7:** one pooled replicate of both C arms with a new seed (about 330 invocations), surviving only if the pooled lift is ≥ +5 pp on 144 tuples.
+  - **Binding: C(lessons) − D ≥ 0** (it was descriptive).
+  - **If C(H0 v4) < D − 5 pp,** check the S4b-A ledger and prompts for E0601, hidden compile failures, and evolver rewrites of the coder template mid-task. S4b is void and rerun once only if a defect is demonstrated. Otherwise the result stands.
+  - Survival authorises P4 spend only and supports no claim.
+  - The evolver's call share is reported beside every C result.
 - Result: pending
 
 
