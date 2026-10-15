@@ -481,7 +481,38 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Below +5 pp: the ceiling is too low, the lessons slot is deprioritised in P4, and the post-green and selection levers are not revisited (S1–S3 killed them).
   - Promotion (≥ +12 pp with a paired lower bound > 0) does not apply to a ceiling arm.
 - Budget: ≤ 500 invocations, 7,200 s. Validation looks used before this one: 0.
+- Result (`runs/2026-10-15-s4-oracle-lessons/summary.json`; aggregates only; 0 void, integrity OK):
+  - **D 52/80 = 65.0%; C(S4) 54/80 = 67.5%.** Lift +2.5 pp, 95% CI [−8.8, +13.8], discordant pairs 10 vs 8, 20 families.
+  - **Below +5 pp, so by the rule the lessons lever is deprioritised.** Validation looks used: 1 of 4.
+  - Spend: C 138 invocations / 1.88M tokens vs D 107 / 0.90M. Stop-at-green is verified at 1.38 invocations per task.
+  - Arm-level breakdown (an observation, not a reinterpretation of the rule):
+    - public-green but hidden-fail: C 18 vs D 26;
+    - never public-green: C 8 vs D 2;
+    - hidden pass among green submissions: C 0.75 vs D 0.67.
+  - Diagnosis, from two checks on aggregate counts:
+    1. **The budget explanation is refuted.** D's first public-green attempt on train (136 tuples) is 1: 111, 2: 18, 3: 3, 4: 1 and never: 3. So H0's evolver taking 2 of 5 calls cannot explain the gap.
+    2. **A mechanical rendering defect.** The seed copies the task input into `requirements`, `design` and `plan`. Every C coder prompt therefore carries the spec, public tests and lessons note **three times**: the note appeared 3× in 109/109 prompts, and the mean prompt was 43K characters vs D's 15K. E08r (H0 v2, no lessons) already showed C non-green 3 vs D 0.
+  - Fix: harness key `dedupe_input` (unit test: the spec appears once per coder prompt). **H0 v4 = H0 v3 + `dedupe_input`** (`harnesses/h0-v4.json`, sha256 `d7e4b4fa…`).
+
+### S4b — lessons rendered once, on clean train (the one train-only revision of S4)  [phase P3, development lane]
+- Registered: 2026-10-15, one-row development pre-registration. This is P3's permitted train-only revision of S4 (mechanism 5 of 5). Its content follows the S4 diagnosis: the task is rendered once, and there are fewer lessons.
+- Harnesses:
+  - H0 v4 (`harnesses/h0-v4.json`, sha256 `d7e4b4fa60bab0313a950551b6ce1bd5fdee0d383ce859855a60b5899dc672f6`);
+  - H0 v4 + **4 lessons** through the `lessons` key (`harnesses/s4b-lessons.json`, sha256 `424a1d4a87a853a9a0a445e31ce4987c4782f00b3e281f79471b47bcd13bf827`), covering precedence, coordinates, unchecked sizes and checked arithmetic.
+- Data: `tasks/train-clean` = dev-v2 + calibration-v2 (72 tasks, 18 families; suite hash `5cc699991cd99c026348233bb9b4c641e73e79985a1aac5d841df906465fe7d7`). T0 drew only from c1-train, so these families are clean for the lessons. There is no validation look.
+- Runs, launched together, seed 17, k = 5, jobs 4, `--unregistered`:
+  - **S4b-A:** arms D and C(H0 v4), out `runs/2026-10-15-s4b-a`;
+  - **S4b-B:** arm C(H0 v4 + lessons), out `runs/2026-10-15-s4b-b`.
+  - Comparisons: `a2d lift compare` across runs, paired by task.
+- **Primary: C(lessons) vs C(H0 v4).** **Kill if the lift is below +5 pp.**
+  - conv and regr are reported against the resampling null: two D runs on c1-train (E07 vs E07b) give null conv 0.294, null regr 0.118 and flip rate 0.162.
+- **Secondary (H0 v4 sanity):** C(H0 v4) vs D within ±5 pp. If C(H0 v4) is below D − 5 pp, H0 still has a defect.
+- Use (fixed now):
+  - **If S4b survives**, P4 proceeds with the self-written lessons slot (`a2d distill`) from H0 v4, subject to the P3 → P4 gate.
+  - **If S4b is killed**, no P3 or P4 lever has evidence behind it. P3 exits "not promoted", and the gate considers the roadmap's falsified path, with P4-0 (label-only diagnosis works) recorded as the open finding.
+- Budget: ≤ 450 invocations (A) + ≤ 300 (B), 7,200 s each. P3 spend before this: about 1,100.
 - Result: pending
+
 
 ### P4-0 — label-only bug diagnosis probe (Luna-low)  [P4 groundwork, development lane, descriptive]
 - Registered: 2026-10-15, one-row development pre-registration.
