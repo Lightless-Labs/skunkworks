@@ -613,3 +613,21 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - If G0 fails: diagnose and fix the base under a new registration; no search starts.
 - Budget: ≤ 700 invocations, 10,800 s.
 - Result: pending
+
+### E11 — P4 searches: self-written lessons (I1, I2) vs uninformed control (U1, U2)  [phase P4, development lane]
+- Registered: 2026-10-15, one-row development pre-registration per `docs/plans/2026-10-15-p4-autopoietic-lift.md` § Searches.
+- **Launch conditions:** E10 (G0) passes, and the multi-harness controller (`--arms C:cand,C:inc`) is merged with tests.
+- Orchestrator: `docs/experiments/analysis/p4_search.py`.
+  - Base `harnesses/h0-v5.json`, with empty lessons. G0 = E10's C arm on `tasks/train-all`.
+  - 3 generations. Each generation runs `a2d distill` on the incumbent's failures on half X (`--families`, `--max-dossiers 40`, Luna-low architect), then evaluates **C(candidate) and C(incumbent) fresh in one run** on half Y (k = 5).
+  - **Accept at net ≥ 4 tasks** and 0 voids. Halves swap after each generation.
+- Searches, paired by seed so that the split and the evaluation seeds are shared:
+  - **I1** informed, seed 101; **U1** uninformed, seed 101;
+  - **I2** informed, seed 202; **U2** uninformed, seed 202.
+  - Out: `runs/2026-10-1x-p4-{I1,U1,I2,U2}`.
+- **Tripwires** (recorded per generation): E0601 prompts, hidden compile failures, and any harness change other than `lessons` and `name` (a candidate that changes anything else is not evaluated).
+- **Outputs:**
+  - `hstar.json` per search, plus the full `trajectory.json`, whether or not any candidate is accepted;
+  - all four go to the single validation look (§ Validation), together with C(H0 v5) and D.
+- Budget: ≤ 4 × 3 × 700 hard cap (expected about 4 × 3 × 240 ≈ 2.9k). Plus distill: ≤ 41 calls per generation.
+- Result: pending
