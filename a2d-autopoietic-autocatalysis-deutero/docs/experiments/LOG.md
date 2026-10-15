@@ -318,3 +318,11 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - Artifacts: runs/2026-10-15-e07b-confirmation-1-r2/ (manifest, ledger, summary, pooled summary)
 - Deviations: 2026-10-15, at launch: the sibling A² session had 2–3 Codex processes on the account (its E1 workcells and one other job). As in E07, this cannot be controlled from this session. Tuple and arm orders are randomised. Recorded before any scoring.
 - Decision: **P2 is complete. A lift of 10 pp or more for the seed A²D metabolism over its own coder in a plain repair loop, at an equal invocation cap, is ruled out on fresh families.** By the roadmap, this is the falsification half of "Completed (falsified)". The plan completes as falsified only if no P4 hypothesis is SUPPORTED within T7, so P3 and P4 proceed. They form the owner's autoresearch loop: outer-loop harness iteration on development data, then A²D's own inner loop, scored on Confirmation-2. The seed harness spends 3.7× the tokens for about +1 pp, so P3 starts by removing spend that cannot affect the submission.
+
+### S0 — P3 Step 0: treatment audit and selection headroom (offline)  [phase P3]
+- 2026-10-15. Offline, no live runs. Inputs: E06 (calibration, visible) and E07/E07b candidates on `tasks/c1-train` (development data since the P2-gate Addendum).
+- **Treatment audit (E06, all 24 arm-C tuples):** the seed coder enzyme never receives its previous code. `code` is not a coder reactant or catalyst.
+  - Its second call had **no new feedback at all in 15/24 tasks**: the first attempt was public-green, so `failure_report` stayed empty. That call was an independent resample under evolver-reworded instructions; its prompt differed from the first by 8 lines of the coder template.
+  - In 9/24 it received a compiler or test diagnostic about code it could not see.
+  - D always sees its previous file plus the public output.
+  - This explains E05's coin-flip second attempts (fixed 5, broke 3) and C ≈ B-like behaviour. **The first fix in any A²D harness is to route the previous attempt to the coder.**
