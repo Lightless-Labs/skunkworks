@@ -5,70 +5,29 @@
 
 ## Headline (read this first)
 
-- **Standing goal:** `docs/plans/2026-10-14-lift-first-roadmap.md`, Appendix. **Phase: P2**, with the extension running. P0 and P1 are complete. Deadline 2026-11-30, and the P2 result already exists.
-- **E07 (the P2 confirmation, Confirmation-1, 148 tasks in 37 families, scored once): INCONCLUSIVE.**
-  - Primary C vs D: **+2.7 pp, 95% CI [−4.7, +11.5]**. Secondary C vs B: +4.1 pp, CI [−4.7, +12.8].
-  - Pass rates: A 58%, B 65%, D 66%, C 69%.
-  - **Cost: C spends 3.8× D's invocations and 3.7× its tokens for +2.7 pp.**
-  - The run was clean: no voids, errors, tool calls or hidden-name hits.
-- **E07b is the single pre-registered extension:** a second replicate pass, seed 8, frozen at `c4ec034a`.
-  - It is pooled with E07 by `a2d lift pool`, and **the pooled class is final**.
-  - If the pooled result is INCONCLUSIVE, that is NO-GO for adding complexity. If it is RULED OUT, the seed configuration is falsified, which completes once P4 also fails to show lift.
-  - **No edits to `lift_arm_c.rs`, metabolism, `main.rs` or providers until E07b is scored**, because pooling needs a byte-identical treatment.
-- **Coder lane:** `codex/gpt-6-luna`, effort low, no-tools. The sibling A² session shares the Codex account; this is recorded as a deviation.
-- Pilots, for context: E05 and E06 put C ≈ D (C 17 and 14, D 15 and 16 under the latest-tie rule). Public tests discriminate weakly: the public-green but hidden-fail rate is 25–33% for B and D.
+- **Owner's framing (2026-10-15):** A²D is *autoresearch on agentic coding harnesses*. A coding agent iterates and experiments on a self-improving harness and process, with human insights. You have the reins. The current rules live in **`docs/PROTOCOL.md`**.
+- **P2 is DONE: the seed lift is RULED OUT.**
+  - Pooled E07 + E07b, 296 tuples, 37 families: C vs D +1.4 pp, CI [−5.4, +8.8]. The two-look adjusted upper bound is +9.8. C spends 3.7× D's tokens.
+  - Robustness checks: domain clustering, leave-one-family-out, and only 2/296 self-test artifacts (all in the LOG).
+  - Narrow claim: the frozen seed harness at an equal invocation cap, with Luna-low.
+- **P3 is the outer research loop** (`docs/plans/2026-10-15-p3-research-loop.md`). Development data:
+  - visible: `tasks/calibration-v2`, `tasks/dev-v2` (48 tasks), `tasks/c1-train` (68; Confirmation-1 re-designated, split in `docs/experiments/c1-split.json`);
+  - metric-only: `~/.a2d-holdout/c1-validation` (80 tasks), never opened.
+- **Step 0 findings (LOG S0):**
+  - **The seed coder never sees its previous code.** In 15/24 tasks its second call got no feedback at all.
+  - The architect and tester are inert, proven by unit test.
+  - Selection headroom: within B's 5 candidates, any-pass is 86% against D's pick at 74% (train).
+  - The constraint: 92% of D's failures are public-green, so only signals beyond the public tests can help.
+- **S1 (blind spec tests, offline falsification) is running.** It is pre-registered with kill thresholds: validity ≥ 0.85, AUC ≥ 0.65, recall ≥ 0.45.
+- **Confirmation-2 is being extended blind** (25 families; log `$SCRATCH/author-c2ext.log`). It is the only claim set left.
+- Coder lane: `codex/gpt-6-luna`, low effort, no tools. The A² session shares the account; this is a standing condition.
 
-## Holdouts (never open their contents)
-
-- `$A2D_HOLDOUT_DIR` = `~/.a2d-holdout`, outside the repo.
-  - `authoring/<set>/<family>/` holds Codex's working dirs. **Never read `codex.out`, `codex.err`, `REPORT.md` or any files in them.**
-  - `confirmation-1/` and `confirmation-2/` hold the assembled sets.
-- **Assemble blind:** `python3 -I $SCRATCH/assemble-holdout.py <set>` copies only the contract files and prints task ids. **Validate blind:** `a2d lift validate ~/.a2d-holdout/<set>` prints verdicts only.
-- Family lists: Confirmation-1 has 12 base families plus 25 extension families; Confirmation-2 has 12 (extend it before P4). Each list is in the LOG and roadmap context, as names only.
-- State: the first 12 Confirmation-1 families (48 tasks) are validated, 48/48 (hash `c4ac2cde…`, superseded once the extension lands). The round-2 driver (`$SCRATCH/author-holdouts-2.sh`, log `author-holdouts-2.log`) authors the extension and then Confirmation-2. When it finishes, re-assemble, re-validate, and record the final hashes in the LOG.
-
-## Next moves (updated 2026-10-14 late; P1 gate triage done)
-
-The triage is complete and recorded in the roadmap Addendum "P1 gate":
-- tie-break is latest;
-- classify over complete tuples up to 5% excluded;
-- claim = primary C-vs-D **and** secondary C-vs-B SUPPORTED, while RULED OUT is decided by C vs D alone;
-- API-surface validation;
-- manifest, `score --expect-head`, freeze through scoring;
-- power targets restated.
-
-**E06 is done.** C/D replicate agreement was 0.875, so **Confirmation-1 runs r = 1**. Across the pilots there is no sign of lift: under the latest-tie rule C passed 17 and 14, D 15 and 16.
-
-0. **State (2026-10-15):**
-   - E07 is scored and recorded.
-   - **E07b is generating** (out `~/.a2d-holdout/runs/E07b`, stdout `~/.a2d-holdout/runs/E07b.stdout`).
-   - When its ledger has `generation_complete`:
-     1. `a2d lift manifest ~/.a2d-holdout/runs/E07b > runs/2026-10-15-e07b-confirmation-1-r2/manifest.json`; commit and push.
-     2. `a2d lift score --out ~/.a2d-holdout/runs/E07b --suite ~/.a2d-holdout/confirmation-1 --expect-head <head> --jobs 4`.
-     3. Copy the summary and ledger into `runs/`.
-     4. `a2d lift pool --out runs/2026-10-15-e07b-confirmation-1-r2/pooled-summary.json runs/2026-10-15-e07-confirmation-1/ledger.jsonl runs/2026-10-15-e07b-confirmation-1-r2/ledger.jsonl`.
-     5. Record the pooled class in the LOG (final) and write the P2-gate Addendum, with reviews and diagnostics.
-     6. Then P3 (`docs/plans/2026-10-14-p3-ablation.md`).
-1. **Holdout authoring is running** (driver `author-holdouts-2.sh`, log `$SCRATCH/author-holdouts-2.log`): the rest of the Confirmation-1 extension, then Confirmation-2. When it finishes:
-   - `python3 -I $SCRATCH/assemble-holdout.py confirmation-1`;
-   - `a2d lift validate ~/.a2d-holdout/confirmation-1 --jobs 4` (verdict lines only).
-2. **Independent-solve audit of Confirmation-1, which blocks P1 exit.** The account must have nothing else running.
-   - Run:
-     ```
-     a2d lift run --experiment AUDIT-C1 --unregistered --suite ~/.a2d-holdout/confirmation-1 \
-       --model codex/gpt-6.1-sol --effort medium --arms D --k 3 --jobs 4 --record-hidden-output \
-       --max-invocations 500 --max-wall-clock-secs 21600 --out ~/.a2d-holdout/audit/c1-run1
-     ```
-   - Then `python3 -I $SCRATCH/stage-audit.py confirmation-1 ~/.a2d-holdout/audit/c1-run1 $SCRATCH/ADJUDICATE.md`. It prints counts and family names.
-   - Then one Codex Sol job per flagged family: `codex exec "Read ADJUDICATE.md ..."` in `~/.a2d-holdout/authoring/confirmation-1/<family>`. Read only `grep '^ADJUDICATED' codex.out`.
-   - Then re-assemble, re-validate, and record the final hash in the LOG.
-3. **P1 exit:** a dated roadmap Addendum (Confirmation-1 hash, Confirmation-2 status, audit result) and Status → P2.
-4. **E07, the P2 confirmation.**
-   - Pre-register: Confirmation-1 (148 tasks), A, B, D, C, k=5, r=1, `--primary D`, seed fixed, `--defer-scoring`, `--out ~/.a2d-holdout/runs/E07`. The global cap is the planned maximum (148 × 16 = 2368); the wall clock is 2× the expected time (about 6 h). Authoring must be paused.
-   - After generation: `a2d lift manifest ~/.a2d-holdout/runs/E07 > runs/<date>-e07/manifest.json`, then commit and push.
-   - Then `a2d lift score --out ~/.a2d-holdout/runs/E07 --suite ~/.a2d-holdout/confirmation-1 --expect-head <ledger_head>`.
-   - Copy `summary.json` and the ledger, which is content-free (checked), into `runs/`.
-5. P3 (plan: `docs/plans/2026-10-14-p3-ablation.md`, to draft) on development data. calibration-v2 can serve as development data now.
+## Next moves
+1. Read S1's result (`runs/2026-10-15-s1-spec-tests/evaluation.json` and the stdout summary) and record it in the LOG.
+   - If it survives: build the harness interpreter (`code` with the previous file, `spec_tests`, `review`, `stop`, `select`, plus a reachability check) and run the first live train experiment (development lane, one-row pre-registration).
+   - If it dies: make clause review-and-fix primary.
+2. Finish Confirmation-2: assemble with `$SCRATCH/assemble-holdout.py confirmation-2`, validate, run the independent-solve audit, and record the hash.
+3. Validation looks are capped at 4. The promotion gate is +12 pp over a concurrent D. Budget: P3 ≤ 3k invocations.
 
 ## The controller: `a2d lift` (`crates/a2d-lift/`)
 
