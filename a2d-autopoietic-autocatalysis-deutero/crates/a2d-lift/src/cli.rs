@@ -20,6 +20,7 @@ usage:
   a2d lift validate <suite-dir> [--jobs <n>]
   a2d lift verify-ledger <ledger.jsonl>
   a2d lift manifest <run-dir>        # content-free pre-score anchor (JSON)
+  a2d lift pool --out <summary.json> <ledger> <ledger> [...]   # replicate pooling
   a2d lift score --out <run-dir> --suite <dir> --expect-head <ledger-head> [--jobs <n>] [--record-hidden-output]
   a2d lift run --experiment <id> --suite <dir> --model codex/<model> --out <dir>
                --max-invocations <n> --max-wall-clock-secs <s>
@@ -39,6 +40,7 @@ pub fn cli_main(args: &[String], arm_c: Option<&dyn ArmC>) -> i32 {
         Some("run") => run(&args[1..], arm_c),
         Some("validate") => validate(&args[1..]),
         Some("score") => score(&args[1..]),
+        Some("pool") => pool(&args[1..]),
         Some("manifest") => args
             .get(1)
             .ok_or_else(|| USAGE.to_string())
@@ -422,6 +424,29 @@ fn manifest(run_dir: &Path) -> Result<Value, String> {
         "generation_complete": records.iter().find(|r| r["kind"] == "generation_complete"),
         "submissions": submissions,
     }))
+}
+
+/// `a2d lift pool`: classify scored runs of one design as replicates.
+fn pool(args: &[String]) -> Result<(), String> {
+    let (out, ledgers) = match args {
+        [flag, out, rest @ ..] if flag == "--out" && rest.len() >= 2 => (
+            PathBuf::from(out),
+            rest.iter().map(PathBuf::from).collect::<Vec<_>>(),
+        ),
+        _ => return Err(USAGE.to_string()),
+    };
+    let (result, plan) = crate::pool_ledgers(&ledgers)?;
+    let mut summary = summarize(&result, &plan);
+    summary["pooled_ledgers"] = json!(
+        ledgers
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+    );
+    let pretty = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
+    fs::write(&out, format!("{pretty}\n")).map_err(|e| e.to_string())?;
+    println!("{pretty}");
+    Ok(())
 }
 
 /// Print outcomes, write summary.json and append the summary to the ledger.

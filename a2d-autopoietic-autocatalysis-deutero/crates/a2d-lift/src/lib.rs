@@ -273,6 +273,151 @@ pub fn run_arms(
     })
 }
 
+/// Pool scored runs of the same registered design as replicates (the
+/// roadmap's single sample extension): ledger `i` becomes replicate `i`.
+/// Every ledger must verify, be scored, and share suite hash, arms, k,
+/// model, effort and primary comparator with the first. Classification
+/// then runs over all pooled tuples with the first registration's rules.
+pub fn pool_ledgers(ledgers: &[PathBuf]) -> Result<(RunResult, RunPlan), String> {
+    if ledgers.len() < 2 {
+        return Err("pooling needs at least two ledgers".to_string());
+    }
+    let mut outcomes = Vec::new();
+    let mut hidden_name_hits = Vec::new();
+    let mut aborted = false;
+    let mut first: Option<Value> = None;
+    let mut tasks = 0usize;
+    for (replicate, path) in ledgers.iter().enumerate() {
+        ledger::verify_chain(path)?;
+        let records: Vec<Value> = fs::read_to_string(path)
+            .map_err(|e| format!("read {}: {e}", path.display()))?
+            .lines()
+            .map(|line| serde_json::from_str(line).map_err(|e| e.to_string()))
+            .collect::<Result<_, _>>()?;
+        let registration = records
+            .iter()
+            .find(|r| r["kind"] == "registration")
+            .cloned()
+            .ok_or(format!("{}: no registration", path.display()))?;
+        match &first {
+            None => {
+                tasks = registration["tasks"].as_array().map_or(0, |t| t.len());
+                first = Some(registration.clone());
+            }
+            Some(reference) => {
+                for key in [
+                    "suite_hash",
+                    "arms",
+                    "k",
+                    "model",
+                    "effort",
+                    "primary_comparator",
+                ] {
+                    if reference[key] != registration[key] {
+                        return Err(format!(
+                            "{}: '{key}' differs from the first ledger; not the same design",
+                            path.display()
+                        ));
+                    }
+                }
+            }
+        }
+        aborted |= records
+            .iter()
+            .find(|r| r["kind"] == "generation_complete")
+            .is_none_or(|r| r["aborted"].as_bool().unwrap_or(true));
+        if let Some(summary) = records.iter().rev().find(|r| r["kind"] == "summary") {
+            hidden_name_hits.extend(
+                summary["hidden_name_hits"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str().map(str::to_string)),
+            );
+        }
+        let submissions: Vec<&Value> = records
+            .iter()
+            .filter(|r| r["kind"] == "submission")
+            .collect();
+        let scores: Vec<&Value> = records.iter().filter(|r| r["kind"] == "score").collect();
+        if scores.is_empty() {
+            return Err(format!("{}: not scored", path.display()));
+        }
+        for score in scores {
+            let arm = Arm::parse(score["arm"].as_str().unwrap_or(""))?;
+            let task = score["task"].as_str().unwrap_or("").to_string();
+            let submission = submissions
+                .iter()
+                .find(|s| s["arm"] == score["arm"] && s["task"] == score["task"])
+                .ok_or(format!(
+                    "{}: score without submission for {task}",
+                    path.display()
+                ))?;
+            let count = |key: &str| submission[key].as_u64().unwrap_or(0);
+            let hidden: TestScore = serde_json::from_value(score["result"].clone())
+                .map_err(|e| format!("{}: bad score record: {e}", path.display()))?;
+            outcomes.push(Outcome {
+                arm,
+                task,
+                family: score["family"].as_str().unwrap_or("").to_string(),
+                replicate: replicate as u32,
+                invocations: count("invocations") as usize,
+                tokens: count("tokens") as usize,
+                provider_ms: count("provider_ms"),
+                coder_calls: count("coder_calls") as usize,
+                tool_calls: count("tool_calls") as usize,
+                public_green: submission["public"]["all_passed"]
+                    .as_bool()
+                    .unwrap_or(false),
+                void_reason: submission["void_reason"].as_str().map(str::to_string),
+                suspicious: score["suspicious"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect(),
+                hidden,
+            });
+        }
+    }
+    let registration = first.expect("at least two ledgers");
+    let arms: Vec<Arm> = registration["arms"]
+        .as_array()
+        .ok_or("registration lacks arms")?
+        .iter()
+        .map(|a| Arm::parse(a.as_str().unwrap_or("")))
+        .collect::<Result<_, _>>()?;
+    let plan = RunPlan {
+        arms,
+        k: registration["k"].as_u64().unwrap_or(0) as usize,
+        replicates: ledgers.len() as u32,
+        jobs: 1,
+        seed: registration["seed"].as_u64().unwrap_or(0),
+        primary: registration["primary_comparator"]
+            .as_str()
+            .map(Arm::parse)
+            .transpose()?,
+        min_families: registration["min_families"]
+            .as_u64()
+            .map_or(DEFAULT_MIN_FAMILIES, |v| v as usize),
+        max_excluded_share: registration["max_excluded_share"]
+            .as_f64()
+            .unwrap_or(DEFAULT_MAX_EXCLUDED_SHARE),
+        record_hidden_output: false,
+        defer_scoring: false,
+    };
+    hidden_name_hits.sort();
+    hidden_name_hits.dedup();
+    let result = RunResult {
+        outcomes,
+        tuples_planned: tasks * ledgers.len(),
+        aborted,
+        hidden_name_hits,
+        scored: true,
+    };
+    Ok((result, plan))
+}
+
 /// Score a run whose generation phase finished with `defer_scoring`. The
 /// ledger chain is verified and continued; the suite must match the
 /// registered hash; every submission file must match its ledgered SHA-256;

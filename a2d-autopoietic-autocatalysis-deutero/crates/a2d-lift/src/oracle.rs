@@ -16,7 +16,7 @@
 use crate::ledger::{sha256_hex, unix_ms};
 use crate::task::{PublicTask, Task, count_tests};
 use a2d_core::sandbox::run_isolated_tests;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -28,7 +28,7 @@ const COMPILE_TIMEOUT_SECS: u64 = 120;
 /// candidate exports macros with the same names.
 const TRUSTED_MACROS: &str = "use ::std::{assert, assert_eq, assert_ne, debug_assert, debug_assert_eq, debug_assert_ne, matches, unreachable};";
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TestScore {
     pub compiled: bool,
     pub passed: usize,
@@ -37,7 +37,7 @@ pub struct TestScore {
     pub timed_out: bool,
     pub exit_success: bool,
     pub all_passed: bool,
-    #[serde(skip)]
+    #[serde(skip, default)]
     pub output: String,
 }
 

@@ -637,3 +637,83 @@ fn hidden_name_scan_matches_whole_identifiers_only() {
         "doubles_negative"
     ));
 }
+
+fn synthetic_ledger(path: &Path, seed: u64, c_passes: usize) {
+    let mut ledger = Ledger::create(path).unwrap();
+    let tasks: Vec<String> = (0..4).map(|i| format!("t{i}")).collect();
+    ledger
+        .append(
+            "registration",
+            json!({"arms": ["D", "C"], "k": 5, "model": "m", "effort": "low",
+                   "primary_comparator": "D", "suite_hash": "h", "seed": seed,
+                   "min_families": 1, "max_excluded_share": 0.05, "tasks": tasks}),
+        )
+        .unwrap();
+    for (i, task) in tasks.iter().enumerate() {
+        for arm in ["D", "C"] {
+            ledger
+                .append(
+                    "submission",
+                    json!({"arm": arm, "task": task, "invocations": 1, "tokens": 10,
+                           "public": {"all_passed": true}}),
+                )
+                .unwrap();
+        }
+        for (arm, pass) in [("D", false), ("C", i < c_passes)] {
+            ledger
+                .append(
+                    "score",
+                    json!({"arm": arm, "task": task, "family": format!("f{}", i % 2),
+                           "result": {"compiled": true, "passed": 1, "failed": 0, "expected": 1,
+                                      "timed_out": false, "exit_success": pass, "all_passed": pass},
+                           "suspicious": []}),
+                )
+                .unwrap();
+        }
+    }
+    ledger
+        .append("generation_complete", json!({"aborted": false}))
+        .unwrap();
+    ledger
+        .append("summary", json!({"hidden_name_hits": []}))
+        .unwrap();
+}
+
+#[test]
+fn pooling_treats_each_ledger_as_a_replicate() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a.jsonl"), dir.path().join("b.jsonl"));
+    synthetic_ledger(&a, 7, 4);
+    synthetic_ledger(&b, 8, 2);
+    let (result, plan) = pool_ledgers(&[a.clone(), b.clone()]).unwrap();
+    assert_eq!(plan.replicates, 2);
+    assert_eq!(result.tuples_planned, 8);
+    assert_eq!(result.outcomes.len(), 16);
+    assert!(result.outcomes.iter().any(|o| o.replicate == 1));
+    let summary = summarize(&result, &plan);
+    assert_eq!(summary["complete"], true);
+    let primary = summary["comparisons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["role"] == "primary")
+        .unwrap()
+        .clone();
+    assert_eq!(primary["n"], 8);
+    assert_eq!(primary["families"], 2);
+    assert!((primary["lift"].as_f64().unwrap() - 0.75).abs() < 1e-9);
+
+    // A ledger from a different design is refused.
+    let c = dir.path().join("c.jsonl");
+    let mut other = Ledger::create(&c).unwrap();
+    other
+        .append(
+            "registration",
+            json!({"arms": ["D", "C"], "k": 9, "model": "m", "effort": "low",
+                                       "primary_comparator": "D", "suite_hash": "h", "tasks": []}),
+        )
+        .unwrap();
+    drop(other);
+    let err = pool_ledgers(&[a, c]).err().unwrap();
+    assert!(err.contains("'k' differs"), "{err}");
+}
