@@ -40,6 +40,33 @@ FIELDS = ("id", "date", "proposer", "stage", "hypothesis", "delta_frac", "se", "
           "tokens", "candidate_sha", "note")
 
 
+ALLOWED_IMPORTS = {"json", "re", "sys", "random", "math", "itertools", "collections", "functools",
+                   "hashlib", "difflib", "textwrap", "string", "heapq", "dataclasses", "typing"}
+FORBIDDEN_CALLS = {"open", "exec", "eval", "compile", "__import__", "globals", "locals", "vars",
+                   "getattr", "setattr", "delattr", "input", "breakpoint"}
+
+
+def guard(path):
+    """Static isolation check for a harness file: only allowlisted stdlib
+    imports and no file, process, network or dynamic-execution calls. Hidden
+    tests and holdouts are on this machine; a harness must not reach them."""
+    import ast
+    tree = ast.parse(pathlib.Path(path).read_text())
+    problems = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            problems += [a.name for a in node.names if a.name.split(".")[0] not in ALLOWED_IMPORTS]
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "").split(".")[0] not in ALLOWED_IMPORTS or node.level:
+                problems.append(f"from {node.module}")
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_CALLS:
+            problems.append(f"call {node.func.id}()")
+        elif isinstance(node, ast.Attribute) and node.attr.startswith("__") and node.attr not in ("__name__",):
+            problems.append(f"dunder attribute {node.attr}")
+    if problems:
+        sys.exit(f"{path}: harness isolation guard failed: {sorted(set(problems))}")
+
+
 def sha(path):
     return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 
@@ -202,6 +229,7 @@ def cmd_aa(args):
     snap = exp_dir / "harness.py"
     if not snap.exists():
         shutil.copy(inc, snap)
+    guard(snap)
     lanes = lanes_of(snap)
     manifest(exp_dir, {"protocol": PROTOCOL, "incumbent_sha": sha(snap), "controller": git_head(),
                        "suite_hash": suite_hash(DEV), "lanes": lanes})
@@ -234,6 +262,8 @@ def cmd_run(args):
         shutil.copy(inc_src, inc)
         shutil.copy(args.candidate, cand)
         (exp_dir / "hypothesis.txt").write_text(args.hypothesis + "\n")
+    guard(inc)
+    guard(cand)
     lanes = lanes_of(inc, cand)
     manifest(exp_dir, {"protocol": PROTOCOL, "id": args.id, "incumbent_sha": sha(inc), "candidate_sha": sha(cand),
                        "aa_threshold": thr, "suite_hash": suite_hash(DEV), "lanes": lanes,

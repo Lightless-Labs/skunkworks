@@ -79,7 +79,7 @@ impl Scope {
             .clone()
     }
 
-    fn mark_void(&self, reason: &str) {
+    pub(crate) fn mark_void(&self, reason: &str) {
         self.void_reason
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -139,6 +139,13 @@ impl Meter {
         Instant::now() >= self.deadline
     }
 
+    pub(crate) fn invocation_dir(&self, scope: &Scope) -> PathBuf {
+        self.artifacts_dir
+            .join(scope.arm.replace(':', "-"))
+            .join(&scope.task)
+            .join(format!("r{}", scope.replicate))
+    }
+
     /// Commit `budget` invocations for a new scope, or say why not.
     pub fn commit(&mut self, budget: usize) -> Result<(), &'static str> {
         if self.audit_failed {
@@ -187,11 +194,7 @@ impl Meter {
         result: &Result<InvocationResponse, ProviderError>,
         elapsed: Duration,
     ) {
-        let dir = self
-            .artifacts_dir
-            .join(scope.arm.replace(':', "-"))
-            .join(&scope.task)
-            .join(format!("r{}", scope.replicate));
+        let dir = self.invocation_dir(scope);
         let stem = format!("inv{:02}-{}", index, file_safe(&request.enzyme_id.0));
         let prompt = format!("SYSTEM:\n{}\n\nPROMPT:\n{}", request.system, request.prompt);
         let response = match result {

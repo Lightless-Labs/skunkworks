@@ -809,6 +809,13 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **parity** = X:a − D and X:b − D.
 - Parity passes if both all-pass deltas are within ±5 pp **and** the first coder prompts are byte-identical to D's on every task (checked from the logs). If parity fails, no candidate runs until v0 is fixed.
 - Budget: ≤ 700 Luna invocations.
+- **Prerequisites met (2026-10-15):**
+  - **External arms** (`--external name=path`, arm `X:<name>`) were implemented by Codex `gpt-6.1-sol` from a written spec, reviewed, and merged.
+  - **Judge lanes** (`--lane name=codex/<model>[:effort]`): a model op with a `lane` field is metered against the same per-task budget, logged as enzyme `lane:<name>`, and runs on the no-tools Codex lane.
+  - **Zero-call parity gate passes.** `nano_harness_v0_matches_native_d_prompts_and_submission` runs the real `nano/harness.py` against native D under a deterministic mock, through both repair branches (no code block, then failing tests). The prompt sequences are identical once per-call oracle randomness is normalised (temp paths, the randomised public module name, thread ids), and so are the submissions.
+  - **An operational fix found on the way:** Apple's `/usr/bin/python3` is an `xcrun` shim, which with a cleared environment spent about 12 s per task before Python started. The controller now resolves the real interpreter once, and keeps `TMPDIR`.
+  - **Isolation guard:** `eval.py` statically rejects any harness importing outside a stdlib allowlist or calling `open`, `exec`, `eval`, `__import__`, `getattr` and similar. Hidden tests are on this machine, so a proposed harness must not be able to read them.
+- Launched 2026-10-15, out `runs/c2-aa-200daaa763c4/` (incumbent sha `200daaa763c4…`).
 - Result: pending
 
 ### E002 — sample 4, judge 1 (Luna generation plus Sol selection) / E003 — sample 4, random green (control)  [cycle 2]

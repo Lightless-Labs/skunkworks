@@ -406,6 +406,8 @@ mod tests {
             harness: serde_json::json!({}),
             harnesses: Default::default(),
             d_notes: Default::default(),
+            externals: Default::default(),
+        lanes: Default::default(),
             claim: None,
             seed: 0,
             primary: Some(Arm::B),

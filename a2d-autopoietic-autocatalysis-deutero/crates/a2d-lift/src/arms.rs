@@ -1,11 +1,19 @@
 //! Baseline arms A (one-shot), B (best-of-k) and D (repair loop), and the
 //! frozen submission rule shared by B, C and D.
 
+use crate::meter::{MeteredProvider, Scope, SharedMeter, lock};
 use crate::oracle::{TestScore, score_public};
 use crate::task::PublicTask;
 use a2d_core::benchmark::extract_rust_code_pub;
 use a2d_core::provider::{InvocationRequest, Provider};
 use a2d_core::types::EnzymeId;
+use serde_json::{Value, json};
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 pub const CODER_ENZYME: &str = "lift-coder";
 
@@ -113,6 +121,210 @@ pub fn repair_loop_with_note(
         }
     }
     attempts
+}
+
+/// Shared scoring for code artifacts supplied by C and external harnesses.
+pub(crate) fn score_codes(task: &PublicTask, codes: Vec<String>) -> Vec<Attempt> {
+    codes
+        .into_iter()
+        .enumerate()
+        .map(|(index, code)| Attempt {
+            index,
+            public: score_public(task, Some(&code)),
+            code: Some(code),
+        })
+        .collect()
+}
+
+/// The real Python interpreter, resolved once under the controller's own
+/// environment. Apple's `/usr/bin/python3` is an `xcrun` shim; with a cleared
+/// environment it can spend tens of seconds re-resolving the toolchain before
+/// the harness starts, so children are launched with the resolved path.
+fn python_interpreter() -> std::path::PathBuf {
+    static PYTHON: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    PYTHON
+        .get_or_init(|| {
+            Command::new("python3")
+                .args(["-I", "-c", "import sys; print(sys.executable)"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| "python3".into())
+        })
+        .clone()
+}
+
+/// Run a Python harness with only public data and metered controller operations.
+/// Blocking pipe I/O runs on a worker so even a silent or non-reading child
+/// can be killed at the controller deadline. Stderr goes directly to a file,
+/// avoiding a full stderr pipe blocking the episode.
+pub(crate) fn external_harness(
+    path: &Path,
+    provider: MeteredProvider,
+    lanes: std::collections::BTreeMap<String, crate::Lane>,
+    task: &PublicTask,
+    k: usize,
+    meter: &SharedMeter,
+    scope: &Arc<Scope>,
+) -> Vec<String> {
+    let episode = || -> Result<Vec<String>, String> {
+        let path = fs::canonicalize(path).map_err(|e| format!("external path: {e}"))?;
+        let cwd = tempfile::Builder::new()
+            .prefix("a2d-external-")
+            .tempdir()
+            .map_err(|e| format!("external cwd: {e}"))?;
+        let dir = lock(meter).invocation_dir(scope);
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let stderr = fs::File::create(dir.join("harness.stderr.txt")).map_err(|e| e.to_string())?;
+        let mut command = Command::new(python_interpreter());
+        command
+            .arg("-I")
+            .arg(path)
+            .current_dir(cwd.path())
+            .env_clear();
+        for name in ["PATH", "HOME", "LANG", "TMPDIR"] {
+            let fallback = if name == "LANG" { "C.UTF-8" } else { "" };
+            command.env(
+                name,
+                std::env::var_os(name).unwrap_or_else(|| fallback.into()),
+            );
+        }
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(stderr)
+            .spawn()
+            .map_err(|e| format!("start external: {e}"))?;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let task = task.clone();
+        let worker_meter = meter.clone();
+        let lane_meter = meter.clone();
+        let lane_scope = scope.clone();
+        let (send, receive) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<Vec<String>, String> {
+                let mut reply = |value: &Value| -> Result<(), String> {
+                    writeln!(stdin, "{value}")
+                        .and_then(|_| stdin.flush())
+                        .map_err(|e| format!("external stdin: {e}"))
+                };
+                reply(&json!({"task": {
+                    "id": task.id, "family": task.family,
+                    "task_prompt": task_prompt(&task), "coder_system": CODER_SYSTEM,
+                    "k": k, "max_feedback_chars": MAX_FEEDBACK_CHARS,
+                }}))?;
+                for line in BufReader::new(stdout).lines() {
+                    if lock(&worker_meter).past_deadline() {
+                        return Err("wall-clock cap reached".to_string());
+                    }
+                    let request: Value = serde_json::from_str(&line.map_err(|e| e.to_string())?)
+                        .map_err(|e| format!("external JSON: {e}"))?;
+                    let string = |key: &str| {
+                        request[key]
+                            .as_str()
+                            .ok_or_else(|| format!("{key} must be a string"))
+                    };
+                    let response = (|| -> Result<Value, String> {
+                        match request["op"].as_str() {
+                            Some("model") => {
+                                let lane = request["lane"].as_str();
+                                let request = InvocationRequest {
+                                    enzyme_id: EnzymeId::from(
+                                        lane.map_or(CODER_ENZYME.to_string(), |l| format!("lane:{l}"))
+                                            .as_str(),
+                                    ),
+                                    system: string("system")?.to_string(),
+                                    prompt: string("prompt")?.to_string(),
+                                    max_tokens: 32_000,
+                                };
+                                match lane {
+                                    None => provider.invoke(&request),
+                                    Some(name) => match lanes.get(name) {
+                                        // Same meter and scope: lane calls share the budget k.
+                                        Some(lane) => MeteredProvider::new(
+                                            lane.provider.clone(),
+                                            lane_meter.clone(),
+                                            lane_scope.clone(),
+                                        )
+                                        .invoke(&request),
+                                        None => return Err(format!("unknown lane {name:?}")),
+                                    },
+                                }
+                                .map(|r| json!({"ok": true, "text": r.text}))
+                                .map_err(|e| e.to_string())
+                            }
+                            Some("extract") => {
+                                Ok(json!({"code": extract_rust_code_pub(string("text")?)}))
+                            }
+                            Some("public_test") => {
+                                // TestScore omits output in the hidden ledger, but public
+                                // feedback must include it for the harness's repair loop.
+                                Ok(match score_public(&task, Some(string("code")?)) {
+                                    Some(score) => {
+                                        let mut value = serde_json::to_value(&score)
+                                            .map_err(|e| e.to_string())?;
+                                        value["output"] = json!(score.output);
+                                        value
+                                    }
+                                    None => Value::Null,
+                                })
+                            }
+                            Some("done") => Ok(json!({"ok": true})),
+                            _ => Err("unknown op".to_string()),
+                        }
+                    })()
+                    .unwrap_or_else(|error| json!({"ok": false, "error": error}));
+                    if request["op"] == "done" {
+                        let codes = serde_json::from_value(request["codes"].clone())
+                            .map_err(|e| format!("done codes: {e}"))?;
+                        // Receiving `done` commits the codes even if the child
+                        // has already closed stdin while exiting.
+                        let _ = reply(&response);
+                        return Ok(codes);
+                    }
+                    reply(&response)?;
+                }
+                Err("external exited without done".to_string())
+            })();
+            let _ = send.send(result);
+        });
+        let result = loop {
+            if lock(meter).past_deadline() {
+                scope.mark_void("wall-clock cap reached");
+                break Err("wall-clock cap reached".to_string());
+            }
+            match receive.recv_timeout(Duration::from_millis(10)) {
+                Ok(result) => break result,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    break Err("external worker stopped".to_string());
+                }
+            }
+        };
+        // `done` ends the episode even if the harness stays alive afterward.
+        // Do not join the I/O worker: a grandchild may still hold its pipe.
+        let _ = child.kill();
+        let _ = child.wait();
+        if lock(meter).past_deadline() {
+            scope.mark_void("wall-clock cap reached");
+            Err("wall-clock cap reached".to_string())
+        } else {
+            result
+        }
+    };
+    episode().unwrap_or_else(|error| {
+        let _ = lock(meter).ledger.append(
+            "external_error",
+            json!({
+                "arm": scope.arm, "task": scope.task, "replicate": scope.replicate, "error": error,
+            }),
+        );
+        Vec::new()
+    })
 }
 
 fn repair_prompt(previous: &Attempt, mut prompt: String) -> String {

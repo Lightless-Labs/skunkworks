@@ -31,6 +31,10 @@ usage:
                [--record-hidden-output] [--defer-scoring]
                [--harness <path> | --harness <name>=<path> ...]  # C or C:<name>
                [--d-note <name>=<path> ...]                   # D:<name>
+               [--external <name>=<path> ...]                 # X:<name>; python3 -I, JSONL
+               [--lane <name>=codex/<model>[:effort] ...]     # model lanes for X arms (model op with a lane field)
+               # stdin: task; stdout requests: model, extract, public_test, done; one JSON reply each
+               # done supplies codes for public selection; model calls metered to k; public feedback only
                [--claim <x>><y>,<x>><y>,...]                  # all pairs supported
                # variant names: [a-z0-9][a-z0-9-]*; list each in --arms
   a2d lift compare --out <file> <ledger>:<arm> <ledger>:<arm>   # paired, across runs";
@@ -242,7 +246,7 @@ pub(super) fn run_with_provider(
     let effort = flags.get("effort").map(String::as_str);
     let arms = parse_arms(flags.get("arms").map(String::as_str).unwrap_or("A"))?;
     let k: usize = if arms.iter().any(|a| *a != Arm::A) {
-        number(&flags, "k").map_err(|e| format!("{e} (required with arms B, C or D)"))?
+        number(&flags, "k").map_err(|e| format!("{e} (required with arms B, C, D or X)"))?
     } else {
         flags.get("k").map_or(Ok(1), |_| number(&flags, "k"))?
     };
@@ -275,11 +279,11 @@ pub(super) fn run_with_provider(
         return Err("--primary must be B or D".to_string());
     }
     if !flags.contains_key("claim")
-        && arms.iter().any(Arm::is_c)
+        && arms.iter().any(Arm::is_treatment)
         && (arms.contains(&Arm::B) || arms.contains(&Arm::D))
         && primary.as_ref().is_none_or(|p| !arms.contains(p))
     {
-        return Err("--primary B|D (one of the arms run) is required when C runs".to_string());
+        return Err("--primary B|D (one of the arms run) is required when C or X runs".to_string());
     }
     let unregistered = flags.contains_key("unregistered");
     let registered_at = flags.get("registered-at").map(String::as_str);
@@ -297,8 +301,34 @@ pub(super) fn run_with_provider(
     let mut registered_harnesses = BTreeMap::new();
     let mut d_notes = BTreeMap::new();
     let mut registered_notes = BTreeMap::new();
+    let mut externals = BTreeMap::new();
+    let mut registered_externals = BTreeMap::new();
+    let mut lanes = BTreeMap::new();
+    let mut registered_lanes = BTreeMap::new();
     for (flag, spec) in &options {
-        if !matches!(flag.as_str(), "harness" | "d-note") {
+        if flag != "lane" {
+            continue;
+        }
+        let (name, lane_spec) = spec.split_once('=').ok_or("--lane expects <name>=codex/<model>[:effort]")?;
+        Arm::validate_name(name)?;
+        let (model, effort) = match lane_spec.rsplit_once(':') {
+            Some((model, effort)) if model.contains('/') => (model, Some(effort)),
+            _ => (lane_spec, None),
+        };
+        let lane_provider = match &provider {
+            Some(provider) => provider.clone(),
+            None => model_provider(model, effort)?,
+        };
+        if lanes
+            .insert(name.to_string(), crate::Lane { spec: lane_spec.to_string(), provider: lane_provider })
+            .is_some()
+        {
+            return Err(format!("lane {name} defined twice"));
+        }
+        registered_lanes.insert(name.to_string(), json!(lane_spec));
+    }
+    for (flag, spec) in &options {
+        if !matches!(flag.as_str(), "harness" | "d-note" | "external") {
             continue;
         }
         let (name, path) = match spec.split_once('=') {
@@ -307,11 +337,12 @@ pub(super) fn run_with_provider(
                 (Some(name), path)
             }
             None if flag == "harness" => (None, spec.as_str()),
-            None => return Err("--d-note expects <name>=<path>".to_string()),
+            None => return Err(format!("--{flag} expects <name>=<path>")),
         };
         let arm = match (flag.as_str(), name) {
             ("harness", Some(name)) => Arm::CVariant(name.to_string()),
             ("harness", None) => Arm::C,
+            ("external", Some(name)) => Arm::External(name.to_string()),
             (_, Some(name)) => Arm::DNote(name.to_string()),
             _ => unreachable!(),
         };
@@ -342,6 +373,14 @@ pub(super) fn run_with_provider(
                 harness = value;
                 harness_sha256 = Some(sha256);
             }
+        } else if flag == "external" {
+            let name = name.expect("external harnesses are named");
+            let resolved =
+                fs::canonicalize(path).map_err(|e| format!("resolve external {path}: {e}"))?;
+            if externals.insert(name.to_string(), resolved).is_some() {
+                return Err(format!("external {name} defined twice"));
+            }
+            registered_externals.insert(name.to_string(), json!({"path": path, "sha256": sha256}));
         } else {
             let name = name.expect("notes are named");
             let text = String::from_utf8(bytes.clone())
@@ -359,6 +398,7 @@ pub(super) fn run_with_provider(
         let defined = match arm {
             Arm::CVariant(name) => harnesses.contains_key(name),
             Arm::DNote(name) => d_notes.contains_key(name),
+            Arm::External(name) => externals.contains_key(name),
             _ => true,
         };
         if !defined {
@@ -404,6 +444,8 @@ pub(super) fn run_with_provider(
                 "harness_sha256": harness_sha256,
                 "harnesses": registered_harnesses,
                 "d_notes": registered_notes,
+                "externals": registered_externals,
+                "lanes": registered_lanes,
                 "claim": flags.get("claim"),
                 "model": model,
                 "effort": effort,
@@ -435,6 +477,8 @@ pub(super) fn run_with_provider(
         harness,
         harnesses,
         d_notes,
+        externals,
+        lanes,
         claim,
         defer_scoring: flags.contains_key("defer-scoring"),
     };
@@ -639,6 +683,7 @@ fn compare(args: &[String]) -> Result<(), String> {
 fn comparison_harness(registration: &Value, arm: &Arm) -> Value {
     match arm {
         Arm::CVariant(name) => registration["harnesses"][name]["harness"].clone(),
+        Arm::External(name) => registration["externals"][name].clone(),
         _ => registration["harness"].clone(),
     }
 }

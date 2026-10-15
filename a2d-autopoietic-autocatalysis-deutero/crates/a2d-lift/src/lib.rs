@@ -21,7 +21,7 @@ pub use cli::cli_main;
 
 use a2d_core::provider::Provider;
 use meter::{MeteredProvider, Scope, SharedMeter, lock};
-use oracle::{TestScore, score_hidden, score_public};
+use oracle::{TestScore, score_hidden};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -65,6 +65,7 @@ pub enum Arm {
     C,
     CVariant(String),
     DNote(String),
+    External(String),
 }
 
 impl Arm {
@@ -76,6 +77,7 @@ impl Arm {
             Arm::C => "C".to_string(),
             Arm::CVariant(name) => format!("C:{name}"),
             Arm::DNote(name) => format!("D:{name}"),
+            Arm::External(name) => format!("X:{name}"),
         }
     }
 
@@ -86,16 +88,16 @@ impl Arm {
             "D" | "d" => Ok(Arm::D),
             "C" | "c" => Ok(Arm::C),
             other => match other.split_once(':') {
-                Some((family, name)) if matches!(family, "C" | "D") => {
+                Some((family, name)) if matches!(family, "C" | "D" | "X") => {
                     Self::validate_name(name)?;
-                    Ok(if family == "C" {
-                        Arm::CVariant(name.to_string())
-                    } else {
-                        Arm::DNote(name.to_string())
+                    Ok(match family {
+                        "C" => Arm::CVariant(name.to_string()),
+                        "D" => Arm::DNote(name.to_string()),
+                        _ => Arm::External(name.to_string()),
                     })
                 }
                 _ => Err(format!(
-                    "unknown arm {other:?} (expected A, B, D, C, C:<name> or D:<name>)"
+                    "unknown arm {other:?} (expected A, B, D, C, C:<name>, D:<name> or X:<name>)"
                 )),
             },
         }
@@ -116,6 +118,10 @@ impl Arm {
 
     fn is_c(&self) -> bool {
         matches!(self, Arm::C | Arm::CVariant(_))
+    }
+
+    fn is_treatment(&self) -> bool {
+        self.is_c() || matches!(self, Arm::External(_))
     }
 
     fn disk_label(&self) -> String {
@@ -151,6 +157,20 @@ pub trait ArmC: Sync {
     }
 }
 
+/// A named model lane an external harness may call (`--lane name=codex/<model>[:effort]`).
+/// Its calls are metered against the same per-task budget as the coder.
+#[derive(Clone)]
+pub struct Lane {
+    pub spec: String,
+    pub provider: Arc<dyn Provider>,
+}
+
+impl std::fmt::Debug for Lane {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.spec)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RunPlan {
     pub arms: Vec<Arm>,
@@ -172,6 +192,10 @@ pub struct RunPlan {
     /// Named arm-C harnesses and arm-D prompt notes.
     pub harnesses: BTreeMap<String, Value>,
     pub d_notes: BTreeMap<String, String>,
+    /// Named Python harness entry points (resolved before changing cwd).
+    pub externals: BTreeMap<String, PathBuf>,
+    /// Named model lanes for external harnesses.
+    pub lanes: BTreeMap<String, Lane>,
     /// Ordered comparisons required for an all-supported claim.
     pub claim: Option<Vec<(Arm, Arm)>>,
     /// Stop after generation; score later with [`score_deferred`] once the
@@ -399,11 +423,12 @@ fn pool_ledgers_inner(ledgers: &[PathBuf]) -> Result<(RunResult, RunPlan), Strin
                     "primary_comparator",
                     "harnesses",
                     "d_notes",
+                    "externals",
                     "claim",
                 ] {
                     // Older registrations predate the empty variant maps.
                     let empty = json!({});
-                    let variant_map = matches!(key, "harnesses" | "d_notes");
+                    let variant_map = matches!(key, "harnesses" | "d_notes" | "externals");
                     let x = if variant_map && reference[key].is_null() {
                         &empty
                     } else {
@@ -516,6 +541,8 @@ fn pool_ledgers_inner(ledgers: &[PathBuf]) -> Result<(RunResult, RunPlan), Strin
         harness: registration["harness"].clone(),
         harnesses: registered_harnesses(&registration)?,
         d_notes: BTreeMap::new(),
+        externals: BTreeMap::new(),
+        lanes: BTreeMap::new(),
         claim: registered_claim(&registration)?,
         defer_scoring: false,
     };
@@ -597,6 +624,8 @@ pub fn score_deferred(
         harness: registration["harness"].clone(),
         harnesses: registered_harnesses(&registration)?,
         d_notes: BTreeMap::new(),
+        externals: BTreeMap::new(),
+        lanes: BTreeMap::new(),
         claim: registered_claim(&registration)?,
         defer_scoring: false,
     };
@@ -725,15 +754,19 @@ fn generate(
                 );
                 Vec::new()
             });
-            codes
-                .into_iter()
-                .enumerate()
-                .map(|(index, code)| arms::Attempt {
-                    index,
-                    public: score_public(&public, Some(&code)),
-                    code: Some(code),
-                })
-                .collect()
+            arms::score_codes(&public, codes)
+        }
+        Arm::External(name) => {
+            let codes = arms::external_harness(
+                &plan.externals[name],
+                metered,
+                plan.lanes.clone(),
+                &public,
+                plan.k,
+                meter,
+                &scope,
+            );
+            arms::score_codes(&public, codes)
         }
     };
     lock(meter).settle(&scope);
@@ -943,11 +976,11 @@ fn comparison_pairs(arms: &[Arm]) -> Vec<(Arm, Arm)> {
     .into_iter()
     .filter(|(x, y)| arms.contains(x) && arms.contains(y))
     .collect();
-    for (i, x) in arms.iter().enumerate().filter(|(_, a)| a.is_c()) {
+    for (i, x) in arms.iter().enumerate().filter(|(_, a)| a.is_treatment()) {
         for y in arms
             .iter()
-            .filter(|a| !a.is_c())
-            .chain(arms[i + 1..].iter().filter(|a| a.is_c()))
+            .filter(|a| !a.is_treatment())
+            .chain(arms[i + 1..].iter().filter(|a| a.is_treatment()))
         {
             let pair = (x.clone(), y.clone());
             if !pairs.contains(&pair) {

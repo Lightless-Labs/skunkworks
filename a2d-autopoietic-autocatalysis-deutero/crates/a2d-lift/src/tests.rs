@@ -17,10 +17,12 @@ const PUBLIC: &str = "#[test]\nfn doubles_two() { assert_eq!(double(2), 4); }\n"
 
 #[test]
 fn variant_labels_accept_safe_names_and_preserve_identity() {
-    for label in ["C:a", "C:h0-v5", "D:lessons", "D:0"] {
+    for label in ["C:a", "C:h0-v5", "D:lessons", "D:0", "X:nano", "X:0"] {
         assert_eq!(Arm::parse(label).unwrap().label(), label);
     }
-    for label in ["C:", "D:", "C:-a", "C:A", "D:a_b", "C:a/b", "A:a", "C:a:b"] {
+    for label in [
+        "C:", "D:", "C:-a", "C:A", "D:a_b", "C:a/b", "A:a", "C:a:b", "X:", "X:A", "X:a/b",
+    ] {
         assert!(Arm::parse(label).is_err(), "{label}");
     }
 }
@@ -155,6 +157,8 @@ fn hidden_tests_never_reach_any_arm_and_are_scored_once() {
         harness: json!({}),
         harnesses: Default::default(),
         d_notes: Default::default(),
+        externals: Default::default(),
+        lanes: Default::default(),
         claim: None,
         defer_scoring: false,
     };
@@ -268,6 +272,8 @@ fn arm_c_budget_is_enforced_across_all_enzymes() {
         harness: json!({}),
         harnesses: Default::default(),
         d_notes: Default::default(),
+        externals: Default::default(),
+        lanes: Default::default(),
         claim: None,
         defer_scoring: false,
     };
@@ -316,6 +322,8 @@ fn repair_loop_feeds_back_public_failures_and_stops_when_green() {
         harness: json!({}),
         harnesses: Default::default(),
         d_notes: Default::default(),
+        externals: Default::default(),
+        lanes: Default::default(),
         claim: None,
         defer_scoring: false,
     };
@@ -357,6 +365,8 @@ fn run_aborts_before_exceeding_global_cap() {
         harness: json!({}),
         harnesses: Default::default(),
         d_notes: Default::default(),
+        externals: Default::default(),
+        lanes: Default::default(),
         claim: None,
         defer_scoring: false,
     };
@@ -389,6 +399,8 @@ fn arm_c_without_runner_is_an_error() {
         harness: json!({}),
         harnesses: Default::default(),
         d_notes: Default::default(),
+        externals: Default::default(),
+        lanes: Default::default(),
         claim: None,
         defer_scoring: false,
     };
@@ -410,6 +422,8 @@ fn arm_order_is_a_seeded_permutation_per_tuple() {
         harness: json!({}),
         harnesses: Default::default(),
         d_notes: Default::default(),
+        externals: Default::default(),
+        lanes: Default::default(),
         claim: None,
         defer_scoring: false,
     };
@@ -452,6 +466,8 @@ fn wall_clock_refusal_mid_arm_voids_the_tuple() {
         harness: json!({}),
         harnesses: Default::default(),
         d_notes: Default::default(),
+        externals: Default::default(),
+        lanes: Default::default(),
         claim: None,
         defer_scoring: false,
     };
@@ -515,6 +531,8 @@ fn deferred_scoring_scores_once_after_generation_and_detects_tampering() {
         harness: json!({}),
         harnesses: Default::default(),
         d_notes: Default::default(),
+        externals: Default::default(),
+        lanes: Default::default(),
         claim: None,
         defer_scoring: true,
     };
@@ -615,6 +633,8 @@ fn claim_plan() -> RunPlan {
         harness: json!({}),
         harnesses: Default::default(),
         d_notes: Default::default(),
+        externals: Default::default(),
+        lanes: Default::default(),
         claim: None,
         defer_scoring: false,
     }
@@ -1259,4 +1279,464 @@ fn pooling_accepts_legacy_registration_without_variant_metadata() {
     let (result, plan) = pool_ledgers(&[legacy, current]).unwrap();
     assert_eq!(result.outcomes.len(), 16);
     assert_eq!(plan.replicates, 2);
+}
+
+/// Record every controller-to-child line on stderr, including oracle feedback.
+fn external_fixture(dir: &Path, body: &str) -> PathBuf {
+    let path = dir.join("harness.py");
+    fs::write(
+        &path,
+        format!(
+            r#"import json, os, sys
+assert sys.flags.isolated == 1
+assert os.listdir('.') == []
+# Apple's /usr/bin/python3 launcher adds toolchain variables after exec.
+assert set(os.environ) <= {{'PATH', 'HOME', 'LANG', 'TMPDIR', 'LC_CTYPE', 'CPATH',
+    'LIBRARY_PATH', 'MANPATH', 'SDKROOT', '__CF_USER_TEXT_ENCODING'}}
+def receive():
+    line = sys.stdin.readline()
+    print(line.rstrip(), file=sys.stderr, flush=True)
+    return json.loads(line)
+def request(value):
+    print(json.dumps(value), flush=True)
+    return receive()
+task = receive()['task']
+{body}
+"#
+        ),
+    )
+    .unwrap();
+    path
+}
+
+fn run_external_mock(args: &[String], provider: Arc<dyn Provider>) -> Result<(), String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let result = crate::cli::run_with_provider(args, None, &root, Some(provider));
+    if result.is_ok() {
+        let out = args.iter().position(|a| a == "--out").unwrap();
+        let run = Path::new(&args[out + 1]);
+        for record in ledger_records(run)
+            .iter()
+            .filter(|r| r["kind"] == "external_error")
+        {
+            eprintln!("{record}");
+        }
+        for path in walk(&run.join("invocations")) {
+            if path
+                .file_name()
+                .is_some_and(|name| name == "harness.stderr.txt")
+            {
+                eprintln!("{}", fs::read_to_string(path).unwrap());
+            }
+        }
+    }
+    result
+}
+
+#[test]
+fn external_round_trip_is_public_only_metered_and_logged() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut args = variant_args(dir.path(), "X:nano");
+    let harness = external_fixture(
+        dir.path(),
+        r#"
+assert task['id'] == 't1' and task['family'] == 'fam-a'
+assert task['k'] == 2 and task['max_feedback_chars'] == 6000
+answer = request({'op': 'model', 'system': task['coder_system'], 'prompt': task['task_prompt']})
+assert answer['ok'], answer
+code = request({'op': 'extract', 'text': answer['text']})['code']
+assert code is not None
+assert request({'op': 'extract', 'text': 'no code'}) == {'code': None}
+score = request({'op': 'public_test', 'code': code})
+assert score['compiled'] and score['all_passed'] and not score['timed_out'], score
+assert (score['passed'], score['failed'], score['expected']) == (1, 0, 1)
+assert 'test result:' in score['output']
+assert request({'op': 'unknown'}) == {'ok': False, 'error': 'unknown op'}
+print(json.dumps({'op': 'done', 'codes': [code]}), flush=True)
+"#,
+    );
+    add_variant(&mut args, "--external", "nano", &harness);
+    let (provider, seen) = mock(|r, _| {
+        assert_eq!(r.enzyme_id.0, "lift-coder");
+        assert_eq!(r.max_tokens, 32_000);
+        GOOD.to_string()
+    });
+    run_external_mock(&args, provider).unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    let run = dir.path().join("run");
+    let records = ledger_records(&run);
+    assert_eq!(
+        records[0]["externals"]["nano"]["path"],
+        harness.display().to_string()
+    );
+    assert_eq!(
+        records[0]["externals"]["nano"]["sha256"],
+        ledger::sha256_hex(&fs::read(harness).unwrap())
+    );
+    let calls: Vec<_> = records
+        .iter()
+        .filter(|r| r["kind"] == "invocation")
+        .collect();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["arm"], "X:nano");
+    assert!(
+        fs::read_to_string(calls[0]["prompt_path"].as_str().unwrap())
+            .unwrap()
+            .contains(arms::CODER_SYSTEM)
+    );
+    assert_eq!(
+        fs::read_to_string(calls[0]["response_path"].as_str().unwrap()).unwrap(),
+        GOOD
+    );
+    let traffic =
+        fs::read_to_string(run.join("invocations/X-nano/t1/r0/harness.stderr.txt")).unwrap();
+    assert!(!traffic.contains(SENTINEL), "{traffic}");
+    let first: Value =
+        serde_json::from_str(traffic.lines().find(|l| l.starts_with('{')).unwrap()).unwrap();
+    let task = task::load_suite(&dir.path().join("suite"), None)
+        .unwrap()
+        .tasks[0]
+        .public();
+    assert_eq!(
+        first,
+        json!({"task": {"id": task.id, "family": task.family,
+        "task_prompt": arms::task_prompt(&task), "coder_system": arms::CODER_SYSTEM,
+        "k": 2, "max_feedback_chars": 6000}})
+    );
+    let submission = records.iter().find(|r| r["kind"] == "submission").unwrap();
+    assert_eq!(submission["invocations"], 1);
+    assert_eq!(submission["coder_calls"], 1);
+    assert_eq!(submission["public"]["all_passed"], true);
+    assert!(
+        records
+            .iter()
+            .any(|r| r["kind"] == "score" && r["result"]["all_passed"] == true)
+    );
+    let summary = records.iter().find(|r| r["kind"] == "summary").unwrap();
+    assert_eq!(summary["arms"][0]["arm"], "X:nano");
+    ledger::verify_chain(&run.join("ledger.jsonl")).unwrap();
+}
+
+#[test]
+fn external_lane_calls_share_the_budget_and_are_logged() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut args = variant_args(dir.path(), "X:nano");
+    let k = args.iter().position(|a| a == "--k").unwrap();
+    args[k + 1] = "2".to_string();
+    let harness = external_fixture(
+        dir.path(),
+        r#"
+coder = request({'op': 'model', 'system': 'coder', 'prompt': 'write'})
+assert coder['ok'], coder
+judge = request({'op': 'model', 'lane': 'judge', 'system': 'judge', 'prompt': 'pick'})
+assert judge['ok'], judge
+third = request({'op': 'model', 'lane': 'judge', 'system': 'judge', 'prompt': 'again'})
+assert not third['ok'] and 'budget exhausted' in third['error'], third
+missing = request({'op': 'model', 'lane': 'nope', 'system': 's', 'prompt': 'p'})
+assert not missing['ok'] and 'unknown lane' in missing['error'], missing
+print(json.dumps({'op': 'done', 'codes': []}), flush=True)
+"#,
+    );
+    add_variant(&mut args, "--external", "nano", &harness);
+    args.push("--lane".into());
+    args.push("judge=codex/gpt-6.1-sol:medium".into());
+    let (provider, seen) = mock(|_, _| GOOD.to_string());
+    run_external_mock(&args, provider).unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    let records = ledger_records(&dir.path().join("run"));
+    let enzymes: Vec<&str> = records
+        .iter()
+        .filter(|r| r["kind"] == "invocation")
+        .map(|r| r["enzyme"].as_str().unwrap())
+        .collect();
+    assert_eq!(enzymes, vec!["lift-coder", "lane:judge"]);
+    let registration = records.iter().find(|r| r["kind"] == "registration").unwrap();
+    assert_eq!(registration["lanes"]["judge"], "codex/gpt-6.1-sol:medium");
+}
+
+#[test]
+fn nano_harness_v0_matches_native_d_prompts_and_submission() {
+    // Cycle-2 parity gate: the external nanoharness v0 must send exactly the
+    // prompts native D sends, through both repair branches, and submit the
+    // same file. Temp paths in public-test output are normalised.
+    let dir = tempfile::tempdir().unwrap();
+    let mut args = variant_args(dir.path(), "D,X:v0");
+    let k = args.iter().position(|a| a == "--k").unwrap();
+    args[k + 1] = "3".to_string();
+    let nano = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nano/harness.py");
+    add_variant(&mut args, "--external", "v0", &nano);
+    let (provider, _) = mock(|request, _| {
+        if request.prompt.contains("contained no ```rust code block") {
+            WRONG.to_string()
+        } else if request.prompt.contains("## Public test results") {
+            GOOD.to_string()
+        } else {
+            "I would write it like this, but forgot the fence.".to_string()
+        }
+    });
+    run_external_mock(&args, provider).unwrap();
+    let run = dir.path().join("run");
+    let normalise = |text: String| -> String {
+        text.split_whitespace()
+            // Per-call oracle randomness: temp paths, the randomised public
+            // module name, and thread ids.
+            .map(|w| {
+                if w.contains("a2d-oracle-") || w.contains("/var/folders/") || w.contains("/tmp/") {
+                    "<tmp>"
+                } else if w.contains("a2d_public_") {
+                    "<module>"
+                } else if w.starts_with('(') && w.ends_with(')') && w[1..w.len() - 1].chars().all(|c| c.is_ascii_digit()) {
+                    "(<thread>)"
+                } else {
+                    w
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let prompts = |arm: &str| -> Vec<String> {
+        let mut files: Vec<PathBuf> = walk(&run.join("invocations").join(arm))
+            .into_iter()
+            .filter(|p| p.to_string_lossy().ends_with(".prompt.txt"))
+            .collect();
+        files.sort();
+        files.into_iter().map(|p| normalise(fs::read_to_string(p).unwrap())).collect()
+    };
+    let d = prompts("D");
+    let x = prompts("X-v0");
+    assert_eq!(d.len(), 3, "D should repair twice and stop at green");
+    assert_eq!(d, x, "nanoharness v0 prompts differ from native D");
+    let sub = |arm: &str| fs::read_to_string(run.join("submissions").join(arm).join("t1/r0.rs")).unwrap();
+    assert_eq!(sub("D"), sub("X-v0"));
+}
+
+#[test]
+fn external_model_calls_cannot_exceed_k() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut args = variant_args(dir.path(), "X:nano");
+    let harness = external_fixture(
+        dir.path(),
+        r#"
+for i in range(task['k'] + 1):
+    answer = request({'op': 'model', 'system': 'system', 'prompt': 'prompt'})
+    assert answer['ok'] == (i < task['k']), answer
+assert 'budget exhausted' in answer['error']
+print(json.dumps({'op': 'done', 'codes': []}), flush=True)
+"#,
+    );
+    add_variant(&mut args, "--external", "nano", &harness);
+    let (provider, seen) = mock(|_, _| GOOD.to_string());
+    run_external_mock(&args, provider).unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    let records = ledger_records(&dir.path().join("run"));
+    assert_eq!(
+        records.iter().filter(|r| r["kind"] == "invocation").count(),
+        2
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| r["kind"] == "invocation_refused")
+            .count(),
+        1
+    );
+    let traffic = fs::read_to_string(
+        dir.path()
+            .join("run/invocations/X-nano/t1/r0/harness.stderr.txt"),
+    )
+    .unwrap();
+    let last: Value = serde_json::from_str(traffic.lines().last().unwrap()).unwrap();
+    assert_eq!(last["ok"], false);
+}
+
+#[test]
+fn external_done_codes_use_public_selection_and_latest_ties() {
+    for public_tests in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut args = variant_args(dir.path(), "X:nano");
+        if !public_tests {
+            fs::remove_file(dir.path().join("suite/t1/public_tests.rs")).unwrap();
+        }
+        let codes = [
+            "fn double(x: i32) -> i32 { x * 2 } // first",
+            "fn double(x: i32) -> i32 { 2 * x } // latest green",
+            "fn double(x: i32) -> i32 { x }",
+            "fn double(",
+        ];
+        let harness = external_fixture(
+            dir.path(),
+            &format!(
+                "os.close(sys.stdin.fileno())\nprint(json.dumps({{'op': 'done', 'codes': {}}}), flush=True)",
+                json!(codes)
+            ),
+        );
+        add_variant(&mut args, "--external", "nano", &harness);
+        let (provider, seen) = mock(|_, _| panic!("no model call requested"));
+        run_external_mock(&args, provider).unwrap();
+        assert!(seen.lock().unwrap().is_empty());
+        let records = ledger_records(&dir.path().join("run"));
+        let submission = records.iter().find(|r| r["kind"] == "submission").unwrap();
+        let index = if public_tests { 1 } else { 3 };
+        assert_eq!(submission["attempts"], 4);
+        assert_eq!(submission["attempt_index"], index);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("run/submissions/X-nano/t1/r0.rs")).unwrap(),
+            codes[index]
+        );
+    }
+}
+
+#[test]
+fn external_exit_without_done_submits_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut args = variant_args(dir.path(), "X:nano");
+    let harness = external_fixture(
+        dir.path(),
+        r#"
+answer = request({'op': 'model', 'system': '', 'prompt': ''})
+code = request({'op': 'extract', 'text': answer['text']})['code']
+request({'op': 'public_test', 'code': code})
+"#,
+    );
+    add_variant(&mut args, "--external", "nano", &harness);
+    let (provider, _) = mock(|_, _| GOOD.to_string());
+    run_external_mock(&args, provider).unwrap();
+    let records = ledger_records(&dir.path().join("run"));
+    let submission = records.iter().find(|r| r["kind"] == "submission").unwrap();
+    assert_eq!(submission["invocations"], 1);
+    assert_eq!(submission["attempts"], 0);
+    assert!(submission["artifact_sha256"].is_null());
+    assert!(submission["void_reason"].is_null());
+    assert!(
+        records
+            .iter()
+            .any(|r| r["kind"] == "score" && r["result"]["all_passed"] == false)
+    );
+}
+
+#[test]
+fn external_hang_is_killed_at_wall_clock_and_voids_tuple() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = external_fixture(dir.path(), "import time\ntime.sleep(30)");
+    let mut plan = claim_plan();
+    plan.arms = vec![Arm::parse("X:nano").unwrap()];
+    plan.externals.insert("nano".into(), harness);
+    let meter = Meter::new(
+        Ledger::create(&dir.path().join("ledger.jsonl")).unwrap(),
+        100,
+        Duration::from_secs(1),
+        dir.path().join("invocations"),
+    );
+    let mut suite = suite();
+    suite.tasks.truncate(1);
+    let (provider, _) = mock(|_, _| panic!("no model call requested"));
+    let start = std::time::Instant::now();
+    let result = run_arms(&plan, &suite, provider, &meter, dir.path(), None).unwrap();
+    assert!(start.elapsed() < Duration::from_secs(10));
+    assert_eq!(
+        result.outcomes[0].void_reason.as_deref(),
+        Some("wall-clock cap reached")
+    );
+    let records = ledger_records(dir.path());
+    let submission = records.iter().find(|r| r["kind"] == "submission").unwrap();
+    assert_eq!(submission["void_reason"], "wall-clock cap reached");
+}
+
+#[test]
+fn external_names_must_be_defined_listed_unique_and_safe() {
+    for (arms, definitions, expected) in [
+        ("X:nano", vec![], "undefined"),
+        ("D", vec!["nano"], "not listed"),
+        ("X:nano", vec!["nano", "nano"], "twice"),
+        ("X:Bad", vec![], "invalid variant name"),
+        ("D", vec!["../bad"], "invalid variant name"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut args = variant_args(dir.path(), arms);
+        let harness = external_fixture(dir.path(), "pass");
+        for name in definitions {
+            add_variant(&mut args, "--external", name, &harness);
+        }
+        let (provider, seen) = mock(|_, _| GOOD.to_string());
+        let error = run_external_mock(&args, provider).unwrap_err();
+        assert!(error.contains(expected), "{error} (expected {expected})");
+        assert!(seen.lock().unwrap().is_empty());
+        assert!(!dir.path().join("run/ledger.jsonl").exists());
+    }
+}
+
+#[test]
+fn external_registration_survives_manifest_scoring_pooling_and_compare() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut args = variant_args(dir.path(), "X:nano,C:b,D");
+    let harness = external_fixture(
+        dir.path(),
+        &format!(
+            "print(json.dumps({{'op': 'done', 'codes': [{}]}}), flush=True)",
+            json!("fn double(x: i32) -> i32 { x * 2 }")
+        ),
+    );
+    add_variant(&mut args, "--external", "nano", &harness);
+    add_variant(&mut args, "--harness", "b", &dir.path().join("b.json"));
+    args.extend([
+        "--defer-scoring".into(),
+        "--claim".into(),
+        "X:nano>C:b,X:nano>D".into(),
+    ]);
+    let (provider, _) = mock(|_, _| GOOD.to_string());
+    run_mock(&args, &HarnessMock::default(), provider).unwrap();
+    let run = dir.path().join("run");
+    assert_eq!(
+        cli_main(&["manifest".into(), run.display().to_string()], None),
+        0
+    );
+    let (result, plan, _) =
+        score_deferred(&run, &dir.path().join("suite"), 1, false, None).unwrap();
+    assert!(
+        result.outcomes.iter().all(|o| o.hidden.all_passed),
+        "{result:?}"
+    );
+    let pairs: Vec<_> = comparison_pairs(&plan.arms)
+        .into_iter()
+        .map(|(x, y)| (x.label(), y.label()))
+        .collect();
+    assert_eq!(
+        pairs,
+        [("X:nano", "D"), ("X:nano", "C:b"), ("C:b", "D")]
+            .map(|(x, y)| (x.to_string(), y.to_string()))
+    );
+    let ledger = run.join("ledger.jsonl");
+    let (pooled, pooled_plan) = pool_ledgers(&[ledger.clone(), ledger.clone()]).unwrap();
+    assert_eq!(pooled.outcomes.len(), 6);
+    assert_eq!(summarize(&pooled, &pooled_plan)["complete"], true);
+    let changed = dir.path().join("changed.jsonl");
+    let mut changed_ledger = Ledger::create(&changed).unwrap();
+    let mut registration = ledger_records(&run)[0].clone();
+    registration["externals"]["nano"]["sha256"] = json!("changed");
+    changed_ledger.append("registration", registration).unwrap();
+    assert!(
+        pool_ledgers(&[ledger.clone(), changed])
+            .unwrap_err()
+            .contains("'externals' differs")
+    );
+    let out = dir.path().join("compare.json");
+    assert_eq!(
+        cli_main(
+            &[
+                "compare".into(),
+                "--out".into(),
+                out.display().to_string(),
+                format!("{}:X:nano", ledger.display()),
+                format!("{}:D", ledger.display())
+            ],
+            None
+        ),
+        0
+    );
+    let comparison: Value = serde_json::from_slice(&fs::read(out).unwrap()).unwrap();
+    assert_eq!(comparison["x"]["arm"], "X:nano");
+    assert_eq!(
+        comparison["x"]["harness"],
+        ledger_records(&run)[0]["externals"]["nano"]
+    );
 }
