@@ -219,6 +219,16 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Hidden tests were not exposed. The saved full output was deleted unread.
   - **Response, fixed before any Confirmation-2 scoring and before any P4 harness is written: family `spreadsheet-eval` is excluded from Confirmation-2.** Its tasks are removed from the set before the final hash.
   - Rule added to `docs/PROTOCOL.md`: never print process command lines while a holdout or confirmation job runs.
+- **Extension and final set (2026-10-15).** 25 families were authored blind by Codex `gpt-6.1-sol`, using the same pipeline as Confirmation-1.
+  - Independent-solve audit (`AUDIT-C2EXT`: Sol, arm D, k = 3, the 100 extension tasks): **97/100**, integrity OK, 0 void.
+  - The 3 failures (`calendar-recurrence` l1–l3) went to blind adjudication: `tests_determined=0 tests_underdetermined=3 tasks_changed=3`. The adjudicator repairs tasks and never drops them. Re-audit (`AUDIT-C2ADJ`): 3/3.
+  - `spreadsheet-eval` was excluded (exposure deviation above).
+  - **Final Confirmation-2: 36 families × 4 = 144 tasks. `a2d lift validate`: 144/144 accepted. Suite hash `cb7cb49655654169505811a5503b165a3d80c308fcbc2362e2108729c3d907a4`.**
+  - Families: base58check, bipartite-match, calc-parser, calendar-recurrence, circuit-breaker, config-merge, consistent-hash, date-arith, edit-distance-align, elevator-sim, fen-parser, flood-fill-regions, huffman-codec, interval-tree, inventory-alloc, ipv4-cidr, ledger-reconcile, log-store, lz77-codec, markdown-inline, nonogram-check, order-book, parking-lot, polynomial, regex-lite, rle-bitmap, seat-booking, skip-list-map, tax-brackets, time-zone-offset, traffic-light-fsm, trie-autocomplete, undo-editor, unit-convert, version-vector, word-freq.
+  - **Power** (`docs/experiments/analysis/c2_power.py`, which simulates the implemented rule with discordance calibrated to 0.26):
+    - P(SUPPORTED | true +15 pp) = 0.86–0.90 at r = 1;
+    - P(RULED OUT | true 0) = 0.62 at r = 1 and 0.75 at r = 2, below the 0.8 target.
+    - Arm-specific variance sits at task level and the set is near the authoring cap. The shortfall is recorded, not hidden.
 
 ### E07 — P2 seed lift confirmation on Confirmation-1  [phase P2]
 - Registered: 2026-10-15 (frozen paths at commit e1915c89). Since E06 (eeaa7e7) only controller and validator files have changed: `crates/a2d-lift/src/{lib,tests,validate}.rs`. The arm-C treatment is the one piloted in E06.
