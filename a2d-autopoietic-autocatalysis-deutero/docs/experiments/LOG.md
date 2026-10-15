@@ -430,3 +430,12 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - Expectation (**sanity, not a claim**): C(H0 v2) within ±5 pp of D. If C is much lower, H0 is not a usable P4 baseline.
 - Budget: ≤ 450 invocations, 7,200 s. P3 spend so far, including E08: about 360 invocations.
 - Result: pending
+
+### T0 — failure taxonomy of D's public-green, hidden-fail picks on c1-train  [P3 → P4 groundwork, development lane, descriptive]
+- Registered: 2026-10-15, one-row development pre-registration.
+- Cases: D's pick per tuple in E07 and E07b on the 17 `c1-train` families: **32 public-green, hidden-fail picks** (11 families). Train is visible development data, so hidden tests are shown.
+- Method: Codex `gpt-6.1-sol` (medium), one call per case, run in an isolated staged dir containing the spec, the candidate, the hidden tests and the failing-test output.
+  - Output per case: violated clauses, a category from a fixed list, whether the spec was clear, whether a careful clause-by-clause check would have caught it, and a **task-agnostic lesson** (≤ 25 words) or null.
+- Decision use (fixed now): if ≥ 50% of cases share ≤ 3 categories **and** ≥ 50% have a task-agnostic lesson, P4's first lever is a cross-task `lessons` slot fed from train failures. Otherwise lessons are deprioritised, and P4 targets selection and schedule.
+- Budget: ≤ 40 Sol calls.
+- Result: pending
