@@ -1,0 +1,141 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WrapError {
+    WidthZero,
+    WidthTooLarge { width: usize },
+    FirstIndentTooWide { indent: usize },
+    RestIndentTooWide { indent: usize },
+    InvalidControl { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapOptions {
+    pub width: usize,
+    pub first_indent: usize,
+    pub rest_indent: usize,
+}
+
+fn is_separator(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{00A0}')
+}
+
+fn layout_segment(segment: &[char], options: &WrapOptions, output: &mut Vec<String>) {
+    let words: Vec<Vec<char>> = segment
+        .split(|ch| is_separator(*ch))
+        .filter(|word| !word.is_empty())
+        .map(|word| word.to_vec())
+        .collect();
+
+    let mut first_line = true;
+    let mut line = String::new();
+    let mut content_len = 0usize;
+
+    for word in words {
+        let mut start = 0usize;
+        while start < word.len() {
+            let indent = if first_line {
+                options.first_indent
+            } else {
+                options.rest_indent
+            };
+            let capacity = options.width - indent;
+            let suffix_len = word.len() - start;
+
+            if suffix_len <= capacity {
+                if content_len == 0 {
+                    line = " ".repeat(indent);
+                    line.extend(word[start..].iter());
+                    content_len = suffix_len;
+                    start = word.len();
+                } else if content_len + 1 + suffix_len <= capacity {
+                    line.push(' ');
+                    line.extend(word[start..].iter());
+                    content_len += 1 + suffix_len;
+                    start = word.len();
+                } else {
+                    output.push(std::mem::take(&mut line));
+                    content_len = 0;
+                    first_line = false;
+                }
+            } else if content_len == 0 {
+                line = " ".repeat(indent);
+                line.extend(word[start..start + capacity].iter());
+                content_len = capacity;
+                start += capacity;
+                output.push(std::mem::take(&mut line));
+                content_len = 0;
+                first_line = false;
+            } else {
+                let available = capacity - content_len - 1;
+                if available >= 2 {
+                    line.push(' ');
+                    line.extend(word[start..start + available].iter());
+                    start += available;
+                }
+                output.push(std::mem::take(&mut line));
+                content_len = 0;
+                first_line = false;
+            }
+        }
+    }
+
+    if content_len > 0 {
+        output.push(line);
+    }
+}
+
+pub fn wrap(input: &str, options: &WrapOptions) -> Result<Vec<String>, WrapError> {
+    if options.width == 0 {
+        return Err(WrapError::WidthZero);
+    }
+    if options.width > 256 {
+        return Err(WrapError::WidthTooLarge {
+            width: options.width,
+        });
+    }
+    if options.first_indent >= options.width {
+        return Err(WrapError::FirstIndentTooWide {
+            indent: options.first_indent,
+        });
+    }
+    if options.rest_indent >= options.width {
+        return Err(WrapError::RestIndentTooWide {
+            indent: options.rest_indent,
+        });
+    }
+
+    for (index, ch) in input.char_indices() {
+        if ch.is_control() && !matches!(ch, '\t' | '\r' | '\n') {
+            return Err(WrapError::InvalidControl { index });
+        }
+    }
+
+    let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
+    let chars: Vec<char> = normalized.chars().collect();
+    let mut output = Vec::new();
+    let mut segment_start = 0usize;
+    let mut index = 0usize;
+
+    while index < chars.len() {
+        if chars[index] != '\n' {
+            index += 1;
+            continue;
+        }
+
+        let run_start = index;
+        while index < chars.len() && chars[index] == '\n' {
+            index += 1;
+        }
+
+        let run_len = index - run_start;
+        if run_len >= 2 {
+            layout_segment(&chars[segment_start..run_start], options, &mut output);
+            output.extend(std::iter::repeat_n(String::new(), run_len - 1));
+            segment_start = index;
+        }
+    }
+
+    layout_segment(&chars[segment_start..], options, &mut output);
+    Ok(output)
+}
+
+fn main() {}

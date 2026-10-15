@@ -429,7 +429,12 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Early check (before the run completes):** the first five C tasks' second coder prompts must carry public-test output or an empty failure report, with no `E0601`. Otherwise abort.
 - Expectation (**sanity, not a claim**): C(H0 v2) within ±5 pp of D. If C is much lower, H0 is not a usable P4 baseline.
 - Budget: ≤ 450 invocations, 7,200 s. P3 spend so far, including E08: about 360 invocations.
-- Result: pending
+- Result (`runs/2026-10-15-e08r-h0-check/summary.json`; 0 void, integrity OK):
+  - The early check passed: 58 later C coder prompts, with no `E0601`.
+  - **D 51/68 = 75.0%; C(H0 v2) 53/68 = 77.9%.** Lift +2.9 pp, 95% CI [−11.8, +19.1], discordant pairs 10 vs 8. **Sanity met (within ±5 pp).**
+  - Spend: C 340 invocations / 3.38M tokens vs D 80 / 0.60M (4.25× invocations, 5.7× tokens).
+  - Public-green but hidden-fail: C 12, D 17. In 53 of 58 later prompts the C coder rewrites an already-green file, which is S2's post-green self-review in vivo (S2 offline: +2.2 pp).
+  - **H0 for P4 = H0 v2 + `stop_at_public_green`** (H0 v3), so that it is structurally D plus routing. The post-green rewrite becomes an explicit P4 lever, not a baseline cost. H0 v3 itself is not live-checked; S4 runs it with lessons added.
 
 ### T0 — failure taxonomy of D's public-green, hidden-fail picks on c1-train  [P3 → P4 groundwork, development lane, descriptive]
 - Registered: 2026-10-15, one-row development pre-registration.

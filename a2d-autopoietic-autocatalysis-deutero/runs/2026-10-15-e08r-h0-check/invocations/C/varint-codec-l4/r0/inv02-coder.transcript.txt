@@ -1,0 +1,327 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-47127-1792058139346164000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a13efd-23ec-7e32-a07b-360fc25c063b
+--------
+user
+You are a programmer. Your inputs: `requirements` (the task; `design` and `plan` repeat it), `previous_attempt` (your last file, empty on the first attempt) and `failure_report` (compiler or public-test output for that file, empty if it passed).
+Write a SINGLE complete Rust source file implementing the requirements exactly, using only std, compiling with `rustc --edition 2024`.
+Before writing code, go through every numbered requirement clause and make sure the file satisfies each one, including exact error variants and their precedence, boundaries, ordering and output formats. Check integer overflow, empty inputs, duplicate values, and boundary indices wherever relevant.
+If `previous_attempt` is non-empty, start from it: keep what is correct, fix what `failure_report` shows, and re-check every clause. Do not change behavior that already passes unless required by a specific failure.
+Include an empty `fn main() {}` (the file is compiled as a program). Do not define a module named `a2d_acceptance` (the system appends it). Your own unit tests are optional.
+Output ONLY the Rust source file in a single ```rust fenced block. No explanation.
+
+{"design":"R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner documentation comments.\n\nR2. Expose pub struct Message { pub fields: Vec<Field> } and pub enum Field { UInt { tag: u32, value: u64 }, Bytes { tag: u32, data: Vec<u8> }, Nested { tag: u32, message: Message } }; both derive Debug, Clone, PartialEq, Eq. Expose pub fn encode_message(message: &Message, max_depth: usize) -> Result<Vec<u8>, Error>; pub fn decode_message(input: &[u8], start: usize, max_depth: usize) -> Result<(Message, usize), Error>. The returned cursor is the first byte after one root frame.\n\nR3. Define pub enum Error deriving Debug, Clone, PartialEq, Eq with exactly these variants: StartOutOfBounds { offset: usize }, Truncated { offset: usize, start: usize }, Overflow { offset: usize, start: usize }, LengthOutOfBounds { offset: usize, length: u64 }, InvalidTag { offset: usize, tag: u64 }, InvalidWire { offset: usize, wire: u8 }, OutOfOrder { offset: usize, previous: u32, tag: u32 }, Duplicate { offset: usize, tag: u32 }, NonCanonical { offset: usize }, DepthExceeded { offset: usize, depth: usize }, InvalidDepthLimit { limit: usize }.\n\nR4. A frame is an unsigned LEB128 byte length followed by exactly that many body bytes. The length counts body bytes only; an empty message encodes as [0].\n\nR5. All integer, key, and length encodings use unsigned LEB128: seven little-endian payload bits per byte and high-bit continuation. Encoding is always minimal; decoding at this level requires minimal encodings everywhere, as detailed below.\n\nR6. All integer types have the entire u64 range. On byte ten of any varint, payload > 1 OR a set continuation bit means Overflow at that byte; this precedes any truncation and an eleventh byte is never read.\n\nR7. A varint missing its next byte returns Truncated { offset: container_end, start: varint_start }. A frame header is bounded by input.len(); body varints are bounded by the current frame end, even if further bytes exist in input.\n\nR8. After the max_depth validation described below, decode_message validates start <= input.len(), otherwise StartOutOfBounds { offset: start }; start equal to input.len() gives Truncated there. Offsets and varint starts are absolute input indices, including in descendants.\n\nR9. After reading a frame length, compare it against bytes remaining in input. If too large return LengthOutOfBounds { offset: header_start, length: declared_length }, before reading body content. Avoid wrapping lengths or narrowing before this comparison.\n\nR10. Consume exactly one frame starting at start, ignore following bytes, and return its absolute end cursor. There are no padding bytes inside a frame: every body byte begins or belongs to a field.\n\nR11. Each field starts with a varint key: tag = key >> 3 and wire = key & 7. Decode the full u64 key before validating its parts.\n\nR12. Decoder tags must be in 1..=255; otherwise InvalidTag { offset: key_start, tag }. This check precedes wire validation and field ordering.\n\nR13. Decoder wire types are 0 (unsigned varint), 1 (eight raw bytes), 2 (varint byte length then raw bytes), 3 (varint body length then nested message body), and 5 (four raw bytes). Other wires give InvalidWire { offset: key_start, wire }, before ordering or payload reads.\n\nR14. Tags must be nondecreasing across ALL fields, including skipped fields. If tag < previous tag return OutOfOrder { offset: key_start, previous, tag }, before reading this field's payload.\n\nR15. Equal consecutive tags are allowed ONLY when both the previous and current wire are 2. Otherwise return Duplicate { offset: key_start, tag }, before reading payload. Ordering uses the immediately preceding field's tag and wire.\n\nR16. Decoder retains tags 1..=15 with wire 0 as Field::UInt and wire 2 as Field::Bytes, in encountered order. Known tags with wire 1 or 5 are skipped. Known wire-3 fields are retained as Field::Nested.\n\nR17. Tags 16..=255 are unknown and are skipped for every supported wire. Even skipped fields must validate varints, lengths, tag order, and repeats by the same rules. Skipped nested bodies are recursively validated, including their descendants, even though none of their fields appear in the parent output.\n\nR18. Repeated wire-2 fields of a retained tag concatenate their data into ONE Field::Bytes at that tag's original position, including empty fragments. Unknown wire-2 repeats are permitted but leave no output field.\n\nR19. Wire-0 payloads use the same varint integrity rules, with Truncated.start equal to the payload start, not the key start.\n\nR20. Wire-1 and wire-5 payloads require eight and four bytes respectively. If insufficient bytes remain in the frame, return LengthOutOfBounds { offset: key_start, length: 8 or 4 }, regardless of bytes outside the frame.\n\nR21. For wires 2 and 3, first decode the length varint within the frame. If the declared data length exceeds remaining frame bytes, return LengthOutOfBounds { offset: length_varint_start, length: declared_length }. Length integrity errors precede bounds errors. Zero length is valid; for wire 3 it is an empty nested body.\n\nR22. Raw bytes are opaque: any byte pattern is accepted as data and is not interpreted as varints or keys.\n\nR23. Decoder error precedence at each field is: key varint integrity; key canonicality; tag validity; wire validity; tag order; duplicate rule; payload varint integrity; payload canonicality; payload bounds; nested depth check; nested content. The enclosing frame header integrity, canonicality and length bounds precede all its fields. Depth-limit argument validation precedes even root cursor validation.\n\nR24. Encoder accepts only tags 1..=15 in any Field variant. Invalid tags return InvalidTag { offset: field_index, tag: supplied_tag as u64 }. Encoder offsets are zero-based field indices in Message.fields, not byte positions.\n\nR25. Encoder validates fields in supplied order without sorting. Decreasing tags return OutOfOrder { offset: field_index, previous, tag }; equal tags are legal only for two consecutive Bytes variants, otherwise Duplicate { offset: field_index, tag }. Tag validity precedes order and duplicate checks.\n\nR26. Encoder writes UInt using wire 0 , Bytes using wire 2, and Nested using wire 3, all varints minimal, then prefixes the complete body length. It preserves separate repeated Bytes fragments on the wire, rather than merging before encoding.\n\nR27. Encoding an empty field vector succeeds. Bytes can be empty. Encoding does not mutate its Message or any data vector.\n\nR28. Decoding a frame with only skipped fields succeeds and produces an empty field vector; a zero-length frame likewise produces an empty field vector.\n\nR29. Errors return no partial Message. All API calls are deterministic and must not panic on any input or invalid tag (allocation exhaustion is outside the contract).\n\nR30. The structured decoder has no schema beyond these rules: any retained tag can have wire 0, 2 or 3, and skipped fields still participate in order and duplicate checks even when adjacent to a retained field.\n\nR31. A completed varint is noncanonical exactly when it has more than one byte and its final seven-bit payload is zero. Return NonCanonical { offset: varint_start }. Zero must therefore be a single [0]. This applies to frame lengths, field keys, UInt payloads, byte lengths and nested lengths, known and unknown fields alike.\n\nR32. Overflow integrity is checked before canonicality, and incomplete varints report Truncated rather than NonCanonical. A valid ten-byte varint ending with payload 1 is canonical; a ten-byte varint ending with payload 0 is noncanonical.\n\nR33. Canonicality is checked before using a key, value or length. Thus an overlong invalid tag reports NonCanonical; an overlong out-of-bounds length reports NonCanonical rather than LengthOutOfBounds.\n\nR34. Nested wire 3 stores a byte length and then exactly that many bytes of child BODY. There is no second frame header inside that body. Child fields use the same tag, wire, ordering, repetition and error rules as the root.\n\nR35. Root depth is 0. Entering a nested body from depth d has depth d+1. max_depth is an inclusive maximum: a child whose depth equals max_depth is allowed; a greater depth gives DepthExceeded { offset: nested_key_start, depth: child_depth }.\n\nR36. max_depth must be in 0..=32 for both encoder and decoder. A greater value immediately returns InvalidDepthLimit { limit: max_depth }, even for empty messages, malformed input or invalid start. max_depth=0 allows root scalar and byte fields, but no nested field, even an empty or unknown one.\n\nR37. Before testing a child depth, decode and validate its length varint and bounds. Therefore a missing/noncanonical/overflowing length or a body length beyond its parent beats DepthExceeded. Once bounds succeed, depth errors beat any malformed child content.\n\nR38. Each nested body resets ordering and repetition state. The next sibling compares only against the preceding parent field; child tags do not change parent ordering. All descendants use their own body end for truncation and bounds.\n\nR39. Known nested fields retain a Message even if its body is empty or contains only skipped fields. Unknown nested fields are discarded only after fully validating their content and depth. Unknown nested fields do not exempt their descendants from canonicality.\n\nR40. Equal tags involving a Nested field are Duplicate, including Nested followed by Nested, Nested followed by Bytes, or Bytes followed by Nested. This check occurs before any length or depth validation.\n\nR41. Encoder recursively validates a Nested field after that parent field's tag, ordering and duplicate checks, and before inspecting later siblings. Check depth before examining the child fields; if depth exceeds max_depth, return DepthExceeded { offset: parent_field_index, depth: child_depth }.\n\nR42. Encoder errors inside a child use that child's local zero-based field index; they are propagated unchanged. Encoder depth counts match decoder depths. An invalid parent tag or parent ordering takes precedence over a depth error at the same field.\n\nR43. Encoder prefixes nested BODY length, and prefixes only the root with a frame length. All lengths and nested keys are canonical. Raw Bytes content and skipped fixed-width payloads remain opaque, even if they look like noncanonical varints.\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\n// R1-R5, R27-R28, R36\n#[test]\nfn public_empty_canonical() {\n    let m=Message{fields:vec![]}; assert_eq!(encode_message(&m,0),Ok(vec![0]));\n    assert_eq!(decode_message(&[0],0,0),Ok((m,1)));\n}\n\n// R2-R3, R10-R11, R16, R19, R21-R22, R24-R27, R34-R35, R38-R39, R41-R43\n#[test]\nfn public_nested_roundtrip() {\n    let m=Message{fields:vec![Field::Nested{tag:1,message:Message{fields:vec![Field::UInt{tag:2,value:9}]}},Field::Bytes{tag:3,data:vec![128,0]}]};\n    let b=vec![8,11,2,16,9,26,2,128,0];\n    assert_eq!(encode_message(&m,3),Ok(b.clone()));\n    assert_eq!(decode_message(&b,0,3),Ok((m,9)));\n}\n\n// R12-R18, R28-R30, R38-R39\n#[test]\nfn public_skips_and_merge() {\n    let b=[11,10,1,7,10,1,8,131,1,2,8,9];\n    assert_eq!(decode_message(&b,0,4),Ok((Message{fields:vec![Field::Bytes{tag:1,data:vec![7,8]}]},12)));\n}\n\n// R7-R9, R23, R31-R33\n#[test]\nfn public_canonical_and_truncation() {\n    assert_eq!(decode_message(&[3,8,130,0],0,2),Err(Error::NonCanonical{offset:2}));\n    assert_eq!(decode_message(&[128],0,2),Err(Error::Truncated{offset:1,start:0}));\n}\n```\n","enzyme_defs":"[{\"id\":\"coder\",\"reactants\":[\"design\",\"plan\",\"requirements\"],\"products\":[\"code\"],\"catalysts\":[\"enzyme_defs\",\"failure_report\",\"previous_attempt\"],\"prompt_template\":\"You are a programmer. Your inputs: `requirements` (the task; `design` and `plan` repeat it), `previous_attempt` (your last file, empty on the first attempt) and `failure_report` (compiler or public-test output for that file, empty if it passed).\\nWrite a SINGLE complete Rust source file implementing the requirements exactly, using only std, compiling with `rustc --edition 2024`.\\nBefore writing code, go through every numbered requirement clause and make sure the file satisfies each one, including exact error variants and their precedence, boundaries, ordering and output formats. Check integer overflow, empty inputs, duplicate values, and boundary indices wherever relevant.\\nIf `previous_attempt` is non-empty, start from it: keep what is correct, fix what `failure_report` shows, and re-check every clause. Do not change behavior that already passes unless required by a specific failure.\\nInclude an empty `fn main() {}` (the file is compiled as a program). Do not define a module named `a2d_acceptance` (the system appends it). Your own unit tests are optional.\\nOutput ONLY the Rust source file in a single ```rust fenced block. No explanation.\"},{\"id\":\"evolver\",\"reactants\":[\"fitness_report\"],\"products\":[\"enzyme_defs\"],\"catalysts\":[\"enzyme_defs\",\"failure_report\",\"fitness_report\",\"provider_health_report\",\"provider_policy\"]}]","failure_report":"","plan":"R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner documentation comments.\n\nR2. Expose pub struct Message { pub fields: Vec<Field> } and pub enum Field { UInt { tag: u32, value: u64 }, Bytes { tag: u32, data: Vec<u8> }, Nested { tag: u32, message: Message } }; both derive Debug, Clone, PartialEq, Eq. Expose pub fn encode_message(message: &Message, max_depth: usize) -> Result<Vec<u8>, Error>; pub fn decode_message(input: &[u8], start: usize, max_depth: usize) -> Result<(Message, usize), Error>. The returned cursor is the first byte after one root frame.\n\nR3. Define pub enum Error deriving Debug, Clone, PartialEq, Eq with exactly these variants: StartOutOfBounds { offset: usize }, Truncated { offset: usize, start: usize }, Overflow { offset: usize, start: usize }, LengthOutOfBounds { offset: usize, length: u64 }, InvalidTag { offset: usize, tag: u64 }, InvalidWire { offset: usize, wire: u8 }, OutOfOrder { offset: usize, previous: u32, tag: u32 }, Duplicate { offset: usize, tag: u32 }, NonCanonical { offset: usize }, DepthExceeded { offset: usize, depth: usize }, InvalidDepthLimit { limit: usize }.\n\nR4. A frame is an unsigned LEB128 byte length followed by exactly that many body bytes. The length counts body bytes only; an empty message encodes as [0].\n\nR5. All integer, key, and length encodings use unsigned LEB128: seven little-endian payload bits per byte and high-bit continuation. Encoding is always minimal; decoding at this level requires minimal encodings everywhere, as detailed below.\n\nR6. All integer types have the entire u64 range. On byte ten of any varint, payload > 1 OR a set continuation bit means Overflow at that byte; this precedes any truncation and an eleventh byte is never read.\n\nR7. A varint missing its next byte returns Truncated { offset: container_end, start: varint_start }. A frame header is bounded by input.len(); body varints are bounded by the current frame end, even if further bytes exist in input.\n\nR8. After the max_depth validation described below, decode_message validates start <= input.len(), otherwise StartOutOfBounds { offset: start }; start equal to input.len() gives Truncated there. Offsets and varint starts are absolute input indices, including in descendants.\n\nR9. After reading a frame length, compare it against bytes remaining in input. If too large return LengthOutOfBounds { offset: header_start, length: declared_length }, before reading body content. Avoid wrapping lengths or narrowing before this comparison.\n\nR10. Consume exactly one frame starting at start, ignore following bytes, and return its absolute end cursor. There are no padding bytes inside a frame: every body byte begins or belongs to a field.\n\nR11. Each field starts with a varint key: tag = key >> 3 and wire = key & 7. Decode the full u64 key before validating its parts.\n\nR12. Decoder tags must be in 1..=255; otherwise InvalidTag { offset: key_start, tag }. This check precedes wire validation and field ordering.\n\nR13. Decoder wire types are 0 (unsigned varint), 1 (eight raw bytes), 2 (varint byte length then raw bytes), 3 (varint body length then nested message body), and 5 (four raw bytes). Other wires give InvalidWire { offset: key_start, wire }, before ordering or payload reads.\n\nR14. Tags must be nondecreasing across ALL fields, including skipped fields. If tag < previous tag return OutOfOrder { offset: key_start, previous, tag }, before reading this field's payload.\n\nR15. Equal consecutive tags are allowed ONLY when both the previous and current wire are 2. Otherwise return Duplicate { offset: key_start, tag }, before reading payload. Ordering uses the immediately preceding field's tag and wire.\n\nR16. Decoder retains tags 1..=15 with wire 0 as Field::UInt and wire 2 as Field::Bytes, in encountered order. Known tags with wire 1 or 5 are skipped. Known wire-3 fields are retained as Field::Nested.\n\nR17. Tags 16..=255 are unknown and are skipped for every supported wire. Even skipped fields must validate varints, lengths, tag order, and repeats by the same rules. Skipped nested bodies are recursively validated, including their descendants, even though none of their fields appear in the parent output.\n\nR18. Repeated wire-2 fields of a retained tag concatenate their data into ONE Field::Bytes at that tag's original position, including empty fragments. Unknown wire-2 repeats are permitted but leave no output field.\n\nR19. Wire-0 payloads use the same varint integrity rules, with Truncated.start equal to the payload start, not the key start.\n\nR20. Wire-1 and wire-5 payloads require eight and four bytes respectively. If insufficient bytes remain in the frame, return LengthOutOfBounds { offset: key_start, length: 8 or 4 }, regardless of bytes outside the frame.\n\nR21. For wires 2 and 3, first decode the length varint within the frame. If the declared data length exceeds remaining frame bytes, return LengthOutOfBounds { offset: length_varint_start, length: declared_length }. Length integrity errors precede bounds errors. Zero length is valid; for wire 3 it is an empty nested body.\n\nR22. Raw bytes are opaque: any byte pattern is accepted as data and is not interpreted as varints or keys.\n\nR23. Decoder error precedence at each field is: key varint integrity; key canonicality; tag validity; wire validity; tag order; duplicate rule; payload varint integrity; payload canonicality; payload bounds; nested depth check; nested content. The enclosing frame header integrity, canonicality and length bounds precede all its fields. Depth-limit argument validation precedes even root cursor validation.\n\nR24. Encoder accepts only tags 1..=15 in any Field variant. Invalid tags return InvalidTag { offset: field_index, tag: supplied_tag as u64 }. Encoder offsets are zero-based field indices in Message.fields, not byte positions.\n\nR25. Encoder validates fields in supplied order without sorting. Decreasing tags return OutOfOrder { offset: field_index, previous, tag }; equal tags are legal only for two consecutive Bytes variants, otherwise Duplicate { offset: field_index, tag }. Tag validity precedes order and duplicate checks.\n\nR26. Encoder writes UInt using wire 0 , Bytes using wire 2, and Nested using wire 3, all varints minimal, then prefixes the complete body length. It preserves separate repeated Bytes fragments on the wire, rather than merging before encoding.\n\nR27. Encoding an empty field vector succeeds. Bytes can be empty. Encoding does not mutate its Message or any data vector.\n\nR28. Decoding a frame with only skipped fields succeeds and produces an empty field vector; a zero-length frame likewise produces an empty field vector.\n\nR29. Errors return no partial Message. All API calls are deterministic and must not panic on any input or invalid tag (allocation exhaustion is outside the contract).\n\nR30. The structured decoder has no schema beyond these rules: any retained tag can have wire 0, 2 or 3, and skipped fields still participate in order and duplicate checks even when adjacent to a retained field.\n\nR31. A completed varint is noncanonical exactly when it has more than one byte and its final seven-bit payload is zero. Return NonCanonical { offset: varint_start }. Zero must therefore be a single [0]. This applies to frame lengths, field keys, UInt payloads, byte lengths and nested lengths, known and unknown fields alike.\n\nR32. Overflow integrity is checked before canonicality, and incomplete varints report Truncated rather than NonCanonical. A valid ten-byte varint ending with payload 1 is canonical; a ten-byte varint ending with payload 0 is noncanonical.\n\nR33. Canonicality is checked before using a key, value or length. Thus an overlong invalid tag reports NonCanonical; an overlong out-of-bounds length reports NonCanonical rather than LengthOutOfBounds.\n\nR34. Nested wire 3 stores a byte length and then exactly that many bytes of child BODY. There is no second frame header inside that body. Child fields use the same tag, wire, ordering, repetition and error rules as the root.\n\nR35. Root depth is 0. Entering a nested body from depth d has depth d+1. max_depth is an inclusive maximum: a child whose depth equals max_depth is allowed; a greater depth gives DepthExceeded { offset: nested_key_start, depth: child_depth }.\n\nR36. max_depth must be in 0..=32 for both encoder and decoder. A greater value immediately returns InvalidDepthLimit { limit: max_depth }, even for empty messages, malformed input or invalid start. max_depth=0 allows root scalar and byte fields, but no nested field, even an empty or unknown one.\n\nR37. Before testing a child depth, decode and validate its length varint and bounds. Therefore a missing/noncanonical/overflowing length or a body length beyond its parent beats DepthExceeded. Once bounds succeed, depth errors beat any malformed child content.\n\nR38. Each nested body resets ordering and repetition state. The next sibling compares only against the preceding parent field; child tags do not change parent ordering. All descendants use their own body end for truncation and bounds.\n\nR39. Known nested fields retain a Message even if its body is empty or contains only skipped fields. Unknown nested fields are discarded only after fully validating their content and depth. Unknown nested fields do not exempt their descendants from canonicality.\n\nR40. Equal tags involving a Nested field are Duplicate, including Nested followed by Nested, Nested followed by Bytes, or Bytes followed by Nested. This check occurs before any length or depth validation.\n\nR41. Encoder recursively validates a Nested field after that parent field's tag, ordering and duplicate checks, and before inspecting later siblings. Check depth before examining the child fields; if depth exceeds max_depth, return DepthExceeded { offset: parent_field_index, depth: child_depth }.\n\nR42. Encoder errors inside a child use that child's local zero-based field index; they are propagated unchanged. Encoder depth counts match decoder depths. An invalid parent tag or parent ordering takes precedence over a depth error at the same field.\n\nR43. Encoder prefixes nested BODY length, and prefixes only the root with a frame length. All lengths and nested keys are canonical. Raw Bytes content and skipped fixed-width payloads remain opaque, even if they look like noncanonical varints.\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\n// R1-R5, R27-R28, R36\n#[test]\nfn public_empty_canonical() {\n    let m=Message{fields:vec![]}; assert_eq!(encode_message(&m,0),Ok(vec![0]));\n    assert_eq!(decode_message(&[0],0,0),Ok((m,1)));\n}\n\n// R2-R3, R10-R11, R16, R19, R21-R22, R24-R27, R34-R35, R38-R39, R41-R43\n#[test]\nfn public_nested_roundtrip() {\n    let m=Message{fields:vec![Field::Nested{tag:1,message:Message{fields:vec![Field::UInt{tag:2,value:9}]}},Field::Bytes{tag:3,data:vec![128,0]}]};\n    let b=vec![8,11,2,16,9,26,2,128,0];\n    assert_eq!(encode_message(&m,3),Ok(b.clone()));\n    assert_eq!(decode_message(&b,0,3),Ok((m,9)));\n}\n\n// R12-R18, R28-R30, R38-R39\n#[test]\nfn public_skips_and_merge() {\n    let b=[11,10,1,7,10,1,8,131,1,2,8,9];\n    assert_eq!(decode_message(&b,0,4),Ok((Message{fields:vec![Field::Bytes{tag:1,data:vec![7,8]}]},12)));\n}\n\n// R7-R9, R23, R31-R33\n#[test]\nfn public_canonical_and_truncation() {\n    assert_eq!(decode_message(&[3,8,130,0],0,2),Err(Error::NonCanonical{offset:2}));\n    assert_eq!(decode_message(&[128],0,2),Err(Error::Truncated{offset:1,start:0}));\n}\n```\n","previous_attempt":"#[derive(Debug, Clone, PartialEq, Eq)]\npub struct Message {\n    pub fields: Vec<Field>,\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub enum Field {\n    UInt { tag: u32, value: u64 },\n    Bytes { tag: u32, data: Vec<u8> },\n    Nested { tag: u32, message: Message },\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub enum Error {\n    StartOutOfBounds { offset: usize },\n    Truncated { offset: usize, start: usize },\n    Overflow { offset: usize, start: usize },\n    LengthOutOfBounds { offset: usize, length: u64 },\n    InvalidTag { offset: usize, tag: u64 },\n    InvalidWire { offset: usize, wire: u8 },\n    OutOfOrder { offset: usize, previous: u32, tag: u32 },\n    Duplicate { offset: usize, tag: u32 },\n    NonCanonical { offset: usize },\n    DepthExceeded { offset: usize, depth: usize },\n    InvalidDepthLimit { limit: usize },\n}\n\nfn put_varint(mut value: u64, out: &mut Vec<u8>) {\n    while value >= 0x80 {\n        out.push((value as u8) | 0x80);\n        value >>= 7;\n    }\n    out.push(value as u8);\n}\n\nfn read_varint(input: &[u8], cursor: &mut usize, end: usize) -> Result<u64, Error> {\n    let start = *cursor;\n    let mut value = 0u64;\n    for i in 0..10 {\n        if *cursor >= end {\n            return Err(Error::Truncated { offset: end, start });\n        }\n        let byte = input[*cursor];\n        *cursor += 1;\n        let payload = byte & 0x7f;\n        if i == 9 && (payload > 1 || byte & 0x80 != 0) {\n            return Err(Error::Overflow {\n                offset: *cursor - 1,\n                start,\n            });\n        }\n        value |= (payload as u64) << (i * 7);\n        if byte & 0x80 == 0 {\n            if i > 0 && payload == 0 {\n                return Err(Error::NonCanonical { offset: start });\n            }\n            return Ok(value);\n        }\n    }\n    unreachable!()\n}\n\nfn encode_body(message: &Message, depth: usize, max_depth: usize) -> Result<Vec<u8>, Error> {\n    let mut body = Vec::new();\n    let mut previous: Option<(u32, bool)> = None;\n\n    for (index, field) in message.fields.iter().enumerate() {\n        let (tag, is_bytes) = match field {\n            Field::UInt { tag, .. } => (*tag, false),\n            Field::Bytes { tag, .. } => (*tag, true),\n            Field::Nested { tag, .. } => (*tag, false),\n        };\n\n        if !(1..=15).contains(&tag) {\n            return Err(Error::InvalidTag {\n                offset: index,\n                tag: tag as u64,\n            });\n        }\n\n        if let Some((prev_tag, prev_bytes)) = previous {\n            if tag < prev_tag {\n                return Err(Error::OutOfOrder {\n                    offset: index,\n                    previous: prev_tag,\n                    tag,\n                });\n            }\n            if tag == prev_tag && !(prev_bytes && is_bytes) {\n                return Err(Error::Duplicate { offset: index, tag });\n            }\n        }\n\n        match field {\n            Field::UInt { value, .. } => {\n                put_varint(((tag as u64) << 3), &mut body);\n                put_varint(*value, &mut body);\n            }\n            Field::Bytes { data, .. } => {\n                put_varint(((tag as u64) << 3) | 2, &mut body);\n                put_varint(data.len() as u64, &mut body);\n                body.extend_from_slice(data);\n            }\n            Field::Nested { message, .. } => {\n                let child_depth = depth + 1;\n                if child_depth > max_depth {\n                    return Err(Error::DepthExceeded {\n                        offset: index,\n                        depth: child_depth,\n                    });\n                }\n                let child = encode_body(message, child_depth, max_depth)?;\n                put_varint(((tag as u64) << 3) | 3, &mut body);\n                put_varint(child.len() as u64, &mut body);\n                body.extend_from_slice(&child);\n            }\n        }\n\n        previous = Some((tag, is_bytes));\n    }\n    Ok(body)\n}\n\npub fn encode_message(message: &Message, max_depth: usize) -> Result<Vec<u8>, Error> {\n    if max_depth > 32 {\n        return Err(Error::InvalidDepthLimit { limit: max_depth });\n    }\n    let body = encode_body(message, 0, max_depth)?;\n    let mut output = Vec::new();\n    put_varint(body.len() as u64, &mut output);\n    output.extend_from_slice(&body);\n    Ok(output)\n}\n\nfn decode_body(\n    input: &[u8],\n    mut cursor: usize,\n    end: usize,\n    depth: usize,\n    max_depth: usize,\n) -> Result<Message, Error> {\n    let mut fields = Vec::new();\n    let mut previous: Option<(u32, u8)> = None;\n\n    while cursor < end {\n        let key_start = cursor;\n        let key = read_varint(input, &mut cursor, end)?;\n        let tag64 = key >> 3;\n        let wire = (key & 7) as u8;\n\n        if !(1..=255).contains(&tag64) {\n            return Err(Error::InvalidTag {\n                offset: key_start,\n                tag: tag64,\n            });\n        }\n        if !matches!(wire, 0 | 1 | 2 | 3 | 5) {\n            return Err(Error::InvalidWire {\n                offset: key_start,\n                wire,\n            });\n        }\n        let tag = tag64 as u32;\n\n        if let Some((prev_tag, prev_wire)) = previous {\n            if tag < prev_tag {\n                return Err(Error::OutOfOrder {\n                    offset: key_start,\n                    previous: prev_tag,\n                    tag,\n                });\n            }\n            if tag == prev_tag && !(prev_wire == 2 && wire == 2) {\n                return Err(Error::Duplicate {\n                    offset: key_start,\n                    tag,\n                });\n            }\n        }\n\n        let retained = tag <= 15;\n        match wire {\n            0 => {\n                let value = read_varint(input, &mut cursor, end)?;\n                if retained {\n                    fields.push(Field::UInt { tag, value });\n                }\n            }\n            1 | 5 => {\n                let length = if wire == 1 { 8usize } else { 4usize };\n                if end - cursor < length {\n                    return Err(Error::LengthOutOfBounds {\n                        offset: key_start,\n                        length: length as u64,\n                    });\n                }\n                cursor += length;\n            }\n            2 | 3 => {\n                let length_start = cursor;\n                let length = read_varint(input, &mut cursor, end)?;\n                let remaining = end - cursor;\n                if length > remaining as u64 {\n                    return Err(Error::LengthOutOfBounds {\n                        offset: length_start,\n                        length,\n                    });\n                }\n                let length_usize = length as usize;\n                let data_start = cursor;\n                let data_end = cursor + length_usize;\n\n                if wire == 2 {\n                    if retained {\n                        let bytes = input[data_start..data_end].to_vec();\n                        if let Some(Field::Bytes {\n                            tag: existing_tag,\n                            data,\n                        }) = fields.last_mut()\n                        {\n                            if *existing_tag == tag {\n                                data.extend_from_slice(&bytes);\n                            } else {\n                                fields.push(Field::Bytes { tag, data: bytes });\n                            }\n                        } else {\n                            fields.push(Field::Bytes { tag, data: bytes });\n                        }\n                    }\n                } else {\n                    let child_depth = depth + 1;\n                    if child_depth > max_depth {\n                        return Err(Error::DepthExceeded {\n                            offset: key_start,\n                            depth: child_depth,\n                        });\n                    }\n                    let child =\n                        decode_body(input, data_start, data_end, child_depth, max_depth)?;\n                    if retained {\n                        fields.push(Field::Nested {\n                            tag,\n                            message: child,\n                        });\n                    }\n                }\n                cursor = data_end;\n            }\n            _ => unreachable!(),\n        }\n\n        previous = Some((tag, wire));\n    }\n\n    Ok(Message { fields })\n}\n\npub fn decode_message(\n    input: &[u8],\n    start: usize,\n    max_depth: usize,\n) -> Result<(Message, usize), Error> {\n    if max_depth > 32 {\n        return Err(Error::InvalidDepthLimit { limit: max_depth });\n    }\n    if start > input.len() {\n        return Err(Error::StartOutOfBounds { offset: start });\n    }\n    let header_start = start;\n    let mut cursor = start;\n    let length = read_varint(input, &mut cursor, input.len())?;\n    let remaining = input.len() - cursor;\n    if length > remaining as u64 {\n        return Err(Error::LengthOutOfBounds {\n            offset: header_start,\n            length,\n        });\n    }\n    let body_len = length as usize;\n    let end = cursor + body_len;\n    let message = decode_body(input, cursor, end, 0, max_depth)?;\n    Ok((message, end))\n}\n\nfn main() {}","requirements":"R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner documentation comments.\n\nR2. Expose pub struct Message { pub fields: Vec<Field> } and pub enum Field { UInt { tag: u32, value: u64 }, Bytes { tag: u32, data: Vec<u8> }, Nested { tag: u32, message: Message } }; both derive Debug, Clone, PartialEq, Eq. Expose pub fn encode_message(message: &Message, max_depth: usize) -> Result<Vec<u8>, Error>; pub fn decode_message(input: &[u8], start: usize, max_depth: usize) -> Result<(Message, usize), Error>. The returned cursor is the first byte after one root frame.\n\nR3. Define pub enum Error deriving Debug, Clone, PartialEq, Eq with exactly these variants: StartOutOfBounds { offset: usize }, Truncated { offset: usize, start: usize }, Overflow { offset: usize, start: usize }, LengthOutOfBounds { offset: usize, length: u64 }, InvalidTag { offset: usize, tag: u64 }, InvalidWire { offset: usize, wire: u8 }, OutOfOrder { offset: usize, previous: u32, tag: u32 }, Duplicate { offset: usize, tag: u32 }, NonCanonical { offset: usize }, DepthExceeded { offset: usize, depth: usize }, InvalidDepthLimit { limit: usize }.\n\nR4. A frame is an unsigned LEB128 byte length followed by exactly that many body bytes. The length counts body bytes only; an empty message encodes as [0].\n\nR5. All integer, key, and length encodings use unsigned LEB128: seven little-endian payload bits per byte and high-bit continuation. Encoding is always minimal; decoding at this level requires minimal encodings everywhere, as detailed below.\n\nR6. All integer types have the entire u64 range. On byte ten of any varint, payload > 1 OR a set continuation bit means Overflow at that byte; this precedes any truncation and an eleventh byte is never read.\n\nR7. A varint missing its next byte returns Truncated { offset: container_end, start: varint_start }. A frame header is bounded by input.len(); body varints are bounded by the current frame end, even if further bytes exist in input.\n\nR8. After the max_depth validation described below, decode_message validates start <= input.len(), otherwise StartOutOfBounds { offset: start }; start equal to input.len() gives Truncated there. Offsets and varint starts are absolute input indices, including in descendants.\n\nR9. After reading a frame length, compare it against bytes remaining in input. If too large return LengthOutOfBounds { offset: header_start, length: declared_length }, before reading body content. Avoid wrapping lengths or narrowing before this comparison.\n\nR10. Consume exactly one frame starting at start, ignore following bytes, and return its absolute end cursor. There are no padding bytes inside a frame: every body byte begins or belongs to a field.\n\nR11. Each field starts with a varint key: tag = key >> 3 and wire = key & 7. Decode the full u64 key before validating its parts.\n\nR12. Decoder tags must be in 1..=255; otherwise InvalidTag { offset: key_start, tag }. This check precedes wire validation and field ordering.\n\nR13. Decoder wire types are 0 (unsigned varint), 1 (eight raw bytes), 2 (varint byte length then raw bytes), 3 (varint body length then nested message body), and 5 (four raw bytes). Other wires give InvalidWire { offset: key_start, wire }, before ordering or payload reads.\n\nR14. Tags must be nondecreasing across ALL fields, including skipped fields. If tag < previous tag return OutOfOrder { offset: key_start, previous, tag }, before reading this field's payload.\n\nR15. Equal consecutive tags are allowed ONLY when both the previous and current wire are 2. Otherwise return Duplicate { offset: key_start, tag }, before reading payload. Ordering uses the immediately preceding field's tag and wire.\n\nR16. Decoder retains tags 1..=15 with wire 0 as Field::UInt and wire 2 as Field::Bytes, in encountered order. Known tags with wire 1 or 5 are skipped. Known wire-3 fields are retained as Field::Nested.\n\nR17. Tags 16..=255 are unknown and are skipped for every supported wire. Even skipped fields must validate varints, lengths, tag order, and repeats by the same rules. Skipped nested bodies are recursively validated, including their descendants, even though none of their fields appear in the parent output.\n\nR18. Repeated wire-2 fields of a retained tag concatenate their data into ONE Field::Bytes at that tag's original position, including empty fragments. Unknown wire-2 repeats are permitted but leave no output field.\n\nR19. Wire-0 payloads use the same varint integrity rules, with Truncated.start equal to the payload start, not the key start.\n\nR20. Wire-1 and wire-5 payloads require eight and four bytes respectively. If insufficient bytes remain in the frame, return LengthOutOfBounds { offset: key_start, length: 8 or 4 }, regardless of bytes outside the frame.\n\nR21. For wires 2 and 3, first decode the length varint within the frame. If the declared data length exceeds remaining frame bytes, return LengthOutOfBounds { offset: length_varint_start, length: declared_length }. Length integrity errors precede bounds errors. Zero length is valid; for wire 3 it is an empty nested body.\n\nR22. Raw bytes are opaque: any byte pattern is accepted as data and is not interpreted as varints or keys.\n\nR23. Decoder error precedence at each field is: key varint integrity; key canonicality; tag validity; wire validity; tag order; duplicate rule; payload varint integrity; payload canonicality; payload bounds; nested depth check; nested content. The enclosing frame header integrity, canonicality and length bounds precede all its fields. Depth-limit argument validation precedes even root cursor validation.\n\nR24. Encoder accepts only tags 1..=15 in any Field variant. Invalid tags return InvalidTag { offset: field_index, tag: supplied_tag as u64 }. Encoder offsets are zero-based field indices in Message.fields, not byte positions.\n\nR25. Encoder validates fields in supplied order without sorting. Decreasing tags return OutOfOrder { offset: field_index, previous, tag }; equal tags are legal only for two consecutive Bytes variants, otherwise Duplicate { offset: field_index, tag }. Tag validity precedes order and duplicate checks.\n\nR26. Encoder writes UInt using wire 0 , Bytes using wire 2, and Nested using wire 3, all varints minimal, then prefixes the complete body length. It preserves separate repeated Bytes fragments on the wire, rather than merging before encoding.\n\nR27. Encoding an empty field vector succeeds. Bytes can be empty. Encoding does not mutate its Message or any data vector.\n\nR28. Decoding a frame with only skipped fields succeeds and produces an empty field vector; a zero-length frame likewise produces an empty field vector.\n\nR29. Errors return no partial Message. All API calls are deterministic and must not panic on any input or invalid tag (allocation exhaustion is outside the contract).\n\nR30. The structured decoder has no schema beyond these rules: any retained tag can have wire 0, 2 or 3, and skipped fields still participate in order and duplicate checks even when adjacent to a retained field.\n\nR31. A completed varint is noncanonical exactly when it has more than one byte and its final seven-bit payload is zero. Return NonCanonical { offset: varint_start }. Zero must therefore be a single [0]. This applies to frame lengths, field keys, UInt payloads, byte lengths and nested lengths, known and unknown fields alike.\n\nR32. Overflow integrity is checked before canonicality, and incomplete varints report Truncated rather than NonCanonical. A valid ten-byte varint ending with payload 1 is canonical; a ten-byte varint ending with payload 0 is noncanonical.\n\nR33. Canonicality is checked before using a key, value or length. Thus an overlong invalid tag reports NonCanonical; an overlong out-of-bounds length reports NonCanonical rather than LengthOutOfBounds.\n\nR34. Nested wire 3 stores a byte length and then exactly that many bytes of child BODY. There is no second frame header inside that body. Child fields use the same tag, wire, ordering, repetition and error rules as the root.\n\nR35. Root depth is 0. Entering a nested body from depth d has depth d+1. max_depth is an inclusive maximum: a child whose depth equals max_depth is allowed; a greater depth gives DepthExceeded { offset: nested_key_start, depth: child_depth }.\n\nR36. max_depth must be in 0..=32 for both encoder and decoder. A greater value immediately returns InvalidDepthLimit { limit: max_depth }, even for empty messages, malformed input or invalid start. max_depth=0 allows root scalar and byte fields, but no nested field, even an empty or unknown one.\n\nR37. Before testing a child depth, decode and validate its length varint and bounds. Therefore a missing/noncanonical/overflowing length or a body length beyond its parent beats DepthExceeded. Once bounds succeed, depth errors beat any malformed child content.\n\nR38. Each nested body resets ordering and repetition state. The next sibling compares only against the preceding parent field; child tags do not change parent ordering. All descendants use their own body end for truncation and bounds.\n\nR39. Known nested fields retain a Message even if its body is empty or contains only skipped fields. Unknown nested fields are discarded only after fully validating their content and depth. Unknown nested fields do not exempt their descendants from canonicality.\n\nR40. Equal tags involving a Nested field are Duplicate, including Nested followed by Nested, Nested followed by Bytes, or Bytes followed by Nested. This check occurs before any length or depth validation.\n\nR41. Encoder recursively validates a Nested field after that parent field's tag, ordering and duplicate checks, and before inspecting later siblings. Check depth before examining the child fields; if depth exceeds max_depth, return DepthExceeded { offset: parent_field_index, depth: child_depth }.\n\nR42. Encoder errors inside a child use that child's local zero-based field index; they are propagated unchanged. Encoder depth counts match decoder depths. An invalid parent tag or parent ordering takes precedence over a depth error at the same field.\n\nR43. Encoder prefixes nested BODY length, and prefixes only the root with a frame length. All lengths and nested keys are canonical. Raw Bytes content and skipped fixed-width payloads remain opaque, even if they look like noncanonical varints.\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\n// R1-R5, R27-R28, R36\n#[test]\nfn public_empty_canonical() {\n    let m=Message{fields:vec![]}; assert_eq!(encode_message(&m,0),Ok(vec![0]));\n    assert_eq!(decode_message(&[0],0,0),Ok((m,1)));\n}\n\n// R2-R3, R10-R11, R16, R19, R21-R22, R24-R27, R34-R35, R38-R39, R41-R43\n#[test]\nfn public_nested_roundtrip() {\n    let m=Message{fields:vec![Field::Nested{tag:1,message:Message{fields:vec![Field::UInt{tag:2,value:9}]}},Field::Bytes{tag:3,data:vec![128,0]}]};\n    let b=vec![8,11,2,16,9,26,2,128,0];\n    assert_eq!(encode_message(&m,3),Ok(b.clone()));\n    assert_eq!(decode_message(&b,0,3),Ok((m,9)));\n}\n\n// R12-R18, R28-R30, R38-R39\n#[test]\nfn public_skips_and_merge() {\n    let b=[11,10,1,7,10,1,8,131,1,2,8,9];\n    assert_eq!(decode_message(&b,0,4),Ok((Message{fields:vec![Field::Bytes{tag:1,data:vec![7,8]}]},12)));\n}\n\n// R7-R9, R23, R31-R33\n#[test]\nfn public_canonical_and_truncation() {\n    assert_eq!(decode_message(&[3,8,130,0],0,2),Err(Error::NonCanonical{offset:2}));\n    assert_eq!(decode_message(&[128],0,2),Err(Error::Truncated{offset:1,start:0}));\n}\n```\n"}
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-15T09:55:39.954147Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Message {
+    pub fields: Vec<Field>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Field {
+    UInt { tag: u32, value: u64 },
+    Bytes { tag: u32, data: Vec<u8> },
+    Nested { tag: u32, message: Message },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    StartOutOfBounds { offset: usize },
+    Truncated { offset: usize, start: usize },
+    Overflow { offset: usize, start: usize },
+    LengthOutOfBounds { offset: usize, length: u64 },
+    InvalidTag { offset: usize, tag: u64 },
+    InvalidWire { offset: usize, wire: u8 },
+    OutOfOrder { offset: usize, previous: u32, tag: u32 },
+    Duplicate { offset: usize, tag: u32 },
+    NonCanonical { offset: usize },
+    DepthExceeded { offset: usize, depth: usize },
+    InvalidDepthLimit { limit: usize },
+}
+
+fn put_varint(mut value: u64, out: &mut Vec<u8>) {
+    while value >= 0x80 {
+        out.push((value as u8) | 0x80);
+        value >>= 7;
+    }
+    out.push(value as u8);
+}
+
+fn read_varint(input: &[u8], cursor: &mut usize, end: usize) -> Result<u64, Error> {
+    let start = *cursor;
+    let mut value = 0u64;
+
+    for index in 0..10 {
+        if *cursor >= end {
+            return Err(Error::Truncated { offset: end, start });
+        }
+
+        let pos = *cursor;
+        let byte = input[pos];
+        *cursor += 1;
+        let payload = byte & 0x7f;
+
+        if index == 9 && (payload > 1 || byte & 0x80 != 0) {
+            return Err(Error::Overflow { offset: pos, start });
+        }
+
+        value |= (payload as u64) << (index * 7);
+
+        if byte & 0x80 == 0 {
+            if index > 0 && payload == 0 {
+                return Err(Error::NonCanonical { offset: start });
+            }
+            return Ok(value);
+        }
+    }
+
+    unreachable!()
+}
+
+fn encode_body(message: &Message, depth: usize, max_depth: usize) -> Result<Vec<u8>, Error> {
+    let mut body = Vec::new();
+    let mut previous: Option<(u32, bool)> = None;
+
+    for (index, field) in message.fields.iter().enumerate() {
+        let (tag, is_bytes) = match field {
+            Field::UInt { tag, .. } => (*tag, false),
+            Field::Bytes { tag, .. } => (*tag, true),
+            Field::Nested { tag, .. } => (*tag, false),
+        };
+
+        if !(1..=15).contains(&tag) {
+            return Err(Error::InvalidTag {
+                offset: index,
+                tag: tag as u64,
+            });
+        }
+
+        if let Some((previous_tag, previous_bytes)) = previous {
+            if tag < previous_tag {
+                return Err(Error::OutOfOrder {
+                    offset: index,
+                    previous: previous_tag,
+                    tag,
+                });
+            }
+            if tag == previous_tag && !(previous_bytes && is_bytes) {
+                return Err(Error::Duplicate { offset: index, tag });
+            }
+        }
+
+        match field {
+            Field::UInt { value, .. } => {
+                put_varint((tag as u64) << 3, &mut body);
+                put_varint(*value, &mut body);
+            }
+            Field::Bytes { data, .. } => {
+                put_varint(((tag as u64) << 3) | 2, &mut body);
+                put_varint(data.len() as u64, &mut body);
+                body.extend_from_slice(data);
+            }
+            Field::Nested { message, .. } => {
+                let child_depth = depth + 1;
+                if child_depth > max_depth {
+                    return Err(Error::DepthExceeded {
+                        offset: index,
+                        depth: child_depth,
+                    });
+                }
+                let child_body = encode_body(message, child_depth, max_depth)?;
+                put_varint(((tag as u64) << 3) | 3, &mut body);
+                put_varint(child_body.len() as u64, &mut body);
+                body.extend_from_slice(&child_body);
+            }
+        }
+
+        previous = Some((tag, is_bytes));
+    }
+
+    Ok(body)
+}
+
+pub fn encode_message(message: &Message, max_depth: usize) -> Result<Vec<u8>, Error> {
+    if max_depth > 32 {
+        return Err(Error::InvalidDepthLimit { limit: max_depth });
+    }
+
+    let body = encode_body(message, 0, max_depth)?;
+    let mut output = Vec::new();
+    put_varint(body.len() as u64, &mut output);
+    output.extend_from_slice(&body);
+    Ok(output)
+}
+
+fn decode_body(
+    input: &[u8],
+    mut cursor: usize,
+    end: usize,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Message, Error> {
+    let mut fields = Vec::new();
+    let mut previous: Option<(u32, u8)> = None;
+
+    while cursor < end {
+        let key_start = cursor;
+        let key = read_varint(input, &mut cursor, end)?;
+        let tag64 = key >> 3;
+        let wire = (key & 7) as u8;
+
+        if !(1..=255).contains(&tag64) {
+            return Err(Error::InvalidTag {
+                offset: key_start,
+                tag: tag64,
+            });
+        }
+
+        if !matches!(wire, 0 | 1 | 2 | 3 | 5) {
+            return Err(Error::InvalidWire {
+                offset: key_start,
+                wire,
+            });
+        }
+
+        let tag = tag64 as u32;
+        if let Some((previous_tag, previous_wire)) = previous {
+            if tag < previous_tag {
+                return Err(Error::OutOfOrder {
+                    offset: key_start,
+                    previous: previous_tag,
+                    tag,
+                });
+            }
+            if tag == previous_tag && !(previous_wire == 2 && wire == 2) {
+                return Err(Error::Duplicate {
+                    offset: key_start,
+                    tag,
+                });
+            }
+        }
+
+        let retained = tag <= 15;
+        match wire {
+            0 => {
+                let value = read_varint(input, &mut cursor, end)?;
+                if retained {
+                    fields.push(Field::UInt { tag, value });
+                }
+            }
+            1 | 5 => {
+                let length = if wire == 1 { 8usize } else { 4usize };
+                if end - cursor < length {
+                    return Err(Error::LengthOutOfBounds {
+                        offset: key_start,
+                        length: length as u64,
+                    });
+                }
+                cursor += length;
+            }
+            2 | 3 => {
+                let length_start = cursor;
+                let length = read_varint(input, &mut cursor, end)?;
+                let remaining = end - cursor;
+                if length > remaining as u64 {
+                    return Err(Error::LengthOutOfBounds {
+                        offset: length_start,
+                        length,
+                    });
+                }
+
+                let length_usize = length as usize;
+                let data_start = cursor;
+                let data_end = cursor + length_usize;
+
+                if wire == 2 {
+                    if retained {
+                        let bytes = input[data_start..data_end].to_vec();
+                        if let Some(Field::Bytes {
+                            tag: existing_tag,
+                            data,
+                        }) = fields.last_mut()
+                        {
+                            if *existing_tag == tag {
+                                data.extend_from_slice(&bytes);
+                            } else {
+                                fields.push(Field::Bytes { tag, data: bytes });
+                            }
+                        } else {
+                            fields.push(Field::Bytes { tag, data: bytes });
+                        }
+                    }
+                } else {
+                    let child_depth = depth + 1;
+                    if child_depth > max_depth {
+                        return Err(Error::DepthExceeded {
+                            offset: key_start,
+                            depth: child_depth,
+                        });
+                    }
+
+                    let child =
+                        decode_body(input, data_start, data_end, child_depth, max_depth)?;
+                    if retained {
+                        fields.push(Field::Nested {
+                            tag,
+                            message: child,
+                        });
+                    }
+                }
+
+                cursor = data_end;
+            }
+            _ => unreachable!(),
+        }
+
+        previous = Some((tag, wire));
+    }
+
+    Ok(Message { fields })
+}
+
+pub fn decode_message(
+    input: &[u8],
+    start: usize,
+    max_depth: usize,
+) -> Result<(Message, usize), Error> {
+    if max_depth > 32 {
+        return Err(Error::InvalidDepthLimit { limit: max_depth });
+    }
+    if start > input.len() {
+        return Err(Error::StartOutOfBounds { offset: start });
+    }
+
+    let header_start = start;
+    let mut cursor = start;
+    let length = read_varint(input, &mut cursor, input.len())?;
+    let remaining = input.len() - cursor;
+
+    if length > remaining as u64 {
+        return Err(Error::LengthOutOfBounds {
+            offset: header_start,
+            length,
+        });
+    }
+
+    let body_len = length as usize;
+    let end = cursor + body_len;
+    let message = decode_body(input, cursor, end, 0, max_depth)?;
+    Ok((message, end))
+}
+
+fn main() {}
+```
+tokens used
+15,666

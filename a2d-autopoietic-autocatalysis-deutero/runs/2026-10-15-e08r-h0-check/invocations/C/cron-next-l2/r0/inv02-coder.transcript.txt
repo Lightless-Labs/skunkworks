@@ -1,0 +1,464 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-47127-1792057591264536000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a13ef4-c8cc-7891-8a17-e01a1923c277
+--------
+user
+You are a programmer. Your inputs: `requirements` (the task; `design` and `plan` repeat it), `previous_attempt` (your last file, empty on the first attempt) and `failure_report` (compiler or public-test output for that file, empty if it passed).
+Write a SINGLE complete Rust source file implementing the requirements exactly, using only std, compiling with `rustc --edition 2024`.
+Before writing code, go through every numbered requirement clause and make sure the file satisfies each one, including exact error variants and their precedence, boundaries, ordering and output formats.
+If `previous_attempt` is non-empty, start from it: keep what is correct, fix what `failure_report` shows, and re-check every clause. When a compiler diagnostic reports conflicting trait implementations, inspect the type's derives and all explicit impl blocks: implement each trait exactly once, either by deriving it or writing a manual impl; remove the duplicate approach and recheck the file.
+Include at least one meaningful `#[cfg(test)]` unit test module with tests for core behavior and boundary cases, so the source passes the `has_tests` check. Include an empty `fn main() {}` (the file is compiled as a program). Do not define a module named `a2d_acceptance` (the system appends it).
+Output ONLY the Rust source file in a single ```rust fenced block. No explanation.
+
+PREVIOUS ATTEMPT FAILED — fix these errors:
+COMPILATION FAILED:
+error[E0119]: conflicting implementations of trait `PartialEq` for type `Cron`
+   --> /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpFRU6ww/main.rs:23:24
+    |
+ 23 | #[derive(Debug, Clone, PartialEq, Eq)]
+    |                        ^^^^^^^^^ conflicting implementation for `Cron`
+...
+292 | impl PartialEq for Cron {
+    | ----------------------- first implementation here
+
+error[E0119]: conflicting implementations of trait `Eq` for type `Cron`
+   --> /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpFRU6ww/main.rs:23:35
+    |
+ 23 | #[derive(Debug, Clone, PartialEq, Eq)]
+    |                                   ^^ conflicting implementation for `Cron`
+...
+297 | impl Eq for Cron {}
+    | ---------------- first implementation here
+
+error: aborting due to 2 previous errors
+
+For more information about this error, try `rustc --explain E0119`.
+
+
+{"design":"R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes. All specified API types, enum variants, and methods are public; Cron internals may be private.\n\nR2. Exact API: #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Field { Minute, Hour, DayOfMonth, Month, DayOfWeek }. #[derive(Debug, Clone, PartialEq, Eq)] pub enum ParseError { FieldCount { found: usize }, InvalidCharacter { field: Field, offset: usize }, EmptyItem { field: Field, offset: usize }, InvalidSyntax { field: Field, offset: usize }, LeadingZero { field: Field, offset: usize }, NumberOverflow { field: Field, offset: usize }, OutOfRange { field: Field, offset: usize }, ReversedRange { field: Field, offset: usize }, BadStep { field: Field, offset: usize } }. #[derive(Debug, Clone, PartialEq, Eq)] pub struct Cron (opaque; no public fields required). pub fn parse_cron(input: &str) -> Result<Cron, ParseError>. impl Cron { pub fn allowed(&self, field: Field) -> Vec<u8>; }.\n\nR3. Fields, in order, are minute (0..=59), hour (0..=23), day of month (1..=31), month (1..=12), day of week (0..=6, Sunday=0). Sunday 7 is invalid; there is no normalization.\n\nR4. First split input on the literal ASCII space byte, retaining empty fields. If the number of pieces is not five, return FieldCount with that number before inspecting any field. Empty input therefore has found=1; tabs and newlines are not separators.\n\nR5. Validate fields in the given order and stop at the first failing field. Every offset in ParseError is a zero-based UTF-8 byte offset within that field, never within the whole expression.\n\nR6. Before parsing any item in a field, scan its entire bytes left to right. Only ASCII digits, *, -, /, and comma are legal. Return InvalidCharacter at the first other byte, even if an earlier item in the same field has a different error.\n\nR7. Split a field on commas retaining empty items. Process items left to right. For an empty item (including an empty whole field) return EmptyItem at its starting offset; a trailing empty item starts at the field byte length.\n\nR8. Each nonempty item has one base, optionally followed by one slash and one step. Base is exactly *, a decimal number, or number-number. Reject every other structure as InvalidSyntax at the item start BEFORE reading any numeric values. This includes empty slash operands, multiple slashes, multiple hyphens, and starred range endpoints.\n\nR9. Numbers are nonempty ASCII decimal sequences. A multi-digit number beginning with 0 yields LeadingZero at that number start, before overflow or bounds checks. Single 0 is permitted wherever bounds permit it.\n\nR10. Accumulate each number as u32 using checked arithmetic. Overflow yields NumberOverflow at the number start. For numeric bases and endpoints, values fitting u32 but outside the field domain yield OutOfRange at that number start; step bounds instead follow R12.\n\nR11. For numeric bases, validate start then end (if present), including each number's leading-zero, overflow and domain checks. Then if start>end return ReversedRange at the end number start. These errors precede all step-number errors.\n\nR12. For step numbers, apply leading-zero and u32 overflow checks, then require 1..=the full field domain width (60,24,31,12,7). Otherwise return BadStep at the step number start, including step 0. Steps larger than the selected range length but within the domain width are valid.\n\nR13. An unstepped * selects the full domain. An unstepped number selects just itself. An unstepped range selects both endpoints and all intervening values.\n\nR14. A stepped * starts at the domain minimum and ends at its maximum. A stepped range starts at its lower endpoint and ends at its upper endpoint. A stepped single number extends from that number through the domain maximum, unlike an unstepped single number.\n\nR15. Step selection includes the start, then start+step repeatedly while within the end. Values are the union of all list items; repetitions and overlaps are harmless.\n\nR16. allowed(field) returns selected values exactly once, in ascending numeric order. It must not depend on list-item order.\n\nR17. A syntactically valid schedule need not be realizable as a date; parsing accepts, for example, February with only day 30 selected.\n\nR18. Cron equality includes both the selected sets and whether each day field was exactly the one-byte string *. Thus * and */1 in a day field compare unequal; other syntax differences selecting identical sets compare equal.\n\nR19. Additional exact API: #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)] pub struct CivilDateTime { pub year: u16, pub month: u8, pub day: u8, pub hour: u8, pub minute: u8 }. #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum DatePart { Year, Month, Day, Hour, Minute }. #[derive(Debug, Clone, PartialEq, Eq)] pub enum DateError { InvalidDateTime { component: DatePart } }. impl Cron { pub fn matches(&self, at: CivilDateTime) -> Result<bool, DateError>; pub fn next_fire(&self, after: CivilDateTime) -> Result<Option<CivilDateTime>, DateError>; }.\n\nR20. CivilDateTime is a minute-resolution proleptic Gregorian civil value. Supported years are 2000..=2399, months 1..=12, days 1..=that actual month length, hours 0..=23, minutes 0..=59. There are no clocks, offsets, seconds, or timezones.\n\nR21. Validate any datetime argument before using schedule membership: first Year, then Month, then Day, then Hour, then Minute. Return DateError::InvalidDateTime for the first invalid component, even for schedules that cannot fire.\n\nR22. Gregorian leap years are divisible by 4 except century years not divisible by 400. February has 29 days in leap years and 28 otherwise; April, June, September, November have 30 and other months have 31.\n\nR23. Weekdays use Sunday=0 through Saturday=6; 2000-01-01 is Saturday (6). Advance weekday by one for each actual civil day, including leap days.\n\nR24. matches returns true exactly when minute, hour, month, day-of-month, AND day-of-week are all selected. Day fields are conjunctive at this level, even when one is *.\n\nR25. next_fire returns the earliest matching supported datetime STRICTLY later than after. Exclude after even if it matches; allow another minute on its date. Return None when no later matching datetime exists through 2399-12-31 23:59.\n\nR26. Search crosses actual month/year boundaries and skips nonexistent dates; never clamp an invalid day-of-month to a shorter month. An unrealizable schedule returns None, and at the maximum supported datetime next_fire always returns None.\n\nR27. All calendar and search methods are read-only: repeated calls on the same Cron and datetime have identical results, and parsing or querying another Cron cannot change an existing instance.\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\nfn c(s: &str) -> Cron {\n    parse_cron(s).unwrap()\n}\nfn d(year: u16, month: u8, day: u8, hour: u8, minute: u8) -> CivilDateTime {\n    CivilDateTime {\n        year,\n        month,\n        day,\n        hour,\n        minute,\n    }\n}\n\n// R13,R15,R16\n#[test]\nfn p_lists_and_ranges() {\n    let q = c(\"4,10-12,4 8 * * *\");\n    assert_eq!(q.allowed(Field::Minute), vec![4, 10, 11, 12]);\n    assert_eq!(q.allowed(Field::Hour), vec![8]);\n}\n\n// R14,R15\n#[test]\nfn p_star_steps() {\n    let q = c(\"*/20 0 * */3 *\");\n    assert_eq!(q.allowed(Field::Minute), vec![0, 20, 40]);\n    assert_eq!(q.allowed(Field::Month), vec![1, 4, 7, 10]);\n}\n\n// R19,R24,R25\n#[test]\nfn p_match_and_next() {\n    let q = c(\"30 9 * * *\");\n    assert!(q.matches(d(2026, 5, 4, 9, 30)).unwrap());\n    assert!(!q.matches(d(2026, 5, 4, 9, 31)).unwrap());\n    assert_eq!(\n        q.next_fire(d(2026, 5, 4, 9, 0)).unwrap(),\n        Some(d(2026, 5, 4, 9, 30))\n    );\n}\n\n// R22,R25,R26\n#[test]\nfn p_next_leap() {\n    assert_eq!(\n        c(\"45 6 29 2 *\").next_fire(d(2003, 1, 1, 0, 0)).unwrap(),\n        Some(d(2004, 2, 29, 6, 45))\n    );\n}\n```\n","enzyme_defs":"[{\"id\":\"coder\",\"reactants\":[\"design\",\"plan\",\"requirements\"],\"products\":[\"code\"],\"catalysts\":[\"enzyme_defs\",\"failure_report\",\"previous_attempt\"],\"prompt_template\":\"You are a programmer. Your inputs: `requirements` (the task; `design` and `plan` repeat it), `previous_attempt` (your last file, empty on the first attempt) and `failure_report` (compiler or public-test output for that file, empty if it passed).\\nWrite a SINGLE complete Rust source file implementing the requirements exactly, using only std, compiling with `rustc --edition 2024`.\\nBefore writing code, go through every numbered requirement clause and make sure the file satisfies each one, including exact error variants and their precedence, boundaries, ordering and output formats.\\nIf `previous_attempt` is non-empty, start from it: keep what is correct, fix what `failure_report` shows, and re-check every clause. When a compiler diagnostic reports conflicting trait implementations, inspect the type's derives and all explicit impl blocks: implement each trait exactly once, either by deriving it or writing a manual impl; remove the duplicate approach and recheck the file.\\nInclude at least one meaningful `#[cfg(test)]` unit test module with tests for core behavior and boundary cases, so the source passes the `has_tests` check. Include an empty `fn main() {}` (the file is compiled as a program). Do not define a module named `a2d_acceptance` (the system appends it).\\nOutput ONLY the Rust source file in a single ```rust fenced block. No explanation.\"},{\"id\":\"evolver\",\"reactants\":[\"fitness_report\"],\"products\":[\"enzyme_defs\"],\"catalysts\":[\"enzyme_defs\",\"failure_report\",\"fitness_report\",\"provider_health_report\",\"provider_policy\"]}]","failure_report":"COMPILATION FAILED:\nerror[E0119]: conflicting implementations of trait `PartialEq` for type `Cron`\n   --> /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpFRU6ww/main.rs:23:24\n    |\n 23 | #[derive(Debug, Clone, PartialEq, Eq)]\n    |                        ^^^^^^^^^ conflicting implementation for `Cron`\n...\n292 | impl PartialEq for Cron {\n    | ----------------------- first implementation here\n\nerror[E0119]: conflicting implementations of trait `Eq` for type `Cron`\n   --> /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpFRU6ww/main.rs:23:35\n    |\n 23 | #[derive(Debug, Clone, PartialEq, Eq)]\n    |                                   ^^ conflicting implementation for `Cron`\n...\n297 | impl Eq for Cron {}\n    | ---------------- first implementation here\n\nerror: aborting due to 2 previous errors\n\nFor more information about this error, try `rustc --explain E0119`.\n","plan":"R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes. All specified API types, enum variants, and methods are public; Cron internals may be private.\n\nR2. Exact API: #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Field { Minute, Hour, DayOfMonth, Month, DayOfWeek }. #[derive(Debug, Clone, PartialEq, Eq)] pub enum ParseError { FieldCount { found: usize }, InvalidCharacter { field: Field, offset: usize }, EmptyItem { field: Field, offset: usize }, InvalidSyntax { field: Field, offset: usize }, LeadingZero { field: Field, offset: usize }, NumberOverflow { field: Field, offset: usize }, OutOfRange { field: Field, offset: usize }, ReversedRange { field: Field, offset: usize }, BadStep { field: Field, offset: usize } }. #[derive(Debug, Clone, PartialEq, Eq)] pub struct Cron (opaque; no public fields required). pub fn parse_cron(input: &str) -> Result<Cron, ParseError>. impl Cron { pub fn allowed(&self, field: Field) -> Vec<u8>; }.\n\nR3. Fields, in order, are minute (0..=59), hour (0..=23), day of month (1..=31), month (1..=12), day of week (0..=6, Sunday=0). Sunday 7 is invalid; there is no normalization.\n\nR4. First split input on the literal ASCII space byte, retaining empty fields. If the number of pieces is not five, return FieldCount with that number before inspecting any field. Empty input therefore has found=1; tabs and newlines are not separators.\n\nR5. Validate fields in the given order and stop at the first failing field. Every offset in ParseError is a zero-based UTF-8 byte offset within that field, never within the whole expression.\n\nR6. Before parsing any item in a field, scan its entire bytes left to right. Only ASCII digits, *, -, /, and comma are legal. Return InvalidCharacter at the first other byte, even if an earlier item in the same field has a different error.\n\nR7. Split a field on commas retaining empty items. Process items left to right. For an empty item (including an empty whole field) return EmptyItem at its starting offset; a trailing empty item starts at the field byte length.\n\nR8. Each nonempty item has one base, optionally followed by one slash and one step. Base is exactly *, a decimal number, or number-number. Reject every other structure as InvalidSyntax at the item start BEFORE reading any numeric values. This includes empty slash operands, multiple slashes, multiple hyphens, and starred range endpoints.\n\nR9. Numbers are nonempty ASCII decimal sequences. A multi-digit number beginning with 0 yields LeadingZero at that number start, before overflow or bounds checks. Single 0 is permitted wherever bounds permit it.\n\nR10. Accumulate each number as u32 using checked arithmetic. Overflow yields NumberOverflow at the number start. For numeric bases and endpoints, values fitting u32 but outside the field domain yield OutOfRange at that number start; step bounds instead follow R12.\n\nR11. For numeric bases, validate start then end (if present), including each number's leading-zero, overflow and domain checks. Then if start>end return ReversedRange at the end number start. These errors precede all step-number errors.\n\nR12. For step numbers, apply leading-zero and u32 overflow checks, then require 1..=the full field domain width (60,24,31,12,7). Otherwise return BadStep at the step number start, including step 0. Steps larger than the selected range length but within the domain width are valid.\n\nR13. An unstepped * selects the full domain. An unstepped number selects just itself. An unstepped range selects both endpoints and all intervening values.\n\nR14. A stepped * starts at the domain minimum and ends at its maximum. A stepped range starts at its lower endpoint and ends at its upper endpoint. A stepped single number extends from that number through the domain maximum, unlike an unstepped single number.\n\nR15. Step selection includes the start, then start+step repeatedly while within the end. Values are the union of all list items; repetitions and overlaps are harmless.\n\nR16. allowed(field) returns selected values exactly once, in ascending numeric order. It must not depend on list-item order.\n\nR17. A syntactically valid schedule need not be realizable as a date; parsing accepts, for example, February with only day 30 selected.\n\nR18. Cron equality includes both the selected sets and whether each day field was exactly the one-byte string *. Thus * and */1 in a day field compare unequal; other syntax differences selecting identical sets compare equal.\n\nR19. Additional exact API: #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)] pub struct CivilDateTime { pub year: u16, pub month: u8, pub day: u8, pub hour: u8, pub minute: u8 }. #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum DatePart { Year, Month, Day, Hour, Minute }. #[derive(Debug, Clone, PartialEq, Eq)] pub enum DateError { InvalidDateTime { component: DatePart } }. impl Cron { pub fn matches(&self, at: CivilDateTime) -> Result<bool, DateError>; pub fn next_fire(&self, after: CivilDateTime) -> Result<Option<CivilDateTime>, DateError>; }.\n\nR20. CivilDateTime is a minute-resolution proleptic Gregorian civil value. Supported years are 2000..=2399, months 1..=12, days 1..=that actual month length, hours 0..=23, minutes 0..=59. There are no clocks, offsets, seconds, or timezones.\n\nR21. Validate any datetime argument before using schedule membership: first Year, then Month, then Day, then Hour, then Minute. Return DateError::InvalidDateTime for the first invalid component, even for schedules that cannot fire.\n\nR22. Gregorian leap years are divisible by 4 except century years not divisible by 400. February has 29 days in leap years and 28 otherwise; April, June, September, November have 30 and other months have 31.\n\nR23. Weekdays use Sunday=0 through Saturday=6; 2000-01-01 is Saturday (6). Advance weekday by one for each actual civil day, including leap days.\n\nR24. matches returns true exactly when minute, hour, month, day-of-month, AND day-of-week are all selected. Day fields are conjunctive at this level, even when one is *.\n\nR25. next_fire returns the earliest matching supported datetime STRICTLY later than after. Exclude after even if it matches; allow another minute on its date. Return None when no later matching datetime exists through 2399-12-31 23:59.\n\nR26. Search crosses actual month/year boundaries and skips nonexistent dates; never clamp an invalid day-of-month to a shorter month. An unrealizable schedule returns None, and at the maximum supported datetime next_fire always returns None.\n\nR27. All calendar and search methods are read-only: repeated calls on the same Cron and datetime have identical results, and parsing or querying another Cron cannot change an existing instance.\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\nfn c(s: &str) -> Cron {\n    parse_cron(s).unwrap()\n}\nfn d(year: u16, month: u8, day: u8, hour: u8, minute: u8) -> CivilDateTime {\n    CivilDateTime {\n        year,\n        month,\n        day,\n        hour,\n        minute,\n    }\n}\n\n// R13,R15,R16\n#[test]\nfn p_lists_and_ranges() {\n    let q = c(\"4,10-12,4 8 * * *\");\n    assert_eq!(q.allowed(Field::Minute), vec![4, 10, 11, 12]);\n    assert_eq!(q.allowed(Field::Hour), vec![8]);\n}\n\n// R14,R15\n#[test]\nfn p_star_steps() {\n    let q = c(\"*/20 0 * */3 *\");\n    assert_eq!(q.allowed(Field::Minute), vec![0, 20, 40]);\n    assert_eq!(q.allowed(Field::Month), vec![1, 4, 7, 10]);\n}\n\n// R19,R24,R25\n#[test]\nfn p_match_and_next() {\n    let q = c(\"30 9 * * *\");\n    assert!(q.matches(d(2026, 5, 4, 9, 30)).unwrap());\n    assert!(!q.matches(d(2026, 5, 4, 9, 31)).unwrap());\n    assert_eq!(\n        q.next_fire(d(2026, 5, 4, 9, 0)).unwrap(),\n        Some(d(2026, 5, 4, 9, 30))\n    );\n}\n\n// R22,R25,R26\n#[test]\nfn p_next_leap() {\n    assert_eq!(\n        c(\"45 6 29 2 *\").next_fire(d(2003, 1, 1, 0, 0)).unwrap(),\n        Some(d(2004, 2, 29, 6, 45))\n    );\n}\n```\n","previous_attempt":"#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum Field {\n    Minute,\n    Hour,\n    DayOfMonth,\n    Month,\n    DayOfWeek,\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub enum ParseError {\n    FieldCount { found: usize },\n    InvalidCharacter { field: Field, offset: usize },\n    EmptyItem { field: Field, offset: usize },\n    InvalidSyntax { field: Field, offset: usize },\n    LeadingZero { field: Field, offset: usize },\n    NumberOverflow { field: Field, offset: usize },\n    OutOfRange { field: Field, offset: usize },\n    ReversedRange { field: Field, offset: usize },\n    BadStep { field: Field, offset: usize },\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub struct Cron {\n    values: [Vec<u8>; 5],\n    day_stars: [bool; 2],\n}\n\n#[derive(Clone, Copy)]\nstruct Bounds {\n    min: u8,\n    max: u8,\n    width: u32,\n}\n\nfn bounds(field: Field) -> Bounds {\n    match field {\n        Field::Minute => Bounds { min: 0, max: 59, width: 60 },\n        Field::Hour => Bounds { min: 0, max: 23, width: 24 },\n        Field::DayOfMonth => Bounds { min: 1, max: 31, width: 31 },\n        Field::Month => Bounds { min: 1, max: 12, width: 12 },\n        Field::DayOfWeek => Bounds { min: 0, max: 6, width: 7 },\n    }\n}\n\nfn field_index(field: Field) -> usize {\n    match field {\n        Field::Minute => 0,\n        Field::Hour => 1,\n        Field::DayOfMonth => 2,\n        Field::Month => 3,\n        Field::DayOfWeek => 4,\n    }\n}\n\nfn parse_number(\n    bytes: &[u8],\n    start: usize,\n    end: usize,\n    field: Field,\n    is_step: bool,\n    b: Bounds,\n) -> Result<u32, ParseError> {\n    if end - start > 1 && bytes[start] == b'0' {\n        return Err(ParseError::LeadingZero { field, offset: start });\n    }\n\n    let mut value = 0u32;\n    for &byte in &bytes[start..end] {\n        value = value\n            .checked_mul(10)\n            .and_then(|v| v.checked_add((byte - b'0') as u32))\n            .ok_or(ParseError::NumberOverflow { field, offset: start })?;\n    }\n\n    if is_step {\n        if value == 0 || value > b.width {\n            return Err(ParseError::BadStep { field, offset: start });\n        }\n    } else if value < b.min as u32 || value > b.max as u32 {\n        return Err(ParseError::OutOfRange { field, offset: start });\n    }\n\n    Ok(value)\n}\n\nfn parse_field(text: &str, field: Field) -> Result<Vec<u8>, ParseError> {\n    let bytes = text.as_bytes();\n\n    for (offset, &byte) in bytes.iter().enumerate() {\n        if !byte.is_ascii_digit() && !matches!(byte, b'*' | b'-' | b'/' | b',') {\n            return Err(ParseError::InvalidCharacter { field, offset });\n        }\n    }\n\n    let b = bounds(field);\n    let mut selected = vec![false; 256];\n    let mut item_start = 0;\n\n    for item_end in (0..=bytes.len()).filter(|&i| i == bytes.len() || bytes[i] == b',') {\n        if item_end == item_start {\n            return Err(ParseError::EmptyItem { field, offset: item_start });\n        }\n\n        let item = &bytes[item_start..item_end];\n        let slash_positions: Vec<usize> = item\n            .iter()\n            .enumerate()\n            .filter_map(|(i, &ch)| (ch == b'/').then_some(i))\n            .collect();\n\n        if slash_positions.len() > 1 {\n            return Err(ParseError::InvalidSyntax { field, offset: item_start });\n        }\n\n        let (base_end, step_range) = if let Some(&slash) = slash_positions.first() {\n            if slash == 0 || slash + 1 == item.len() {\n                return Err(ParseError::InvalidSyntax { field, offset: item_start });\n            }\n            (slash, Some((item_start + slash + 1, item_end)))\n        } else {\n            (item.len(), None)\n        };\n\n        let base = &item[..base_end];\n        let is_star = base == b\"*\";\n        let hyphens: Vec<usize> = base\n            .iter()\n            .enumerate()\n            .filter_map(|(i, &ch)| (ch == b'-').then_some(i))\n            .collect();\n\n        let (start_range, end_range) = if is_star {\n            if !hyphens.is_empty() {\n                return Err(ParseError::InvalidSyntax { field, offset: item_start });\n            }\n            (None, None)\n        } else if hyphens.is_empty() {\n            if base.is_empty() || !base.iter().all(u8::is_ascii_digit) {\n                return Err(ParseError::InvalidSyntax { field, offset: item_start });\n            }\n            (Some((item_start, item_start + base_end)), None)\n        } else if hyphens.len() == 1 {\n            let hyphen = hyphens[0];\n            if hyphen == 0\n                || hyphen + 1 == base.len()\n                || !base[..hyphen].iter().all(u8::is_ascii_digit)\n                || !base[hyphen + 1..].iter().all(u8::is_ascii_digit)\n            {\n                return Err(ParseError::InvalidSyntax { field, offset: item_start });\n            }\n            (\n                Some((item_start, item_start + hyphen)),\n                Some((item_start + hyphen + 1, item_end - step_range.map_or(0, |_| item.len() - base_end))),\n            )\n        } else {\n            return Err(ParseError::InvalidSyntax { field, offset: item_start });\n        };\n\n        let step = if let Some((step_start, step_end)) = step_range {\n            if step_start == step_end\n                || !bytes[step_start..step_end].iter().all(u8::is_ascii_digit)\n            {\n                return Err(ParseError::InvalidSyntax { field, offset: item_start });\n            }\n            Some(parse_number(bytes, step_start, step_end, field, true, b)?)\n        } else {\n            None\n        };\n\n        let (start, end) = match (start_range, end_range) {\n            (None, None) => (b.min as u32, b.max as u32),\n            (Some((s, e)), None) => {\n                let start = parse_number(bytes, s, e, field, false, b)?;\n                (start, if step.is_some() { b.max as u32 } else { start })\n            }\n            (Some((s, e)), Some((rs, re))) => {\n                let start = parse_number(bytes, s, e, field, false, b)?;\n                let end = parse_number(bytes, rs, re, field, false, b)?;\n                if start > end {\n                    return Err(ParseError::ReversedRange { field, offset: rs });\n                }\n                (start, end)\n            }\n            _ => unreachable!(),\n        };\n\n        let stride = step.unwrap_or(1);\n        let mut value = start;\n        while value <= end {\n            selected[value as usize] = true;\n            match value.checked_add(stride) {\n                Some(next) => value = next,\n                None => break,\n            }\n        }\n\n        item_start = item_end + 1;\n        if item_end == bytes.len() {\n            break;\n        }\n    }\n\n    Ok((0..=u8::MAX).filter(|&v| selected[v as usize]).collect())\n}\n\npub fn parse_cron(input: &str) -> Result<Cron, ParseError> {\n    let parts: Vec<&str> = input.split(' ').collect();\n    if parts.len() != 5 {\n        return Err(ParseError::FieldCount { found: parts.len() });\n    }\n\n    let fields = [\n        Field::Minute,\n        Field::Hour,\n        Field::DayOfMonth,\n        Field::Month,\n        Field::DayOfWeek,\n    ];\n    let mut parsed: [Vec<u8>; 5] = std::array::from_fn(|_| Vec::new());\n\n    for (i, (&field, part)) in fields.iter().zip(parts.iter()).enumerate() {\n        parsed[i] = parse_field(part, field)?;\n    }\n\n    Ok(Cron {\n        values: parsed,\n        day_stars: [parts[2] == \"*\", parts[4] == \"*\"],\n    })\n}\n\nimpl Cron {\n    pub fn allowed(&self, field: Field) -> Vec<u8> {\n        self.values[field_index(field)].clone()\n    }\n\n    pub fn matches(&self, at: CivilDateTime) -> Result<bool, DateError> {\n        validate_datetime(at)?;\n        let weekday = weekday(at);\n        Ok(self.values[0].contains(&at.minute)\n            && self.values[1].contains(&at.hour)\n            && self.values[2].contains(&at.day)\n            && self.values[3].contains(&at.month)\n            && self.values[4].contains(&weekday))\n    }\n\n    pub fn next_fire(&self, after: CivilDateTime) -> Result<Option<CivilDateTime>, DateError> {\n        validate_datetime(after)?;\n\n        let mut current = after;\n        loop {\n            if current.minute == 59 {\n                current.minute = 0;\n                if current.hour == 23 {\n                    current.hour = 0;\n                    if current.day == days_in_month(current.year, current.month) {\n                        current.day = 1;\n                        if current.month == 12 {\n                            current.month = 1;\n                            if current.year == 2399 {\n                                return Ok(None);\n                            }\n                            current.year += 1;\n                        } else {\n                            current.month += 1;\n                        }\n                    } else {\n                        current.day += 1;\n                    }\n                } else {\n                    current.hour += 1;\n                }\n            } else {\n                current.minute += 1;\n            }\n\n            if self.matches(current)? {\n                return Ok(Some(current));\n            }\n            if current.year == 2399\n                && current.month == 12\n                && current.day == 31\n                && current.hour == 23\n                && current.minute == 59\n            {\n                return Ok(None);\n            }\n        }\n    }\n}\n\nimpl PartialEq for Cron {\n    fn eq(&self, other: &Self) -> bool {\n        self.values == other.values && self.day_stars == other.day_stars\n    }\n}\nimpl Eq for Cron {}\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]\npub struct CivilDateTime {\n    pub year: u16,\n    pub month: u8,\n    pub day: u8,\n    pub hour: u8,\n    pub minute: u8,\n}\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum DatePart {\n    Year,\n    Month,\n    Day,\n    Hour,\n    Minute,\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub enum DateError {\n    InvalidDateTime { component: DatePart },\n}\n\nfn validate_datetime(at: CivilDateTime) -> Result<(), DateError> {\n    if !(2000..=2399).contains(&at.year) {\n        return Err(DateError::InvalidDateTime { component: DatePart::Year });\n    }\n    if !(1..=12).contains(&at.month) {\n        return Err(DateError::InvalidDateTime { component: DatePart::Month });\n    }\n    if at.day == 0 || at.day > days_in_month(at.year, at.month) {\n        return Err(DateError::InvalidDateTime { component: DatePart::Day });\n    }\n    if at.hour > 23 {\n        return Err(DateError::InvalidDateTime { component: DatePart::Hour });\n    }\n    if at.minute > 59 {\n        return Err(DateError::InvalidDateTime { component: DatePart::Minute });\n    }\n    Ok(())\n}\n\nfn is_leap(year: u16) -> bool {\n    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)\n}\n\nfn days_in_month(year: u16, month: u8) -> u8 {\n    match month {\n        2 => if is_leap(year) { 29 } else { 28 },\n        4 | 6 | 9 | 11 => 30,\n        _ => 31,\n    }\n}\n\nfn weekday(at: CivilDateTime) -> u8 {\n    let mut days = 0u32;\n    for year in 2000..at.year {\n        days += if is_leap(year) { 366 } else { 365 };\n    }\n    for month in 1..at.month {\n        days += days_in_month(at.year, month) as u32;\n    }\n    days += (at.day - 1) as u32;\n    ((days + 6) % 7) as u8\n}\n\nfn main() {}","requirements":"R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes. All specified API types, enum variants, and methods are public; Cron internals may be private.\n\nR2. Exact API: #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Field { Minute, Hour, DayOfMonth, Month, DayOfWeek }. #[derive(Debug, Clone, PartialEq, Eq)] pub enum ParseError { FieldCount { found: usize }, InvalidCharacter { field: Field, offset: usize }, EmptyItem { field: Field, offset: usize }, InvalidSyntax { field: Field, offset: usize }, LeadingZero { field: Field, offset: usize }, NumberOverflow { field: Field, offset: usize }, OutOfRange { field: Field, offset: usize }, ReversedRange { field: Field, offset: usize }, BadStep { field: Field, offset: usize } }. #[derive(Debug, Clone, PartialEq, Eq)] pub struct Cron (opaque; no public fields required). pub fn parse_cron(input: &str) -> Result<Cron, ParseError>. impl Cron { pub fn allowed(&self, field: Field) -> Vec<u8>; }.\n\nR3. Fields, in order, are minute (0..=59), hour (0..=23), day of month (1..=31), month (1..=12), day of week (0..=6, Sunday=0). Sunday 7 is invalid; there is no normalization.\n\nR4. First split input on the literal ASCII space byte, retaining empty fields. If the number of pieces is not five, return FieldCount with that number before inspecting any field. Empty input therefore has found=1; tabs and newlines are not separators.\n\nR5. Validate fields in the given order and stop at the first failing field. Every offset in ParseError is a zero-based UTF-8 byte offset within that field, never within the whole expression.\n\nR6. Before parsing any item in a field, scan its entire bytes left to right. Only ASCII digits, *, -, /, and comma are legal. Return InvalidCharacter at the first other byte, even if an earlier item in the same field has a different error.\n\nR7. Split a field on commas retaining empty items. Process items left to right. For an empty item (including an empty whole field) return EmptyItem at its starting offset; a trailing empty item starts at the field byte length.\n\nR8. Each nonempty item has one base, optionally followed by one slash and one step. Base is exactly *, a decimal number, or number-number. Reject every other structure as InvalidSyntax at the item start BEFORE reading any numeric values. This includes empty slash operands, multiple slashes, multiple hyphens, and starred range endpoints.\n\nR9. Numbers are nonempty ASCII decimal sequences. A multi-digit number beginning with 0 yields LeadingZero at that number start, before overflow or bounds checks. Single 0 is permitted wherever bounds permit it.\n\nR10. Accumulate each number as u32 using checked arithmetic. Overflow yields NumberOverflow at the number start. For numeric bases and endpoints, values fitting u32 but outside the field domain yield OutOfRange at that number start; step bounds instead follow R12.\n\nR11. For numeric bases, validate start then end (if present), including each number's leading-zero, overflow and domain checks. Then if start>end return ReversedRange at the end number start. These errors precede all step-number errors.\n\nR12. For step numbers, apply leading-zero and u32 overflow checks, then require 1..=the full field domain width (60,24,31,12,7). Otherwise return BadStep at the step number start, including step 0. Steps larger than the selected range length but within the domain width are valid.\n\nR13. An unstepped * selects the full domain. An unstepped number selects just itself. An unstepped range selects both endpoints and all intervening values.\n\nR14. A stepped * starts at the domain minimum and ends at its maximum. A stepped range starts at its lower endpoint and ends at its upper endpoint. A stepped single number extends from that number through the domain maximum, unlike an unstepped single number.\n\nR15. Step selection includes the start, then start+step repeatedly while within the end. Values are the union of all list items; repetitions and overlaps are harmless.\n\nR16. allowed(field) returns selected values exactly once, in ascending numeric order. It must not depend on list-item order.\n\nR17. A syntactically valid schedule need not be realizable as a date; parsing accepts, for example, February with only day 30 selected.\n\nR18. Cron equality includes both the selected sets and whether each day field was exactly the one-byte string *. Thus * and */1 in a day field compare unequal; other syntax differences selecting identical sets compare equal.\n\nR19. Additional exact API: #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)] pub struct CivilDateTime { pub year: u16, pub month: u8, pub day: u8, pub hour: u8, pub minute: u8 }. #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum DatePart { Year, Month, Day, Hour, Minute }. #[derive(Debug, Clone, PartialEq, Eq)] pub enum DateError { InvalidDateTime { component: DatePart } }. impl Cron { pub fn matches(&self, at: CivilDateTime) -> Result<bool, DateError>; pub fn next_fire(&self, after: CivilDateTime) -> Result<Option<CivilDateTime>, DateError>; }.\n\nR20. CivilDateTime is a minute-resolution proleptic Gregorian civil value. Supported years are 2000..=2399, months 1..=12, days 1..=that actual month length, hours 0..=23, minutes 0..=59. There are no clocks, offsets, seconds, or timezones.\n\nR21. Validate any datetime argument before using schedule membership: first Year, then Month, then Day, then Hour, then Minute. Return DateError::InvalidDateTime for the first invalid component, even for schedules that cannot fire.\n\nR22. Gregorian leap years are divisible by 4 except century years not divisible by 400. February has 29 days in leap years and 28 otherwise; April, June, September, November have 30 and other months have 31.\n\nR23. Weekdays use Sunday=0 through Saturday=6; 2000-01-01 is Saturday (6). Advance weekday by one for each actual civil day, including leap days.\n\nR24. matches returns true exactly when minute, hour, month, day-of-month, AND day-of-week are all selected. Day fields are conjunctive at this level, even when one is *.\n\nR25. next_fire returns the earliest matching supported datetime STRICTLY later than after. Exclude after even if it matches; allow another minute on its date. Return None when no later matching datetime exists through 2399-12-31 23:59.\n\nR26. Search crosses actual month/year boundaries and skips nonexistent dates; never clamp an invalid day-of-month to a shorter month. An unrealizable schedule returns None, and at the maximum supported datetime next_fire always returns None.\n\nR27. All calendar and search methods are read-only: repeated calls on the same Cron and datetime have identical results, and parsing or querying another Cron cannot change an existing instance.\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\nfn c(s: &str) -> Cron {\n    parse_cron(s).unwrap()\n}\nfn d(year: u16, month: u8, day: u8, hour: u8, minute: u8) -> CivilDateTime {\n    CivilDateTime {\n        year,\n        month,\n        day,\n        hour,\n        minute,\n    }\n}\n\n// R13,R15,R16\n#[test]\nfn p_lists_and_ranges() {\n    let q = c(\"4,10-12,4 8 * * *\");\n    assert_eq!(q.allowed(Field::Minute), vec![4, 10, 11, 12]);\n    assert_eq!(q.allowed(Field::Hour), vec![8]);\n}\n\n// R14,R15\n#[test]\nfn p_star_steps() {\n    let q = c(\"*/20 0 * */3 *\");\n    assert_eq!(q.allowed(Field::Minute), vec![0, 20, 40]);\n    assert_eq!(q.allowed(Field::Month), vec![1, 4, 7, 10]);\n}\n\n// R19,R24,R25\n#[test]\nfn p_match_and_next() {\n    let q = c(\"30 9 * * *\");\n    assert!(q.matches(d(2026, 5, 4, 9, 30)).unwrap());\n    assert!(!q.matches(d(2026, 5, 4, 9, 31)).unwrap());\n    assert_eq!(\n        q.next_fire(d(2026, 5, 4, 9, 0)).unwrap(),\n        Some(d(2026, 5, 4, 9, 30))\n    );\n}\n\n// R22,R25,R26\n#[test]\nfn p_next_leap() {\n    assert_eq!(\n        c(\"45 6 29 2 *\").next_fire(d(2003, 1, 1, 0, 0)).unwrap(),\n        Some(d(2004, 2, 29, 6, 45))\n    );\n}\n```\n"}
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-15T09:46:32.308485Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    Minute,
+    Hour,
+    DayOfMonth,
+    Month,
+    DayOfWeek,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseError {
+    FieldCount { found: usize },
+    InvalidCharacter { field: Field, offset: usize },
+    EmptyItem { field: Field, offset: usize },
+    InvalidSyntax { field: Field, offset: usize },
+    LeadingZero { field: Field, offset: usize },
+    NumberOverflow { field: Field, offset: usize },
+    OutOfRange { field: Field, offset: usize },
+    ReversedRange { field: Field, offset: usize },
+    BadStep { field: Field, offset: usize },
+}
+
+#[derive(Debug, Clone)]
+pub struct Cron {
+    values: [Vec<u8>; 5],
+    day_stars: [bool; 2],
+}
+
+impl PartialEq for Cron {
+    fn eq(&self, other: &Self) -> bool {
+        self.values == other.values && self.day_stars == other.day_stars
+    }
+}
+impl Eq for Cron {}
+
+#[derive(Clone, Copy)]
+struct Bounds {
+    min: u8,
+    max: u8,
+    width: u32,
+}
+
+fn bounds(field: Field) -> Bounds {
+    match field {
+        Field::Minute => Bounds { min: 0, max: 59, width: 60 },
+        Field::Hour => Bounds { min: 0, max: 23, width: 24 },
+        Field::DayOfMonth => Bounds { min: 1, max: 31, width: 31 },
+        Field::Month => Bounds { min: 1, max: 12, width: 12 },
+        Field::DayOfWeek => Bounds { min: 0, max: 6, width: 7 },
+    }
+}
+
+fn field_index(field: Field) -> usize {
+    match field {
+        Field::Minute => 0,
+        Field::Hour => 1,
+        Field::DayOfMonth => 2,
+        Field::Month => 3,
+        Field::DayOfWeek => 4,
+    }
+}
+
+fn parse_number(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    field: Field,
+    is_step: bool,
+    b: Bounds,
+) -> Result<u32, ParseError> {
+    if end - start > 1 && bytes[start] == b'0' {
+        return Err(ParseError::LeadingZero { field, offset: start });
+    }
+    let mut value = 0u32;
+    for &byte in &bytes[start..end] {
+        value = value
+            .checked_mul(10)
+            .and_then(|v| v.checked_add((byte - b'0') as u32))
+            .ok_or(ParseError::NumberOverflow { field, offset: start })?;
+    }
+    if is_step {
+        if value == 0 || value > b.width {
+            return Err(ParseError::BadStep { field, offset: start });
+        }
+    } else if value < b.min as u32 || value > b.max as u32 {
+        return Err(ParseError::OutOfRange { field, offset: start });
+    }
+    Ok(value)
+}
+
+fn parse_field(text: &str, field: Field) -> Result<Vec<u8>, ParseError> {
+    let bytes = text.as_bytes();
+    for (offset, &byte) in bytes.iter().enumerate() {
+        if !byte.is_ascii_digit() && !matches!(byte, b'*' | b'-' | b'/' | b',') {
+            return Err(ParseError::InvalidCharacter { field, offset });
+        }
+    }
+
+    let b = bounds(field);
+    let mut selected = vec![false; 256];
+    let mut item_start = 0;
+
+    for item_end in (0..=bytes.len()).filter(|&i| i == bytes.len() || bytes[i] == b',') {
+        if item_end == item_start {
+            return Err(ParseError::EmptyItem { field, offset: item_start });
+        }
+
+        let item = &bytes[item_start..item_end];
+        let slash_positions: Vec<usize> = item
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &ch)| (ch == b'/').then_some(i))
+            .collect();
+        if slash_positions.len() > 1 {
+            return Err(ParseError::InvalidSyntax { field, offset: item_start });
+        }
+
+        let (base_end, step_range) = if let Some(&slash) = slash_positions.first() {
+            if slash == 0 || slash + 1 == item.len() {
+                return Err(ParseError::InvalidSyntax { field, offset: item_start });
+            }
+            (slash, Some((item_start + slash + 1, item_end)))
+        } else {
+            (item.len(), None)
+        };
+
+        let base = &item[..base_end];
+        let is_star = base == b"*";
+        let hyphens: Vec<usize> = base
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &ch)| (ch == b'-').then_some(i))
+            .collect();
+
+        let (start_range, end_range) = if is_star {
+            if !hyphens.is_empty() {
+                return Err(ParseError::InvalidSyntax { field, offset: item_start });
+            }
+            (None, None)
+        } else if hyphens.is_empty() {
+            if base.is_empty() || !base.iter().all(u8::is_ascii_digit) {
+                return Err(ParseError::InvalidSyntax { field, offset: item_start });
+            }
+            (Some((item_start, item_start + base_end)), None)
+        } else if hyphens.len() == 1 {
+            let hyphen = hyphens[0];
+            if hyphen == 0
+                || hyphen + 1 == base.len()
+                || !base[..hyphen].iter().all(u8::is_ascii_digit)
+                || !base[hyphen + 1..].iter().all(u8::is_ascii_digit)
+            {
+                return Err(ParseError::InvalidSyntax { field, offset: item_start });
+            }
+            (
+                Some((item_start, item_start + hyphen)),
+                Some((item_start + hyphen + 1, item_start + base_end)),
+            )
+        } else {
+            return Err(ParseError::InvalidSyntax { field, offset: item_start });
+        };
+
+        let (start, end) = match (start_range, end_range) {
+            (None, None) => (b.min as u32, b.max as u32),
+            (Some((s, e)), None) => {
+                let start = parse_number(bytes, s, e, field, false, b)?;
+                (start, if step_range.is_some() { b.max as u32 } else { start })
+            }
+            (Some((s, e)), Some((rs, re))) => {
+                let start = parse_number(bytes, s, e, field, false, b)?;
+                let end = parse_number(bytes, rs, re, field, false, b)?;
+                if start > end {
+                    return Err(ParseError::ReversedRange { field, offset: rs });
+                }
+                (start, end)
+            }
+            _ => unreachable!(),
+        };
+
+        let step = if let Some((step_start, step_end)) = step_range {
+            if !bytes[step_start..step_end].iter().all(u8::is_ascii_digit) {
+                return Err(ParseError::InvalidSyntax { field, offset: item_start });
+            }
+            Some(parse_number(bytes, step_start, step_end, field, true, b)?)
+        } else {
+            None
+        };
+
+        let stride = step.unwrap_or(1);
+        let mut value = start;
+        while value <= end {
+            selected[value as usize] = true;
+            match value.checked_add(stride) {
+                Some(next) => value = next,
+                None => break,
+            }
+        }
+
+        item_start = item_end + 1;
+        if item_end == bytes.len() {
+            break;
+        }
+    }
+
+    Ok((0..=u8::MAX).filter(|&v| selected[v as usize]).collect())
+}
+
+pub fn parse_cron(input: &str) -> Result<Cron, ParseError> {
+    let parts: Vec<&str> = input.split(' ').collect();
+    if parts.len() != 5 {
+        return Err(ParseError::FieldCount { found: parts.len() });
+    }
+
+    let fields = [
+        Field::Minute,
+        Field::Hour,
+        Field::DayOfMonth,
+        Field::Month,
+        Field::DayOfWeek,
+    ];
+    let mut parsed: [Vec<u8>; 5] = std::array::from_fn(|_| Vec::new());
+    for (i, (&field, part)) in fields.iter().zip(parts.iter()).enumerate() {
+        parsed[i] = parse_field(part, field)?;
+    }
+
+    Ok(Cron {
+        values: parsed,
+        day_stars: [parts[2] == "*", parts[4] == "*"],
+    })
+}
+
+impl Cron {
+    pub fn allowed(&self, field: Field) -> Vec<u8> {
+        self.values[field_index(field)].clone()
+    }
+
+    pub fn matches(&self, at: CivilDateTime) -> Result<bool, DateError> {
+        validate_datetime(at)?;
+        let weekday = weekday(at);
+        Ok(self.values[0].contains(&at.minute)
+            && self.values[1].contains(&at.hour)
+            && self.values[2].contains(&at.day)
+            && self.values[3].contains(&at.month)
+            && self.values[4].contains(&weekday))
+    }
+
+    pub fn next_fire(&self, after: CivilDateTime) -> Result<Option<CivilDateTime>, DateError> {
+        validate_datetime(after)?;
+        let mut current = after;
+
+        loop {
+            if current.minute == 59 {
+                current.minute = 0;
+                if current.hour == 23 {
+                    current.hour = 0;
+                    if current.day == days_in_month(current.year, current.month) {
+                        current.day = 1;
+                        if current.month == 12 {
+                            current.month = 1;
+                            if current.year == 2399 {
+                                return Ok(None);
+                            }
+                            current.year += 1;
+                        } else {
+                            current.month += 1;
+                        }
+                    } else {
+                        current.day += 1;
+                    }
+                } else {
+                    current.hour += 1;
+                }
+            } else {
+                current.minute += 1;
+            }
+
+            if self.matches(current)? {
+                return Ok(Some(current));
+            }
+            if current.year == 2399
+                && current.month == 12
+                && current.day == 31
+                && current.hour == 23
+                && current.minute == 59
+            {
+                return Ok(None);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CivilDateTime {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatePart {
+    Year,
+    Month,
+    Day,
+    Hour,
+    Minute,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DateError {
+    InvalidDateTime { component: DatePart },
+}
+
+fn validate_datetime(at: CivilDateTime) -> Result<(), DateError> {
+    if !(2000..=2399).contains(&at.year) {
+        return Err(DateError::InvalidDateTime { component: DatePart::Year });
+    }
+    if !(1..=12).contains(&at.month) {
+        return Err(DateError::InvalidDateTime { component: DatePart::Month });
+    }
+    if at.day == 0 || at.day > days_in_month(at.year, at.month) {
+        return Err(DateError::InvalidDateTime { component: DatePart::Day });
+    }
+    if at.hour > 23 {
+        return Err(DateError::InvalidDateTime { component: DatePart::Hour });
+    }
+    if at.minute > 59 {
+        return Err(DateError::InvalidDateTime { component: DatePart::Minute });
+    }
+    Ok(())
+}
+
+fn is_leap(year: u16) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+fn days_in_month(year: u16, month: u8) -> u8 {
+    match month {
+        2 => if is_leap(year) { 29 } else { 28 },
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
+fn weekday(at: CivilDateTime) -> u8 {
+    let mut days = 0u32;
+    for year in 2000..at.year {
+        days += if is_leap(year) { 366 } else { 365 };
+    }
+    for month in 1..at.month {
+        days += days_in_month(at.year, month) as u32;
+    }
+    days += (at.day - 1) as u32;
+    ((days + 6) % 7) as u8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn d(year: u16, month: u8, day: u8, hour: u8, minute: u8) -> CivilDateTime {
+        CivilDateTime { year, month, day, hour, minute }
+    }
+
+    #[test]
+    fn parses_sets_and_steps() {
+        let cron = parse_cron("4,10-12,4 8 * * *").unwrap();
+        assert_eq!(cron.allowed(Field::Minute), vec![4, 10, 11, 12]);
+        let stepped = parse_cron("*/20 0 * */3 *").unwrap();
+        assert_eq!(stepped.allowed(Field::Minute), vec![0, 20, 40]);
+        assert_eq!(stepped.allowed(Field::Month), vec![1, 4, 7, 10]);
+    }
+
+    #[test]
+    fn errors_and_day_star_equality() {
+        assert_eq!(parse_cron("* * * *").unwrap_err(), ParseError::FieldCount { found: 4 });
+        assert_eq!(
+            parse_cron("0 0 * */1 *").unwrap() == parse_cron("0 0 * * *").unwrap(),
+            false
+        );
+        assert_eq!(
+            parse_cron("0 0 01 * *").unwrap_err(),
+            ParseError::LeadingZero { field: Field::DayOfMonth, offset: 0 }
+        );
+    }
+
+    #[test]
+    fn matches_and_next_fire() {
+        let cron = parse_cron("30 9 * * *").unwrap();
+        assert!(cron.matches(d(2026, 5, 4, 9, 30)).unwrap());
+        assert_eq!(cron.next_fire(d(2026, 5, 4, 9, 0)).unwrap(), Some(d(2026, 5, 4, 9, 30)));
+        let leap = parse_cron("45 6 29 2 *").unwrap();
+        assert_eq!(leap.next_fire(d(2003, 1, 1, 0, 0)).unwrap(), Some(d(2004, 2, 29, 6, 45)));
+    }
+
+    #[test]
+    fn validates_datetime_boundaries() {
+        let cron = parse_cron("0 0 * * *").unwrap();
+        assert_eq!(
+            cron.matches(d(1999, 13, 0, 24, 60)).unwrap_err(),
+            DateError::InvalidDateTime { component: DatePart::Year }
+        );
+        assert_eq!(
+            cron.next_fire(d(2399, 12, 31, 23, 59)).unwrap(),
+            None
+        );
+    }
+}
+
+fn main() {}
+```
+tokens used
+16,471

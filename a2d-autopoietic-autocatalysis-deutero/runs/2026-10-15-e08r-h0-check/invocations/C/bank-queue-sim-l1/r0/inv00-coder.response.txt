@@ -1,0 +1,138 @@
+```rust
+use std::collections::{HashSet, VecDeque};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Arrive,
+    Start { finish: u64, wake: bool },
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub time: u64,
+    pub customer: u32,
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroId { index: usize },
+    DuplicateId { index: usize, id: u32 },
+    TimeOverflow { customer: u32, time: u64 },
+}
+
+pub fn simulate(customers: &[Customer], wake_cost: u64) -> Result<Vec<Event>, Error> {
+    let mut seen = HashSet::new();
+    for (index, customer) in customers.iter().enumerate() {
+        if customer.id == 0 {
+            return Err(Error::ZeroId { index });
+        }
+        if !seen.insert(customer.id) {
+            return Err(Error::DuplicateId {
+                index,
+                id: customer.id,
+            });
+        }
+    }
+
+    let mut arrivals: Vec<&Customer> = customers.iter().collect();
+    arrivals.sort_by(|a, b| {
+        a.arrival
+            .cmp(&b.arrival)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+
+    let mut events = Vec::with_capacity(customers.len().saturating_mul(3));
+    let mut waiting: VecDeque<&Customer> = VecDeque::new();
+    let mut next_arrival = 0usize;
+    let mut now = 0u64;
+    let mut finish: Option<(u64, u32)> = None;
+    let mut previous_finish: Option<u64> = None;
+    let mut first_dispatch = true;
+
+    while next_arrival < arrivals.len() || !waiting.is_empty() || finish.is_some() {
+        let next_arrival_time = arrivals.get(next_arrival).map(|c| c.arrival);
+        let next_finish_time = finish.map(|(time, _)| time);
+        let tick = match (next_arrival_time, next_finish_time) {
+            (Some(a), Some(f)) => a.min(f),
+            (Some(a), None) => a,
+            (None, Some(f)) => f,
+            (None, None) => break,
+        };
+        now = tick;
+
+        if let Some((time, id)) = finish {
+            if time == tick {
+                events.push(Event {
+                    time: tick,
+                    customer: id,
+                    kind: Kind::Finish,
+                });
+                finish = None;
+                previous_finish = Some(tick);
+            }
+        }
+
+        while next_arrival < arrivals.len() && arrivals[next_arrival].arrival == tick {
+            let customer = arrivals[next_arrival];
+            events.push(Event {
+                time: tick,
+                customer: customer.id,
+                kind: Kind::Arrive,
+            });
+            waiting.push_back(customer);
+            next_arrival += 1;
+        }
+
+        if finish.is_none() {
+            while let Some(customer) = waiting.pop_front() {
+                let wake = first_dispatch || previous_finish != Some(now);
+                let base_finish = now.checked_add(customer.service).ok_or(
+                    Error::TimeOverflow {
+                        customer: customer.id,
+                        time: now,
+                    },
+                )?;
+                let end = base_finish
+                    .checked_add(if wake { wake_cost } else { 0 })
+                    .ok_or(Error::TimeOverflow {
+                        customer: customer.id,
+                        time: now,
+                    })?;
+
+                events.push(Event {
+                    time: now,
+                    customer: customer.id,
+                    kind: Kind::Start { finish: end, wake },
+                });
+                first_dispatch = false;
+
+                if end == now {
+                    events.push(Event {
+                        time: now,
+                        customer: customer.id,
+                        kind: Kind::Finish,
+                    });
+                    previous_finish = Some(now);
+                    continue;
+                }
+
+                finish = Some((end, customer.id));
+                break;
+            }
+        }
+    }
+
+    Ok(events)
+}
+
+fn main() {}
+```

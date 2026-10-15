@@ -1,0 +1,435 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+    UnclosedQuote { at: usize },
+    TrailingLocal { at: usize },
+    BadEscape { at: usize },
+    QuotedChar { at: usize },
+    BadFold { at: usize },
+    UnclosedComment { at: usize },
+    CommentDepth { at: usize },
+    CommentChar { at: usize },
+    CommentEscape { at: usize },
+    UnexpectedClose { at: usize },
+    CfwsBoundary { at: usize },
+}
+
+#[derive(Clone, Copy)]
+struct Run {
+    start: usize,
+    end: usize,
+}
+
+fn hws(b: u8) -> bool {
+    b == b' ' || b == b'\t'
+}
+
+fn fold_end(bytes: &[u8], i: usize) -> Option<usize> {
+    if i + 2 >= bytes.len()
+        || bytes[i] != b'\r'
+        || bytes[i + 1] != b'\n'
+        || !hws(bytes[i + 2])
+    {
+        return None;
+    }
+    let mut j = i + 2;
+    while j < bytes.len() && hws(bytes[j]) {
+        j += 1;
+    }
+    Some(j)
+}
+
+fn push_run(runs: &mut Vec<Run>, start: usize, end: usize) {
+    if let Some(last) = runs.last_mut() {
+        if last.end == start {
+            last.end = end;
+            return;
+        }
+    }
+    runs.push(Run { start, end });
+}
+
+fn cleanup(input: &[u8]) -> Result<(Vec<u8>, Vec<usize>, Vec<Run>), EmailError> {
+    let mut clean = Vec::with_capacity(input.len());
+    let mut origins = Vec::with_capacity(input.len());
+    let mut runs = Vec::new();
+    let mut i = 0;
+    let mut quote_prefix = false;
+
+    while i < input.len() {
+        let b = input[i];
+
+        if quote_prefix {
+            clean.push(b);
+            origins.push(i);
+            if b == b'\\' {
+                if i + 1 < input.len() {
+                    i += 1;
+                    clean.push(input[i]);
+                    origins.push(i);
+                }
+            } else if b == b'"' {
+                quote_prefix = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == b'"' && clean.is_empty() {
+            quote_prefix = true;
+            clean.push(b);
+            origins.push(i);
+            i += 1;
+            continue;
+        }
+
+        if hws(b) {
+            let start = i;
+            while i < input.len() && hws(input[i]) {
+                i += 1;
+            }
+            push_run(&mut runs, start, i);
+            continue;
+        }
+
+        if b == b'\r' || b == b'\n' {
+            if let Some(end) = fold_end(input, i) {
+                push_run(&mut runs, i, end);
+                i = end;
+                continue;
+            }
+            return Err(EmailError::BadFold { at: i });
+        }
+
+        if b == b'(' {
+            let run_start = i;
+            let outer_start = i;
+            let mut depth = 0usize;
+
+            while i < input.len() {
+                let c = input[i];
+
+                if c == b'\\' {
+                    if i + 1 >= input.len() || !(0x20..=0x7e).contains(&input[i + 1]) {
+                        return Err(EmailError::CommentEscape { at: i });
+                    }
+                    i += 2;
+                    continue;
+                }
+
+                if c == b'\r' || c == b'\n' {
+                    if let Some(end) = fold_end(input, i) {
+                        i = end;
+                        continue;
+                    }
+                    return Err(EmailError::BadFold { at: i });
+                }
+
+                if c == b'(' {
+                    depth += 1;
+                    if depth > 3 {
+                        return Err(EmailError::CommentDepth { at: i });
+                    }
+                    i += 1;
+                    continue;
+                }
+
+                if c == b')' {
+                    depth -= 1;
+                    i += 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    continue;
+                }
+
+                if !(0x20..=0x7e).contains(&c) && c != b'\t' {
+                    return Err(EmailError::CommentChar { at: i });
+                }
+                i += 1;
+            }
+
+            if depth != 0 {
+                return Err(EmailError::UnclosedComment { at: outer_start });
+            }
+            push_run(&mut runs, run_start, i);
+            continue;
+        }
+
+        if b == b')' {
+            return Err(EmailError::UnexpectedClose { at: i });
+        }
+
+        clean.push(b);
+        origins.push(i);
+        i += 1;
+    }
+
+    Ok((clean, origins, runs))
+}
+
+fn original(origins: &[usize], index: usize, input_len: usize) -> usize {
+    origins.get(index).copied().unwrap_or(input_len)
+}
+
+pub fn parse_email(input: &str) -> Result<Address, EmailError> {
+    if input.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+
+    let raw = input.as_bytes();
+    if let Some(at) = raw.iter().position(|&b| b >= 128) {
+        return Err(EmailError::NonAscii { at });
+    }
+
+    let (bytes, origins, runs) = cleanup(raw)?;
+
+    for run in runs {
+        let adjacent_left_at = run.start > 0 && raw[run.start - 1] == b'@';
+        let adjacent_right_at = run.end < raw.len() && raw[run.end] == b'@';
+        if run.start != 0 && run.end != raw.len() && !adjacent_left_at && !adjacent_right_at {
+            return Err(EmailError::CfwsBoundary { at: run.start });
+        }
+    }
+
+    if bytes.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+
+    let closing_quote = if bytes[0] == b'"' {
+        let mut i = 1;
+        let mut closing = None;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\\' => i += 2,
+                b'"' => {
+                    closing = Some(i);
+                    break;
+                }
+                _ => i += 1,
+            }
+        }
+        match closing {
+            Some(q) => Some(q),
+            None => return Err(EmailError::UnclosedQuote {
+                at: original(&origins, 0, raw.len()),
+            }),
+        }
+    } else {
+        None
+    };
+
+    let mut separators = Vec::new();
+    let mut i = closing_quote.map_or(0, |q| q + 1);
+    while i < bytes.len() {
+        if bytes[i] == b'@' {
+            separators.push(i);
+        }
+        i += 1;
+    }
+
+    if separators.is_empty() {
+        return Err(EmailError::MissingAt);
+    }
+    if separators.len() > 1 {
+        return Err(EmailError::MultipleAt {
+            at: original(&origins, separators[1], raw.len()),
+        });
+    }
+
+    let at = separators[0];
+    if at == 0 {
+        return Err(EmailError::EmptyLocal {
+            at: original(&origins, at, raw.len()),
+        });
+    }
+
+    let local_bytes = &bytes[..at];
+    let (local, quoted) = if local_bytes[0] == b'"' {
+        let q = closing_quote.unwrap();
+        if q + 1 != at {
+            return Err(EmailError::TrailingLocal {
+                at: original(&origins, q + 1, raw.len()),
+            });
+        }
+
+        let mut decoded = Vec::new();
+        let mut decoded_origins = Vec::new();
+        let mut j = 1;
+        while j < q {
+            let b = bytes[j];
+            if b == b'\\' {
+                if j + 1 >= q || !matches!(bytes[j + 1], b'"' | b'\\' | b'@') {
+                    return Err(EmailError::BadEscape {
+                        at: original(&origins, j, raw.len()),
+                    });
+                }
+                decoded.push(bytes[j + 1]);
+                decoded_origins.push(original(&origins, j, raw.len()));
+                j += 2;
+            } else {
+                if !(0x20..=0x7e).contains(&b) {
+                    return Err(EmailError::QuotedChar {
+                        at: original(&origins, j, raw.len()),
+                    });
+                }
+                decoded.push(b);
+                decoded_origins.push(original(&origins, j, raw.len()));
+                j += 1;
+            }
+        }
+
+        if decoded.is_empty() {
+            return Err(EmailError::EmptyLocal {
+                at: original(&origins, q, raw.len()),
+            });
+        }
+        if decoded.len() > 64 {
+            return Err(EmailError::LocalTooLong {
+                at: decoded_origins[64],
+            });
+        }
+        (String::from_utf8(decoded).unwrap(), true)
+    } else {
+        if local_bytes.len() > 64 {
+            return Err(EmailError::LocalTooLong {
+                at: original(&origins, 64, raw.len()),
+            });
+        }
+
+        for (j, &b) in local_bytes.iter().enumerate() {
+            if b == b'.' {
+                if j == 0 || j + 1 == local_bytes.len() || local_bytes[j - 1] == b'.' {
+                    return Err(EmailError::LocalDot {
+                        at: original(&origins, j, raw.len()),
+                    });
+                }
+            } else if !(b.is_ascii_alphanumeric()
+                || b"!#$%&'*+-/=?^_`{|}~".contains(&b))
+            {
+                return Err(EmailError::LocalChar {
+                    at: original(&origins, j, raw.len()),
+                });
+            }
+        }
+        (String::from_utf8(local_bytes.to_vec()).unwrap(), false)
+    };
+
+    let domain_start = at + 1;
+    let mut domain_end = bytes.len();
+    let root_dot = domain_start < domain_end && bytes[domain_end - 1] == b'.';
+    if root_dot {
+        domain_end -= 1;
+    }
+
+    if domain_start == domain_end {
+        return Err(EmailError::EmptyDomain {
+            at: original(&origins, domain_start, raw.len()),
+        });
+    }
+
+    if domain_end - domain_start > 253 {
+        return Err(EmailError::DomainTooLong {
+            at: original(&origins, domain_start + 253, raw.len()),
+        });
+    }
+
+    let mut labels = Vec::new();
+    let mut start = domain_start;
+    for j in domain_start..domain_end {
+        if bytes[j] == b'.' {
+            if j == start {
+                return Err(EmailError::EmptyLabel {
+                    at: original(&origins, j, raw.len()),
+                });
+            }
+            labels.push((start, j));
+            start = j + 1;
+        }
+    }
+
+    if start == domain_end {
+        let empty_at = if root_dot {
+            original(&origins, domain_end, raw.len())
+        } else {
+            original(&origins, domain_end, raw.len())
+        };
+        return Err(EmailError::EmptyLabel { at: empty_at });
+    }
+    labels.push((start, domain_end));
+
+    for &(s, e) in &labels {
+        if e - s > 63 {
+            return Err(EmailError::LabelTooLong {
+                at: original(&origins, s + 63, raw.len()),
+            });
+        }
+        if bytes[s] == b'-' {
+            return Err(EmailError::LabelHyphen {
+                at: original(&origins, s, raw.len()),
+            });
+        }
+        if bytes[e - 1] == b'-' {
+            return Err(EmailError::LabelHyphen {
+                at: original(&origins, e - 1, raw.len()),
+            });
+        }
+        for j in s..e {
+            if !(bytes[j].is_ascii_alphanumeric() || bytes[j] == b'-') {
+                return Err(EmailError::DomainChar {
+                    at: original(&origins, j, raw.len()),
+                });
+            }
+        }
+    }
+
+    if labels.len() < 2 {
+        return Err(EmailError::DomainNeedsDot {
+            at: original(&origins, domain_start, raw.len()),
+        });
+    }
+
+    let (last_start, last_end) = *labels.last().unwrap();
+    if bytes[last_start..last_end].iter().all(u8::is_ascii_digit) {
+        return Err(EmailError::NumericTld {
+            at: original(&origins, last_start, raw.len()),
+        });
+    }
+
+    let domain = bytes[domain_start..domain_end]
+        .iter()
+        .map(|b| b.to_ascii_lowercase() as char)
+        .collect();
+
+    Ok(Address {
+        local,
+        domain,
+        quoted,
+    })
+}
+
+fn main() {}
+```

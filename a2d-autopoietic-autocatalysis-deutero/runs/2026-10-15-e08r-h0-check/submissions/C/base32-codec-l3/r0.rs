@@ -1,0 +1,167 @@
+const DATA_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const CHECK_ALPHABET: &[u8; 37] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ*~$=U";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    MissingCheck { offset: usize },
+    InvalidByte { offset: usize, byte: u8 },
+    InvalidLength { offset: usize },
+    TrailingBits { offset: usize },
+    CheckMismatch { offset: usize, expected: u8, found: u8 },
+}
+
+pub fn encode(input: &[u8], checked: bool) -> String {
+    let mut output = String::new();
+    let mut remainder = 0u8;
+    let mut value = 0u8;
+    let mut bits = 0u8;
+
+    for &byte in input {
+        for shift in (0..8).rev() {
+            value = (value << 1) | ((byte >> shift) & 1);
+            bits += 1;
+            if bits == 5 {
+                output.push(DATA_ALPHABET[value as usize] as char);
+                remainder = ((remainder as u16 * 32 + value as u16) % 37) as u8;
+                value = 0;
+                bits = 0;
+            }
+        }
+    }
+
+    if bits != 0 {
+        value <<= 5 - bits;
+        output.push(DATA_ALPHABET[value as usize] as char);
+        remainder = ((remainder as u16 * 32 + value as u16) % 37) as u8;
+    }
+
+    if checked {
+        output.push(CHECK_ALPHABET[remainder as usize] as char);
+    }
+
+    output
+}
+
+fn data_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0' | b'O' | b'o' => Some(0),
+        b'1' | b'I' | b'i' | b'L' | b'l' => Some(1),
+        b'2'..=b'9' => Some(byte - b'0'),
+        b'A'..=b'H' => Some(byte - b'A' + 10),
+        b'a'..=b'h' => Some(byte - b'a' + 10),
+        b'J'..=b'K' => Some(byte - b'J' + 18),
+        b'j'..=b'k' => Some(byte - b'j' + 18),
+        b'M'..=b'N' => Some(byte - b'M' + 20),
+        b'm'..=b'n' => Some(byte - b'm' + 20),
+        b'P'..=b'T' => Some(byte - b'P' + 22),
+        b'p'..=b't' => Some(byte - b'p' + 22),
+        b'V'..=b'Z' => Some(byte - b'V' + 27),
+        b'v'..=b'z' => Some(byte - b'v' + 27),
+        _ => None,
+    }
+}
+
+fn check_value(byte: u8) -> Option<u8> {
+    if let Some(value) = data_value(byte) {
+        return Some(value);
+    }
+
+    match byte {
+        b'*' => Some(32),
+        b'~' => Some(33),
+        b'$' => Some(34),
+        b'=' => Some(35),
+        b'U' | b'u' => Some(36),
+        _ => None,
+    }
+}
+
+pub fn decode(input: &str, checked: bool) -> Result<Vec<u8>, DecodeError> {
+    let significant: Vec<(usize, u8)> = input
+        .bytes()
+        .enumerate()
+        .filter(|&(_, byte)| byte != b'-')
+        .collect();
+
+    let (data_end, reserved_check) = if checked {
+        if significant.is_empty() {
+            return Err(DecodeError::MissingCheck { offset: input.len() });
+        }
+        (
+            significant.len() - 1,
+            Some(significant[significant.len() - 1]),
+        )
+    } else {
+        (significant.len(), None)
+    };
+
+    let mut values = Vec::with_capacity(data_end);
+    for &(offset, byte) in &significant[..data_end] {
+        match data_value(byte) {
+            Some(value) => values.push((offset, value)),
+            None => return Err(DecodeError::InvalidByte { offset, byte }),
+        }
+    }
+
+    let normalized_check = if let Some((offset, byte)) = reserved_check {
+        match check_value(byte) {
+            Some(value) => Some((offset, value)),
+            None => return Err(DecodeError::InvalidByte { offset, byte }),
+        }
+    } else {
+        None
+    };
+
+    let residue = values.len() % 8;
+    if !matches!(residue, 0 | 2 | 4 | 5 | 7) {
+        return Err(DecodeError::InvalidLength { offset: input.len() });
+    }
+
+    let unused_bits = match residue {
+        2 => 2,
+        4 => 4,
+        5 => 1,
+        7 => 3,
+        _ => 0,
+    };
+
+    if unused_bits != 0 {
+        let (offset, value) = values[values.len() - 1];
+        let mask = (1u8 << unused_bits) - 1;
+        if value & mask != 0 {
+            return Err(DecodeError::TrailingBits { offset });
+        }
+    }
+
+    let mut result = Vec::with_capacity(values.len() * 5 / 8);
+    let mut byte = 0u8;
+    let mut bits = 0u8;
+    let mut remainder = 0u8;
+
+    for &(_, value) in &values {
+        remainder = ((remainder as u16 * 32 + value as u16) % 37) as u8;
+        for shift in (0..5).rev() {
+            byte = (byte << 1) | ((value >> shift) & 1);
+            bits += 1;
+            if bits == 8 {
+                result.push(byte);
+                byte = 0;
+                bits = 0;
+            }
+        }
+    }
+
+    if let Some((offset, found)) = normalized_check {
+        if found != remainder {
+            return Err(DecodeError::CheckMismatch {
+                offset,
+                expected: remainder,
+                found,
+            });
+        }
+    }
+
+    Ok(result)
+}
+
+fn main() {}

@@ -1,0 +1,122 @@
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges { limit: MAX_EDGES });
+    }
+
+    for (edge, &(source, target)) in edges.iter().enumerate() {
+        if source >= n {
+            return Err(GraphError::BadEndpoint {
+                edge,
+                side: 0,
+                vertex: source,
+            });
+        }
+        if target >= n {
+            return Err(GraphError::BadEndpoint {
+                edge,
+                side: 1,
+                vertex: target,
+            });
+        }
+    }
+
+    let mut forward = vec![Vec::new(); n];
+    let mut backward = vec![Vec::new(); n];
+    for &(source, target) in edges {
+        forward[source].push(target);
+        backward[target].push(source);
+    }
+
+    // Iterative first pass of Kosaraju's algorithm.
+    let mut seen = vec![false; n];
+    let mut finish_order = Vec::with_capacity(n);
+    for root in 0..n {
+        if seen[root] {
+            continue;
+        }
+        seen[root] = true;
+        let mut stack = vec![(root, 0usize)];
+        while let Some((vertex, next)) = stack.last_mut() {
+            if *next < forward[*vertex].len() {
+                let neighbor = forward[*vertex][*next];
+                *next += 1;
+                if !seen[neighbor] {
+                    seen[neighbor] = true;
+                    stack.push((neighbor, 0));
+                }
+            } else {
+                let (finished, _) = stack.pop().unwrap();
+                finish_order.push(finished);
+            }
+        }
+    }
+
+    let mut assigned = vec![false; n];
+    let mut components = Vec::new();
+    for &root in finish_order.iter().rev() {
+        if assigned[root] {
+            continue;
+        }
+        assigned[root] = true;
+        let mut component = Vec::new();
+        let mut stack = vec![root];
+        while let Some(vertex) = stack.pop() {
+            component.push(vertex);
+            for &neighbor in &backward[vertex] {
+                if !assigned[neighbor] {
+                    assigned[neighbor] = true;
+                    stack.push(neighbor);
+                }
+            }
+        }
+        component.sort_unstable();
+        components.push(component);
+    }
+
+    components.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0])));
+
+    let mut component_of = vec![0; n];
+    let mut cyclic = Vec::with_capacity(components.len());
+    for (id, component) in components.iter().enumerate() {
+        for &vertex in component {
+            component_of[vertex] = id;
+        }
+        cyclic.push(component.len() > 1);
+    }
+    for &(source, target) in edges {
+        if source == target {
+            cyclic[component_of[source]] = true;
+        }
+    }
+
+    Ok(Graph {
+        components,
+        component_of,
+        cyclic,
+    })
+}
+
+fn main() {}
