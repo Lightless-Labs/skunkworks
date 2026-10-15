@@ -1,63 +1,77 @@
-# Plan: P4 — Autopoietic Lift
+# Plan: P4 — Autopoietic Lift (self-written lessons)
 
-**Created:** 2026-10-15 (drafted while E07b runs; executes after P3)
-**Status:** Draft
-**Addendum:** 2026-10-15 — P2 gate fixes:
-- **Train-label rule:** train-family aggregate pass/fail labels may reach the proposer; test content never does; validation and confirmation outcomes reach no enzyme.
-- **Acceptance** uses train mechanism metrics with a fixed threshold. Validation is used only at the end.
-- **A random-edit proposer** over the same grammar, at equal search budget, is the control.
-- **At least 2 independent searches** from H0 (≤ 5 generations each), and every search is reported.
-- **New slots:** a post-green action and a capped 'lessons' list the architect can append to.
-- **Budget** (full accounting): ≤ 5k invocations.
-**Parent:** `docs/plans/2026-10-14-lift-first-roadmap.md` § P4
-**Grounding:** `docs/research/2026-10-14-dgm-rqgm-relevance.md`; E07: the seed metabolism ≈ the plain repair loop (+2.7 pp, CI [−4.7, +11.5]) at 3.7× the tokens.
+**Created:** 2026-10-15 (drafted while E07b ran)
+**Status:** Draft v2. It awaits the S4 result and the P3 → P4 gate review.
+**Addendum:** 2026-10-15 — P2 gate fixes (kept, now concrete below):
+- train labels may reach the proposer, but test content never does;
+- acceptance uses train metrics, with validation only at the end;
+- a control proposer at equal budget;
+- at least 2 searches;
+- full budget accounting within ≤ 5k.
+
+**Addendum:** 2026-10-15 — v2 rewrite after P3. It is grounded in:
+- S1–S3 (self-signals within one task do not beat the repair loop);
+- T0 (failures concentrate, and task-agnostic lessons exist);
+- P4-0 (Luna-low diagnoses a known bug from labels alone: clause hit 0.56 vs chance 0.25);
+- E08r (H0 ≈ D on train).
+
+The H2 (archive) and H3 (co-evolved evaluator) hypotheses are dropped for budget and time; T7 is unaffected.
+
+**Parent:** `docs/plans/2026-10-14-lift-first-roadmap.md` § P4. Rules: `docs/PROTOCOL.md`.
 
 ## Question
 
-Does A²D's self-modification produce a harness that beats the frozen P3 harness and the stronger of B and D on fresh families (Confirmation-2), at the equal invocation cap?
+Does A²D's self-modification — its architect writing task-agnostic lessons from its own train failures — produce a harness H* that beats the frozen H0 and the stronger of B and D on fresh families (Confirmation-2), at the equal invocation cap?
 
-## What may evolve: the harness as data
+The lever is the one thing a plain repair loop cannot do: **learn across tasks**. In P3, every within-task self-signal failed. Most remaining failures are systematic misreadings that recur across families (T0), and the same model can diagnose them once it knows a bug exists (P4-0).
 
-P4 hypothesis 1 (roadmap) is "the architect edits the coder harness". Today the architect's only actuator is a `SystemPatch` to Rust source, which is rejected in lift mode. Self-modification must not touch the controller, oracles or ledger (CONSTITUTION Invariant 4), so the evolvable surface is a **harness file** that arm C loads per run:
+## What evolves
 
-- coder system prompt and repair-prompt template;
-- which artefacts feed the coder (failure report, tester review, previous attempt), and in what order;
-- the per-task schedule within k: the number of code attempts versus review calls;
-- the candidate-ranking rule inside C, on public signals only.
-
-The harness file sits outside the protected paths. Its hash is recorded in the registration, and the controller and oracle remain frozen.
+- Only the harness `lessons` key: at most 8 task-agnostic lessons, rendered after the task input for every enzyme.
+- `a2d distill` writes it (`crates/a2d-cli/src/lift_distill.rs`). The architect is `codex/gpt-6-luna` at low effort, the treatment model.
+- Distill's inputs are the public-green, hidden-fail submissions of a scored train run: requirements plus public tests, the file, and the label.
+- Test content and hidden output never reach a prompt (sentinel unit test). Lessons that name a train family or API identifier are dropped.
+- Everything else is frozen at **H0 v3** (`harnesses/h0.json` + `stop_at_public_green`). The controller, oracle and ledger stay frozen.
 
 ## Data
+- **Train** (visible): calibration-v2 (24) + dev-v2 (48) + c1-train (68) = 140 tasks, 35 families, split by family into halves T_a / T_b with a seeded split per search.
+- **Validation:** c1-validation (80 tasks, aggregates only), with 3 looks left after S4.
+- **Confirmation-2:** 144 tasks, 36 families, hash `cb7cb496…`. It is never used for search.
 
-A **development set authored in-repo** (visible), from the same v2 spec: 12 new families × 4 levels = 48 tasks, split by family into **train** (6 families) and **validation** (6 families). calibration-v2 can be added to train. The confirmation sets are never used for search.
+## Search (one run of H1)
+1. **G0:** run C(H0) on all train, with one scored development run per suite.
+2. **Generation g = 1…4:**
+   - **Propose.** `a2d distill` reads the incumbent's failures on half X (alternating T_a / T_b) and writes candidate lessons.
+   - **Evaluate.** Run C(candidate) on all train.
+   - **Accept** if the candidate's hidden passes on the held-out half Y are at least the incumbent's + 2 tasks (fixed). Otherwise keep the incumbent. The incumbent's failures for the next generation come from its own latest run.
+3. **Output:** the final incumbent H*_s.
 
-## Search loop (one "evolution run")
+The cost per generation is about 140 × 1.6 + about 20 distill calls ≈ 245. That makes about 1,000 per search with G0.
 
-1. Start from the frozen P3 harness H0.
-2. For each generation g = 1…G:
-   - **Propose.** The architect (Luna, so the treatment model is unchanged) proposes a harness edit, given aggregated public-test outcomes from train only. It never sees hidden results.
-   - **Evaluate.** The candidate is evaluated on train by hidden pass rate. Train hidden results are visible to the *search*, but the confirmation sets never are.
-   - **Accept.** The candidate is kept if validation improves (ratchet) or, for H2, enters the archive.
-3. Output: the best harness by validation.
+## Arms of the search experiment
+- **H1 search × 2:** independent seeds and splits.
+- **Control: uninformed lessons.** It uses the same loop, budget and acceptance rule, but the architect writes lessons from the requirements of failed tasks *without* the code or the failure label. It tests whether learning from failures matters more than generic advice.
 
-Search cost (invocations and tokens) is accounted for and reported beside the claim. Budget: about 240 invocations per generation (train plus validation at k = 5); G ≤ 10, so ≤ 2,400 per run.
+## Validation (one look)
+- C(H*_1), C(H*_2), C(control*) and C(H0), with D alongside, on c1-validation (about 600 invocations).
+- The H* that enters Confirmation-2 is fixed by a pre-registered rule: the better validation rate of the two searches. Ties go to search 1.
 
-## Hypotheses (T7: at most 5 in total)
+## Confirmation-2 (one registered run, scored once)
+- **Arms:** D, B, C(H0) and C(H*). k = 5, r = 1, seeded tuple and arm order. About 144 × 9.3 ≈ 1,340 invocations.
+  - If the controller still takes one `--harness` per run, use two registered runs launched together and `a2d lift compare` across them. A multi-harness arm C is preferable and is a researcher change to the controller, registered beforehand.
+- **Claims** (roadmap completion):
+  - C(H*) vs C(H0): self-modification widens the margin;
+  - C(H*) vs max(B, D): A²D beats its coder used directly.
+  - Each uses the implemented classifier.
+- **Power** (`docs/experiments/analysis/c2_power.py`):
+  - P(SUPPORTED | +15 pp) = 0.86–0.90;
+  - P(RULED OUT | 0) = 0.62 at r = 1, a recorded shortfall.
 
-1. **H1 — harness self-modification with a ratchet:** evolved H* vs frozen H0.
-2. **H2 — archive vs ratchet:** DGM-style parent selection from the lineage archive.
-3. **H3 — co-evolved evaluator** (RQGM): the tester enzyme is frozen per epoch and swapped only when it beats the incumbent on a labelled anchor set. This runs only if H1 or H2 shows fixed-oracle lift.
-
-## Confirmation
-
-- H* and H0 are each scored once on **Confirmation-2**, against max(B, D) and against each other.
-- Confirmation-2 has 48 tasks (12 families), which is underpowered.
-  - Before P4 registration, extend it blind (Codex-authored and validated, independent-solve audit as for Confirmation-1) towards the 150-task cap.
-  - Power-plan by simulating the implemented classifier (`docs/solutions/best-practices/power-plan-the-implemented-decision-rule-2026-10-14.md`).
-- Completion (roadmap): success needs H* SUPPORTED against H0 on Confirmation-2 **and** a SUPPORTED A²D configuration against max(B, D).
+## Budget (≤ 5k for P4, Confirmation-2 separate)
+- Two searches about 2,000, control about 1,000, validation look about 600: total ≈ 3,600.
+- Spend (invocations and tokens) is reported beside every result.
 
 ## Risks
-
-- **Overfitting the search to train.** Mitigated by the family-split validation and by Confirmation-2.
-- **Search cost dominating any lift.** The cost is reported as a first-class result.
-- **Same-vendor model throughout** (Luna as coder and architect, Sol as author and auditor): recorded.
+- **Author-style transfer.** Lessons learn what Sol's hidden tests probe. Confirmation-2 shares the author, so the claim is scoped to that task distribution.
+- **Noisy acceptance.** About 70 tasks per held-out half; the control at equal budget calibrates how often noise is accepted.
+- **Same-vendor models throughout.** Luna is the coder and architect; Sol is the author and auditor.
