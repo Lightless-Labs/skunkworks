@@ -673,3 +673,18 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - all four go to the single validation look (§ Validation), together with C(H0 v5) and D.
 - Budget: ≤ 4 × 3 × 700 hard cap (expected about 4 × 3 × 240 ≈ 2.9k). Plus distill: ≤ 41 calls per generation.
 - Result: pending
+
+### E12 — P4 validation look: frozen search outputs on c1-validation  [phase P4, metric-only]
+- Registered: 2026-10-15, before any E11 search finished. This is P4's single validation look.
+- Data: `$A2D_HOLDOUT_DIR/c1-validation` (80 tasks, 20 families). Only `summary.json` aggregates are read; per-task and per-family results, prompts and submissions are never opened.
+- **One multi-harness run**, k = 5, seed 31, `--primary D`, out `$A2D_HOLDOUT_DIR/runs/E12`. Arms:
+  - D;
+  - `C:h0` (`harnesses/h0-v6.json`);
+  - `C:i1`, `C:i2`, `C:u1`, `C:u2`: each search's frozen `hstar.json`, copied to `harnesses/p4-{i1,i2,u1,u2}.json` and committed before launch.
+- **Rules (from the P4 plan, fixed):**
+  - **H\* is the better of `C:i1` and `C:i2` by validation rate**; ties go to I1. Its validation lift is selection-biased and is never claimed.
+  - **Control consequence:** if max(`C:u1`, `C:u2`) ≥ max(`C:i1`, `C:i2`), the wording "learning from failures" is withdrawn. The lessons slot can then only be described as "generic advice from requirements".
+  - **Go/no-go:** go to Confirmation-2 only if C(H\*) − D ≥ +10 pp on validation.
+    - **No-go:** Confirmation-2 stays unspent. P4 is reported as "not supported at the development screen", and the roadmap completes on its falsified path with the precise wording.
+- Budget: ≤ 900 invocations (about 80 × 6 × 1.4 ≈ 670 expected), 10,800 s. Validation looks used: 1 of 4 in P3 (S4); this is P4's one look.
+- Result: pending
