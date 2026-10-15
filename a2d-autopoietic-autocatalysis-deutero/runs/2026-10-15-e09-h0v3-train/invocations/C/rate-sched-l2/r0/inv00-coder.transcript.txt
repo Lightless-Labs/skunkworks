@@ -1,0 +1,397 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-40127-1792061230534464000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a13f2c-528a-7732-b382-2d77c42a8671
+--------
+user
+You are a programmer. Your inputs: `requirements` (the task; `design` and `plan` repeat it), `previous_attempt` (your last file, empty on the first attempt) and `failure_report` (compiler or public-test output for that file, empty if it passed).
+Write a SINGLE complete Rust source file implementing the requirements exactly, using only std, compiling with `rustc --edition 2024`.
+Before writing code, go through every numbered requirement clause and make sure the file satisfies each one, including exact error variants and their precedence, boundaries, ordering and output formats.
+If `previous_attempt` is non-empty, start from it: keep what is correct, fix what `failure_report` shows, and re-check every clause.
+Include an empty `fn main() {}` (the file is compiled as a program). Do not define a module named `a2d_acceptance` (the system appends it). Your own unit tests are optional.
+Output ONLY the Rust source file in a single ```rust fenced block. No explanation.
+
+{"design":"Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. All listed API items and fields must be pub. Derive Debug, Clone, PartialEq, Eq for data/error enums and records (engine structs need not implement these). No main function is required. \n\nExact public API:\n```rust\npub enum CronError { Layout(usize), Syntax(usize), Number(usize), Bounds(usize), Descending(usize), Step(usize) }\npub struct Cron { /* private fields */ }\nimpl Cron {\n pub fn parse(text: &str) -> Result<Self, CronError>;\n pub fn matches(&self, minute: u64) -> bool;\n}\npub enum Policy { Skip, Once, All }\npub struct Occurrence { pub id: String, pub at: u64 }\npub enum Error { TimeReversed, TimeRange, BadId, BadPriority, Duplicate, Cron(CronError) }\npub struct Calendar { /* private fields */ }\nimpl Calendar {\n pub fn new() -> Self;\n pub fn add(&mut self, id: &str, expression: &str, priority: u8, policy: Policy) -> Result<(), Error>;\n pub fn poll(&mut self, now: u64) -> Result<Vec<Occurrence>, Error>;\n}\n```\n\nR1. All API time arguments and Occurrence.at are u64 milliseconds. Cron.matches alone receives an absolute minute number. A minute is 60000 ms; a day is 1440 minutes, with no time zones.\nR2. Cron text has exactly two nonempty fields, minute then hour, separated by exactly one ASCII space. First check layout over the entire string: any ASCII whitespace other than space yields Layout at its first byte offset; otherwise no spaces yields Layout(text.len()), multiple spaces yields Layout at the second space, and a sole leading/trailing space yields Layout at that space. This layout check precedes field parsing.\nR3. Fields are comma-separated nonempty items. Allowed items are n, a-b, *, */s, a-b/s. No other syntax is valid. A bare n/s reports Syntax at the slash. Lists may overlap, repeat, or appear out of numeric order; they are unions.\nR4. All offsets in CronError are zero-based UTF-8 byte offsets in the complete input. Parse minute items left-to-right, then hour items left-to-right; return the first error under that order.\nR5. Parse an item base before its optional step. A numeric fragment must be nonempty ASCII digits; otherwise Syntax points at its first non-digit byte (or fragment start if empty). A multi-digit fragment starting with zero gives Number(fragment start), after the digit-syntax check. Arbitrarily long digit fragments are allowed to be rejected by Bounds or Step, never panic.\nR6. Minute numbers are 0..=59, hour numbers 0..=23. An out-of-range base number gives Bounds at its start. Validate a range left endpoint, then right endpoint, then its order; descending gives Descending at the dash.\nR7. An item may have at most one slash; a second slash gives Syntax at that slash before checking the base. Only * or a range can have a step; otherwise Syntax at the first slash before numeric validation. Within a range only the first dash separates numeric fragments, so a second dash is a non-digit in the right fragment.\nR8. Step fragments obey the numeric syntax/canonical rules in R5; their value must be 1..=60 for minute, 1..=24 for hour, else Step at the step start. Validate base bounds/order before step syntax/value.\nR9. An empty list item gives Syntax at its start, including trailing comma (which can point at field end). A * base means the whole field; all other nondigit text follows the numeric-fragment Syntax rule.\nR10. A range includes both endpoints. A step selects start, start+s, ... <= end, anchored at range start; * has start 0. Unstepped ranges and * use step 1.\nR11. Cron.matches(m) is true exactly when minute m%60 is selected AND hour (m/60)%24 is selected. It works for every u64 minute, including u64::MAX.\nR12. Calendar initially has no jobs and no successful poll. add reserves an ID permanently, and records insertion order.\nR13. IDs have 1..=16 ASCII lowercase-letter/digit/hyphen bytes. Priorities are 0..=9; larger means higher.\nR14. add error precedence is BadId, then BadPriority, then Duplicate, then Cron(parser error). Failed add changes nothing.\nR15. The first successful poll considers matching minute boundaries from time 0 through now inclusive. Later polls consider only boundaries strictly greater than the previous successful poll time and <= now.\nR16. Jobs added after a poll participate only in later poll intervals; they never recover occurrences at or before the most recent successful poll.\nR17. poll accepts now <= 604800000 (exactly seven days). It checks TimeReversed (now less than last successful poll) before TimeRange. Initially only TimeRange can apply.\nR18. Failed poll changes nothing, including the last successful poll time.\nR19. Policy::All emits every matching boundary in the current interval.\nR20. Policy::Once emits only the latest matching boundary in the current interval, if any.\nR21. Policy::Skip emits only a matching boundary exactly equal to now; if now is not a minute boundary it emits nothing. All older boundaries in the interval are discarded.\nR22. All policies consume the entire interval even when they emit nothing. Repeated poll at identical now emits an empty vector.\nR23. Merge emitted occurrences by ascending at, then descending job priority, then insertion order; ID spelling never breaks ties.\nR24. Occurrence.at is the original scheduled boundary, even for catch-up. Return one occurrence per selected boundary per job, deduplicating overlapping cron items.\nR25. Each Calendar and Cron is independent; no wall clock is read.\nR26. Zero is a valid first occurrence. Empty calendars still advance their poll watermark.\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\n// R3 R10 R11\n#[test]\nfn public_parse() {\n    let c = Cron::parse(\"5-15/5 2,4\").unwrap();\n    assert!(c.matches(130));\n    assert!(!c.matches(131));\n}\n\n// R15 R19 R24\n#[test]\nfn public_all() {\n    let mut c = Calendar::new();\n    c.add(\"ticks\", \"*/1 0-23\", 1, Policy::All).unwrap();\n    assert_eq!(\n        c.poll(60000).unwrap(),\n        vec![\n            Occurrence {\n                id: \"ticks\".into(),\n                at: 0\n            },\n            Occurrence {\n                id: \"ticks\".into(),\n                at: 60000\n            }\n        ]\n    );\n}\n\n// R20 R21\n#[test]\nfn public_policies() {\n    let mut c = Calendar::new();\n    c.add(\"late\", \"*/1 0-23\", 1, Policy::Once).unwrap();\n    c.add(\"skip\", \"*/1 0-23\", 2, Policy::Skip).unwrap();\n    assert_eq!(\n        c.poll(90000).unwrap(),\n        vec![Occurrence {\n            id: \"late\".into(),\n            at: 60000\n        }]\n    );\n}\n\n// R23\n#[test]\nfn public_ordering() {\n    let mut c = Calendar::new();\n    c.add(\"low\", \"0-0 0-0\", 0, Policy::All).unwrap();\n    c.add(\"high\", \"0-0 0-0\", 9, Policy::All).unwrap();\n    assert_eq!(\n        c.poll(0)\n            .unwrap()\n            .iter()\n            .map(|o| o.id.as_str())\n            .collect::<Vec<_>>(),\n        vec![\"high\", \"low\"]\n    );\n}\n```\n","enzyme_defs":"[{\"id\":\"coder\",\"reactants\":[\"design\",\"plan\",\"requirements\"],\"products\":[\"code\"],\"catalysts\":[\"enzyme_defs\",\"failure_report\",\"previous_attempt\"],\"prompt_template\":\"You are a programmer. Your inputs: `requirements` (the task; `design` and `plan` repeat it), `previous_attempt` (your last file, empty on the first attempt) and `failure_report` (compiler or public-test output for that file, empty if it passed).\\nWrite a SINGLE complete Rust source file implementing the requirements exactly, using only std, compiling with `rustc --edition 2024`.\\nBefore writing code, go through every numbered requirement clause and make sure the file satisfies each one, including exact error variants and their precedence, boundaries, ordering and output formats.\\nIf `previous_attempt` is non-empty, start from it: keep what is correct, fix what `failure_report` shows, and re-check every clause.\\nInclude an empty `fn main() {}` (the file is compiled as a program). Do not define a module named `a2d_acceptance` (the system appends it). Your own unit tests are optional.\\nOutput ONLY the Rust source file in a single ```rust fenced block. No explanation.\"},{\"id\":\"evolver\",\"reactants\":[\"fitness_report\"],\"products\":[\"enzyme_defs\"],\"catalysts\":[\"enzyme_defs\",\"failure_report\",\"fitness_report\",\"provider_health_report\",\"provider_policy\"]}]","failure_report":"","plan":"Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. All listed API items and fields must be pub. Derive Debug, Clone, PartialEq, Eq for data/error enums and records (engine structs need not implement these). No main function is required. \n\nExact public API:\n```rust\npub enum CronError { Layout(usize), Syntax(usize), Number(usize), Bounds(usize), Descending(usize), Step(usize) }\npub struct Cron { /* private fields */ }\nimpl Cron {\n pub fn parse(text: &str) -> Result<Self, CronError>;\n pub fn matches(&self, minute: u64) -> bool;\n}\npub enum Policy { Skip, Once, All }\npub struct Occurrence { pub id: String, pub at: u64 }\npub enum Error { TimeReversed, TimeRange, BadId, BadPriority, Duplicate, Cron(CronError) }\npub struct Calendar { /* private fields */ }\nimpl Calendar {\n pub fn new() -> Self;\n pub fn add(&mut self, id: &str, expression: &str, priority: u8, policy: Policy) -> Result<(), Error>;\n pub fn poll(&mut self, now: u64) -> Result<Vec<Occurrence>, Error>;\n}\n```\n\nR1. All API time arguments and Occurrence.at are u64 milliseconds. Cron.matches alone receives an absolute minute number. A minute is 60000 ms; a day is 1440 minutes, with no time zones.\nR2. Cron text has exactly two nonempty fields, minute then hour, separated by exactly one ASCII space. First check layout over the entire string: any ASCII whitespace other than space yields Layout at its first byte offset; otherwise no spaces yields Layout(text.len()), multiple spaces yields Layout at the second space, and a sole leading/trailing space yields Layout at that space. This layout check precedes field parsing.\nR3. Fields are comma-separated nonempty items. Allowed items are n, a-b, *, */s, a-b/s. No other syntax is valid. A bare n/s reports Syntax at the slash. Lists may overlap, repeat, or appear out of numeric order; they are unions.\nR4. All offsets in CronError are zero-based UTF-8 byte offsets in the complete input. Parse minute items left-to-right, then hour items left-to-right; return the first error under that order.\nR5. Parse an item base before its optional step. A numeric fragment must be nonempty ASCII digits; otherwise Syntax points at its first non-digit byte (or fragment start if empty). A multi-digit fragment starting with zero gives Number(fragment start), after the digit-syntax check. Arbitrarily long digit fragments are allowed to be rejected by Bounds or Step, never panic.\nR6. Minute numbers are 0..=59, hour numbers 0..=23. An out-of-range base number gives Bounds at its start. Validate a range left endpoint, then right endpoint, then its order; descending gives Descending at the dash.\nR7. An item may have at most one slash; a second slash gives Syntax at that slash before checking the base. Only * or a range can have a step; otherwise Syntax at the first slash before numeric validation. Within a range only the first dash separates numeric fragments, so a second dash is a non-digit in the right fragment.\nR8. Step fragments obey the numeric syntax/canonical rules in R5; their value must be 1..=60 for minute, 1..=24 for hour, else Step at the step start. Validate base bounds/order before step syntax/value.\nR9. An empty list item gives Syntax at its start, including trailing comma (which can point at field end). A * base means the whole field; all other nondigit text follows the numeric-fragment Syntax rule.\nR10. A range includes both endpoints. A step selects start, start+s, ... <= end, anchored at range start; * has start 0. Unstepped ranges and * use step 1.\nR11. Cron.matches(m) is true exactly when minute m%60 is selected AND hour (m/60)%24 is selected. It works for every u64 minute, including u64::MAX.\nR12. Calendar initially has no jobs and no successful poll. add reserves an ID permanently, and records insertion order.\nR13. IDs have 1..=16 ASCII lowercase-letter/digit/hyphen bytes. Priorities are 0..=9; larger means higher.\nR14. add error precedence is BadId, then BadPriority, then Duplicate, then Cron(parser error). Failed add changes nothing.\nR15. The first successful poll considers matching minute boundaries from time 0 through now inclusive. Later polls consider only boundaries strictly greater than the previous successful poll time and <= now.\nR16. Jobs added after a poll participate only in later poll intervals; they never recover occurrences at or before the most recent successful poll.\nR17. poll accepts now <= 604800000 (exactly seven days). It checks TimeReversed (now less than last successful poll) before TimeRange. Initially only TimeRange can apply.\nR18. Failed poll changes nothing, including the last successful poll time.\nR19. Policy::All emits every matching boundary in the current interval.\nR20. Policy::Once emits only the latest matching boundary in the current interval, if any.\nR21. Policy::Skip emits only a matching boundary exactly equal to now; if now is not a minute boundary it emits nothing. All older boundaries in the interval are discarded.\nR22. All policies consume the entire interval even when they emit nothing. Repeated poll at identical now emits an empty vector.\nR23. Merge emitted occurrences by ascending at, then descending job priority, then insertion order; ID spelling never breaks ties.\nR24. Occurrence.at is the original scheduled boundary, even for catch-up. Return one occurrence per selected boundary per job, deduplicating overlapping cron items.\nR25. Each Calendar and Cron is independent; no wall clock is read.\nR26. Zero is a valid first occurrence. Empty calendars still advance their poll watermark.\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\n// R3 R10 R11\n#[test]\nfn public_parse() {\n    let c = Cron::parse(\"5-15/5 2,4\").unwrap();\n    assert!(c.matches(130));\n    assert!(!c.matches(131));\n}\n\n// R15 R19 R24\n#[test]\nfn public_all() {\n    let mut c = Calendar::new();\n    c.add(\"ticks\", \"*/1 0-23\", 1, Policy::All).unwrap();\n    assert_eq!(\n        c.poll(60000).unwrap(),\n        vec![\n            Occurrence {\n                id: \"ticks\".into(),\n                at: 0\n            },\n            Occurrence {\n                id: \"ticks\".into(),\n                at: 60000\n            }\n        ]\n    );\n}\n\n// R20 R21\n#[test]\nfn public_policies() {\n    let mut c = Calendar::new();\n    c.add(\"late\", \"*/1 0-23\", 1, Policy::Once).unwrap();\n    c.add(\"skip\", \"*/1 0-23\", 2, Policy::Skip).unwrap();\n    assert_eq!(\n        c.poll(90000).unwrap(),\n        vec![Occurrence {\n            id: \"late\".into(),\n            at: 60000\n        }]\n    );\n}\n\n// R23\n#[test]\nfn public_ordering() {\n    let mut c = Calendar::new();\n    c.add(\"low\", \"0-0 0-0\", 0, Policy::All).unwrap();\n    c.add(\"high\", \"0-0 0-0\", 9, Policy::All).unwrap();\n    assert_eq!(\n        c.poll(0)\n            .unwrap()\n            .iter()\n            .map(|o| o.id.as_str())\n            .collect::<Vec<_>>(),\n        vec![\"high\", \"low\"]\n    );\n}\n```\n","previous_attempt":"","requirements":"Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. All listed API items and fields must be pub. Derive Debug, Clone, PartialEq, Eq for data/error enums and records (engine structs need not implement these). No main function is required. \n\nExact public API:\n```rust\npub enum CronError { Layout(usize), Syntax(usize), Number(usize), Bounds(usize), Descending(usize), Step(usize) }\npub struct Cron { /* private fields */ }\nimpl Cron {\n pub fn parse(text: &str) -> Result<Self, CronError>;\n pub fn matches(&self, minute: u64) -> bool;\n}\npub enum Policy { Skip, Once, All }\npub struct Occurrence { pub id: String, pub at: u64 }\npub enum Error { TimeReversed, TimeRange, BadId, BadPriority, Duplicate, Cron(CronError) }\npub struct Calendar { /* private fields */ }\nimpl Calendar {\n pub fn new() -> Self;\n pub fn add(&mut self, id: &str, expression: &str, priority: u8, policy: Policy) -> Result<(), Error>;\n pub fn poll(&mut self, now: u64) -> Result<Vec<Occurrence>, Error>;\n}\n```\n\nR1. All API time arguments and Occurrence.at are u64 milliseconds. Cron.matches alone receives an absolute minute number. A minute is 60000 ms; a day is 1440 minutes, with no time zones.\nR2. Cron text has exactly two nonempty fields, minute then hour, separated by exactly one ASCII space. First check layout over the entire string: any ASCII whitespace other than space yields Layout at its first byte offset; otherwise no spaces yields Layout(text.len()), multiple spaces yields Layout at the second space, and a sole leading/trailing space yields Layout at that space. This layout check precedes field parsing.\nR3. Fields are comma-separated nonempty items. Allowed items are n, a-b, *, */s, a-b/s. No other syntax is valid. A bare n/s reports Syntax at the slash. Lists may overlap, repeat, or appear out of numeric order; they are unions.\nR4. All offsets in CronError are zero-based UTF-8 byte offsets in the complete input. Parse minute items left-to-right, then hour items left-to-right; return the first error under that order.\nR5. Parse an item base before its optional step. A numeric fragment must be nonempty ASCII digits; otherwise Syntax points at its first non-digit byte (or fragment start if empty). A multi-digit fragment starting with zero gives Number(fragment start), after the digit-syntax check. Arbitrarily long digit fragments are allowed to be rejected by Bounds or Step, never panic.\nR6. Minute numbers are 0..=59, hour numbers 0..=23. An out-of-range base number gives Bounds at its start. Validate a range left endpoint, then right endpoint, then its order; descending gives Descending at the dash.\nR7. An item may have at most one slash; a second slash gives Syntax at that slash before checking the base. Only * or a range can have a step; otherwise Syntax at the first slash before numeric validation. Within a range only the first dash separates numeric fragments, so a second dash is a non-digit in the right fragment.\nR8. Step fragments obey the numeric syntax/canonical rules in R5; their value must be 1..=60 for minute, 1..=24 for hour, else Step at the step start. Validate base bounds/order before step syntax/value.\nR9. An empty list item gives Syntax at its start, including trailing comma (which can point at field end). A * base means the whole field; all other nondigit text follows the numeric-fragment Syntax rule.\nR10. A range includes both endpoints. A step selects start, start+s, ... <= end, anchored at range start; * has start 0. Unstepped ranges and * use step 1.\nR11. Cron.matches(m) is true exactly when minute m%60 is selected AND hour (m/60)%24 is selected. It works for every u64 minute, including u64::MAX.\nR12. Calendar initially has no jobs and no successful poll. add reserves an ID permanently, and records insertion order.\nR13. IDs have 1..=16 ASCII lowercase-letter/digit/hyphen bytes. Priorities are 0..=9; larger means higher.\nR14. add error precedence is BadId, then BadPriority, then Duplicate, then Cron(parser error). Failed add changes nothing.\nR15. The first successful poll considers matching minute boundaries from time 0 through now inclusive. Later polls consider only boundaries strictly greater than the previous successful poll time and <= now.\nR16. Jobs added after a poll participate only in later poll intervals; they never recover occurrences at or before the most recent successful poll.\nR17. poll accepts now <= 604800000 (exactly seven days). It checks TimeReversed (now less than last successful poll) before TimeRange. Initially only TimeRange can apply.\nR18. Failed poll changes nothing, including the last successful poll time.\nR19. Policy::All emits every matching boundary in the current interval.\nR20. Policy::Once emits only the latest matching boundary in the current interval, if any.\nR21. Policy::Skip emits only a matching boundary exactly equal to now; if now is not a minute boundary it emits nothing. All older boundaries in the interval are discarded.\nR22. All policies consume the entire interval even when they emit nothing. Repeated poll at identical now emits an empty vector.\nR23. Merge emitted occurrences by ascending at, then descending job priority, then insertion order; ID spelling never breaks ties.\nR24. Occurrence.at is the original scheduled boundary, even for catch-up. Return one occurrence per selected boundary per job, deduplicating overlapping cron items.\nR25. Each Calendar and Cron is independent; no wall clock is read.\nR26. Zero is a valid first occurrence. Empty calendars still advance their poll watermark.\n\n## Public tests\n\nYour file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.\n\n```rust\n// R3 R10 R11\n#[test]\nfn public_parse() {\n    let c = Cron::parse(\"5-15/5 2,4\").unwrap();\n    assert!(c.matches(130));\n    assert!(!c.matches(131));\n}\n\n// R15 R19 R24\n#[test]\nfn public_all() {\n    let mut c = Calendar::new();\n    c.add(\"ticks\", \"*/1 0-23\", 1, Policy::All).unwrap();\n    assert_eq!(\n        c.poll(60000).unwrap(),\n        vec![\n            Occurrence {\n                id: \"ticks\".into(),\n                at: 0\n            },\n            Occurrence {\n                id: \"ticks\".into(),\n                at: 60000\n            }\n        ]\n    );\n}\n\n// R20 R21\n#[test]\nfn public_policies() {\n    let mut c = Calendar::new();\n    c.add(\"late\", \"*/1 0-23\", 1, Policy::Once).unwrap();\n    c.add(\"skip\", \"*/1 0-23\", 2, Policy::Skip).unwrap();\n    assert_eq!(\n        c.poll(90000).unwrap(),\n        vec![Occurrence {\n            id: \"late\".into(),\n            at: 60000\n        }]\n    );\n}\n\n// R23\n#[test]\nfn public_ordering() {\n    let mut c = Calendar::new();\n    c.add(\"low\", \"0-0 0-0\", 0, Policy::All).unwrap();\n    c.add(\"high\", \"0-0 0-0\", 9, Policy::All).unwrap();\n    assert_eq!(\n        c.poll(0)\n            .unwrap()\n            .iter()\n            .map(|o| o.id.as_str())\n            .collect::<Vec<_>>(),\n        vec![\"high\", \"low\"]\n    );\n}\n```\n"}
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-15T10:47:14.223850Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CronError {
+    Layout(usize),
+    Syntax(usize),
+    Number(usize),
+    Bounds(usize),
+    Descending(usize),
+    Step(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cron {
+    minutes: [bool; 60],
+    hours: [bool; 24],
+}
+
+fn numeric_value(
+    text: &str,
+    start: usize,
+    end: usize,
+    limit: u32,
+    error_kind: u8,
+) -> Result<u32, CronError> {
+    let bytes = text.as_bytes();
+    if start == end {
+        return Err(CronError::Syntax(start));
+    }
+    for i in start..end {
+        if !bytes[i].is_ascii_digit() {
+            return Err(CronError::Syntax(i));
+        }
+    }
+    if end - start > 1 && bytes[start] == b'0' {
+        return Err(CronError::Number(start));
+    }
+
+    let mut value = 0u32;
+    for i in start..end {
+        value = value
+            .saturating_mul(10)
+            .saturating_add((bytes[i] - b'0') as u32);
+        if value > limit {
+            return Err(if error_kind == 0 {
+                CronError::Bounds(start)
+            } else {
+                CronError::Step(start)
+            });
+        }
+    }
+    Ok(value)
+}
+
+fn parse_field(
+    text: &str,
+    field_start: usize,
+    field_end: usize,
+    maximum: u32,
+    step_maximum: u32,
+    selected: &mut [bool],
+) -> Result<(), CronError> {
+    let bytes = text.as_bytes();
+    let mut item_start = field_start;
+
+    loop {
+        let mut item_end = item_start;
+        while item_end < field_end && bytes[item_end] != b',' {
+            item_end += 1;
+        }
+
+        if item_start == item_end {
+            return Err(CronError::Syntax(item_start));
+        }
+
+        let mut slash = None;
+        for i in item_start..item_end {
+            if bytes[i] == b'/' {
+                if slash.is_some() {
+                    return Err(CronError::Syntax(i));
+                }
+                slash = Some(i);
+            }
+        }
+
+        let base_end = slash.unwrap_or(item_end);
+        let step_start = slash.map(|i| i + 1);
+
+        if slash.is_some() {
+            let has_range = bytes[item_start..base_end].contains(&b'-');
+            if bytes[item_start] != b'*' && !has_range {
+                return Err(CronError::Syntax(slash.unwrap()));
+            }
+        }
+
+        let (range_start, range_end) = if item_start < base_end && bytes[item_start] == b'*' {
+            if item_start + 1 != base_end {
+                let bad = item_start + 1;
+                return Err(CronError::Syntax(bad));
+            }
+            (0, maximum)
+        } else {
+            let mut dash = None;
+            for i in item_start..base_end {
+                if bytes[i] == b'-' && dash.is_none() {
+                    dash = Some(i);
+                }
+            }
+            if let Some(dash_pos) = dash {
+                let left = numeric_value(text, item_start, dash_pos, maximum, 0)?;
+                let right = numeric_value(text, dash_pos + 1, base_end, maximum, 0)?;
+                if left > right {
+                    return Err(CronError::Descending(dash_pos));
+                }
+                (left, right)
+            } else {
+                let value = numeric_value(text, item_start, base_end, maximum, 0)?;
+                (value, value)
+            }
+        };
+
+        let step = if let Some(start) = step_start {
+            let value = numeric_value(text, start, item_end, step_maximum, 1)?;
+            if value == 0 {
+                return Err(CronError::Step(start));
+            }
+            value
+        } else {
+            1
+        };
+
+        let mut value = range_start;
+        while value <= range_end {
+            selected[value as usize] = true;
+            match value.checked_add(step) {
+                Some(next) => value = next,
+                None => break,
+            }
+        }
+
+        if item_end == field_end {
+            break;
+        }
+        item_start = item_end + 1;
+    }
+
+    Ok(())
+}
+
+impl Cron {
+    pub fn parse(text: &str) -> Result<Self, CronError> {
+        let bytes = text.as_bytes();
+
+        for (i, byte) in bytes.iter().enumerate() {
+            if byte.is_ascii_whitespace() && *byte != b' ' {
+                return Err(CronError::Layout(i));
+            }
+        }
+
+        let spaces: Vec<usize> = bytes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, b)| (*b == b' ').then_some(i))
+            .collect();
+
+        if spaces.is_empty() {
+            return Err(CronError::Layout(text.len()));
+        }
+        if spaces.len() > 1 {
+            return Err(CronError::Layout(spaces[1]));
+        }
+        let separator = spaces[0];
+        if separator == 0 || separator + 1 == text.len() {
+            return Err(CronError::Layout(separator));
+        }
+
+        let mut minutes = [false; 60];
+        let mut hours = [false; 24];
+        parse_field(text, 0, separator, 59, 60, &mut minutes)?;
+        parse_field(
+            text,
+            separator + 1,
+            text.len(),
+            23,
+            24,
+            &mut hours,
+        )?;
+
+        Ok(Self { minutes, hours })
+    }
+
+    pub fn matches(&self, minute: u64) -> bool {
+        self.minutes[(minute % 60) as usize]
+            && self.hours[((minute / 60) % 24) as usize]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Policy {
+    Skip,
+    Once,
+    All,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Occurrence {
+    pub id: String,
+    pub at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    TimeReversed,
+    TimeRange,
+    BadId,
+    BadPriority,
+    Duplicate,
+    Cron(CronError),
+}
+
+struct Job {
+    id: String,
+    cron: Cron,
+    priority: u8,
+    policy: Policy,
+    order: usize,
+}
+
+pub struct Calendar {
+    jobs: Vec<Job>,
+    last_poll: Option<u64>,
+}
+
+impl Calendar {
+    pub fn new() -> Self {
+        Self {
+            jobs: Vec::new(),
+            last_poll: None,
+        }
+    }
+
+    pub fn add(
+        &mut self,
+        id: &str,
+        expression: &str,
+        priority: u8,
+        policy: Policy,
+    ) -> Result<(), Error> {
+        if id.is_empty()
+            || id.len() > 16
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err(Error::BadId);
+        }
+        if priority > 9 {
+            return Err(Error::BadPriority);
+        }
+        if self.jobs.iter().any(|job| job.id == id) {
+            return Err(Error::Duplicate);
+        }
+        let cron = Cron::parse(expression).map_err(Error::Cron)?;
+        let order = self.jobs.len();
+        self.jobs.push(Job {
+            id: id.to_owned(),
+            cron,
+            priority,
+            policy,
+            order,
+        });
+        Ok(())
+    }
+
+    pub fn poll(&mut self, now: u64) -> Result<Vec<Occurrence>, Error> {
+        if let Some(last) = self.last_poll {
+            if now < last {
+                return Err(Error::TimeReversed);
+            }
+        }
+        if now > 604_800_000 {
+            return Err(Error::TimeRange);
+        }
+
+        let interval_start = self.last_poll;
+        let mut scheduled: Vec<(u64, u8, usize, Occurrence)> = Vec::new();
+
+        for job in &self.jobs {
+            match job.policy {
+                Policy::All => {
+                    let mut at = match interval_start {
+                        None => 0,
+                        Some(last) => (last / 60_000 + 1) * 60_000,
+                    };
+                    while at <= now {
+                        if at % 60_000 == 0 && job.cron.matches(at / 60_000) {
+                            scheduled.push((
+                                at,
+                                job.priority,
+                                job.order,
+                                Occurrence {
+                                    id: job.id.clone(),
+                                    at,
+                                },
+                            ));
+                        }
+                        match at.checked_add(60_000) {
+                            Some(next) => at = next,
+                            None => break,
+                        }
+                    }
+                }
+                Policy::Once => {
+                    let mut latest = None;
+                    let mut at = match interval_start {
+                        None => 0,
+                        Some(last) => (last / 60_000 + 1) * 60_000,
+                    };
+                    while at <= now {
+                        if job.cron.matches(at / 60_000) {
+                            latest = Some(at);
+                        }
+                        match at.checked_add(60_000) {
+                            Some(next) => at = next,
+                            None => break,
+                        }
+                    }
+                    if let Some(at) = latest {
+                        scheduled.push((
+                            at,
+                            job.priority,
+                            job.order,
+                            Occurrence {
+                                id: job.id.clone(),
+                                at,
+                            },
+                        ));
+                    }
+                }
+                Policy::Skip => {
+                    if now % 60_000 == 0
+                        && interval_start.map_or(true, |last| now > last)
+                        && job.cron.matches(now / 60_000)
+                    {
+                        scheduled.push((
+                            now,
+                            job.priority,
+                            job.order,
+                            Occurrence {
+                                id: job.id.clone(),
+                                at: now,
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+
+        scheduled.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+
+        self.last_poll = Some(now);
+        Ok(scheduled.into_iter().map(|entry| entry.3).collect())
+    }
+}
+
+fn main() {}
+```
+tokens used
+9,599

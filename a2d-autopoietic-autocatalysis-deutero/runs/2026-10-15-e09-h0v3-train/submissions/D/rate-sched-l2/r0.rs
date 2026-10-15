@@ -1,0 +1,368 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CronError {
+    Layout(usize),
+    Syntax(usize),
+    Number(usize),
+    Bounds(usize),
+    Descending(usize),
+    Step(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cron {
+    minutes: [bool; 60],
+    hours: [bool; 24],
+}
+
+fn number(fragment: &str, offset: usize, max: u32) -> Result<u32, CronError> {
+    if fragment.is_empty() {
+        return Err(CronError::Syntax(offset));
+    }
+
+    if let Some((index, _)) = fragment
+        .bytes()
+        .enumerate()
+        .find(|(_, byte)| !byte.is_ascii_digit())
+    {
+        return Err(CronError::Syntax(offset + index));
+    }
+
+    if fragment.len() > 1 && fragment.as_bytes()[0] == b'0' {
+        return Err(CronError::Number(offset));
+    }
+
+    let mut value = 0u32;
+    for byte in fragment.bytes() {
+        value = match value
+            .checked_mul(10)
+            .and_then(|value| value.checked_add((byte - b'0') as u32))
+        {
+            Some(value) => value,
+            None => return Err(CronError::Bounds(offset)),
+        };
+    }
+
+    if value > max {
+        return Err(CronError::Bounds(offset));
+    }
+
+    Ok(value)
+}
+
+fn parse_field(
+    field: &str,
+    field_offset: usize,
+    max: usize,
+    step_max: usize,
+    selected: &mut [bool],
+) -> Result<(), CronError> {
+    let mut item_start = 0;
+
+    loop {
+        let item_end = field[item_start..]
+            .find(',')
+            .map(|relative| item_start + relative)
+            .unwrap_or(field.len());
+        let item = &field[item_start..item_end];
+        let absolute_start = field_offset + item_start;
+
+        if item.is_empty() {
+            return Err(CronError::Syntax(absolute_start));
+        }
+
+        let slash_positions: Vec<usize> = item
+            .bytes()
+            .enumerate()
+            .filter_map(|(index, byte)| (byte == b'/').then_some(index))
+            .collect();
+
+        if slash_positions.len() > 1 {
+            return Err(CronError::Syntax(
+                absolute_start + slash_positions[1],
+            ));
+        }
+
+        let slash = slash_positions.first().copied();
+        let base_end = slash.unwrap_or(item.len());
+        let base = &item[..base_end];
+
+        let dash = base.bytes().position(|byte| byte == b'-');
+        let is_star = base == "*";
+        let is_range = dash.is_some();
+
+        if slash.is_some() && !is_star && !is_range {
+            return Err(CronError::Syntax(absolute_start + slash.unwrap()));
+        }
+
+        let (start, end) = if is_star {
+            (0usize, max)
+        } else if let Some(dash_index) = dash {
+            let left = number(&base[..dash_index], absolute_start, max as u32)? as usize;
+            let right = number(
+                &base[dash_index + 1..],
+                absolute_start + dash_index + 1,
+                max as u32,
+            )? as usize;
+
+            if left > right {
+                return Err(CronError::Descending(absolute_start + dash_index));
+            }
+
+            (left, right)
+        } else {
+            let value = number(base, absolute_start, max as u32)? as usize;
+            (value, value)
+        };
+
+        let step = if let Some(slash_index) = slash {
+            let step_offset = absolute_start + slash_index + 1;
+            let value = number(&item[slash_index + 1..], step_offset, step_max as u32)?;
+            if value == 0 {
+                return Err(CronError::Step(step_offset));
+            }
+            value as usize
+        } else {
+            1
+        };
+
+        let mut value = start;
+        while value <= end {
+            selected[value] = true;
+            match value.checked_add(step) {
+                Some(next) => value = next,
+                None => break,
+            }
+        }
+
+        if item_end == field.len() {
+            break;
+        }
+        item_start = item_end + 1;
+    }
+
+    Ok(())
+}
+
+impl Cron {
+    pub fn parse(text: &str) -> Result<Self, CronError> {
+        if let Some((index, _)) = text
+            .bytes()
+            .enumerate()
+            .find(|(_, byte)| byte.is_ascii_whitespace() && *byte != b' ')
+        {
+            return Err(CronError::Layout(index));
+        }
+
+        let spaces: Vec<usize> = text
+            .bytes()
+            .enumerate()
+            .filter_map(|(index, byte)| (byte == b' ').then_some(index))
+            .collect();
+
+        if spaces.is_empty() {
+            return Err(CronError::Layout(text.len()));
+        }
+        if spaces.len() > 1 {
+            return Err(CronError::Layout(spaces[1]));
+        }
+
+        let split = spaces[0];
+        if split == 0 || split + 1 == text.len() {
+            return Err(CronError::Layout(split));
+        }
+
+        let mut minutes = [false; 60];
+        let mut hours = [false; 24];
+
+        parse_field(&text[..split], 0, 59, 60, &mut minutes)?;
+        parse_field(&text[split + 1..], split + 1, 23, 24, &mut hours)?;
+
+        Ok(Self { minutes, hours })
+    }
+
+    pub fn matches(&self, minute: u64) -> bool {
+        self.minutes[(minute % 60) as usize] && self.hours[((minute / 60) % 24) as usize]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Policy {
+    Skip,
+    Once,
+    All,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Occurrence {
+    pub id: String,
+    pub at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    TimeReversed,
+    TimeRange,
+    BadId,
+    BadPriority,
+    Duplicate,
+    Cron(CronError),
+}
+
+struct Job {
+    id: String,
+    cron: Cron,
+    priority: u8,
+    policy: Policy,
+    order: usize,
+}
+
+pub struct Calendar {
+    jobs: Vec<Job>,
+    reserved_ids: Vec<String>,
+    last_poll: Option<u64>,
+}
+
+impl Calendar {
+    pub fn new() -> Self {
+        Self {
+            jobs: Vec::new(),
+            reserved_ids: Vec::new(),
+            last_poll: None,
+        }
+    }
+
+    pub fn add(
+        &mut self,
+        id: &str,
+        expression: &str,
+        priority: u8,
+        policy: Policy,
+    ) -> Result<(), Error> {
+        if id.is_empty()
+            || id.len() > 16
+            || !id
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(Error::BadId);
+        }
+
+        if priority > 9 {
+            return Err(Error::BadPriority);
+        }
+
+        if self.reserved_ids.iter().any(|reserved| reserved == id) {
+            return Err(Error::Duplicate);
+        }
+
+        let cron = Cron::parse(expression).map_err(Error::Cron)?;
+        let id = id.to_owned();
+        let order = self.jobs.len();
+
+        self.reserved_ids.push(id.clone());
+        self.jobs.push(Job {
+            id,
+            cron,
+            priority,
+            policy,
+            order,
+        });
+
+        Ok(())
+    }
+
+    pub fn poll(&mut self, now: u64) -> Result<Vec<Occurrence>, Error> {
+        if let Some(last) = self.last_poll {
+            if now < last {
+                return Err(Error::TimeReversed);
+            }
+        }
+
+        if now > 604_800_000 {
+            return Err(Error::TimeRange);
+        }
+
+        let lower_exclusive = self.last_poll;
+        let mut occurrences: Vec<(Occurrence, u8, usize)> = Vec::new();
+
+        for job in &self.jobs {
+            let first_minute = match lower_exclusive {
+                Some(last) => last / 60_000 + 1,
+                None => 0,
+            };
+            let last_minute = now / 60_000;
+
+            if first_minute > last_minute {
+                continue;
+            }
+
+            let matching = |minute: u64| {
+                let at = minute * 60_000;
+                at <= now
+                    && lower_exclusive.map_or(true, |last| at > last)
+                    && job.cron.matches(minute)
+            };
+
+            match job.policy {
+                Policy::All => {
+                    for minute in first_minute..=last_minute {
+                        if matching(minute) {
+                            occurrences.push((
+                                Occurrence {
+                                    id: job.id.clone(),
+                                    at: minute * 60_000,
+                                },
+                                job.priority,
+                                job.order,
+                            ));
+                        }
+                    }
+                }
+                Policy::Once => {
+                    if let Some(minute) = (first_minute..=last_minute)
+                        .rev()
+                        .find(|minute| matching(*minute))
+                    {
+                        occurrences.push((
+                            Occurrence {
+                                id: job.id.clone(),
+                                at: minute * 60_000,
+                            },
+                            job.priority,
+                            job.order,
+                        ));
+                    }
+                }
+                Policy::Skip => {
+                    if now % 60_000 == 0 {
+                        let minute = now / 60_000;
+                        if matching(minute) {
+                            occurrences.push((
+                                Occurrence {
+                                    id: job.id.clone(),
+                                    at: now,
+                                },
+                                job.priority,
+                                job.order,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        occurrences.sort_by(|left, right| {
+            left.0
+                .at
+                .cmp(&right.0.at)
+                .then_with(|| right.1.cmp(&left.1))
+                .then_with(|| left.2.cmp(&right.2))
+        });
+
+        self.last_poll = Some(now);
+        Ok(occurrences
+            .into_iter()
+            .map(|(occurrence, _, _)| occurrence)
+            .collect())
+    }
+}

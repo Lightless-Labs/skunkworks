@@ -1,104 +1,75 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-15 (session 144: E10b PASS (H0 v6 = parity with D); E11 four searches done (4/12 accepted: 2 informed, 2 control); E12 validation look running)
+**Last updated:** 2026-10-15 (session 144: the lift-first roadmap is **Completed (falsified)** after the closing gate; E13 diagnostic pending)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
 
-- **Owner's framing:** A²D is *autoresearch on agentic coding harnesses*, and you have the reins. The rules are in **`docs/PROTOCOL.md`**; the goal and completion criteria are in `docs/plans/2026-10-14-lift-first-roadmap.md` (P4 decision by 2026-11-30).
-- **P2: the seed lift is RULED OUT** (C vs D +1.4 pp, CI [−5.4, +8.8]).
-- **P3 is completed as "not promoted"** (roadmap Addendum, P3 exit).
-  - S1–S4 failed their rules. Within-task self-signals do not beat the repair loop.
-  - **S4b survived its development screen.** Four researcher lessons on H0 v4 gave +11.1 pp over H0 v4 (net +8 of 72; CI [+2.8, +19.4]) and +5.6 pp over D, on families T0 never saw. This authorises P4 spend only.
-  - **Plumbing defects dominated the early readings:**
-    - the missing `main()` clause;
-    - input rendered three times;
-    - JSON-escaped repair inputs;
-    - an evolver that rewrites the coder's prompt mid-task.
+- **Owner's framing:** A²D is *autoresearch on agentic coding harnesses*, and you have the reins. The rules are in `docs/PROTOCOL.md`.
+- **The lift-first roadmap is Completed (falsified)** (`docs/plans/2026-10-14-lift-first-roadmap.md`; report `docs/reports/2026-10-15-lift-first-outcome.md`). Three outcomes, kept separate:
+  1. **Seed: RULED OUT** on Confirmation-1 under the registered analysis (E07 + E07b: +1.4 pp [−5.4, +8.8]; two-look upper bound +9.8).
+  2. **Improved harness: none promoted.**
+     - Within-task self-signal configurations failed their screens.
+     - The parity base, H0 v6 (D's prompts plus a `main()` clause on the metabolism carrier), was +2.9 pp on train but −12.5 pp on validation (exploratory). Its parity on fresh families is not established.
+     - The C arms show a small, carrier-wide never-green excess.
+  3. **Self-modification (P4): failed its development screen, unconfirmed, and not ruled out.**
+     - Self-written lessons: E12 H\* = i1, 68.8% vs D 70.0%. That is the pre-registered **no-go**.
+     - The uninformed control tied, so the "learning from failures" attribution is withdrawn.
+     - Lessons beat C:h0 (+11 pp, exploratory) but never beat D.
+- **Confirmation-2** (144 tasks, 36 families, `cb7cb496…`) is **unspent and unopened** apart from the disclosed `spreadsheet-eval` exclusion. It is reserved for one registered claim in a future regime.
 
-    All are fixed and unit-tested; see `docs/solutions/best-practices/inspect-first-prompts-of-a-new-harness-2026-10-15.md`.
-- **The P3 → P4 gate passed.** Reviewers: Codex Sol and a fresh Claude subagent. Every item has a disposition in `docs/plans/2026-10-15-p4-autopoietic-lift.md` (v3).
-- **P4 base: H0 v6** (`harnesses/h0-v6.json`, after E10 failed). H0 v6 is parity with D: D's `CODER_SYSTEM` plus the `main()` clause, `prompt_format: repair`, and `escalation: false`. It replaced H0 v5, an evolver-free coder enzyme with:
-  - `drop_coder_catalysts: [enzyme_defs]`;
-  - `plain_inputs`;
-  - `dedupe_input`;
-  - previous-attempt routing;
-  - `stop_at_public_green`.
-- **P4 = lessons that A²D writes itself** (`a2d distill`, Luna architect, per-task train labels only, starting from empty lessons).
-  - Searches: I1 and I2 informed; U1 and U2 an uninformed control (paired seeds 101 and 202).
-  - Ratchet: the incumbent is re-run fresh each generation, and a candidate is accepted at ≥ 4 net tasks.
-  - Then one validation look. Go/no-go: C(H\*) − D ≥ +10 pp.
-  - Then a multi-harness Confirmation-2 run at r = 2. Completion needs C(H\*) SUPPORTED vs C(H0 v5), D and B.
-- **Confirmation-2:** 144 tasks, 36 families, hash `cb7cb496…`, final (LOG). The power shortfall is recorded.
+## Open
+1. **E13** (D vs D + `main()` clause on `tasks/train-all`): out `runs/2026-10-15-e13-main-clause`, stdout `$SCRATCH/e13.out`. It is slow because of account contention.
+   - When it completes:
+     - record the result in the LOG with the registered reading;
+     - append a dated addendum to the report's Evidence section;
+     - commit the run.
+   - It does not affect the completion label.
+2. **No new roadmap is active.** The report's § Recommended pivot is the proposed next step, pending an owner decision:
+   1. check the carrier at zero model calls: byte-diff C:h0 vs D repair prompts on train, and mine the E11 C-arm runs for never-green;
+   2. calibrate measurement (about 700 tuples per decision for ±5 pp; A/A and uninformed controls);
+   3. one "D + X vs D" hypothesis in a stated regime;
+   4. an owner decision on the instrument as a product.
 
-## In flight
-1. **E12 (P4's single validation look)** on `~/.a2d-holdout/c1-validation`. Arms: D, `C:h0` (H0 v6), and `C:i1`, `C:i2`, `C:u1`, `C:u2` (the frozen `harnesses/p4-*.json`). Out `~/.a2d-holdout/runs/E12`, stdout `$SCRATCH/e12.out`.
-   - Read **only** the `summary.json` aggregates, then copy the summary to `runs/2026-10-1x-e12-validation/`.
-   - Apply the pre-registered rules (LOG E12):
-     - H\* = the better of i1 and i2 (ties go to i1);
-     - control consequence: if the better u ≥ the better i, withdraw "learning from failures";
-     - **go only if C(H\*) − D ≥ +10 pp.**
-2. **E11 result:**
-   - 4 of 12 ratchet comparisons accepted (I1 g3 +4, I2 g3 +5, U1 g2 +6, U2 g3 +5). That is about the noise rate, given D's retest flip rate of 0.229 on train-all.
-   - The final lessons are in `harnesses/p4-*.json`.
-
-## Next moves after E12
-- Validation look: C(H\*_I1), C(H\*_I2), C(H\*_U1), C(H\*_U2), C(H0 v5) and D on c1-validation (aggregates only).
-  - H\* = the better informed search.
-  - The control consequence and the go/no-go are pre-registered in the plan.
-- If go:
-  - joint power simulation (three comparisons);
-  - register the Confirmation-2 run: D, B, C(H0 v5), C(H\*), C(R) (S4b lessons on H0 v5, descriptive), and D + H\*-lessons (descriptive); r = 2.
-- If no-go: the roadmap completes as falsified with the precise wording (plan § Validation).
-
-## The controller: `a2d lift` (`crates/a2d-lift/`)
+## The instrument (`a2d lift`, `crates/a2d-lift/`)
 
 ```bash
 cargo build -p a2d
 ./target/debug/a2d lift validate <suite> --jobs 4
 ./target/debug/a2d lift run --experiment <id> [--unregistered | --registered-at <sha> --expect-suite-hash <sha>] \
-  --suite <dir> --model codex/gpt-6-luna --effort low --arms D,C --k 5 --primary D --seed <n> --jobs 4 \
-  --harness harnesses/<h>.json --max-invocations <n> --max-wall-clock-secs <s> --out <dir> [--defer-scoring]
+  --suite <dir> --model codex/gpt-6-luna --effort low --arms D,C:a,C:b --harness a=<json> --harness b=<json> \
+  [--d-note n=<file> (arm D:n)] [--claim "C:a>C:b,C:a>D"] --k 5 --primary D --seed <n> --jobs 4 \
+  --max-invocations <n> --max-wall-clock-secs <s> --out <dir> [--defer-scoring]
 ./target/debug/a2d lift manifest|score|pool|compare|verify-ledger ...
+./target/debug/a2d distill --from <run>=<suite> --harness <in> --out <out> --log <prov> --name <n> \
+  [--arm C:x] [--families <json>] [--mode informed|uninformed] [--max-dossiers 40]
 ```
 
-- **Arms:** A (one-shot), B (best-of-k, public selection), D (repair loop, stops at public-green), C (A²D metabolism, `crates/a2d-cli/src/lift_arm_c.rs`). All run at an equal invocation cap k.
+- **Arms:** A (one-shot), B (best-of-k), D (repair loop), C / `C:<name>` (A²D metabolism with a harness), `D:<name>` (D with a note).
 - **Oracle:** the candidate is the crate root, and the trusted tests are an earlier-declared `#[path]` module. Sources are deleted before the run, and a clean exit is required.
-- **Harness-as-data for C** (`--harness`, validated and hashed). Keys (see `lift_arm_c.rs`), plus `lessons`, `dedupe_input`, `plain_inputs` and `drop_coder_catalysts`:
-  - `name`;
-  - `drop_enzymes` (RAF closure enforced);
-  - `coder_note` (appended to the task input);
-  - `coder_prompt` (it must keep the `main()` clause);
-  - `route_previous_code`;
-  - `stop_at_public_green`.
-
-  Unknown keys are rejected.
-- **Summary:** per-arm rate, tokens and public-green-hidden-fail. Comparisons use a paired cluster-bootstrap CI, the family sign-flip p, and a class guarded by `--min-families`.
-- **Protected from automated patches:** `crates/a2d-lift/`, `lift_arm_c.rs`, `LOG.md`, `runs/`.
+- **Classifier:** a whole-family bootstrap with a boundary tolerance of 1e-9. `--claim` = all listed comparisons Supported; IntegrityReview and Invalid dominate.
+- **Arm-C harness keys** (`crates/a2d-cli/src/lift_arm_c.rs`):
+  - `drop_enzymes`, `drop_coder_catalysts`;
+  - `coder_prompt` (must keep `main()`), `coder_note`, `lessons`;
+  - `route_previous_code`, `stop_at_public_green`, `dedupe_input`;
+  - `prompt_format` (json, plain or repair), `escalation`.
+- **Harnesses:** `harnesses/h0-v6.json` (parity base), `s4b-lessons.json` (researcher lessons), `p4-{i1,i2,u1,u2}.json` (search outputs).
+- **Analysis scripts** (`docs/experiments/analysis/`): `p4_search.py` (the ratchet orchestrator, resumable), `c2_power.py`, `c2_joint_power.py`, `t0_stage.py`, `p4_0_probe.py`.
 
 ## Data
-- Visible development data: `tasks/calibration-v2` (24), `tasks/dev-v2` (48) and `tasks/c1-train` (68; split in `docs/experiments/c1-split.json`).
-- Metric-only: `~/.a2d-holdout/c1-validation` (80 tasks, 20 families). Read `summary.json` aggregates only, and never open its prompts or tasks.
-- Claim set: `~/.a2d-holdout/confirmation-2` (144). Never opened; scored once.
-- Development artefacts: `runs/2026-10-15-s0-candidate-pool/` (1,263 hidden-scored train candidates), `runs/2026-10-15-t0-taxonomy/`, and analysis scripts in `docs/experiments/analysis/`.
-
-## Budget (PROTOCOL envelope, about 15k at the P2 gate)
-- P3: about 1.45k used (closed).
-- P4 ≤ 5k (plan about 4.0k: G0 about 400, searches about 2.9k, validation about 700). Confirmation-2 about 3.5k. Reserve ≈ 2k.
+- Visible: `tasks/calibration-v2` (24), `tasks/dev-v2` (48), `tasks/c1-train` (68), and the combined `tasks/train-all` (140) and `tasks/train-clean` (72), both made of symlinks.
+- Metric-only: `~/.a2d-holdout/c1-validation` (80). 2 of 4 looks used (S4, E12). Read only `summary.json` aggregates.
+- Claim set: `~/.a2d-holdout/confirmation-2` (144). Never opened; unspent.
 
 ## Provider state
-- Working lanes: Codex (`gpt-6-luna` coder, `gpt-6.1-sol` reviewer and author) and Claude subagents. The Kimi, Z.ai, MiniMax and Gemini subscriptions were stopped on purpose.
+- Working lanes: Codex (`gpt-6-luna` coder, `gpt-6.1-sol` reviewer and author) and Claude subagents. The other subscriptions were stopped on purpose. The A² session shares the Codex account.
 - Codex gotchas:
-  - `-s read-only` never blocks reads, so run reviewers and authors in empty temp dirs;
+  - run reviewers and authors in copies-only temp dirs;
   - close stdin;
-  - inside the sandbox, give it the toolchain's `rustc` path directly;
-  - **`codex exec` argv carries the prompt**, so never `ps -o command` while holdout jobs run.
+  - give the sandbox the toolchain's `rustc` path directly;
+  - git commits from inside Codex's sandbox fail (index.lock), so commit outside it;
+  - **never `ps -o command` while holdout jobs run** (argv carries prompts).
 
 ## Tests
 
-`cargo test` is all green. Provenance tests in `a2d-cli` fail whenever there are **untracked files under `crates/`**, so commit first. The `a2d-lift` tests take about 20 s.
-
-## Legacy (deprioritised)
-
-- The metabolism, evolver, architect, escalation rungs and observer exist, but their value is unproven. The SWE-Bench Pro chain is parked.
-- Pre-reset history: `docs/handoff-archive/`. Audit: `docs/research/2026-10-14-direction-audit.md`.
+`cargo test` is all green (24 result lines). Provenance tests in `a2d-cli` fail when there are **untracked files under `crates/`**, so `git add` first. The `a2d-lift` tests take about 30–90 s.
