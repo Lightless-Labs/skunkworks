@@ -79,29 +79,44 @@ def _diff_files(diff_text: str) -> list[tuple[str, list[str]]]:
     return files
 
 
+IMPORTABLE_SUFFIXES = (".py", ".pyc", ".so", ".pyd")
+# Shadowing these breaks the grader itself, whatever the repo's import roots are.
+ALWAYS_PROTECTED = {"pytest", "_pytest", "py", "pluggy", "sitecustomize", "usercustomize"}
+
+
+def _top_level_name(path: str, root: str) -> str | None:
+    """The import name `path` would define if `root` is on sys.path, or None if not importable there."""
+    prefix = "" if root in (".", "") else root.strip("/") + "/"
+    if prefix and not path.startswith(prefix):
+        return None
+    rel = path[len(prefix):]
+    if not rel.endswith(IMPORTABLE_SUFFIXES):
+        return None
+    top = rel.split("/", 1)[0]
+    return top.split(".", 1)[0] if "/" not in rel else top
+
+
 def audit_diff(diff_text: str, sys_path_roots: list[str | Path], protected_names: set[str]) -> list[str]:
-    """Reject pytest controls, protected import shadowing, and suspicious production code."""
+    """Reject import shadowing, .pth files and conftest edits, and evaluator tokens in production code.
+
+    Repo config files (setup.cfg, tox.ini, pyproject.toml, pytest.ini) are allowed: the runner passes a
+    frozen copy of the base config with -c, so a candidate's edits to them cannot reach pytest.
+    """
     reasons: list[str] = []
-    roots = {Path(root).as_posix().strip("./") for root in sys_path_roots}
-    roots.update({"." if Path(root).as_posix() in (".", "") else Path(root).as_posix().strip("/")
-                  for root in sys_path_roots})
+    roots = [Path(root).as_posix() for root in sys_path_roots]
     for path, added in _diff_files(diff_text):
-        parts = Path(path).parts
-        basename = parts[-1] if parts else path
+        basename = Path(path).name
         if basename.endswith(".pth"):
             reasons.append(f"forbidden .pth file: {path}")
-        if basename in CONFIG_NAMES:
-            reasons.append(f"forbidden pytest configuration/control file: {path}")
+        if basename == "conftest.py":
+            reasons.append(f"forbidden conftest edit: {path}")
+        top = _top_level_name(path, ".")
+        if top in ALWAYS_PROTECTED:
+            reasons.append(f"protected module shadow: {path}")
         for root in roots:
-            prefix = "" if root == "." else root + "/"
-            rel = path[len(prefix):] if prefix and path.startswith(prefix) else (path if not prefix else None)
-            if rel and "/" not in rel:
-                if rel.endswith(".py") and rel[:-3] in protected_names:
-                    reasons.append(f"protected top-level module shadow: {path}")
-            if rel and rel.split("/", 1)[0] in protected_names and "/" in rel:
-                if rel.split("/", 1)[0] in protected_names:
-                    reasons.append(f"protected top-level package shadow: {path}")
-                    break
+            top = _top_level_name(path, root)
+            if top is not None and top in protected_names:
+                reasons.append(f"protected module shadow: {path}")
         if not common.is_test_path(path):
             for line in added:
                 if CONTENT_TOKENS.search(line) or SYS_MODULES.search(line):
@@ -285,7 +300,9 @@ def enforce_required_ids(cases: dict[str, list[str]], node_ids: list[str]) -> di
 
 
 def run_pytest_hardened(tree: str | Path, venv: str | Path, node_ids: list[str], pythonpath: list[str],
-                        frozen_ini: str | Path, plugins: list[str], timeout: int, home: str | Path) -> HardenedResult:
+                        frozen_ini: str | Path, plugins: list[str], timeout: int, home: str | Path,
+                        select: list[str] | None = None) -> HardenedResult:
+    """Run pytest on `select` (default: `node_ids`) and report each required `node_ids` entry exactly once."""
     tree, venv = Path(tree).resolve(), Path(venv).resolve()
     guard_dir = Path(__file__).resolve().parent / "guard"
     with tempfile.TemporaryDirectory(prefix="evolve-pytest-") as tmp_name:
@@ -301,7 +318,7 @@ def run_pytest_hardened(tree: str | Path, venv: str | Path, node_ids: list[str],
                        "--rootdir", str(tree), "-p", "no:cacheprovider", "-p", "evolve_guard"]
         for plugin in plugins:
             pytest_args.extend(["-p", plugin])
-        pytest_args.extend([f"--junitxml={junit}", *node_ids])
+        pytest_args.extend([f"--junitxml={junit}", *(select or node_ids)])
         bootstrap = (
             "import os, sys\n"
             "sys.path[:] = [p for p in sys.path if p not in ('', '.', os.getcwd())]\n"
@@ -349,7 +366,7 @@ def verify_structured(opaque: str, diff: str) -> dict:
         tree = Path(tmp) / "tree"
         try:
             grading.build_candidate_tree(base, tree, diff=diff)
-            reasons = audit_diff(diff, [".", *profile["pythonpath"]], protected_module_names(priv / "venv"))
+            reasons = audit_diff(diff, profile["pythonpath"], protected_module_names(priv / "venv"))
             if reasons:
                 return {"passed": False, "rejected": reasons, "tests": []}
             grading.apply_patch(tree, (priv / "test.patch").read_text())
@@ -390,7 +407,7 @@ def grade_hardened(opaque: str, diff: str | None) -> dict:
     if diff is None:
         diff = ""
     try:
-        reasons = audit_diff(diff, [".", *profile["pythonpath"]], protected_module_names(priv / "venv"))
+        reasons = audit_diff(diff, profile["pythonpath"], protected_module_names(priv / "venv"))
     except OSError:
         return {"applied": False, "rejected": [], "resolved": False, "hidden_resolved": False,
                 "error": "evaluator audit setup failed"}
@@ -403,8 +420,11 @@ def grade_hardened(opaque: str, diff: str | None) -> dict:
             grading.apply_patch(tree, (priv / "test.patch").read_text())
             node_ids = sorted(set(manifest["fail_to_pass"]) | set(manifest["pass_to_pass"]))
             ini = frozen_pytest_config(base, _frozen_dir(tree))
+            # Official selection (whole selected files), as E1's grader ran it: node-id subsets can
+            # change test order and expose order-dependent tests.
             result = run_pytest_hardened(tree, priv / "venv", node_ids, profile["pythonpath"], ini,
-                                         venv_pytest_plugins(priv / "venv"), 1200, Path.home())
+                                         venv_pytest_plugins(priv / "venv"), 1200, Path.home(),
+                                         select=manifest["selected_test_files"])
         except grading.CandidateError as exc:
             return {"applied": False, "rejected": [], "resolved": False, "hidden_resolved": False, "error": str(exc)}
     required = set(manifest["fail_to_pass"]) | set(manifest["pass_to_pass"])
@@ -434,7 +454,7 @@ def _audit_gold(summary_path: str) -> None:
         manifest = tasks.load_manifest(opaque)
         profile = tasks.REPO_PROFILES[manifest["repo"]]
         diff = (tasks.private_dir(opaque) / "gold.patch").read_text()
-        reasons = audit_diff(diff, [".", *profile["pythonpath"]], protected_module_names(tasks.private_dir(opaque) / "venv"))
+        reasons = audit_diff(diff, profile["pythonpath"], protected_module_names(tasks.private_dir(opaque) / "venv"))
         print(json.dumps({"opaque_id": opaque, "reasons": reasons}, sort_keys=True))
 
 

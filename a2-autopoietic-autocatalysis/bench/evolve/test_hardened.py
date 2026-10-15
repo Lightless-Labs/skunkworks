@@ -33,6 +33,23 @@ class AuditTests(unittest.TestCase):
             with self.subTest(diff=diff[:40]):
                 self.assertTrue(hardened.audit_diff(diff, roots, protected))
 
+    def test_gold_style_edits_are_not_flagged(self) -> None:
+        protected = {"docs", "packaging", "yaml"}
+        diff = ("diff --git a/docs/user_guide/index.rst b/docs/user_guide/index.rst\n+text\n"
+                "diff --git a/packaging/release.py b/packaging/release.py\n+X = 1\n"
+                "diff --git a/setup.cfg b/setup.cfg\n+[metadata]\n")
+        self.assertEqual(hardened.audit_diff(diff, ["lib", "test/lib"], protected), [])
+
+    def test_always_protected_names_flagged_at_repo_root(self) -> None:
+        for path in ("pytest.py", "_pytest/__init__.py", "sitecustomize.py", "lib/x.pth", "test/conftest.py"):
+            with self.subTest(path=path):
+                self.assertTrue(hardened.audit_diff(f"diff --git a/{path} b/{path}\n+x\n", ["lib"], set()))
+
+    def test_protected_name_flagged_only_under_import_roots(self) -> None:
+        diff = "diff --git a/lib/yaml/__init__.py b/lib/yaml/__init__.py\n+x\n"
+        self.assertTrue(hardened.audit_diff(diff, ["lib"], {"yaml"}))
+        self.assertEqual(hardened.audit_diff(diff, ["src"], {"yaml"}), [])
+
     def test_legitimate_lib_edit_has_no_flags(self) -> None:
         diff = "diff --git a/lib/fix.py b/lib/fix.py\n--- a/lib/fix.py\n+++ b/lib/fix.py\n+VALUE = 1\n"
         self.assertEqual(hardened.audit_diff(diff, ["." , "lib"], {"pytest"}), [])
