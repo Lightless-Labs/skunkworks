@@ -472,3 +472,16 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Promotion (≥ +12 pp with a paired lower bound > 0) does not apply to a ceiling arm.
 - Budget: ≤ 500 invocations, 7,200 s. Validation looks used before this one: 0.
 - Result: pending
+
+### P4-0 — label-only bug diagnosis probe (Luna-low)  [P4 groundwork, development lane, descriptive]
+- Registered: 2026-10-15, one-row development pre-registration.
+- Question: can A²D's own architect (Luna, low effort) diagnose a known bug from **train labels alone**? This is the information a P4 lessons distiller may use.
+- Inputs: the spec, the public-green candidate, and the label "fails at least one hidden test". No test content and no hidden output.
+- Cases: the same 32 T0 cases.
+- Output: up to 3 suspect clauses, the bug in one sentence, and one task-agnostic lesson. One `codex exec` call per case (`gpt-6-luna`, low effort), with the prompt inline and an empty working directory.
+- Metric: **clause hit rate**, meaning at least one suspect is among T0's violated clauses (Sol, with hidden tests). It is compared with the chance rate of 3 random clauses.
+- Use (fixed now):
+  - hit rate ≥ 0.5 and ≥ chance + 0.2: single-shot distillation from labels is viable;
+  - otherwise the P4 distiller also gets **contrast pairs** (a hidden-passing and a hidden-failing candidate of the same task, from train labels) wherever they exist.
+- Budget: 32 Luna calls.
+- Result: pending
