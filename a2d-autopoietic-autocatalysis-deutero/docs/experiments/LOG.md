@@ -452,3 +452,18 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
     - The lesson criterion was weak (any lesson counts).
     - The lessons partly encode the authoring style of the hidden tests (extreme counts, precedence, absolute offsets). Confirmation-2 shares the author (Sol), so any transfer holds within one author's task distribution, and is reported as such.
   - So lessons must earn promotion **empirically, on families they were not distilled from**.
+
+### S4 — oracle-lessons ceiling on c1-validation  [phase P3, development lane, validation look 1 of 4]
+- Registered: 2026-10-15, one-row development pre-registration. **This is a ceiling experiment, not a promotable mechanism.**
+  - The lessons were distilled by the researcher from T0, and Sol wrote T0 while looking at train hidden tests.
+  - They measure what a cross-task `lessons` slot could achieve at best. P4 asks whether A²D can write such lessons itself from train labels alone.
+  - Whether a researcher-lessons configuration may enter the Confirmation-2 run as a separate, disclosed arm is a question for the P3 → P4 gate reviewers, not for this entry.
+- Harness: `harnesses/s4-oracle-lessons.json` (sha256 `c26774f0c7c3699c285601cd1649d0e4ee3bea8c799a10f7db7861116d56c9e3`). It is H0 v2 plus `stop_at_public_green` plus a `coder_note` of 8 task-agnostic lessons (no family names) condensed from T0.
+- Data: `$A2D_HOLDOUT_DIR/c1-validation` (80 tasks, 20 families; none is a family T0 drew from). Metric only: `summary.json` aggregates are read; per-task and per-family results are not.
+- Arms D and C(S4); k = 5; `--primary D`; seed 11; jobs 4. Out: `$A2D_HOLDOUT_DIR/runs/S4`; the summary is copied to `runs/2026-10-15-s4-oracle-lessons/`.
+- **Decision rule (fixed now):**
+  - C(S4) − D ≥ +5 pp on validation: the lessons lever has room, and P4 builds the self-written `lessons` slot first.
+  - Below +5 pp: the ceiling is too low, the lessons slot is deprioritised in P4, and the post-green and selection levers are not revisited (S1–S3 killed them).
+  - Promotion (≥ +12 pp with a paired lower bound > 0) does not apply to a ceiling arm.
+- Budget: ≤ 500 invocations, 7,200 s. Validation looks used before this one: 0.
+- Result: pending
