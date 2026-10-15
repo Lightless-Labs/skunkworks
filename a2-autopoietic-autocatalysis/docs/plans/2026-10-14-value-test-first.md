@@ -1,7 +1,8 @@
 # A² Value-Test-First Plan (E1 / E2)
 
 **Created:** 2026-10-14
-**Status:** Active — supersedes the execution order of `2026-07-10-a2-remediation-roadmap.md`
+**Status:** Completed — E1 NO GO; see `docs/benchmark-results/external-value/e1/decision.md`
+**Completed:** 2026-10-15
 **Decision basis:** `reviews/2026-10-14-direction-audit.md` (Option B). The owner delegated the decision on 2026-10-14.
 **Decision deadline:** 2026-11-30. No E1 decision record by then = **NO GO**. No extensions.
 
