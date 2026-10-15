@@ -445,6 +445,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Spend: C 340 invocations / 3.38M tokens vs D 80 / 0.60M (4.25× invocations, 5.7× tokens).
   - Public-green but hidden-fail: C 12, D 17. In 53 of 58 later prompts the C coder rewrites an already-green file, which is S2's post-green self-review in vivo (S2 offline: +2.2 pp).
   - **H0 for P4 = H0 v2 + `stop_at_public_green`** (H0 v3), so that it is structurally D plus routing. The post-green rewrite becomes an explicit P4 lever, not a baseline cost. H0 v3 itself is not live-checked; S4 runs it with lessons added.
+  - **Correction (2026-10-15, P3 gate review):** "structurally D plus routing" is wrong. After each failing cycle the evolver rewrites the coder's prompt template with task-specific advice. This happened in 68/68 E08r tasks and in every multi-call C task of S4b-A (11/11) and S4b-B (19/19); `main()` was never lost. H0 is a repair loop plus a per-task prompt-rewriting evolver. The evolver took 136 of C's 340 E08r invocations (40%).
 
 ### T0 — failure taxonomy of D's public-green, hidden-fail picks on c1-train  [P3 → P4 groundwork, development lane, descriptive]
 - Registered: 2026-10-15, one-row development pre-registration.
@@ -492,6 +493,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Diagnosis, from two checks on aggregate counts:
     1. **The budget explanation is refuted.** D's first public-green attempt on train (136 tuples) is 1: 111, 2: 18, 3: 3, 4: 1 and never: 3. So H0's evolver taking 2 of 5 calls cannot explain the gap.
     2. **A mechanical rendering defect.** The seed copies the task input into `requirements`, `design` and `plan`. Every C coder prompt therefore carries the spec, public tests and lessons note **three times**: the note appeared 3× in 109/109 prompts, and the mean prompt was 43K characters vs D's 15K. E08r (H0 v2, no lessons) already showed C non-green 3 vs D 0.
+  - **Deviation (recorded 2026-10-15 at the P3 gate review):** check 2 counted note occurrences and prompt lengths in S4's validation-run prompts, under `$A2D_HOLDOUT_DIR/runs/S4/invocations`. That goes beyond "summary.json aggregates only". Only aggregate counts were printed; no task content, per-task or per-family statistic was read. Future diagnosis on metric-only data needs a pre-registered list of aggregate probes.
   - Fix: harness key `dedupe_input` (unit test: the spec appears once per coder prompt). **H0 v4 = H0 v3 + `dedupe_input`** (`harnesses/h0-v4.json`, sha256 `d7e4b4fa…`).
 
 ### S4b — lessons rendered once, on clean train (the one train-only revision of S4)  [phase P3, development lane]
@@ -559,4 +561,4 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - Arms D and C(H0 v3); k = 5; `--primary D`; seed 13; jobs 4; `--unregistered`. Out: `runs/2026-10-15-e09-h0v3-train`.
 - Expectation (**sanity, not a claim**): C(H0 v3) within ±5 pp of D, and C's invocations per task within 1.5× of D's. C's public-green-but-hidden-fail submissions are the G0 failure dossiers for P4.
 - Budget: ≤ 700 invocations, 10,800 s. Launched after S4 completes.
-- Result: pending
+- Result: **STOPPED after 6 invocations (2026-10-15).** S4 changed the P4 baseline: H0 v3 renders the task input three times, so H0 v4 adds `dedupe_input`. Any P4 G0 run will use H0 v4 under a new registration. No scores were computed.
