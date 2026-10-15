@@ -363,5 +363,21 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   3. recall and false-alarm rate;
   4. end: the selection pick rate against B's public pick and D.
 - **Kill rule** (same thresholds): retained validity < 0.85 **or** AUC < 0.65 kills mechanism 1 for P3. Separate promotion bar for the end metric: the offline pick must reach ≥ D + 5 pp (≥ 0.793) before any live harness is built around it.
-- Result: pending
+- Result: **KILLED** (AUC 0.637 < 0.65; zero new invocations).
+  - Consensus filtering keeps only valid tests (retained validity 1.000) with a false-alarm rate of 0.002, but recall falls to 0.275.
+  - Offline end metric, the consensus-spec pick over B's 5: 0.728, below D (0.743) and below the 0.793 promotion bar.
+- Decision: **mechanism 1 (blind spec tests) is dead for P3.** One reusable fact: consensus-filtered spec tests are a high-precision, low-recall detector of public-green failures (27.5% caught, 0.2% false alarm). Clause review becomes the primary mechanism (S2).
 
+
+
+### S2 — clause-by-clause review-and-fix after green, offline  [phase P3, development lane]
+- Registered: 2026-10-15, before any call.
+- Mechanism: after D reaches public-green, one review call. `codex/gpt-6-luna`, effort low, no-tools lane. The reviewer sees the numbered requirements, the public tests and the current file. For each clause it marks OK or GAP, citing the implementing code, then emits the complete corrected file. **If the corrected file breaks a public test, the original is kept.**
+- Sample: every public-green D pick on `tasks/c1-train` from the S0 pool, **133 candidates** (32 hidden-fail, 101 hidden-pass). One call each, **cap 150**.
+- Measurements:
+  - conv: the share of hidden-fail picks that pass hidden after review;
+  - regr: the share of hidden-pass picks that fail after review;
+  - end: D + review pick rate against D (0.743 on these 136 tuples).
+  - Break-even for +10 pp: conv × 32 − regr × 101 ≥ 13.6, i.e. conv ≥ 0.43 at regr = 0.
+- **Kill rule:** conv < 0.25 **or** regr > 0.05 (more than 5 of 101 broken). **Promotion bar** (before building a live harness around it): end ≥ D + 5 pp (≥ 0.793).
+- Result: pending
