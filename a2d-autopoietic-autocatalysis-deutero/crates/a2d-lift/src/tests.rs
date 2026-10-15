@@ -97,7 +97,13 @@ struct MockArmC {
 }
 
 impl ArmC for MockArmC {
-    fn run(&self, provider: Box<dyn Provider>, task: &PublicTask, _budget: usize) -> Vec<String> {
+    fn run(
+        &self,
+        provider: Box<dyn Provider>,
+        task: &PublicTask,
+        _budget: usize,
+        _harness: &Value,
+    ) -> Vec<String> {
         let mut codes = Vec::new();
         for i in 0..self.attempts_wanted {
             let enzyme = if i % 2 == 0 { "coder" } else { "evolver" };
@@ -136,6 +142,7 @@ fn hidden_tests_never_reach_any_arm_and_are_scored_once() {
         min_families: 1,
         max_excluded_share: 0.0,
         record_hidden_output: false,
+        harness: json!({}),
         defer_scoring: false,
     };
     let arm_c = MockArmC { attempts_wanted: 4 };
@@ -245,6 +252,7 @@ fn arm_c_budget_is_enforced_across_all_enzymes() {
         min_families: 1,
         max_excluded_share: 0.0,
         record_hidden_output: false,
+        harness: json!({}),
         defer_scoring: false,
     };
     let greedy = MockArmC {
@@ -289,6 +297,7 @@ fn repair_loop_feeds_back_public_failures_and_stops_when_green() {
         min_families: 1,
         max_excluded_share: 0.0,
         record_hidden_output: false,
+        harness: json!({}),
         defer_scoring: false,
     };
     let outcomes = run_arms(&plan, &suite(), provider, &meter, dir.path(), None)
@@ -326,6 +335,7 @@ fn run_aborts_before_exceeding_global_cap() {
         min_families: 1,
         max_excluded_share: 0.0,
         record_hidden_output: false,
+        harness: json!({}),
         defer_scoring: false,
     };
     let result = run_arms(&plan, &suite(), provider, &meter, dir.path(), None).unwrap();
@@ -354,6 +364,7 @@ fn arm_c_without_runner_is_an_error() {
         min_families: 1,
         max_excluded_share: 0.0,
         record_hidden_output: false,
+        harness: json!({}),
         defer_scoring: false,
     };
     assert!(run_arms(&plan, &suite(), provider, &meter, dir.path(), None).is_err());
@@ -371,6 +382,7 @@ fn arm_order_is_a_seeded_permutation_per_tuple() {
         min_families: 1,
         max_excluded_share: 0.0,
         record_hidden_output: false,
+        harness: json!({}),
         defer_scoring: false,
     };
     let orders: Vec<Vec<Arm>> = (0..20)
@@ -409,6 +421,7 @@ fn wall_clock_refusal_mid_arm_voids_the_tuple() {
         min_families: 1,
         max_excluded_share: 0.0,
         record_hidden_output: false,
+        harness: json!({}),
         defer_scoring: false,
     };
     let one_task = Suite {
@@ -468,6 +481,7 @@ fn deferred_scoring_scores_once_after_generation_and_detects_tampering() {
         min_families: 1,
         max_excluded_share: 0.0,
         record_hidden_output: false,
+        harness: json!({}),
         defer_scoring: true,
     };
     let generated = run_arms(&plan, &suite, provider, &meter, dir.path(), None).unwrap();
@@ -564,6 +578,7 @@ fn claim_plan() -> RunPlan {
         min_families: 10,
         max_excluded_share: 0.05,
         record_hidden_output: false,
+        harness: json!({}),
         defer_scoring: false,
     }
 }

@@ -11,15 +11,24 @@
 //!
 //! Every code artifact the metabolism produces is returned in order; the
 //! controller selects the submission with the same public rule as B and D.
+//!
+//! Harness-as-data (P3/P4): a registered JSON harness may
+//! - `drop_enzymes`: remove seed enzymes (RAF closure must hold), freeing
+//!   their invocations for the remaining schedule;
+//! - `coder_note`: append text to the task input every enzyme sees.
+//!
+//! `{}` is the seed configuration. Unknown keys are rejected.
 
 use crate::{seed_germline, seed_initial_runtime_artifacts};
 use a2d_core::benchmark::{BenchmarkSuite, extract_rust_code_pub};
+use a2d_core::germline::Germline;
 use a2d_core::metabolism::{CycleReport, Metabolism};
 use a2d_core::provider::{Provider, ProviderRegistry};
-use a2d_core::types::ArtifactType;
+use a2d_core::types::{ArtifactType, EnzymeId};
 use a2d_core::workcell::WorkcellOutcome;
 use a2d_lift::ArmC;
 use a2d_lift::task::PublicTask;
+use serde_json::Value;
 use std::time::Duration;
 
 pub struct MetabolismArm;
@@ -58,15 +67,63 @@ fn refused(report: &CycleReport) -> bool {
     })
 }
 
+const HARNESS_KEYS: &[&str] = &["name", "drop_enzymes", "coder_note"];
+
+/// The seed germline with the harness's enzyme removals applied.
+fn harness_germline(harness: &Value) -> Result<Germline, String> {
+    if let Some(object) = harness.as_object() {
+        if let Some(key) = object.keys().find(|k| !HARNESS_KEYS.contains(&k.as_str())) {
+            return Err(format!("unknown harness key {key:?}"));
+        }
+    } else {
+        return Err("harness must be a JSON object".to_string());
+    }
+    let mut germline = seed_germline();
+    for id in harness["drop_enzymes"].as_array().into_iter().flatten() {
+        let id = id.as_str().ok_or("drop_enzymes must be strings")?;
+        germline
+            .propose_remove(&EnzymeId::from(id))
+            .map_err(|e| format!("cannot drop {id}: {e}"))?;
+    }
+    Ok(germline)
+}
+
+fn harness_input(task: &PublicTask, harness: &Value) -> String {
+    let mut input = a2d_lift::arms::task_prompt(task);
+    if let Some(note) = harness["coder_note"].as_str() {
+        input.push_str("\n\n");
+        input.push_str(note);
+    }
+    input
+}
+
 impl ArmC for MetabolismArm {
-    fn run(&self, provider: Box<dyn Provider>, task: &PublicTask, budget: usize) -> Vec<String> {
+    fn validate_harness(&self, harness: &Value) -> Result<(), String> {
+        harness_germline(harness).map(|_| ())
+    }
+
+    fn run(
+        &self,
+        provider: Box<dyn Provider>,
+        task: &PublicTask,
+        budget: usize,
+        harness: &Value,
+    ) -> Vec<String> {
+        let germline = match harness_germline(harness) {
+            Ok(germline) => germline,
+            Err(error) => {
+                // validate_harness runs before registration; reaching this is a bug.
+                eprintln!("arm C harness error: {error}");
+                return Vec::new();
+            }
+        };
         let registry = ProviderRegistry::new(provider);
-        let mut metabolism = Metabolism::new(seed_germline(), registry)
+        let mut metabolism = Metabolism::new(germline, registry)
             .with_benchmark(public_benchmark(task))
             .with_max_invocations_per_cycle(budget)
             .with_provider_failure_cooldown(Duration::ZERO)
             .without_max_cycle_wall_clock();
-        seed_initial_runtime_artifacts(&mut metabolism, &a2d_lift::arms::task_prompt(task));
+        seed_initial_runtime_artifacts(&mut metabolism, &harness_input(task, harness));
 
         let mut codes = Vec::new();
         // Each productive cycle spends at least one invocation, so `budget`
@@ -160,6 +217,7 @@ mod tests {
             k: 4,
             replicates: 1,
             jobs: 2,
+            harness: serde_json::json!({}),
             seed: 0,
             primary: Some(Arm::B),
             min_families: 1,
@@ -194,6 +252,19 @@ mod tests {
             );
             assert!(!request.contains("doubles_negative"));
         }
+    }
+
+    #[test]
+    fn harness_drops_inert_enzymes_and_rejects_unknown_keys() {
+        let minimal =
+            serde_json::json!({"name": "minimal", "drop_enzymes": ["architect", "tester"]});
+        let germline = harness_germline(&minimal).unwrap();
+        let ids: Vec<String> = germline.enzymes().iter().map(|e| e.id.0.clone()).collect();
+        assert!(!ids.contains(&"architect".to_string()) && !ids.contains(&"tester".to_string()));
+        assert!(ids.contains(&"coder".to_string()));
+        assert!(harness_germline(&serde_json::json!({"drop": []})).is_err());
+        assert!(harness_germline(&serde_json::json!({"drop_enzymes": ["nope"]})).is_err());
+        assert!(harness_germline(&serde_json::json!({})).is_ok());
     }
 
     #[test]

@@ -98,7 +98,20 @@ impl Arm {
 /// It must route every model call through `provider` and return each code
 /// artifact it produced, in order.
 pub trait ArmC: Sync {
-    fn run(&self, provider: Box<dyn Provider>, task: &PublicTask, budget: usize) -> Vec<String>;
+    /// `harness` is the registered harness description (JSON); `{}` means the
+    /// seed configuration.
+    fn run(
+        &self,
+        provider: Box<dyn Provider>,
+        task: &PublicTask,
+        budget: usize,
+        harness: &Value,
+    ) -> Vec<String>;
+
+    /// Reject a harness the runner cannot apply, before anything is registered.
+    fn validate_harness(&self, _harness: &Value) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +130,8 @@ pub struct RunPlan {
     /// (voided, aborted or missing an arm); otherwise the run is Invalid.
     pub max_excluded_share: f64,
     pub record_hidden_output: bool,
+    /// Arm C harness (harness-as-data, P3/P4); `{}` = seed.
+    pub harness: Value,
     /// Stop after generation; score later with [`score_deferred`] once the
     /// submissions are committed (confirmation protocol).
     pub defer_scoring: bool,
@@ -273,6 +288,19 @@ pub fn run_arms(
     })
 }
 
+/// Registration and scored outcomes of one run (replicate 0), from its
+/// verified ledger.
+pub fn load_scored(path: &Path) -> Result<(Value, Vec<Outcome>), String> {
+    let (result, _) = pool_ledgers_inner(&[path.to_path_buf()])?;
+    let registration = fs::read_to_string(path)
+        .map_err(|e| e.to_string())?
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|r| r["kind"] == "registration")
+        .ok_or("no registration")?;
+    Ok((registration, result.outcomes))
+}
+
 /// Pool scored runs of the same registered design as replicates (the
 /// roadmap's single sample extension): ledger `i` becomes replicate `i`.
 /// Every ledger must verify, be scored, and share suite hash, arms, k,
@@ -282,6 +310,10 @@ pub fn pool_ledgers(ledgers: &[PathBuf]) -> Result<(RunResult, RunPlan), String>
     if ledgers.len() < 2 {
         return Err("pooling needs at least two ledgers".to_string());
     }
+    pool_ledgers_inner(ledgers)
+}
+
+fn pool_ledgers_inner(ledgers: &[PathBuf]) -> Result<(RunResult, RunPlan), String> {
     let mut outcomes = Vec::new();
     let mut hidden_name_hits = Vec::new();
     let mut aborted = false;
@@ -380,7 +412,7 @@ pub fn pool_ledgers(ledgers: &[PathBuf]) -> Result<(RunResult, RunPlan), String>
             });
         }
     }
-    let registration = first.expect("at least two ledgers");
+    let registration = first.expect("at least one ledger");
     let arms: Vec<Arm> = registration["arms"]
         .as_array()
         .ok_or("registration lacks arms")?
@@ -404,6 +436,7 @@ pub fn pool_ledgers(ledgers: &[PathBuf]) -> Result<(RunResult, RunPlan), String>
             .as_f64()
             .unwrap_or(DEFAULT_MAX_EXCLUDED_SHARE),
         record_hidden_output: false,
+        harness: registration["harness"].clone(),
         defer_scoring: false,
     };
     hidden_name_hits.sort();
@@ -481,6 +514,7 @@ pub fn score_deferred(
             .as_f64()
             .unwrap_or(DEFAULT_MAX_EXCLUDED_SHARE),
         record_hidden_output,
+        harness: registration["harness"].clone(),
         defer_scoring: false,
     };
     let suite = task::load_suite(suite_dir, registration["suite_hash"].as_str())?;
@@ -592,7 +626,7 @@ fn generate(
         Arm::C => {
             let runner = arm_c.expect("checked by run_arms");
             let codes = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                runner.run(Box::new(metered), &public, plan.k)
+                runner.run(Box::new(metered), &public, plan.k, &plan.harness)
             }))
             .unwrap_or_else(|_| {
                 let _ = lock(meter).ledger.append(

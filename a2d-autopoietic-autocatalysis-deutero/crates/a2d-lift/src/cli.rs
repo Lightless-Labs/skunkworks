@@ -28,7 +28,8 @@ usage:
                [--arms A,B,D,C] [--k <n>] [--replicates <n>] [--jobs <n>]
                [--primary B|D] [--seed <n>] [--min-families <n>] [--max-excluded-share <f>]
                [--effort <level>]
-               [--record-hidden-output] [--defer-scoring]";
+               [--record-hidden-output] [--defer-scoring] [--harness <harness.json>]
+  a2d lift compare --out <file> <ledger>:<arm> <ledger>:<arm>   # paired, across runs";
 
 pub fn cli_main(args: &[String], arm_c: Option<&dyn ArmC>) -> i32 {
     let result = match args.first().map(String::as_str) {
@@ -41,6 +42,7 @@ pub fn cli_main(args: &[String], arm_c: Option<&dyn ArmC>) -> i32 {
         Some("validate") => validate(&args[1..]),
         Some("score") => score(&args[1..]),
         Some("pool") => pool(&args[1..]),
+        Some("compare") => compare(&args[1..]),
         Some("manifest") => args
             .get(1)
             .ok_or_else(|| USAGE.to_string())
@@ -270,6 +272,24 @@ fn run(args: &[String], arm_c: Option<&dyn ArmC>) -> Result<(), String> {
         );
     }
 
+    let (harness, harness_sha256) = match flags.get("harness") {
+        None => (json!({}), None),
+        Some(path) => {
+            let bytes = fs::read(path).map_err(|e| format!("read harness {path}: {e}"))?;
+            let value: Value = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("harness {path} is not JSON: {e}"))?;
+            (value, Some(crate::ledger::sha256_hex(&bytes)))
+        }
+    };
+    if harness != json!({}) {
+        if !arms.contains(&Arm::C) {
+            return Err("--harness only applies to arm C".to_string());
+        }
+        arm_c
+            .ok_or("arm C is not wired")?
+            .validate_harness(&harness)
+            .map_err(|e| format!("harness rejected: {e}"))?;
+    }
     let root = project_root()?;
     let git_state = registration_git_state(&root, registered_at)?;
     let suite = load_suite(&suite_dir, expected_hash)?;
@@ -296,6 +316,8 @@ fn run(args: &[String], arm_c: Option<&dyn ArmC>) -> Result<(), String> {
                 "seed": seed,
                 "min_families": min_families,
                 "max_excluded_share": max_excluded_share,
+                "harness": harness,
+                "harness_sha256": harness_sha256,
                 "model": model,
                 "effort": effort,
                 "max_invocations": max_invocations,
@@ -323,6 +345,7 @@ fn run(args: &[String], arm_c: Option<&dyn ArmC>) -> Result<(), String> {
         min_families,
         max_excluded_share,
         record_hidden_output: flags.contains_key("record-hidden-output"),
+        harness: harness.clone(),
         defer_scoring: flags.contains_key("defer-scoring"),
     };
     println!(
@@ -444,6 +467,80 @@ fn pool(args: &[String]) -> Result<(), String> {
             .collect::<Vec<_>>()
     );
     let pretty = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
+    fs::write(&out, format!("{pretty}\n")).map_err(|e| e.to_string())?;
+    println!("{pretty}");
+    Ok(())
+}
+
+/// `a2d lift compare`: paired comparison of one arm in one scored run
+/// against one arm in another run on the same suite (e.g. two arm-C
+/// harnesses). Pairs by task and replicate; whole-family bootstrap.
+fn compare(args: &[String]) -> Result<(), String> {
+    let (out, x, y) = match args {
+        [flag, out, x, y] if flag == "--out" => (PathBuf::from(out), x, y),
+        _ => return Err(USAGE.to_string()),
+    };
+    let side = |spec: &str| -> Result<(PathBuf, Arm), String> {
+        let (path, arm) = spec
+            .rsplit_once(':')
+            .ok_or(format!("expected <ledger>:<arm>, got {spec}"))?;
+        Ok((PathBuf::from(path), Arm::parse(arm)?))
+    };
+    let ((x_path, x_arm), (y_path, y_arm)) = (side(x)?, side(y)?);
+    let (x_reg, x_out) = crate::load_scored(&x_path)?;
+    let (y_reg, y_out) = crate::load_scored(&y_path)?;
+    if x_reg["suite_hash"] != y_reg["suite_hash"] {
+        return Err("the two runs used different suites".to_string());
+    }
+    let paired: Vec<crate::stats::PairedOutcome> = x_out
+        .iter()
+        .filter(|o| o.arm == x_arm && o.void_reason.is_none())
+        .filter_map(|ox| {
+            y_out
+                .iter()
+                .find(|oy| {
+                    oy.arm == y_arm
+                        && oy.task == ox.task
+                        && oy.replicate == ox.replicate
+                        && oy.void_reason.is_none()
+                })
+                .map(|oy| crate::stats::PairedOutcome {
+                    family: ox.family.clone(),
+                    task: ox.task.clone(),
+                    replicate: ox.replicate,
+                    x_pass: ox.hidden.all_passed,
+                    y_pass: oy.hidden.all_passed,
+                })
+        })
+        .collect();
+    let s = crate::stats::paired_summary(&paired, 10_000, 0x5eed_a2d0);
+    let min_families = x_reg["min_families"].as_u64().unwrap_or(10) as usize;
+    let tokens = |outcomes: &[crate::Outcome], arm: Arm| {
+        outcomes
+            .iter()
+            .filter(|o| o.arm == arm)
+            .map(|o| o.tokens)
+            .sum::<usize>()
+    };
+    let invocations = |outcomes: &[crate::Outcome], arm: Arm| {
+        outcomes
+            .iter()
+            .filter(|o| o.arm == arm)
+            .map(|o| o.invocations)
+            .sum::<usize>()
+    };
+    let result = json!({
+        "x": {"ledger": x_path.display().to_string(), "arm": x_arm.label(), "harness": x_reg["harness"],
+              "tokens": tokens(&x_out, x_arm), "invocations": invocations(&x_out, x_arm)},
+        "y": {"ledger": y_path.display().to_string(), "arm": y_arm.label(), "harness": y_reg["harness"],
+              "tokens": tokens(&y_out, y_arm), "invocations": invocations(&y_out, y_arm)},
+        "n": s.n, "families": s.families, "x_rate": s.x_rate, "y_rate": s.y_rate,
+        "lift": s.lift, "ci95": [s.ci_low, s.ci_high],
+        "discordant_x_only": s.discordant_x_only, "discordant_y_only": s.discordant_y_only,
+        "family_sign_flip_p": crate::stats::family_sign_flip_p(&paired, 10_000, 0x5eed_a2d0),
+        "class": format!("{:?}", crate::stats::classify_guarded(&s, crate::MIN_EFFECT, min_families)),
+    });
+    let pretty = serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?;
     fs::write(&out, format!("{pretty}\n")).map_err(|e| e.to_string())?;
     println!("{pretty}");
     Ok(())
