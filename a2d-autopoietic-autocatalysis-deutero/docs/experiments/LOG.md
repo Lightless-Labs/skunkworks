@@ -789,4 +789,14 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Rule (from the goal):** the judge pick rate = (76 + correct) / 136. **If the Claude judge's rate is ≥ D's pick rate + 5 pp = 0.793 (≥ 32 of 39 correct),** cross-model review is the first lever, claimed as "multi-model system vs single model at equal invocation budget". Otherwise the loop moves to a tool-using multi-file regime.
 - **References:** D pick 0.743; B4 public pick 0.699; random pick among green candidates 0.704; perfect judge 0.846.
 - Budget: 39 Claude calls and 39 Sol calls.
-- Result: pending
+- Result (`runs/2026-10-15-c2e1-judge/`: answer key, Claude picks, Sol picks with reasons):
+  - **Claude judge (primary, Sonnet): 37/39 correct, pick rate (76 + 37) / 136 = 0.831.** That is ≥ 0.793, so **the rule is met: cross-model review is the first lever.**
+  - **Sol judge (secondary): 39/39 correct, pick rate 0.846** (the ceiling: any passing candidate among B's first 4).
+  - References: D 0.743; B4 public pick 0.699; random green pick 0.704 (19.8/39 expected).
+  - **Leakage audit (Sol):** every executed command was `cat`, `ls` or `rg` inside its own tuple dir, with no path escapes and no code execution.
+    - The Claude subagents were instructed to use Read only, inside their dirs. Their tool calls were not audited; their stated reasons are clause-level code analysis.
+  - **Caveats:**
+    - This is an offline estimate on train (c1-train families, the S0 pool).
+    - The equal-budget arm is 4 Luna samples plus 1 judge call = 5 invocations, but a judge call reads 3–5 files, so tokens per task are higher, and that must be reported.
+    - Sol is a stronger model from the same vendor as Luna. For Sol, the information source is "a stronger reviewer" rather than "a different family".
+  - **Next:** a live nanoharness experiment, "sample 4, judge 1". The Claude CLI lane is not usable from the controller (missing native binary), so the live judge is `codex/gpt-6.1-sol`, disclosed as such. A Claude-lane variant follows once the lane works.
