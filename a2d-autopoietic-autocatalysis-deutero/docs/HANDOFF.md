@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-15 (session 144: P3 exit "not promoted"; P3 → P4 gate passed with dispositions; H0 v5 frozen; E10 (G0) running; multi-harness controller being built by Codex)
+**Last updated:** 2026-10-15 (session 144: gate passed; multi-harness controller merged; E10 (G0, H0 v5) FAILED never-green 5 vs 2; H0 v6 = parity with D; E10b running)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -18,7 +18,7 @@
 
     All are fixed and unit-tested; see `docs/solutions/best-practices/inspect-first-prompts-of-a-new-harness-2026-10-15.md`.
 - **The P3 → P4 gate passed.** Reviewers: Codex Sol and a fresh Claude subagent. Every item has a disposition in `docs/plans/2026-10-15-p4-autopoietic-lift.md` (v3).
-- **Frozen P4 base: H0 v5** (`harnesses/h0-v5.json`). It is an evolver-free coder enzyme with:
+- **P4 base: H0 v6** (`harnesses/h0-v6.json`, after E10 failed). H0 v6 is parity with D: D's `CODER_SYSTEM` plus the `main()` clause, `prompt_format: repair`, and `escalation: false`. It replaced H0 v5, an evolver-free coder enzyme with:
   - `drop_coder_catalysts: [enzyme_defs]`;
   - `plain_inputs`;
   - `dedupe_input`;
@@ -32,17 +32,13 @@
 - **Confirmation-2:** 144 tasks, 36 families, hash `cb7cb496…`, final (LOG). The power shortfall is recorded.
 
 ## In flight
-1. **E10 (G0):** D vs C(H0 v5) on `tasks/train-all` (140 tasks), out `runs/2026-10-15-e10-g0-h0v5`, stdout `$SCRATCH/e10.out`.
-   - Pass needs all of: never-green C − D ≤ 2; rate within ±5 pp; zero evolver calls.
-   - Escalation consultation calls (rung 2, "You are a consulting model") are expected and counted.
-2. **Multi-harness controller:** being built by Codex Sol in the worktree `$SCRATCH/wt-multiharness` (branch `p4-multi-harness`), spec `TASK-multi-harness.md`. It adds:
-   - `--harness name=path` and `C:<name>` arms;
-   - `--d-note` and `D:<name>` arms;
-   - `--claim x>y,...`;
-   - `compare` with variant labels.
-
-   **Review the diff, rebase onto main, run all tests, merge, and drop the TASK file.**
-3. Then launch E11 (4 searches) with `docs/experiments/analysis/p4_search.py`. Run the pairs in parallel, mindful of account contention.
+1. **E10b (G0 retry, H0 v6):** D vs C on `tasks/train-all`, seed 22, out `runs/2026-10-15-e10b-g0-h0v6`, stdout `$SCRATCH/e10b.out`.
+   - Pass needs all of: never-green C − D ≤ 2; rate within ±5 pp; zero evolver and consultation calls.
+   - **If it fails, P4 stops** and the gap is recorded as a finding (LOG E10b).
+   - The early check has passed: first-prompt bodies are identical to D's.
+2. **If E10b passes, launch E11:** `python3 -I docs/experiments/analysis/p4_search.py --search I1 --mode informed --seed 101 --base harnesses/h0-v6.json --suite tasks/train-all --g0-run runs/2026-10-15-e10b-g0-h0v6 --out runs/2026-10-1x-p4-I1`. Then U1 (uninformed, seed 101), I2 and U2 (seed 202).
+   - Run them in parallel with `--jobs 3`.
+   - The multi-harness controller (`--harness name=path`, `C:<name>`, `--d-note`, `--claim`) is merged.
 
 ## Next moves after E11
 - Validation look: C(H\*_I1), C(H\*_I2), C(H\*_U1), C(H\*_U2), C(H0 v5) and D on c1-validation (aggregates only).

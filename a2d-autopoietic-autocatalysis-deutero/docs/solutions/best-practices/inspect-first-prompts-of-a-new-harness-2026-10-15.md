@@ -26,7 +26,10 @@ The harness-as-data slots for arm C (`coder_prompt`, `coder_note`, `lessons`, â€
    - An "oracle lessons" ceiling test came in below its threshold. The arm-level breakdown showed C reaching public-green less often (8 vs 2 failures), which first looked like a budget effect.
    - Checking D's first-green attempt index refuted the budget story. Counting the note's occurrences per prompt (3 in 109/109) found the cause.
 
-Neither defect was a finding about the mechanism under test. Both were plumbing.
+3. **JSON-escaped repair inputs and a prompt-rewriting evolver (P3 gate).** C's coder received its previous file as one escaped JSON string, the failure report twice, and the whole germline. Meanwhile the evolver rewrote the coder's instructions mid-task in every multi-call task.
+4. **A repair path weaker than D's (G0 / E10).** After those fixes, C still missed public-green more often (5 vs 2). Splitting the gap showed that C *won* the first attempt (0.82 vs 0.77 green) and *lost* the repair (0.80 vs 0.94). The repair instruction, the failure-report wrapper and a same-model escalation "consultation" were the remaining differences. The fix was full parity with the baseline's repair prompt.
+
+None of these defects was a finding about the mechanism under test. All of them were plumbing.
 
 ## The practice
 
@@ -35,3 +38,6 @@ Neither defect was a finding about the mechanism under test. Both were plumbing.
 - **Encode each contract you discover as validation**, not as a note. `validate_harness` now rejects a `coder_prompt` without `main()`, and `dedupe_input` has a unit test asserting that the spec appears once per coder prompt. P4's proposer edits these slots, so a contract that lives only in prose will be broken again.
 - **On metric-only data, diagnose from aggregate counts.** Note occurrences per prompt, mean prompt length and per-arm green rates are counts that need no task content. That keeps the diagnosis inside the validation boundary.
 - **A failed pre-registered rule stands.** Record the diagnosis as an observation, fix the defect as a floor change to the baseline, and test the corrected mechanism as the plan's single allowed revision, on data the mechanism was not derived from.
+- **Split a base's gap into first attempt vs repair.** From the ledger alone, compute each arm's first-attempt public-green rate and its repair conversion (green within budget after a failed first attempt). The two halves point at different components: the system prompt for the first attempt; the repair instruction, feedback format and escalation for the repair.
+- **When the baseline is the thing to beat, give the treatment's base the baseline's exact behaviour** (same prompts, same repair rendering), and pin it with a test that compares strings. Each piecemeal fix costs a live check, and parity ends the tuning.
+
