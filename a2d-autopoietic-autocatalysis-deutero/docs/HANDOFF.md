@@ -1,92 +1,96 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-14 (session 143: P0 done; P1 nearly done; calibration-v2 accepted; pilot fixed comparator D; Confirmation-1 at the cap being authored blind)
+**Last updated:** 2026-10-15 (session 144: P2 RULED OUT; P3 mechanisms S1–S3 killed; H0 built, fixed and live-checked (E08r); T0 taxonomy; S4 oracle-lessons ceiling running; Confirmation-2 finalising)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
 
-- **Owner's framing (2026-10-15):** A²D is *autoresearch on agentic coding harnesses*. A coding agent iterates and experiments on a self-improving harness and process, with human insights. You have the reins. The current rules live in **`docs/PROTOCOL.md`**.
-- **P2 is DONE: the seed lift is RULED OUT.**
-  - Pooled E07 + E07b, 296 tuples, 37 families: C vs D +1.4 pp, CI [−5.4, +8.8]. The two-look adjusted upper bound is +9.8. C spends 3.7× D's tokens.
-  - Robustness checks: domain clustering, leave-one-family-out, and only 2/296 self-test artifacts (all in the LOG).
-  - Narrow claim: the frozen seed harness at an equal invocation cap, with Luna-low.
-- **P3 is the outer research loop** (`docs/plans/2026-10-15-p3-research-loop.md`). Development data:
-  - visible: `tasks/calibration-v2`, `tasks/dev-v2` (48 tasks), `tasks/c1-train` (68; Confirmation-1 re-designated, split in `docs/experiments/c1-split.json`);
-  - metric-only: `~/.a2d-holdout/c1-validation` (80 tasks), never opened.
-- **Step 0 findings (LOG S0):**
-  - **The seed coder never sees its previous code.** In 15/24 tasks its second call got no feedback at all.
-  - The architect and tester are inert, proven by unit test.
-  - Selection headroom: within B's 5 candidates, any-pass is 86% against D's pick at 74% (train).
-  - The constraint: 92% of D's failures are public-green, so only signals beyond the public tests can help.
-- **S1 (blind spec tests, offline falsification) is running.** It is pre-registered with kill thresholds: validity ≥ 0.85, AUC ≥ 0.65, recall ≥ 0.45.
-- **Confirmation-2 is being extended blind** (25 families; log `$SCRATCH/author-c2ext.log`). It is the only claim set left.
+- **Owner's framing:** A²D is *autoresearch on agentic coding harnesses*. A coding agent iterates and experiments on a self-improving harness and process, with human insights. You have the reins. The rules live in **`docs/PROTOCOL.md`**. Goal and completion: `docs/plans/2026-10-14-lift-first-roadmap.md` (deadline 2026-11-30).
+- **P2 is DONE: the seed lift is RULED OUT.** Pooled E07 + E07b (296 tuples, 37 families): C vs D +1.4 pp, CI [−5.4, +8.8], at 3.7× D's tokens.
+- **P3 (outer loop, `docs/plans/2026-10-15-p3-research-loop.md`).**
+  - Mechanisms S1, S1b, S2 and S3 were all killed offline by pre-registered rules:
+    - blind spec tests (AUC 0.63);
+    - consensus-filtered spec tests (AUC 0.64);
+    - clause review and fix (conversion rate 0.19);
+    - agreement selection (0.73 vs D 0.74).
+  - Compound doc: `docs/solutions/architectural-insights/self-signals-dont-beat-repair-loop-2026-10-15.md`.
+  - **H0** (`harnesses/h0.json`) = the seed minus the architect and tester, with the coder shown its previous attempt and a cleaned prompt.
+    - The first run, E08, was **aborted**: the cleaned prompt dropped the seed's `main()` clause, and the metabolism sandbox compiles the file as a program, which caused spurious E0601 errors. Fixed and guarded in `validate_harness`.
+    - **E08r (train): C(H0 v2) 77.9% vs D 75.0%** (+2.9 pp, CI [−11.8, +19.1]) at 4.25× invocations. The sanity check is met.
+  - **H0 for P4 = H0 v2 + `stop_at_public_green`** (new harness key).
+  - **T0 failure taxonomy** (32 public-green but hidden-fail D picks on train, Sol): the top 3 categories cover 62%, and the lessons recur. The P4 lever is therefore a **`lessons` slot**.
+  - **S4 (running):** oracle-lessons ceiling on c1-validation, validation look 1 of 4. It is H0 v3 plus 8 researcher-distilled lessons, with D alongside.
+    - Rule: ≥ +5 pp means P4 builds lessons that A²D writes itself; below that, the lever is deprioritised.
+    - It is a ceiling, **not promotable**. Whether a researcher-lessons arm may enter Confirmation-2 is a question for the gate.
+- **Confirmation-2** (the only claim set): 36 families × 4 = **144 tasks**.
+  - `spreadsheet-eval` was excluded after an accidental exposure (see the LOG deviation). The rule now: never print process command lines while holdout jobs run.
+  - The extension audit (Sol) passed 97/100. The 3 `calendar-recurrence` failures were adjudicated (3 underdetermined tests, 3 tasks changed), and the re-audit passed 3/3.
+  - **Full re-validation is running** (`$SCRATCH/c2-final-validate.txt`). Next, record the final hash and family list in the LOG.
 - Coder lane: `codex/gpt-6-luna`, low effort, no tools. The A² session shares the account; this is a standing condition.
 
 ## Next moves
-1. Read S1's result (`runs/2026-10-15-s1-spec-tests/evaluation.json` and the stdout summary) and record it in the LOG.
-   - If it survives: build the harness interpreter (`code` with the previous file, `spec_tests`, `review`, `stop`, `select`, plus a reachability check) and run the first live train experiment (development lane, one-row pre-registration).
-   - If it dies: make clause review-and-fix primary.
-2. Finish Confirmation-2: assemble with `$SCRATCH/assemble-holdout.py confirmation-2`, validate, run the independent-solve audit, and record the hash.
-3. Validation looks are capped at 4. The promotion gate is +12 pp over a concurrent D. Budget: P3 ≤ 3k invocations.
+1. **S4 result:** read `~/.a2d-holdout/runs/S4/summary.json` (aggregates only), copy it to `runs/2026-10-15-s4-oracle-lessons/`, apply the rule, and record it in the LOG.
+2. **Confirmation-2:** once validation passes, `a2d lift hash ~/.a2d-holdout/confirmation-2`, then record the hash, 144 tasks and the family list in the LOG (Holdouts — Confirmation-2).
+3. **P3 exit addendum** (roadmap and P3 plan):
+   - P3 is "not promoted". Record the validation looks used and freeze H0 v3 as P4's baseline.
+   - T0 justifies the lessons *slot*. Its contents in P4 must be written by A²D (Luna, as architect) from train pass/fail labels, never from test content.
+   - Then the P3 → P4 gate review: Codex Sol plus a fresh Claude subagent, both in empty temp dirs.
+4. **P4 plan revision** (`docs/plans/2026-10-15-p4-autopoietic-lift.md` is stale: it still says Confirmation-2 has 48 tasks, and its budget exceeds 5k):
+   - `a2d lift distill`: the architect reads failure dossiers (spec, candidate and hidden pass/fail label only) and appends ≤ 8 task-agnostic lessons to the harness. Mechanical test: a hidden-test sentinel never reaches the architect prompt.
+   - Cross-fit within train (lessons from one half, acceptance on the other).
+   - ≥ 2 searches, plus an uninformed-lessons control (generic advice) at equal budget.
+   - Validation look for H*.
+   - Final registered Confirmation-2 run: D, B, H0, H*.
+   - Size everything within P4 ≤ 5k invocations.
 
 ## The controller: `a2d lift` (`crates/a2d-lift/`)
 
 ```bash
 cargo build -p a2d
-./target/debug/a2d lift hash tasks/dev
-./target/debug/a2d lift validate <suite> --jobs 4          # reference + mutants oracle check (P1 suites)
-./target/debug/a2d lift run --experiment E0N --suite <dir> --expect-suite-hash <sha> --registered-at <sha> \
-  --model codex/gpt-6-luna --effort low --arms A,B,D,C --k 5 --primary B --seed 1 --jobs 3 \
-  --max-invocations <n> --max-wall-clock-secs <s> --out runs/<date>-<id> [--record-hidden-output]
-./target/debug/a2d lift verify-ledger runs/<...>/ledger.jsonl
+./target/debug/a2d lift validate <suite> --jobs 4
+./target/debug/a2d lift run --experiment <id> [--unregistered | --registered-at <sha> --expect-suite-hash <sha>] \
+  --suite <dir> --model codex/gpt-6-luna --effort low --arms D,C --k 5 --primary D --seed <n> --jobs 4 \
+  --harness harnesses/<h>.json --max-invocations <n> --max-wall-clock-secs <s> --out <dir> [--defer-scoring]
+./target/debug/a2d lift manifest|score|pool|compare|verify-ledger ...
 ```
 
-- **Tasks:** `<suite>/<task>/task.json`, `public_tests.rs` and `hidden_tests.rs`, plus `reference.rs` and `mutants/*.rs` for validation. Arms see only a `PublicTask`.
-- **Two phases.** Every arm generates and submits; then each submission is scored once by the hidden oracle. The oracle compiles the candidate as the crate root and the tests as an earlier-declared `#[path]` module with explicit std macro imports. It deletes the sources before running, and requires a clean exit with every expected test passing. See `docs/solutions/best-practices/oracle-isolation-for-llm-candidates-2026-10-14.md`.
-- **Budget meter.** Per-arm budget (A=1, B/C/D=k), a global cap, a wall clock, and tokens, provider time and coder calls per tuple. A wall-clock refusal voids the tuple. Prompts, responses and Codex transcripts go under `runs/<id>/invocations/`.
-- **Summary.**
-  - Run status: complete/aborted, void tuples, and hidden-name scan hits.
-  - Per arm: rate, tokens, public-green-but-hidden-fail and suspicious constructs.
-  - Comparisons: paired cluster-bootstrap CI, family sign-flip p, descriptive McNemar, and a class guarded by `--min-families` (default 10) and by zero discordance.
-  - `--primary` marks the single primary comparison.
-- **Registration freeze:** `crates/`, `Cargo.toml` and `Cargo.lock` must be unchanged since `--registered-at`. The suite hash must match. `--unregistered` is for development only.
-- **Arm C** (`crates/a2d-cli/src/lift_arm_c.rs`):
-  - seed germline per task;
-  - one metered provider for every enzyme;
-  - public-tests-only benchmark;
-  - no project root, so patches are rejected;
-  - cooldown off;
-  - returns all code artifacts, and the controller picks one with the same public rule as B and D (most public passes, then compiled, then earliest).
-- **Protected from automated patches:** `crates/a2d-lift/`, `lift_arm_c.rs`, `LOG.md`, `runs/` (`self_sandbox::PROTECTED_DIRS`; CONSTITUTION Invariant 4).
+- **Arms:** A (one-shot), B (best-of-k, public selection), D (repair loop, stops at public-green), C (A²D metabolism, `crates/a2d-cli/src/lift_arm_c.rs`). All run at an equal invocation cap k.
+- **Oracle:** the candidate is the crate root, and the trusted tests are an earlier-declared `#[path]` module. Sources are deleted before the run, and a clean exit is required.
+- **Harness-as-data for C** (`--harness`, validated and hashed). Keys:
+  - `name`;
+  - `drop_enzymes` (RAF closure enforced);
+  - `coder_note` (appended to the task input);
+  - `coder_prompt` (it must keep the `main()` clause);
+  - `route_previous_code`;
+  - `stop_at_public_green`.
 
-## In flight / next moves
+  Unknown keys are rejected.
+- **Summary:** per-arm rate, tokens and public-green-hidden-fail. Comparisons use a paired cluster-bootstrap CI, the family sign-flip p, and a class guarded by `--min-families`.
+- **Protected from automated patches:** `crates/a2d-lift/`, `lift_arm_c.rs`, `LOG.md`, `runs/`.
 
-1. **P1 calibration suite.** Six families × 4 graded tasks (`stream-b64`, `dep-resolve`, `txn-kv`, `rate-sched`, `semver`, `lru-repair`) are being authored by Codex Sol in `$SCRATCH/p1-author/<family>/out/`, per `SPEC.md` there. Then:
-   - copy them to `tasks/calibration/`;
-   - run `a2d lift validate`, and feed rejections back to Codex;
-   - hand-check that the public tests cover every major API item.
-2. **E03, the calibration pilot:** A + B at k = 4 (or 5) on `tasks/calibration`. Headroom gate: A in 20–70%, B ≤ 85%, per family and pooled. If saturated, it's a T7 redesign (max 2): harder levels, `gpt-5.6-luna`, or lower effort.
-3. **Power planning** from pilot discordance (in families), then author Confirmation-1 and Confirmation-2 into `$A2D_HOLDOUT_DIR` (outside the repo, Codex-authored, validated blind), and commit only the hashes.
-4. **Before P2 confirmation:** add deferred scoring (generate, commit submission hashes, then score), and pre-register k ≡ 1 (mod 4) with `--primary` fixed from the pilot.
+## Data
+- Visible development data: `tasks/calibration-v2` (24), `tasks/dev-v2` (48) and `tasks/c1-train` (68; split in `docs/experiments/c1-split.json`).
+- Metric-only: `~/.a2d-holdout/c1-validation` (80 tasks, 20 families). Read `summary.json` aggregates only, and never open its prompts or tasks.
+- Claim set: `~/.a2d-holdout/confirmation-2` (144). Never opened; scored once.
+- Development artefacts: `runs/2026-10-15-s0-candidate-pool/` (1,263 hidden-scored train candidates), `runs/2026-10-15-t0-taxonomy/`, and analysis scripts in `docs/experiments/analysis/`.
 
-Stop doing: SWE-bench/redaction/env-scrub scaffolding (T3), constant-artifact evidence, controller work not needed by the next run.
+## Budget (PROTOCOL envelope, about 15k at the P2 gate)
+- P3 ≤ 3k. Used so far: about 200 offline, E08 159, E08r 420, T0 32 Sol, plus S4 (≤ 500).
+- P4 ≤ 5k. Confirmation-2 run ≈ 5k. Reserve ≈ 2k.
 
-## Provider state (2026-10-14)
-
-- Working lanes: Codex (`gpt-6-luna` coder, `gpt-6.1-sol` reviewer and author) and Claude subagents. The Kimi, Z.ai, MiniMax and Gemini subscriptions were stopped on purpose, so don't plan around them. `gpt-6.1-luna` is not offered on this account.
+## Provider state
+- Working lanes: Codex (`gpt-6-luna` coder, `gpt-6.1-sol` reviewer and author) and Claude subagents. The Kimi, Z.ai, MiniMax and Gemini subscriptions were stopped on purpose.
 - Codex gotchas:
-  - `-s read-only` never blocks reads;
-  - user config auto-approves escalations, so run reviewers and authors in empty temp dirs, never with the repo as cwd;
-  - close stdin (`< /dev/null`);
-  - inside Codex's sandbox the rustup proxy hangs, so give it the toolchain's `rustc` path directly.
+  - `-s read-only` never blocks reads, so run reviewers and authors in empty temp dirs;
+  - close stdin;
+  - inside the sandbox, give it the toolchain's `rustc` path directly;
+  - **`codex exec` argv carries the prompt**, so never `ps -o command` while holdout jobs run.
 
 ## Tests
 
-`cargo test` is all green. Five `a2d-cli` fitness-evidence provenance tests fail whenever there are **untracked files under `crates/`**, so commit before running the full suite. The `a2d-lift` tests take about 20 s, because the oracle compiles real code.
+`cargo test` is all green. Provenance tests in `a2d-cli` fail whenever there are **untracked files under `crates/`**, so commit first. The `a2d-lift` tests take about 20 s.
 
-## Legacy (unchanged, deprioritised)
+## Legacy (deprioritised)
 
-- The metabolism, evolver, architect, escalation rungs and observer are implemented, but their value is unproven. The observer never fires: CLI providers emit a constant trace, and the lift lane keeps it constant until P5 validates the observer offline.
-- Live `challenge` and related commands now use `Challenge::selection_benchmark()`, with no hidden acceptance; hidden tests are scored only via `score-artifact` or `a2d lift`.
-- The SWE-Bench Pro chain is parked (`docs/plans/swe-bench-pro-blind-evaluator-adapter.md`).
-- Pre-reset history: `docs/handoff-archive/2026-07-10-session-141-HANDOFF.md`. Audit and prior art: `docs/research/2026-10-14-direction-audit.md` and `docs/research/2026-10-14-dgm-rqgm-relevance.md`.
+- The metabolism, evolver, architect, escalation rungs and observer exist, but their value is unproven. The SWE-Bench Pro chain is parked.
+- Pre-reset history: `docs/handoff-archive/`. Audit: `docs/research/2026-10-14-direction-audit.md`.
