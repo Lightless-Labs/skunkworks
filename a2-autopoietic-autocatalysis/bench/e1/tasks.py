@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -41,6 +42,25 @@ REPO_PROFILES = {
         ],
         "extra": ["pytest", "pytest-mock", "mock"],
         "pythonpath": ["lib", "test/lib"],
+    },
+    "internetarchive/openlibrary": {
+        "requirements": ["requirements.txt"],
+        "unit_requirements": ["requirements_test.txt"],
+        "extra": ["pytest", "pytest-mock"],
+        "pythonpath": ["."],
+        "submodules": ["vendor/infogami"],
+    },
+    "qutebrowser/qutebrowser": {
+        "requirements": ["requirements.txt"],
+        "unit_requirements": [
+            "misc/requirements/requirements-tests.txt",
+            "misc/requirements/requirements-tests-git.txt",
+        ],
+        "pyqt_requirements": "misc/requirements/requirements-pyqt*.txt",
+        "extra": ["pytest", "pytest-mock", "pytest-qt"],
+        "pythonpath": ["."],
+        "env": {"QT_QPA_PLATFORM": "offscreen"},
+        "fallback_constraints": ["PyQt5<5.16", "PyQtWebEngine<5.16"],
     },
 }
 
@@ -94,7 +114,9 @@ def load_rows(parquet: Path) -> list[dict]:
 
 
 def select(args: argparse.Namespace) -> None:
-    rows = [r for r in load_rows(dataset_path()) if r["repo"] in REPO_PROFILES]
+    requested_repos = getattr(args, "repo", None)
+    allowed_repos = set(requested_repos) if requested_repos else set(REPO_PROFILES)
+    rows = [r for r in load_rows(dataset_path()) if r["repo"] in allowed_repos and r["repo"] in REPO_PROFILES]
     selected = []
     for row in sorted(rows, key=lambda r: r["instance_id"]):
         fail_to_pass = json.loads(row["fail_to_pass"])
@@ -136,13 +158,28 @@ def requirement_files(profile: dict, exists) -> list[str]:
 
 def install_requirements(venv: Path, repo: Path, profile: dict, base_date: str) -> str:
     """Pre-registered two-stage install: date-pinned first; if that fails, the same files unpinned."""
-    reqs = [arg for r in requirement_files(profile, lambda rel: (repo / rel).is_file()) for arg in ("-r", str(repo / r))]
+    files = requirement_files(profile, lambda rel: (repo / rel).is_file())
+    pattern = profile.get("pyqt_requirements")
+    if pattern:
+        matches = list(repo.glob(pattern))
+        if matches:
+            def version_key(path: Path) -> tuple:
+                return tuple(int(part) for part in re.findall(r"\d+", path.name))
+            files.append(str(max(matches, key=version_key).relative_to(repo)))
+    reqs = [arg for r in files for arg in ("-r", str(repo / r))]
     base = ["uv", "pip", "install", "-q", "--python", str(venv / "bin" / "python"), *reqs, *profile["extra"]]
     pinned = subprocess.run([*base, "--exclude-newer", common.exclude_newer_for_base_date(base_date)],
                             capture_output=True, text=True)
     if pinned.returncode == 0:
         return "date-pinned"
-    subprocess.run(base, check=True, capture_output=True, text=True)
+    constraints = profile.get("fallback_constraints", [])
+    if constraints:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="e1-constraints-", suffix=".txt") as stream:
+            stream.write("\n".join(constraints) + "\n")
+            stream.flush()
+            subprocess.run([*base, "-c", stream.name], check=True, capture_output=True, text=True)
+    else:
+        subprocess.run(base, check=True, capture_output=True, text=True)
     return "unpinned-fallback"
 
 
@@ -159,6 +196,8 @@ def prepare(opaque: str) -> dict:
             cwd=repo, check=True,
         )
         subprocess.run(["git", "checkout", "-q", "FETCH_HEAD"], cwd=repo, check=True)
+        for submodule_path in profile.get("submodules", []):
+            _fetch_submodule(repo, submodule_path)
         base_date = subprocess.run(
             ["git", "log", "-1", "--format=%cs"], cwd=repo, check=True, capture_output=True, text=True
         ).stdout.strip()
@@ -176,6 +215,47 @@ def prepare(opaque: str) -> dict:
             raise
         (private_dir(opaque) / "manifest.json").write_text(json.dumps(manifest, indent=1, sort_keys=True))
     return manifest
+
+
+def _fetch_submodule(repo: Path, submodule_path: str) -> None:
+    """Fetch the exact gitlink commit without invoking recursive submodule networking."""
+    tree = subprocess.run(
+        ["git", "ls-tree", "HEAD", submodule_path], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    if not tree:
+        raise RuntimeError(f"missing gitlink for submodule {submodule_path}")
+    metadata, _ = tree.split("\t", 1)
+    mode, kind, commit = metadata.split()
+    if mode != "160000" or kind != "commit":
+        raise RuntimeError(f"{submodule_path} is not a gitlink")
+
+    paths = subprocess.run(
+        ["git", "config", "-f", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout.splitlines()
+    section = None
+    for line in paths:
+        key, value = line.split(None, 1)
+        if value == submodule_path:
+            section = key[: -len(".path")]
+            break
+    if section is None:
+        raise RuntimeError(f"missing .gitmodules entry for {submodule_path}")
+    url = subprocess.run(
+        ["git", "config", "-f", ".gitmodules", "--get", f"{section}.url"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+    destination = repo / submodule_path
+    destination.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=destination, check=True)
+    subprocess.run(["git", "fetch", "--depth", "1", url, commit], cwd=destination, check=True)
+    subprocess.run(["git", "checkout", "-q", "--detach", "FETCH_HEAD"], cwd=destination, check=True)
+    shutil.rmtree(destination / ".git")
+
+
+def profile_env(manifest: dict) -> dict:
+    return dict(REPO_PROFILES[manifest["repo"]].get("env", {}))
 
 
 def grade_diff(opaque: str, diff: str | None) -> dict:
@@ -239,6 +319,7 @@ def main(argv: list[str]) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("select")
     s.add_argument("--out", required=True, help="where to write the selected task list (opaque + instance ids)")
+    s.add_argument("--repo", action="append", help="limit selection to this supported repo (repeatable; default: all)")
     for name in ("prepare", "gate", "evict"):
         p = sub.add_parser(name)
         p.add_argument("--task", required=True)
