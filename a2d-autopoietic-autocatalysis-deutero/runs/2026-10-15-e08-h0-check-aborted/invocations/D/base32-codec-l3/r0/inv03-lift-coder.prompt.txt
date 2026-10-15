@@ -1,0 +1,249 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+PROMPT:
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner doc comments.
+R2. Expose these public operations and error type with the listed derives: pub fn encode(input: &[u8], checked: bool) -> String; pub fn decode(input: &str, checked: bool) -> Result<Vec<u8>, DecodeError>; #[derive(Debug, Clone, PartialEq, Eq)] pub enum DecodeError { MissingCheck { offset: usize }, InvalidByte { offset: usize, byte: u8 }, InvalidLength { offset: usize }, TrailingBits { offset: usize }, CheckMismatch { offset: usize, expected: u8, found: u8 } }
+R3. This is a byte-oriented Crockford codec, not an integer formatter. Data alphabet values 0..31 are 0123456789ABCDEFGHJKMNPQRSTVWXYZ.
+R4. Encoding reads bytes most significant bit first into five-bit values, zero-fills the right of the last partial value, and emits uppercase canonical data symbols.
+R5. Encoded data is unpadded and contains no separators; no wholly empty final five-bit group is emitted.
+R6. With checked=false, encode empty bytes as "". With checked=true, encode empty bytes as "0" (a check symbol with no data).
+R7. The check alphabet values 0..36 are 0123456789ABCDEFGHJKMNPQRSTVWXYZ*~$=U. A checked encoding appends exactly one check symbol after the data.
+R8. Compute the check remainder starting at r=0 and update r=(r*32+v)%37 for every encoded data symbol value v, including the zero-filled last symbol. The check symbol is the check-alphabet entry r, not a byte checksum.
+R9. Decoding ignores every ASCII hyphen anywhere, including leading, trailing, repeated, and those between data and check. No other byte is skipped.
+R10. Data letters are ASCII case-insensitive. I, i, L, l map to value 1; O, o map to value 0. No other aliases exist.
+R11. Check letters use the same case-folding and aliases. Uppercase or lowercase U represents check value 36; * ~ $ = represent values 32..35. These five symbols are never valid data.
+R12. All offsets refer to original UTF-8 byte indices, including skipped hyphens. InvalidByte carries the actual original byte, not its uppercase form.
+R13. Whitespace, newlines, non-ASCII, and all bytes not recognized in their data/check role are invalid. Non-ASCII fails at the first offending UTF-8 byte.
+R14. After skipping hyphens, unchecked mode treats every remaining byte as data. Checked mode reserves the last remaining byte as the check symbol, with preceding bytes as data.
+R15. Checked mode with no remaining byte returns MissingCheck { offset: input.len() }, including for empty input or only hyphens.
+R16. Validation order is: missing check, all data lexical validation, check lexical validation, data length, trailing bits, check mismatch. The first error in the first failing pass wins.
+R17. Data lexical validation scans data bytes in original order and returns InvalidByte at the first invalid data byte. Invalid data beats an invalid check, wrong length, or mismatch.
+R18. In checked mode an invalid reserved check byte gives InvalidByte at its original offset after data lexical validation.
+R19. Let d be the count of data symbols after skipping hyphens and reserving the check. Legal d modulo 8 residues are 0,2,4,5,7; any other residue gives InvalidLength { offset: input.len() }.
+R20. Decode normalized data values most significant bit first into bytes. Check symbols and hyphens contribute no decoded bits.
+R21. Unused low bits of the final data value must be zero: residue 2 requires 2 zero bits, residue 4 requires 4, residue 5 requires 1, residue 7 requires 3; residue 0 has none.
+R22. Nonzero unused bits give TrailingBits at the original offset of the last data symbol, before checking the check remainder.
+R23. In checked mode compute the remainder by the recurrence in R8 over normalized data values. Neither aliases, lowercase nor hyphens alter the remainder.
+R24. If the reserved normalized check value differs from the remainder, return CheckMismatch at the original check offset with expected equal to the numerical remainder and found equal to the numerical normalized check value (0..36).
+R25. Unchecked empty data, including only hyphens, decodes to an empty vector. Checked empty data succeeds only when its reserved check value normalizes to zero.
+R26. No padding syntax exists: = can appear only as the final significant checked symbol. It is otherwise an InvalidByte, not a padding or length error.
+R27. Errors return no partial bytes; calls are independent and input is untouched.
+R28. Support arbitrary binary bytes, all byte values, repeated complete groups and final partial groups.
+R29. Successful decoding followed by encoding with the same checked flag yields canonical uppercase data with no hyphens, no aliases, and the canonical check symbol.
+R30. A single significant byte in checked mode is always a check on empty data; a single significant byte in unchecked mode is data and hence has an invalid length.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+#[test] fn public_crockford_encode() { assert_eq!(encode(b"foo",false),"CSQPY"); }
+#[test] fn public_crockford_normalize() { assert_eq!(decode("c-s-q-p-y",false),Ok(b"foo".to_vec())); }
+#[test] fn public_checked_extended() { assert_eq!(encode(&[64],true),"80$"); assert_eq!(decode("80$",true),Ok(vec![64])); }
+#[test] fn public_unchecked_binary() { assert_eq!(encode(&[32,16],false),"4080"); assert_eq!(decode("4080",false),Ok(vec![32,16])); }
+```
+
+
+## Previous attempt
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    MissingCheck { offset: usize },
+    InvalidByte { offset: usize, byte: u8 },
+    InvalidLength { offset: usize },
+    TrailingBits { offset: usize },
+    CheckMismatch { offset: usize, expected: u8, found: u8 },
+}
+
+const DATA_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const CHECK_ALPHABET: &[u8; 37] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ*~$=U";
+
+pub fn encode(input: &[u8], checked: bool) -> String {
+    let mut output = String::new();
+    let mut accumulator = 0u32;
+    let mut bits = 0u32;
+    let mut remainder = 0u8;
+
+    for &byte in input {
+        accumulator = (accumulator << 8) | u32::from(byte);
+        bits += 8;
+
+        while bits >= 5 {
+            bits -= 5;
+            let value = ((accumulator >> bits) & 31) as u8;
+            output.push(DATA_ALPHABET[value as usize] as char);
+            remainder = ((u16::from(remainder) * 32 + u16::from(value)) % 37) as u8;
+        }
+
+        if bits == 0 {
+            accumulator = 0;
+        } else {
+            accumulator &= (1u32 << bits) - 1;
+        }
+    }
+
+    if bits > 0 {
+        let value = ((accumulator << (5 - bits)) & 31) as u8;
+        output.push(DATA_ALPHABET[value as usize] as char);
+        remainder = ((u16::from(remainder) * 32 + u16::from(value)) % 37) as u8;
+    }
+
+    if checked {
+        output.push(CHECK_ALPHABET[remainder as usize] as char);
+    }
+
+    output
+}
+
+fn normalize_data(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'A'..=b'H' => Some(byte - b'A' + 10),
+        b'a'..=b'h' => Some(byte - b'a' + 10),
+        b'I' | b'i' | b'L' | b'l' => Some(1),
+        b'J'..=b'K' => Some(byte - b'A' + 10),
+        b'j'..=b'k' => Some(byte - b'a' + 10),
+        b'M'..=b'N' => Some(byte - b'A' + 10),
+        b'm'..=b'n' => Some(byte - b'a' + 10),
+        b'O' | b'o' => Some(0),
+        b'P'..=b'T' => Some(byte - b'A' + 10),
+        b'p'..=b't' => Some(byte - b'a' + 10),
+        b'V'..=b'Z' => Some(byte - b'A' + 10),
+        b'v'..=b'z' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn normalize_check(byte: u8) -> Option<u8> {
+    match byte {
+        b'*' => Some(32),
+        b'~' => Some(33),
+        b'$' => Some(34),
+        b'=' => Some(35),
+        b'U' | b'u' => Some(36),
+        _ => normalize_data(byte),
+    }
+}
+
+pub fn decode(input: &str, checked: bool) -> Result<Vec<u8>, DecodeError> {
+    let bytes = input.as_bytes();
+    let significant: Vec<(usize, u8)> = bytes
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|&(_, byte)| byte != b'-')
+        .collect();
+
+    let check = if checked {
+        match significant.last().copied() {
+            Some(last) => Some(last),
+            None => return Err(DecodeError::MissingCheck { offset: input.len() }),
+        }
+    } else {
+        None
+    };
+
+    let data_len = significant.len() - usize::from(checked);
+    let mut values = Vec::with_capacity(data_len);
+
+    for &(offset, byte) in significant.iter().take(data_len) {
+        let value = normalize_data(byte)
+            .ok_or(DecodeError::InvalidByte { offset, byte })?;
+        values.push((offset, value));
+    }
+
+    let normalized_check = if let Some((offset, byte)) = check {
+        Some((
+            offset,
+            normalize_check(byte).ok_or(DecodeError::InvalidByte { offset, byte })?,
+        ))
+    } else {
+        None
+    };
+
+    let residue = values.len() % 8;
+    let unused_bits = match residue {
+        0 => 0,
+        2 => 2,
+        4 => 4,
+        5 => 1,
+        7 => 3,
+        _ => return Err(DecodeError::InvalidLength { offset: input.len() }),
+    };
+
+    if unused_bits > 0 {
+        let (offset, last_value) = values[values.len() - 1];
+        if last_value & ((1u8 << unused_bits) - 1) != 0 {
+            return Err(DecodeError::TrailingBits { offset });
+        }
+    }
+
+    if let Some((offset, found)) = normalized_check {
+        let remainder = values.iter().fold(0u8, |remainder, &(_, value)| {
+            ((u16::from(remainder) * 32 + u16::from(value)) % 37) as u8
+        });
+
+        if found != remainder {
+            return Err(DecodeError::CheckMismatch {
+                offset,
+                expected: remainder,
+                found,
+            });
+        }
+    }
+
+    let mut output = Vec::with_capacity(values.len() * 5 / 8);
+    let mut accumulator = 0u32;
+    let mut bits = 0u32;
+
+    for &(_, value) in &values {
+        accumulator = (accumulator << 5) | u32::from(value);
+        bits += 5;
+
+        while bits >= 8 {
+            bits -= 8;
+            output.push(((accumulator >> bits) & 0xff) as u8);
+        }
+
+        if bits == 0 {
+            accumulator = 0;
+        } else {
+            accumulator &= (1u32 << bits) - 1;
+        }
+    }
+
+    Ok(output)
+}
+```
+
+## Public test results
+
+
+running 4 tests
+test a2d_public_2013ec9e60b61fbf::public_checked_extended ... ok
+test a2d_public_2013ec9e60b61fbf::public_crockford_encode ... ok
+test a2d_public_2013ec9e60b61fbf::public_unchecked_binary ... ok
+test a2d_public_2013ec9e60b61fbf::public_crockford_normalize ... FAILED
+
+failures:
+
+---- a2d_public_2013ec9e60b61fbf::public_crockford_normalize stdout ----
+
+thread 'a2d_public_2013ec9e60b61fbf::public_crockford_normalize' (82611572) panicked at /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-oracle-8ROx1X/t_2013ec9e60b61fbf.rs:6:43:
+assertion `left == right` failed
+  left: Ok([103, 53, 145])
+ right: Ok([102, 111, 111])
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a2d_public_2013ec9e60b61fbf::public_crockford_normalize
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+
+
+Fix the file. Respond with the whole corrected file in a single ```rust block.
