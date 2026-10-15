@@ -484,7 +484,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - Result (`runs/2026-10-15-s4-oracle-lessons/summary.json`; aggregates only; 0 void, integrity OK):
   - **D 52/80 = 65.0%; C(S4) 54/80 = 67.5%.** Lift +2.5 pp, 95% CI [−8.8, +13.8], discordant pairs 10 vs 8, 20 families.
   - **Below +5 pp, so by the rule the lessons lever is deprioritised.** Validation looks used: 1 of 4.
-  - Spend: C 138 invocations / 1.88M tokens vs D 107 / 0.90M. Stop-at-green is verified at 1.38 invocations per task.
+  - Spend: C 138 invocations / 1.88M tokens vs D 107 / 0.90M. Stop-at-green is verified: 1.73 invocations and 1.36 coder calls per task (corrected 2026-10-15 at the P3 gate review; earlier text said 1.38 invocations).
   - Arm-level breakdown (an observation, not a reinterpretation of the rule):
     - public-green but hidden-fail: C 18 vs D 26;
     - never public-green: C 8 vs D 2;
@@ -511,6 +511,12 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **If S4b survives**, P4 proceeds with the self-written lessons slot (`a2d distill`) from H0 v4, subject to the P3 → P4 gate.
   - **If S4b is killed**, no P3 or P4 lever has evidence behind it. P3 exits "not promoted", and the gate considers the roadmap's falsified path, with P4-0 (label-only diagnosis works) recorded as the open finding.
 - Budget: ≤ 450 invocations (A) + ≤ 300 (B), 7,200 s each. P3 spend before this: about 1,100.
+- **Clarification (11:02 UTC, 2026-10-15, while S4b was generating, before any S4b hidden score existed or was read; from the P3 gate review by Codex Sol). This clarifies the rule and does not relax it. The original rule stands beside it.**
+  - On 72 complete tasks, +5 pp means **at least 4 net additional passes**.
+  - Survival authorises **P4 development only**. P3's promotion bar to Confirmation-2 stays unmet.
+  - C(H0 v4) below D − 5 pp is a **performance warning**. It invalidates or repeats nothing unless a defect is independently demonstrated.
+  - The paired family interval, discordance, conv and regr are reported descriptively. None is an alternative way to pass.
+  - Under an independent symmetric null with flip rate 0.162, a net gain of ≥ 4 on 72 occurs about 15% of the time. This is a screening rule, not evidence of improvement.
 - Result: pending
 
 
