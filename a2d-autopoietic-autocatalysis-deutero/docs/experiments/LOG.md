@@ -305,6 +305,11 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
     | C | 1,480 | 12.10M |
     C used **3.7× D's invocations and tokens**.
   - E07b alone: A 87, B 98, D 102, C 102 of 148. C vs D 0.0 pp, CI [−8.1, +8.8].
+- Sensitivity (descriptive, requested by the P2 gate review; the registered result stays primary; script `docs/experiments/analysis/p2_sensitivity.py`, with the grouping written before computing):
+  - An independent Python re-implementation reproduces the registered interval exactly: +1.4 pp, [−5.4, +8.8].
+  - **5 broad domain clusters** (codecs and parsers, text and format, data structures, graphs and algorithms, state/simulation/finance): CI [−5.8, +6.9]. Still RULED OUT.
+  - **Leave-one-family-out:** the lift ranges from −0.7 pp (without iso-duration) to +2.4 pp (without life-rules). No single family drives the result.
+  - **Wording of the claim (adopted from the review):** under the registered family-bootstrap analysis, the frozen seed A²D harness did not deliver a 10 pp improvement over the public-test-stopping repair loop on these fresh Rust task families, using Luna-low, no tools, and an equal cap of five provider invocations per task. This does not establish zero benefit, equivalence, equal-cost performance, or the failure of an optimised harness or of autoresearch.
 - Artifacts: runs/2026-10-15-e07b-confirmation-1-r2/ (manifest, ledger, summary, pooled summary)
 - Deviations: 2026-10-15, at launch: the sibling A² session had 2–3 Codex processes on the account (its E1 workcells and one other job). As in E07, this cannot be controlled from this session. Tuple and arm orders are randomised. Recorded before any scoring.
 - Decision: **P2 is complete. A lift of 10 pp or more for the seed A²D metabolism over its own coder in a plain repair loop, at an equal invocation cap, is ruled out on fresh families.** By the roadmap, this is the falsification half of "Completed (falsified)". The plan completes as falsified only if no P4 hypothesis is SUPPORTED within T7, so P3 and P4 proceed. They form the owner's autoresearch loop: outer-loop harness iteration on development data, then A²D's own inner loop, scored on Confirmation-2. The seed harness spends 3.7× the tokens for about +1 pp, so P3 starts by removing spend that cannot affect the submission.
