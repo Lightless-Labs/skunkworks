@@ -167,6 +167,14 @@ class LeakTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             run.assert_no_private_leak("--- a/lib/x.py\n+++ b/lib/x.py\n+fix\n", markers)
 
+    def test_hidden_id_matches_whole_node_ids_only(self) -> None:
+        markers = run.private_markers("gold", ["t.py::K::test_six", "t.py::test_p"])
+        run.assert_no_private_leak("- t.py::K::test_six_from_many_submodules failed", markers)
+        run.assert_no_private_leak("- t.py::test_p[1] failed", markers)
+        for text in ("- t.py::K::test_six failed", "t.py::K::test_six", "(t.py::test_p)"):
+            with self.assertRaises(RuntimeError):
+                run.assert_no_private_leak(text, markers)
+
     def test_payload_names_only_opaque_id_and_committed_verifier(self) -> None:
         payload = run.task_payload("e1-abc123abc123", "Fix it.", "e1-abc123abc123:raw:r1", ["https://api.z.ai"])
         command = payload["verification_commands"][0]["command"]

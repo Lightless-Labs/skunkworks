@@ -146,3 +146,9 @@ What was in the output:
 - Seatbelt denies reads under the private directory either way.
 
 The fix limits the guard markers to gold-patch content and hidden ids (`run.private_markers`). Verifier output is unchanged, and every arm still receives identical feedback. The completed rows are kept, and the shards resume with the same commands.
+
+**Addendum:** 2026-10-15 — `e1-v1` second leak-guard stop (harness fix, no protocol change).
+
+Two shards stopped at 96 rows. In every match, a hidden node id was a strict prefix of a visible id the verifier listed. For example, hidden `…::test_import_six` matched visible `…::test_import_six_from_many_submodules`. That is a substring false positive, not a leak.
+
+The guard now matches node-id markers as whole ids: no word character, `[` or `-` may follow. Gold-patch content is still matched as a plain substring. Rescanning all 188 recorded attempt rows, across all arms, finds no leak. Feedback text is unchanged, and the shards resume from the completed rows.

@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -74,9 +75,17 @@ def private_markers(gold_patch: str, hidden_fail_to_pass: list[str]) -> list[str
     return [gold_patch[:200], *hidden_fail_to_pass]
 
 
+def _marker_in(marker: str, text: str) -> bool:
+    """Node ids match whole ids only: a hidden `k::test_six` is not leaked by a visible
+    `k::test_six_from_submodules` or `k::test_six[1]`. Other markers match as substrings."""
+    if "::" not in marker:
+        return marker in text
+    return re.search(re.escape(marker) + r"(?![\w\[\-])", text) is not None
+
+
 def assert_no_private_leak(text: str, private_markers: list[str]) -> None:
     for marker in private_markers:
-        if marker and marker in text:
+        if marker and _marker_in(marker, text):
             raise RuntimeError(f"private material marker leaked into agent-visible text: {marker[:40]!r}")
 
 
