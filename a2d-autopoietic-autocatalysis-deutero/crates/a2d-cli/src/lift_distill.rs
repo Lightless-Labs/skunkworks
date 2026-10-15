@@ -99,6 +99,56 @@ pub fn failure_dossiers(run_dir: &Path, suite: &Path, arm: &str) -> Result<Vec<D
     Ok(dossiers)
 }
 
+const UNINFORMED: &str = "Below are the requirements of a Rust programming task.\nWrite one TASK-AGNOSTIC instruction to a programmer (no names from this task, at most 25 words) that helps implement tasks like this correctly. Reply with ONE JSON object and nothing else:\n{\"suspect_clauses\": [], \"bug\": \"\", \"lesson\": \"...\"}";
+
+/// Deterministic sampling order for the uninformed control.
+pub fn sample_key(seed: u64, task: &str, replicate: u64) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64 ^ seed;
+    for byte in task.bytes().chain(replicate.to_le_bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+/// Control: `n` submissions of `arm`, sampled without regard to any outcome.
+/// The architect sees requirements only (no file, no label).
+pub fn uninformed_dossiers(
+    run_dir: &Path,
+    suite: &Path,
+    arm: &str,
+    n: usize,
+    seed: u64,
+) -> Result<Vec<Dossier>, String> {
+    let mut picks = Vec::new();
+    for line in read(&run_dir.join("ledger.jsonl"))?.lines() {
+        let record: Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
+        if record["arm"].as_str() == Some(arm) && record["kind"].as_str() == Some("submission") {
+            let task = record["task"].as_str().unwrap_or_default().to_string();
+            let replicate = record["replicate"].as_u64().unwrap_or(0);
+            let family = record["family"].as_str().unwrap_or_default().to_string();
+            picks.push((sample_key(seed, &task, replicate), task, family));
+        }
+    }
+    picks.sort();
+    picks
+        .into_iter()
+        .take(n)
+        .map(|(_, task, family)| {
+            Ok(Dossier {
+                task_prompt: a2d_lift::arms::task_prompt(&public_task(suite, &task)?),
+                code: String::new(),
+                task,
+                family,
+            })
+        })
+        .collect()
+}
+
+pub fn uninformed_prompt(dossier: &Dossier) -> String {
+    format!("{UNINFORMED}\n\nREQUIREMENTS:\n{}", dossier.task_prompt)
+}
+
 pub fn diagnosis_prompt(dossier: &Dossier) -> String {
     format!(
         "{DIAGNOSE}\n\nREQUIREMENTS:\n{}\n\nFILE:\n```rust\n{}\n```",
@@ -210,9 +260,15 @@ pub fn distill(
                 .map(|d| {
                     let provider = provider.clone();
                     scope.spawn(move || {
+                        // An uninformed (control) dossier has no file.
+                        let prompt = if d.code.is_empty() {
+                            uninformed_prompt(d)
+                        } else {
+                            diagnosis_prompt(d)
+                        };
                         (
                             d.task.clone(),
-                            invoke(provider.as_ref(), "architect-diagnose", diagnosis_prompt(d)),
+                            invoke(provider.as_ref(), "architect-diagnose", prompt),
                         )
                     })
                 })
@@ -276,7 +332,7 @@ pub fn distill(
     }
 }
 
-const USAGE: &str = "usage: a2d distill --from <run-dir>=<suite-dir> [--from ...] --harness <in.json> --out <out.json> --log <provenance.json> --name <name> [--arm C] [--model codex/gpt-6-luna] [--effort low] [--max-lessons 8] [--jobs 4]";
+const USAGE: &str = "usage: a2d distill --from <run-dir>=<suite-dir> [--from ...] --harness <in.json> --out <out.json> --log <provenance.json> --name <name> [--arm C] [--model codex/gpt-6-luna] [--effort low] [--max-lessons 8] [--jobs 4] [--mode informed|uninformed] [--seed <n>]";
 
 pub fn main(args: &[String]) -> i32 {
     match run(args) {
@@ -329,6 +385,24 @@ fn run(args: &[String]) -> Result<(), String> {
     for (run_dir, suite) in &from {
         dossiers.extend(failure_dossiers(run_dir, suite, &arm)?);
     }
+    let mode = flags.get("mode").cloned().unwrap_or_else(|| "informed".to_string());
+    match mode.as_str() {
+        "informed" => {}
+        "uninformed" => {
+            // Control at equal size: as many dossiers as there are failures,
+            // sampled from every submission regardless of outcome.
+            let seed: u64 = flags.get("seed").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let mut pool = Vec::new();
+            for (run_dir, suite) in &from {
+                for d in uninformed_dossiers(run_dir, suite, &arm, usize::MAX, seed)? {
+                    pool.push((sample_key(seed, &d.task, 0), d));
+                }
+            }
+            pool.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.task.cmp(&b.1.task)));
+            dossiers = pool.into_iter().take(dossiers.len()).map(|(_, d)| d).collect();
+        }
+        other => return Err(format!("--mode must be informed or uninformed, not {other:?}")),
+    }
     let model = flags
         .get("model")
         .cloned()
@@ -348,7 +422,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let text = serde_json::to_string_pretty(&harness).map_err(|e| e.to_string())?;
     fs::write(need("out")?, text + "\n").map_err(|e| e.to_string())?;
     let provenance = json!({
-        "model": model, "effort": effort, "arm": arm,
+        "model": model, "effort": effort, "arm": arm, "mode": mode,
         "from": from.iter().map(|(r, s)| json!({"run": r, "suite": s})).collect::<Vec<_>>(),
         "dossiers": dossiers.iter().map(|d| &d.task).collect::<Vec<_>>(),
         "calls": distilled.calls,
@@ -476,6 +550,23 @@ mod tests {
             assert!(!prompt.contains("\"failed\""), "hidden counts reached the architect");
         }
         assert_eq!(distilled.lessons, vec!["Validate in the specified order.".to_string()]);
+    }
+
+    #[test]
+    fn uninformed_dossiers_carry_requirements_only_and_match_the_failure_count() {
+        let (_root, run, suite) = fixture();
+        let informed = failure_dossiers(&run, &suite, "C").unwrap();
+        let uninformed = uninformed_dossiers(&run, &suite, "C", informed.len(), 7).unwrap();
+        assert_eq!(uninformed.len(), informed.len());
+        assert!(uninformed.iter().all(|d| d.code.is_empty()));
+        let prompt = uninformed_prompt(&uninformed[0]);
+        assert!(prompt.contains("Errors first."));
+        assert!(!prompt.contains("CODE_C_") && !prompt.contains("FAILS"));
+        assert_eq!(
+            uninformed_dossiers(&run, &suite, "C", 2, 7).unwrap().len(),
+            2,
+            "samples from every submission of the arm, pass or fail"
+        );
     }
 
     #[test]
