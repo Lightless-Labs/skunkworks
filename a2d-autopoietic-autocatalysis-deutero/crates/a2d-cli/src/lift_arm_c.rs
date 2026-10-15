@@ -22,6 +22,8 @@
 //! - `route_previous_code`: give the coder its previous file (a
 //!   `previous_attempt` food artifact, updated after every cycle, as a coder
 //!   catalyst). The seed coder never sees its own code (LOG S0).
+//! - `lessons`: task-agnostic lessons (at most 12), rendered as a numbered
+//!   list after the task input; `a2d distill` writes them from train labels;
 //! - `stop_at_public_green`: end the task once a cycle's code passes every
 //!   public test, as arm D does; otherwise the remaining budget is spent on
 //!   post-green rewrites.
@@ -83,7 +85,36 @@ const HARNESS_KEYS: &[&str] = &[
     "coder_prompt",
     "route_previous_code",
     "stop_at_public_green",
+    "lessons",
 ];
+
+/// Header of the rendered `lessons` list in every enzyme's task input.
+pub const LESSONS_HEADER: &str =
+    "Lessons from earlier tasks (task-agnostic; apply each one that is relevant):";
+pub const MAX_LESSONS: usize = 12;
+pub const MAX_LESSON_CHARS: usize = 300;
+
+/// The harness's `lessons`, checked: a list of at most `MAX_LESSONS` strings,
+/// each at most `MAX_LESSON_CHARS` long.
+fn harness_lessons(harness: &Value) -> Result<Vec<String>, String> {
+    let Some(value) = harness.get("lessons") else {
+        return Ok(Vec::new());
+    };
+    let items = value.as_array().ok_or("lessons must be a list of strings")?;
+    if items.len() > MAX_LESSONS {
+        return Err(format!("at most {MAX_LESSONS} lessons"));
+    }
+    items
+        .iter()
+        .map(|item| {
+            let text = item.as_str().ok_or("lessons must be a list of strings")?;
+            if text.chars().count() > MAX_LESSON_CHARS {
+                return Err(format!("a lesson is longer than {MAX_LESSON_CHARS} characters"));
+            }
+            Ok(text.to_string())
+        })
+        .collect()
+}
 
 fn previous_attempt() -> ArtifactType {
     ArtifactType::from("previous_attempt")
@@ -110,6 +141,7 @@ fn harness_germline(harness: &Value) -> Result<Germline, String> {
             return Err(format!("{flag} must be a boolean"));
         }
     }
+    harness_lessons(harness)?;
     let route = harness["route_previous_code"].as_bool().unwrap_or(false);
     let prompt = harness["coder_prompt"].as_str();
     if harness.get("coder_prompt").is_some() && prompt.is_none() {
@@ -147,6 +179,14 @@ fn harness_input(task: &PublicTask, harness: &Value) -> String {
     if let Some(note) = harness["coder_note"].as_str() {
         input.push_str("\n\n");
         input.push_str(note);
+    }
+    let lessons = harness_lessons(harness).unwrap_or_default();
+    if !lessons.is_empty() {
+        input.push_str("\n\n");
+        input.push_str(LESSONS_HEADER);
+        for (i, lesson) in lessons.iter().enumerate() {
+            input.push_str(&format!("\n{}. {lesson}", i + 1));
+        }
     }
     input
 }
@@ -460,6 +500,29 @@ mod tests {
         assert_eq!(coder_calls(stop), (1, 1));
         assert!(coder_calls(base).0 >= 2);
         assert!(harness_germline(&serde_json::json!({"stop_at_public_green": "yes"})).is_err());
+    }
+
+    #[test]
+    fn lessons_render_into_the_task_input_and_are_validated() {
+        let task = PublicTask {
+            id: "t".into(),
+            family: "f".into(),
+            requirements: "Do it.".into(),
+            public_tests: String::new(),
+            test_timeout_secs: 7,
+        };
+        let harness = serde_json::json!({"lessons": ["Check A first.", "Count bytes."]});
+        assert!(harness_germline(&harness).is_ok());
+        let input = harness_input(&task, &harness);
+        assert!(input.contains(LESSONS_HEADER));
+        assert!(input.contains("1. Check A first.\n2. Count bytes."));
+        assert!(!harness_input(&task, &serde_json::json!({})).contains(LESSONS_HEADER));
+        assert!(harness_germline(&serde_json::json!({"lessons": "one"})).is_err());
+        assert!(harness_germline(&serde_json::json!({"lessons": [1]})).is_err());
+        let too_many: Vec<String> = (0..=MAX_LESSONS).map(|i| format!("L{i}")).collect();
+        assert!(harness_germline(&serde_json::json!({ "lessons": too_many })).is_err());
+        let too_long = "x".repeat(MAX_LESSON_CHARS + 1);
+        assert!(harness_germline(&serde_json::json!({ "lessons": [too_long] })).is_err());
     }
 
     #[test]
