@@ -283,5 +283,5 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - Deviation expected at launch: the sibling A² session may share the Codex account, as in E07. This will be recorded if observed.
 - Result: pending
 - Artifacts: runs/2026-10-15-e07b-confirmation-1-r2/ (manifest, ledger, summary, pooled summary)
-- Deviations:
+- Deviations: 2026-10-15, at launch: the sibling A² session had 2–3 Codex processes on the account (its E1 workcells and one other job). As in E07, this cannot be controlled from this session. Tuple and arm orders are randomised. Recorded before any scoring.
 - Decision:
