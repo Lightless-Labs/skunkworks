@@ -1,0 +1,338 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-58022-1792065791326936000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a13f71-e686-7e00-8ce8-476b224369df
+--------
+user
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+Implement a deterministic round-robin CPU scheduler in Rust as a SINGLE source file that compiles with rustc --edition 2024, using std only. Output ONLY the Rust source code inside ```rust fences.
+
+The entire public API is below. Every listed type, field, and function must be public; every listed type must derive Clone, Debug, PartialEq, Eq. Do not add required arguments or change field types. Time intervals are half-open [start,end). There is no textual input/output protocol.
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job { pub id: u32, pub arrival: u32, pub ticks: u32, pub level: usize }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run { pub id: u32, pub start: u64, pub end: u64, pub finished: bool, pub level: usize }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule { pub runs: Vec<Run>, pub idle: Vec<(u64, u64)>, pub completion: Vec<(u32, u64)>, pub end: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error { LevelCount, Quantum { level: usize }, SwitchCost, TooManyJobs, DuplicateId { index: usize }, Arrival { index: usize }, InitialLevel { index: usize }, Ticks { index: usize } }
+pub fn schedule(jobs: &[Job], quanta: &[u32], switch_cost: u32) -> Result<Schedule, Error>;
+```
+
+R1. Use exactly the public API above. Calls are independent and must not modify jobs. IDs may be any u32, including 0 and u32::MAX.
+
+R2. Validate all input before simulation, returning only the first error in the order described by the following validation clauses. Even empty jobs do not bypass parameter validation.
+
+R3. First quanta.len() must be 1..=8, otherwise Error::LevelCount.
+
+R4. Next inspect quanta in ascending index order. Each must be 1..=1000; return Error::Quantum { level } for the first invalid element.
+
+R5. Next switch_cost must be 0..=1000, otherwise Error::SwitchCost.
+
+R6. Next jobs.len() must be at most 64, otherwise Error::TooManyJobs.
+
+R7. Next inspect job rows in input order. At each row the first check is whether id equals any earlier row id; if so return Error::DuplicateId { index }.
+
+R8. At that row next require arrival in 0..=1000; otherwise Error::Arrival { index }.
+
+R9. At that row next require level < quanta.len(); otherwise Error::InitialLevel { index }. Level 0 is the highest priority.
+
+R10. At that row finally require ticks in 0..=1000; otherwise Error::Ticks { index }. Zero is valid. Earlier row errors win over any later row errors.
+
+R11. Start at time 0. External arrivals are admitted by increasing (arrival, input index), regardless of input sorting or id values.
+
+R12. A zero-tick job completes at its exact arrival time, including during another job's Run or dispatch cost. It never enters a ready queue, creates a Run, or changes the last dispatched id.
+
+R13. There is one FIFO ready queue for each level. An external arrival joins the tail of its initial level queue.
+
+R14. Choose the head of the lowest numbered nonempty queue whenever a dispatch is needed. A higher-priority arrival never interrupts a selected dispatch.
+
+R15. At the start of each scheduling iteration, admit every pending event whose timestamp is at most the current time before selecting a job. Events retain their own timestamp even when processed later.
+
+R16. Remove the selected head before charging any cost. This choice is locked: events during a dispatch cost may join queues but cannot replace the selected job.
+
+R17. Before executing the selected job, add switch_cost to time exactly when a last positive-work dispatch id exists and differs from the selected id. The first dispatch is free.
+
+R18. Admit events through the time after that cost. Then execute uninterrupted for min(remaining CPU work, selected quantum). Cost does not consume quantum.
+
+R19. The selected quantum is quanta at the job's level when selected. Run.level is that level, before any demotion or promotion.
+
+R20. Advance time by consumed CPU ticks. Emit exactly one Run, with start after cost, end after execution, and finished true exactly when the entire job completes. Never merge Runs, including adjacent Runs of the same id.
+
+R21. After execution, admit all pending events through the Run.end, including events exactly at Run.end, before requeuing the running job. Arrivals during execution are never delayed until its next dispatch.
+
+R22. If unfinished, demote the running job by one level, capped at the last level, and append it to that level's tail after all newly admitted arrivals. Every unfinished dispatch demotes, including one at the bottom level.
+
+R23. A finished job leaves permanently and completes at Run.end; it is not requeued. A job finishing exactly at a quantum boundary is finished.
+
+R24. After execution, remember its id as the last dispatched id. Consecutive dispatches of the same id incur no cost, even if zero-work arrivals occurred between them.
+
+R25. If no ready job exists but an event remains, advance to the next event timestamp. Any positive time skipped is idle: append that half-open interval and clear the last dispatched id. The next dispatch after positive idle is free.
+
+R26. Merge adjacent idle intervals into one pair when the old end equals the new start. Never include dispatch costs in idle, never emit zero-length idle, and emit no trailing idle after the last completion.
+
+R27. Schedule.end is the time all jobs have completed. Initial idle begins at 0 when needed. For no jobs, end is 0 and all vectors are empty.
+
+R28. Schedule.completion has exactly one (id, completion_time) per input job in input order, regardless of execution or completion order.
+
+R29. All time and statistics calculations are exact u64. The stated bounds guarantee no overflow; no wall-clock, randomness, threads, global state, or external services affect the result.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R13-R14, R19-R23
+#[test]
+fn demotion_basics() {
+    assert_eq!(schedule(&[Job { id: 1, arrival: 0, ticks: 7, level: 0 }, Job { id: 2, arrival: 0, ticks: 2, level: 0 }], &[2, 4], 0), Ok(Schedule {
+        runs: vec![Run { id: 1, start: 0, end: 2, finished: false, level: 0 }, Run { id: 2, start: 2, end: 4, finished: true, level: 0 }, Run { id: 1, start: 4, end: 8, finished: false, level: 1 }, Run { id: 1, start: 8, end: 9, finished: true, level: 1 }],
+        idle: vec![],
+        completion: vec![(1, 9), (2, 4)],
+        end: 9
+    }));
+}
+
+// R11, R14, R25-R28
+#[test]
+fn priority_and_idle() {
+    assert_eq!(schedule(&[Job { id: 3, arrival: 3, ticks: 1, level: 1 }, Job { id: 4, arrival: 3, ticks: 1, level: 0 }], &[2, 3], 0), Ok(Schedule {
+        runs: vec![Run { id: 4, start: 3, end: 4, finished: true, level: 0 }, Run { id: 3, start: 4, end: 5, finished: true, level: 1 }],
+        idle: vec![(0, 3)],
+        completion: vec![(3, 5), (4, 4)],
+        end: 5
+    }));
+}
+
+// R27
+#[test]
+fn empty_priority_schedule() {
+    assert_eq!(schedule(&[], &[1], 0), Ok(Schedule {
+        runs: vec![],
+        idle: vec![],
+        completion: vec![],
+        end: 0
+    }));
+}
+
+// R9
+#[test]
+fn reject_invalid_level() {
+    assert_eq!(schedule(&[Job { id: 5, arrival: 0, ticks: 1, level: 2 }], &[2, 3], 0), Err(Error::InitialLevel { index: 0 }));
+}
+```
+
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-15T12:03:11.932916Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: u32,
+    pub arrival: u32,
+    pub ticks: u32,
+    pub level: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub id: u32,
+    pub start: u64,
+    pub end: u64,
+    pub finished: bool,
+    pub level: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub idle: Vec<(u64, u64)>,
+    pub completion: Vec<(u32, u64)>,
+    pub end: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    LevelCount,
+    Quantum { level: usize },
+    SwitchCost,
+    TooManyJobs,
+    DuplicateId { index: usize },
+    Arrival { index: usize },
+    InitialLevel { index: usize },
+    Ticks { index: usize },
+}
+
+pub fn schedule(jobs: &[Job], quanta: &[u32], switch_cost: u32) -> Result<Schedule, Error> {
+    use std::collections::VecDeque;
+
+    if !(1..=8).contains(&quanta.len()) {
+        return Err(Error::LevelCount);
+    }
+    for (level, &quantum) in quanta.iter().enumerate() {
+        if !(1..=1000).contains(&quantum) {
+            return Err(Error::Quantum { level });
+        }
+    }
+    if switch_cost > 1000 {
+        return Err(Error::SwitchCost);
+    }
+    if jobs.len() > 64 {
+        return Err(Error::TooManyJobs);
+    }
+
+    for (index, job) in jobs.iter().enumerate() {
+        if jobs[..index].iter().any(|earlier| earlier.id == job.id) {
+            return Err(Error::DuplicateId { index });
+        }
+        if job.arrival > 1000 {
+            return Err(Error::Arrival { index });
+        }
+        if job.level >= quanta.len() {
+            return Err(Error::InitialLevel { index });
+        }
+        if job.ticks > 1000 {
+            return Err(Error::Ticks { index });
+        }
+    }
+
+    let mut arrival_order: Vec<usize> = (0..jobs.len()).collect();
+    arrival_order.sort_by_key(|&index| (jobs[index].arrival, index));
+
+    let mut queues: Vec<VecDeque<usize>> =
+        (0..quanta.len()).map(|_| VecDeque::new()).collect();
+    let mut remaining: Vec<u32> = jobs.iter().map(|job| job.ticks).collect();
+    let mut levels: Vec<usize> = jobs.iter().map(|job| job.level).collect();
+    let mut completion: Vec<Option<u64>> = vec![None; jobs.len()];
+    let mut runs = Vec::new();
+    let mut idle = Vec::new();
+
+    let mut time = 0u64;
+    let mut next_arrival = 0usize;
+    let mut last_dispatched_id: Option<u32> = None;
+
+    let admit_through = |time: u64,
+                         next_arrival: &mut usize,
+                         queues: &mut Vec<VecDeque<usize>>,
+                         completion: &mut Vec<Option<u64>>| {
+        while *next_arrival < arrival_order.len() {
+            let index = arrival_order[*next_arrival];
+            let job = &jobs[index];
+            if u64::from(job.arrival) > time {
+                break;
+            }
+            *next_arrival += 1;
+            if job.ticks == 0 {
+                completion[index] = Some(u64::from(job.arrival));
+            } else {
+                queues[job.level].push_back(index);
+            }
+        }
+    };
+
+    loop {
+        admit_through(
+            time,
+            &mut next_arrival,
+            &mut queues,
+            &mut completion,
+        );
+
+        let selected_level = queues.iter().position(|queue| !queue.is_empty());
+        let Some(queue_level) = selected_level else {
+            if next_arrival == arrival_order.len() {
+                break;
+            }
+
+            let next_time = u64::from(jobs[arrival_order[next_arrival]].arrival);
+            if next_time > time {
+                if let Some(last) = idle.last_mut() {
+                    if last.1 == time {
+                        last.1 = next_time;
+                    } else {
+                        idle.push((time, next_time));
+                    }
+                } else {
+                    idle.push((time, next_time));
+                }
+                time = next_time;
+                last_dispatched_id = None;
+            }
+            continue;
+        };
+
+        let index = queues[queue_level].pop_front().unwrap();
+        let job = &jobs[index];
+
+        if let Some(last_id) = last_dispatched_id {
+            if last_id != job.id {
+                time += u64::from(switch_cost);
+            }
+        }
+
+        admit_through(
+            time,
+            &mut next_arrival,
+            &mut queues,
+            &mut completion,
+        );
+
+        let level = levels[index];
+        let consumed = remaining[index].min(quanta[level]);
+        let start = time;
+        time += u64::from(consumed);
+        remaining[index] -= consumed;
+        let finished = remaining[index] == 0;
+
+        runs.push(Run {
+            id: job.id,
+            start,
+            end: time,
+            finished,
+            level,
+        });
+
+        admit_through(
+            time,
+            &mut next_arrival,
+            &mut queues,
+            &mut completion,
+        );
+
+        if finished {
+            completion[index] = Some(time);
+        } else {
+            levels[index] = (level + 1).min(quanta.len() - 1);
+            queues[levels[index]].push_back(index);
+        }
+
+        last_dispatched_id = Some(job.id);
+    }
+
+    let completion = jobs
+        .iter()
+        .enumerate()
+        .map(|(index, job)| (job.id, completion[index].unwrap()))
+        .collect();
+
+    Ok(Schedule {
+        runs,
+        idle,
+        completion,
+        end: time,
+    })
+}
+```
+tokens used
+5,182

@@ -612,13 +612,43 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Escalation calls (invocations − coder calls) are reported.
 - If G0 fails: diagnose and fix the base under a new registration; no search starts.
 - Budget: ≤ 700 invocations, 10,800 s.
+- Result (`runs/2026-10-15-e10-g0-h0v5/summary.json`; 0 void, integrity OK): **FAIL. No search starts.**
+  - D 105/140 = 75.0%; C(H0 v5) 104/140 = 74.3%. Lift −0.7 pp, CI [−7.1, +5.0] (classed RuledOut); discordant pairs 10 vs 11.
+  - Criteria:
+    - rate within ±5 pp: **pass**;
+    - zero evolver calls: **pass**;
+    - **never-green C − D ≤ 2: fail** (C 5, D 2, so 3).
+  - Spend: C 191 invocations / 1.52M tokens; D 181 / 1.41M. C made 5 escalation consultation calls and had 1 E0601.
+  - **Diagnosis** (from the ledger): **the gap is in the repair path, not the first attempt.**
+    - C's first attempt is green **more** often: 115/140 = 0.821, vs D's 108/140 = 0.771.
+    - C repairs failed first attempts to green **less** often: 20/25 = 0.80, vs D's 30/32 = 0.94.
+    - In 4 of the 5 never-green tasks C repeated the same failing state 2–3 times, and the escalation ladder spent a call on a same-model "consulting model" call. D was green after 1–3 calls on four of them.
+    - Observation, not a mechanism claim: H0's clause-check system prompt helps first attempts. That is the kind of advice a lessons slot could rediscover.
+  - **Fix: full parity with D,** returning to the P2-gate decision ("Base harness: D's behaviour"). This ends base tuning; any residual gap after parity is a finding about the metabolism carrier.
+    - The `repair` prompt format renders exactly D's repair prompt.
+    - The loop-escalation ladder is off.
+    - The coder system prompt is D's `CODER_SYSTEM` plus the `main()` clause the sandbox needs. That clause is the one residual difference, and it is disclosed.
+    - Unit tests: `repair_format_matches_the_plain_repair_loop_prompt`, `repair_format_without_escalation_spends_every_call_on_plain_repairs`, `h0_v6_is_the_repair_loop_prompt_plus_the_main_clause`.
+
+### E10b — G0 retry: H0 v6 (parity with D) live check on all train  [phase P4, development lane]
+- Registered: 2026-10-15, one-row development pre-registration. H0 v6 = `harnesses/h0-v6.json` (sha256 `e4e2a937ca933af7ea47be04f4405685d645b5613d9b885b2f79a5a40073f9a7`).
+- Arms D and C(H0 v6), same batch; `tasks/train-all`; k = 5; `--primary D`; **seed 22**; jobs 4. Out: `runs/2026-10-15-e10b-g0-h0v6`.
+  - The second D sample on train-all, beside E10's D, gives D's test-retest flip rate on this suite: the null for the ratchet and for power.
+- **Pass criteria (unchanged strictness):**
+  - never-green C − D ≤ 2;
+  - C rate within ±5 pp of D;
+  - zero evolver calls and zero consultation calls.
+- **If it fails,** no further base change. P4 stops and the residual gap is recorded as a finding about the metabolism carrier.
+- **If it passes,** E11 launches from H0 v6, with G0 = E10b's C arm.
+- Budget: ≤ 700 invocations, 10,800 s. P4 spend so far: E10 372.
 - Result: pending
+
 
 ### E11 — P4 searches: self-written lessons (I1, I2) vs uninformed control (U1, U2)  [phase P4, development lane]
 - Registered: 2026-10-15, one-row development pre-registration per `docs/plans/2026-10-15-p4-autopoietic-lift.md` § Searches.
-- **Launch conditions:** E10 (G0) passes, and the multi-harness controller (`--arms C:cand,C:inc`) is merged with tests.
+- **Launch conditions:** E10b (G0 retry, H0 v6) passes (E10 failed), and the multi-harness controller is merged with tests (done 2026-10-15).
 - Orchestrator: `docs/experiments/analysis/p4_search.py`.
-  - Base `harnesses/h0-v5.json`, with empty lessons. G0 = E10's C arm on `tasks/train-all`.
+  - Base `harnesses/h0-v6.json` (amended from v5 after E10), with empty lessons. G0 = E10b's C arm on `tasks/train-all`.
   - 3 generations. Each generation runs `a2d distill` on the incumbent's failures on half X (`--families`, `--max-dossiers 40`, Luna-low architect), then evaluates **C(candidate) and C(incumbent) fresh in one run** on half Y (k = 5).
   - **Accept at net ≥ 4 tasks** and 0 voids. Halves swap after each generation.
 - Searches, paired by seed so that the split and the evaluation seeds are shared:

@@ -10,6 +10,16 @@
 - a validation go/no-go;
 - a multi-harness Confirmation-2 run at r = 2.
 
+**Addendum:** 2026-10-15 — **G0 (E10) failed its never-green criterion (C 5 vs D 2). H0 v6 replaces H0 v5.**
+- **Diagnosis:** C is better on the first attempt (0.82 vs 0.77 public-green) but worse at repair (0.80 vs 0.94).
+- **Fix:** full parity with D. D's system prompt plus the `main()` clause, D's repair prompt (`prompt_format: repair`), and escalation off (`harnesses/h0-v6.json`, sha256 `e4e2a937…`).
+- **Retry:** E10b, with unchanged criteria. A second failure stops P4, and the residual gap becomes a finding.
+- **Disclosures:**
+  - S4b screened lessons on H0 v4's clause-check prompt; the searches measure them on D's prompt.
+  - With parity, C(H0) ≈ D. The descriptive D + H\*-lessons arm on Confirmation-2 is optional, and is dropped if the envelope is tight.
+  - Everywhere below, "H0 v5" now reads "H0 v6".
+- **P4 spend estimate:** about 4.35k (E10 and E10b about 0.74k, searches about 2.9k, validation about 0.7k).
+
 **Parent:** `docs/plans/2026-10-14-lift-first-roadmap.md` § P4. Rules: `docs/PROTOCOL.md`.
 
 ## Question

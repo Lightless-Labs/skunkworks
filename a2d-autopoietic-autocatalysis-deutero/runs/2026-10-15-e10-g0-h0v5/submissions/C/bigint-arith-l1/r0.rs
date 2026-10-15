@@ -1,0 +1,171 @@
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Big {
+    digits: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Empty,
+    SignOnly,
+    InvalidDigit { index: usize },
+    Separator { index: usize },
+    LeadingZero { index: usize },
+    TooManyDigits { limit: usize, index: usize },
+    Underflow,
+}
+
+impl Big {
+    pub fn parse(text: &str, max_digits: usize) -> Result<Self, Error> {
+        let bytes = text.as_bytes();
+        if bytes.is_empty() {
+            return Err(Error::Empty);
+        }
+
+        let start = if bytes[0] == b'+' { 1 } else { 0 };
+        if start == bytes.len() {
+            return Err(Error::SignOnly);
+        }
+
+        for (index, &byte) in bytes.iter().enumerate().skip(start) {
+            if byte != b'_' && !byte.is_ascii_digit() {
+                return Err(Error::InvalidDigit { index });
+            }
+        }
+
+        for index in start..bytes.len() {
+            if bytes[index] == b'_'
+                && (index == start
+                    || index + 1 == bytes.len()
+                    || !bytes[index - 1].is_ascii_digit()
+                    || !bytes[index + 1].is_ascii_digit())
+            {
+                return Err(Error::Separator { index });
+            }
+        }
+
+        let digit_count = bytes[start..].iter().filter(|&&b| b != b'_').count();
+
+        let first_digit = (start..bytes.len())
+            .find(|&i| bytes[i].is_ascii_digit())
+            .expect("nonempty valid magnitude");
+
+        if digit_count > 1 && bytes[first_digit] == b'0' {
+            return Err(Error::LeadingZero { index: first_digit });
+        }
+
+        if digit_count > max_digits {
+            let excess_number = max_digits + 1;
+            let mut seen = 0usize;
+            for index in start..bytes.len() {
+                if bytes[index].is_ascii_digit() {
+                    seen += 1;
+                    if seen == excess_number {
+                        return Err(Error::TooManyDigits {
+                            limit: max_digits,
+                            index,
+                        });
+                    }
+                }
+            }
+        }
+
+        let mut digits: Vec<u8> = bytes[start..]
+            .iter()
+            .filter(|&&b| b != b'_')
+            .map(|&b| b - b'0')
+            .collect();
+        while digits.len() > 1 && digits[0] == 0 {
+            digits.remove(0);
+        }
+
+        Ok(Self { digits })
+    }
+
+    pub fn format(&self, min_digits: usize, group: usize) -> String {
+        let mut output = String::new();
+        let width = self.digits.len().max(min_digits);
+        let padding = width - self.digits.len();
+
+        for i in 0..width {
+            if group > 0 && i > 0 && (width - i) % group == 0 {
+                output.push('_');
+            }
+            if i < padding {
+                output.push('0');
+            } else {
+                output.push((b'0' + self.digits[i - padding]) as char);
+            }
+        }
+        output
+    }
+
+    pub fn cmp_value(&self, rhs: &Self) -> std::cmp::Ordering {
+        self.digits
+            .len()
+            .cmp(&rhs.digits.len())
+            .then_with(|| self.digits.cmp(&rhs.digits))
+    }
+
+    pub fn add(&self, rhs: &Self) -> Self {
+        let mut result = Vec::with_capacity(self.digits.len().max(rhs.digits.len()) + 1);
+        let mut carry = 0u8;
+        let mut left = self.digits.len();
+        let mut right = rhs.digits.len();
+
+        while left > 0 || right > 0 || carry > 0 {
+            let a = if left > 0 {
+                left -= 1;
+                self.digits[left]
+            } else {
+                0
+            };
+            let b = if right > 0 {
+                right -= 1;
+                rhs.digits[right]
+            } else {
+                0
+            };
+            let sum = a + b + carry;
+            result.push(sum % 10);
+            carry = sum / 10;
+        }
+
+        result.reverse();
+        Self { digits: result }
+    }
+
+    pub fn sub(&self, rhs: &Self) -> Result<Self, Error> {
+        if self.cmp_value(rhs) == std::cmp::Ordering::Less {
+            return Err(Error::Underflow);
+        }
+
+        let mut result = Vec::with_capacity(self.digits.len());
+        let mut borrow = 0i16;
+        let mut right = rhs.digits.len();
+
+        for left in (0..self.digits.len()).rev() {
+            let mut digit = self.digits[left] as i16 - borrow;
+            let subtrahend = if right > 0 {
+                right -= 1;
+                rhs.digits[right] as i16
+            } else {
+                0
+            };
+            if digit < subtrahend {
+                digit += 10;
+                borrow = 1;
+            } else {
+                borrow = 0;
+            }
+            result.push((digit - subtrahend) as u8);
+        }
+
+        while result.len() > 1 && result.last() == Some(&0) {
+            result.pop();
+        }
+        result.reverse();
+        Ok(Self { digits: result })
+    }
+}
+
+fn main() {}

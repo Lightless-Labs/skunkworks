@@ -1,0 +1,670 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-58022-1792064144838443000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a13f58-e50b-7b50-9531-20cfc51534ec
+--------
+user
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences.
+
+R2. Use exactly this public API; all listed items, variants and fields are public. All types derive Debug, Clone, PartialEq, Eq. Extra private helpers are allowed.
+```rust
+pub struct Customer { pub id: u32, pub arrival: u64, pub service: u64, pub priority: u8, pub patience: Option<u64> }
+pub struct Config { pub switch_cost: u64, pub waiting_capacity: usize }
+pub enum Kind {
+    Arrive, Balk, Renege { waited: u64 },
+    Start { remaining: u64, work_at: u64, finish: u64 },
+    Resume { remaining: u64, work_at: u64, finish: u64 },
+    Preempt { remaining: u64, by: u32 }, Finish
+}
+pub struct Event { pub time: u64, pub customer: u32, pub kind: Kind }
+pub enum OverflowStage { WorkAt, Finish, Patience }
+pub enum Error {
+    CapacityTooLarge { capacity: usize }, TooManyCustomers { count: usize },
+    ZeroId { index: usize }, DuplicateId { index: usize, id: u32 },
+    BadPriority { index: usize, value: u8 }, DeadlineOverflow { index: usize, id: u32 },
+    TimeOverflow { customer: u32, time: u64, stage: OverflowStage }
+}
+pub struct Stats {
+    pub accepted: usize, pub balked: usize, pub reneged: usize, pub completed: usize,
+    pub started: usize, pub preemptions: usize, pub elapsed: u64,
+    pub busy_ticks: u128, pub wait_ticks: u128, pub turnaround_ticks: u128,
+    pub mean_wait_milli: u128, pub mean_turnaround_milli: u128, pub utilization_bps: u32,
+    pub completion_order: Vec<u32>
+}
+pub struct Report { pub events: Vec<Event>, pub stats: Stats }
+pub fn rounded_ratio(numerator: u128, denominator: u128) -> Option<u128>;
+pub fn simulate(customers: &[Customer], config: &Config) -> Result<Report, Error>;
+```
+
+R3. Times, service, switch_cost and patience budgets are u64 ticks, IDs are u32. Input may be unsorted or empty. Priorities 0..3 are legal; smaller numeric priority is superior.
+
+R4. Before simulation reject waiting_capacity > 4096 with CapacityTooLarge, even for empty input. Next reject customers.len() > 4096 with TooManyCustomers. Capacity zero and exactly 4096 customers/capacity are legal.
+
+R5. Then scan original customer indices ascending. Per row check zero ID, duplicate earlier ID, priority > 3, then (for Some(patience)) overflow of arrival + patience, in that exact order. Return ZeroId, DuplicateId, BadPriority, or DeadlineOverflow at the original row. Finish validation before any runtime work; these errors take precedence over runtime overflow.
+
+R6. None patience means unlimited waiting. Some(p) is a CUMULATIVE waiting budget across initial queuing and all later pauses. Service and switching occupation never consume this budget. Some(0) is legal.
+
+R7. Sort arrival cohorts by arrival time ascending, then priority ascending, then ID descending. At each tick use the phases below in the exact stated order.
+
+R8. Phase A: if the running customer finishes now, emit Finish first and free the server, before expirations, arrivals, or preemption. Completion at a work boundary also wins.
+
+R9. Phase B: expire customers already waiting at the start of this tick whose current deadline is <= the tick. Emit Renege in deadline ascending, then ID ascending order, and remove them. Do not dispatch in this phase. A waiting customer with deadline exactly at a running finish therefore reneges instead of starting.
+
+R10. Phase C: process the full arrival cohort one customer at a time. Emit Arrive; immediately decide admission and, if refused, emit Balk adjacent to that Arrive. No dispatch or preemption occurs between arrivals.
+
+R11. Admission permits a customer precisely when current waiting count < waiting_capacity + (server idle ? 1 : 0). The running customer (including switching) is excluded from waiting count; paused and fresh waiters both count. The extra idle slot is virtual and applies throughout the cohort, until dispatch.
+
+R12. Capacity refusal is the only balk reason; emit Balk even for a zero-patience arrival if the gate is full. Do not inspect service arithmetic for balked customers. Balked customers are never accepted, queued, started, completed or reneged.
+
+R13. Priority does not bypass admission. A high-priority arrival balks at a full gate even if it could have preempted the running customer. An accepted zero-patience arrival occupies a waiting slot until the later phases; it does not free that slot for the next arrival.
+
+R14. Admitted arrivals join the queue with their full patience budget and queue entry time = arrival. Their deadline is arrival + patience, or absent for None. Admission does not itself start them.
+
+R15. Waiting selection chooses highest priority; within a class paused customers precede never-started customers. Paused ties order by most recent preemption time ascending then ID ascending; fresh ties order by arrival ascending then ID descending. Repeated preemption updates the pause time.
+
+R16. Phase D: if running protection has ended, compare the running customer with the best admitted waiter. Strictly superior priority triggers one Preempt, naming that waiter in by. Equal/lower priority cannot preempt. Compare before re-enqueuing the paused customer.
+
+R17. On preemption at time t, remaining service = scheduled finish - t. Emit Preempt { remaining, by }, free the server, and enqueue the paused customer with entry time t and its UNCONSUMED waiting budget. The preempted customer remains accepted. Do not restart service or restore spent patience.
+
+R18. For a newly paused customer with Some(budget), checked-add t + budget to schedule its new deadline. Overflow returns TimeOverflow { customer: paused ID, time: t, stage: Patience }; None has no deadline. This check occurs before the next dispatch and can therefore precede its arithmetic errors.
+
+R19. Switching overhead is nonpreemptible: the running customer is protected while time < work_at. At work_at protection ends. Every future work_at is an internal tick, even with no arrivals; at that tick run ALL phases, including expiration before reconsidering preemption. Emit no event just for the boundary.
+
+R20. Phase E: if idle, dispatch the best waiter. First-ever dispatch of that customer emits Start; later ones emit Resume. Both report remaining service before dispatch. The whole simulation's first dispatch has zero switching cost.
+
+R21. Every later dispatch pays switch_cost exactly when its ID differs from the most recently dispatched ID. Remember that ID across idle gaps and update it even on zero-duration dispatches. Switching consumes server time, never waiting patience.
+
+R22. At dispatch time t compute checked work_at = t + applicable switch cost, then checked finish = work_at + remaining service. On failure return TimeOverflow for selected ID and t with stage WorkAt or Finish respectively. Never retry another waiter, and do not prevalidate this arithmetic.
+
+R23. When dispatching, consume time - queue_entry_time from the waiting budget and add it to that customer's total waited time. None stays unlimited. This includes all initial and paused waiting segments and excludes all active intervals.
+
+R24. If finish == dispatch tick, emit Finish immediately after Start/Resume and repeat best-waiter dispatch in Phase E at that tick. If zero service pays positive switching cost, it stays occupied until work_at == finish. Inline finishes do not revisit earlier phases.
+
+R25. Phase F: after Phase E is exhausted (one active customer or no waiters), expire any newly queued customers with deadline <= now, ordered by deadline ascending then ID ascending. These include fresh zero-patience arrivals and newly paused zero-budget customers. A fresh zero-budget customer may start in Phase E, and a zero-budget paused customer may Resume after an inline finish before Phase F; active customers never expire.
+
+R26. On either kind of expiration, consume the final waiting segment and emit Renege { waited: total of ALL that customer's waiting segments }. Remove it permanently; it cannot Resume or Finish after Renege. An accepted customer can renege without ever starting, or after one or more preemptions.
+
+R27. After all phases, advance to the least pending arrival, active finish, future active work_at, or waiting deadline. Run to completion without a horizon: every customer eventually Balks, Reneges, or Finishes. Do not emit idle events.
+
+R28. The trace is in nondecreasing time with exact phase/inline order. Each input customer has one Arrive. An accepted customer has at most one Start, Resume count at most Preempt count, and exactly one terminal Finish or Renege. A balked customer has exactly its Arrive and Balk.
+
+R29. Statistics count accepted at admission, balked at refusal, reneged at expiration, completed at Finish, and started only at each customer's first Start (never Resume). preemptions counts Preempt events. accepted = completed + reneged in a successful final report.
+
+R30. completion_order contains IDs in exact Finish emission order, including inline completions; exclude balked/reneged IDs.
+
+R31. elapsed is the time of the LAST emitted event, measured from absolute time 0. Empty input has elapsed = 0 and no events; valid empty config returns all counts/totals/means/utilization zero and an empty completion_order.
+
+R32. busy_ticks is the sum of all occupied intervals [dispatch, preempt-or-finish), including switching overhead actually incurred, including intervals of customers that later renege; exclude idle time. Each active interval is counted once.
+
+R33. wait_ticks is the sum of every consumed waiting segment for ALL accepted customers, including those that renege and any waiting before a Resume. Exclude balked customers entirely. All waiting segments are consumed by dispatch or terminal expiration.
+
+R34. turnaround_ticks sums finish_time - arrival_time ONLY for completed customers, including their waiting and switching; exclude reneged and balked customers.
+
+R35. mean_wait_milli = rounded_ratio(1000 * wait_ticks, accepted), or 0 if accepted is zero. mean_turnaround_milli analogously uses 1000 * turnaround_ticks / completed, or 0 if completed is zero. Both are u128 integers in thousandths of a tick.
+
+R36. utilization_bps = rounded_ratio(10000 * busy_ticks, elapsed), or 0 if elapsed is zero, as u32. Include idle time before the first arrival in elapsed. The counts/limits ensure all statistic arithmetic fits u128.
+
+R37. rounded_ratio returns None iff denominator == 0. Otherwise divide numerator by denominator and round to the nearest integer, with exact halves rounding to the even integer. Support the FULL u128 domain without overflowing intermediate arithmetic (in particular do not double the remainder).
+
+R38. u64::MAX is a legal arrival, deadline, work_at and finish. Zero additions at that boundary succeed. Upfront initial deadline overflow is an error even if that customer would later balk; runtime service overflow is irrelevant if a customer balks or reneges without dispatch.
+
+R39. Simulation errors return only Err, never a partial report. The first failing check in specified validation/phase/selection order wins. Repeat calls have no shared state and never mutate customers or config.
+
+R40. No tick-by-tick iteration is permitted: simulation must jump between the event/boundary times above. Gaps as large as u64::MAX must complete promptly. Neither HashMap/HashSet iteration order nor input order may replace a stated trace tie-break.
+
+R41. A switch boundary coinciding with a waiting deadline expires that waiter in Phase B before preemption; a new arrival at the same boundary is considered only after those expirations. A finish/deadline/arrival coincidence follows A, B, C, D, E, F.
+
+R42. An idle admission cohort can temporarily contain waiting_capacity + 1 waiters; do not dispatch mid-cohort to create extra admission slots. After Phase E the waiting count is at most waiting_capacity, except that Phase F can further reduce it.
+
+R43. Customer IDs and priorities persist unchanged through pauses, resumes and final events. No synthetic customers or server IDs are emitted.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+fn c(id: u32, arrival: u64, service: u64, priority: u8, patience: Option<u64>) -> Customer {
+    Customer {
+        id,
+        arrival,
+        service,
+        priority,
+        patience,
+    }
+}
+fn cfg(waiting_capacity: usize, switch_cost: u64) -> Config {
+    Config {
+        switch_cost,
+        waiting_capacity,
+    }
+}
+fn e(time: u64, customer: u32, kind: Kind) -> Event {
+    Event {
+        time,
+        customer,
+        kind,
+    }
+}
+#[test]
+fn public_complete_and_stats() {
+    let r = simulate(&[c(1, 2, 3, 1, None), c(2, 3, 2, 1, None)], &cfg(2, 1)).unwrap();
+    assert_eq!(
+        r.stats,
+        Stats {
+            accepted: 2,
+            balked: 0,
+            reneged: 0,
+            completed: 2,
+            started: 2,
+            preemptions: 0,
+            elapsed: 8,
+            busy_ticks: 6,
+            wait_ticks: 2,
+            turnaround_ticks: 8,
+            mean_wait_milli: 1000,
+            mean_turnaround_milli: 4000,
+            utilization_bps: 7500,
+            completion_order: vec![1, 2]
+        }
+    );
+    assert_eq!(
+        r.events[4],
+        e(
+            5,
+            2,
+            Kind::Start {
+                remaining: 2,
+                work_at: 6,
+                finish: 8
+            }
+        )
+    );
+}
+#[test]
+fn public_balk_and_renege() {
+    let r = simulate(
+        &[
+            c(1, 0, 10, 0, None),
+            c(2, 1, 1, 1, Some(2)),
+            c(3, 2, 1, 2, None),
+        ],
+        &cfg(1, 0),
+    )
+    .unwrap();
+    assert!(r.events.contains(&e(2, 3, Kind::Balk)));
+    assert!(r.events.contains(&e(3, 2, Kind::Renege { waited: 2 })));
+    assert_eq!(
+        (
+            r.stats.accepted,
+            r.stats.balked,
+            r.stats.reneged,
+            r.stats.completed
+        ),
+        (2, 1, 1, 1)
+    );
+}
+#[test]
+fn public_preempt_resume() {
+    let r = simulate(&[c(4, 0, 5, 3, None), c(5, 1, 1, 0, None)], &cfg(2, 0)).unwrap();
+    assert!(r.events.contains(&e(
+        1,
+        4,
+        Kind::Preempt {
+            remaining: 4,
+            by: 5
+        }
+    )));
+    assert!(r.events.contains(&e(
+        2,
+        4,
+        Kind::Resume {
+            remaining: 4,
+            work_at: 2,
+            finish: 6
+        }
+    )));
+    assert_eq!(r.stats.completion_order, vec![5, 4]);
+    assert_eq!(
+        (
+            r.stats.busy_ticks,
+            r.stats.wait_ticks,
+            r.stats.turnaround_ticks
+        ),
+        (6, 1, 7)
+    );
+}
+#[test]
+fn public_round_and_empty() {
+    assert_eq!(rounded_ratio(7, 2), Some(4));
+    assert_eq!(rounded_ratio(6, 0), None);
+    let r = simulate(&[], &cfg(0, 5)).unwrap();
+    assert!(r.events.is_empty());
+    assert_eq!(
+        (r.stats.elapsed, r.stats.busy_ticks, r.stats.mean_wait_milli),
+        (0, 0, 0)
+    );
+}
+```
+
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-15T11:35:53.052864Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+    pub priority: u8,
+    pub patience: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Config {
+    pub switch_cost: u64,
+    pub waiting_capacity: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Arrive,
+    Balk,
+    Renege { waited: u64 },
+    Start { remaining: u64, work_at: u64, finish: u64 },
+    Resume { remaining: u64, work_at: u64, finish: u64 },
+    Preempt { remaining: u64, by: u32 },
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub time: u64,
+    pub customer: u32,
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OverflowStage {
+    WorkAt,
+    Finish,
+    Patience,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    CapacityTooLarge { capacity: usize },
+    TooManyCustomers { count: usize },
+    ZeroId { index: usize },
+    DuplicateId { index: usize, id: u32 },
+    BadPriority { index: usize, value: u8 },
+    DeadlineOverflow { index: usize, id: u32 },
+    TimeOverflow { customer: u32, time: u64, stage: OverflowStage },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stats {
+    pub accepted: usize,
+    pub balked: usize,
+    pub reneged: usize,
+    pub completed: usize,
+    pub started: usize,
+    pub preemptions: usize,
+    pub elapsed: u64,
+    pub busy_ticks: u128,
+    pub wait_ticks: u128,
+    pub turnaround_ticks: u128,
+    pub mean_wait_milli: u128,
+    pub mean_turnaround_milli: u128,
+    pub utilization_bps: u32,
+    pub completion_order: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Report {
+    pub events: Vec<Event>,
+    pub stats: Stats,
+}
+
+pub fn rounded_ratio(numerator: u128, denominator: u128) -> Option<u128> {
+    if denominator == 0 {
+        return None;
+    }
+    let q = numerator / denominator;
+    let r = numerator % denominator;
+    let other_half = denominator - r;
+    Some(if r > other_half || (r == other_half && q & 1 == 1) {
+        q + 1
+    } else {
+        q
+    })
+}
+
+#[derive(Clone)]
+struct Job {
+    customer: Customer,
+    deadline: Option<u64>,
+    remaining: u64,
+    queue_since: u64,
+    waited: u64,
+    paused: bool,
+    pause_time: u64,
+    ever_started: bool,
+}
+
+#[derive(Clone)]
+struct Active {
+    idx: usize,
+    work_at: u64,
+    finish: u64,
+    dispatch_at: u64,
+}
+
+fn event(events: &mut Vec<Event>, time: u64, id: u32, kind: Kind) {
+    events.push(Event { time, customer: id, kind });
+}
+
+fn better(a: &Job, b: &Job) -> bool {
+    if a.customer.priority != b.customer.priority {
+        return a.customer.priority < b.customer.priority;
+    }
+    if a.paused != b.paused {
+        return a.paused;
+    }
+    if a.paused {
+        if a.pause_time != b.pause_time {
+            return a.pause_time < b.pause_time;
+        }
+        a.customer.id < b.customer.id
+    } else if a.customer.arrival != b.customer.arrival {
+        a.customer.arrival < b.customer.arrival
+    } else {
+        a.customer.id > b.customer.id
+    }
+}
+
+fn best_waiter(waiting: &[usize], jobs: &[Job]) -> Option<usize> {
+    waiting.iter().copied().min_by(|&a, &b| {
+        if better(&jobs[a], &jobs[b]) {
+            std::cmp::Ordering::Less
+        } else if better(&jobs[b], &jobs[a]) {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    })
+}
+
+fn fail_time(id: u32, time: u64, stage: OverflowStage) -> Error {
+    Error::TimeOverflow { customer: id, time, stage }
+}
+
+pub fn simulate(customers: &[Customer], config: &Config) -> Result<Report, Error> {
+    if config.waiting_capacity > 4096 {
+        return Err(Error::CapacityTooLarge { capacity: config.waiting_capacity });
+    }
+    if customers.len() > 4096 {
+        return Err(Error::TooManyCustomers { count: customers.len() });
+    }
+
+    let mut seen = Vec::new();
+    let mut deadlines = Vec::with_capacity(customers.len());
+    for (i, c) in customers.iter().enumerate() {
+        if c.id == 0 {
+            return Err(Error::ZeroId { index: i });
+        }
+        if seen.iter().any(|&id| id == c.id) {
+            return Err(Error::DuplicateId { index: i, id: c.id });
+        }
+        seen.push(c.id);
+        if c.priority > 3 {
+            return Err(Error::BadPriority { index: i, value: c.priority });
+        }
+        let deadline = match c.patience {
+            Some(p) => Some(c.arrival.checked_add(p).ok_or(Error::DeadlineOverflow { index: i, id: c.id })?),
+            None => None,
+        };
+        deadlines.push(deadline);
+    }
+
+    let mut order: Vec<usize> = (0..customers.len()).collect();
+    order.sort_by(|&a, &b| {
+        customers[a].arrival.cmp(&customers[b].arrival)
+            .then(customers[a].priority.cmp(&customers[b].priority))
+            .then(customers[b].id.cmp(&customers[a].id))
+    });
+
+    let mut jobs: Vec<Job> = customers.iter().enumerate().map(|(i, c)| Job {
+        customer: c.clone(),
+        deadline: deadlines[i],
+        remaining: c.service,
+        queue_since: c.arrival,
+        waited: 0,
+        paused: false,
+        pause_time: 0,
+        ever_started: false,
+    }).collect();
+
+    let (mut events, mut waiting) = (Vec::new(), Vec::new());
+    let (mut active, mut now, mut next_arrival) = (None::<Active>, 0u64, 0usize);
+    let (mut last_dispatched, mut any_dispatch) = (None::<u32>, false);
+    let (mut accepted, mut balked, mut reneged, mut completed, mut started, mut preemptions) =
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    let (mut busy_ticks, mut wait_ticks, mut turnaround_ticks) = (0u128, 0u128, 0u128);
+    let mut completion_order = Vec::new();
+    let mut last_event_time = 0u64;
+
+    while next_arrival < order.len() || active.is_some() || !waiting.is_empty() {
+        if active.is_none() && waiting.is_empty() && next_arrival < order.len() {
+            now = now.max(customers[order[next_arrival]].arrival);
+        }
+
+        // Phase A: a completion at this tick wins over every other event.
+        if let Some(a) = active.as_ref() {
+            if a.finish == now {
+                let idx = a.idx;
+                let id = jobs[idx].customer.id;
+                event(&mut events, now, id, Kind::Finish);
+                last_event_time = now;
+                completed += 1;
+                turnaround_ticks += (now - jobs[idx].customer.arrival) as u128;
+                completion_order.push(id);
+                active = None;
+            }
+        }
+
+        // Phase B: expire those who were waiting at the start of the tick.
+        let mut expired: Vec<usize> = waiting.iter().copied()
+            .filter(|&i| jobs[i].deadline.is_some_and(|d| d <= now))
+            .collect();
+        expired.sort_by(|&a, &b| jobs[a].deadline.cmp(&jobs[b].deadline).then(jobs[a].customer.id.cmp(&jobs[b].customer.id)));
+        for i in expired {
+            if let Some(pos) = waiting.iter().position(|&x| x == i) {
+                waiting.remove(pos);
+                let segment = now - jobs[i].queue_since;
+                jobs[i].waited += segment;
+                wait_ticks += segment as u128;
+                event(&mut events, now, jobs[i].customer.id, Kind::Renege { waited: jobs[i].waited });
+                last_event_time = now;
+                reneged += 1;
+            }
+        }
+
+        // Phase C: process the complete arrival cohort.
+        while next_arrival < order.len() && customers[order[next_arrival]].arrival == now {
+            let i = order[next_arrival];
+            next_arrival += 1;
+            let id = jobs[i].customer.id;
+            event(&mut events, now, id, Kind::Arrive);
+            last_event_time = now;
+            let limit = config.waiting_capacity + usize::from(active.is_none());
+            if waiting.len() >= limit {
+                event(&mut events, now, id, Kind::Balk);
+                last_event_time = now;
+                balked += 1;
+            } else {
+                accepted += 1;
+                jobs[i].queue_since = now;
+                waiting.push(i);
+            }
+        }
+
+        // Phase D: preempt only after the nonpreemptible switching interval.
+        if let Some(a) = active.as_ref() {
+            if now >= a.work_at {
+                if let Some(w) = best_waiter(&waiting, &jobs) {
+                    if jobs[waiting.iter().copied().find(|&x| x == w).unwrap()].customer.priority
+                        < jobs[a.idx].customer.priority
+                    {
+                        let a = active.take().unwrap();
+                        let id = jobs[a.idx].customer.id;
+                        let remaining = a.finish - now;
+                        event(&mut events, now, id, Kind::Preempt { remaining, by: jobs[w].customer.id });
+                        last_event_time = now;
+                        preemptions += 1;
+                        busy_ticks += (now - a.dispatch_at) as u128;
+                        jobs[a.idx].remaining = remaining;
+                        jobs[a.idx].queue_since = now;
+                        jobs[a.idx].paused = true;
+                        jobs[a.idx].pause_time = now;
+                        if let Some(budget) = jobs[a.idx].customer.patience {
+                            let spent = jobs[a.idx].waited;
+                            let remaining_budget = budget.saturating_sub(spent);
+                            jobs[a.idx].deadline = Some(now.checked_add(remaining_budget).ok_or_else(|| fail_time(id, now, OverflowStage::Patience))?);
+                        }
+                        waiting.push(a.idx);
+                    }
+                }
+            }
+        }
+
+        // Phase E: dispatch repeatedly, allowing inline zero-duration finishes.
+        loop {
+            if active.is_some() {
+                break;
+            }
+            let Some(i) = best_waiter(&waiting, &jobs) else { break };
+            let pos = waiting.iter().position(|&x| x == i).unwrap();
+            waiting.remove(pos);
+
+            let segment = now - jobs[i].queue_since;
+            jobs[i].waited += segment;
+            wait_ticks += segment as u128;
+            if let Some(budget) = jobs[i].customer.patience {
+                let remaining_budget = budget.saturating_sub(jobs[i].waited);
+                jobs[i].deadline = Some(now.checked_add(remaining_budget).ok_or_else(|| fail_time(jobs[i].customer.id, now, OverflowStage::Patience))?);
+            }
+
+            let id = jobs[i].customer.id;
+            let cost = if !any_dispatch || last_dispatched == Some(id) { 0 } else { config.switch_cost };
+            let work_at = now.checked_add(cost).ok_or_else(|| fail_time(id, now, OverflowStage::WorkAt))?;
+            let finish = work_at.checked_add(jobs[i].remaining).ok_or_else(|| fail_time(id, now, OverflowStage::Finish))?;
+            let was_started = jobs[i].ever_started;
+            let kind = if was_started {
+                Kind::Resume { remaining: jobs[i].remaining, work_at, finish }
+            } else {
+                started += 1;
+                Kind::Start { remaining: jobs[i].remaining, work_at, finish }
+            };
+            jobs[i].ever_started = true;
+            any_dispatch = true;
+            last_dispatched = Some(id);
+            event(&mut events, now, id, kind);
+            last_event_time = now;
+            active = Some(Active { idx: i, work_at, finish, dispatch_at: now });
+
+            if finish == now {
+                event(&mut events, now, id, Kind::Finish);
+                last_event_time = now;
+                completed += 1;
+                turnaround_ticks += (now - jobs[i].customer.arrival) as u128;
+                completion_order.push(id);
+                active = None;
+                continue;
+            }
+            break;
+        }
+
+        // Phase F: expire newly queued waiters, after dispatches.
+        let mut expired: Vec<usize> = waiting.iter().copied()
+            .filter(|&i| jobs[i].deadline.is_some_and(|d| d <= now))
+            .collect();
+        expired.sort_by(|&a, &b| jobs[a].deadline.cmp(&jobs[b].deadline).then(jobs[a].customer.id.cmp(&jobs[b].customer.id)));
+        for i in expired {
+            if let Some(pos) = waiting.iter().position(|&x| x == i) {
+                waiting.remove(pos);
+                let segment = now - jobs[i].queue_since;
+                jobs[i].waited += segment;
+                wait_ticks += segment as u128;
+                event(&mut events, now, jobs[i].customer.id, Kind::Renege { waited: jobs[i].waited });
+                last_event_time = now;
+                reneged += 1;
+            }
+        }
+
+        if next_arrival >= order.len() && active.is_none() && waiting.is_empty() {
+            break;
+        }
+
+        let mut next_time = None::<u64>;
+        let mut consider = |t: u64| {
+            if t > now && next_time.map_or(true, |n| t < n) {
+                next_time = Some(t);
+            }
+        };
+        if next_arrival < order.len() {
+            consider(customers[order[next_arrival]].arrival);
+        }
+        if let Some(a) = active.as_ref() {
+            consider(a.finish);
+            consider(a.work_at);
+        }
+        for &i in &waiting {
+            if let Some(d) = jobs[i].deadline {
+                consider(d);
+            }
+        }
+        if let Some(t) = next_time {
+            now = t;
+        } else {
+            // At u64::MAX, all remaining work must finish or expire at this tick.
+            if now == u64::MAX {
+                if active.is_some() {
+                    return Err(fail_time(jobs[active.as_ref().unwrap().idx].customer.id, now, OverflowStage::Finish));
+                }
+                break;
+            }
+        }
+    }
+
+    let mean_wait_milli = if accepted == 0 { 0 } else { rounded_ratio(wait_ticks * 1000, accepted as u128).unwrap() };
+    let mean_turnaround_milli = if completed == 0 { 0 } else { rounded_ratio(turnaround_ticks * 1000, completed as u128).unwrap() };
+    let utilization_bps = if last_event_time == 0 {
+        if busy_ticks == 0 { 0 } else { 10000 }
+    } else {
+        rounded_ratio(busy_ticks * 10000, last_event_time as u128).unwrap().min(u32::MAX as u128) as u32
+    };
+
+    Ok(Report {
+        events,
+        stats: Stats {
+            accepted, balked, reneged, completed, started, preemptions,
+            elapsed: last_event_time,
+            busy_ticks, wait_ticks, turnaround_ticks,
+            mean_wait_milli, mean_turnaround_milli, utilization_bps,
+            completion_order,
+        },
+    })
+}
+```
+tokens used
+8,326

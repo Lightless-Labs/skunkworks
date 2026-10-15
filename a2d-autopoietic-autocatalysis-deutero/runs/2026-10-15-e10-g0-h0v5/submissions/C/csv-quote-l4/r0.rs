@@ -1,0 +1,651 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigPart {
+    Delimiter,
+    Quote,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DuplicatePolicy {
+    Reject,
+    KeepFirst,
+    KeepLast,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CsvError {
+    UnexpectedQuote { record: usize, byte: usize },
+    TrailingByte { record: usize, byte: usize },
+    BareCr { record: usize, byte: usize },
+    UnclosedQuote { record: usize, byte: usize },
+    Nul { record: usize, byte: usize },
+    InvalidConfig { component: ConfigPart },
+    DuplicateHeader { name: String, first: usize, second: usize },
+    HeaderWidth { record: usize, expected: usize, actual: usize },
+    ReaderFinished,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Config {
+    pub delimiter: u8,
+    pub quote: u8,
+    pub headers: bool,
+    pub duplicates: DuplicatePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Table {
+    pub header: Option<Vec<String>>,
+    pub rows: Vec<Vec<String>>,
+    pub duplicates: DuplicatePolicy,
+}
+
+impl Table {
+    pub fn column_index(&self, name: &str) -> Option<usize> {
+        let header = self.header.as_ref()?;
+        match self.duplicates {
+            DuplicatePolicy::KeepLast => header.iter().rposition(|x| x == name),
+            DuplicatePolicy::KeepFirst | DuplicatePolicy::Reject => {
+                header.iter().position(|x| x == name)
+            }
+        }
+    }
+}
+
+fn validate_dialect(delimiter: u8, quote: u8) -> Result<(), ConfigPart> {
+    if !(0x21..=0x7e).contains(&delimiter) {
+        return Err(ConfigPart::Delimiter);
+    }
+    if !(0x21..=0x7e).contains(&quote) {
+        return Err(ConfigPart::Quote);
+    }
+    if delimiter == quote {
+        return Err(ConfigPart::Quote);
+    }
+    Ok(())
+}
+
+fn parse_with_dialect(input: &str, delimiter: u8, quote: u8) -> Result<Vec<Vec<String>>, CsvError> {
+    let bytes = input.as_bytes();
+    let mut i = if bytes.starts_with(&[0xef, 0xbb, 0xbf]) { 3 } else { 0 };
+    if i == bytes.len() {
+        return Ok(Vec::new());
+    }
+
+    let mut records = Vec::new();
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut state = 0u8; // 0: unquoted, 1: quoted, 2: after closing quote
+    let mut record_index = 0usize;
+    let mut quote_start = 0usize;
+    let mut record_started = false;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        if b == 0 {
+            return Err(CsvError::Nul { record: record_index, byte: i });
+        }
+
+        if state != 1 && b == b'\r' && (i + 1 >= bytes.len() || bytes[i + 1] != b'\n') {
+            return Err(CsvError::BareCr { record: record_index, byte: i });
+        }
+
+        if state == 1 {
+            if b == quote {
+                if i + 1 < bytes.len() && bytes[i + 1] == quote {
+                    field.push(quote as char);
+                    i += 2;
+                    record_started = true;
+                    continue;
+                }
+                state = 2;
+                i += 1;
+                continue;
+            }
+            field.push(b as char);
+            i += 1;
+            continue;
+        }
+
+        if state == 2 {
+            if b == delimiter {
+                fields.push(std::mem::take(&mut field));
+                state = 0;
+                record_started = true;
+                i += 1;
+                continue;
+            }
+            if b == b'\n' || b == b'\r' {
+                fields.push(std::mem::take(&mut field));
+                records.push(std::mem::take(&mut fields));
+                record_index += 1;
+                state = 0;
+                record_started = false;
+                i += if b == b'\r' { 2 } else { 1 };
+                continue;
+            }
+            return Err(CsvError::TrailingByte { record: record_index, byte: i });
+        }
+
+        if b == delimiter {
+            fields.push(std::mem::take(&mut field));
+            record_started = true;
+            i += 1;
+            continue;
+        }
+        if b == b'\n' || b == b'\r' {
+            fields.push(std::mem::take(&mut field));
+            records.push(std::mem::take(&mut fields));
+            record_index += 1;
+            record_started = false;
+            i += if b == b'\r' { 2 } else { 1 };
+            continue;
+        }
+        if b == quote {
+            if field.is_empty() {
+                state = 1;
+                quote_start = i;
+                record_started = true;
+                i += 1;
+                continue;
+            }
+            return Err(CsvError::UnexpectedQuote { record: record_index, byte: i });
+        }
+        field.push(b as char);
+        record_started = true;
+        i += 1;
+    }
+
+    if state == 1 {
+        return Err(CsvError::UnclosedQuote { record: record_index, byte: quote_start });
+    }
+
+    if record_started || !fields.is_empty() || !field.is_empty() {
+        fields.push(field);
+        records.push(fields);
+    }
+    Ok(records)
+}
+
+pub fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, CsvError> {
+    parse_with_dialect(input, b',', b'"')
+}
+
+fn build_table(records: Vec<Vec<String>>, config: Config) -> Result<Table, CsvError> {
+    if !config.headers {
+        return Ok(Table { header: None, rows: records, duplicates: config.duplicates });
+    }
+
+    let mut iter = records.into_iter();
+    let Some(header) = iter.next() else {
+        return Ok(Table { header: None, rows: Vec::new(), duplicates: config.duplicates });
+    };
+
+    if config.duplicates == DuplicatePolicy::Reject {
+        let mut seen = std::collections::HashMap::<String, usize>::new();
+        for (second, name) in header.iter().enumerate() {
+            if let Some(&first) = seen.get(name) {
+                return Err(CsvError::DuplicateHeader {
+                    name: name.clone(),
+                    first,
+                    second,
+                });
+            }
+            seen.insert(name.clone(), second);
+        }
+    }
+
+    let expected = header.len();
+    let mut rows = Vec::new();
+    for (record, row) in iter.enumerate() {
+        if row.len() != expected {
+            return Err(CsvError::HeaderWidth {
+                record: record + 1,
+                expected,
+                actual: row.len(),
+            });
+        }
+        rows.push(row);
+    }
+    Ok(Table { header: Some(header), rows, duplicates: config.duplicates })
+}
+
+pub struct StreamReader {
+    config: Config,
+    input: String,
+    cached: Option<Result<Table, CsvError>>,
+}
+
+impl StreamReader {
+    pub fn new(config: Config) -> Result<Self, CsvError> {
+        validate_dialect(config.delimiter, config.quote)
+            .map_err(|component| CsvError::InvalidConfig { component })?;
+        Ok(Self { config, input: String::new(), cached: None })
+    }
+
+    pub fn feed(&mut self, chunk: &str) -> Result<(), CsvError> {
+        if self.cached.is_some() {
+            return Err(CsvError::ReaderFinished);
+        }
+        self.input.push_str(chunk);
+        Ok(())
+    }
+
+    pub fn finish(&mut self) -> Result<Table, CsvError> {
+        if let Some(result) = &self.cached {
+            return result.clone();
+        }
+        let result = parse_with_dialect(&self.input, self.config.delimiter, self.config.quote)
+            .and_then(|records| build_table(records, self.config));
+        self.cached = Some(result.clone());
+        result
+    }
+
+    pub fn reset(&mut self) {
+        self.input.clear();
+        self.cached = None;
+    }
+}
+
+pub fn read_csv(input: &str, config: Config) -> Result<Table, CsvError> {
+    let mut reader = StreamReader::new(config)?;
+    reader.feed(input)?;
+    reader.finish()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColumnRef {
+    Index(usize),
+    Name(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnType {
+    Text,
+    Integer,
+    Decimal,
+    Boolean,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnSpec {
+    pub column: ColumnRef,
+    pub kind: ColumnType,
+    pub nullable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Value {
+    Null,
+    Text(String),
+    Integer(i64),
+    Decimal(i64),
+    Boolean(bool),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellErrorKind {
+    UnknownColumn,
+    MissingCell,
+    Empty,
+    InvalidInteger,
+    IntegerOverflow,
+    InvalidDecimal,
+    DecimalOverflow,
+    InvalidBoolean,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellError {
+    pub row: usize,
+    pub spec: usize,
+    pub column: Option<usize>,
+    pub kind: CellErrorKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorPolicy {
+    Collect,
+    FirstPerRow,
+    Stop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedResult {
+    pub rows: Vec<Vec<Option<Value>>>,
+    pub errors: Vec<CellError>,
+}
+
+fn valid_integer_syntax(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.is_empty() {
+        return false;
+    }
+    let start = usize::from(b[0] == b'-');
+    if start == b.len() {
+        return false;
+    }
+    if b[start] == b'0' {
+        return start == 0 && b.len() == 1;
+    }
+    (b'1'..=b'9').contains(&b[start]) && b[start + 1..].iter().all(u8::is_ascii_digit)
+}
+
+fn valid_decimal_syntax(s: &str) -> bool {
+    let b = s.as_bytes();
+    let start = usize::from(b.first() == Some(&b'-'));
+    if start == b.len() {
+        return false;
+    }
+    let dot = match b[start..].iter().position(|&x| x == b'.') {
+        Some(p) => start + p,
+        None => return false,
+    };
+    if b.len() != dot + 3 {
+        return false;
+    }
+    let integral = &b[start..dot];
+    let integer_ok = if integral == b"0" {
+        true
+    } else {
+        !integral.is_empty()
+            && (b'1'..=b'9').contains(&integral[0])
+            && integral[1..].iter().all(u8::is_ascii_digit)
+    };
+    integer_ok && b[dot + 1..].iter().all(u8::is_ascii_digit)
+}
+
+fn parse_integer(s: &str) -> Result<i64, CellErrorKind> {
+    if !valid_integer_syntax(s) {
+        return Err(CellErrorKind::InvalidInteger);
+    }
+    s.parse::<i64>().map_err(|_| CellErrorKind::IntegerOverflow)
+}
+
+fn parse_decimal(s: &str) -> Result<i64, CellErrorKind> {
+    if !valid_decimal_syntax(s) {
+        return Err(CellErrorKind::InvalidDecimal);
+    }
+    let negative = s.starts_with('-');
+    let body = if negative { &s[1..] } else { s };
+    let mut parts = body.split('.');
+    let whole = parts.next().unwrap();
+    let fraction = parts.next().unwrap();
+    let magnitude = whole.parse::<i128>().unwrap() * 100
+        + fraction.parse::<i128>().unwrap();
+    let signed = if negative { -magnitude } else { magnitude };
+    i64::try_from(signed).map_err(|_| CellErrorKind::DecimalOverflow)
+}
+
+fn evaluate_cell(cell: &str, kind: ColumnType, nullable: bool) -> Result<Value, CellErrorKind> {
+    if cell.is_empty() {
+        if nullable {
+            return Ok(Value::Null);
+        }
+        if kind == ColumnType::Text {
+            return Ok(Value::Text(String::new()));
+        }
+        return Err(CellErrorKind::Empty);
+    }
+    match kind {
+        ColumnType::Text => Ok(Value::Text(cell.to_string())),
+        ColumnType::Integer => parse_integer(cell).map(Value::Integer),
+        ColumnType::Decimal => parse_decimal(cell).map(Value::Decimal),
+        ColumnType::Boolean => match cell {
+            "yes" | "1" => Ok(Value::Boolean(true)),
+            "no" | "0" => Ok(Value::Boolean(false)),
+            _ => Err(CellErrorKind::InvalidBoolean),
+        },
+    }
+}
+
+pub fn extract_columns(table: &Table, columns: &[ColumnSpec], policy: ErrorPolicy) -> TypedResult {
+    let mut result = TypedResult { rows: Vec::new(), errors: Vec::new() };
+    for (row_index, row) in table.rows.iter().enumerate() {
+        let mut output = vec![None; columns.len()];
+        let mut failed = false;
+        for (spec_index, spec) in columns.iter().enumerate() {
+            if policy == ErrorPolicy::Stop && failed {
+                break;
+            }
+
+            let resolved = match &spec.column {
+                ColumnRef::Index(index) => Some(*index),
+                ColumnRef::Name(name) => table.column_index(name),
+            };
+            let column = match resolved {
+                None => {
+                    let error = CellError {
+                        row: row_index,
+                        spec: spec_index,
+                        column: None,
+                        kind: CellErrorKind::UnknownColumn,
+                    };
+                    result.errors.push(error);
+                    failed = true;
+                    if policy != ErrorPolicy::Collect {
+                        break;
+                    }
+                    continue;
+                }
+                Some(index) => index,
+            };
+
+            let cell = match row.get(column) {
+                None => {
+                    result.errors.push(CellError {
+                        row: row_index,
+                        spec: spec_index,
+                        column: Some(column),
+                        kind: CellErrorKind::MissingCell,
+                    });
+                    failed = true;
+                    if policy != ErrorPolicy::Collect {
+                        break;
+                    }
+                    continue;
+                }
+                Some(cell) => cell,
+            };
+
+            match evaluate_cell(cell, spec.kind, spec.nullable) {
+                Ok(value) => output[spec_index] = Some(value),
+                Err(kind) => {
+                    result.errors.push(CellError {
+                        row: row_index,
+                        spec: spec_index,
+                        column: Some(column),
+                        kind,
+                    });
+                    failed = true;
+                    if policy != ErrorPolicy::Collect {
+                        break;
+                    }
+                }
+            }
+        }
+        result.rows.push(output);
+        if policy == ErrorPolicy::Stop && failed {
+            break;
+        }
+    }
+    result
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineEnding {
+    Lf,
+    CrLf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteMode {
+    Preserve,
+    Canonical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteConfig {
+    pub delimiter: u8,
+    pub quote: u8,
+    pub line_ending: LineEnding,
+    pub final_terminator: bool,
+    pub mode: WriteMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteError {
+    InvalidConfig { component: ConfigPart },
+    Nul { record: usize, column: usize, byte: usize },
+    Width { record: usize, expected: usize, actual: usize },
+    ZeroColumns { record: usize },
+    DuplicateHeader { name: String, first: usize, second: usize },
+}
+
+fn original_records<'a>(table: &'a Table) -> Vec<&'a Vec<String>> {
+    let mut records = Vec::new();
+    if let Some(header) = &table.header {
+        records.push(header);
+    }
+    records.extend(table.rows.iter());
+    records
+}
+
+pub fn write_csv(table: &Table, config: WriteConfig) -> Result<String, WriteError> {
+    validate_dialect(config.delimiter, config.quote)
+        .map_err(|component| WriteError::InvalidConfig { component })?;
+
+    let records = original_records(table);
+    for (record_index, record) in records.iter().enumerate() {
+        for (column, field) in record.iter().enumerate() {
+            if let Some(byte) = field.as_bytes().iter().position(|&b| b == 0) {
+                return Err(WriteError::Nul { record: record_index, column, byte });
+            }
+        }
+    }
+
+    if let Some(header) = &table.header {
+        for (row_index, row) in table.rows.iter().enumerate() {
+            if row.len() != header.len() {
+                return Err(WriteError::Width {
+                    record: row_index + 1,
+                    expected: header.len(),
+                    actual: row.len(),
+                });
+            }
+        }
+    }
+
+    for (record_index, record) in records.iter().enumerate() {
+        if record.is_empty() {
+            return Err(WriteError::ZeroColumns { record: record_index });
+        }
+    }
+
+    if config.mode == WriteMode::Canonical
+        && table.header.is_some()
+        && table.duplicates == DuplicatePolicy::Reject
+    {
+        let header = table.header.as_ref().unwrap();
+        let mut seen = std::collections::HashMap::<String, usize>::new();
+        for (second, name) in header.iter().enumerate() {
+            if let Some(&first) = seen.get(name) {
+                return Err(WriteError::DuplicateHeader {
+                    name: name.clone(),
+                    first,
+                    second,
+                });
+            }
+            seen.insert(name.clone(), second);
+        }
+    }
+
+    let mut output_records: Vec<Vec<String>> = Vec::new();
+    if config.mode == WriteMode::Preserve {
+        output_records.extend(records.iter().map(|r| (*r).clone()));
+    } else if let Some(header) = &table.header {
+        let mut retained = std::collections::HashMap::<String, usize>::new();
+        for (index, name) in header.iter().enumerate() {
+            match table.duplicates {
+                DuplicatePolicy::KeepFirst | DuplicatePolicy::Reject => {
+                    retained.entry(name.clone()).or_insert(index);
+                }
+                DuplicatePolicy::KeepLast => {
+                    retained.insert(name.clone(), index);
+                }
+            }
+        }
+        let mut columns: Vec<(String, usize)> =
+            retained.into_iter().map(|(name, index)| (name, index)).collect();
+        columns.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+        let projected_header: Vec<String> = columns.iter().map(|(n, _)| n.clone()).collect();
+        output_records.push(projected_header);
+        for row in &table.rows {
+            output_records.push(columns.iter().map(|(_, index)| row[*index].clone()).collect());
+        }
+        output_records[1..].sort_by(|a, b| compare_rows(a, b));
+    } else {
+        output_records.extend(table.rows.iter().cloned());
+        output_records.sort_by(|a, b| compare_rows(a, b));
+    }
+
+    if output_records.is_empty() {
+        return Ok(String::new());
+    }
+
+    let canonical = config.mode == WriteMode::Canonical;
+    let ending: &[u8] = if canonical || config.line_ending == LineEnding::Lf {
+        b"\n"
+    } else {
+        b"\r\n"
+    };
+    let mut output = String::new();
+    for (record_index, record) in output_records.iter().enumerate() {
+        if record_index > 0 {
+            output.push_str(std::str::from_utf8(ending).unwrap());
+        }
+        for (column_index, field) in record.iter().enumerate() {
+            if column_index > 0 {
+                output.push(config.delimiter as char);
+            }
+            let bytes = field.as_bytes();
+            let needs_quote = bytes.contains(&config.delimiter)
+                || bytes.contains(&config.quote)
+                || bytes.contains(&b'\r')
+                || bytes.contains(&b'\n')
+                || bytes.first().map_or(false, |b| *b == b' ' || *b == b'\t')
+                || bytes.last().map_or(false, |b| *b == b' ' || *b == b'\t')
+                || (record_index == 0 && column_index == 0 && field.starts_with('\u{feff}'))
+                || (record.len() == 1 && field.is_empty());
+            if needs_quote {
+                output.push(config.quote as char);
+                for &b in bytes {
+                    output.push(b as char);
+                    if b == config.quote {
+                        output.push(config.quote as char);
+                    }
+                }
+                output.push(config.quote as char);
+            } else {
+                output.push_str(field);
+            }
+        }
+    }
+
+    if canonical || config.final_terminator {
+        output.push_str(std::str::from_utf8(ending).unwrap());
+    }
+    Ok(output)
+}
+
+fn compare_rows(a: &[String], b: &[String]) -> std::cmp::Ordering {
+    for (x, y) in a.iter().zip(b.iter()) {
+        match x.as_bytes().cmp(y.as_bytes()) {
+            std::cmp::Ordering::Equal => {}
+            other => return other,
+        }
+    }
+    a.len().cmp(&b.len())
+}
+
+fn main() {}

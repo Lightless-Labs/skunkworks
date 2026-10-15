@@ -1,0 +1,127 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Point {
+    pub x: i64,
+    pub y: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Clockwise,
+    Degenerate,
+    CounterClockwise,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Measures {
+    pub signed_area2: i128,
+    pub area2: u128,
+    pub orientation: Orientation,
+    pub edge_milli: Vec<u64>,
+    pub perimeter_milli: u64,
+    pub longest_edge: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeomError {
+    TooManyVertices { len: usize },
+    OutOfRange { index: usize },
+    TooFewVertices { len: usize },
+}
+
+pub fn measure(points: &[Point]) -> Result<Measures, GeomError> {
+    if points.len() > 4096 {
+        return Err(GeomError::TooManyVertices { len: points.len() });
+    }
+
+    for (index, point) in points.iter().enumerate() {
+        if !(-1_000_000_000..=1_000_000_000).contains(&point.x)
+            || !(-1_000_000_000..=1_000_000_000).contains(&point.y)
+        {
+            return Err(GeomError::OutOfRange { index });
+        }
+    }
+
+    let effective_len = points.len()
+        - usize::from(points.len() >= 2 && points.last() == points.first());
+    if effective_len < 3 {
+        return Err(GeomError::TooFewVertices { len: effective_len });
+    }
+
+    let polygon = &points[..effective_len];
+    let mut signed_area2 = 0i128;
+    let mut edge_milli = Vec::with_capacity(effective_len);
+    let mut perimeter_milli = 0u64;
+    let mut longest_edge: Option<usize> = None;
+
+    for i in 0..effective_len {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % effective_len];
+
+        signed_area2 += (a.x as i128) * (b.y as i128) - (a.y as i128) * (b.x as i128);
+
+        let dx = (a.x as i128) - (b.x as i128);
+        let dy = (a.y as i128) - (b.y as i128);
+        let d2 = (dx * dx + dy * dy) as u128;
+        let scaled = d2 * 1_000_000u128;
+        let root = integer_sqrt(scaled);
+        let remainder = scaled - root * root;
+        let rounded = if remainder >= root * 2 + 1 { root + 1 } else { root };
+        let length = rounded as u64;
+        edge_milli.push(length);
+        perimeter_milli += length;
+
+        let replace = match longest_edge {
+            None => true,
+            Some(best) if length > edge_milli[best] => true,
+            Some(best) if length < edge_milli[best] => false,
+            Some(best) => {
+                let best_a = polygon[best];
+                let best_b = polygon[(best + 1) % effective_len];
+                let candidate_pair = (a.min(b), a.max(b));
+                let best_pair = (best_a.min(best_b), best_a.max(best_b));
+                candidate_pair < best_pair || (candidate_pair == best_pair && i < best)
+            }
+        };
+        if replace {
+            longest_edge = Some(i);
+        }
+    }
+
+    let area2 = signed_area2.unsigned_abs();
+    let orientation = if signed_area2 > 0 {
+        Orientation::CounterClockwise
+    } else if signed_area2 < 0 {
+        Orientation::Clockwise
+    } else {
+        Orientation::Degenerate
+    };
+
+    Ok(Measures {
+        signed_area2,
+        area2,
+        orientation,
+        edge_milli,
+        perimeter_milli,
+        longest_edge,
+    })
+}
+
+fn integer_sqrt(n: u128) -> u128 {
+    if n < 2 {
+        return n;
+    }
+
+    let mut low = 1u128;
+    let mut high = n / 2 + 1;
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        if mid <= n / mid {
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+    high
+}
+
+fn main() {}

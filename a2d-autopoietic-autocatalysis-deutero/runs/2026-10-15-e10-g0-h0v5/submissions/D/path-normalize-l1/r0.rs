@@ -1,0 +1,85 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.bytes().position(|byte| byte == 0) {
+        return Err(PathError::Nul { at });
+    }
+
+    if let Some(at) = path.bytes().position(|byte| byte == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+
+    if let Some(at) = path
+        .bytes()
+        .position(|byte| (1..=31).contains(&byte) || byte == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    let absolute = path.starts_with('/');
+    let directory_intent = path.ends_with('/')
+        || path
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .last()
+            .is_some_and(|component| component == "." || component == "..");
+
+    let mut components: Vec<(String, bool)> = Vec::new();
+    let mut offset = 0;
+
+    for component in path.split('/') {
+        let component_offset = offset;
+        offset += component.len() + 1;
+
+        if component.is_empty() || component == "." {
+            continue;
+        }
+
+        if component == ".." {
+            if components.last().is_some_and(|(_, ordinary)| *ordinary) {
+                components.pop();
+            } else if absolute {
+                return Err(PathError::Escape {
+                    at: component_offset,
+                });
+            } else {
+                components.push((component.to_owned(), false));
+            }
+        } else {
+            components.push((component.to_owned(), true));
+        }
+    }
+
+    let mut result = String::new();
+    if absolute {
+        result.push('/');
+    }
+    result.push_str(
+        &components
+            .iter()
+            .map(|(component, _)| component.as_str())
+            .collect::<Vec<_>>()
+            .join("/"),
+    );
+
+    if result.is_empty() {
+        result.push('.');
+    }
+
+    if directory_intent && result != "/" && result != "." {
+        result.push('/');
+    }
+
+    Ok(result)
+}

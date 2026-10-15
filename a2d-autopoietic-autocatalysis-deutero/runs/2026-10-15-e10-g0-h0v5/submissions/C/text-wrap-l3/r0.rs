@@ -1,0 +1,303 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WrapError {
+    WidthZero,
+    WidthTooLarge { width: usize },
+    FirstIndentTooWide { indent: usize },
+    RestIndentTooWide { indent: usize },
+    HyphenCostTooLarge { cost: usize },
+    InvalidControl { index: usize },
+    InvalidMarker { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapOptions {
+    pub width: usize,
+    pub first_indent: usize,
+    pub rest_indent: usize,
+    pub hyphen_cost: usize,
+    pub justify: bool,
+}
+
+#[derive(Clone)]
+struct LinePiece {
+    text: String,
+    word_count: usize,
+}
+
+fn is_separator(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{00a0}')
+}
+
+fn render_line(
+    pieces: &[LinePiece],
+    indent: usize,
+    width: usize,
+    justify: bool,
+    is_final: bool,
+    line_index: usize,
+) -> String {
+    let gaps = pieces.len().saturating_sub(1);
+    let text_width: usize = pieces.iter().map(|p| p.text.chars().count()).sum();
+    let pre_width = text_width + gaps;
+    let extra = if justify && !is_final && pieces.len() >= 2 {
+        width.saturating_sub(indent + pre_width)
+    } else {
+        0
+    };
+    let base_extra = if gaps == 0 { 0 } else { extra / gaps };
+    let remainder = if gaps == 0 { 0 } else { extra % gaps };
+    let start_gap = if gaps == 0 { 0 } else { line_index % gaps };
+
+    let mut output = " ".repeat(indent);
+    for (index, piece) in pieces.iter().enumerate() {
+        if index > 0 {
+            let gap_index = index - 1;
+            let bonus = if remainder > 0
+                && (gap_index + gaps - start_gap) % gaps < remainder
+            {
+                1
+            } else {
+                0
+            };
+            output.push_str(&" ".repeat(1 + base_extra + bonus));
+        }
+        output.push_str(&piece.text);
+    }
+    output
+}
+
+pub fn wrap(input: &str, options: &WrapOptions) -> Result<Vec<String>, WrapError> {
+    if options.width == 0 {
+        return Err(WrapError::WidthZero);
+    }
+    if options.width > 256 {
+        return Err(WrapError::WidthTooLarge {
+            width: options.width,
+        });
+    }
+    if options.first_indent >= options.width {
+        return Err(WrapError::FirstIndentTooWide {
+            indent: options.first_indent,
+        });
+    }
+    if options.rest_indent >= options.width {
+        return Err(WrapError::RestIndentTooWide {
+            indent: options.rest_indent,
+        });
+    }
+    if options.hyphen_cost > 1_000_000 {
+        return Err(WrapError::HyphenCostTooLarge {
+            cost: options.hyphen_cost,
+        });
+    }
+
+    for (index, c) in input.char_indices() {
+        if c.is_control() && !matches!(c, '\t' | '\r' | '\n') {
+            return Err(WrapError::InvalidControl { index });
+        }
+    }
+
+    let input_chars: Vec<(usize, char)> = input.char_indices().collect();
+    for i in 0..input_chars.len() {
+        if input_chars[i].1 == '~' {
+            let valid_neighbor = |j: isize| -> bool {
+                if j < 0 || j as usize >= input_chars.len() {
+                    return false;
+                }
+                let c = input_chars[j as usize].1;
+                c != '~' && !is_separator(c)
+            };
+            if !valid_neighbor(i as isize - 1) || !valid_neighbor(i as isize + 1) {
+                return Err(WrapError::InvalidMarker {
+                    index: input_chars[i].0,
+                });
+            }
+        }
+    }
+
+    let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
+    if normalized.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let chars: Vec<char> = normalized.chars().collect();
+    let mut segments: Vec<Vec<char>> = Vec::new();
+    let mut boundary_empty_counts: Vec<usize> = Vec::new();
+    let mut segment_start = 0;
+    let mut i = 0;
+
+    while i < chars.len() {
+        if chars[i] == '\n' {
+            let mut end = i + 1;
+            while end < chars.len() && chars[end] == '\n' {
+                end += 1;
+            }
+            if end - i >= 2 {
+                segments.push(chars[segment_start..i].to_vec());
+                boundary_empty_counts.push(end - i - 1);
+                segment_start = end;
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    segments.push(chars[segment_start..].to_vec());
+
+    let mut output = Vec::new();
+
+    for (segment_index, segment) in segments.iter().enumerate() {
+        let mut words: Vec<Vec<char>> = Vec::new();
+        let mut current_word = Vec::new();
+
+        for &c in segment {
+            if is_separator(c) {
+                if !current_word.is_empty() {
+                    words.push(std::mem::take(&mut current_word));
+                }
+            } else {
+                current_word.push(c);
+            }
+        }
+        if !current_word.is_empty() {
+            words.push(current_word);
+        }
+
+        let mut completed_lines: Vec<Vec<LinePiece>> = Vec::new();
+        let mut line: Vec<LinePiece> = Vec::new();
+        let mut content_len = 0usize;
+        let mut line_number = 0usize;
+
+        for word in words {
+            let mut offset = 0usize;
+
+            while offset < word.len() {
+                let indent = if line_number == 0 {
+                    options.first_indent
+                } else {
+                    options.rest_indent
+                };
+                let capacity = options.width - indent;
+                let room = capacity.saturating_sub(
+                    content_len + usize::from(!line.is_empty()),
+                );
+                let suffix_len = word.len() - offset;
+
+                if suffix_len <= room {
+                    let text: String = word[offset..]
+                        .iter()
+                        .copied()
+                        .filter(|&c| c != '~')
+                        .collect();
+                    let text_len = text.chars().count();
+                    if !text.is_empty() {
+                        if !line.is_empty() {
+                            content_len += 1;
+                        }
+                        content_len += text_len;
+                        line.push(LinePiece {
+                            text,
+                            word_count: 1,
+                        });
+                    }
+                    offset = word.len();
+                    continue;
+                }
+
+                let mut rightmost_usable = None;
+                for marker in (offset + 1)..word.len() {
+                    if word[marker] == '~' && marker - offset + 1 <= room {
+                        rightmost_usable = Some(marker);
+                    }
+                }
+
+                let chosen = rightmost_usable.filter(|&marker| {
+                    if line.is_empty() {
+                        true
+                    } else {
+                        let prefix_len = marker - offset;
+                        let used = content_len + 1 + prefix_len + 1;
+                        let unused = capacity.saturating_sub(used);
+                        let left = unused * unused + options.hyphen_cost;
+                        let baseline_room = capacity.saturating_sub(content_len);
+                        left < baseline_room * baseline_room
+                    }
+                });
+
+                if let Some(marker) = chosen {
+                    let prefix: String = word[offset..marker]
+                        .iter()
+                        .copied()
+                        .filter(|&c| c != '~')
+                        .collect();
+                    if !line.is_empty() {
+                        content_len += 1;
+                    }
+                    content_len += prefix.chars().count() + 1;
+                    line.push(LinePiece {
+                        text: format!("{prefix}-"),
+                        word_count: 1,
+                    });
+                    completed_lines.push(std::mem::take(&mut line));
+                    content_len = 0;
+                    line_number += 1;
+                    offset = marker + 1;
+                } else if !line.is_empty() {
+                    completed_lines.push(std::mem::take(&mut line));
+                    content_len = 0;
+                    line_number += 1;
+                } else {
+                    let take = capacity.min(suffix_len);
+                    let text: String = word[offset..offset + take]
+                        .iter()
+                        .copied()
+                        .filter(|&c| c != '~')
+                        .collect();
+                    content_len += text.chars().count();
+                    line.push(LinePiece {
+                        text,
+                        word_count: 1,
+                    });
+                    offset += take;
+
+                    if offset < word.len() {
+                        completed_lines.push(std::mem::take(&mut line));
+                        content_len = 0;
+                        line_number += 1;
+                    }
+                }
+            }
+        }
+
+        if !line.is_empty() {
+            completed_lines.push(line);
+        }
+
+        let line_count = completed_lines.len();
+        for (line_index, pieces) in completed_lines.iter().enumerate() {
+            let indent = if line_index == 0 {
+                options.first_indent
+            } else {
+                options.rest_indent
+            };
+            output.push(render_line(
+                pieces,
+                indent,
+                options.width,
+                options.justify,
+                line_index + 1 == line_count,
+                line_index,
+            ));
+        }
+
+        if segment_index < boundary_empty_counts.len() {
+            for _ in 0..boundary_empty_counts[segment_index] {
+                output.push(String::new());
+            }
+        }
+    }
+
+    Ok(output)
+}
+
+fn main() {}

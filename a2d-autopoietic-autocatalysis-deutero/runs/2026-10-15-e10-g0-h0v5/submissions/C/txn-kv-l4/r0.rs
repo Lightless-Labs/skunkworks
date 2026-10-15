@@ -1,0 +1,648 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    KeyEmpty,
+    NameEmpty,
+    NameInvalid { at: usize },
+    SnapshotLimit,
+    TimeBackwards { previous: u64, now: u64 },
+    DeadlineOverflow,
+    UnknownTransaction(u64),
+    TransactionExists(u64),
+    ReadOnly(u64),
+    SnapshotMissing(String),
+    ActiveTransactions,
+    Conflict { tx: u64, key: String },
+    InvalidRange,
+    CursorMismatch,
+    InvalidNumber { key: String, value: String },
+    SumOverflow { key: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stats {
+    pub clock: u64,
+    pub revision: u64,
+    pub keys: usize,
+    pub live_keys: usize,
+    pub versions: usize,
+    pub tombstones: usize,
+    pub active_transactions: usize,
+    pub read_only_transactions: usize,
+    pub staged_writes: usize,
+    pub snapshots: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cursor {
+    pub start: String,
+    pub end: Option<String>,
+    pub prefix: Option<String>,
+    pub offset: usize,
+    pub last: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Page {
+    pub items: Vec<(String, String)>,
+    pub next: Option<Cursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Aggregate {
+    pub count: usize,
+    pub sum: i64,
+}
+
+#[derive(Clone)]
+struct Version {
+    revision: u64,
+    value: Option<String>,
+    deadline: Option<u64>,
+}
+
+#[derive(Clone)]
+struct Write {
+    value: Option<String>,
+    deadline: Option<u64>,
+}
+
+struct Transaction {
+    revision: u64,
+    read_only: bool,
+    writes: BTreeMap<String, Write>,
+}
+
+pub struct Store {
+    clock: u64,
+    revision: u64,
+    data: BTreeMap<String, Vec<Version>>,
+    transactions: BTreeMap<u64, Transaction>,
+    snapshots: BTreeMap<String, BTreeMap<String, (String, Option<u64>)>>,
+}
+
+impl Store {
+    pub fn new() -> Self {
+        Self {
+            clock: 0,
+            revision: 0,
+            data: BTreeMap::new(),
+            transactions: BTreeMap::new(),
+            snapshots: BTreeMap::new(),
+        }
+    }
+
+    fn admit(&mut self, now: u64) -> Result<(), Error> {
+        if now < self.clock {
+            return Err(Error::TimeBackwards {
+                previous: self.clock,
+                now,
+            });
+        }
+        self.clock = now;
+        Ok(())
+    }
+
+    fn validate_tx(&self, tx: Option<u64>) -> Result<(), Error> {
+        if let Some(id) = tx {
+            if !self.transactions.contains_key(&id) {
+                return Err(Error::UnknownTransaction(id));
+            }
+        }
+        Ok(())
+    }
+
+    fn visible_version(&self, key: &str, tx: Option<u64>) -> Option<&Version> {
+        let versions = self.data.get(key)?;
+        match tx {
+            None => versions.last(),
+            Some(id) => {
+                let begin_revision = self.transactions.get(&id)?.revision;
+                versions
+                    .iter()
+                    .rev()
+                    .find(|v| v.revision <= begin_revision)
+            }
+        }
+    }
+
+    fn live_value(&self, key: &str, tx: Option<u64>, now: u64) -> Option<String> {
+        if let Some(id) = tx {
+            if let Some(write) = self.transactions.get(&id)?.writes.get(key) {
+                return match (&write.value, write.deadline) {
+                    (Some(value), deadline) if deadline.map_or(true, |d| d > now) => {
+                        Some(value.clone())
+                    }
+                    _ => None,
+                };
+            }
+        }
+        let version = self.visible_version(key, tx)?;
+        match (&version.value, version.deadline) {
+            (Some(value), deadline) if deadline.map_or(true, |d| d > now) => {
+                Some(value.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn visible_entries(&self, tx: Option<u64>, now: u64) -> BTreeMap<String, String> {
+        let mut keys: BTreeSet<String> = self.data.keys().cloned().collect();
+        if let Some(id) = tx {
+            if let Some(transaction) = self.transactions.get(&id) {
+                keys.extend(transaction.writes.keys().cloned());
+            }
+        }
+        keys.into_iter()
+            .filter_map(|key| self.live_value(&key, tx, now).map(|v| (key, v)))
+            .collect()
+    }
+
+    fn range_matches(key: &str, start: &str, end: Option<&str>, prefix: Option<&str>) -> bool {
+        key >= start
+            && end.map_or(true, |bound| key < bound)
+            && prefix.map_or(true, |p| key.starts_with(p))
+    }
+
+    fn validate_range(start: &str, end: Option<&str>) -> Result<(), Error> {
+        if end.is_some_and(|bound| bound <= start) {
+            Err(Error::InvalidRange)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_name(name: &str) -> Result<(), Error> {
+        if name.is_empty() {
+            return Err(Error::NameEmpty);
+        }
+        for (at, ch) in name.char_indices() {
+            let valid = if at == 0 {
+                ch.is_ascii_lowercase()
+            } else {
+                ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'
+            };
+            if !valid {
+                return Err(Error::NameInvalid { at });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn begin(&mut self, now: u64, id: u64, read_only: bool) -> Result<(), Error> {
+        self.admit(now)?;
+        if self.transactions.contains_key(&id) {
+            return Err(Error::TransactionExists(id));
+        }
+        self.transactions.insert(
+            id,
+            Transaction {
+                revision: self.revision,
+                read_only,
+                writes: BTreeMap::new(),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn commit(&mut self, now: u64, id: u64) -> Result<u64, Error> {
+        self.admit(now)?;
+        let transaction = self
+            .transactions
+            .get(&id)
+            .ok_or(Error::UnknownTransaction(id))?;
+
+        if transaction.writes.is_empty() {
+            self.transactions.remove(&id);
+            return Ok(self.revision);
+        }
+
+        let begin_revision = transaction.revision;
+        let keys: Vec<String> = transaction.writes.keys().cloned().collect();
+        for key in &keys {
+            if self
+                .data
+                .get(key)
+                .and_then(|versions| versions.last())
+                .is_some_and(|version| version.revision > begin_revision)
+            {
+                return Err(Error::Conflict {
+                    tx: id,
+                    key: key.clone(),
+                });
+            }
+        }
+
+        let writes = self.transactions.get(&id).unwrap().writes.clone();
+        self.revision += 1;
+        let revision = self.revision;
+        for (key, write) in writes {
+            self.data.entry(key).or_default().push(Version {
+                revision,
+                value: write.value,
+                deadline: write.deadline,
+            });
+        }
+        self.transactions.remove(&id);
+        Ok(revision)
+    }
+
+    pub fn rollback(&mut self, now: u64, id: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        if self.transactions.remove(&id).is_none() {
+            return Err(Error::UnknownTransaction(id));
+        }
+        Ok(())
+    }
+
+    pub fn set(
+        &mut self,
+        now: u64,
+        tx: Option<u64>,
+        key: &str,
+        value: &str,
+        ttl: Option<u64>,
+    ) -> Result<(), Error> {
+        self.admit(now)?;
+        self.validate_tx(tx)?;
+        if key.is_empty() {
+            return Err(Error::KeyEmpty);
+        }
+        if let Some(id) = tx {
+            if self.transactions.get(&id).unwrap().read_only {
+                return Err(Error::ReadOnly(id));
+            }
+        }
+        let deadline = match ttl {
+            Some(d) => Some(now.checked_add(d).ok_or(Error::DeadlineOverflow)?),
+            None => None,
+        };
+        let write = if deadline == Some(now) {
+            Write {
+                value: None,
+                deadline: None,
+            }
+        } else {
+            Write {
+                value: Some(value.to_string()),
+                deadline,
+            }
+        };
+        match tx {
+            Some(id) => {
+                self.transactions
+                    .get_mut(&id)
+                    .unwrap()
+                    .writes
+                    .insert(key.to_string(), write);
+            }
+            None => {
+                self.revision += 1;
+                self.data.entry(key.to_string()).or_default().push(Version {
+                    revision: self.revision,
+                    value: write.value,
+                    deadline: write.deadline,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn delete(&mut self, now: u64, tx: Option<u64>, key: &str) -> Result<bool, Error> {
+        self.admit(now)?;
+        self.validate_tx(tx)?;
+        if key.is_empty() {
+            return Err(Error::KeyEmpty);
+        }
+        if let Some(id) = tx {
+            if self.transactions.get(&id).unwrap().read_only {
+                return Err(Error::ReadOnly(id));
+            }
+        }
+        let existed = self.live_value(key, tx, now).is_some();
+        let write = Write {
+            value: None,
+            deadline: None,
+        };
+        match tx {
+            Some(id) => {
+                self.transactions
+                    .get_mut(&id)
+                    .unwrap()
+                    .writes
+                    .insert(key.to_string(), write);
+            }
+            None => {
+                self.revision += 1;
+                self.data.entry(key.to_string()).or_default().push(Version {
+                    revision: self.revision,
+                    value: None,
+                    deadline: None,
+                });
+            }
+        }
+        Ok(existed)
+    }
+
+    pub fn get(
+        &mut self,
+        now: u64,
+        tx: Option<u64>,
+        key: &str,
+    ) -> Result<Option<String>, Error> {
+        self.admit(now)?;
+        self.validate_tx(tx)?;
+        if key.is_empty() {
+            return Err(Error::KeyEmpty);
+        }
+        Ok(self.live_value(key, tx, now))
+    }
+
+    pub fn count(
+        &mut self,
+        now: u64,
+        tx: Option<u64>,
+        value: &str,
+    ) -> Result<usize, Error> {
+        self.admit(now)?;
+        self.validate_tx(tx)?;
+        Ok(self
+            .visible_entries(tx, now)
+            .values()
+            .filter(|v| v.as_str() == value)
+            .count())
+    }
+
+    pub fn scan(
+        &mut self,
+        now: u64,
+        tx: Option<u64>,
+        start: &str,
+        end: Option<&str>,
+        prefix: Option<&str>,
+        offset: usize,
+        limit: usize,
+        cursor: Option<&Cursor>,
+    ) -> Result<Page, Error> {
+        self.admit(now)?;
+        self.validate_tx(tx)?;
+        Self::validate_range(start, end)?;
+        if let Some(c) = cursor {
+            if c.start != start
+                || c.end.as_deref() != end
+                || c.prefix.as_deref() != prefix
+                || c.offset != offset
+                || c.last.is_empty()
+                || !Self::range_matches(&c.last, start, end, prefix)
+            {
+                return Err(Error::CursorMismatch);
+            }
+        }
+
+        if limit == 0 {
+            return Ok(Page {
+                items: Vec::new(),
+                next: None,
+            });
+        }
+
+        let entries = self.visible_entries(tx, now);
+        let mut matching = entries
+            .into_iter()
+            .filter(|(key, _)| Self::range_matches(key, start, end, prefix))
+            .filter(|(key, _)| cursor.map_or(true, |c| key.as_str() > c.last.as_str()));
+
+        if cursor.is_none() {
+            for _ in 0..offset {
+                if matching.next().is_none() {
+                    return Ok(Page {
+                        items: Vec::new(),
+                        next: None,
+                    });
+                }
+            }
+        }
+
+        let mut items = Vec::new();
+        for _ in 0..limit {
+            match matching.next() {
+                Some(item) => items.push(item),
+                None => break,
+            }
+        }
+        let has_more = matching.next().is_some();
+        let next = if has_more {
+            items.last().map(|(last, _)| Cursor {
+                start: start.to_string(),
+                end: end.map(str::to_string),
+                prefix: prefix.map(str::to_string),
+                offset,
+                last: last.clone(),
+            })
+        } else {
+            None
+        };
+        Ok(Page { items, next })
+    }
+
+    pub fn aggregate(
+        &mut self,
+        now: u64,
+        tx: Option<u64>,
+        start: &str,
+        end: Option<&str>,
+        prefix: Option<&str>,
+    ) -> Result<Aggregate, Error> {
+        self.admit(now)?;
+        self.validate_tx(tx)?;
+        Self::validate_range(start, end)?;
+        let entries = self.visible_entries(tx, now);
+        let mut count = 0usize;
+        let mut sum = 0i64;
+        for (key, value) in entries {
+            if !Self::range_matches(&key, start, end, prefix) {
+                continue;
+            }
+            let parsed = parse_canonical_i64(&value).ok_or_else(|| Error::InvalidNumber {
+                key: key.clone(),
+                value: value.clone(),
+            })?;
+            sum = sum
+                .checked_add(parsed)
+                .ok_or_else(|| Error::SumOverflow { key: key.clone() })?;
+            count += 1;
+        }
+        Ok(Aggregate { count, sum })
+    }
+
+    pub fn snapshot(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        if !self.snapshots.contains_key(name) && self.snapshots.len() >= 3 {
+            return Err(Error::SnapshotLimit);
+        }
+        let saved = self
+            .visible_entries(None, now)
+            .into_iter()
+            .filter_map(|(key, value)| {
+                self.data.get(&key).and_then(|versions| versions.last()).and_then(|v| {
+                    if v.value.as_deref() == Some(value.as_str()) {
+                        Some((key, (value, v.deadline)))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        self.snapshots.insert(name.to_string(), saved);
+        Ok(())
+    }
+
+    pub fn restore(&mut self, now: u64, name: &str) -> Result<u64, Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        let saved = self
+            .snapshots
+            .get(name)
+            .ok_or_else(|| Error::SnapshotMissing(name.to_string()))?;
+        if !self.transactions.is_empty() {
+            return Err(Error::ActiveTransactions);
+        }
+
+        let saved_live: BTreeMap<String, (String, Option<u64>)> = saved
+            .iter()
+            .filter(|(_, (_, deadline))| deadline.map_or(true, |d| d > now))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+
+        let mut current_live = BTreeSet::new();
+        for key in self.data.keys() {
+            if self.live_value(key, None, now).is_some() {
+                current_live.insert(key.clone());
+            }
+        }
+        let mut union = current_live;
+        union.extend(saved_live.keys().cloned());
+        if union.is_empty() {
+            return Ok(self.revision);
+        }
+
+        self.revision += 1;
+        let revision = self.revision;
+        for key in union {
+            let version = match saved_live.get(&key) {
+                Some((value, deadline)) => Version {
+                    revision,
+                    value: Some(value.clone()),
+                    deadline: *deadline,
+                },
+                None => Version {
+                    revision,
+                    value: None,
+                    deadline: None,
+                },
+            };
+            self.data.entry(key).or_default().push(version);
+        }
+        Ok(revision)
+    }
+
+    pub fn forget(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        if self.snapshots.remove(name).is_none() {
+            return Err(Error::SnapshotMissing(name.to_string()));
+        }
+        Ok(())
+    }
+
+    pub fn gc(&mut self, now: u64) -> Result<usize, Error> {
+        self.admit(now)?;
+        let begin_revisions: Vec<u64> = self.transactions.values().map(|t| t.revision).collect();
+        let mut removed = 0;
+        for versions in self.data.values_mut() {
+            if versions.is_empty() {
+                continue;
+            }
+            let mut keep = BTreeSet::new();
+            keep.insert(versions.len() - 1);
+            for begin in &begin_revisions {
+                if let Some(index) = versions.iter().rposition(|v| v.revision <= *begin) {
+                    keep.insert(index);
+                }
+            }
+            let mut index = 0;
+            versions.retain(|_| {
+                let retain = keep.contains(&index);
+                index += 1;
+                if !retain {
+                    removed += 1;
+                }
+                retain
+            });
+        }
+        Ok(removed)
+    }
+
+    pub fn stats(&mut self, now: u64) -> Result<Stats, Error> {
+        self.admit(now)?;
+        let versions = self.data.values().map(Vec::len).sum();
+        let tombstones = self
+            .data
+            .values()
+            .flat_map(|v| v.iter())
+            .filter(|v| v.value.is_none())
+            .count();
+        let live_keys = self
+            .data
+            .keys()
+            .filter(|key| self.live_value(key, None, now).is_some())
+            .count();
+        Stats {
+            clock: self.clock,
+            revision: self.revision,
+            keys: self.data.values().filter(|v| !v.is_empty()).count(),
+            live_keys,
+            versions,
+            tombstones,
+            active_transactions: self.transactions.len(),
+            read_only_transactions: self
+                .transactions
+                .values()
+                .filter(|t| t.read_only)
+                .count(),
+            staged_writes: self.transactions.values().map(|t| t.writes.len()).sum(),
+            snapshots: self.snapshots.len(),
+        }
+        .pipe(Ok)
+    }
+}
+
+fn parse_canonical_i64(value: &str) -> Option<i64> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    let digits = if bytes[0] == b'-' { &bytes[1..] } else { bytes };
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    if digits == b"0" {
+        if bytes[0] == b'-' {
+            return None;
+        }
+    } else if digits[0] == b'0' {
+        return None;
+    }
+    value.parse::<i64>().ok()
+}
+
+trait Pipe: Sized {
+    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
+        f(self)
+    }
+}
+impl<T> Pipe for T {}
+
+fn main() {}

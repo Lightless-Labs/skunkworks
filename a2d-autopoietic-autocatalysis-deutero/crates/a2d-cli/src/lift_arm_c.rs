@@ -27,6 +27,11 @@
 //! - `plain_inputs`: render the coder's inputs as plain sections (previous
 //!   file fenced, real newlines, failure report once) instead of one JSON
 //!   line, as arm D sees them;
+//! - `prompt_format`: `json` (seed), `plain`, or `repair` (exactly the plain
+//!   repair loop's prompt: requirements, previous file, public-test output,
+//!   "Fix the file"); `plain_inputs: true` is the legacy spelling of `plain`;
+//! - `escalation`: `false` turns the metabolism's loop-escalation ladder off
+//!   (with one lane its consultations and clean sessions cost repairs, LOG E10);
 //! - `drop_coder_catalysts`: remove catalysts from the coder (applied before
 //!   `drop_enzymes`; e.g. `enzyme_defs`, which lets the evolver be dropped);
 //! - `dedupe_input`: keep the task input in `requirements` only; the seed
@@ -40,7 +45,7 @@
 use crate::{seed_germline, seed_initial_runtime_artifacts};
 use a2d_core::benchmark::{BenchmarkSuite, extract_rust_code_pub};
 use a2d_core::germline::Germline;
-use a2d_core::metabolism::{CycleReport, Metabolism};
+use a2d_core::metabolism::{CycleReport, Metabolism, PromptFormat};
 use a2d_core::provider::{Provider, ProviderRegistry};
 use a2d_core::types::{ArtifactType, EnzymeId};
 use a2d_core::workcell::WorkcellOutcome;
@@ -96,7 +101,25 @@ const HARNESS_KEYS: &[&str] = &[
     "dedupe_input",
     "plain_inputs",
     "drop_coder_catalysts",
+    "prompt_format",
+    "escalation",
 ];
+
+/// The harness's prompt format: `prompt_format` (json, plain, repair), or
+/// the legacy `plain_inputs` flag; not both.
+fn harness_prompt_format(harness: &Value) -> Result<PromptFormat, String> {
+    match (harness.get("prompt_format"), harness.get("plain_inputs")) {
+        (Some(_), Some(_)) => Err("give prompt_format or plain_inputs, not both".to_string()),
+        (Some(format), None) => match format.as_str() {
+            Some("json") => Ok(PromptFormat::Json),
+            Some("plain") => Ok(PromptFormat::Plain),
+            Some("repair") => Ok(PromptFormat::Repair),
+            _ => Err("prompt_format must be json, plain or repair".to_string()),
+        },
+        (None, Some(plain)) if plain.as_bool() == Some(true) => Ok(PromptFormat::Plain),
+        (None, _) => Ok(PromptFormat::Json),
+    }
+}
 
 /// Header of the rendered `lessons` list in every enzyme's task input.
 pub const LESSONS_HEADER: &str =
@@ -176,12 +199,14 @@ fn harness_germline(harness: &Value) -> Result<Germline, String> {
         "stop_at_public_green",
         "dedupe_input",
         "plain_inputs",
+        "escalation",
     ] {
         if harness.get(flag).is_some_and(|v| !v.is_boolean()) {
             return Err(format!("{flag} must be a boolean"));
         }
     }
     harness_lessons(harness)?;
+    harness_prompt_format(harness)?;
     let route = harness["route_previous_code"].as_bool().unwrap_or(false);
     let prompt = harness["coder_prompt"].as_str();
     if harness.get("coder_prompt").is_some() && prompt.is_none() {
@@ -262,7 +287,10 @@ impl ArmC for MetabolismArm {
             .with_max_invocations_per_cycle(budget)
             .with_provider_failure_cooldown(Duration::ZERO)
             .without_max_cycle_wall_clock()
-            .with_plain_prompt_inputs(harness["plain_inputs"].as_bool().unwrap_or(false));
+            .with_prompt_format(harness_prompt_format(harness).unwrap_or_default());
+        if harness["escalation"].as_bool() == Some(false) {
+            metabolism = metabolism.without_loop_escalation();
+        }
         seed_initial_runtime_artifacts(&mut metabolism, &harness_input(task, harness));
         if harness["dedupe_input"].as_bool().unwrap_or(false) {
             // The seed writes the whole task input into requirements, design
@@ -641,6 +669,52 @@ mod tests {
         assert!(harness_germline(&broken).is_err());
         assert!(harness_germline(&serde_json::json!({"drop_coder_catalysts": "x"})).is_err());
         assert!(harness_germline(&serde_json::json!({"plain_inputs": 1})).is_err());
+    }
+
+    #[test]
+    fn repair_format_without_escalation_spends_every_call_on_plain_repairs() {
+        let task = PublicTask {
+            id: "t".into(),
+            family: "f".into(),
+            requirements: "Implement `fn double(x: i32) -> i32`.".into(),
+            public_tests: "#[test]\nfn doubles_two() { assert_eq!(double(2), 4); }\n".into(),
+            test_timeout_secs: 10,
+        };
+        let harness = serde_json::json!({
+            "drop_coder_catalysts": ["enzyme_defs"],
+            "drop_enzymes": ["architect", "tester", "evolver"],
+            "prompt_format": "repair", "escalation": false,
+            "route_previous_code": true, "dedupe_input": true
+        });
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        MetabolismArm.run(Box::new(EnzymeMock { seen: seen.clone() }), &task, 5, &harness);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 5, "no escalation calls");
+        assert!(!seen.iter().any(|p| p.contains("You are a consulting model")));
+        assert!(seen[1].contains("## Previous attempt\n\n```rust\n"));
+        assert!(seen[1].contains("Fix the file. Respond with the whole corrected file"));
+        for bad in [
+            serde_json::json!({"prompt_format": "xml"}),
+            serde_json::json!({"escalation": "no"}),
+            serde_json::json!({"prompt_format": "repair", "plain_inputs": true}),
+        ] {
+            assert!(harness_germline(&bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn h0_v6_is_the_repair_loop_prompt_plus_the_main_clause() {
+        let h0: Value =
+            serde_json::from_str(include_str!("../../../harnesses/h0-v6.json")).unwrap();
+        assert!(harness_germline(&h0).is_ok());
+        let prompt = h0["coder_prompt"].as_str().unwrap();
+        assert!(prompt.starts_with(a2d_lift::arms::CODER_SYSTEM));
+        assert_eq!(
+            &prompt[a2d_lift::arms::CODER_SYSTEM.len()..],
+            " Include an empty `fn main() {}` (the file is compiled as a program)."
+        );
+        assert_eq!(h0["prompt_format"], "repair");
+        assert_eq!(h0["escalation"], false);
     }
 
     #[test]

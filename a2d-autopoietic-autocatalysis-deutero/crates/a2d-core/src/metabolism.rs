@@ -259,8 +259,11 @@ pub struct Metabolism {
     next_cycle: usize,
     max_invocations_per_cycle: usize,
     max_cycle_wall_clock: Option<Duration>,
-    /// Render task-enzyme inputs as plain sections instead of one JSON line.
-    plain_prompt_inputs: bool,
+    /// How task-enzyme inputs become prompts.
+    prompt_format: PromptFormat,
+    /// Loop-escalation ladder (awareness, consultation, clean session,
+    /// provider swap); off keeps every invocation at rung 0.
+    loop_escalation: bool,
     provider_failure_cooldown: Duration,
     provider_failure_max_cooldown: Duration,
     provider_health: BTreeMap<String, ProviderHealth>,
@@ -317,7 +320,8 @@ impl Metabolism {
             next_cycle: 0,
             max_invocations_per_cycle: 20,
             max_cycle_wall_clock: Some(Duration::from_secs(600)),
-            plain_prompt_inputs: false,
+            prompt_format: PromptFormat::Json,
+            loop_escalation: true,
             provider_failure_cooldown: Duration::from_secs(600),
             provider_failure_max_cooldown: Duration::from_secs(3600),
             provider_health: BTreeMap::new(),
@@ -372,7 +376,18 @@ impl Metabolism {
     /// Render task-enzyme inputs as plain markdown sections (code fenced, real
     /// newlines) instead of one JSON line; see `render_plain_inputs`.
     pub fn with_plain_prompt_inputs(mut self, plain: bool) -> Self {
-        self.plain_prompt_inputs = plain;
+        self.prompt_format = if plain { PromptFormat::Plain } else { PromptFormat::Json };
+        self
+    }
+
+    pub fn with_prompt_format(mut self, format: PromptFormat) -> Self {
+        self.prompt_format = format;
+        self
+    }
+
+    /// Turn the loop-escalation ladder off (every invocation stays at rung 0).
+    pub fn without_loop_escalation(mut self) -> Self {
+        self.loop_escalation = false;
         self
     }
 
@@ -926,11 +941,14 @@ impl Metabolism {
             scheduled.inputs.clone(),
         );
 
-        let loop_rung = self
-            .enzyme_loop_count
-            .get(&scheduled.enzyme.id)
-            .copied()
-            .unwrap_or(0);
+        let loop_rung = if self.loop_escalation {
+            self.enzyme_loop_count
+                .get(&scheduled.enzyme.id)
+                .copied()
+                .unwrap_or(0)
+        } else {
+            0
+        };
 
         let clean_session = loop_rung == 3 || loop_rung >= 5;
         let swap_provider = loop_rung >= 4;
@@ -1041,7 +1059,7 @@ impl Metabolism {
             &invocation_inputs,
             loop_rung,
             consultation.as_deref(),
-            self.plain_prompt_inputs,
+            self.prompt_format,
         );
         let consensus_portfolio = loop_rung >= 6;
         let mut candidate_evaluations = Vec::new();
@@ -1860,6 +1878,49 @@ fn evolver_system_prompt(
     )
 }
 
+/// How a task enzyme's inputs become its prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PromptFormat {
+    /// One JSON object of every input (the seed).
+    #[default]
+    Json,
+    /// Markdown sections; see `render_plain_inputs`.
+    Plain,
+    /// The plain repair loop's prompt (lift arm D); see `render_repair_inputs`.
+    Repair,
+}
+
+/// Cap on public-test output in a repair prompt (as lift arm D).
+const MAX_REPAIR_FEEDBACK_CHARS: usize = 6_000;
+
+/// The lift repair loop's prompt: the requirements; then, once there is a
+/// previous file, that file, its public-test output and "Fix the file". No
+/// other input is shown.
+fn render_repair_inputs(inputs: &ArtifactStore) -> String {
+    let text = |name: &str| {
+        inputs
+            .get(&ArtifactType::from(name))
+            .map(|b| String::from_utf8_lossy(b).trim_end().to_string())
+            .filter(|t| !t.is_empty())
+    };
+    let mut prompt = text("requirements").unwrap_or_default();
+    if let Some(code) = text("previous_attempt") {
+        let mut feedback = text("failure_report").unwrap_or_else(|| "(all public tests passed)".to_string());
+        if feedback.len() > MAX_REPAIR_FEEDBACK_CHARS {
+            let mut cut = MAX_REPAIR_FEEDBACK_CHARS;
+            while !feedback.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            feedback.truncate(cut);
+            feedback.push_str("\n… (truncated)");
+        }
+        prompt.push_str(&format!(
+            "\n\n## Previous attempt\n\n```rust\n{code}\n```\n\n## Public test results\n\n{feedback}\n\nFix the file. Respond with the whole corrected file in a single ```rust block.\n"
+        ));
+    }
+    prompt
+}
+
 #[cfg(test)]
 fn build_request(
     enzyme: &EnzymeDef,
@@ -1867,7 +1928,7 @@ fn build_request(
     loop_rung: usize,
     consultation: Option<&str>,
 ) -> InvocationRequest {
-    build_request_with(enzyme, inputs, loop_rung, consultation, false)
+    build_request_with(enzyme, inputs, loop_rung, consultation, PromptFormat::Json)
 }
 
 /// Plain rendering of a task enzyme's inputs: one markdown section per
@@ -1903,19 +1964,21 @@ fn render_plain_inputs(inputs: &ArtifactStore) -> String {
         .join("\n")
 }
 
-/// `plain`: task enzymes (not the architect or evolver) get
-/// `render_plain_inputs` as the prompt, and the failure report is not also
-/// injected into the system prompt.
+/// `format`: for task enzymes (not the architect or evolver), `Plain` and
+/// `Repair` render the inputs as text (`render_plain_inputs`,
+/// `render_repair_inputs`), and the failure report is not also injected into
+/// the system prompt.
 fn build_request_with(
     enzyme: &EnzymeDef,
     inputs: &ArtifactStore,
     loop_rung: usize,
     consultation: Option<&str>,
-    plain: bool,
+    format: PromptFormat,
 ) -> InvocationRequest {
     let system_enzyme =
         enzyme.id == EnzymeId::from("architect") || enzyme.id == EnzymeId::from("evolver");
-    let plain = plain && !system_enzyme;
+    let format = if system_enzyme { PromptFormat::Json } else { format };
+    let plain = format != PromptFormat::Json;
     let prompt_inputs: BTreeMap<String, String> = inputs
         .iter()
         .map(|(artifact_type, payload)| {
@@ -2016,10 +2079,12 @@ fn build_request_with(
     InvocationRequest {
         enzyme_id: enzyme.id.clone(),
         system,
-        prompt: if plain {
-            render_plain_inputs(inputs)
-        } else {
-            serde_json::to_string(&prompt_inputs).expect("inputs must serialize")
+        prompt: match format {
+            PromptFormat::Plain => render_plain_inputs(inputs),
+            PromptFormat::Repair => render_repair_inputs(inputs),
+            PromptFormat::Json => {
+                serde_json::to_string(&prompt_inputs).expect("inputs must serialize")
+            }
         },
         max_tokens: 4096,
     }
@@ -3335,7 +3400,7 @@ mod tests {
         inputs.insert(art("failure_report"), b"COMPILATION FAILED: E0308".to_vec());
         inputs.insert(art("enzyme_defs"), b"[{\"id\":\"coder\"}]".to_vec());
 
-        let plain = build_request_with(&coder, &inputs, 0, None, true);
+        let plain = build_request_with(&coder, &inputs, 0, None, PromptFormat::Plain);
         assert_eq!(plain.system, "Write code.");
         assert!(plain.prompt.starts_with("## requirements\n\nR1. Build it."));
         assert!(plain.prompt.contains("## previous_attempt\n\n```rust\nfn a() {\n    1\n}\n```"));
@@ -3345,6 +3410,31 @@ mod tests {
 
         let json = build_request(&coder, &inputs, 0, None);
         assert!(json.prompt.starts_with('{') && json.system.contains("PREVIOUS ATTEMPT FAILED"));
+    }
+
+    #[test]
+    fn repair_format_matches_the_plain_repair_loop_prompt() {
+        let coder = EnzymeDef {
+            id: EnzymeId::from("coder"),
+            reactants: [art("requirements")].into(),
+            products: [art("code")].into(),
+            catalysts: [art("failure_report"), art("previous_attempt")].into(),
+            prompt_template: Some("Write code.".to_string()),
+        };
+        let mut inputs = ArtifactStore::new();
+        inputs.insert(art("requirements"), b"R1. Build it.".to_vec());
+        inputs.insert(art("design"), b"(identical to requirements)".to_vec());
+        let first = build_request_with(&coder, &inputs, 0, None, PromptFormat::Repair);
+        assert_eq!(first.prompt, "R1. Build it.");
+        inputs.insert(art("previous_attempt"), b"fn a() {}".to_vec());
+        inputs.insert(art("failure_report"), b"COMPILATION FAILED: E0308".to_vec());
+        inputs.insert(art("enzyme_defs"), b"[]".to_vec());
+        let repair = build_request_with(&coder, &inputs, 0, None, PromptFormat::Repair);
+        assert_eq!(repair.system, "Write code.");
+        assert_eq!(
+            repair.prompt,
+            "R1. Build it.\n\n## Previous attempt\n\n```rust\nfn a() {}\n```\n\n## Public test results\n\nCOMPILATION FAILED: E0308\n\nFix the file. Respond with the whole corrected file in a single ```rust block.\n"
+        );
     }
 
     #[test]
