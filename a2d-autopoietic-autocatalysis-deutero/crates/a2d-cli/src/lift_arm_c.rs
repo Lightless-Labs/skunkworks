@@ -15,7 +15,11 @@
 //! Harness-as-data (P3/P4): a registered JSON harness may
 //! - `drop_enzymes`: remove seed enzymes (RAF closure must hold), freeing
 //!   their invocations for the remaining schedule;
-//! - `coder_note`: append text to the task input every enzyme sees.
+//! - `coder_note`: append text to the task input every enzyme sees;
+//! - `coder_prompt`: replace the coder enzyme's prompt template;
+//! - `route_previous_code`: give the coder its previous file (a
+//!   `previous_attempt` food artifact, updated after every cycle, as a coder
+//!   catalyst). The seed coder never sees its own code (LOG S0).
 //!
 //! `{}` is the seed configuration. Unknown keys are rejected.
 
@@ -67,7 +71,17 @@ fn refused(report: &CycleReport) -> bool {
     })
 }
 
-const HARNESS_KEYS: &[&str] = &["name", "drop_enzymes", "coder_note"];
+const HARNESS_KEYS: &[&str] = &[
+    "name",
+    "drop_enzymes",
+    "coder_note",
+    "coder_prompt",
+    "route_previous_code",
+];
+
+fn previous_attempt() -> ArtifactType {
+    ArtifactType::from("previous_attempt")
+}
 
 /// The seed germline with the harness's enzyme removals applied.
 fn harness_germline(harness: &Value) -> Result<Germline, String> {
@@ -84,6 +98,29 @@ fn harness_germline(harness: &Value) -> Result<Germline, String> {
         germline
             .propose_remove(&EnzymeId::from(id))
             .map_err(|e| format!("cannot drop {id}: {e}"))?;
+    }
+    let route = harness["route_previous_code"].as_bool().unwrap_or(false);
+    let prompt = harness["coder_prompt"].as_str();
+    if harness.get("coder_prompt").is_some() && prompt.is_none() {
+        return Err("coder_prompt must be a string".to_string());
+    }
+    if route || prompt.is_some() {
+        let mut enzymes: Vec<_> = germline.enzymes().into_iter().cloned().collect();
+        let coder = enzymes
+            .iter_mut()
+            .find(|e| e.id.0 == "coder")
+            .ok_or("harness needs a coder enzyme")?;
+        if route {
+            coder.catalysts.insert(previous_attempt());
+        }
+        if let Some(prompt) = prompt {
+            coder.prompt_template = Some(prompt.to_string());
+        }
+        let mut food = germline.food().clone();
+        if route {
+            food.insert(previous_attempt());
+        }
+        germline = Germline::new(enzymes, food);
     }
     Ok(germline)
 }
@@ -125,12 +162,17 @@ impl ArmC for MetabolismArm {
             .without_max_cycle_wall_clock();
         seed_initial_runtime_artifacts(&mut metabolism, &harness_input(task, harness));
 
+        let route = harness["route_previous_code"].as_bool().unwrap_or(false);
         let mut codes = Vec::new();
         // Each productive cycle spends at least one invocation, so `budget`
         // cycles always exhaust the budget.
         for _ in 0..budget {
             let report = metabolism.run_cycle();
-            codes.extend(code_outputs(&report));
+            let produced = code_outputs(&report);
+            if route && let Some(last) = produced.last() {
+                metabolism.seed_artifact(previous_attempt(), last.clone().into_bytes());
+            }
+            codes.extend(produced);
             if report.invocations == 0 || refused(&report) {
                 break;
             }
@@ -323,6 +365,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn routed_harness_shows_the_coder_its_previous_attempt() {
+        let task = PublicTask {
+            id: "t".into(),
+            family: "f".into(),
+            requirements: "Implement `fn double(x: i32) -> i32`.".into(),
+            public_tests: "#[test]\nfn doubles_two() { assert_eq!(double(2), 4); }\n".into(),
+            test_timeout_secs: 10,
+        };
+        let h0 = serde_json::json!({
+            "name": "h0", "drop_enzymes": ["architect", "tester"],
+            "route_previous_code": true, "coder_prompt": "CUSTOM_CODER_PROMPT_e1 Output a ```rust block."
+        });
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        MetabolismArm.run(Box::new(MarkerMock { seen: seen.clone() }), &task, 5, &h0);
+        let seen = seen.lock().unwrap();
+        let coder: Vec<&String> = seen
+            .iter()
+            .filter(|(e, _)| e == "coder")
+            .map(|(_, p)| p)
+            .collect();
+        assert!(
+            coder.len() >= 2,
+            "{:?}",
+            seen.iter().map(|(e, _)| e).collect::<Vec<_>>()
+        );
+        assert!(coder[0].contains("CUSTOM_CODER_PROMPT_e1"));
+        assert!(
+            !coder[0].contains("x * 2"),
+            "first call has no previous attempt"
+        );
+        assert!(
+            coder[1].contains("x * 2"),
+            "second call must see the first attempt"
+        );
+        assert!(seen.iter().all(|(e, _)| e != "architect" && e != "tester"));
     }
 
     #[test]

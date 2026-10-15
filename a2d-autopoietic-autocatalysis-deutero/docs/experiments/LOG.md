@@ -401,3 +401,13 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Pattern: every signal the low-effort coder generates about its own code is too noisy to beat a plain repair loop. Spec tests are 83% valid; self-review converts 19% of failures; agreement selection reaches 73%.
   - Diversity across samples is real (86% any-pass in 5), but this model cannot tell which sample is right.
 
+
+### E08 — H0 live check: D vs C(H0) on c1-train  [phase P3, development lane]
+- Registered: 2026-10-15, one-row development pre-registration.
+- H0 = `harnesses/h0.json`: the seed minus the architect and tester, **previous-code routing** (the S0 fix), and a cleaned coder prompt (no self-test demand, no GitHub boilerplate, a clause check before coding). At k = 5 the expected schedule is coder → evolver → coder → evolver → coder.
+- Prompt hygiene is folded into H0 as a floor change, not as a P3 mechanism: a prompt gain would lift every arm.
+- Arms D and C(H0); k = 5; `tasks/c1-train` (68 tasks); `--unregistered`; seed 9; jobs 4.
+- Expectation (**sanity, not a claim**): C(H0) within ±5 pp of D. If C(H0) is much lower, the routing did not take and P4 has no baseline.
+- Budget: ≤ 450 invocations, 7,200 s.
+- P3 validation looks used so far: 0.
+- Result: pending
