@@ -5,18 +5,18 @@
 
 ## Headline (read this first)
 
-- **Standing goal:** `docs/plans/2026-10-14-lift-first-roadmap.md`, Appendix. Measure whether A²D (arm C) beats its own coder model used directly at matched invocations: A one-shot, B best-of-k, D repair loop. Then test whether self-modification widens the margin. **Deadline:** P2 confirmation result by 2026-11-30.
-- **Phase: P1, exit pending.** Exit needs Confirmation-1 and Confirmation-2 validated with hashes logged (in progress), the P1 gate review (running), and power planning (done, E05).
-- **Results** (`docs/experiments/LOG.md`):
-  - E01: Luna one-shot passes 2/3 legacy dev tasks.
-  - E02: first live four-arm run.
-  - E03: calibration v1 saturated, A 79%. That triggered T7 redesign 1/2.
-  - E04: calibration v2 headroom passed, A 62.5%, B 58.3%.
-  - **E05, four-arm pilot on v2:** A 58%, B 50%, D 62.5%, C 67%. C vs D +4 pp, CI [−12.5, +25], so noise. **The P2 primary comparator is D.**
-  - Power plan: pd 0.21 needs about 162 independent pairs for 80% power at 10 pp, and replicates add little. **Confirmation-1 = 37 families × 4 = 148 tasks** (the cap).
-- **Arm C's realised seed schedule:** coder → evolver → architect → tester → coder at k=5 (2 code attempts). **P2 uses k=5.**
-- **The public tests discriminate weakly.** Best-of-5 does no better than one-shot. The rates of public-green-but-hidden-fail submissions are the evidence.
-- **Coder lane:** `codex/gpt-6-luna`, effort low, run as a no-tools generator (about 20–25 s per call when the account isn't contended). **Don't run holdout authoring (Codex Sol, 6 parallel jobs) at the same time as live runs**: Luna calls slowed to about 65 s (E05 deviation).
+- **Standing goal:** `docs/plans/2026-10-14-lift-first-roadmap.md`, Appendix. **Phase: P2**, with the extension running. P0 and P1 are complete. Deadline 2026-11-30, and the P2 result already exists.
+- **E07 (the P2 confirmation, Confirmation-1, 148 tasks in 37 families, scored once): INCONCLUSIVE.**
+  - Primary C vs D: **+2.7 pp, 95% CI [−4.7, +11.5]**. Secondary C vs B: +4.1 pp, CI [−4.7, +12.8].
+  - Pass rates: A 58%, B 65%, D 66%, C 69%.
+  - **Cost: C spends 3.8× D's invocations and 3.7× its tokens for +2.7 pp.**
+  - The run was clean: no voids, errors, tool calls or hidden-name hits.
+- **E07b is the single pre-registered extension:** a second replicate pass, seed 8, frozen at `c4ec034a`.
+  - It is pooled with E07 by `a2d lift pool`, and **the pooled class is final**.
+  - If the pooled result is INCONCLUSIVE, that is NO-GO for adding complexity. If it is RULED OUT, the seed configuration is falsified, which completes once P4 also fails to show lift.
+  - **No edits to `lift_arm_c.rs`, metabolism, `main.rs` or providers until E07b is scored**, because pooling needs a byte-identical treatment.
+- **Coder lane:** `codex/gpt-6-luna`, effort low, no-tools. The sibling A² session shares the Codex account; this is recorded as a deviation.
+- Pilots, for context: E05 and E06 put C ≈ D (C 17 and 14, D 15 and 16 under the latest-tie rule). Public tests discriminate weakly: the public-green but hidden-fail rate is 25–33% for B and D.
 
 ## Holdouts (never open their contents)
 
@@ -40,14 +40,15 @@ The triage is complete and recorded in the roadmap Addendum "P1 gate":
 **E06 is done.** C/D replicate agreement was 0.875, so **Confirmation-1 runs r = 1**. Across the pilots there is no sign of lift: under the latest-tie rule C passed 17 and 14, D 15 and 16.
 
 0. **State (2026-10-15):**
-   - **P1 is complete.** Confirmation-1 has 148 tasks (`7bd1b669…`) and Confirmation-2 has 48 (`25435ab3…`). Both are audited 100% by an independent Codex Sol solve.
-   - **E07, the P2 confirmation, is generating** (`--defer-scoring`, out `~/.a2d-holdout/runs/E07`, stdout `~/.a2d-holdout/runs/E07.stdout`).
-   - Deviation already logged: the sibling A² session runs Luna jobs on the same account.
-   - When the ledger has `generation_complete`:
-     1. `./target/debug/a2d lift manifest ~/.a2d-holdout/runs/E07 > runs/2026-10-15-e07-confirmation-1/manifest.json`; commit and push.
-     2. `./target/debug/a2d lift score --out ~/.a2d-holdout/runs/E07 --suite ~/.a2d-holdout/confirmation-1 --expect-head <ledger_head from manifest> --jobs 4`. This re-checks the freeze at `e1915c89`, so **don't touch `crates/` before scoring**.
-     3. Copy `summary.json` and `ledger.jsonl` into `runs/2026-10-15-e07-confirmation-1/`.
-     4. Record the result in the LOG and decide per roadmap § Completion and P2's exit, then go on to P3.
+   - E07 is scored and recorded.
+   - **E07b is generating** (out `~/.a2d-holdout/runs/E07b`, stdout `~/.a2d-holdout/runs/E07b.stdout`).
+   - When its ledger has `generation_complete`:
+     1. `a2d lift manifest ~/.a2d-holdout/runs/E07b > runs/2026-10-15-e07b-confirmation-1-r2/manifest.json`; commit and push.
+     2. `a2d lift score --out ~/.a2d-holdout/runs/E07b --suite ~/.a2d-holdout/confirmation-1 --expect-head <head> --jobs 4`.
+     3. Copy the summary and ledger into `runs/`.
+     4. `a2d lift pool --out runs/2026-10-15-e07b-confirmation-1-r2/pooled-summary.json runs/2026-10-15-e07-confirmation-1/ledger.jsonl runs/2026-10-15-e07b-confirmation-1-r2/ledger.jsonl`.
+     5. Record the pooled class in the LOG (final) and write the P2-gate Addendum, with reviews and diagnostics.
+     6. Then P3 (`docs/plans/2026-10-14-p3-ablation.md`).
 1. **Holdout authoring is running** (driver `author-holdouts-2.sh`, log `$SCRATCH/author-holdouts-2.log`): the rest of the Confirmation-1 extension, then Confirmation-2. When it finishes:
    - `python3 -I $SCRATCH/assemble-holdout.py confirmation-1`;
    - `a2d lift validate ~/.a2d-holdout/confirmation-1 --jobs 4` (verdict lines only).
