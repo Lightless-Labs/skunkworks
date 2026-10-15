@@ -832,3 +832,15 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Claim wording if kept:** "Luna generation plus Sol selection beats Luna's repair loop at an equal call cap" (exploratory; dev set). Not a different-family claim.
 - Budget: ≤ 1,500 Luna and ≤ 300 Sol invocations for both.
 - Result: pending
+
+### E004 — repair to green, then sample and judge  [cycle 2, seed 2]
+- Registered: 2026-10-15, before any live candidate run. It goes through `nano/eval.py run` (eval v2.1) against incumbent v0, like E002 and E003.
+- **Hypothesis:** keeping D's repair loop until public-green and spending the leftover calls on fresh samples, with the final call reserved for a Sol judge over the distinct green files, beats D. It may also beat E002, because D's ~99% green rate is preserved and selection is added on top.
+- If the repair loop never goes green, the arm behaves exactly like D.
+- **Reported:**
+  - Δfrac and Δall-pass vs v0;
+  - E004 vs E002 (full runs, same tasks);
+  - branch frequencies (judge / first-green / never-green), mean repair calls, judge fallbacks;
+  - calls and tokens by lane.
+- Budget: ≤ 1,000 Luna and ≤ 150 Sol invocations.
+- Result: pending
