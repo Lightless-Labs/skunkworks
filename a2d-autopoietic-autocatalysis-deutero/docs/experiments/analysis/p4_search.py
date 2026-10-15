@@ -10,6 +10,7 @@ Implements docs/plans/2026-10-15-p4-autopoietic-lift.md § Searches.
 - Every search starts from the base harness's lessons (empty for H0 v5).
 - Tripwires are recorded per generation: E0601 prompts, hidden compile
   failures, and any harness change other than `lessons` and `name`.
+- Re-running with the same --out resumes after the last recorded generation.
 
 usage: python3 -I p4_search.py --search I1 --mode informed --seed 101
          --base harnesses/h0-v5.json --suite tasks/train-all
@@ -85,7 +86,20 @@ def main():
     # Latest run holding the incumbent's outcomes: (run dir, suite, arm label).
     latest = (pathlib.Path(a.g0_run), suite, a.g0_arm)
     trajectory = []
-    for g in range(1, a.generations + 1):
+    # Resume: replay recorded generations (incumbent and latest outcomes).
+    if (out / "trajectory.json").exists():
+        trajectory = json.loads((out / "trajectory.json").read_text())
+        for r in trajectory:
+            gdir = out / f"g{r['generation']}"
+            if r.get("evaluated"):
+                if r["accepted"]:
+                    incumbent = gdir / "candidate.json"
+                    inc_json = json.loads(incumbent.read_text())
+                    latest = (gdir / "eval", suites[r["eval_half"]], "C:cand")
+                else:
+                    latest = (gdir / "eval", suites[r["eval_half"]], "C:inc")
+        print(f"resuming after generation {len(trajectory)}", flush=True)
+    for g in range(len(trajectory) + 1, a.generations + 1):
         x, y = ("A", "B") if g % 2 == 1 else ("B", "A")
         gdir = out / f"g{g}"
         gdir.mkdir(exist_ok=True)

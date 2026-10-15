@@ -87,9 +87,10 @@ pub fn failure_dossiers(run_dir: &Path, suite: &Path, arm: &str) -> Result<Vec<D
         if !hidden_fail.contains(&(task.clone(), replicate)) {
             continue;
         }
+        // Variant arms (`C:<name>`) are stored on disk as `C-<name>`.
         let submission: PathBuf = run_dir
             .join("submissions")
-            .join(arm)
+            .join(arm.replace(':', "-"))
             .join(&task)
             .join(format!("r{replicate}.rs"));
         dossiers.push(Dossier {
@@ -694,6 +695,20 @@ mod tests {
             .map(|d| d.task.clone())
             .collect();
         assert_eq!(tasks.len(), 2);
+    }
+
+    #[test]
+    fn variant_arm_submissions_are_read_from_their_disk_label() {
+        let (_root, run, suite) = fixture();
+        // The controller stores arm `C:inc` under `submissions/C-inc`.
+        let ledger = fs::read_to_string(run.join("ledger.jsonl"))
+            .unwrap()
+            .replace("\"arm\":\"C\"", "\"arm\":\"C:inc\"");
+        fs::write(run.join("ledger.jsonl"), ledger).unwrap();
+        fs::rename(run.join("submissions/C"), run.join("submissions/C-inc")).unwrap();
+        let dossiers = failure_dossiers(&run, &suite, "C:inc").unwrap();
+        assert_eq!(dossiers.len(), 1);
+        assert!(dossiers[0].code.contains("CODE_C_t1"));
     }
 
     #[test]
