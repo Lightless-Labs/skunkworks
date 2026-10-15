@@ -687,4 +687,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **Go/no-go:** go to Confirmation-2 only if C(H\*) − D ≥ +10 pp on validation.
     - **No-go:** Confirmation-2 stays unspent. P4 is reported as "not supported at the development screen", and the roadmap completes on its falsified path with the precise wording.
 - Budget: ≤ 900 invocations (about 80 × 6 × 1.4 ≈ 670 expected), 10,800 s. Validation looks used: 1 of 4 in P3 (S4); this is P4's one look.
+- **Amendment (2026-10-15, while E11 was in generations 2–3; no search had finished. Generation 1 was rejected in all four searches: net +2, +3, −1, −3 of 72).**
+  - **If neither informed search (I1, I2) accepts any candidate,** H\* is H0 v6 itself. The go/no-go is then decided as **no-go without a validation look**: H0 v6 vs D on train is +2.9 pp (E10b), far below +10 pp, and running identical harnesses would spend about 670 validation invocations on a foregone result.
+  - Otherwise E12 runs as registered. Validation stays unspent for any later experiment.
 - Result: pending
