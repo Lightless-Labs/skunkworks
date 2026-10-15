@@ -175,12 +175,17 @@ pub fn classify_guarded(
     }
 }
 
+/// Rates are ratios of counts, so a lift of exactly 8/80 can come out as
+/// 0.09999999999999998; boundaries are compared with this tolerance.
+const BOUNDARY_EPS: f64 = 1e-9;
+
 /// Supported if `ci_low > 0` and `lift >= min_effect`; ruled out if
 /// `ci_high < min_effect`; otherwise inconclusive. Supported takes precedence.
+/// Each comparison tolerates floating-point noise (`BOUNDARY_EPS`).
 pub fn classify(summary: &PairedSummary, min_effect: f64) -> ResultClass {
-    if summary.ci_low > 0.0 && summary.lift >= min_effect {
+    if summary.ci_low > BOUNDARY_EPS && summary.lift >= min_effect - BOUNDARY_EPS {
         ResultClass::Supported
-    } else if summary.ci_high < min_effect {
+    } else if summary.ci_high < min_effect - BOUNDARY_EPS {
         ResultClass::RuledOut
     } else {
         ResultClass::Inconclusive
@@ -208,6 +213,30 @@ pub fn mcnemar_exact(b: usize, c: usize) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classification_boundaries_ignore_floating_point_noise() {
+        // 8/80 computed as x/n - y/n is 0.09999999999999998: exactly the
+        // 10 pp boundary, not below it (E12, C:i1 vs D).
+        let at = |lift: f64, ci_low: f64, ci_high: f64| PairedSummary {
+            n: 80,
+            families: 20,
+            x_rate: 0.0,
+            y_rate: 0.0,
+            lift,
+            ci_low,
+            ci_high,
+            discordant_x_only: 9,
+            discordant_y_only: 10,
+            mcnemar_exact_p: 1.0,
+        };
+        let tenth = 56.0 / 80.0 - 48.0 / 80.0;
+        assert!(tenth < 0.1);
+        assert_eq!(classify(&at(-0.0125, -0.125, tenth), 0.1), ResultClass::Inconclusive);
+        assert_eq!(classify(&at(tenth, 0.0125, 0.2), 0.1), ResultClass::Supported);
+        assert_eq!(classify(&at(0.15, 1e-17, 0.3), 0.1), ResultClass::Inconclusive);
+        assert_eq!(classify(&at(0.0, -0.05, 0.0999), 0.1), ResultClass::RuledOut);
+    }
 
     fn outcome(family: usize, task: usize, x_pass: bool, y_pass: bool) -> PairedOutcome {
         PairedOutcome {
