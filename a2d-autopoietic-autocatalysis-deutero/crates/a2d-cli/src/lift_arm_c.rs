@@ -22,6 +22,9 @@
 //! - `route_previous_code`: give the coder its previous file (a
 //!   `previous_attempt` food artifact, updated after every cycle, as a coder
 //!   catalyst). The seed coder never sees its own code (LOG S0).
+//! - `stop_at_public_green`: end the task once a cycle's code passes every
+//!   public test, as arm D does; otherwise the remaining budget is spent on
+//!   post-green rewrites.
 //!
 //! `{}` is the seed configuration. Unknown keys are rejected.
 
@@ -79,6 +82,7 @@ const HARNESS_KEYS: &[&str] = &[
     "coder_note",
     "coder_prompt",
     "route_previous_code",
+    "stop_at_public_green",
 ];
 
 fn previous_attempt() -> ArtifactType {
@@ -100,6 +104,11 @@ fn harness_germline(harness: &Value) -> Result<Germline, String> {
         germline
             .propose_remove(&EnzymeId::from(id))
             .map_err(|e| format!("cannot drop {id}: {e}"))?;
+    }
+    for flag in ["route_previous_code", "stop_at_public_green"] {
+        if harness.get(flag).is_some_and(|v| !v.is_boolean()) {
+            return Err(format!("{flag} must be a boolean"));
+        }
     }
     let route = harness["route_previous_code"].as_bool().unwrap_or(false);
     let prompt = harness["coder_prompt"].as_str();
@@ -171,6 +180,7 @@ impl ArmC for MetabolismArm {
         seed_initial_runtime_artifacts(&mut metabolism, &harness_input(task, harness));
 
         let route = harness["route_previous_code"].as_bool().unwrap_or(false);
+        let stop_at_green = harness["stop_at_public_green"].as_bool().unwrap_or(false);
         let mut codes = Vec::new();
         // Each productive cycle spends at least one invocation, so `budget`
         // cycles always exhaust the budget.
@@ -180,8 +190,10 @@ impl ArmC for MetabolismArm {
             if route && let Some(last) = produced.last() {
                 metabolism.seed_artifact(previous_attempt(), last.clone().into_bytes());
             }
+            let green = !produced.is_empty()
+                && report.fitness.as_ref().is_some_and(|f| f.fitness >= 1.0);
             codes.extend(produced);
-            if report.invocations == 0 || refused(&report) {
+            if report.invocations == 0 || refused(&report) || (stop_at_green && green) {
                 break;
             }
         }
@@ -424,6 +436,30 @@ mod tests {
         assert!(harness_germline(&serde_json::json!({"drop": []})).is_err());
         assert!(harness_germline(&serde_json::json!({"drop_enzymes": ["nope"]})).is_err());
         assert!(harness_germline(&serde_json::json!({})).is_ok());
+    }
+
+    #[test]
+    fn stop_at_public_green_ends_the_task_after_a_green_attempt() {
+        let task = PublicTask {
+            id: "t".into(),
+            family: "f".into(),
+            requirements: "Implement `fn double(x: i32) -> i32`.".into(),
+            public_tests: "#[test]\nfn doubles_two() { assert_eq!(double(2), 4); }\n".into(),
+            test_timeout_secs: 10,
+        };
+        let coder_calls = |harness: Value| {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let codes =
+                MetabolismArm.run(Box::new(EnzymeMock { seen: seen.clone() }), &task, 5, &harness);
+            let calls = seen.lock().unwrap().iter().filter(|p| p.contains("programmer")).count();
+            (calls, codes.len())
+        };
+        let base = serde_json::json!({"drop_enzymes": ["architect", "tester"]});
+        let mut stop = base.clone();
+        stop["stop_at_public_green"] = Value::Bool(true);
+        assert_eq!(coder_calls(stop), (1, 1));
+        assert!(coder_calls(base).0 >= 2);
+        assert!(harness_germline(&serde_json::json!({"stop_at_public_green": "yes"})).is_err());
     }
 
     #[test]
