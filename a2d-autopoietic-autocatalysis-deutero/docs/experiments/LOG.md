@@ -714,4 +714,24 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Amendment (2026-10-15, while E11 was in generations 2–3; no search had finished. Generation 1 was rejected in all four searches: net +2, +3, −1, −3 of 72).**
   - **If neither informed search (I1, I2) accepts any candidate,** H\* is H0 v6 itself. The go/no-go is then decided as **no-go without a validation look**: H0 v6 vs D on train is +2.9 pp (E10b), far below +10 pp, and running identical harnesses would spend about 670 validation invocations on a foregone result.
   - Otherwise E12 runs as registered. Validation stays unspent for any later experiment.
-- Result: pending
+- Result (`runs/2026-10-15-e12-validation/summary.json`; aggregates only; 0 void, integrity OK, complete):
+
+  | arm | passed / 80 | rate | vs D (CI) | discordant (arm, D) |
+  |---|---|---|---|---|
+  | D | 56 | 70.0% | — | — |
+  | C:h0 (H0 v6) | 46 | 57.5% | −12.5 pp [−26.2, 0.0] | 5 / 15 |
+  | C:i1 | 55 | 68.8% | −1.2 pp [−12.5, +10.0] | 9 / 10 |
+  | C:i2 | 50 | 62.5% | −7.5 pp [−16.2, +1.2] | 8 / 14 |
+  | C:u1 | 55 | 68.8% | −1.2 pp [−11.2, +8.7] | 7 / 8 |
+  | C:u2 | 49 | 61.3% | −8.7 pp [−21.2, +2.5] | 7 / 14 |
+
+  - **H\* = i1** (68.8%, better than i2).
+  - **Go/no-go: C(H\*) − D = −1.2 pp, below +10, so NO-GO.** Confirmation-2 is not spent.
+  - **Control consequence:** max(u) = 68.8% ≥ max(i) = 68.8%. **The wording "learning from failures" is withdrawn.** Informed and uninformed lessons are indistinguishable (i1 vs u1: 0.0 pp, 9 vs 9 discordant).
+  - **Observation, unexplained:** C:h0 is 12.5 pp below D on validation (5 vs 15 discordant; two-sided sign test about 0.04, one of many comparisons), although H0 v6 is at parity with D by construction and was +2.9 pp on train (E10b).
+    - Pooled over train and validation, C(H0 v6) − D = −2.7 pp.
+    - The residual differences are the `main()` clause and the metabolism's `TESTS:` wrapper.
+    - Per-task validation data may not be inspected, so the cause is not diagnosed.
+  - Every lessons arm beat C:h0 on validation (+3.8 to +11.2 pp). None beat D.
+  - **P4 is therefore "not supported at the development screen".** Self-written lessons did not move A²D above its coder used directly, and failure-informed lessons did no better than generic ones.
+  - Spend: 652 invocations / 6.0M tokens. P4 total: about 3.8k invocations.
