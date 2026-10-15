@@ -269,4 +269,19 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
     C used 3.8× D's invocations and 3.7× its tokens for +2.7 pp.
 - Artifacts: runs/2026-10-15-e07-confirmation-1/ (manifest.json committed pre-score, ledger.jsonl, summary.json); full run in `$A2D_HOLDOUT_DIR/runs/E07` (never opened)
 - Deviations: 2026-10-15, at launch: the sibling A² session was running `gpt-6-luna` jobs on the same Codex account (about 1 process, its E1 run). That violates the pre-registered "no other Codex jobs" condition, but this session cannot control it and A²'s schedule is open-ended. Generation proceeded. Tuple and arm orders are randomised, so the contention is noise, not bias. Call durations and provider errors are monitored and reported with the result. Recorded before any submission was scored or inspected.
+- Decision: INCONCLUSIVE, so the pre-registered response applies: run the single allowed extension, E07b (a second replicate pass over Confirmation-1, pooled at the family level). **P2's exit criterion (a result class is recorded) is met.** P3 code waits until E07b is scored, because the treatment must stay byte-identical for pooling. Finding regardless of class: C buys +2.7 pp over D with 3.8× the invocations and 3.7× the tokens.
+
+### E07b — P2 sample extension: second replicate pass on Confirmation-1  [phase P2]
+- Registered: 2026-10-15 (frozen paths at commit c4ec034a). Since E07's e1915c89, only `crates/a2d-lift` has changed: the `pool` command and TestScore deserialisation. The arm-C treatment, controller run path, providers and metabolism are byte-identical to E07's.
+- Purpose: the roadmap's single allowed extension after E07's INCONCLUSIVE.
+- Design: identical to E07 (A, B, D, C; k = 5; `--primary D`; `codex/gpt-6-luna`, effort low, no-tools lane; Confirmation-1, suite hash 7bd1b669051c93c7aa6ad0cd9eb316384682a332aa3d981ba205464932f1b9dd; min-families 10; max excluded share 5%). Only the seed differs: **seed 8**.
+- Budget cap: 2,400 invocations, 21,600 s wall-clock.
+- Protocol: as E07 (deferred scoring, manifest committed before `score --expect-head`).
+- **Analysis, pre-registered:** `a2d lift pool --out <pooled summary> <E07 ledger> <E07b ledger>`. E07 becomes replicate 0 and E07b replicate 1, giving 296 tuples in 37 families. The registered claim rules apply to the pooled tuples: SUPPORTED needs the primary C-vs-D and secondary C-vs-B comparisons SUPPORTED; RULED OUT is decided by C vs D alone; the excluded-share rule applies to all 296.
+- **The pooled class is final.** E07 alone is not re-classified, there is no third look, and an INCONCLUSIVE pooled result means NO-GO for adding complexity (roadmap § Metric).
+- Infrastructure exceptions: as E07.
+- Deviation expected at launch: the sibling A² session may share the Codex account, as in E07. This will be recorded if observed.
+- Result: pending
+- Artifacts: runs/2026-10-15-e07b-confirmation-1-r2/ (manifest, ledger, summary, pooled summary)
+- Deviations:
 - Decision:
