@@ -1,9 +1,11 @@
 # Plan: P3 — The Outer Research Loop (autoresearch on the harness)
 
 **Created:** 2026-10-15 (P2 gate; supersedes `2026-10-14-p3-ablation.md`)
-**Status:** Active
+**Status:** Completed 2026-10-15 — not promoted (exit and gate: roadmap Addendum 2026-10-15)
 **Parent:** roadmap § P3 and the P2-gate Addendum; rules in `docs/PROTOCOL.md`.
-**Reviewed:** 2026-10-15, P2 gate (Codex `gpt-6.1-sol`, fresh Claude subagent).
+**Reviewed:** 2026-10-15, P2 gate (Codex `gpt-6.1-sol`, fresh Claude subagent); 2026-10-15, P3 → P4 gate (same reviewers).
+**Completed:** 2026-10-15. S1–S4 were killed by their rules, and S4b survived its development screen. The frozen P4 base is H0 v5. Validation looks used: 1 of 4. Spend: about 1,450 invocations.
+**Addendum:** 2026-10-15 — the S4 → S4b revision used the mechanism-5 slot after S4's result. This is disclosed in the LOG (S4b gate disclosure).
 
 ## The constraint (from P2)
 

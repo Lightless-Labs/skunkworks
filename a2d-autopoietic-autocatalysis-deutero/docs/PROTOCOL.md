@@ -26,7 +26,8 @@ This file gathers the rules **currently in force**. History and rationale live i
   - `tasks/calibration-v2`, `tasks/dev-v2`, `tasks/c1-train`: fully visible.
   - `$A2D_HOLDOUT_DIR/c1-validation`: metric only, read through `summary.json`; per-task and per-family statistics are never computed.
 - **No command lines while holdout jobs run:** Codex `exec` carries the task prompt in argv. Use `pgrep -f '<pattern>'` (pids only), never `ps -o command` or `pgrep -fl` (Confirmation-2 deviation, 2026-10-15).
-- **Hidden-test boundary:** test *content* never reaches an arm or enzyme. In P4 only, train-family aggregate pass/fail labels may reach the proposer.
+- **Hidden-test boundary:** test *content* and hidden output never reach an arm or enzyme. In P4 only, the proposer (`a2d distill`) may see **one all-hidden-tests-pass bit per train submission**, for train families of its proposal half only. Validation and confirmation outcomes never reach any enzyme.
+- **Researcher reference arm** (2026-10-15, P3 → P4 gate): researcher- or Sol-derived lessons (S4b) may run on Confirmation-2 only as a separately registered, disclosed, descriptive arm. It is excluded from Completion and never informs the choice of H\*.
 
 ## Runs
 - **Development lane:** `a2d lift run --unregistered`, plus a one-row LOG pre-registration (id, mechanism, kill threshold, budget) written before the run. The ledger is the record.
@@ -37,7 +38,8 @@ This file gathers the rules **currently in force**. History and rationale live i
   4. `a2d lift score --expect-head`.
 - **Harness:** `--harness <json>`, validated, hashed and recorded. Every harness step's output must have a declared consumer. A `coder_prompt` must keep the seed's `main()` clause, because the metabolism's sandbox compiles the file as a program (E08). Check a new harness's first feedback prompts early in its first run.
 - **Shared account:** the A² session shares the Codex account. This is a standing condition, mitigated by seeded tuple and arm order. This session never runs holdout authoring alongside a registered run.
-- **Budget envelope** (remaining ≈ 15k): P3 ≤ 3k, P4 ≤ 5k, Confirmation-2 ≈ 5k, reserve ≈ 2k.
+- **Budget envelope** (≈ 15k at the P2 gate): P3 used about 1.45k of its 3k; P4 ≤ 5k (plan about 4.0k); Confirmation-2 about 3.5k (r = 2, multi-harness); reserve ≈ 2k.
+- **Frozen P4 base:** `harnesses/h0-v5.json`. Every search starts from empty `lessons`.
 
 ## Process
 - Phase gates are reviewed by Codex `gpt-6.1-sol` plus a fresh Claude subagent, in empty temp dirs. Record who was consulted.

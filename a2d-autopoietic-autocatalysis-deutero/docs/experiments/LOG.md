@@ -471,6 +471,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 
 ### S4 — oracle-lessons ceiling on c1-validation  [phase P3, development lane, validation look 1 of 4]
 - Registered: 2026-10-15, one-row development pre-registration. **This is a ceiling experiment, not a promotable mechanism.**
+  - *Gate note (2026-10-15):* in hindsight this was a **researcher-lessons screen**, not a measured ceiling. Its CI does not exclude a useful effect, and it had no H0-only arm.
   - The lessons were distilled by the researcher from T0, and Sol wrote T0 while looking at train hidden tests.
   - They measure what a cross-task `lessons` slot could achieve at best. P4 asks whether A²D can write such lessons itself from train labels alone.
   - Whether a researcher-lessons configuration may enter the Confirmation-2 run as a separate, disclosed arm is a question for the P3 → P4 gate reviewers, not for this entry.
@@ -551,6 +552,11 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
     - C(H0 v4): 110 invocations, 91 coder calls (evolver 17%), 0.84M tokens;
     - D: 98 invocations, 0.77M tokens.
   - P3 validation looks used: 1 of 4. P3 spend: about 1,450 invocations.
+  - Provider time: S4b-A D 2,336 s and C 2,314 s; S4b-B C 2,731 s (32–38 s per task). The two runs launched together. B (one arm) finished generation earlier.
+  - *Gate disclosure (2026-10-15):*
+    - S4 was registered as a non-promotable ceiling and relabelled "mechanism 5 of 5" after its result, so that it could take P3's one revision. S4b's content (render once, 4 lessons, comparator H0 v4) was chosen after S4's aggregate diagnosis.
+    - The "clean" families are not free of researcher knowledge: the v2 template stresses error precedence and byte offsets, and lessons 1–2 target exactly those.
+    - Survival is therefore an optimistic signal, and it authorises P4 spend only.
 
 
 ### P4-0 — label-only bug diagnosis probe (Luna-low)  [P4 groundwork, development lane, descriptive]
@@ -574,6 +580,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
     - finishing ready work before advancing time.
   - Most misses still yield a sensible general lesson (typically validation precedence).
   - Contrast pairs remain an optional upgrade, not a requirement.
+  - *Gate note (2026-10-15):* the 32 cases are 21 distinct tasks (11 are E07/E07b duplicates), and two families supply 13 of them. The hit rate holds without rational-matrix (14/25), but csv-quote is 0/3 and url-parse 0/4.
 
 ### E09 — H0 v3 live check on all train (also P4's G0)  [phase P3 → P4, development lane]
 - Registered: 2026-10-15, one-row development pre-registration.
@@ -583,3 +590,26 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - Expectation (**sanity, not a claim**): C(H0 v3) within ±5 pp of D, and C's invocations per task within 1.5× of D's. C's public-green-but-hidden-fail submissions are the G0 failure dossiers for P4.
 - Budget: ≤ 700 invocations, 10,800 s. Launched after S4 completes.
 - Result: **STOPPED after 6 invocations (2026-10-15).** S4 changed the P4 baseline: H0 v3 renders the task input three times, so H0 v4 adds `dedupe_input`. Any P4 G0 run will use H0 v4 under a new registration. No scores were computed.
+
+### P3 exit and the P3 → P4 gate (2026-10-15)
+- **P3 exits "not promoted".** No configuration met the promotion bar (validation ≥ +12 pp over D with a paired lower bound > 0).
+  - S1, S1b, S2, S3 and S4 failed their rules. S4b survived its development screen.
+  - Validation looks used: 1 of 4. P3 spend: about 1,450 invocations, plus 64 Sol and Luna probe calls.
+- **Gate reviewers:** Codex `gpt-6.1-sol` (high) and a fresh Claude subagent, each in a copies-only temp dir. Every item has a disposition in `docs/plans/2026-10-15-p4-autopoietic-lift.md` § Review dispositions.
+- **Frozen P4 baseline: H0 v5** (`harnesses/h0-v5.json`, sha256 `5c066914adad960f98ee85add738e118e1483be994c880dfe445ce4973907535`).
+  - This adds two floor repairs found at the gate:
+    1. **plain rendering.** C's coder received its inputs as one JSON line, with the previous file escaped (321 `\n` vs 28 real newlines on uri-template-l3), the failure report twice and the whole germline. It now sees plain sections, as D does.
+    2. **an evolver-free base.** The evolver rewrote the coder template mid-task in 100% of multi-call tasks. `enzyme_defs` is removed from the coder's catalysts so that the evolver can be dropped with RAF closure intact.
+  - Both are unit-tested.
+
+### E10 — G0: H0 v5 live check on all train  [phase P4, development lane]
+- Registered: 2026-10-15, one-row development pre-registration. It is P4's G0: the base for every search, and the live check of H0 v5.
+- Arms D and C(H0 v5); `tasks/train-all` (140 tasks, 35 families; hash `bf75b130…`); k = 5; `--primary D`; seed 21; jobs 4; `--unregistered`. Out: `runs/2026-10-15-e10-g0-h0v5`.
+- **Pass criteria (all required before any search):**
+  - never-green C − D ≤ 2 tasks;
+  - C rate within ±5 pp of D;
+  - zero evolver calls.
+  - Escalation calls (invocations − coder calls) are reported.
+- If G0 fails: diagnose and fix the base under a new registration; no search starts.
+- Budget: ≤ 700 invocations, 10,800 s.
+- Result: pending

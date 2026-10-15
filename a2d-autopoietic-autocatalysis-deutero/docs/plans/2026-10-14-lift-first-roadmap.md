@@ -1,7 +1,7 @@
 # Plan: Lift-First Roadmap
 
 **Created:** 2026-10-14
-**Status:** Active — phase P3 (P0 and P1 exit 2026-10-14; P2 exit 2026-10-15: seed lift RULED OUT)
+**Status:** Active — phase P4 (P0 and P1 exit 2026-10-14; P2 exit 2026-10-15: seed lift RULED OUT; P3 exit 2026-10-15: not promoted)
 **Reviewed:** 2026-10-14 (independent review, Codex gpt-6.1-sol xhigh). The other non-Claude lanes were unavailable; see Blockers. Changes adopted: repair-loop comparator, three-way result classification, pilot/development/confirmation split, frozen controller, B-headroom calibration, harness-first P4, process metrics as diagnostics only.
 **Addendum:** 2026-10-14 — coder lane: the owner stopped the Kimi, Z.ai, MiniMax and Gemini subscriptions on purpose and suggested Luna via Codex or Pi. `gpt-6-luna` works through Codex with A²D's provider flags. `gpt-6.1-luna` is not offered on this ChatGPT account (Codex model list fetched 2026-10-14 has 6.1 only as Sol). Pi's `openai-codex` provider is not authenticated. P0/P1 updated accordingly.
 **Addendum:** 2026-10-14 — P0 gate. Exit criteria met (isolation tests, four arms end to end on mocks, E01). Reviewed by Codex `gpt-6.1-sol` (high) and a fresh-context Claude subagent, each in an empty temp dir with copied inputs. Diversity reduced to one non-Claude family (see Blockers). Adopted (commits `e8e7fa3`, `2eefa0d`):
@@ -134,6 +134,25 @@ Process diagnostics:
 - Spend: the P2 confirmation was 82% of experiment spend, justified as the falsification.
 
 Lesson: never spend confirmation data without development evidence at the claim threshold.
+**Addendum:** 2026-10-15 — **P3 exit and the P3 → P4 gate.**
+- **P3 exits "not promoted."** It ran six mechanisms or revisions (S1, S1b, S2, S3, S4 and S4b). S1–S4 failed their pre-registered rules. S4b passed its development screen: four researcher-written lessons on a repaired base gave +11.1 pp over that base and +5.6 pp over D on 72 train tasks the lessons were not derived from. That survival authorises P4 spend only.
+- **Two classes of finding.**
+  - **Within-task self-signals** (spec tests, self-review, agreement selection) do not beat the repair loop at this regime.
+  - **Cross-task lessons** are the only lever with evidence.
+- **Plumbing defects** dominated several early readings:
+  - the missing `main()` clause;
+  - triplicated input;
+  - JSON-escaped repair inputs;
+  - an evolver that rewrites prompts.
+
+  All are fixed and unit-tested (`docs/solutions/best-practices/inspect-first-prompts-of-a-new-harness-2026-10-15.md`).
+- **Frozen P4 base: H0 v5.** An evolver-free coder enzyme with plain rendering, previous-attempt routing, the task rendered once, and a stop at public-green.
+- **P4 plan v3** (`docs/plans/2026-10-15-p4-autopoietic-lift.md`), reviewed by Codex `gpt-6.1-sol` and a fresh Claude subagent. Every item has a disposition.
+  - **Searches:** lessons written by A²D itself from per-task train labels, starting empty, in 2 informed and 2 uninformed-control searches. Each generation re-evaluates the incumbent fresh and accepts only at ≥ 4 net tasks.
+  - **Validation go/no-go:** ≥ +10 pp over D.
+  - **Confirmation-2:** one registered multi-harness run at r = 2. Completion requires C(H\*) to be SUPPORTED against C(H0 v5), D and B separately.
+  - **Arms:** a researcher-lessons arm and a D + lessons arm, both descriptive only.
+- **Completion wording:** if P4 is a no-go at validation, Confirmation-2 is not spent, and P4 is reported as "not supported at the development screen", never as "ruled out".
 **Supersedes as primary goal:** `swe-bench-pro-blind-evaluator-adapter.md` (parked), the Senior SWE-Bench retry chain (parked)
 **Grounding:** `docs/research/2026-10-14-direction-audit.md`, `docs/research/2026-10-14-dgm-rqgm-relevance.md`
 **Decision deadline:** P2 confirmation result recorded by **2026-11-30**. Missing it is a non-result, not a falsification: record "not measured by deadline", stop adding seed-cycle complexity, and continue per Completion.

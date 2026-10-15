@@ -36,6 +36,7 @@ The seed A²D metabolism (P2) was no better: +1.4 pp over D, 95% CI [−5.4, +8.
 
 - **Measure the selection headroom before building a mechanism.** "any-pass within the budget" minus "the repair loop's pick" bounds what selection can do. Here it was +12 pp, and no available signal could pick within it.
 - **Break-even arithmetic kills ideas cheaply.** A mechanism must convert ≥ 43% of the repair loop's public-green failures, with no regressions, to gain 10 pp. Any detector with lower recall cannot reach that, whatever the repair step does.
+- **Scope (gate note, 2026-10-15):** these are specific configurations that failed pre-registered development criteria, not confidence-bound exclusions of every within-task self-signal. S1 matched D's selection, and S2 had a small positive net effect.
 - **Self-signals from the same model share its blind spots.** Remaining errors are mostly systematic misreadings. Other samples, its own tests and its own review all inherit them.
 - **Check that every call reaches the submission.** "The component executes" is not the same as "its output can change the result". Our seed spent 2 of 4 feedback calls on outputs nothing consumed.
 - **Untested, and outside the current metric:** a higher reasoning effort or a larger k; a stronger model as reviewer or test-writer (a portfolio question); stronger public tests (a different regime). Those are where lift might be, not in harness plumbing around the same low-effort coder.
