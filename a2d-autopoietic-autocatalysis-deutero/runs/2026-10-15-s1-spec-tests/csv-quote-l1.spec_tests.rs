@@ -1,0 +1,233 @@
+#[test]
+fn spec_r1_api_shape() {
+    let result: Result<Vec<Vec<String>>, CsvError> = parse_csv("");
+    assert_eq!(result, Ok(Vec::new()));
+}
+
+#[test]
+fn spec_r2_field_order_and_preservation() {
+    assert_eq!(
+        parse_csv("  Name ,Étage\nx,y"),
+        Ok(vec![
+            vec!["  Name ".to_string(), "Étage".to_string()],
+            vec!["x".to_string(), "y".to_string()],
+        ])
+    );
+}
+
+#[test]
+fn spec_r3_error_indices_and_utf8_byte_offsets() {
+    assert_eq!(
+        parse_csv("a\n雪,\"x\"z"),
+        Err(CsvError::TrailingByte { record: 1, byte: 8 })
+    );
+    assert_eq!(
+        parse_csv("a\n雪,b\r"),
+        Err(CsvError::BareCr { record: 1, byte: 7 })
+    );
+}
+
+#[test]
+fn spec_r4_initial_and_later_bom() {
+    assert_eq!(parse_csv("\u{FEFF}"), Ok(vec![]));
+    assert_eq!(
+        parse_csv("\u{FEFF}a\n\u{FEFF}b"),
+        Ok(vec![vec!["a".to_string()], vec!["\u{FEFF}b".to_string()]])
+    );
+    assert_eq!(
+        parse_csv("\"\u{FEFF}x\""),
+        Ok(vec![vec!["\u{FEFF}x".to_string()]])
+    );
+}
+
+#[test]
+fn spec_r5_empty_eof_and_terminators() {
+    assert_eq!(parse_csv(""), Ok(vec![]));
+    assert_eq!(parse_csv("a"), Ok(vec![vec!["a".to_string()]]));
+    assert_eq!(parse_csv("\n"), Ok(vec![vec!["".to_string()]]));
+    assert_eq!(
+        parse_csv("\n\n"),
+        Ok(vec![vec!["".to_string()], vec!["".to_string()]])
+    );
+    assert_eq!(
+        parse_csv("a\n"),
+        Ok(vec![vec!["a".to_string()]])
+    );
+}
+
+#[test]
+fn spec_r6_empty_fields_and_trailing_delimiters() {
+    assert_eq!(
+        parse_csv(","),
+        Ok(vec![vec!["".to_string(), "".to_string()]])
+    );
+    assert_eq!(
+        parse_csv("a,,"),
+        Ok(vec![vec!["a".to_string(), "".to_string(), "".to_string()]])
+    );
+    assert_eq!(
+        parse_csv("\"\""),
+        Ok(vec![vec!["".to_string()]])
+    );
+}
+
+#[test]
+fn spec_r7_crlf_and_bare_cr() {
+    assert_eq!(
+        parse_csv("a\r\nb"),
+        Ok(vec![vec!["a".to_string()], vec!["b".to_string()]])
+    );
+    assert_eq!(
+        parse_csv("a\rb"),
+        Err(CsvError::BareCr { record: 0, byte: 1 })
+    );
+    assert_eq!(
+        parse_csv("a\r"),
+        Err(CsvError::BareCr { record: 0, byte: 1 })
+    );
+}
+
+#[test]
+fn spec_r8_quote_only_opens_at_field_start() {
+    assert_eq!(
+        parse_csv("a\"b"),
+        Err(CsvError::UnexpectedQuote { record: 0, byte: 1 })
+    );
+    assert_eq!(
+        parse_csv("  \"b\""),
+        Err(CsvError::UnexpectedQuote { record: 0, byte: 2 })
+    );
+    assert_eq!(parse_csv("\"a\""), Ok(vec![vec!["a".to_string()]]));
+}
+
+#[test]
+fn spec_r9_quote_pairs_and_pair_at_eof() {
+    assert_eq!(
+        parse_csv("\"a\"\"b\""),
+        Ok(vec![vec!["a\"b".to_string()]])
+    );
+    assert_eq!(
+        parse_csv("\"a\"\""),
+        Err(CsvError::UnclosedQuote { record: 0, byte: 0 })
+    );
+}
+
+#[test]
+fn spec_r10_quoted_newlines_and_cr_are_literal() {
+    assert_eq!(
+        parse_csv("\"a,\n\r\n\rb\",c"),
+        Ok(vec![vec!["a,\n\r\n\rb".to_string(), "c".to_string()]])
+    );
+    assert_eq!(
+        parse_csv("\"x\n\"z"),
+        Err(CsvError::TrailingByte { record: 0, byte: 4 })
+    );
+}
+
+#[test]
+fn spec_r11_only_delimiter_terminator_or_eof_after_close() {
+    assert_eq!(
+        parse_csv("\"a\" ,b"),
+        Err(CsvError::TrailingByte { record: 0, byte: 3 })
+    );
+    assert_eq!(
+        parse_csv("\"a\"\tb"),
+        Err(CsvError::TrailingByte { record: 0, byte: 3 })
+    );
+    assert_eq!(
+        parse_csv("\"a\"\rb"),
+        Err(CsvError::BareCr { record: 0, byte: 3 })
+    );
+    assert_eq!(
+        parse_csv("\"a\"\r\nb"),
+        Ok(vec![vec!["a".to_string()], vec!["b".to_string()]])
+    );
+}
+
+#[test]
+fn spec_r12_unclosed_quote_points_to_opening_quote() {
+    assert_eq!(
+        parse_csv("x,\"abc"),
+        Err(CsvError::UnclosedQuote { record: 0, byte: 2 })
+    );
+    assert_eq!(
+        parse_csv("\"abc\""),
+        Ok(vec![vec!["abc".to_string()]])
+    );
+}
+
+#[test]
+fn spec_r13_nul_forbidden_in_all_states() {
+    assert_eq!(
+        parse_csv("a\0b"),
+        Err(CsvError::Nul { record: 0, byte: 1 })
+    );
+    assert_eq!(
+        parse_csv("\"a\0b\""),
+        Err(CsvError::Nul { record: 0, byte: 2 })
+    );
+}
+
+#[test]
+fn spec_r14_first_error_precedence_and_unclosed_at_eof() {
+    assert_eq!(
+        parse_csv("\"a\"x\0"),
+        Err(CsvError::TrailingByte { record: 0, byte: 3 })
+    );
+    assert_eq!(
+        parse_csv("\"a\"\r"),
+        Err(CsvError::BareCr { record: 0, byte: 3 })
+    );
+    assert_eq!(
+        parse_csv("\"a\0"),
+        Err(CsvError::Nul { record: 0, byte: 2 })
+    );
+    assert_eq!(
+        parse_csv("\"a"),
+        Err(CsvError::UnclosedQuote { record: 0, byte: 0 })
+    );
+}
+
+#[test]
+fn spec_r15_backslash_is_ordinary_data() {
+    assert_eq!(
+        parse_csv("a\\\"b"),
+        Err(CsvError::UnexpectedQuote { record: 0, byte: 2 })
+    );
+    assert_eq!(
+        parse_csv("\"a\\nb\""),
+        Ok(vec![vec!["a\\nb".to_string()]])
+    );
+}
+
+#[test]
+fn spec_r16_quote_syntax_removed_and_escape_decoded_once() {
+    assert_eq!(
+        parse_csv(",\"\","),
+        Ok(vec![vec!["".to_string(), "".to_string(), "".to_string()]])
+    );
+    assert_eq!(
+        parse_csv("\"\"\"\""),
+        Ok(vec![vec!["\"".to_string()]])
+    );
+}
+
+#[test]
+fn spec_r17_many_records_and_long_fields() {
+    let long = "x".repeat(100_000);
+    let input = format!("{long}\n{long}");
+    assert_eq!(
+        parse_csv(&input),
+        Ok(vec![vec![long.clone()], vec![long]])
+    );
+}
+
+#[test]
+fn spec_r18_repeated_calls_are_independent() {
+    assert_eq!(parse_csv("a"), Ok(vec![vec!["a".to_string()]]));
+    assert_eq!(
+        parse_csv("\""),
+        Err(CsvError::UnclosedQuote { record: 0, byte: 0 })
+    );
+    assert_eq!(parse_csv("b"), Ok(vec![vec!["b".to_string()]]));
+}

@@ -1,0 +1,403 @@
+```rust
+#[test]
+fn spec_r1_public_api_returns_edits() {
+    let old = vec!["same".to_string()];
+    let new = vec!["same".to_string()];
+    assert_eq!(
+        diff_lines(&old, &new),
+        Ok(vec![Edit::Keep {
+            old_index: 0,
+            new_index: 0,
+            line: "same".to_string(),
+        }])
+    );
+}
+
+#[test]
+fn spec_r2_empty_slice_and_empty_line_differ() {
+    let empty: Vec<String> = vec![];
+    let one_empty_line = vec![String::new()];
+    assert_eq!(diff_lines(&empty, &empty), Ok(vec![]));
+    assert_eq!(
+        diff_lines(&one_empty_line, &one_empty_line),
+        Ok(vec![Edit::Keep {
+            old_index: 0,
+            new_index: 0,
+            line: String::new(),
+        }])
+    );
+}
+
+#[test]
+fn spec_r3_length_limit_is_inclusive_and_reports_both_lengths() {
+    let at_limit = vec!["x".to_string(); 128];
+    assert!(diff_lines(&at_limit, &at_limit).is_ok());
+
+    let over_limit = vec!["x".to_string(); 129];
+    assert_eq!(
+        diff_lines(&over_limit, &[]),
+        Err(DiffError::TooLarge {
+            old_len: 129,
+            new_len: 0,
+        })
+    );
+    assert_eq!(
+        diff_lines(&[], &over_limit),
+        Err(DiffError::TooLarge {
+            old_len: 0,
+            new_len: 129,
+        })
+    );
+}
+
+#[test]
+fn spec_r4_length_limit_precedes_content_validation() {
+    let old = vec!["bad\n".to_string(); 129];
+    let new = vec!["bad\r".to_string()];
+    assert_eq!(
+        diff_lines(&old, &new),
+        Err(DiffError::TooLarge {
+            old_len: 129,
+            new_len: 1,
+        })
+    );
+}
+
+#[test]
+fn spec_r5_lf_and_cr_are_invalid_but_other_characters_are_allowed() {
+    let lf = vec!["a\nb".to_string()];
+    assert_eq!(
+        diff_lines(&lf, &[]),
+        Err(DiffError::EmbeddedNewline {
+            side: Side::Old,
+            index: 0,
+        })
+    );
+
+    let cr = vec!["a\rb".to_string()];
+    assert_eq!(
+        diff_lines(&[], &cr),
+        Err(DiffError::EmbeddedNewline {
+            side: Side::New,
+            index: 0,
+        })
+    );
+
+    let allowed = vec!["\0\t\u{85}\u{2028}".to_string()];
+    assert!(diff_lines(&allowed, &allowed).is_ok());
+}
+
+#[test]
+fn spec_r6_error_index_is_element_index_not_byte_position() {
+    let old = vec!["é".to_string(), "abc\rdef".to_string()];
+    assert_eq!(
+        diff_lines(&old, &[]),
+        Err(DiffError::EmbeddedNewline {
+            side: Side::Old,
+            index: 1,
+        })
+    );
+}
+
+#[test]
+fn spec_r7_old_validation_precedes_new_validation() {
+    let old = vec!["ok".to_string(), "old\nbad".to_string()];
+    let new = vec!["new\rbad".to_string()];
+    assert_eq!(
+        diff_lines(&old, &new),
+        Err(DiffError::EmbeddedNewline {
+            side: Side::Old,
+            index: 1,
+        })
+    );
+
+    let old_valid = vec!["ok".to_string()];
+    let new_multiple_invalid = vec!["bad\n".to_string(), "bad\r".to_string()];
+    assert_eq!(
+        diff_lines(&old_valid, &new_multiple_invalid),
+        Err(DiffError::EmbeddedNewline {
+            side: Side::New,
+            index: 0,
+        })
+    );
+}
+
+#[test]
+fn spec_r8_comparison_is_exact_without_normalization() {
+    let old = vec!["Word".to_string(), " word ".to_string()];
+    let new = vec!["word".to_string(), "word".to_string()];
+    assert_eq!(
+        diff_lines(&old, &new),
+        Ok(vec![
+            Edit::Delete {
+                old_index: 0,
+                line: "Word".to_string(),
+            },
+            Edit::Delete {
+                old_index: 1,
+                line: " word ".to_string(),
+            },
+            Edit::Insert {
+                new_index: 0,
+                line: "word".to_string(),
+            },
+            Edit::Insert {
+                new_index: 1,
+                line: "word".to_string(),
+            },
+        ])
+    );
+}
+
+#[test]
+fn spec_r9_script_consumes_each_side_once_in_order() {
+    let old = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+    let new = vec!["b".to_string(), "d".to_string()];
+    let edits = diff_lines(&old, &new).unwrap();
+
+    let mut old_indices = Vec::new();
+    let mut new_indices = Vec::new();
+    for edit in edits {
+        match edit {
+            Edit::Keep {
+                old_index,
+                new_index,
+                ..
+            } => {
+                old_indices.push(old_index);
+                new_indices.push(new_index);
+            }
+            Edit::Delete { old_index, .. } => old_indices.push(old_index),
+            Edit::Insert { new_index, .. } => new_indices.push(new_index),
+        }
+    }
+    assert_eq!(old_indices, vec![0, 1, 2]);
+    assert_eq!(new_indices, vec![0, 1]);
+}
+
+#[test]
+fn spec_r10_minimizes_insertions_and_deletions() {
+    let old = vec!["a".to_string(), "b".to_string()];
+    let new = vec!["b".to_string(), "a".to_string()];
+    let edits = diff_lines(&old, &new).unwrap();
+    let edit_cost = edits
+        .iter()
+        .filter(|edit| matches!(edit, Edit::Delete { .. } | Edit::Insert { .. }))
+        .count();
+    assert_eq!(edit_cost, 2);
+}
+
+#[test]
+fn spec_r11_lcs_choice_preserves_a_longest_common_subsequence() {
+    let old = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+    let new = vec!["b".to_string(), "c".to_string(), "a".to_string()];
+    let edits = diff_lines(&old, &new).unwrap();
+    let keeps: Vec<(&str, usize, usize)> = edits
+        .iter()
+        .filter_map(|edit| match edit {
+            Edit::Keep {
+                old_index,
+                new_index,
+                line,
+            } => Some((line.as_str(), *old_index, *new_index)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(keeps, vec![("b", 1, 0), ("c", 2, 1)]);
+}
+
+#[test]
+fn spec_r12_equal_available_lines_are_kept_immediately() {
+    let old = vec!["a".to_string(), "b".to_string()];
+    let new = vec!["a".to_string(), "c".to_string(), "b".to_string()];
+    assert_eq!(
+        diff_lines(&old, &new),
+        Ok(vec![
+            Edit::Keep {
+                old_index: 0,
+                new_index: 0,
+                line: "a".to_string(),
+            },
+            Edit::Insert {
+                new_index: 1,
+                line: "c".to_string(),
+            },
+            Edit::Keep {
+                old_index: 1,
+                new_index: 2,
+                line: "b".to_string(),
+            },
+        ])
+    );
+}
+
+#[test]
+fn spec_r13_unequal_lcs_lengths_choose_the_larger_suffix() {
+    let old = vec!["a".to_string(), "b".to_string()];
+    let new = vec!["b".to_string()];
+    assert_eq!(
+        diff_lines(&old, &new),
+        Ok(vec![
+            Edit::Delete {
+                old_index: 0,
+                line: "a".to_string(),
+            },
+            Edit::Keep {
+                old_index: 1,
+                new_index: 0,
+                line: "b".to_string(),
+            },
+        ])
+    );
+}
+
+#[test]
+fn spec_r14_tied_lcs_lengths_use_cursor_parity() {
+    let old_even = vec!["a".to_string()];
+    let new_even = vec!["b".to_string()];
+    assert_eq!(
+        diff_lines(&old_even, &new_even),
+        Ok(vec![
+            Edit::Delete {
+                old_index: 0,
+                line: "a".to_string(),
+            },
+            Edit::Insert {
+                new_index: 0,
+                line: "b".to_string(),
+            },
+        ])
+    );
+
+    let old_odd = vec!["x".to_string(), "a".to_string()];
+    let new_odd = vec!["x".to_string(), "b".to_string()];
+    assert_eq!(
+        diff_lines(&old_odd, &new_odd),
+        Ok(vec![
+            Edit::Keep {
+                old_index: 0,
+                new_index: 0,
+                line: "x".to_string(),
+            },
+            Edit::Insert {
+                new_index: 1,
+                line: "b".to_string(),
+            },
+            Edit::Delete {
+                old_index: 1,
+                line: "a".to_string(),
+            },
+        ])
+    );
+}
+
+#[test]
+fn spec_r15_exhausted_sides_emit_remaining_operations() {
+    let old = vec!["a".to_string(), "b".to_string()];
+    let new = vec!["a".to_string()];
+    assert_eq!(
+        diff_lines(&old, &new),
+        Ok(vec![
+            Edit::Keep {
+                old_index: 0,
+                new_index: 0,
+                line: "a".to_string(),
+            },
+            Edit::Delete {
+                old_index: 1,
+                line: "b".to_string(),
+            },
+        ])
+    );
+
+    let old_empty: Vec<String> = vec![];
+    let new = vec!["a".to_string(), "b".to_string()];
+    assert_eq!(
+        diff_lines(&old_empty, &new),
+        Ok(vec![
+            Edit::Insert {
+                new_index: 0,
+                line: "a".to_string(),
+            },
+            Edit::Insert {
+                new_index: 1,
+                line: "b".to_string(),
+            },
+        ])
+    );
+}
+
+#[test]
+fn spec_r16_edits_carry_verbatim_lines_and_original_indices() {
+    let old = vec!["prefix".to_string(), "keep".to_string(), "suffix".to_string()];
+    let new = vec!["inserted".to_string(), "keep".to_string()];
+    assert_eq!(
+        diff_lines(&old, &new),
+        Ok(vec![
+            Edit::Delete {
+                old_index: 0,
+                line: "prefix".to_string(),
+            },
+            Edit::Insert {
+                new_index: 0,
+                line: "inserted".to_string(),
+            },
+            Edit::Keep {
+                old_index: 1,
+                new_index: 1,
+                line: "keep".to_string(),
+            },
+            Edit::Delete {
+                old_index: 2,
+                line: "suffix".to_string(),
+            },
+        ])
+    );
+}
+
+#[test]
+fn spec_r17_identical_inputs_emit_one_keep_per_element_in_order() {
+    let lines = vec!["".to_string(), "same".to_string(), "same".to_string()];
+    assert_eq!(
+        diff_lines(&lines, &lines),
+        Ok(vec![
+            Edit::Keep {
+                old_index: 0,
+                new_index: 0,
+                line: "".to_string(),
+            },
+            Edit::Keep {
+                old_index: 1,
+                new_index: 1,
+                line: "same".to_string(),
+            },
+            Edit::Keep {
+                old_index: 2,
+                new_index: 2,
+                line: "same".to_string(),
+            },
+        ])
+    );
+}
+
+#[test]
+fn spec_r18_inputs_are_unchanged_on_success_and_error_has_no_script() {
+    let old = vec!["old".to_string()];
+    let new = vec!["new".to_string()];
+    let old_before = old.clone();
+    let new_before = new.clone();
+    assert!(diff_lines(&old, &new).is_ok());
+    assert_eq!(old, old_before);
+    assert_eq!(new, new_before);
+
+    let invalid_old = vec!["bad\nline".to_string()];
+    let invalid_new = vec!["new".to_string()];
+    assert_eq!(
+        diff_lines(&invalid_old, &invalid_new),
+        Err(DiffError::EmbeddedNewline {
+            side: Side::Old,
+            index: 0,
+        })
+    );
+}
+```

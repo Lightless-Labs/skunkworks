@@ -1,0 +1,675 @@
+#[test]
+fn spec_r1_single_file_std_only_api_smoke() {
+    let customer = Customer {
+        id: 1,
+        arrival: 0,
+        service: 0,
+        priority: 0,
+        patience: None,
+    };
+    let config = Config {
+        switch_cost: 0,
+        waiting_capacity: 0,
+    };
+    assert_eq!(customer.id, 1);
+    assert_eq!(config.waiting_capacity, 0);
+}
+
+#[test]
+fn spec_r2_public_types_and_fields_are_constructible() {
+    let _ = Customer {
+        id: 1,
+        arrival: 2,
+        service: 3,
+        priority: 1,
+        patience: Some(4),
+    };
+    let _ = Config {
+        switch_cost: 5,
+        waiting_capacity: 6,
+    };
+    let _ = Kind::Arrive;
+    let _ = Event {
+        time: 0,
+        customer: 1,
+        kind: Kind::Finish,
+    };
+    let _ = OverflowStage::Patience;
+    let _ = Error::CapacityTooLarge { capacity: 1 };
+    let _ = Stats {
+        accepted: 0,
+        balked: 0,
+        reneged: 0,
+        completed: 0,
+        started: 0,
+        preemptions: 0,
+        elapsed: 0,
+        busy_ticks: 0,
+        wait_ticks: 0,
+        turnaround_ticks: 0,
+        mean_wait_milli: 0,
+        mean_turnaround_milli: 0,
+        utilization_bps: 0,
+        completion_order: Vec::new(),
+    };
+    let _ = Report {
+        events: Vec::new(),
+        stats: Stats {
+            accepted: 0,
+            balked: 0,
+            reneged: 0,
+            completed: 0,
+            started: 0,
+            preemptions: 0,
+            elapsed: 0,
+            busy_ticks: 0,
+            wait_ticks: 0,
+            turnaround_ticks: 0,
+            mean_wait_milli: 0,
+            mean_turnaround_milli: 0,
+            utilization_bps: 0,
+            completion_order: Vec::new(),
+        },
+    };
+    assert_eq!(rounded_ratio(0, 1), Some(0));
+}
+
+#[test]
+fn spec_r3_unsorted_input_and_legal_priorities() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 2, service: 0, priority: 3, patience: None },
+            Customer { id: 2, arrival: 1, service: 0, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    assert_eq!(
+        r.events.iter().filter(|e| matches!(e.kind, Kind::Arrive)).map(|e| (e.time, e.customer)).collect::<Vec<_>>(),
+        vec![(1, 2), (2, 1)]
+    );
+}
+
+#[test]
+fn spec_r4_capacity_and_customer_count_limits() {
+    assert_eq!(
+        simulate(&[], &Config { switch_cost: 0, waiting_capacity: 4097 }),
+        Err(Error::CapacityTooLarge { capacity: 4097 })
+    );
+    let too_many = vec![Customer { id: 1, arrival: 0, service: 0, priority: 0, patience: None }; 4097];
+    assert_eq!(
+        simulate(&too_many, &Config { switch_cost: 0, waiting_capacity: 0 }),
+        Err(Error::TooManyCustomers { count: 4097 })
+    );
+    let max_customers: Vec<_> = (1..=4096).map(|id| Customer {
+        id,
+        arrival: 0,
+        service: 0,
+        priority: 0,
+        patience: None,
+    }).collect();
+    assert!(simulate(&max_customers, &Config { switch_cost: 0, waiting_capacity: 4096 }).is_ok());
+}
+
+#[test]
+fn spec_r5_validation_order_and_original_indices() {
+    let rows = [
+        Customer { id: 7, arrival: u64::MAX, service: 0, priority: 0, patience: Some(1) },
+        Customer { id: 7, arrival: 0, service: 0, priority: 9, patience: None },
+        Customer { id: 0, arrival: 0, service: 0, priority: 9, patience: None },
+    ];
+    assert_eq!(
+        simulate(&rows, &Config { switch_cost: 0, waiting_capacity: 0 }),
+        Err(Error::DeadlineOverflow { index: 0, id: 7 })
+    );
+    let rows = [
+        Customer { id: 1, arrival: 0, service: 0, priority: 0, patience: None },
+        Customer { id: 1, arrival: 0, service: 0, priority: 8, patience: None },
+    ];
+    assert_eq!(
+        simulate(&rows, &Config { switch_cost: 0, waiting_capacity: 0 }),
+        Err(Error::DuplicateId { index: 1, id: 1 })
+    );
+    let rows = [Customer { id: 0, arrival: 0, service: 0, priority: 4, patience: None }];
+    assert_eq!(
+        simulate(&rows, &Config { switch_cost: 0, waiting_capacity: 0 }),
+        Err(Error::ZeroId { index: 0 })
+    );
+    let rows = [Customer { id: 1, arrival: 0, service: 0, priority: 4, patience: None }];
+    assert_eq!(
+        simulate(&rows, &Config { switch_cost: 0, waiting_capacity: 0 }),
+        Err(Error::BadPriority { index: 0, value: 4 })
+    );
+}
+
+#[test]
+fn spec_r6_patience_is_cumulative_across_pause_segments() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 3, priority: 3, patience: Some(2) },
+            Customer { id: 2, arrival: 1, service: 1, priority: 0, patience: None },
+            Customer { id: 3, arrival: 2, service: 1, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 2 },
+    ).unwrap();
+    assert!(r.events.contains(&Event { time: 3, customer: 1, kind: Kind::Renege { waited: 2 } }));
+}
+
+#[test]
+fn spec_r7_arrival_cohort_order_is_priority_then_descending_id() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 4, service: 0, priority: 1, patience: None },
+            Customer { id: 2, arrival: 4, service: 0, priority: 0, patience: None },
+            Customer { id: 3, arrival: 4, service: 0, priority: 1, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 3 },
+    ).unwrap();
+    assert_eq!(
+        r.events.iter().filter(|e| e.time == 4 && matches!(e.kind, Kind::Arrive)).map(|e| e.customer).collect::<Vec<_>>(),
+        vec![2, 3, 1]
+    );
+}
+
+#[test]
+fn spec_r8_finish_phase_precedes_same_tick_expiration_arrival_and_preemption() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 2, priority: 2, patience: None },
+            Customer { id: 2, arrival: 1, service: 1, priority: 3, patience: Some(1) },
+            Customer { id: 3, arrival: 2, service: 1, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 2 },
+    ).unwrap();
+    let at_two: Vec<_> = r.events.iter().filter(|e| e.time == 2).map(|e| (e.customer, e.kind.clone())).collect();
+    assert_eq!(at_two[0], (1, Kind::Finish));
+    assert_eq!(at_two[1], (2, Kind::Renege { waited: 1 }));
+    assert_eq!(at_two[2], (3, Kind::Arrive));
+}
+
+#[test]
+fn spec_r9_deadline_at_running_finish_reneges_before_dispatch() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 3, priority: 0, patience: None },
+            Customer { id: 2, arrival: 1, service: 1, priority: 1, patience: Some(2) },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    let t3: Vec<_> = r.events.iter().filter(|e| e.time == 3).map(|e| e.kind.clone()).collect();
+    assert_eq!(t3[0], Kind::Finish);
+    assert_eq!(t3[1], Kind::Renege { waited: 2 });
+}
+
+#[test]
+fn spec_r10_arrival_refusal_events_are_adjacent() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 5, priority: 0, patience: None },
+            Customer { id: 2, arrival: 1, service: 1, priority: 1, patience: None },
+            Customer { id: 3, arrival: 1, service: 1, priority: 2, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    let pair = r.events.windows(2).find(|w| w[0] == Event { time: 1, customer: 3, kind: Kind::Arrive }).unwrap();
+    assert_eq!(pair[1], Event { time: 1, customer: 3, kind: Kind::Balk });
+}
+
+#[test]
+fn spec_r11_idle_virtual_admission_slot_applies_through_cohort() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 2, priority: 0, patience: None },
+            Customer { id: 2, arrival: 0, service: 2, priority: 1, patience: None },
+            Customer { id: 3, arrival: 0, service: 2, priority: 2, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    assert_eq!(r.stats.accepted, 2);
+    assert_eq!(r.stats.balked, 1);
+}
+
+#[test]
+fn spec_r12_balked_customer_skips_service_overflow_checks() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 1, priority: 0, patience: None },
+            Customer { id: 2, arrival: 0, service: u64::MAX, priority: 1, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 0 },
+    ).unwrap();
+    assert!(r.events.contains(&Event { time: 0, customer: 2, kind: Kind::Balk }));
+}
+
+#[test]
+fn spec_r13_high_priority_does_not_bypass_full_admission_gate() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 5, priority: 2, patience: None },
+            Customer { id: 2, arrival: 1, service: 1, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 0 },
+    ).unwrap();
+    assert!(r.events.contains(&Event { time: 1, customer: 2, kind: Kind::Balk }));
+    assert_eq!(r.stats.preemptions, 0);
+}
+
+#[test]
+fn spec_r14_admission_queues_without_immediate_start() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 3, priority: 0, patience: None },
+            Customer { id: 2, arrival: 1, service: 1, priority: 1, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    let arrival = r.events.iter().position(|e| *e == Event { time: 1, customer: 2, kind: Kind::Arrive }).unwrap();
+    assert!(!matches!(r.events[arrival + 1].kind, Kind::Start { .. } | Kind::Resume { .. }));
+}
+
+#[test]
+fn spec_r15_waiter_selection_pause_then_tie_breaks() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 4, priority: 3, patience: None },
+            Customer { id: 2, arrival: 1, service: 1, priority: 1, patience: None },
+            Customer { id: 3, arrival: 1, service: 1, priority: 1, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 2 },
+    ).unwrap();
+    assert_eq!(r.stats.completion_order, vec![3, 2, 1]);
+}
+
+#[test]
+fn spec_r16_preemption_requires_strict_priority_superiority() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 3, priority: 1, patience: None },
+            Customer { id: 2, arrival: 1, service: 1, priority: 1, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    assert_eq!(r.stats.preemptions, 0);
+}
+
+#[test]
+fn spec_r17_preemption_preserves_remaining_service_and_requeues() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 5, priority: 3, patience: None },
+            Customer { id: 2, arrival: 2, service: 1, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    assert!(r.events.contains(&Event {
+        time: 2,
+        customer: 1,
+        kind: Kind::Preempt { remaining: 3, by: 2 },
+    }));
+    assert!(r.events.iter().any(|e| e.customer == 1 && matches!(e.kind, Kind::Resume { remaining: 3, .. })));
+}
+
+#[test]
+fn spec_r18_pause_deadline_overflow_precedes_next_dispatch_arithmetic() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: u64::MAX, priority: 3, patience: Some(u64::MAX) },
+            Customer { id: 2, arrival: 1, service: u64::MAX, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    );
+    assert_eq!(
+        r,
+        Err(Error::TimeOverflow { customer: 1, time: 1, stage: OverflowStage::Patience })
+    );
+}
+
+#[test]
+fn spec_r19_work_boundary_is_an_internal_preemption_tick() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 4, priority: 3, patience: None },
+            Customer { id: 2, arrival: 1, service: 1, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 2, waiting_capacity: 1 },
+    ).unwrap();
+    assert!(r.events.contains(&Event { time: 2, customer: 2, kind: Kind::Arrive }));
+    assert!(r.events.iter().any(|e| matches!(e.kind, Kind::Preempt { .. }) && e.time == 2));
+}
+
+#[test]
+fn spec_r20_start_resume_and_first_dispatch_has_no_switching() {
+    let r = simulate(
+        &[Customer { id: 1, arrival: 5, service: 2, priority: 0, patience: None }],
+        &Config { switch_cost: 7, waiting_capacity: 0 },
+    ).unwrap();
+    assert!(r.events.contains(&Event {
+        time: 5,
+        customer: 1,
+        kind: Kind::Start { remaining: 2, work_at: 5, finish: 7 },
+    }));
+}
+
+#[test]
+fn spec_r21_switch_cost_depends_on_previous_dispatch_id_across_idle_gap() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 1, priority: 0, patience: None },
+            Customer { id: 2, arrival: 3, service: 1, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 2, waiting_capacity: 0 },
+    ).unwrap();
+    assert!(r.events.contains(&Event {
+        time: 3,
+        customer: 2,
+        kind: Kind::Start { remaining: 1, work_at: 5, finish: 6 },
+    }));
+}
+
+#[test]
+fn spec_r22_dispatch_overflow_stage_and_selected_customer() {
+    let work_at = simulate(
+        &[Customer { id: 1, arrival: u64::MAX, service: 0, priority: 0, patience: None }],
+        &Config { switch_cost: 1, waiting_capacity: 0 },
+    );
+    assert_eq!(work_at, Err(Error::TimeOverflow {
+        customer: 1,
+        time: u64::MAX,
+        stage: OverflowStage::WorkAt,
+    }));
+    let finish = simulate(
+        &[Customer { id: 1, arrival: u64::MAX, service: 1, priority: 0, patience: None }],
+        &Config { switch_cost: 0, waiting_capacity: 0 },
+    );
+    assert_eq!(finish, Err(Error::TimeOverflow {
+        customer: 1,
+        time: u64::MAX,
+        stage: OverflowStage::Finish,
+    }));
+}
+
+#[test]
+fn spec_r23_waiting_segments_consumed_on_resume_dispatch() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 5, priority: 3, patience: None },
+            Customer { id: 2, arrival: 1, service: 1, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    assert_eq!(r.stats.wait_ticks, 1);
+}
+
+#[test]
+fn spec_r24_zero_service_inline_finish_and_repeated_dispatch() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 0, priority: 0, patience: None },
+            Customer { id: 2, arrival: 0, service: 0, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    let at_zero: Vec<_> = r.events.iter().filter(|e| e.time == 0).map(|e| (e.customer, e.kind.clone())).collect();
+    assert_eq!(
+        at_zero,
+        vec![
+            (2, Kind::Arrive),
+            (1, Kind::Arrive),
+            (2, Kind::Start { remaining: 0, work_at: 0, finish: 0 }),
+            (2, Kind::Finish),
+            (1, Kind::Start { remaining: 0, work_at: 0, finish: 0 }),
+            (1, Kind::Finish),
+        ]
+    );
+}
+
+#[test]
+fn spec_r25_phase_f_expires_newly_queued_zero_budget_after_dispatch() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 3, priority: 0, patience: None },
+            Customer { id: 2, arrival: 1, service: 1, priority: 1, patience: Some(0) },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    let t1: Vec<_> = r.events.iter().filter(|e| e.time == 1).map(|e| e.kind.clone()).collect();
+    assert_eq!(t1[0], Kind::Arrive);
+    assert!(matches!(t1[1], Kind::Renege { .. }));
+}
+
+#[test]
+fn spec_r26_renege_reports_all_waiting_segments() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 5, priority: 3, patience: Some(1) },
+            Customer { id: 2, arrival: 1, service: 1, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    assert!(r.events.iter().any(|e| *e == Event { time: 1, customer: 1, kind: Kind::Renege { waited: 1 } }));
+    assert!(!r.events.iter().any(|e| e.customer == 1 && matches!(e.kind, Kind::Resume { .. } | Kind::Finish)));
+}
+
+#[test]
+fn spec_r27_jumps_across_maximal_idle_gap() {
+    let r = simulate(
+        &[Customer { id: 1, arrival: u64::MAX, service: 0, priority: 0, patience: None }],
+        &Config { switch_cost: 0, waiting_capacity: 0 },
+    ).unwrap();
+    assert_eq!(r.stats.elapsed, u64::MAX);
+    assert_eq!(r.stats.completed, 1);
+}
+
+#[test]
+fn spec_r28_trace_has_one_arrival_and_terminal_per_customer() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 1, priority: 0, patience: None },
+            Customer { id: 2, arrival: 0, service: 1, priority: 1, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 0 },
+    ).unwrap();
+    for id in [1, 2] {
+        assert_eq!(r.events.iter().filter(|e| e.customer == id && e.kind == Kind::Arrive).count(), 1);
+        let terminal_count = r.events.iter().filter(|e| e.customer == id && matches!(e.kind, Kind::Finish | Kind::Renege { .. } | Kind::Balk)).count();
+        assert_eq!(terminal_count, 1);
+    }
+}
+
+#[test]
+fn spec_r29_statistics_count_first_starts_and_terminals() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 3, priority: 3, patience: None },
+            Customer { id: 2, arrival: 1, service: 1, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    assert_eq!((r.stats.accepted, r.stats.completed, r.stats.started, r.stats.preemptions), (2, 2, 2, 1));
+    assert_eq!(r.stats.accepted, r.stats.completed + r.stats.reneged);
+}
+
+#[test]
+fn spec_r30_completion_order_tracks_finish_emission_order() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 3, priority: 2, patience: None },
+            Customer { id: 2, arrival: 1, service: 1, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    assert_eq!(r.stats.completion_order, vec![2, 1]);
+}
+
+#[test]
+fn spec_r31_elapsed_is_last_event_time_and_empty_is_zero() {
+    let empty = simulate(&[], &Config { switch_cost: 3, waiting_capacity: 0 }).unwrap();
+    assert_eq!(empty.stats.elapsed, 0);
+    assert!(empty.events.is_empty());
+    let r = simulate(
+        &[Customer { id: 1, arrival: 8, service: 2, priority: 0, patience: None }],
+        &Config { switch_cost: 0, waiting_capacity: 0 },
+    ).unwrap();
+    assert_eq!(r.stats.elapsed, 10);
+}
+
+#[test]
+fn spec_r32_busy_ticks_include_switching_and_preempted_intervals() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 4, priority: 3, patience: None },
+            Customer { id: 2, arrival: 1, service: 1, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 2, waiting_capacity: 1 },
+    ).unwrap();
+    assert_eq!(r.stats.busy_ticks, 9);
+}
+
+#[test]
+fn spec_r33_wait_ticks_include_reneged_customer_waiting() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 5, priority: 0, patience: None },
+            Customer { id: 2, arrival: 1, service: 1, priority: 1, patience: Some(2) },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    assert_eq!(r.stats.wait_ticks, 2);
+}
+
+#[test]
+fn spec_r34_turnaround_counts_completed_only() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 4, priority: 0, patience: None },
+            Customer { id: 2, arrival: 1, service: 1, priority: 1, patience: Some(1) },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    assert_eq!(r.stats.turnaround_ticks, 4);
+}
+
+#[test]
+fn spec_r35_means_are_milli_ticks_and_zero_denominators_are_zero() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 1, priority: 0, patience: None },
+            Customer { id: 2, arrival: 0, service: 0, priority: 1, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 0 },
+    ).unwrap();
+    assert_eq!(r.stats.mean_wait_milli, 0);
+    assert_eq!(r.stats.mean_turnaround_milli, 1000);
+    let empty = simulate(&[], &Config { switch_cost: 0, waiting_capacity: 0 }).unwrap();
+    assert_eq!((empty.stats.mean_wait_milli, empty.stats.mean_turnaround_milli), (0, 0));
+}
+
+#[test]
+fn spec_r36_utilization_uses_absolute_elapsed_including_initial_idle() {
+    let r = simulate(
+        &[Customer { id: 1, arrival: 5, service: 5, priority: 0, patience: None }],
+        &Config { switch_cost: 0, waiting_capacity: 0 },
+    ).unwrap();
+    assert_eq!(r.stats.elapsed, 10);
+    assert_eq!(r.stats.busy_ticks, 5);
+    assert_eq!(r.stats.utilization_bps, 5000);
+}
+
+#[test]
+fn spec_r37_rounded_ratio_full_u128_and_ties_to_even() {
+    assert_eq!(rounded_ratio(1, 2), Some(0));
+    assert_eq!(rounded_ratio(3, 2), Some(2));
+    assert_eq!(rounded_ratio(5, 2), Some(2));
+    assert_eq!(rounded_ratio(u128::MAX, 1), Some(u128::MAX));
+    assert_eq!(rounded_ratio(u128::MAX, u128::MAX), Some(1));
+    assert_eq!(rounded_ratio(u128::MAX - 1, u128::MAX), Some(1));
+    assert_eq!(rounded_ratio(1, 0), None);
+}
+
+#[test]
+fn spec_r38_max_tick_zero_additions_succeed_and_deadline_overflow_precedes_runtime() {
+    let max = simulate(
+        &[Customer { id: 1, arrival: u64::MAX, service: 0, priority: 0, patience: Some(0) }],
+        &Config { switch_cost: 0, waiting_capacity: 0 },
+    ).unwrap();
+    assert_eq!(max.stats.completed, 1);
+    assert_eq!(max.stats.elapsed, u64::MAX);
+    let overflow = simulate(
+        &[Customer { id: 1, arrival: u64::MAX, service: u64::MAX, priority: 0, patience: Some(1) }],
+        &Config { switch_cost: 0, waiting_capacity: 0 },
+    );
+    assert_eq!(overflow, Err(Error::DeadlineOverflow { index: 0, id: 1 }));
+}
+
+#[test]
+fn spec_r39_errors_are_atomic_and_calls_do_not_mutate_inputs() {
+    let customers = [Customer { id: 1, arrival: 0, service: u64::MAX, priority: 0, patience: None }];
+    let config = Config { switch_cost: 1, waiting_capacity: 0 };
+    let original_customers = customers.clone();
+    let original_config = config.clone();
+    let first = simulate(&customers, &config);
+    let second = simulate(&customers, &config);
+    assert_eq!(first, second);
+    assert_eq!(customers, original_customers);
+    assert_eq!(config, original_config);
+    assert!(matches!(first, Err(Error::TimeOverflow { .. })));
+}
+
+#[test]
+fn spec_r40_large_time_gap_completes_without_tick_iteration() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: u64::MAX, priority: 0, patience: None },
+            Customer { id: 2, arrival: u64::MAX, service: 0, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 0 },
+    );
+    assert!(r.is_ok());
+}
+
+#[test]
+fn spec_r41_boundary_deadline_expires_before_arrival_and_preemption() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 5, priority: 3, patience: None },
+            Customer { id: 2, arrival: 1, service: 1, priority: 2, patience: Some(2) },
+            Customer { id: 3, arrival: 3, service: 1, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 2, waiting_capacity: 2 },
+    ).unwrap();
+    let t3: Vec<_> = r.events.iter().filter(|e| e.time == 3).map(|e| (e.customer, e.kind.clone())).collect();
+    assert!(matches!(t3[0].1, Kind::Renege { .. }));
+    assert_eq!(t3[1], (3, Kind::Arrive));
+}
+
+#[test]
+fn spec_r42_no_mid_cohort_dispatch_and_post_phase_waiting_capacity() {
+    let r = simulate(
+        &[
+            Customer { id: 1, arrival: 0, service: 3, priority: 0, patience: None },
+            Customer { id: 2, arrival: 0, service: 3, priority: 1, patience: None },
+            Customer { id: 3, arrival: 0, service: 3, priority: 2, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    assert_eq!((r.stats.accepted, r.stats.balked), (2, 1));
+    let first_start = r.events.iter().position(|e| matches!(e.kind, Kind::Start { .. })).unwrap();
+    assert!(r.events[..first_start].iter().all(|e| !matches!(e.kind, Kind::Start { .. } | Kind::Resume { .. })));
+}
+
+#[test]
+fn spec_r43_customer_identity_and_priority_persist_across_resume() {
+    let r = simulate(
+        &[
+            Customer { id: 17, arrival: 0, service: 3, priority: 3, patience: None },
+            Customer { id: 23, arrival: 1, service: 1, priority: 0, patience: None },
+        ],
+        &Config { switch_cost: 0, waiting_capacity: 1 },
+    ).unwrap();
+    assert!(r.events.iter().any(|e| *e == Event {
+        time: 1,
+        customer: 17,
+        kind: Kind::Preempt { remaining: 2, by: 23 },
+    }));
+    assert!(r.events.iter().any(|e| e.customer == 17 && matches!(e.kind, Kind::Resume { .. })));
+    assert!(r.events.iter().all(|e| e.customer == 17 || e.customer == 23));
+}

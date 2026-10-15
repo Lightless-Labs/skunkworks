@@ -1,0 +1,667 @@
+#[test]
+fn spec_r1_single_file_edition_2024_surface() {
+    let message = Message { fields: vec![] };
+    assert_eq!(encode_message(&message, 0), Ok(vec![0]));
+}
+
+#[test]
+fn spec_r2_public_types_and_roundtrip() {
+    let message = Message {
+        fields: vec![
+            Field::UInt { tag: 1, value: u64::MAX },
+            Field::Bytes { tag: 2, data: vec![0, 255] },
+            Field::Nested {
+                tag: 3,
+                message: Message { fields: vec![] },
+            },
+        ],
+    };
+    let encoded = encode_message(&message, 1).unwrap();
+    assert_eq!(decode_message(&encoded, 0, 1), Ok((message, encoded.len())));
+}
+
+#[test]
+fn spec_r3_error_variants_and_equality() {
+    assert_eq!(
+        decode_message(&[], 1, 0),
+        Err(Error::StartOutOfBounds { offset: 1 })
+    );
+    assert_eq!(
+        decode_message(&[0], 0, 33),
+        Err(Error::InvalidDepthLimit { limit: 33 })
+    );
+    assert_eq!(
+        decode_message(&[1, 0], 0, 0),
+        Err(Error::InvalidWire { offset: 1, wire: 0 })
+    );
+    assert_eq!(
+        decode_message(&[1, 8], 0, 0),
+        Err(Error::Truncated { offset: 2, start: 2 })
+    );
+    assert_eq!(
+        decode_message(&[1, 8, 0], 0, 0),
+        Err(Error::LengthOutOfBounds { offset: 1, length: 8 })
+    );
+    assert_eq!(
+        decode_message(&[1, 0], 0, 0),
+        Err(Error::InvalidWire { offset: 1, wire: 0 })
+    );
+}
+
+#[test]
+fn spec_r4_frame_length_counts_body_only() {
+    assert_eq!(encode_message(&Message { fields: vec![] }, 0), Ok(vec![0]));
+    let message = Message { fields: vec![Field::UInt { tag: 1, value: 1 }] };
+    assert_eq!(encode_message(&message, 0), Ok(vec![2, 8, 1]));
+}
+
+#[test]
+fn spec_r5_varints_are_unsigned_leb128_and_minimal() {
+    let message = Message { fields: vec![Field::UInt { tag: 1, value: 128 }] };
+    assert_eq!(encode_message(&message, 0), Ok(vec![3, 8, 128, 1]));
+    assert_eq!(
+        decode_message(&[3, 8, 128, 1], 0, 0),
+        Ok((message, 4))
+    );
+}
+
+#[test]
+fn spec_r6_tenth_byte_overflow_precedes_truncation() {
+    let mut input = vec![0xff; 10];
+    input[0] = 0x80;
+    assert_eq!(
+        decode_message(&input, 0, 0),
+        Err(Error::Overflow { offset: 9, start: 0 })
+    );
+
+    let mut input = vec![0xff; 9];
+    input.push(0x02);
+    assert_eq!(
+        decode_message(&input, 0, 0),
+        Err(Error::Overflow { offset: 9, start: 0 })
+    );
+
+    let mut canonical_ten_byte = vec![0x80; 9];
+    canonical_ten_byte.push(0x01);
+    assert_eq!(
+        decode_message(&canonical_ten_byte, 0, 0),
+        Err(Error::LengthOutOfBounds {
+            offset: 0,
+            length: u64::MAX
+        })
+    );
+}
+
+#[test]
+fn spec_r7_varints_use_their_container_end_for_truncation() {
+    assert_eq!(
+        decode_message(&[2, 8, 0x80, 0], 0, 0),
+        Err(Error::Truncated { offset: 3, start: 2 })
+    );
+
+    assert_eq!(
+        decode_message(&[3, 10, 0x80, 0, 0], 0, 0),
+        Err(Error::Truncated { offset: 4, start: 2 })
+    );
+}
+
+#[test]
+fn spec_r8_root_start_validation_and_absolute_offsets() {
+    assert_eq!(
+        decode_message(&[], 1, 0),
+        Err(Error::StartOutOfBounds { offset: 1 })
+    );
+    assert_eq!(
+        decode_message(&[], 0, 0),
+        Err(Error::Truncated { offset: 0, start: 0 })
+    );
+    assert_eq!(
+        decode_message(&[0, 0x80], 1, 0),
+        Err(Error::Truncated { offset: 2, start: 1 })
+    );
+}
+
+#[test]
+fn spec_r9_frame_length_checked_against_remaining_input() {
+    assert_eq!(
+        decode_message(&[3, 8], 0, 0),
+        Err(Error::LengthOutOfBounds { offset: 0, length: 3 })
+    );
+    assert_eq!(
+        decode_message(&[0, 2, 8, 1], 1, 0),
+        Ok((Message { fields: vec![Field::UInt { tag: 1, value: 1 }] }, 4))
+    );
+}
+
+#[test]
+fn spec_r10_decode_exactly_one_frame_and_return_absolute_end() {
+    let input = [0, 2, 8, 1, 0xff];
+    assert_eq!(
+        decode_message(&input, 1, 0),
+        Ok((Message { fields: vec![Field::UInt { tag: 1, value: 1 }] }, 4))
+    );
+}
+
+#[test]
+fn spec_r11_decode_full_key_before_splitting_tag_and_wire() {
+    assert_eq!(
+        decode_message(&[2, 0x80, 0x02], 0, 0),
+        Err(Error::InvalidWire { offset: 1, wire: 0 })
+    );
+}
+
+#[test]
+fn spec_r12_invalid_tag_precedes_wire_validation() {
+    assert_eq!(
+        decode_message(&[2, 0x80, 0x10], 0, 0),
+        Err(Error::InvalidTag { offset: 1, tag: 32 })
+    );
+    assert_eq!(
+        decode_message(&[2, 0x81, 0x10], 0, 0),
+        Err(Error::InvalidTag { offset: 1, tag: 32 })
+    );
+}
+
+#[test]
+fn spec_r13_supported_wires_and_invalid_wire() {
+    let input = [17, 8, 1, 17, 1, 0, 0, 0, 0, 0, 0, 0, 0, 17, 2, 0, 17, 3, 0, 17, 5, 0, 0, 0, 0];
+    assert_eq!(decode_message(&input, 0, 0), Ok((Message { fields: vec![] }, 26)));
+
+    assert_eq!(
+        decode_message(&[1, 3], 0, 0),
+        Err(Error::InvalidWire { offset: 1, wire: 3 })
+    );
+}
+
+#[test]
+fn spec_r14_tag_order_includes_skipped_fields_and_precedes_payload() {
+    assert_eq!(
+        decode_message(&[4, 18, 0, 8, 0x80], 0, 0),
+        Err(Error::OutOfOrder { offset: 3, previous: 2, tag: 1 })
+    );
+}
+
+#[test]
+fn spec_r15_equal_tags_only_for_consecutive_wire_two_fields() {
+    assert_eq!(
+        decode_message(&[4, 8, 0, 8, 0x80], 0, 0),
+        Err(Error::Duplicate { offset: 3, tag: 1 })
+    );
+    assert_eq!(
+        decode_message(&[4, 10, 0, 8, 0x80], 0, 0),
+        Err(Error::Duplicate { offset: 3, tag: 1 })
+    );
+    assert_eq!(
+        decode_message(&[4, 10, 0, 10, 0], 0, 0),
+        Ok((Message { fields: vec![Field::Bytes { tag: 1, data: vec![] }] }, 5))
+    );
+}
+
+#[test]
+fn spec_r16_retained_types_and_skipped_fixed_width_fields() {
+    let input = [15, 8, 7, 17, 1, 0, 0, 0, 0, 0, 0, 0, 0, 21, 0, 0, 0, 0, 18, 1, 9];
+    assert_eq!(
+        decode_message(&input, 0, 0),
+        Ok((Message {
+            fields: vec![
+                Field::UInt { tag: 1, value: 7 },
+                Field::Bytes { tag: 2, data: vec![9] }
+            ]
+        }, 21))
+    );
+}
+
+#[test]
+fn spec_r17_unknown_fields_validate_payload_and_nested_content() {
+    assert_eq!(
+        decode_message(&[3, 16, 0x80, 0], 0, 0),
+        Err(Error::Truncated { offset: 3, start: 2 })
+    );
+
+    assert_eq!(
+        decode_message(&[4, 19, 1, 8, 0x80], 0, 1),
+        Err(Error::Truncated { offset: 5, start: 4 })
+    );
+
+    assert_eq!(
+        decode_message(&[2, 128, 1], 0, 0),
+        Ok((Message { fields: vec![] }, 3))
+    );
+}
+
+#[test]
+fn spec_r18_repeated_bytes_merge_without_affecting_wire_encoding() {
+    let input = [6, 10, 1, 7, 10, 1, 8];
+    assert_eq!(
+        decode_message(&input, 0, 0),
+        Ok((Message { fields: vec![Field::Bytes { tag: 1, data: vec![7, 8] }] }, 7))
+    );
+
+    let message = Message {
+        fields: vec![
+            Field::Bytes { tag: 1, data: vec![7] },
+            Field::Bytes { tag: 1, data: vec![8] },
+        ],
+    };
+    assert_eq!(encode_message(&message, 0), Ok(vec![6, 10, 1, 7, 10, 1, 8]));
+
+    assert_eq!(
+        decode_message(&[4, 130, 1, 0, 130, 1, 0], 0, 0),
+        Ok((Message { fields: vec![] }, 7))
+    );
+}
+
+#[test]
+fn spec_r19_uint_payload_truncation_starts_at_payload() {
+    assert_eq!(
+        decode_message(&[2, 8, 0x80], 0, 0),
+        Err(Error::Truncated { offset: 3, start: 2 })
+    );
+}
+
+#[test]
+fn spec_r20_fixed_width_payload_bounds_are_frame_local() {
+    assert_eq!(
+        decode_message(&[2, 9, 0, 0, 0, 0, 0, 0, 0], 0, 0),
+        Err(Error::LengthOutOfBounds { offset: 1, length: 8 })
+    );
+    assert_eq!(
+        decode_message(&[2, 13, 0, 0, 0, 0], 0, 0),
+        Err(Error::LengthOutOfBounds { offset: 1, length: 4 })
+    );
+}
+
+#[test]
+fn spec_r21_length_varint_integrity_precedes_bounds() {
+    assert_eq!(
+        decode_message(&[2, 10, 0x80], 0, 0),
+        Err(Error::Truncated { offset: 3, start: 2 })
+    );
+    assert_eq!(
+        decode_message(&[3, 10, 0x81, 0], 0, 0),
+        Err(Error::NonCanonical { offset: 2 })
+    );
+    assert_eq!(
+        decode_message(&[2, 10, 2], 0, 0),
+        Err(Error::LengthOutOfBounds { offset: 2, length: 2 })
+    );
+    assert_eq!(
+        decode_message(&[3, 19, 0], 0, 0),
+        Ok((Message { fields: vec![] }, 3))
+    );
+}
+
+#[test]
+fn spec_r22_raw_bytes_are_opaque() {
+    let message = Message { fields: vec![Field::Bytes { tag: 1, data: vec![0x80, 0, 0xff] }] };
+    let encoded = encode_message(&message, 0).unwrap();
+    assert_eq!(decode_message(&encoded, 0, 0), Ok((message, encoded.len())));
+}
+
+#[test]
+fn spec_r23_field_error_precedence() {
+    assert_eq!(
+        decode_message(&[2, 0x80, 0], 0, 0),
+        Err(Error::NonCanonical { offset: 1 })
+    );
+    assert_eq!(
+        decode_message(&[2, 16, 0x80], 0, 0),
+        Err(Error::InvalidTag { offset: 1, tag: 2 })
+    );
+    assert_eq!(
+        decode_message(&[2, 3, 0x80], 0, 0),
+        Err(Error::InvalidWire { offset: 1, wire: 3 })
+    );
+    assert_eq!(
+        decode_message(&[4, 18, 0, 8, 0x80], 0, 0),
+        Err(Error::OutOfOrder { offset: 3, previous: 2, tag: 1 })
+    );
+    assert_eq!(
+        decode_message(&[4, 8, 0, 8, 0x80], 0, 0),
+        Err(Error::Duplicate { offset: 3, tag: 1 })
+    );
+}
+
+#[test]
+fn spec_r24_encoder_rejects_invalid_tags_with_field_index_offset() {
+    let message = Message {
+        fields: vec![
+            Field::UInt { tag: 1, value: 0 },
+            Field::Bytes { tag: 0, data: vec![] },
+        ],
+    };
+    assert_eq!(
+        encode_message(&message, 0),
+        Err(Error::InvalidTag { offset: 1, tag: 0 })
+    );
+    assert_eq!(
+        encode_message(&Message { fields: vec![Field::UInt { tag: 16, value: 0 }] }, 0),
+        Err(Error::InvalidTag { offset: 0, tag: 16 })
+    );
+}
+
+#[test]
+fn spec_r25_encoder_checks_supplied_order_and_duplicate_types() {
+    assert_eq!(
+        encode_message(&Message {
+            fields: vec![
+                Field::UInt { tag: 2, value: 0 },
+                Field::Bytes { tag: 1, data: vec![] },
+            ]
+        }, 0),
+        Err(Error::OutOfOrder { offset: 1, previous: 2, tag: 1 })
+    );
+    assert_eq!(
+        encode_message(&Message {
+            fields: vec![
+                Field::Bytes { tag: 1, data: vec![] },
+                Field::UInt { tag: 1, value: 0 },
+            ]
+        }, 0),
+        Err(Error::Duplicate { offset: 1, tag: 1 })
+    );
+    assert_eq!(
+        encode_message(&Message {
+            fields: vec![
+                Field::Bytes { tag: 1, data: vec![] },
+                Field::Bytes { tag: 1, data: vec![] },
+            ]
+        }, 0),
+        Ok(vec![4, 10, 0, 10, 0])
+    );
+}
+
+#[test]
+fn spec_r26_encoder_uses_each_field_wire_and_minimal_lengths() {
+    let message = Message {
+        fields: vec![
+            Field::UInt { tag: 1, value: 128 },
+            Field::Bytes { tag: 2, data: vec![1, 2] },
+            Field::Nested { tag: 3, message: Message { fields: vec![] } },
+        ],
+    };
+    assert_eq!(encode_message(&message, 1), Ok(vec![9, 8, 128, 1, 18, 2, 1, 2, 27, 0]));
+}
+
+#[test]
+fn spec_r27_empty_fields_empty_bytes_and_no_mutation() {
+    let empty = Message { fields: vec![] };
+    assert_eq!(encode_message(&empty, 0), Ok(vec![0]));
+
+    let message = Message { fields: vec![Field::Bytes { tag: 1, data: vec![] }] };
+    let before = message.clone();
+    assert_eq!(encode_message(&message, 0), Ok(vec![2, 10, 0]));
+    assert_eq!(message, before);
+}
+
+#[test]
+fn spec_r28_zero_body_or_only_skipped_fields_decode_empty() {
+    assert_eq!(
+        decode_message(&[0], 0, 0),
+        Ok((Message { fields: vec![] }, 1))
+    );
+    assert_eq!(
+        decode_message(&[2, 128, 1], 0, 0),
+        Ok((Message { fields: vec![] }, 3))
+    );
+}
+
+#[test]
+fn spec_r29_malformed_calls_return_errors_without_panicking() {
+    for input in [&[][..], &[0x80][..], &[1, 0xff][..], &[1, 8][..]] {
+        let _ = decode_message(input, 0, 0);
+    }
+    let _ = encode_message(
+        &Message { fields: vec![Field::UInt { tag: u32::MAX, value: 0 }] },
+        0,
+    );
+}
+
+#[test]
+fn spec_r30_skipped_fields_participate_in_order_and_duplicates() {
+    assert_eq!(
+        decode_message(&[4, 8, 0, 128, 1], 0, 0),
+        Err(Error::Duplicate { offset: 3, tag: 1 })
+    );
+    assert_eq!(
+        decode_message(&[4, 18, 0, 8, 0x80], 0, 0),
+        Err(Error::OutOfOrder { offset: 3, previous: 2, tag: 1 })
+    );
+}
+
+#[test]
+fn spec_r31_completed_varints_with_zero_final_payload_are_noncanonical() {
+    assert_eq!(
+        decode_message(&[0x80, 0], 0, 0),
+        Err(Error::NonCanonical { offset: 0 })
+    );
+    assert_eq!(
+        decode_message(&[2, 8, 0x80, 0], 0, 0),
+        Err(Error::NonCanonical { offset: 2 })
+    );
+    assert_eq!(
+        decode_message(&[3, 10, 0x81, 0, 0], 0, 0),
+        Err(Error::NonCanonical { offset: 2 })
+    );
+}
+
+#[test]
+fn spec_r32_overflow_and_truncation_precede_canonicality() {
+    assert_eq!(
+        decode_message(&[0x80], 0, 0),
+        Err(Error::Truncated { offset: 1, start: 0 })
+    );
+
+    let mut input = vec![0x80; 9];
+    input.push(0x02);
+    assert_eq!(
+        decode_message(&input, 0, 0),
+        Err(Error::Overflow { offset: 9, start: 0 })
+    );
+
+    let mut ten_byte_zero = vec![0x80; 9];
+    ten_byte_zero.push(0);
+    assert_eq!(
+        decode_message(&ten_byte_zero, 0, 0),
+        Err(Error::NonCanonical { offset: 0 })
+    );
+}
+
+#[test]
+fn spec_r33_canonicality_precedes_tag_and_length_use() {
+    assert_eq!(
+        decode_message(&[2, 0x80, 0], 0, 0),
+        Err(Error::NonCanonical { offset: 1 })
+    );
+    assert_eq!(
+        decode_message(&[3, 10, 0x82, 0], 0, 0),
+        Err(Error::NonCanonical { offset: 2 })
+    );
+}
+
+#[test]
+fn spec_r34_nested_payload_is_body_without_frame_header() {
+    let input = [4, 27, 2, 16, 9];
+    assert_eq!(
+        decode_message(&input, 0, 1),
+        Ok((Message {
+            fields: vec![Field::Nested {
+                tag: 3,
+                message: Message { fields: vec![Field::UInt { tag: 2, value: 9 }] },
+            }]
+        }, 5))
+    );
+}
+
+#[test]
+fn spec_r35_depth_limit_is_inclusive_from_root_zero() {
+    let message = Message {
+        fields: vec![Field::Nested {
+            tag: 1,
+            message: Message { fields: vec![] },
+        }],
+    };
+    assert_eq!(encode_message(&message, 1), Ok(vec![2, 11, 0]));
+    assert_eq!(
+        encode_message(&message, 0),
+        Err(Error::DepthExceeded { offset: 0, depth: 1 })
+    );
+    assert_eq!(
+        decode_message(&[2, 11, 0], 0, 1),
+        Ok((message, 3))
+    );
+}
+
+#[test]
+fn spec_r36_depth_limit_argument_validation_precedes_other_checks() {
+    assert_eq!(
+        encode_message(&Message { fields: vec![] }, 33),
+        Err(Error::InvalidDepthLimit { limit: 33 })
+    );
+    assert_eq!(
+        decode_message(&[], usize::MAX, 33),
+        Err(Error::InvalidDepthLimit { limit: 33 })
+    );
+    assert_eq!(encode_message(&Message { fields: vec![] }, 32), Ok(vec![0]));
+}
+
+#[test]
+fn spec_r37_nested_length_and_bounds_precede_depth_and_content() {
+    assert_eq!(
+        decode_message(&[2, 11, 0x80], 0, 0),
+        Err(Error::Truncated { offset: 3, start: 2 })
+    );
+    assert_eq!(
+        decode_message(&[3, 11, 2, 0], 0, 0),
+        Err(Error::LengthOutOfBounds { offset: 2, length: 2 })
+    );
+    assert_eq!(
+        decode_message(&[3, 11, 1, 0xff], 0, 0),
+        Err(Error::DepthExceeded { offset: 1, depth: 1 })
+    );
+}
+
+#[test]
+fn spec_r38_nested_ordering_resets_and_sibling_order_is_preserved() {
+    let input = [8, 27, 4, 18, 0, 8, 0, 16, 1];
+    assert_eq!(
+        decode_message(&input, 0, 1),
+        Err(Error::OutOfOrder { offset: 6, previous: 2, tag: 1 })
+    );
+
+    let input = [8, 27, 2, 18, 0, 8, 0];
+    assert_eq!(
+        decode_message(&input, 0, 1),
+        Err(Error::OutOfOrder { offset: 5, previous: 2, tag: 1 })
+    );
+}
+
+#[test]
+fn spec_r39_known_empty_and_unknown_nested_bodies_are_validated() {
+    assert_eq!(
+        decode_message(&[2, 11, 0], 0, 1),
+        Ok((Message {
+            fields: vec![Field::Nested { tag: 1, message: Message { fields: vec![] } }]
+        }, 3))
+    );
+    assert_eq!(
+        decode_message(&[2, 19, 0], 0, 1),
+        Ok((Message { fields: vec![] }, 3))
+    );
+    assert_eq!(
+        decode_message(&[4, 19, 2, 0x80, 0], 0, 1),
+        Err(Error::NonCanonical { offset: 3 })
+    );
+}
+
+#[test]
+fn spec_r40_equal_tags_with_nested_are_duplicate_before_length_or_depth() {
+    assert_eq!(
+        decode_message(&[4, 11, 0, 11, 0x80], 0, 0),
+        Err(Error::Duplicate { offset: 3, tag: 1 })
+    );
+    assert_eq!(
+        decode_message(&[4, 11, 0, 10, 0x80], 0, 0),
+        Err(Error::Duplicate { offset: 3, tag: 1 })
+    );
+    assert_eq!(
+        decode_message(&[4, 10, 0, 11, 0x80], 0, 0),
+        Err(Error::Duplicate { offset: 3, tag: 1 })
+    );
+}
+
+#[test]
+fn spec_r41_encoder_checks_parent_then_depth_then_child() {
+    let message = Message {
+        fields: vec![Field::Nested {
+            tag: 1,
+            message: Message { fields: vec![Field::UInt { tag: 0, value: 0 }] },
+        }],
+    };
+    assert_eq!(
+        encode_message(&message, 0),
+        Err(Error::DepthExceeded { offset: 0, depth: 1 })
+    );
+
+    let message = Message {
+        fields: vec![
+            Field::UInt { tag: 2, value: 0 },
+            Field::Nested { tag: 1, message: Message { fields: vec![] } },
+        ],
+    };
+    assert_eq!(
+        encode_message(&message, 0),
+        Err(Error::OutOfOrder { offset: 1, previous: 2, tag: 1 })
+    );
+}
+
+#[test]
+fn spec_r42_encoder_child_errors_use_local_index_and_depth_matches() {
+    let message = Message {
+        fields: vec![
+            Field::UInt { tag: 1, value: 0 },
+            Field::Nested {
+                tag: 2,
+                message: Message {
+                    fields: vec![
+                        Field::UInt { tag: 1, value: 0 },
+                        Field::UInt { tag: 0, value: 0 },
+                    ],
+                },
+            },
+        ],
+    };
+    assert_eq!(
+        encode_message(&message, 1),
+        Err(Error::InvalidTag { offset: 1, tag: 0 })
+    );
+
+    let nested = Message {
+        fields: vec![Field::Nested {
+            tag: 1,
+            message: Message {
+                fields: vec![Field::Nested { tag: 1, message: Message { fields: vec![] } }],
+            },
+        }],
+    };
+    assert_eq!(
+        encode_message(&nested, 1),
+        Err(Error::DepthExceeded { offset: 0, depth: 2 })
+    );
+}
+
+#[test]
+fn spec_r43_nested_lengths_and_opaque_payloads_encode_exactly() {
+    let message = Message {
+        fields: vec![
+            Field::Bytes { tag: 1, data: vec![0x80, 0] },
+            Field::Nested {
+                tag: 2,
+                message: Message { fields: vec![Field::Bytes { tag: 1, data: vec![0xff] }] },
+            },
+        ],
+    };
+    let encoded = vec![8, 10, 2, 0x80, 0, 19, 3, 10, 1, 0xff];
+    assert_eq!(encode_message(&message, 1), Ok(encoded.clone()));
+    assert_eq!(decode_message(&encoded, 0, 1), Ok((message, encoded.len())));
+}

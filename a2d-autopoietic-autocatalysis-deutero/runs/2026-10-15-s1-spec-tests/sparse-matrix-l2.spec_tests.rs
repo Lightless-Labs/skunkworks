@@ -1,0 +1,424 @@
+#[test]
+fn spec_r1_compiles_with_std_only_surface() {
+    let sparse = Sparse::from_coo(0, 0, &[]).unwrap();
+    assert_eq!(sparse.shape(), (0, 0));
+}
+
+#[test]
+fn spec_r2_traits_and_public_entry_fields() {
+    fn assert_clone_debug_partial_eq<T: Clone + std::fmt::Debug + PartialEq>() {}
+    fn assert_copy_debug_partial_eq<T: Copy + std::fmt::Debug + PartialEq>() {}
+    fn assert_axis_traits<T: Clone + Copy + std::fmt::Debug + PartialEq + Eq>() {}
+    assert_clone_debug_partial_eq::<Sparse>();
+    assert_clone_debug_partial_eq::<Csr>();
+    assert_clone_debug_partial_eq::<Error>();
+    assert_axis_traits::<Axis>();
+    assert_copy_debug_partial_eq::<Entry>();
+
+    let entry = Entry { row: 2, col: 3, value: 4.5 };
+    assert_eq!((entry.row, entry.col, entry.value), (2, 3, 4.5));
+}
+
+#[test]
+fn spec_r3_dimension_limits_and_check_order() {
+    assert_eq!(
+        Sparse::from_coo(MAX_DIM + 1, MAX_DIM + 1, &[]),
+        Err(Error::Shape { axis: Axis::Row, size: MAX_DIM + 1 })
+    );
+    assert_eq!(
+        Sparse::from_coo(0, MAX_DIM + 1, &[]),
+        Err(Error::Shape { axis: Axis::Column, size: MAX_DIM + 1 })
+    );
+    assert_eq!(Sparse::from_coo(MAX_DIM, MAX_DIM, &[]).unwrap().shape(), (MAX_DIM, MAX_DIM));
+    assert_eq!(
+        Csr::from_parts(MAX_DIM + 1, MAX_DIM + 1, vec![], vec![], vec![]),
+        Err(Error::Shape { axis: Axis::Row, size: MAX_DIM + 1 })
+    );
+    assert_eq!(
+        Csr::from_parts(0, MAX_DIM + 1, vec![], vec![], vec![]),
+        Err(Error::Shape { axis: Axis::Column, size: MAX_DIM + 1 })
+    );
+}
+
+#[test]
+fn spec_r4_zero_shapes_and_empty_coo() {
+    assert_eq!(Sparse::from_coo(0, 5, &[]).unwrap().shape(), (0, 5));
+    assert_eq!(Sparse::from_coo(5, 0, &[]).unwrap().shape(), (5, 0));
+    assert_eq!(Sparse::from_coo(0, 0, &[]).unwrap().entries(), &[]);
+    assert_eq!(
+        Sparse::from_coo(0, 5, &[Entry { row: 0, col: 0, value: 1.0 }]),
+        Err(Error::Bounds { entry: 0, axis: Axis::Row, index: 0, limit: 0 })
+    );
+    assert_eq!(
+        Sparse::from_coo(5, 0, &[Entry { row: 0, col: 0, value: 1.0 }]),
+        Err(Error::Bounds { entry: 0, axis: Axis::Column, index: 0, limit: 0 })
+    );
+}
+
+#[test]
+fn spec_r5_coo_validation_order_and_original_indices() {
+    let items = [
+        Entry { row: 0, col: 0, value: 1.0 },
+        Entry { row: 4, col: 3, value: 2.0 },
+        Entry { row: 3, col: 8, value: 3.0 },
+    ];
+    assert_eq!(
+        Sparse::from_coo(3, 5, &items),
+        Err(Error::Bounds { entry: 1, axis: Axis::Row, index: 4, limit: 3 })
+    );
+    assert_eq!(
+        Sparse::from_coo(4, 5, &items),
+        Err(Error::Bounds { entry: 2, axis: Axis::Column, index: 8, limit: 5 })
+    );
+}
+
+#[test]
+fn spec_r6_nonfinite_coo_and_bounds_priority() {
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(
+            Sparse::from_coo(1, 1, &[Entry { row: 0, col: 0, value }]),
+            Err(Error::NonFinite { entry: 0 })
+        );
+    }
+    for value in [0.0, -0.0, f64::MIN_POSITIVE, f64::from_bits(1), -3.25] {
+        assert!(Sparse::from_coo(1, 1, &[Entry { row: 0, col: 0, value }]).is_ok());
+    }
+    assert_eq!(
+        Sparse::from_coo(0, 0, &[Entry { row: 1, col: 0, value: f64::NAN }]),
+        Err(Error::Bounds { entry: 0, axis: Axis::Row, index: 1, limit: 0 })
+    );
+}
+
+#[test]
+fn spec_r7_validate_all_before_duplicate_sums() {
+    let items = [
+        Entry { row: 0, col: 0, value: f64::MAX },
+        Entry { row: 0, col: 0, value: f64::MAX },
+        Entry { row: 2, col: 0, value: f64::NAN },
+    ];
+    assert_eq!(
+        Sparse::from_coo(2, 1, &items),
+        Err(Error::Bounds { entry: 2, axis: Axis::Row, index: 2, limit: 2 })
+    );
+    let items = [
+        Entry { row: 0, col: 0, value: f64::MAX },
+        Entry { row: 0, col: 0, value: f64::MAX },
+        Entry { row: 1, col: 0, value: f64::NAN },
+    ];
+    assert_eq!(Sparse::from_coo(2, 1, &items), Err(Error::NonFinite { entry: 2 }));
+}
+
+#[test]
+fn spec_r8_duplicate_sums_follow_input_order_and_include_zeros() {
+    let items = [
+        Entry { row: 0, col: 0, value: 1.0e16 },
+        Entry { row: 0, col: 0, value: 1.0 },
+        Entry { row: 0, col: 0, value: -1.0e16 },
+        Entry { row: 0, col: 1, value: -0.0 },
+        Entry { row: 0, col: 1, value: 2.0 },
+    ];
+    let sparse = Sparse::from_coo(1, 2, &items).unwrap();
+    assert_eq!(sparse.entries(), &[Entry { row: 0, col: 1, value: 2.0 }]);
+}
+
+#[test]
+fn spec_r9_sum_overflow_reports_adding_entry() {
+    let items = [
+        Entry { row: 0, col: 0, value: f64::MAX },
+        Entry { row: 0, col: 0, value: f64::MAX },
+        Entry { row: 0, col: 0, value: -f64::MAX },
+    ];
+    assert_eq!(Sparse::from_coo(1, 1, &items), Err(Error::SumOverflow { entry: 1 }));
+}
+
+#[test]
+fn spec_r10_cancelled_coordinate_can_receive_later_values() {
+    let items = [
+        Entry { row: 0, col: 0, value: 7.0 },
+        Entry { row: 0, col: 0, value: -7.0 },
+        Entry { row: 0, col: 0, value: 2.0 },
+        Entry { row: 0, col: 1, value: -0.0 },
+    ];
+    assert_eq!(
+        Sparse::from_coo(1, 2, &items).unwrap().entries(),
+        &[Entry { row: 0, col: 0, value: 2.0 }]
+    );
+}
+
+#[test]
+fn spec_r11_preserves_smallest_subnormal() {
+    let tiny = f64::from_bits(1);
+    assert_eq!(
+        Sparse::from_coo(1, 1, &[Entry { row: 0, col: 0, value: tiny }])
+            .unwrap()
+            .entries(),
+        &[Entry { row: 0, col: 0, value: tiny }]
+    );
+}
+
+#[test]
+fn spec_r12_canonical_row_then_column_order() {
+    let items = [
+        Entry { row: 2, col: 1, value: 1.0 },
+        Entry { row: 0, col: 2, value: 2.0 },
+        Entry { row: 0, col: 0, value: 3.0 },
+        Entry { row: 1, col: 1, value: 4.0 },
+    ];
+    assert_eq!(
+        Sparse::from_coo(3, 3, &items).unwrap().entries(),
+        &[
+            Entry { row: 0, col: 0, value: 3.0 },
+            Entry { row: 0, col: 2, value: 2.0 },
+            Entry { row: 1, col: 1, value: 4.0 },
+            Entry { row: 2, col: 1, value: 1.0 },
+        ]
+    );
+}
+
+#[test]
+fn spec_r13_accessors_preserve_shape_and_canonical_values() {
+    let sparse = Sparse::from_coo(
+        4,
+        6,
+        &[Entry { row: 2, col: 5, value: f64::from_bits(1) }],
+    )
+    .unwrap();
+    assert_eq!(sparse.shape(), (4, 6));
+    assert_eq!(sparse.entries(), &[Entry { row: 2, col: 5, value: f64::from_bits(1) }]);
+    assert_eq!(Sparse::from_coo(4, 6, &[]).unwrap().shape(), (4, 6));
+}
+
+#[test]
+fn spec_r14_coo_input_unchanged_and_clone_equal() {
+    let items = [
+        Entry { row: 1, col: 1, value: 3.0 },
+        Entry { row: 0, col: 0, value: 2.0 },
+    ];
+    let before = items;
+    let sparse = Sparse::from_coo(2, 2, &items).unwrap();
+    let cloned = sparse.clone();
+    assert_eq!(items, before);
+    assert_eq!(cloned, sparse);
+    let shape = sparse.shape();
+    let entries = sparse.entries().to_vec();
+    let _ = sparse.shape();
+    let _ = sparse.entries();
+    assert_eq!(sparse.shape(), shape);
+    assert_eq!(sparse.entries(), entries.as_slice());
+}
+
+#[test]
+fn spec_r15_malformed_parts_return_errors_without_panicking() {
+    let result = std::panic::catch_unwind(|| {
+        Csr::from_parts(2, 2, vec![0, 99, 0], vec![], vec![])
+    });
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), Err(Error::RowPtrEnd { found: 0, expected: 0 }));
+}
+
+#[test]
+fn spec_r16_error_indices_are_zero_based_and_original() {
+    let items = [
+        Entry { row: 0, col: 0, value: 1.0 },
+        Entry { row: 0, col: 0, value: f64::MAX },
+        Entry { row: 0, col: 0, value: f64::MAX },
+    ];
+    assert_eq!(Sparse::from_coo(1, 1, &items), Err(Error::SumOverflow { entry: 2 }));
+    assert_eq!(
+        Csr::from_parts(1, 2, vec![0, 1], vec![2], vec![1.0]),
+        Err(Error::ColumnBounds { slot: 0, column: 2, limit: 2 })
+    );
+}
+
+#[test]
+fn spec_r17_ieee_arithmetic_and_finite_successful_results() {
+    let sparse = Sparse::from_coo(
+        1,
+        2,
+        &[
+            Entry { row: 0, col: 0, value: 1.0e16 },
+            Entry { row: 0, col: 0, value: 1.0 },
+            Entry { row: 0, col: 0, value: -1.0e16 },
+            Entry { row: 0, col: 1, value: f64::from_bits(1) },
+        ],
+    )
+    .unwrap();
+    assert_eq!(sparse.entries(), &[Entry { row: 0, col: 1, value: f64::from_bits(1) }]);
+    let csr = sparse.to_csr();
+    let output = csr.mul_vector(&[0.0, 1.0]).unwrap();
+    assert_eq!(output, vec![f64::from_bits(1)]);
+    assert!(output.iter().all(|value| value.is_finite()));
+}
+
+#[test]
+fn spec_r18_first_error_follows_defined_validation_passes() {
+    assert_eq!(
+        Csr::from_parts(1, 1, vec![1, 0], vec![3], vec![f64::NAN]),
+        Err(Error::RowPtrStart { found: 1 })
+    );
+    assert_eq!(
+        Csr::from_parts(1, 1, vec![0, 0], vec![3], vec![f64::NAN]),
+        Err(Error::ColumnBounds { slot: 0, column: 3, limit: 1 })
+    );
+}
+
+#[test]
+fn spec_r19_csr_row_pointers_encode_cumulative_rows() {
+    let sparse = Sparse::from_coo(
+        4,
+        4,
+        &[
+            Entry { row: 0, col: 2, value: 1.0 },
+            Entry { row: 2, col: 1, value: 2.0 },
+            Entry { row: 3, col: 0, value: 3.0 },
+        ],
+    )
+    .unwrap();
+    let csr = sparse.to_csr();
+    assert_eq!(csr.row_ptr(), &[0, 1, 1, 2, 3]);
+    assert_eq!(csr.col_indices(), &[2, 1, 0]);
+    assert_eq!(csr.values(), &[1.0, 2.0, 3.0]);
+    let empty = Sparse::from_coo(3, 0, &[]).unwrap().to_csr();
+    assert_eq!(empty.row_ptr(), &[0, 0, 0, 0]);
+}
+
+#[test]
+fn spec_r20_csr_accessors_round_trip_without_mutation() {
+    let sparse = Sparse::from_coo(
+        2,
+        3,
+        &[Entry { row: 1, col: 2, value: f64::from_bits(1) }],
+    )
+    .unwrap();
+    let csr = sparse.to_csr();
+    let shape = csr.shape();
+    let row_ptr = csr.row_ptr().to_vec();
+    let columns = csr.col_indices().to_vec();
+    let values = csr.values().to_vec();
+    assert_eq!(csr.to_coo(), sparse);
+    assert_eq!(csr.shape(), (2, 3));
+    assert_eq!(csr.row_ptr(), row_ptr.as_slice());
+    assert_eq!(csr.col_indices(), columns.as_slice());
+    assert_eq!(csr.values(), values.as_slice());
+    assert_eq!(shape, sparse.shape());
+}
+
+#[test]
+fn spec_r21_from_parts_length_checks_in_order() {
+    assert_eq!(
+        Csr::from_parts(2, 3, vec![], vec![0], vec![1.0, 2.0]),
+        Err(Error::RowPtrLength { expected: 3, actual: 0 })
+    );
+    assert_eq!(
+        Csr::from_parts(1, 3, vec![0, 0], vec![0, 1], vec![1.0]),
+        Err(Error::ColumnValueLength { columns: 2, values: 1 })
+    );
+}
+
+#[test]
+fn spec_r22_endpoints_checked_before_interior_and_slots() {
+    assert_eq!(
+        Csr::from_parts(2, 2, vec![1, 99, 0], vec![8], vec![f64::NAN]),
+        Err(Error::RowPtrStart { found: 1 })
+    );
+    assert_eq!(
+        Csr::from_parts(2, 2, vec![0, 99, 0], vec![8], vec![f64::NAN]),
+        Err(Error::RowPtrEnd { found: 0, expected: 1 })
+    );
+    assert_eq!(
+        Csr::from_parts(0, 2, vec![1], vec![], vec![]),
+        Err(Error::RowPtrStart { found: 1 })
+    );
+}
+
+#[test]
+fn spec_r23_row_pointer_monotonicity_before_slot_access() {
+    let result = std::panic::catch_unwind(|| {
+        Csr::from_parts(2, 2, vec![0, usize::MAX, 0], vec![], vec![])
+    });
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), Err(Error::RowPtrOrder { row: 1 }));
+}
+
+#[test]
+fn spec_r24_slot_validation_order_and_row_local_column_order() {
+    assert_eq!(
+        Csr::from_parts(1, 2, vec![0, 1], vec![2], vec![f64::NAN]),
+        Err(Error::ColumnBounds { slot: 0, column: 2, limit: 2 })
+    );
+    assert_eq!(
+        Csr::from_parts(1, 3, vec![0, 2], vec![2, 1], vec![f64::NAN, 1.0]),
+        Err(Error::ColumnOrder { slot: 1 })
+    );
+    assert_eq!(
+        Csr::from_parts(1, 2, vec![0, 1], vec![0], vec![f64::NAN]),
+        Err(Error::NonFiniteValue { slot: 0 })
+    );
+    assert_eq!(
+        Csr::from_parts(1, 2, vec![0, 1], vec![0], vec![-0.0]),
+        Err(Error::ExplicitZero { slot: 0 })
+    );
+    let valid = Csr::from_parts(2, 3, vec![0, 1, 2], vec![2, 1], vec![1.0, 2.0]);
+    assert!(valid.is_ok());
+}
+
+#[test]
+fn spec_r25_vector_length_then_all_values_validated() {
+    let csr = Csr::from_parts(2, 3, vec![0, 0, 0], vec![], vec![]).unwrap();
+    assert_eq!(
+        csr.mul_vector(&[f64::NAN]),
+        Err(Error::VectorLength { expected: 3, actual: 1 })
+    );
+    assert_eq!(
+        csr.mul_vector(&[1.0, 2.0, f64::INFINITY]),
+        Err(Error::NonFiniteVector { index: 2 })
+    );
+    let zero_rows = Csr::from_parts(0, 2, vec![0], vec![], vec![]).unwrap();
+    assert_eq!(zero_rows.mul_vector(&[0.0, f64::NAN]), Err(Error::NonFiniteVector { index: 1 }));
+}
+
+#[test]
+fn spec_r26_product_overflow_precedes_row_accumulation() {
+    let csr = Csr::from_parts(1, 2, vec![0, 2], vec![0, 1], vec![f64::MAX, 1.0]).unwrap();
+    assert_eq!(
+        csr.mul_vector(&[2.0, f64::NAN]),
+        Err(Error::NonFiniteVector { index: 1 })
+    );
+    let csr = Csr::from_parts(1, 2, vec![0, 2], vec![0, 1], vec![f64::MAX, f64::MAX]).unwrap();
+    assert_eq!(
+        csr.mul_vector(&[2.0, 0.0]),
+        Err(Error::ProductOverflow { row: 0, column: 0 })
+    );
+}
+
+#[test]
+fn spec_r27_accumulate_in_slot_order_and_do_not_skip_zero_products() {
+    let csr = Csr::from_parts(1, 2, vec![0, 2], vec![0, 1], vec![f64::MAX, -f64::MAX]).unwrap();
+    assert_eq!(csr.mul_vector(&[1.0, 1.0]).unwrap(), vec![0.0]);
+
+    let csr = Csr::from_parts(1, 2, vec![0, 2], vec![0, 1], vec![f64::MAX, 1.0]).unwrap();
+    assert_eq!(
+        csr.mul_vector(&[2.0, 0.0]),
+        Err(Error::ProductOverflow { row: 0, column: 0 })
+    );
+
+    let csr = Csr::from_parts(1, 2, vec![0, 2], vec![0, 1], vec![f64::MAX, f64::MAX]).unwrap();
+    assert_eq!(
+        csr.mul_vector(&[1.0, 1.0]),
+        Err(Error::AccumulationOverflow { row: 0, column: 1 })
+    );
+}
+
+#[test]
+fn spec_r28_vector_output_rows_and_positive_zero_normalization() {
+    let csr = Csr::from_parts(3, 2, vec![0, 1, 1, 2], vec![0, 1], vec![-1.0, 2.0]).unwrap();
+    let x = [-0.0, 0.0];
+    let output = csr.mul_vector(&x).unwrap();
+    assert_eq!(output, vec![0.0, 0.0, 0.0]);
+    assert!(output.iter().all(|value| value.to_bits() == 0.0f64.to_bits()));
+    assert_eq!(x[0].to_bits(), (-0.0f64).to_bits());
+    assert_eq!(
+        Csr::from_parts(0, 2, vec![0], vec![], vec![]).unwrap().mul_vector(&[1.0, 2.0]).unwrap(),
+        Vec::<f64>::new()
+    );
+}

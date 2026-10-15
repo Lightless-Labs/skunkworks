@@ -1,0 +1,459 @@
+```rust
+#[test]
+fn spec_r1_source_compiles_as_rust_2024() {
+    let graph = analyze(0, &[]).unwrap();
+    assert!(graph.components.is_empty());
+}
+
+#[test]
+fn spec_r2_public_api_types_and_fields_are_available() {
+    let graph = analyze(1, &[]).unwrap();
+    let _: Vec<Vec<usize>> = graph.components;
+    let _: Vec<usize> = graph.component_of;
+    let _: Vec<bool> = graph.cyclic;
+    let _: Vec<usize> = graph.internal_edges;
+    let _: Vec<Arc> = graph.arcs;
+    let _: Vec<usize> = graph.topo;
+    let _: Vec<usize> = graph.depth;
+
+    let _: GraphError = GraphError::BadQuery { side: 0, vertex: 0 };
+    let _: Query = Query { kind: Relation::Trivial, route: vec![0] };
+    let _: Step = Step {
+        edge_index: 0,
+        status: EdgeStatus::Internal,
+        before: (0, 0),
+        after: (0, 0),
+    };
+    let _: Merge = Merge {
+        edge_index: 0,
+        before: vec![0, 1],
+        after: 0,
+        members: vec![0, 1],
+    };
+    let _: Batch = Batch { steps: vec![], merges: vec![], graph: analyze(0, &[]).unwrap() };
+    let _: Incremental = Incremental::new(0, &[]).unwrap();
+}
+
+#[test]
+fn spec_r3_analyze_returns_owned_values() {
+    let input = vec![(0, 1)];
+    let graph = analyze(2, &input).unwrap();
+    assert_eq!(graph.components, vec![vec![0], vec![1]]);
+    assert_eq!(graph.arcs, vec![Arc { from: 0, to: 1, multiplicity: 1, first_edge: 0 }]);
+}
+
+#[test]
+fn spec_r4_vertex_limit_precedes_edge_limit_and_endpoints() {
+    assert_eq!(
+        analyze(MAX_VERTICES + 1, &vec![(usize::MAX, usize::MAX); MAX_EDGES + 1]),
+        Err(GraphError::TooManyVertices { count: MAX_VERTICES + 1, limit: MAX_VERTICES })
+    );
+}
+
+#[test]
+fn spec_r5_edge_limit_precedes_endpoint_validation() {
+    assert_eq!(
+        analyze(1, &vec![(usize::MAX, 0); MAX_EDGES + 1]),
+        Err(GraphError::TooManyEdges { limit: MAX_EDGES })
+    );
+}
+
+#[test]
+fn spec_r6_endpoint_validation_uses_edge_then_source_order() {
+    assert_eq!(
+        analyze(2, &[(0, 1), (2, 3)]),
+        Err(GraphError::BadEndpoint { edge: 1, side: 0, vertex: 2 })
+    );
+    assert_eq!(
+        analyze(2, &[(0, 1), (1, 2)]),
+        Err(GraphError::BadEndpoint { edge: 1, side: 1, vertex: 2 })
+    );
+}
+
+#[test]
+fn spec_r7_endpoint_error_indices_include_duplicates_and_usize_max() {
+    assert_eq!(
+        analyze(1, &[(0, 0), (0, 0), (usize::MAX, 0)]),
+        Err(GraphError::BadEndpoint { edge: 2, side: 0, vertex: usize::MAX })
+    );
+    assert_eq!(
+        analyze(1, &[(0, 0), (0, usize::MAX)]),
+        Err(GraphError::BadEndpoint { edge: 1, side: 1, vertex: usize::MAX })
+    );
+}
+
+#[test]
+fn spec_r8_query_reachability_includes_zero_length_paths() {
+    let graph = analyze(2, &[]).unwrap();
+    assert_eq!(graph.query(0, 0).unwrap(), Query { kind: Relation::Trivial, route: vec![0] });
+}
+
+#[test]
+fn spec_r9_components_are_maximal_mutual_reachability_sets() {
+    let graph = analyze(5, &[(0, 1), (1, 0), (1, 2), (2, 3), (3, 2)]).unwrap();
+    assert_eq!(graph.components, vec![vec![0, 1], vec![2, 3], vec![4]]);
+}
+
+#[test]
+fn spec_r10_component_members_are_distinct_and_sorted() {
+    let graph = analyze(4, &[(3, 1), (1, 3), (3, 1)]).unwrap();
+    assert_eq!(graph.components, vec![vec![1, 3], vec![0], vec![2]]);
+}
+
+#[test]
+fn spec_r11_components_sort_by_size_then_smallest_member() {
+    let graph = analyze(7, &[(0, 2), (2, 0), (3, 5), (5, 3), (1, 4), (4, 1)]).unwrap();
+    assert_eq!(graph.components, vec![vec![0, 2], vec![1, 4], vec![3, 5], vec![6]]);
+}
+
+#[test]
+fn spec_r12_component_ids_follow_canonical_component_order() {
+    let graph = analyze(4, &[(0, 2), (2, 0)]).unwrap();
+    assert_eq!(graph.components, vec![vec![0, 2], vec![1], vec![3]]);
+    assert_eq!(graph.component_of, vec![0, 1, 0, 2]);
+}
+
+#[test]
+fn spec_r13_cyclic_flags_only_mark_multivertex_sccs_or_self_loops() {
+    let graph = analyze(4, &[(0, 1), (1, 0), (2, 3)]).unwrap();
+    assert_eq!(graph.components, vec![vec![0, 1], vec![2], vec![3]]);
+    assert_eq!(graph.cyclic, vec![true, false, false]);
+}
+
+#[test]
+fn spec_r14_duplicates_and_self_loops_are_legal() {
+    let graph = analyze(1, &[(0, 0), (0, 0)]).unwrap();
+    assert_eq!(graph.cyclic, vec![true]);
+    assert_eq!(graph.internal_edges, vec![2]);
+}
+
+#[test]
+fn spec_r15_empty_graph_and_nonempty_edges() {
+    let graph = analyze(0, &[]).unwrap();
+    assert!(graph.components.is_empty());
+    assert!(graph.component_of.is_empty());
+    assert!(graph.cyclic.is_empty());
+    assert!(graph.internal_edges.is_empty());
+    assert!(graph.arcs.is_empty());
+    assert!(graph.topo.is_empty());
+    assert!(graph.depth.is_empty());
+    assert_eq!(analyze(0, &[(0, 0)]), Err(GraphError::BadEndpoint { edge: 0, side: 0, vertex: 0 }));
+}
+
+#[test]
+fn spec_r16_edgeless_graph_has_singleton_components_in_vertex_order() {
+    let graph = analyze(4, &[]).unwrap();
+    assert_eq!(graph.components, vec![vec![0], vec![1], vec![2], vec![3]]);
+    assert_eq!(graph.component_of, vec![0, 1, 2, 3]);
+    assert_eq!(graph.cyclic, vec![false; 4]);
+}
+
+#[test]
+fn spec_r17_edge_permutation_preserves_scc_outputs() {
+    let a = analyze(4, &[(0, 1), (1, 0), (2, 3), (3, 2), (1, 2)]).unwrap();
+    let b = analyze(4, &[(1, 2), (3, 2), (2, 3), (1, 0), (0, 1)]).unwrap();
+    assert_eq!(a.components, b.components);
+    assert_eq!(a.component_of, b.component_of);
+    assert_eq!(a.cyclic, b.cyclic);
+}
+
+#[test]
+fn spec_r18_long_path_and_full_component_are_supported() {
+    let n = 1024;
+    let edges: Vec<_> = (0..n - 1).map(|v| (v, v + 1)).collect();
+    let path = analyze(n, &edges).unwrap();
+    assert_eq!(path.components.len(), n);
+    assert_eq!(path.query(0, n - 1).unwrap().kind, Relation::Forward);
+
+    let cycle_edges: Vec<_> = (0..n).map(|v| (v, (v + 1) % n)).collect();
+    let cycle = analyze(n, &cycle_edges).unwrap();
+    assert_eq!(cycle.components, vec![(0..n).collect::<Vec<_>>()]);
+}
+
+#[test]
+fn spec_r19_internal_edges_count_each_internal_occurrence() {
+    let graph = analyze(3, &[(0, 1), (1, 0), (0, 0), (0, 1), (1, 2)]).unwrap();
+    assert_eq!(graph.components, vec![vec![0, 1], vec![2]]);
+    assert_eq!(graph.internal_edges, vec![4, 0]);
+}
+
+#[test]
+fn spec_r20_self_loops_and_duplicate_internal_edges_each_count() {
+    let graph = analyze(1, &[(0, 0), (0, 0), (0, 0)]).unwrap();
+    assert_eq!(graph.internal_edges, vec![3]);
+    assert_eq!(analyze(1, &[]).unwrap().internal_edges, vec![0]);
+}
+
+#[test]
+fn spec_r21_condensation_arcs_never_have_equal_endpoints() {
+    let graph = analyze(2, &[(0, 1), (1, 0)]).unwrap();
+    assert!(graph.arcs.iter().all(|arc| arc.from != arc.to));
+}
+
+#[test]
+fn spec_r22_arc_is_unique_per_ordered_component_pair() {
+    let graph = analyze(4, &[(0, 2), (1, 3), (0, 3)]).unwrap();
+    assert_eq!(graph.arcs.len(), 1);
+    assert_eq!((graph.arcs[0].from, graph.arcs[0].to), (0, 1));
+}
+
+#[test]
+fn spec_r23_arc_multiplicity_counts_all_vertex_pair_occurrences() {
+    let graph = analyze(4, &[(0, 2), (1, 3), (0, 3), (0, 2)]).unwrap();
+    assert_eq!(graph.arcs[0].multiplicity, 4);
+}
+
+#[test]
+fn spec_r24_arc_first_edge_is_smallest_original_input_position() {
+    let graph = analyze(3, &[(0, 0), (1, 1), (0, 2), (0, 2)]).unwrap();
+    assert_eq!(graph.arcs[0].first_edge, 2);
+}
+
+#[test]
+fn spec_r25_arcs_sort_by_source_ascending_then_target_descending() {
+    let graph = analyze(4, &[(0, 2), (0, 3), (1, 2), (1, 3)]).unwrap();
+    assert_eq!(
+        graph.arcs.iter().map(|a| (a.from, a.to)).collect::<Vec<_>>(),
+        vec![(0, 3), (0, 2), (1, 3), (1, 2)]
+    );
+}
+
+#[test]
+fn spec_r26_arc_witness_indices_include_filtered_out_occurrences() {
+    let graph = analyze(3, &[(0, 0), (0, 1), (1, 1), (0, 1)]).unwrap();
+    assert_eq!(graph.arcs, vec![Arc { from: 0, to: 1, multiplicity: 2, first_edge: 1 }]);
+    assert_eq!(graph.internal_edges.iter().sum::<usize>() + graph.arcs[0].multiplicity, 4);
+}
+
+#[test]
+fn spec_r27_topo_contains_each_component_once_and_respects_arcs() {
+    let graph = analyze(4, &[(0, 1), (2, 3)]).unwrap();
+    let mut positions = vec![0; graph.components.len()];
+    for (position, &component) in graph.topo.iter().enumerate() {
+        positions[component] = position;
+    }
+    assert_eq!(graph.topo.len(), graph.components.len());
+    assert_eq!(graph.topo.iter().copied().collect::<std::collections::BTreeSet<_>>().len(), graph.components.len());
+    assert!(graph.arcs.iter().all(|a| positions[a.from] < positions[a.to]));
+}
+
+#[test]
+fn spec_r28_topo_priority_uses_internal_count_then_largest_member() {
+    let graph = analyze(4, &[(2, 2), (0, 0), (0, 0)]).unwrap();
+    assert_eq!(graph.internal_edges, vec![2, 1, 0, 0]);
+    assert_eq!(graph.topo, vec![0, 1, 3, 2]);
+}
+
+#[test]
+fn spec_r29_kahn_admits_newly_ready_components_immediately() {
+    let graph = analyze(4, &[(0, 1), (1, 2)]).unwrap();
+    assert_eq!(graph.topo, vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn spec_r30_depth_is_longest_predecessor_path_indexed_by_component() {
+    let graph = analyze(5, &[(0, 2), (1, 2), (2, 3), (1, 3)]).unwrap();
+    assert_eq!(graph.depth, vec![0, 0, 1, 2, 0]);
+}
+
+#[test]
+fn spec_r31_query_checks_source_before_target() {
+    let graph = analyze(1, &[]).unwrap();
+    assert_eq!(graph.query(1, 1), Err(GraphError::BadQuery { side: 0, vertex: 1 }));
+    assert_eq!(graph.query(0, 1), Err(GraphError::BadQuery { side: 1, vertex: 1 }));
+}
+
+#[test]
+fn spec_r32_same_component_query_encodings_are_prescribed() {
+    let graph = analyze(3, &[(0, 1), (1, 0), (2, 2)]).unwrap();
+    assert_eq!(graph.query(0, 1).unwrap(), Query { kind: Relation::Cycle, route: vec![0, 0] });
+    assert_eq!(graph.query(2, 2).unwrap(), Query { kind: Relation::Cycle, route: vec![1, 1] });
+    assert_eq!(graph.query(2, 2).unwrap().kind, Relation::Cycle);
+
+    let trivial = analyze(1, &[]).unwrap();
+    assert_eq!(trivial.query(0, 0).unwrap(), Query { kind: Relation::Trivial, route: vec![0] });
+}
+
+#[test]
+fn spec_r33_forward_query_returns_shortest_inclusive_route() {
+    let graph = analyze(5, &[(0, 1), (1, 4), (0, 2), (2, 3), (3, 4)]).unwrap();
+    assert_eq!(graph.query(0, 4).unwrap(), Query { kind: Relation::Forward, route: vec![0, 1, 4] });
+}
+
+#[test]
+fn spec_r34_backward_query_reverses_selected_route() {
+    let graph = analyze(4, &[(1, 0), (2, 1), (3, 0), (2, 3)]).unwrap();
+    assert_eq!(graph.query(0, 2).unwrap(), Query { kind: Relation::Backward, route: vec![2, 0] });
+}
+
+#[test]
+fn spec_r35_incomparable_components_return_separate_with_empty_route() {
+    let graph = analyze(3, &[(0, 1)]).unwrap();
+    assert_eq!(graph.query(0, 2).unwrap(), Query { kind: Relation::Separate, route: vec![] });
+}
+
+#[test]
+fn spec_r36_equal_length_routes_choose_lexicographically_smallest_component_ids() {
+    let graph = analyze(5, &[(0, 2), (0, 1), (2, 4), (1, 4)]).unwrap();
+    assert_eq!(graph.query(0, 4).unwrap().route, vec![0, 1, 4]);
+}
+
+#[test]
+fn spec_r37_empty_graph_queries_fail_on_source() {
+    let graph = analyze(0, &[]).unwrap();
+    assert_eq!(graph.query(usize::MAX, usize::MAX), Err(GraphError::BadQuery { side: 0, vertex: usize::MAX }));
+}
+
+#[test]
+fn spec_r38_incremental_new_matches_analyze_and_starts_empty_history() {
+    let edges = [(0, 1), (1, 0), (0, 1)];
+    let state = Incremental::new(3, &edges).unwrap();
+    assert_eq!(state.snapshot(), analyze(3, &edges).unwrap());
+    assert!(state.history().is_empty());
+}
+
+#[test]
+fn spec_r39_incremental_returns_owned_snapshot_and_history() {
+    let mut state = Incremental::new(2, &[]).unwrap();
+    let mut snapshot = state.snapshot();
+    snapshot.components.clear();
+    let mut history = state.history();
+    history.clear();
+    assert_eq!(state.snapshot().components, vec![vec![0], vec![1]]);
+    assert!(state.history().is_empty());
+}
+
+#[test]
+fn spec_r40_insert_capacity_precedes_endpoint_validation_and_empty_batch_succeeds() {
+    let mut state = Incremental::new(1, &vec![(0, 0); MAX_EDGES]).unwrap();
+    assert_eq!(state.insert(&[(usize::MAX, 0)]), Err(GraphError::TooManyEdges { limit: MAX_EDGES }));
+    let empty = state.insert(&[]).unwrap();
+    assert!(empty.steps.is_empty());
+    assert!(empty.merges.is_empty());
+}
+
+#[test]
+fn spec_r41_insert_validates_whole_batch_atomically_with_local_indices() {
+    let mut state = Incremental::new(3, &[]).unwrap();
+    let before = state.snapshot();
+    assert_eq!(
+        state.insert(&[(0, 1), (2, usize::MAX)]),
+        Err(GraphError::BadEndpoint { edge: 1, side: 1, vertex: usize::MAX })
+    );
+    assert_eq!(state.snapshot(), before);
+    assert!(state.history().is_empty());
+    let next = state.insert(&[(1, 2)]).unwrap();
+    assert_eq!(next.steps[0].edge_index, 0);
+}
+
+#[test]
+fn spec_r42_batch_edges_process_sequentially_and_recanonicalize() {
+    let mut state = Incremental::new(4, &[]).unwrap();
+    let batch = state.insert(&[(0, 1), (1, 0)]).unwrap();
+    assert_eq!(batch.steps[0].before, (0, 1));
+    assert_eq!(batch.steps[0].after, (0, 1));
+    assert_eq!(batch.steps[1].before, (1, 0));
+    assert_eq!(batch.steps[1].after, (0, 0));
+    assert_eq!(batch.graph, analyze(4, &[(0, 1), (1, 0)]).unwrap());
+}
+
+#[test]
+fn spec_r43_step_indices_are_global_retained_positions() {
+    let mut state = Incremental::new(3, &[(0, 1)]).unwrap();
+    state.insert(&[(0, 1), (1, 2)]).unwrap();
+    let batch = state.insert(&[(2, 0)]).unwrap();
+    assert_eq!(batch.steps[0].edge_index, 3);
+}
+
+#[test]
+fn spec_r44_step_before_and_after_capture_each_occurrence_time() {
+    let mut state = Incremental::new(3, &[]).unwrap();
+    let batch = state.insert(&[(0, 1), (1, 0), (1, 2)]).unwrap();
+    assert_eq!(batch.steps[0].before, (0, 1));
+    assert_eq!(batch.steps[0].after, (0, 1));
+    assert_eq!(batch.steps[1].before, (1, 0));
+    assert_eq!(batch.steps[1].after, (0, 0));
+    assert_eq!(batch.steps[2].before, (0, 1));
+    assert_eq!(batch.steps[2].after, (0, 1));
+}
+
+#[test]
+fn spec_r45_status_precedence_checks_exact_duplicates_then_component_relation() {
+    let mut state = Incremental::new(3, &[(0, 1)]).unwrap();
+    let batch = state.insert(&[(1, 0), (0, 1), (1, 2), (2, 1)]).unwrap();
+    assert_eq!(
+        batch.steps.iter().map(|s| s.status.clone()).collect::<Vec<_>>(),
+        vec![EdgeStatus::Merge, EdgeStatus::Duplicate, EdgeStatus::Link, EdgeStatus::Merge]
+    );
+}
+
+#[test]
+fn spec_r46_self_loop_is_internal_and_duplicate_occurrences_update_metadata() {
+    let mut state = Incremental::new(2, &[]).unwrap();
+    let first = state.insert(&[(1, 1)]).unwrap();
+    assert_eq!(first.steps[0].status, EdgeStatus::Internal);
+    assert_eq!(first.graph.cyclic, vec![false, true]);
+    let duplicate = state.insert(&[(1, 1)]).unwrap();
+    assert_eq!(duplicate.steps[0].status, EdgeStatus::Duplicate);
+    assert_eq!(duplicate.graph.internal_edges, vec![0, 2]);
+    assert_eq!(duplicate.graph.topo, vec![1, 0]);
+}
+
+#[test]
+fn spec_r47_merge_event_members_include_every_united_vertex() {
+    let mut state = Incremental::new(6, &[(0, 1), (1, 0), (2, 3), (3, 2)]).unwrap();
+    let batch = state.insert(&[(1, 2)]).unwrap();
+    assert_eq!(batch.merges.len(), 1);
+    assert_eq!(batch.merges[0].members, vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn spec_r48_merge_before_lists_all_distinct_united_canonical_ids() {
+    let mut state = Incremental::new(6, &[(0, 1), (1, 0), (2, 3), (3, 2)]).unwrap();
+    let batch = state.insert(&[(1, 2)]).unwrap();
+    assert_eq!(batch.merges[0].before, vec![0, 1]);
+    assert_eq!(batch.merges[0].after, 0);
+}
+
+#[test]
+fn spec_r49_history_preserves_event_time_values() {
+    let mut state = Incremental::new(4, &[]).unwrap();
+    let first = state.insert(&[(0, 1), (1, 0)]).unwrap();
+    let saved = first.merges.clone();
+    state.insert(&[(2, 3), (3, 2), (1, 2)]).unwrap();
+    assert_eq!(first.merges, saved);
+    assert_eq!(state.history()[0], saved[0]);
+    assert_eq!(first.merges.len(), 1);
+}
+
+#[test]
+fn spec_r50_prior_batches_and_graphs_are_independent_owned_values() {
+    let mut state = Incremental::new(3, &[]).unwrap();
+    let mut first = state.insert(&[(0, 1)]).unwrap();
+    first.graph.components.clear();
+    state.insert(&[(1, 0)]).unwrap();
+    assert_eq!(state.snapshot(), analyze(3, &[(0, 1), (1, 0)]).unwrap());
+}
+
+#[test]
+fn spec_r51_empty_batch_preserves_history_and_future_indices_at_capacity() {
+    let mut state = Incremental::new(2, &vec![(0, 0); MAX_EDGES - 1]).unwrap();
+    let empty = state.insert(&[]).unwrap();
+    assert!(empty.steps.is_empty());
+    let last = state.insert(&[(1, 1)]).unwrap();
+    assert_eq!(last.steps[0].edge_index, MAX_EDGES - 1);
+    assert!(state.insert(&[]).is_ok());
+}
+
+#[test]
+fn spec_r52_clone_has_independent_future_insertions() {
+    let mut original = Incremental::new(2, &[]).unwrap();
+    let mut clone = original.clone();
+    original.insert(&[(0, 1), (1, 0)]).unwrap();
+    assert_eq!(original.snapshot().components, vec![vec![0, 1]]);
+    assert_eq!(clone.snapshot().components, vec![vec![0], vec![1]]);
+    clone.insert(&[(1, 1)]).unwrap();
+    assert!(original.history().is_empty());
+    assert!(clone.history().is_empty());
+}
+```

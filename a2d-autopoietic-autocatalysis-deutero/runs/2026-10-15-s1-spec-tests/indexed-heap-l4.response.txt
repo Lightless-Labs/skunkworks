@@ -1,0 +1,694 @@
+```rust
+#[test]
+fn spec_r1_single_source_compatible_api() {
+    let q = IndexedHeap::new();
+    assert_eq!(q.capacity(), None);
+}
+
+#[test]
+fn spec_r2_public_types_and_variants() {
+    let item = Item {
+        key: "a".into(),
+        priority: 0,
+        value: String::new(),
+    };
+    assert_eq!(item, item.clone());
+    assert_eq!(Error::EmptyKey, Error::EmptyKey);
+    assert_eq!(
+        Error::InvalidKey { at: 0 },
+        Error::InvalidKey { at: 0 }
+    );
+    assert_eq!(
+        Error::Duplicate { key: "a".into() },
+        Error::Duplicate { key: "a".into() }
+    );
+    assert_eq!(
+        Error::Missing { key: "a".into() },
+        Error::Missing { key: "a".into() }
+    );
+    assert_eq!(
+        Error::WrongDirection {
+            current: 1,
+            requested: 1
+        },
+        Error::WrongDirection {
+            current: 1,
+            requested: 1
+        }
+    );
+    assert_eq!(
+        Error::Collision { key: "a".into() },
+        Error::Collision { key: "a".into() }
+    );
+    let _ = CollisionPolicy::KeepSelf;
+    let _ = CollisionPolicy::TakeOther;
+    let _ = CollisionPolicy::Reject;
+    let _ = Admission::Inserted;
+    let _ = MergeReport {
+        moved: 0,
+        replaced: 0,
+        discarded: 0,
+        evicted: Vec::new(),
+    };
+}
+
+#[test]
+fn spec_r3_ascii_space_trimming_only() {
+    let mut q = IndexedHeap::new();
+    assert_eq!(q.push("   ", 0, ""), Err(Error::EmptyKey));
+    assert_eq!(q.push("\t", 0, ""), Err(Error::InvalidKey { at: 0 }));
+    assert_eq!(q.push("\n", 0, ""), Err(Error::InvalidKey { at: 0 }));
+    q.push("  Ab  ", 0, "").unwrap();
+    assert_eq!(q.get(" Ab ").unwrap().unwrap().key, "ab");
+}
+
+#[test]
+fn spec_r4_key_byte_validation_offsets() {
+    let mut q = IndexedHeap::new();
+    assert_eq!(q.push("1abc", 0, ""), Err(Error::InvalidKey { at: 0 }));
+    assert_eq!(q.push("a_b", 0, ""), Err(Error::InvalidKey { at: 1 }));
+    assert_eq!(q.push("aé", 0, ""), Err(Error::InvalidKey { at: 1 }));
+    assert_eq!(q.push("  aé", 0, ""), Err(Error::InvalidKey { at: 3 }));
+    q.push("a--", 0, "").unwrap();
+    q.push("a9-z", 0, "").unwrap();
+}
+
+#[test]
+fn spec_r5_canonical_key_errors_and_aliases() {
+    let mut q = IndexedHeap::new();
+    q.push("  AbC ", 1, "v").unwrap();
+    assert_eq!(
+        q.push("abc", 2, "other"),
+        Err(Error::Duplicate { key: "abc".into() })
+    );
+    assert_eq!(q.get(" ABC ").unwrap().unwrap().key, "abc");
+    assert_eq!(
+        q.remove(" MISSING "),
+        Err(Error::Missing {
+            key: "missing".into()
+        })
+    );
+}
+
+#[test]
+fn spec_r6_full_best_to_worst_order() {
+    let mut q = IndexedHeap::new();
+    q.push("a", 0, "xx").unwrap();
+    q.push("b", 0, "z").unwrap();
+    q.push("c", 0, "z").unwrap();
+    q.push("d", -1, "longer").unwrap();
+    let got: Vec<_> = q.iter().map(|i| i.key).collect();
+    assert_eq!(got, vec!["d", "b", "c", "a"]);
+}
+
+#[test]
+fn spec_r7_reinsert_gets_new_age() {
+    let mut q = IndexedHeap::new();
+    q.push("old", 1, "x").unwrap();
+    q.push("young", 1, "x").unwrap();
+    q.remove("old").unwrap();
+    q.push("old", 1, "x").unwrap();
+    assert_eq!(
+        q.iter().map(|i| i.key).collect::<Vec<_>>(),
+        vec!["young", "old"]
+    );
+}
+
+#[test]
+fn spec_r8_empty_construction_and_counts() {
+    let q = IndexedHeap::new();
+    assert_eq!(q.len(), 0);
+    assert_eq!(q.is_empty(), true);
+    let mut other = IndexedHeap::new();
+    other.push("a", 0, "").unwrap();
+    assert_eq!(q.len(), 0);
+    assert_eq!(other.len(), 1);
+}
+
+#[test]
+fn spec_r9_push_admission_and_canonical_item() {
+    let mut q = IndexedHeap::new();
+    assert_eq!(q.push(" A ", 4, "value"), Ok(Admission::Inserted));
+    assert_eq!(
+        q.get("a").unwrap(),
+        Some(Item {
+            key: "a".into(),
+            priority: 4,
+            value: "value".into()
+        })
+    );
+}
+
+#[test]
+fn spec_r10_duplicate_does_not_replace() {
+    let mut q = IndexedHeap::new();
+    q.push("Key", 3, "original").unwrap();
+    assert_eq!(
+        q.push(" key ", 9, "changed"),
+        Err(Error::Duplicate { key: "key".into() })
+    );
+    assert_eq!(q.get("key").unwrap().unwrap().value, "original");
+    assert_eq!(q.get("key").unwrap().unwrap().priority, 3);
+}
+
+#[test]
+fn spec_r11_peek_is_owned_best_item() {
+    let mut q = IndexedHeap::new();
+    assert_eq!(q.peek(), None);
+    q.push("a", 1, "x").unwrap();
+    let mut item = q.peek().unwrap();
+    item.value.push('!');
+    assert_eq!(q.peek().unwrap().value, "x");
+}
+
+#[test]
+fn spec_r12_pop_repeatedly_follows_order() {
+    let mut q = IndexedHeap::new();
+    q.push("a", 0, "long").unwrap();
+    q.push("b", 0, "x").unwrap();
+    assert_eq!(q.pop().unwrap().key, "b");
+    assert_eq!(q.pop().unwrap().key, "a");
+    assert_eq!(q.pop(), None);
+}
+
+#[test]
+fn spec_r13_get_valid_absent_and_malformed_empty_queue() {
+    let q = IndexedHeap::new();
+    assert_eq!(q.get("valid"), Ok(None));
+    assert_eq!(q.get(" bad"), Err(Error::InvalidKey { at: 0 }));
+}
+
+#[test]
+fn spec_r14_reads_and_returned_items_do_not_mutate_queue() {
+    let mut q = IndexedHeap::new();
+    q.push("a", 0, "first").unwrap();
+    q.push("b", 0, "second").unwrap();
+    for _ in 0..3 {
+        let mut item = q.get("a").unwrap().unwrap();
+        item.key.clear();
+        item.priority = i64::MAX;
+        item.value.clear();
+        let mut peeked = q.peek().unwrap();
+        peeked.value.clear();
+    }
+    assert_eq!(q.pop().unwrap().key, "a");
+    assert_eq!(q.pop().unwrap().key, "b");
+}
+
+#[test]
+fn spec_r15_values_are_preserved_verbatim() {
+    let mut q = IndexedHeap::new();
+    let value = " \tÉ\0\n ";
+    q.push("a", 0, value).unwrap();
+    assert_eq!(q.get("a").unwrap().unwrap().value.as_bytes(), value.as_bytes());
+    assert_eq!(q.replace_value("a", "").unwrap(), value);
+    assert_eq!(q.get("a").unwrap().unwrap().value, "");
+}
+
+#[test]
+fn spec_r16_signed_priority_extremes() {
+    let mut q = IndexedHeap::new();
+    q.push("max", i64::MAX, "").unwrap();
+    q.push("zero", 0, "").unwrap();
+    q.push("min", i64::MIN, "").unwrap();
+    assert_eq!(
+        q.iter().map(|i| i.key).collect::<Vec<_>>(),
+        vec!["min", "zero", "max"]
+    );
+}
+
+#[test]
+fn spec_r17_pop_frees_key_and_indices_remain_usable() {
+    let mut q = IndexedHeap::new();
+    q.push("a", 2, "").unwrap();
+    q.push("b", 1, "").unwrap();
+    q.push("c", 3, "").unwrap();
+    assert_eq!(q.pop().unwrap().key, "b");
+    assert_eq!(q.get("b"), Ok(None));
+    q.push("b", 0, "").unwrap();
+    assert_eq!(q.pop().unwrap().key, "b");
+    assert_eq!(q.remove("c").unwrap().key, "c");
+    assert_eq!(q.get("a").unwrap().unwrap().key, "a");
+}
+
+#[test]
+fn spec_r18_queues_have_independent_state() {
+    let mut a = IndexedHeap::new();
+    let mut b = IndexedHeap::new();
+    a.push("same", 0, "a").unwrap();
+    b.push("same", 5, "b").unwrap();
+    a.push("onlya", -1, "").unwrap();
+    assert_eq!(b.len(), 1);
+    assert_eq!(b.get("same").unwrap().unwrap().value, "b");
+    assert_eq!(b.get("onlya"), Ok(None));
+}
+
+#[test]
+fn spec_r19_errors_are_atomic_and_empty_none_is_stable() {
+    let mut q = IndexedHeap::with_capacity(1);
+    q.push("kept", 1, "v").unwrap();
+    let before = q.iter().collect::<Vec<_>>();
+    assert_eq!(
+        q.decrease_key("kept", 1),
+        Err(Error::WrongDirection {
+            current: 1,
+            requested: 1
+        })
+    );
+    assert_eq!(q.iter().collect::<Vec<_>>(), before);
+    let mut empty = IndexedHeap::new();
+    assert_eq!(empty.pop(), None);
+    assert_eq!(empty.len(), 0);
+}
+
+#[test]
+fn spec_r20_only_retained_items_count() {
+    let mut q = IndexedHeap::with_capacity(0);
+    assert_eq!(q.push("a", 0, ""), Ok(Admission::Discarded(Item {
+        key: "a".into(), priority: 0, value: "".into()
+    })));
+    assert_eq!(q.len(), 0);
+    assert!(q.is_empty());
+}
+
+#[test]
+fn spec_r21_decrease_key_changes_priority_and_returns_old() {
+    let mut q = IndexedHeap::new();
+    q.push("a", 5, "v").unwrap();
+    assert_eq!(q.decrease_key("a", -2), Ok(5));
+    assert_eq!(q.get("a").unwrap().unwrap().priority, -2);
+    assert_eq!(q.get("a").unwrap().unwrap().value, "v");
+}
+
+#[test]
+fn spec_r22_increase_key_changes_priority_and_returns_old() {
+    let mut q = IndexedHeap::new();
+    q.push("a", -5, "v").unwrap();
+    assert_eq!(q.increase_key("a", 2), Ok(-5));
+    assert_eq!(q.get("a").unwrap().unwrap().priority, 2);
+}
+
+#[test]
+fn spec_r23_wrong_direction_includes_equality_and_extremes() {
+    let mut q = IndexedHeap::new();
+    q.push("a", i64::MIN, "").unwrap();
+    q.push("b", i64::MAX, "").unwrap();
+    assert_eq!(
+        q.decrease_key("a", i64::MIN),
+        Err(Error::WrongDirection {
+            current: i64::MIN,
+            requested: i64::MIN
+        })
+    );
+    assert_eq!(
+        q.increase_key("b", i64::MAX),
+        Err(Error::WrongDirection {
+            current: i64::MAX,
+            requested: i64::MAX
+        })
+    );
+    assert_eq!(
+        q.decrease_key("b", i64::MAX),
+        Err(Error::WrongDirection {
+            current: i64::MAX,
+            requested: i64::MAX
+        })
+    );
+    assert_eq!(
+        q.increase_key("a", i64::MIN),
+        Err(Error::WrongDirection {
+            current: i64::MIN,
+            requested: i64::MIN
+        })
+    );
+}
+
+#[test]
+fn spec_r24_update_error_precedence() {
+    let mut q = IndexedHeap::new();
+    assert_eq!(
+        q.decrease_key("9bad", i64::MAX),
+        Err(Error::InvalidKey { at: 0 })
+    );
+    assert_eq!(
+        q.increase_key("Absent", 0),
+        Err(Error::Missing { key: "absent".into() })
+    );
+    q.push("a", 2, "").unwrap();
+    assert_eq!(
+        q.increase_key("a", 1),
+        Err(Error::WrongDirection {
+            current: 2,
+            requested: 1
+        })
+    );
+}
+
+#[test]
+fn spec_r25_replace_value_reorders_by_utf8_byte_length() {
+    let mut q = IndexedHeap::new();
+    q.push("a", 0, "é").unwrap();
+    q.push("b", 0, "zz").unwrap();
+    assert_eq!(q.replace_value("a", "x"), Ok("é".into()));
+    assert_eq!(q.peek().unwrap().key, "a");
+    assert_eq!(q.replace_value("a", "long"), Ok("x".into()));
+    assert_eq!(q.peek().unwrap().key, "b");
+}
+
+#[test]
+fn spec_r26_remove_any_rank_and_missing_error() {
+    let mut q = IndexedHeap::new();
+    q.push("best", 0, "").unwrap();
+    q.push("worst", 9, "").unwrap();
+    assert_eq!(q.remove(" WORST ").unwrap().key, "worst");
+    assert_eq!(
+        q.remove("absent"),
+        Err(Error::Missing { key: "absent".into() })
+    );
+    assert_eq!(q.len(), 1);
+}
+
+#[test]
+fn spec_r27_keyed_updates_preserve_age() {
+    let mut q = IndexedHeap::new();
+    q.push("first", 0, "x").unwrap();
+    q.push("second", 0, "x").unwrap();
+    q.decrease_key("first", -1).unwrap();
+    q.increase_key("first", 0).unwrap();
+    assert_eq!(q.replace_value("first", "y").unwrap(), "x");
+    assert_eq!(
+        q.iter().map(|i| i.key).collect::<Vec<_>>(),
+        vec!["first", "second"]
+    );
+    assert_eq!(q.len(), 2);
+}
+
+#[test]
+fn spec_r28_replace_and_remove_validate_before_lookup() {
+    let mut q = IndexedHeap::new();
+    assert_eq!(q.replace_value(" bad", "x"), Err(Error::InvalidKey { at: 0 }));
+    assert_eq!(q.remove(" bad"), Err(Error::InvalidKey { at: 0 }));
+    assert_eq!(
+        q.replace_value("Absent", "x"),
+        Err(Error::Missing { key: "absent".into() })
+    );
+    assert_eq!(
+        q.remove("Absent"),
+        Err(Error::Missing { key: "absent".into() })
+    );
+}
+
+#[test]
+fn spec_r29_merge_public_report_and_policy_types() {
+    let mut a = IndexedHeap::new();
+    let mut b = IndexedHeap::new();
+    a.push("a", 0, "").unwrap();
+    b.push("b", 0, "").unwrap();
+    let report = a.merge(&mut b, CollisionPolicy::KeepSelf).unwrap();
+    assert_eq!(
+        report,
+        MergeReport {
+            moved: 1,
+            replaced: 0,
+            discarded: 0,
+            evicted: Vec::new()
+        }
+    );
+}
+
+#[test]
+fn spec_r30_merge_transfers_and_empties_source() {
+    let mut a = IndexedHeap::new();
+    let mut b = IndexedHeap::new();
+    a.push("self", 2, "s").unwrap();
+    b.push("other", 1, "o").unwrap();
+    let report = a.merge(&mut b, CollisionPolicy::KeepSelf).unwrap();
+    assert_eq!(report.moved, 1);
+    assert!(b.is_empty());
+    assert_eq!(a.get("self").unwrap().unwrap().value, "s");
+    assert_eq!(a.get("other").unwrap().unwrap().value, "o");
+}
+
+#[test]
+fn spec_r31_keep_self_discards_collision_without_replacing() {
+    let mut a = IndexedHeap::new();
+    let mut b = IndexedHeap::new();
+    a.push("same", 5, "receiver").unwrap();
+    b.push("SAME", -5, "source").unwrap();
+    let report = a.merge(&mut b, CollisionPolicy::KeepSelf).unwrap();
+    assert_eq!((report.moved, report.discarded), (0, 1));
+    assert_eq!(a.get("same").unwrap().unwrap().priority, 5);
+    assert_eq!(a.get("same").unwrap().unwrap().value, "receiver");
+    assert!(report.evicted.is_empty());
+}
+
+#[test]
+fn spec_r32_take_other_replaces_data_but_keeps_receiver_age() {
+    let mut a = IndexedHeap::new();
+    let mut b = IndexedHeap::new();
+    a.push("same", 5, "old").unwrap();
+    a.push("later", 5, "x").unwrap();
+    b.push("SAME", 0, "new").unwrap();
+    let report = a.merge(&mut b, CollisionPolicy::TakeOther).unwrap();
+    assert_eq!((report.replaced, report.moved), (1, 0));
+    assert_eq!(a.get("same").unwrap().unwrap().value, "new");
+    assert_eq!(
+        a.iter().map(|i| i.key).collect::<Vec<_>>(),
+        vec!["same", "later"]
+    );
+}
+
+#[test]
+fn spec_r33_reject_first_collision_in_source_rank_order_atomic() {
+    let mut a = IndexedHeap::new();
+    let mut b = IndexedHeap::new();
+    a.push("z", 0, "").unwrap();
+    a.push("a", 0, "").unwrap();
+    b.push("z", 5, "").unwrap();
+    b.push("a", -1, "").unwrap();
+    let before_a = a.iter().collect::<Vec<_>>();
+    let before_b = b.iter().collect::<Vec<_>>();
+    assert_eq!(
+        a.merge(&mut b, CollisionPolicy::Reject),
+        Err(Error::Collision { key: "a".into() })
+    );
+    assert_eq!(a.iter().collect::<Vec<_>>(), before_a);
+    assert_eq!(b.iter().collect::<Vec<_>>(), before_b);
+}
+
+#[test]
+fn spec_r34_merge_new_key_ages_follow_source_rank() {
+    let mut receiver = IndexedHeap::new();
+    let mut source = IndexedHeap::new();
+    source.push("first", 0, "x").unwrap();
+    source.push("second", 0, "x").unwrap();
+    receiver.merge(&mut source, CollisionPolicy::KeepSelf).unwrap();
+    assert_eq!(
+        receiver.iter().map(|i| i.key).collect::<Vec<_>>(),
+        vec!["second", "first"]
+    );
+}
+
+#[test]
+fn spec_r35_merge_counts_collision_outcomes() {
+    let mut a = IndexedHeap::new();
+    let mut b = IndexedHeap::new();
+    a.push("same", 0, "").unwrap();
+    b.push("same", 1, "").unwrap();
+    b.push("new", 2, "").unwrap();
+    let report = a.merge(&mut b, CollisionPolicy::TakeOther).unwrap();
+    assert_eq!((report.moved, report.replaced, report.discarded), (1, 1, 0));
+    assert_eq!(report.moved + report.replaced + report.discarded, 2);
+    let empty_report = a.merge(&mut b, CollisionPolicy::KeepSelf).unwrap();
+    assert_eq!((empty_report.moved, empty_report.replaced, empty_report.discarded), (0, 0, 0));
+}
+
+#[test]
+fn spec_r36_emptied_source_remains_usable_and_merge_rebases_rank() {
+    let mut receiver = IndexedHeap::new();
+    let mut source = IndexedHeap::new();
+    source.push("older", 0, "x").unwrap();
+    source.push("younger", 0, "x").unwrap();
+    receiver.merge(&mut source, CollisionPolicy::KeepSelf).unwrap();
+    source.push("again", 1, "").unwrap();
+    assert_eq!(source.len(), 1);
+    let mut empty_receiver = IndexedHeap::new();
+    let mut donor = IndexedHeap::new();
+    donor.push("old", 0, "x").unwrap();
+    donor.push("young", 0, "x").unwrap();
+    empty_receiver.merge(&mut donor, CollisionPolicy::KeepSelf).unwrap();
+    assert_eq!(
+        empty_receiver.iter().map(|i| i.key).collect::<Vec<_>>(),
+        vec!["young", "old"]
+    );
+}
+
+#[test]
+fn spec_r37_capacity_bounds_include_zero_and_max() {
+    let q = IndexedHeap::new();
+    assert_eq!(q.capacity(), None);
+    let zero = IndexedHeap::with_capacity(0);
+    assert_eq!(zero.capacity(), Some(0));
+    let max = IndexedHeap::with_capacity(usize::MAX);
+    assert_eq!(max.capacity(), Some(usize::MAX));
+}
+
+#[test]
+fn spec_r38_bounded_queue_retains_no_more_than_limit() {
+    let mut q = IndexedHeap::with_capacity(2);
+    q.push("a", 0, "").unwrap();
+    q.push("b", 1, "").unwrap();
+    q.push("c", 2, "").unwrap();
+    assert_eq!(q.len(), 2);
+}
+
+#[test]
+fn spec_r39_admission_reports_evicted_and_discarded_items() {
+    let mut q = IndexedHeap::with_capacity(1);
+    q.push("old", 5, "o").unwrap();
+    assert_eq!(
+        q.push("better", 0, "b"),
+        Ok(Admission::Evicted(Item {
+            key: "old".into(),
+            priority: 5,
+            value: "o".into()
+        }))
+    );
+    assert_eq!(
+        q.push("worse", 9, "w"),
+        Ok(Admission::Discarded(Item {
+            key: "worse".into(),
+            priority: 9,
+            value: "w".into()
+        }))
+    );
+}
+
+#[test]
+fn spec_r40_full_admission_uses_full_order_and_tie_discards_new() {
+    let mut q = IndexedHeap::with_capacity(1);
+    q.push("old", 2, "aa").unwrap();
+    assert!(matches!(q.push("new", 2, "z"), Ok(Admission::Evicted(_))));
+    assert_eq!(q.peek().unwrap().key, "new");
+    assert!(matches!(q.push("tie", 2, "z"), Ok(Admission::Discarded(_))));
+    assert_eq!(q.peek().unwrap().key, "new");
+}
+
+#[test]
+fn spec_r41_zero_capacity_discards_valid_nonduplicates() {
+    let mut q = IndexedHeap::with_capacity(0);
+    assert!(matches!(q.push("a", 0, "x"), Ok(Admission::Discarded(_))));
+    assert!(matches!(q.push("a", 1, "y"), Ok(Admission::Discarded(_))));
+    assert_eq!(q.len(), 0);
+}
+
+#[test]
+fn spec_r42_push_validates_and_checks_duplicates_before_capacity() {
+    let mut q = IndexedHeap::with_capacity(0);
+    assert_eq!(q.push("1bad", 0, ""), Err(Error::InvalidKey { at: 0 }));
+    q.push("a", 0, "").unwrap();
+    assert_eq!(
+        q.push("A", 1, ""),
+        Err(Error::Duplicate { key: "a".into() })
+    );
+    assert!(matches!(q.push("b", 0, ""), Ok(Admission::Discarded(_))));
+}
+
+#[test]
+fn spec_r43_set_capacity_trims_worst_to_best() {
+    let mut q = IndexedHeap::new();
+    q.push("old", 0, "x").unwrap();
+    q.push("middle", 0, "x").unwrap();
+    q.push("best", 0, "x").unwrap();
+    let removed = q.set_capacity(Some(1));
+    assert_eq!(
+        removed.iter().map(|i| i.key.as_str()).collect::<Vec<_>>(),
+        vec!["middle", "old"]
+    );
+    assert_eq!(q.set_capacity(None), Vec::<Item>::new());
+    assert_eq!(q.capacity(), None);
+}
+
+#[test]
+fn spec_r44_keyed_updates_on_bounded_queue_do_not_evict() {
+    let mut q = IndexedHeap::with_capacity(1);
+    q.push("a", 0, "x").unwrap();
+    assert_eq!(q.increase_key("a", 10), Ok(0));
+    assert_eq!(q.len(), 1);
+    assert_eq!(q.get("a").unwrap().unwrap().priority, 10);
+    assert!(matches!(q.push("b", 5, ""), Ok(Admission::Evicted(_))));
+    assert_eq!(q.peek().unwrap().key, "b");
+}
+
+#[test]
+fn spec_r45_iterator_is_double_ended_exact_snapshot_order() {
+    let mut q = IndexedHeap::new();
+    q.push("a", 0, "xx").unwrap();
+    q.push("b", 0, "x").unwrap();
+    q.push("c", 1, "").unwrap();
+    let mut it = q.iter();
+    assert_eq!(it.len(), 3);
+    assert_eq!(it.next().unwrap().key, "b");
+    assert_eq!(it.next_back().unwrap().key, "c");
+    assert_eq!(it.len(), 1);
+    assert_eq!(it.next().unwrap().key, "a");
+    assert_eq!(it.len(), 0);
+}
+
+#[test]
+fn spec_r46_iterator_detached_from_queue_and_items() {
+    let mut q = IndexedHeap::new();
+    q.push("a", 0, "value").unwrap();
+    let mut snapshot = q.iter();
+    q.remove("a").unwrap();
+    q.push("b", 0, "").unwrap();
+    let mut item = snapshot.next().unwrap();
+    assert_eq!(item.key, "a");
+    item.value.clear();
+    assert_eq!(q.get("b").unwrap().unwrap().value, "");
+    assert_eq!(q.get("a").unwrap(), Ok(None));
+}
+
+#[test]
+fn spec_r47_merge_trims_after_full_merge_and_reports_evictions() {
+    let mut receiver = IndexedHeap::with_capacity(2);
+    receiver.push("keep", 5, "").unwrap();
+    let mut source = IndexedHeap::new();
+    source.push("same", 0, "source").unwrap();
+    source.push("new", 1, "").unwrap();
+    receiver.push("same", 9, "receiver").unwrap();
+    let report = receiver.merge(&mut source, CollisionPolicy::TakeOther).unwrap();
+    assert_eq!((report.moved, report.replaced, report.discarded), (1, 1, 0));
+    assert_eq!(report.evicted.len(), 1);
+    assert_eq!(report.evicted[0].key, "keep");
+    assert_eq!(receiver.len(), 2);
+    assert!(source.is_empty());
+}
+
+#[test]
+fn spec_r48_merge_preserves_capacities_and_rejects_before_trimming() {
+    let mut receiver = IndexedHeap::with_capacity(0);
+    let mut source = IndexedHeap::with_capacity(3);
+    receiver.push("same", 0, "receiver").unwrap();
+    source.push("SAME", -1, "source").unwrap();
+    let before_receiver = receiver.iter().collect::<Vec<_>>();
+    let before_source = source.iter().collect::<Vec<_>>();
+    assert_eq!(
+        receiver.merge(&mut source, CollisionPolicy::Reject),
+        Err(Error::Collision { key: "same".into() })
+    );
+    assert_eq!(receiver.capacity(), Some(0));
+    assert_eq!(source.capacity(), Some(3));
+    assert_eq!(receiver.iter().collect::<Vec<_>>(), before_receiver);
+    assert_eq!(source.iter().collect::<Vec<_>>(), before_source);
+
+    let mut dst = IndexedHeap::with_capacity(1);
+    let mut src = IndexedHeap::with_capacity(2);
+    dst.push("d", 5, "").unwrap();
+    src.push("s", 0, "").unwrap();
+    dst.merge(&mut src, CollisionPolicy::KeepSelf).unwrap();
+    assert_eq!(dst.capacity(), Some(1));
+    assert_eq!(src.capacity(), Some(2));
+    assert!(src.is_empty());
+}
+```

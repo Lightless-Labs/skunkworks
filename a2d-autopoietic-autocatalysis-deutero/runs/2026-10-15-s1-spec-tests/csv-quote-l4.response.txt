@@ -1,0 +1,846 @@
+```rust
+#[test]
+fn spec_r1_public_api_shapes() {
+    let _: Result<Vec<Vec<String>>, CsvError> = parse_csv("");
+    let _: Result<Table, CsvError> = read_csv(
+        "",
+        Config {
+            delimiter: b',',
+            quote: b'"',
+            headers: false,
+            duplicates: DuplicatePolicy::Reject,
+        },
+    );
+}
+
+#[test]
+fn spec_r2_record_and_field_order() {
+    assert_eq!(
+        parse_csv("first,second\nthird,fourth"),
+        Ok(vec![
+            vec!["first".into(), "second".into()],
+            vec!["third".into(), "fourth".into()],
+        ])
+    );
+}
+
+#[test]
+fn spec_r3_error_record_and_absolute_byte_offsets() {
+    assert_eq!(
+        parse_csv("\u{feff}ok\nλ,\"x\"z"),
+        Err(CsvError::TrailingByte { record: 1, byte: 10 })
+    );
+}
+
+#[test]
+fn spec_r4_initial_and_later_bom() {
+    assert_eq!(parse_csv("\u{feff}"), Ok(vec![]));
+    assert_eq!(
+        parse_csv("\u{feff}a\n\u{feff}b"),
+        Ok(vec![vec!["a".into()], vec!["\u{feff}b".into()]])
+    );
+    assert_eq!(
+        parse_csv("\"\u{feff}x\""),
+        Ok(vec![vec!["\u{feff}x".into()]])
+    );
+}
+
+#[test]
+fn spec_r5_empty_unfinished_and_terminated_inputs() {
+    assert_eq!(parse_csv(""), Ok(vec![]));
+    assert_eq!(parse_csv("unfinished"), Ok(vec![vec!["unfinished".into()]]));
+    assert_eq!(parse_csv("x\n"), Ok(vec![vec!["x".into()]]));
+    assert_eq!(parse_csv("\n"), Ok(vec![vec!["".into()]]));
+    assert_eq!(parse_csv("\n\n"), Ok(vec![vec!["".into()], vec!["".into()]]));
+}
+
+#[test]
+fn spec_r6_empty_fields_and_delimiters() {
+    assert_eq!(parse_csv(","), Ok(vec![vec!["".into(), "".into()]]));
+    assert_eq!(parse_csv("a,,b,"), Ok(vec![vec!["a".into(), "".into(), "b".into(), "".into()]]));
+    assert_eq!(parse_csv("\"\""), Ok(vec![vec!["".into()]]));
+}
+
+#[test]
+fn spec_r7_outside_crlf_and_bare_cr() {
+    assert_eq!(parse_csv("a\r\nb"), Ok(vec![vec!["a".into()], vec!["b".into()]]));
+    assert_eq!(parse_csv("a\rb"), Err(CsvError::BareCr { record: 0, byte: 1 }));
+    assert_eq!(parse_csv("\r"), Err(CsvError::BareCr { record: 0, byte: 0 }));
+}
+
+#[test]
+fn spec_r8_quote_only_opens_at_field_start() {
+    assert_eq!(parse_csv("a\"b"), Err(CsvError::UnexpectedQuote { record: 0, byte: 1 }));
+    assert_eq!(parse_csv(" \"x\""), Err(CsvError::UnexpectedQuote { record: 0, byte: 1 }));
+    assert_eq!(parse_csv("\"x\""), Ok(vec![vec!["x".into()]]));
+}
+
+#[test]
+fn spec_r9_escaped_quotes_and_pair_at_eof() {
+    assert_eq!(parse_csv("\"a\"\"b\""), Ok(vec![vec!["a\"b".into()]]));
+    assert_eq!(parse_csv("\"a\"\""), Err(CsvError::UnclosedQuote { record: 0, byte: 0 }));
+}
+
+#[test]
+fn spec_r10_quoted_terminators_are_data() {
+    assert_eq!(
+        parse_csv("\"a,\r\nb\rc\nx\""),
+        Ok(vec![vec!["a,\r\nb\rc\nx".into()]])
+    );
+    assert_eq!(
+        parse_csv("\"a\nb\"\"c\"z"),
+        Err(CsvError::TrailingByte { record: 0, byte: 7 })
+    );
+}
+
+#[test]
+fn spec_r11_only_delimiter_terminator_or_eof_after_quote() {
+    assert_eq!(parse_csv("\"x\" y"), Err(CsvError::TrailingByte { record: 0, byte: 3 }));
+    assert_eq!(parse_csv("\"x\"\t"), Err(CsvError::TrailingByte { record: 0, byte: 3 }));
+    assert_eq!(parse_csv("\"x\",y"), Ok(vec![vec!["x".into(), "y".into()]]));
+    assert_eq!(parse_csv("\"x\"\n"), Ok(vec![vec!["x".into()]]));
+}
+
+#[test]
+fn spec_r12_unclosed_quote_points_to_opener() {
+    assert_eq!(parse_csv("ok,\"x"), Err(CsvError::UnclosedQuote { record: 0, byte: 3 }));
+    assert_eq!(parse_csv("\"x\""), Ok(vec![vec!["x".into()]]));
+}
+
+#[test]
+fn spec_r13_nul_forbidden_everywhere() {
+    assert_eq!(parse_csv("a\0b"), Err(CsvError::Nul { record: 0, byte: 1 }));
+    assert_eq!(parse_csv("\"\0\""), Err(CsvError::Nul { record: 0, byte: 1 }));
+}
+
+#[test]
+fn spec_r14_lexical_error_precedence_and_scan_order() {
+    assert_eq!(parse_csv("\"\0\""), Err(CsvError::Nul { record: 0, byte: 1 }));
+    assert_eq!(parse_csv("\"x\"\r"), Err(CsvError::BareCr { record: 0, byte: 3 }));
+    assert_eq!(parse_csv("\"x\"z\0"), Err(CsvError::TrailingByte { record: 0, byte: 3 }));
+    assert_eq!(parse_csv("\"x\n"), Err(CsvError::UnclosedQuote { record: 0, byte: 0 }));
+}
+
+#[test]
+fn spec_r15_backslash_and_blank_records_are_literal() {
+    assert_eq!(parse_csv("\\\"x\\\"\n\n"), Ok(vec![vec!["\\\"x\\\"".into()], vec!["".into()]]));
+}
+
+#[test]
+fn spec_r16_quoted_and_unquoted_empty_values_match() {
+    assert_eq!(parse_csv(",\"\""), Ok(vec![vec!["".into(), "".into()]]));
+    assert_eq!(parse_csv("\"a\"\"b\""), Ok(vec![vec!["a\"b".into()]]));
+}
+
+#[test]
+fn spec_r17_many_records_and_long_utf8_fields() {
+    let field = "界".repeat(20_000);
+    let input = format!("{}\n{}", field, field);
+    assert_eq!(parse_csv(&input), Ok(vec![vec![field.clone()], vec![field]]));
+}
+
+#[test]
+fn spec_r18_parse_calls_are_independent() {
+    assert_eq!(parse_csv("\"x"), Err(CsvError::UnclosedQuote { record: 0, byte: 0 }));
+    assert_eq!(parse_csv("y"), Ok(vec![vec!["y".into()]]));
+}
+
+#[test]
+fn spec_r19_config_validation_order_and_range() {
+    let make = |delimiter, quote| Config {
+        delimiter,
+        quote,
+        headers: false,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        read_csv("", make(b' ', b' ')),
+        Err(CsvError::InvalidConfig { component: ConfigPart::Delimiter })
+    );
+    assert_eq!(
+        read_csv("", make(b'|', b' ')),
+        Err(CsvError::InvalidConfig { component: ConfigPart::Quote })
+    );
+    assert_eq!(
+        read_csv("", make(b'|', b'|')),
+        Err(CsvError::InvalidConfig { component: ConfigPart::Quote })
+    );
+    assert!(read_csv("", make(b'!', b'~')).is_ok());
+}
+
+#[test]
+fn spec_r20_config_dialect_is_used_by_reader() {
+    let config = Config {
+        delimiter: b'|',
+        quote: b'!',
+        headers: false,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        read_csv("!a|b!|c", config),
+        Ok(Table {
+            header: None,
+            rows: vec![vec!["a|b".into(), "c".into()]],
+            duplicates: DuplicatePolicy::Reject,
+        })
+    );
+    assert_eq!(parse_csv("a|b"), Ok(vec![vec!["a|b".into()]]));
+}
+
+#[test]
+fn spec_r21_stream_chunks_concatenate_verbatim() {
+    let config = Config {
+        delimiter: b',',
+        quote: b'"',
+        headers: false,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let mut reader = StreamReader::new(config).unwrap();
+    assert_eq!(reader.feed("a,\"b").unwrap(), ());
+    reader.feed("").unwrap();
+    reader.feed "\"\r".unwrap();
+    reader.feed("\nc").unwrap();
+    assert_eq!(
+        reader.finish().unwrap().rows,
+        vec![vec!["a".into(), "b".into()], vec!["c".into()]]
+    );
+}
+
+#[test]
+fn spec_r22_stream_finish_caches_result_and_rejects_feed() {
+    let config = Config {
+        delimiter: b',',
+        quote: b'"',
+        headers: false,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let mut reader = StreamReader::new(config).unwrap();
+    reader.feed("\"x").unwrap();
+    let first = reader.finish();
+    assert_eq!(first, Err(CsvError::UnclosedQuote { record: 0, byte: 0 }));
+    assert_eq!(reader.finish(), first);
+    assert_eq!(reader.feed(""), Err(CsvError::ReaderFinished));
+}
+
+#[test]
+fn spec_r23_stream_reset_reuses_reader() {
+    let config = Config {
+        delimiter: b',',
+        quote: b'"',
+        headers: false,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let mut reader = StreamReader::new(config).unwrap();
+    reader.feed("\"bad").unwrap();
+    assert!(reader.finish().is_err());
+    reader.reset();
+    reader.feed("good").unwrap();
+    assert_eq!(reader.finish().unwrap().rows, vec![vec!["good".into()]]);
+    reader.reset();
+    assert_eq!(reader.finish().unwrap().rows, Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn spec_r24_header_consumption_and_empty_input() {
+    let base = Config {
+        delimiter: b',',
+        quote: b'"',
+        headers: false,
+        duplicates: DuplicatePolicy::KeepLast,
+    };
+    let no_header = read_csv("\nwide,row\n", base).unwrap();
+    assert_eq!(no_header.header, None);
+    assert_eq!(no_header.rows, vec![vec!["".into()], vec!["wide".into(), "row".into()]]);
+    let with_header = read_csv("h\n\n", Config { headers: true, ..base }).unwrap();
+    assert_eq!(with_header.header, Some(vec!["h".into()]));
+    assert_eq!(with_header.rows, vec![vec!["".into()]]);
+    assert_eq!(read_csv("", Config { headers: true, ..base }).unwrap().header, None);
+    assert_eq!(no_header.duplicates, DuplicatePolicy::KeepLast);
+}
+
+#[test]
+fn spec_r25_duplicate_header_policies_and_tie_break() {
+    let reject = Config {
+        delimiter: b',',
+        quote: b'"',
+        headers: true,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        read_csv("x,y,x,x", reject),
+        Err(CsvError::DuplicateHeader { name: "x".into(), first: 0, second: 2 })
+    );
+    for policy in [DuplicatePolicy::KeepFirst, DuplicatePolicy::KeepLast] {
+        let table = read_csv(" x,x,", Config { duplicates: policy, ..reject }).unwrap();
+        assert_eq!(table.header, Some(vec![" x".into(), "x".into(), "".into()]));
+    }
+}
+
+#[test]
+fn spec_r26_header_width_uses_input_record_index() {
+    let config = Config {
+        delimiter: b',',
+        quote: b'"',
+        headers: true,
+        duplicates: DuplicatePolicy::KeepFirst,
+    };
+    assert_eq!(
+        read_csv("a,b\nx\nq,r,s", config),
+        Err(CsvError::HeaderWidth { record: 1, expected: 2, actual: 1 })
+    );
+}
+
+#[test]
+fn spec_r27_reader_validation_precedence() {
+    let invalid = Config {
+        delimiter: b',',
+        quote: b'"',
+        headers: true,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let invalid_config = Config { delimiter: b' ', ..invalid };
+    assert_eq!(
+        read_csv("\"x", invalid_config),
+        Err(CsvError::InvalidConfig { component: ConfigPart::Delimiter })
+    );
+    assert_eq!(
+        read_csv("a,a\nx\n", invalid),
+        Err(CsvError::UnclosedQuote { record: 1, byte: 6 })
+    );
+    assert_eq!(
+        read_csv("a,a\nx", invalid),
+        Err(CsvError::DuplicateHeader { name: "a".into(), first: 0, second: 1 })
+    );
+}
+
+#[test]
+fn spec_r28_column_index_duplicate_lookup_policies() {
+    for (duplicates, expected) in [
+        (DuplicatePolicy::KeepFirst, Some(0)),
+        (DuplicatePolicy::Reject, Some(0)),
+        (DuplicatePolicy::KeepLast, Some(2)),
+    ] {
+        let table = Table {
+            header: Some(vec!["x".into(), "y".into(), "x".into()]),
+            rows: vec![vec![]],
+            duplicates,
+        };
+        assert_eq!(table.column_index("x"), expected);
+        assert_eq!(table.column_index("missing"), None);
+    }
+    assert_eq!(
+        Table { header: None, rows: vec![], duplicates: DuplicatePolicy::KeepLast }
+            .column_index("x"),
+        None
+    );
+}
+
+#[test]
+fn spec_r29_read_csv_equivalent_and_public_table_fields() {
+    let config = Config {
+        delimiter: b',',
+        quote: b'"',
+        headers: true,
+        duplicates: DuplicatePolicy::KeepFirst,
+    };
+    let direct = read_csv("a\nb", config).unwrap();
+    let mut reader = StreamReader::new(config).unwrap();
+    reader.feed("a\nb").unwrap();
+    assert_eq!(reader.finish(), Ok(direct.clone()));
+    assert_eq!(direct.header, Some(vec!["a".into()]));
+    assert_eq!(direct.rows, vec![vec!["b".into()]]);
+    assert_eq!(direct.duplicates, DuplicatePolicy::KeepFirst);
+}
+
+#[test]
+fn spec_r30_extraction_order_and_row_indexes() {
+    let table = Table {
+        header: Some(vec!["v".into()]),
+        rows: vec![vec!["a".into()], vec!["b".into()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let specs = [
+        ColumnSpec { column: ColumnRef::Index(0), kind: ColumnType::Text, nullable: false },
+        ColumnSpec { column: ColumnRef::Index(0), kind: ColumnType::Text, nullable: false },
+    ];
+    let result = extract_columns(&table, &specs, ErrorPolicy::Collect);
+    assert_eq!(
+        result.rows,
+        vec![
+            vec![Some(Value::Text("a".into())), Some(Value::Text("a".into()))],
+            vec![Some(Value::Text("b".into())), Some(Value::Text("b".into()))],
+        ]
+    );
+    assert!(result.errors.is_empty());
+}
+
+#[test]
+fn spec_r31_column_resolution_and_missing_cells() {
+    let table = Table {
+        header: Some(vec!["present".into()]),
+        rows: vec![vec![]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let specs = [
+        ColumnSpec { column: ColumnRef::Name("absent".into()), kind: ColumnType::Text, nullable: true },
+        ColumnSpec { column: ColumnRef::Index(4), kind: ColumnType::Text, nullable: true },
+    ];
+    let result = extract_columns(&table, &specs, ErrorPolicy::Collect);
+    assert_eq!(result.rows, vec![vec![None, None]]);
+    assert_eq!(
+        result.errors,
+        vec![
+            CellError { row: 0, spec: 0, column: None, kind: CellErrorKind::UnknownColumn },
+            CellError { row: 0, spec: 1, column: Some(4), kind: CellErrorKind::MissingCell },
+        ]
+    );
+}
+
+#[test]
+fn spec_r32_nullable_empty_and_text_empty() {
+    let table = Table {
+        header: None,
+        rows: vec![vec!["".into(), "".into(), "  ".into()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let specs = [
+        ColumnSpec { column: ColumnRef::Index(0), kind: ColumnType::Integer, nullable: true },
+        ColumnSpec { column: ColumnRef::Index(1), kind: ColumnType::Integer, nullable: false },
+        ColumnSpec { column: ColumnRef::Index(2), kind: ColumnType::Text, nullable: false },
+    ];
+    let result = extract_columns(&table, &specs, ErrorPolicy::Collect);
+    assert_eq!(
+        result.rows,
+        vec![vec![Some(Value::Null), None, Some(Value::Text("  ".into()))]]
+    );
+    assert_eq!(result.errors[0].kind, CellErrorKind::Empty);
+}
+
+#[test]
+fn spec_r33_integer_grammar_and_bounds() {
+    let table = Table {
+        header: None,
+        rows: vec![
+            vec!["0".into()], vec!["-0".into()], vec!["01".into()], vec!["+1".into()],
+            vec!["9223372036854775807".into()], vec!["-9223372036854775808".into()],
+            vec!["9223372036854775808".into()], vec!["999999999999999999999x".into()],
+            vec!["١".into()],
+        ],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let specs = [ColumnSpec { column: ColumnRef::Index(0), kind: ColumnType::Integer, nullable: false }];
+    let result = extract_columns(&table, &specs, ErrorPolicy::Collect);
+    assert_eq!(result.rows[0], vec![Some(Value::Integer(0))]);
+    assert_eq!(result.rows[1], vec![None]);
+    assert_eq!(result.rows[2], vec![None]);
+    assert_eq!(result.rows[4], vec![Some(Value::Integer(i64::MAX))]);
+    assert_eq!(result.rows[5], vec![Some(Value::Integer(i64::MIN))]);
+    assert_eq!(result.errors.iter().map(|e| e.kind).collect::<Vec<_>>(), vec![
+        CellErrorKind::InvalidInteger, CellErrorKind::InvalidInteger,
+        CellErrorKind::InvalidInteger, CellErrorKind::IntegerOverflow,
+        CellErrorKind::InvalidInteger,
+    ]);
+}
+
+#[test]
+fn spec_r34_decimal_grammar_bounds_and_precedence() {
+    let table = Table {
+        header: None,
+        rows: vec![
+            vec!["0.00".into()], vec!["-0.00".into()], vec!["-0.01".into()],
+            vec!["01.00".into()], vec!["1.0".into()], vec!["92233720368547758.07".into()],
+            vec!["-92233720368547758.08".into()], vec!["92233720368547758.08".into()],
+            vec!["999999999999999999999.0x".into()],
+        ],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let specs = [ColumnSpec { column: ColumnRef::Index(0), kind: ColumnType::Decimal, nullable: false }];
+    let result = extract_columns(&table, &specs, ErrorPolicy::Collect);
+    assert_eq!(result.rows[0], vec![Some(Value::Decimal(0))]);
+    assert_eq!(result.rows[2], vec![Some(Value::Decimal(-1))]);
+    assert_eq!(result.rows[5], vec![Some(Value::Decimal(i64::MAX))]);
+    assert_eq!(result.rows[6], vec![Some(Value::Decimal(i64::MIN))]);
+    assert_eq!(result.errors.iter().map(|e| e.kind).collect::<Vec<_>>(), vec![
+        CellErrorKind::InvalidDecimal, CellErrorKind::InvalidDecimal,
+        CellErrorKind::InvalidDecimal, CellErrorKind::DecimalOverflow,
+        CellErrorKind::InvalidDecimal,
+    ]);
+}
+
+#[test]
+fn spec_r35_boolean_spellings_are_exact() {
+    let table = Table {
+        header: None,
+        rows: ["yes", "1", "no", "0", "Yes", "true", ""]
+            .iter()
+            .map(|s| vec![s.to_string()])
+            .collect(),
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let specs = [ColumnSpec { column: ColumnRef::Index(0), kind: ColumnType::Boolean, nullable: false }];
+    let result = extract_columns(&table, &specs, ErrorPolicy::Collect);
+    assert_eq!(result.rows[0], vec![Some(Value::Boolean(true))]);
+    assert_eq!(result.rows[1], vec![Some(Value::Boolean(true))]);
+    assert_eq!(result.rows[2], vec![Some(Value::Boolean(false))]);
+    assert_eq!(result.rows[3], vec![Some(Value::Boolean(false))]);
+    assert_eq!(result.errors.iter().map(|e| e.kind).collect::<Vec<_>>(), vec![
+        CellErrorKind::InvalidBoolean, CellErrorKind::InvalidBoolean, CellErrorKind::Empty,
+    ]);
+}
+
+#[test]
+fn spec_r36_cell_error_precedence_and_none_positions() {
+    let table = Table { header: None, rows: vec![vec![]], duplicates: DuplicatePolicy::Reject };
+    let specs = [
+        ColumnSpec { column: ColumnRef::Name("x".into()), kind: ColumnType::Integer, nullable: true },
+        ColumnSpec { column: ColumnRef::Index(1), kind: ColumnType::Integer, nullable: true },
+    ];
+    let result = extract_columns(&table, &specs, ErrorPolicy::Collect);
+    assert_eq!(result.rows, vec![vec![None, None]]);
+    assert_eq!(result.errors[0].kind, CellErrorKind::UnknownColumn);
+    assert_eq!(result.errors[1].kind, CellErrorKind::MissingCell);
+}
+
+#[test]
+fn spec_r37_collect_keeps_valid_cells_and_all_errors() {
+    let table = Table {
+        header: None,
+        rows: vec![vec!["bad".into(), "2".into(), "x".into()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let specs = [
+        ColumnSpec { column: ColumnRef::Index(0), kind: ColumnType::Integer, nullable: false },
+        ColumnSpec { column: ColumnRef::Index(1), kind: ColumnType::Integer, nullable: false },
+        ColumnSpec { column: ColumnRef::Index(2), kind: ColumnType::Boolean, nullable: false },
+    ];
+    let result = extract_columns(&table, &specs, ErrorPolicy::Collect);
+    assert_eq!(result.rows, vec![vec![None, Some(Value::Integer(2)), None]]);
+    assert_eq!(result.errors.len(), 2);
+    assert_eq!((result.errors[0].row, result.errors[0].spec), (0, 0));
+    assert_eq!((result.errors[1].row, result.errors[1].spec), (0, 2));
+}
+
+#[test]
+fn spec_r38_first_per_row_stops_each_row_at_error() {
+    let table = Table {
+        header: None,
+        rows: vec![vec!["bad".into(), "2".into()], vec!["3".into(), "bad".into()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let specs = [
+        ColumnSpec { column: ColumnRef::Index(0), kind: ColumnType::Integer, nullable: false },
+        ColumnSpec { column: ColumnRef::Index(1), kind: ColumnType::Integer, nullable: false },
+    ];
+    let result = extract_columns(&table, &specs, ErrorPolicy::FirstPerRow);
+    assert_eq!(result.rows, vec![vec![None, None], vec![Some(Value::Integer(3)), None]]);
+    assert_eq!(result.errors.len(), 2);
+    assert_eq!((result.errors[0].row, result.errors[0].spec), (0, 0));
+    assert_eq!((result.errors[1].row, result.errors[1].spec), (1, 1));
+}
+
+#[test]
+fn spec_r39_stop_stops_after_first_global_error() {
+    let table = Table {
+        header: None,
+        rows: vec![vec!["1".into(), "bad".into()], vec!["2".into(), "3".into()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let specs = [
+        ColumnSpec { column: ColumnRef::Index(0), kind: ColumnType::Integer, nullable: false },
+        ColumnSpec { column: ColumnRef::Index(1), kind: ColumnType::Integer, nullable: false },
+    ];
+    let result = extract_columns(&table, &specs, ErrorPolicy::Stop);
+    assert_eq!(result.rows, vec![vec![Some(Value::Integer(1)), None]]);
+    assert_eq!(result.errors.len(), 1);
+    assert_eq!((result.errors[0].row, result.errors[0].spec), (0, 1));
+}
+
+#[test]
+fn spec_r40_empty_specs_and_empty_data() {
+    let table = Table {
+        header: Some(vec!["h".into()]),
+        rows: vec![vec!["x".into()], vec!["y".into()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    for policy in [ErrorPolicy::Collect, ErrorPolicy::FirstPerRow, ErrorPolicy::Stop] {
+        let result = extract_columns(&table, &[], policy);
+        assert_eq!(result.rows, vec![vec![], vec![]]);
+        assert!(result.errors.is_empty());
+        let empty = Table { rows: vec![], ..table.clone() };
+        let result = extract_columns(&empty, &[ColumnSpec {
+            column: ColumnRef::Name("missing".into()),
+            kind: ColumnType::Text,
+            nullable: true,
+        }], policy);
+        assert_eq!(result.rows, Vec::<Vec<Option<Value>>>::new());
+        assert!(result.errors.is_empty());
+    }
+}
+
+#[test]
+fn spec_r41_extraction_does_not_parse_or_mutate_cells() {
+    let table = Table {
+        header: None,
+        rows: vec![vec!["\0,\nλ".into()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let original = table.clone();
+    let specs = [ColumnSpec {
+        column: ColumnRef::Index(0),
+        kind: ColumnType::Text,
+        nullable: false,
+    }];
+    assert_eq!(
+        extract_columns(&table, &specs, ErrorPolicy::Collect).rows,
+        vec![vec![Some(Value::Text("\0,\nλ".into()))]]
+    );
+    assert_eq!(table, original);
+}
+
+#[test]
+fn spec_r42_writer_config_validation_and_table_policy() {
+    let table = Table {
+        header: Some(vec!["x".into(), "x".into()]),
+        rows: vec![vec!["a".into(), "b".into()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let config = WriteConfig {
+        delimiter: b',',
+        quote: b',',
+        line_ending: LineEnding::Lf,
+        final_terminator: false,
+        mode: WriteMode::Canonical,
+    };
+    assert_eq!(
+        write_csv(&table, config),
+        Err(WriteError::InvalidConfig { component: ConfigPart::Quote })
+    );
+    let mut preserve = config;
+    preserve.quote = b'"';
+    preserve.mode = WriteMode::Preserve;
+    assert!(write_csv(&table, preserve).is_ok());
+}
+
+#[test]
+fn spec_r43_writer_preflights_nul_row_major_before_structure() {
+    let table = Table {
+        header: Some(vec!["h\0".into()]),
+        rows: vec![vec!["wrong".into()], vec!["later\0".into()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        write_csv(&table, WriteConfig {
+            delimiter: b',', quote: b'"', line_ending: LineEnding::Lf,
+            final_terminator: false, mode: WriteMode::Preserve,
+        }),
+        Err(WriteError::Nul { record: 0, column: 0, byte: 1 })
+    );
+}
+
+#[test]
+fn spec_r44_writer_width_precedes_zero_columns_and_zero_columns_are_records() {
+    let width = Table {
+        header: Some(vec!["a".into(), "b".into()]),
+        rows: vec![vec!["x".into()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let config = WriteConfig {
+        delimiter: b',', quote: b'"', line_ending: LineEnding::Lf,
+        final_terminator: false, mode: WriteMode::Preserve,
+    };
+    assert_eq!(
+        write_csv(&width, config),
+        Err(WriteError::Width { record: 1, expected: 2, actual: 1 })
+    );
+    let empty_record = Table { header: Some(vec![]), rows: vec![], duplicates: DuplicatePolicy::Reject };
+    assert_eq!(write_csv(&empty_record, config), Err(WriteError::ZeroColumns { record: 0 }));
+    let no_records = Table { header: None, rows: vec![], duplicates: DuplicatePolicy::Reject };
+    assert_eq!(write_csv(&no_records, config), Ok(String::new()));
+}
+
+#[test]
+fn spec_r45_canonical_duplicate_rejection_after_structure() {
+    let table = Table {
+        header: Some(vec!["x".into(), "x".into()]),
+        rows: vec![vec!["a".into()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let config = WriteConfig {
+        delimiter: b',', quote: b'"', line_ending: LineEnding::Lf,
+        final_terminator: false, mode: WriteMode::Canonical,
+    };
+    assert_eq!(
+        write_csv(&table, config),
+        Err(WriteError::Width { record: 1, expected: 2, actual: 1 })
+    );
+    let valid = Table { rows: vec![vec!["a".into(), "b".into()]], ..table };
+    assert_eq!(
+        write_csv(&valid, config),
+        Err(WriteError::DuplicateHeader { name: "x".into(), first: 0, second: 1 })
+    );
+}
+
+#[test]
+fn spec_r46_preserve_keeps_original_order_and_cells() {
+    let table = Table {
+        header: Some(vec!["b".into(), "a".into()]),
+        rows: vec![vec!["2".into(), "z".into()], vec!["1".into(), "y".into()]],
+        duplicates: DuplicatePolicy::KeepFirst,
+    };
+    let config = WriteConfig {
+        delimiter: b',', quote: b'"', line_ending: LineEnding::Lf,
+        final_terminator: false, mode: WriteMode::Preserve,
+    };
+    assert_eq!(write_csv(&table, config), Ok("b,a\n2,z\n1,y".into()));
+}
+
+#[test]
+fn spec_r47_canonical_projects_and_sorts_distinct_header_columns() {
+    let table = Table {
+        header: Some(vec!["z".into(), "a".into(), "z".into(), "".into()]),
+        rows: vec![vec!["discard".into(), "b".into(), "keep".into(), "empty".into()]],
+        duplicates: DuplicatePolicy::KeepLast,
+    };
+    let config = WriteConfig {
+        delimiter: b',', quote: b'"', line_ending: LineEnding::CrLf,
+        final_terminator: false, mode: WriteMode::Canonical,
+    };
+    assert_eq!(write_csv(&table, config), Ok(",a,z\nempty,b,keep\n".into()));
+}
+
+#[test]
+fn spec_r48_canonical_sorts_projected_rows_by_decoded_fields() {
+    let table = Table {
+        header: Some(vec!["b".into(), "a".into()]),
+        rows: vec![vec!["x".into(), "z".into()], vec!["a".into(), "y".into()], vec!["a".into(), "y".into()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let config = WriteConfig {
+        delimiter: b',', quote: b'"', line_ending: LineEnding::Lf,
+        final_terminator: false, mode: WriteMode::Canonical,
+    };
+    assert_eq!(write_csv(&table, config), Ok("a,b\ny,a\ny,a\nz,x\n".into()));
+}
+
+#[test]
+fn spec_r49_canonical_without_header_sorts_vectors_and_keeps_widths() {
+    let table = Table {
+        header: None,
+        rows: vec![vec!["b".into()], vec!["a".into(), "x".into()], vec!["a".into()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let config = WriteConfig {
+        delimiter: b',', quote: b'"', line_ending: LineEnding::CrLf,
+        final_terminator: false, mode: WriteMode::Canonical,
+    };
+    assert_eq!(write_csv(&table, config), Ok("a\n\"a,x\"\nb\n".into()));
+}
+
+#[test]
+fn spec_r50_writer_quotes_exactly_required_cases() {
+    let table = Table {
+        header: None,
+        rows: vec![
+            vec!["".into()],
+            vec!["".into(), "".into()],
+            vec![" x".into(), "y ".into(), "a\tb".into(), "a\u{00a0}".into(), "\u{feff}x".into()],
+        ],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let config = WriteConfig {
+        delimiter: b',', quote: b'"', line_ending: LineEnding::Lf,
+        final_terminator: false, mode: WriteMode::Preserve,
+    };
+    assert_eq!(
+        write_csv(&table, config),
+        Ok("\"\"\n,\n\" x\",y ,a\tb,a\u{00a0},\"\u{feff}x\"".into())
+    );
+}
+
+#[test]
+fn spec_r51_writer_escapes_configured_quote_and_preserves_content() {
+    let table = Table {
+        header: None,
+        rows: vec![vec!["a!b|c\r\n".into()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let config = WriteConfig {
+        delimiter: b'|', quote: b'!', line_ending: LineEnding::Lf,
+        final_terminator: false, mode: WriteMode::Preserve,
+    };
+    assert_eq!(write_csv(&table, config), Ok("!a!!b|c\r\n!".into()));
+}
+
+#[test]
+fn spec_r52_preserve_line_endings_and_final_terminator() {
+    let table = Table { header: None, rows: vec![vec!["a".into()], vec!["b".into()]], duplicates: DuplicatePolicy::Reject };
+    let base = WriteConfig {
+        delimiter: b',', quote: b'"', line_ending: LineEnding::CrLf,
+        final_terminator: false, mode: WriteMode::Preserve,
+    };
+    assert_eq!(write_csv(&table, base), Ok("a\r\nb".into()));
+    assert_eq!(write_csv(&table, WriteConfig { final_terminator: true, ..base }), Ok("a\r\nb\r\n".into()));
+    let empty = Table { header: None, rows: vec![], duplicates: DuplicatePolicy::Reject };
+    assert_eq!(write_csv(&empty, WriteConfig { final_terminator: true, ..base }), Ok(String::new()));
+}
+
+#[test]
+fn spec_r53_canonical_always_lf_and_final_newline() {
+    let table = Table { header: None, rows: vec![vec!["a".into()]], duplicates: DuplicatePolicy::Reject };
+    let config = WriteConfig {
+        delimiter: b',', quote: b'"', line_ending: LineEnding::CrLf,
+        final_terminator: false, mode: WriteMode::Canonical,
+    };
+    assert_eq!(write_csv(&table, config), Ok("a\n".into()));
+    let empty = Table { header: None, rows: vec![], duplicates: DuplicatePolicy::Reject };
+    assert_eq!(write_csv(&empty, config), Ok(String::new()));
+}
+
+#[test]
+fn spec_r54_writer_round_trips_bom_and_embedded_newlines() {
+    let table = Table {
+        header: Some(vec!["\u{feff}name".into(), "line".into()]),
+        rows: vec![vec!["".into(), "a\r\nb".into()]],
+        duplicates: DuplicatePolicy::KeepFirst,
+    };
+    let write_config = WriteConfig {
+        delimiter: b',', quote: b'"', line_ending: LineEnding::Lf,
+        final_terminator: false, mode: WriteMode::Preserve,
+    };
+    let encoded = write_csv(&table, write_config).unwrap();
+    let read_config = Config {
+        delimiter: b',', quote: b'"', headers: true, duplicates: DuplicatePolicy::KeepFirst,
+    };
+    assert_eq!(read_csv(&encoded, read_config), Ok(table));
+    let canonical = write_csv(&Table {
+        header: Some(vec!["b".into(), "a".into()]),
+        rows: vec![vec!["2".into(), "z".into()]],
+        duplicates: DuplicatePolicy::Reject,
+    }, WriteConfig { mode: WriteMode::Canonical, ..write_config }).unwrap();
+    assert_eq!(
+        read_csv(&canonical, Config { headers: true, ..read_config }).unwrap(),
+        Table {
+            header: Some(vec!["a".into(), "b".into()]),
+            rows: vec![vec!["z".into(), "2".into()]],
+            duplicates: DuplicatePolicy::KeepFirst,
+        }
+    );
+}
+
+#[test]
+fn spec_r55_writer_error_precedence_and_original_indexes() {
+    let table = Table {
+        header: Some(vec!["a".into(), "a\0".into()]),
+        rows: vec![vec!["bad".into()], vec!["x".into(), "y".into()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let config = WriteConfig {
+        delimiter: b',', quote: b'"', line_ending: LineEnding::Lf,
+        final_terminator: false, mode: WriteMode::Canonical,
+    };
+    assert_eq!(
+        write_csv(&table, config),
+        Err(WriteError::Nul { record: 0, column: 1, byte: 1 })
+    );
+}
+```

@@ -1,0 +1,821 @@
+#[test]
+fn spec_r1_public_api_shape() {
+    let options = PatchOptions {
+        max_offset: 0,
+        fuzz: 0,
+    };
+    assert_eq!(
+        apply_unified("", "", options),
+        Ok(String::new())
+    );
+}
+
+#[test]
+fn spec_r2_options_precede_all_other_errors() {
+    assert_eq!(
+        apply_unified(
+            "bad\r",
+            "not a patch",
+            PatchOptions {
+                max_offset: 17,
+                fuzz: 3,
+            }
+        ),
+        Err(ApplyError::InvalidOptions)
+    );
+    assert_eq!(
+        apply_unified(
+            "",
+            "",
+            PatchOptions {
+                max_offset: 16,
+                fuzz: 2,
+            }
+        ),
+        Ok(String::new())
+    );
+}
+
+#[test]
+fn spec_r3_line_and_hunk_numbers() {
+    assert_eq!(
+        apply_unified(
+            "",
+            "--- before\n+++ after\n@@ -0,0 +0,0 @@\n",
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Err(ApplyError::BadBody { line: 3 })
+    );
+    assert_eq!(
+        apply_unified(
+            "x\n",
+            "--- before\n+++ after\n@@ -1,1 +1,1 @@\n-y\n+z\n",
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Err(ApplyError::NoMatch { hunk: 1 })
+    );
+}
+
+#[test]
+fn spec_r4_empty_patch_is_identity_but_validates_source() {
+    let options = PatchOptions {
+        max_offset: 0,
+        fuzz: 0,
+    };
+    assert_eq!(apply_unified("", "", options.clone()), Ok(String::new()));
+    assert_eq!(
+        apply_unified("x", "", options.clone()),
+        Err(ApplyError::SourceMissingLf)
+    );
+    assert_eq!(
+        apply_unified("x\r\n", "", options),
+        Err(ApplyError::SourceFormat { byte: 1 })
+    );
+}
+
+#[test]
+fn spec_r5_missing_patch_lf_precedes_patch_syntax() {
+    assert_eq!(
+        apply_unified("", "nonsense",
+            PatchOptions { max_offset: 0, fuzz: 0 }),
+        Err(ApplyError::BadHeader { line: 1 })
+    );
+    assert_eq!(
+        apply_unified("", "--- before\n+++ after\n",
+            PatchOptions { max_offset: 0, fuzz: 0 }),
+        Err(ApplyError::BadHeader { line: 3 })
+    );
+}
+
+#[test]
+fn spec_r6_file_headers_are_exact_and_report_first_bad_line() {
+    let options = PatchOptions {
+        max_offset: 0,
+        fuzz: 0,
+    };
+    assert_eq!(
+        apply_unified("", "--- other\n+++ after\n",
+            options.clone()),
+        Err(ApplyError::BadHeader { line: 1 })
+    );
+    assert_eq!(
+        apply_unified("", "--- before\n+++ other\n",
+            options.clone()),
+        Err(ApplyError::BadHeader { line: 2 })
+    );
+    assert_eq!(
+        apply_unified("", "+++ after\n--- before\n",
+            options),
+        Err(ApplyError::BadHeader { line: 1 })
+    );
+}
+
+#[test]
+fn spec_r7_patch_requires_a_hunk() {
+    assert_eq!(
+        apply_unified(
+            "",
+            "--- before\n+++ after\n",
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Err(ApplyError::BadHunkHeader { line: 3 })
+    );
+}
+
+#[test]
+fn spec_r8_hunk_header_has_exact_shape() {
+    let options = PatchOptions {
+        max_offset: 0,
+        fuzz: 0,
+    };
+    for header in [
+        "@@ -1 +1,1 @@",
+        "@@ -1,1 +1 @@",
+        "@@  -1,1 +1,1 @@",
+        "@@ -1,1  +1,1 @@",
+        "@@ -1,1 +1,1 @@ trailing",
+    ] {
+        let patch = format!("--- before\n+++ after\n{header}\n-a\n+A\n");
+        assert_eq!(
+            apply_unified("", &patch, options.clone()),
+            Err(ApplyError::BadHunkHeader { line: 3 })
+        );
+    }
+}
+
+#[test]
+fn spec_r9_hunk_numbers_are_canonical_and_bounded() {
+    let options = PatchOptions {
+        max_offset: 0,
+        fuzz: 0,
+    };
+    for header in [
+        "@@ -01,1 +1,1 @@",
+        "@@ -+1,1 +1,1 @@",
+        "@@ --1,1 +1,1 @@",
+        "@@ -129,1 +1,1 @@",
+        "@@ -1,129 +1,1 @@",
+        "@@ -1,1 +129,1 @@",
+        "@@ -1,1 +1,129 @@",
+        "@@ -1,1 +1, @@",
+    ] {
+        let patch = format!("--- before\n+++ after\n{header}\n-a\n+A\n");
+        assert_eq!(
+            apply_unified("", &patch, options.clone()),
+            Err(ApplyError::BadHunkHeader { line: 3 })
+        );
+    }
+    let patch = "--- before\n+++ after\n@@ -0,0 +0,0 @@\n+x\n";
+    assert_eq!(
+        apply_unified("", patch, options),
+        Ok("x\n".into())
+    );
+}
+
+#[test]
+fn spec_r10_positive_counts_require_positive_starts() {
+    let options = PatchOptions {
+        max_offset: 0,
+        fuzz: 0,
+    };
+    for header in ["@@ -0,1 +1,1 @@", "@@ -1,1 +0,1 @@"] {
+        let patch = format!("--- before\n+++ after\n{header}\n-a\n+A\n");
+        assert_eq!(
+            apply_unified("", &patch, options.clone()),
+            Err(ApplyError::BadHunkHeader { line: 3 })
+        );
+    }
+    assert_eq!(
+        apply_unified(
+            "",
+            "--- before\n+++ after\n@@ -0,0 +1,1 @@\n+x\n",
+            options
+        ),
+        Ok("x\n".into())
+    );
+}
+
+#[test]
+fn spec_r11_zero_count_anchors_are_full_starts() {
+    let options = PatchOptions {
+        max_offset: 0,
+        fuzz: 0,
+    };
+    assert_eq!(
+        apply_unified(
+            "a\n",
+            "--- before\n+++ after\n@@ -1,0 +2,1 @@\n+x\n",
+            options
+        ),
+        Ok("a\nx\n".into())
+    );
+}
+
+#[test]
+fn spec_r12_any_at_at_body_line_starts_a_new_header() {
+    assert_eq!(
+        apply_unified(
+            "",
+            "--- before\n+++ after\n@@ -0,0 +1,1 @@\n+x\n@@ malformed\n",
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Err(ApplyError::BadHunkHeader { line: 5 })
+    );
+}
+
+#[test]
+fn spec_r13_body_prefix_and_payload_rules() {
+    let options = PatchOptions {
+        max_offset: 0,
+        fuzz: 0,
+    };
+    for row in ["", "x", "\tx", "\rx"] {
+        let patch = format!(
+            "--- before\n+++ after\n@@ -0,0 +1,1 @@\n{row}\n"
+        );
+        assert_eq!(
+            apply_unified("", &patch, options.clone()),
+            Err(ApplyError::BadBody { line: 4 })
+        );
+    }
+    assert_eq!(
+        apply_unified(
+            "",
+            "--- before\n+++ after\n@@ -0,0 +1,1 @@\n+\n",
+            options
+        ),
+        Ok("\n".into())
+    );
+}
+
+#[test]
+fn spec_r14_body_counts_are_checked_after_rows() {
+    let options = PatchOptions {
+        max_offset: 0,
+        fuzz: 0,
+    };
+    assert_eq!(
+        apply_unified(
+            "",
+            "--- before\n+++ after\n@@ -0,1 +0,1 @@\n?\n",
+            options.clone()
+        ),
+        Err(ApplyError::BadBody { line: 4 })
+    );
+    assert_eq!(
+        apply_unified(
+            "",
+            "--- before\n+++ after\n@@ -0,1 +0,1 @@\n-a\n",
+            options
+        ),
+        Err(ApplyError::CountMismatch { line: 3 })
+    );
+}
+
+#[test]
+fn spec_r15_hunk_must_change_at_least_one_line_after_counts() {
+    assert_eq!(
+        apply_unified(
+            "",
+            "--- before\n+++ after\n@@ -0,0 +0,0 @@\n",
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Err(ApplyError::BadBody { line: 3 })
+    );
+    assert_eq!(
+        apply_unified(
+            "x\n",
+            "--- before\n+++ after\n@@ -1,1 +1,1 @@\n x\n",
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Err(ApplyError::BadBody { line: 3 })
+    );
+}
+
+#[test]
+fn spec_r16_nominal_old_hunks_must_be_ordered_and_nonoverlapping() {
+    let options = PatchOptions {
+        max_offset: 0,
+        fuzz: 0,
+    };
+    let overlap = concat!(
+        "--- before\n+++ after\n",
+        "@@ -1,2 +1,1 @@\n-a\n-b\n+x\n",
+        "@@ -2,1 +2,1 @@\n-b\n+y\n",
+    );
+    assert_eq!(
+        apply_unified("a\nb\n", overlap, options.clone()),
+        Err(ApplyError::Misordered { line: 7 })
+    );
+    let same_anchor_insertions = concat!(
+        "--- before\n+++ after\n",
+        "@@ -0,0 +1,1 @@\n+x\n",
+        "@@ -0,0 +2,1 @@\n+y\n",
+    );
+    assert_eq!(
+        apply_unified("", same_anchor_insertions, options),
+        Ok("x\ny\n".into())
+    );
+}
+
+#[test]
+fn spec_r17_nominal_new_start_tracks_prior_line_deltas() {
+    let patch = concat!(
+        "--- before\n+++ after\n",
+        "@@ -1,1 +1,2 @@\n-a\n+x\n+y\n",
+        "@@ -2,1 +3,1 @@\n-b\n+z\n",
+    );
+    assert_eq!(
+        apply_unified(
+            "a\nb\n",
+            patch,
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Ok("x\ny\nz\n".into())
+    );
+
+    let bad_new_start = concat!(
+        "--- before\n+++ after\n",
+        "@@ -1,1 +1,1 @@\n-a\n+x\n",
+        "@@ -2,1 +1,1 @@\n-b\n+y\n",
+    );
+    assert_eq!(
+        apply_unified(
+            "a\nb\n",
+            bad_new_start,
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Err(ApplyError::Misordered { line: 7 })
+    );
+}
+
+#[test]
+fn spec_r18_seventeenth_valid_hunk_is_too_large_after_ordering() {
+    let mut patch = String::from("--- before\n+++ after\n");
+    for i in 0..17 {
+        let start = i + 1;
+        patch.push_str(&format!(
+            "@@ -{start},1 +{start},1 @@\n-old{i}\n-new{i}\n"
+        ));
+    }
+    assert_eq!(
+        apply_unified(
+            "",
+            &patch,
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Err(ApplyError::TooLarge)
+    );
+}
+
+#[test]
+fn spec_r19_full_patch_parse_precedes_source_matching() {
+    let patch = concat!(
+        "--- before\n+++ after\n",
+        "@@ -1,1 +1,1 @@\n-a\n+b\n",
+        "@@ malformed\n",
+    );
+    assert_eq!(
+        apply_unified(
+            "z\n",
+            patch,
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Err(ApplyError::BadHunkHeader { line: 6 })
+    );
+}
+
+#[test]
+fn spec_r20_source_line_splitting_and_blank_lines() {
+    let options = PatchOptions {
+        max_offset: 0,
+        fuzz: 0,
+    };
+    assert_eq!(
+        apply_unified(
+            "\n",
+            "--- before\n+++ after\n@@ -1,1 +1,1 @@\n-\n+blank\n",
+            options.clone()
+        ),
+        Ok("blank\n".into())
+    );
+    assert_eq!(
+        apply_unified("", "", options.clone()),
+        Ok(String::new())
+    );
+    assert_eq!(
+        apply_unified("a\n\n", "", options),
+        Ok("a\n\n".into())
+    );
+}
+
+#[test]
+fn spec_r21_source_validation_order_and_line_limit() {
+    let options = PatchOptions {
+        max_offset: 0,
+        fuzz: 0,
+    };
+    assert_eq!(
+        apply_unified("a\r", "", options.clone()),
+        Err(ApplyError::SourceFormat { byte: 1 })
+    );
+    assert_eq!(
+        apply_unified("a", "", options.clone()),
+        Err(ApplyError::SourceMissingLf)
+    );
+    let source = "x\n".repeat(129);
+    assert_eq!(
+        apply_unified(&source, "", options),
+        Err(ApplyError::TooLarge)
+    );
+}
+
+#[test]
+fn spec_r22_changes_are_applied_to_a_private_copy() {
+    let source = String::from("a\nb\n");
+    let patch = String::from(
+        "--- before\n+++ after\n@@ -1,1 +1,1 @@\n-a\n+A\n",
+    );
+    let result = apply_unified(
+        &source,
+        &patch,
+        PatchOptions {
+            max_offset: 0,
+            fuzz: 0,
+        },
+    );
+    assert_eq!(result, Ok("A\nb\n".into()));
+    assert_eq!(source, "a\nb\n");
+    assert_eq!(
+        apply_unified(
+            &source,
+            "--- before\n+++ after\n@@ -1,1 +1,1 @@\n-x\n+X\n",
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Err(ApplyError::NoMatch { hunk: 1 })
+    );
+    assert_eq!(source, "a\nb\n");
+}
+
+#[test]
+fn spec_r23_fuzz_drops_only_edge_context_rows() {
+    let patch = concat!(
+        "--- before\n+++ after\n",
+        "@@ -1,3 +1,3 @@\n",
+        " lead\n-old\n+new\n trail\n",
+    );
+    assert_eq!(
+        apply_unified(
+            "changed lead\nold\nchanged trail\n",
+            patch,
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 2,
+            }
+        ),
+        Ok("changed lead\nnew\nchanged trail\n".into())
+    );
+}
+
+#[test]
+fn spec_r24_dropped_context_must_exist_and_is_preserved() {
+    let patch = concat!(
+        "--- before\n+++ after\n",
+        "@@ -1,2 +1,2 @@\n",
+        " context\n-old\n+new\n",
+    );
+    assert_eq!(
+        apply_unified(
+            "old\n",
+            patch,
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 1,
+            }
+        ),
+        Err(ApplyError::NoMatch { hunk: 1 })
+    );
+    assert_eq!(
+        apply_unified(
+            "actual\nold\n",
+            patch,
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 1,
+            }
+        ),
+        Ok("actual\nnew\n".into())
+    );
+}
+
+#[test]
+fn spec_r25_candidate_bounds_include_end_insertions() {
+    assert_eq!(
+        apply_unified(
+            "x\n",
+            "--- before\n+++ after\n@@ -1,0 +2,1 @@\n+y\n",
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Ok("x\ny\n".into())
+    );
+}
+
+#[test]
+fn spec_r26_net_and_drift_set_expected_start() {
+    let patch = concat!(
+        "--- before\n+++ after\n",
+        "@@ -1,1 +1,1 @@\n-a\n+A\n",
+        "@@ -2,1 +2,1 @@\n-b\n+B\n",
+    );
+    assert_eq!(
+        apply_unified(
+            "z\na\nb\n",
+            patch,
+            PatchOptions {
+                max_offset: 1,
+                fuzz: 0,
+            }
+        ),
+        Ok("z\nA\nB\n".into())
+    );
+}
+
+#[test]
+fn spec_r27_offset_uses_signed_unclamped_expected_start() {
+    let patch = "--- before\n+++ after\n@@ -0,0 +1,1 @@\n+x\n";
+    assert_eq!(
+        apply_unified(
+            "",
+            patch,
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Err(ApplyError::NoMatch { hunk: 1 })
+    );
+}
+
+#[test]
+fn spec_r28_trimmed_context_and_removal_rows_must_match_in_order() {
+    let patch = concat!(
+        "--- before\n+++ after\n",
+        "@@ -1,2 +1,1 @@\n",
+        " keep\n-old\n+new\n",
+    );
+    assert_eq!(
+        apply_unified(
+            "keep\nold\n",
+            patch,
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Ok("keep\nnew\n".into())
+    );
+    assert_eq!(
+        apply_unified(
+            "old\nkeep\n",
+            "--- before\n+++ after\n@@ -1,2 +1,1 @@\n keep\n-old\n+new\n",
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Err(ApplyError::NoMatch { hunk: 1 })
+    );
+}
+
+#[test]
+fn spec_r29_exact_context_outranks_closer_fuzzed_choice() {
+    let patch = concat!(
+        "--- before\n+++ after\n",
+        "@@ -2,2 +2,2 @@\n",
+        "left\n-old\n+new\n",
+    );
+    assert_eq!(
+        apply_unified(
+            "wrong\nold\nleft\nold\n",
+            patch,
+            PatchOptions {
+                max_offset: 1,
+                fuzz: 1,
+            }
+        ),
+        Ok("wrong\nold\nleft\nnew\n".into())
+    );
+}
+
+#[test]
+fn spec_r30_no_matching_choice_reports_hunk_number() {
+    assert_eq!(
+        apply_unified(
+            "x\n",
+            "--- before\n+++ after\n@@ -1,1 +1,1 @@\n-y\n+z\n",
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Err(ApplyError::NoMatch { hunk: 1 })
+    );
+}
+
+#[test]
+fn spec_r31_best_rank_positional_tie_is_ambiguous_with_smallest_starts() {
+    let patch = "--- before\n+++ after\n@@ -2,1 +2,1 @@\n-x\n+y\n";
+    assert_eq!(
+        apply_unified(
+            "x\nx\nx\n",
+            patch,
+            PatchOptions {
+                max_offset: 1,
+                fuzz: 0,
+            }
+        ),
+        Err(ApplyError::Ambiguous {
+            hunk: 1,
+            first: 0,
+            second: 2,
+        })
+    );
+}
+
+#[test]
+fn spec_r32_same_start_choice_prefers_smallest_leading_fuzz() {
+    let patch = concat!(
+        "--- before\n+++ after\n",
+        "@@ -1,3 +1,3 @@\n",
+        " first\n-old\n+new\n",
+        " last\n",
+    );
+    assert_eq!(
+        apply_unified(
+            "first\nold\nlast\n",
+            patch,
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 1,
+            }
+        ),
+        Ok("first\nnew\nlast\n".into())
+    );
+}
+
+#[test]
+fn spec_r33_replacement_emits_only_trimmed_context_and_additions() {
+    let patch = concat!(
+        "--- before\n+++ after\n",
+        "@@ -1,3 +1,3 @@\n",
+        " before\n-old\n+new\n",
+        " after\n",
+    );
+    assert_eq!(
+        apply_unified(
+            "before\nold\nafter\n",
+            patch,
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Ok("before\nnew\nafter\n".into())
+    );
+}
+
+#[test]
+fn spec_r34_working_source_limit_checked_after_each_hunk() {
+    let source = "x\n".repeat(128);
+    let patch = concat!(
+        "--- before\n+++ after\n",
+        "@@ -1,1 +1,2 @@\n",
+        "-x\n+y\n+z\n",
+    );
+    assert_eq!(
+        apply_unified(
+            &source,
+            patch,
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Err(ApplyError::TooLarge)
+    );
+}
+
+#[test]
+fn spec_r35_relocation_drift_carries_to_next_hunk() {
+    let patch = concat!(
+        "--- before\n+++ after\n",
+        "@@ -1,1 +1,1 @@\n-a\n+A\n",
+        "@@ -2,1 +2,1 @@\n-b\n+B\n",
+    );
+    assert_eq!(
+        apply_unified(
+            "z\na\nb\n",
+            patch,
+            PatchOptions {
+                max_offset: 1,
+                fuzz: 0,
+            }
+        ),
+        Ok("z\nA\nB\n".into())
+    );
+}
+
+#[test]
+fn spec_r36_actual_relocation_may_revisit_prior_lines() {
+    let patch = concat!(
+        "--- before\n+++ after\n",
+        "@@ -1,1 +1,1 @@\n-a\n+A\n",
+        "@@ -2,1 +2,1 @@\n-b\n+B\n",
+    );
+    assert_eq!(
+        apply_unified(
+            "a\nb\n",
+            patch,
+            PatchOptions {
+                max_offset: 1,
+                fuzz: 0,
+            }
+        ),
+        Ok("A\nB\n".into())
+    );
+}
+
+#[test]
+fn spec_r37_success_serializes_each_line_with_one_lf() {
+    let options = PatchOptions {
+        max_offset: 0,
+        fuzz: 0,
+    };
+    assert_eq!(
+        apply_unified(
+            "",
+            "--- before\n+++ after\n@@ -0,0 +1,1 @@\n+x\n",
+            options.clone()
+        ),
+        Ok("x\n".into())
+    );
+    assert_eq!(
+        apply_unified(
+            "x\n",
+            "--- before\n+++ after\n@@ -1,1 +0,0 @@\n-x\n",
+            options
+        ),
+        Ok(String::new())
+    );
+}
+
+#[test]
+fn spec_r38_file_headers_are_metadata_not_output() {
+    assert_eq!(
+        apply_unified(
+            "",
+            "--- before\n+++ after\n@@ -0,0 +1,1 @@\n+payload\n",
+            PatchOptions {
+                max_offset: 0,
+                fuzz: 0,
+            }
+        ),
+        Ok("payload\n".into())
+    );
+}

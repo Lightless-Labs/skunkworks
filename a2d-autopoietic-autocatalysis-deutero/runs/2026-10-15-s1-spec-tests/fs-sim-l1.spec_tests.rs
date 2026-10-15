@@ -1,0 +1,295 @@
+#[test]
+fn spec_r1_api_smoke() {
+    let mut fs = Fs::new();
+    assert_eq!(fs.mkdir("/api"), Ok(()));
+    assert_eq!(fs.write("/api/file", b"x"), Ok(()));
+    assert_eq!(fs.read("/api/file"), Ok(b"x".to_vec()));
+    assert_eq!(
+        fs.ls("/api"),
+        Ok(vec![("file".to_string(), Kind::File)])
+    );
+}
+
+#[test]
+fn spec_r2_root_and_independent_instances() {
+    let mut first = Fs::new();
+    let second = Fs::new();
+
+    assert_eq!(first.ls("/"), Ok(Vec::new()));
+    first.mkdir("/only-first").unwrap();
+    assert_eq!(
+        second.read("/only-first"),
+        Err(Error::Missing("/only-first".into()))
+    );
+    assert_eq!(second.ls("/"), Ok(Vec::new()));
+}
+
+#[test]
+fn spec_r3_nul_precedes_other_path_errors() {
+    let fs = Fs::new();
+
+    assert_eq!(fs.read("relative\0/path"), Err(Error::InvalidPath(8)));
+    assert_eq!(fs.read("/bad/\0name/"), Err(Error::InvalidPath(5)));
+    assert_eq!(fs.read(""), Err(Error::InvalidPath(0)));
+}
+
+#[test]
+fn spec_r4_absolute_and_component_validation_offsets() {
+    let fs = Fs::new();
+
+    assert_eq!(fs.read("relative"), Err(Error::InvalidPath(0)));
+    assert_eq!(fs.read("/a//b"), Err(Error::InvalidPath(3)));
+    assert_eq!(fs.read("/a/"), Err(Error::InvalidPath(2)));
+    assert_eq!(fs.read("/./z"), Err(Error::InvalidPath(1)));
+    assert_eq!(fs.read("/a/../b"), Err(Error::InvalidPath(3)));
+    assert_eq!(fs.read("/"), Err(Error::IsDir("/".into())));
+}
+
+#[test]
+fn spec_r5_lookup_prefixes_and_traversal_precedence() {
+    let mut fs = Fs::new();
+    fs.write("/plain", b"x").unwrap();
+
+    assert_eq!(
+        fs.read("/missing/child"),
+        Err(Error::Missing("/missing".into()))
+    );
+    assert_eq!(
+        fs.read("/plain/child"),
+        Err(Error::NotDir("/plain".into()))
+    );
+    assert_eq!(
+        fs.read("/plain/child/grandchild"),
+        Err(Error::NotDir("/plain".into()))
+    );
+}
+
+#[test]
+fn spec_r6_creation_requires_existing_directory_parent() {
+    let mut fs = Fs::new();
+    fs.write("/file", b"x").unwrap();
+
+    assert_eq!(
+        fs.mkdir("/missing/child"),
+        Err(Error::Missing("/missing".into()))
+    );
+    assert_eq!(
+        fs.write("/missing/child", b"x"),
+        Err(Error::Missing("/missing".into()))
+    );
+    assert_eq!(
+        fs.mkdir("/file/child"),
+        Err(Error::NotDir("/file".into()))
+    );
+    assert_eq!(
+        fs.write("/file/child", b"x"),
+        Err(Error::NotDir("/file".into()))
+    );
+    assert_eq!(fs.read("/file"), Ok(b"x".to_vec()));
+}
+
+#[test]
+fn spec_r7_mkdir_existing_entries_and_root() {
+    let mut fs = Fs::new();
+    fs.mkdir("/dir").unwrap();
+    fs.write("/file", b"x").unwrap();
+
+    assert_eq!(fs.mkdir("/dir"), Err(Error::Exists("/dir".into())));
+    assert_eq!(fs.mkdir("/file"), Err(Error::Exists("/file".into())));
+    assert_eq!(fs.mkdir("/"), Err(Error::Exists("/".into())));
+    assert_eq!(fs.ls("/dir"), Ok(Vec::new()));
+    assert_eq!(fs.read("/file"), Ok(b"x".to_vec()));
+}
+
+#[test]
+fn spec_r8_write_create_replace_and_directory_error() {
+    let mut fs = Fs::new();
+    fs.mkdir("/dir").unwrap();
+
+    assert_eq!(fs.write("/dir", b"x"), Err(Error::IsDir("/dir".into())));
+    assert_eq!(fs.ls("/dir"), Ok(Vec::new()));
+
+    fs.write("/new", b"created").unwrap();
+    assert_eq!(fs.read("/new"), Ok(b"created".to_vec()));
+    fs.write("/new", b"replacement").unwrap();
+    assert_eq!(fs.read("/new"), Ok(b"replacement".to_vec()));
+}
+
+#[test]
+fn spec_r9_read_file_bytes_and_directory_error() {
+    let mut fs = Fs::new();
+    fs.mkdir("/dir").unwrap();
+    let bytes = vec![0, 255, 128, b'a'];
+
+    fs.write("/bytes", &bytes).unwrap();
+    assert_eq!(fs.read("/bytes"), Ok(bytes));
+    assert_eq!(fs.read("/dir"), Err(Error::IsDir("/dir".into())));
+}
+
+#[test]
+fn spec_r10_ls_requires_directory_and_empty_is_empty() {
+    let mut fs = Fs::new();
+    fs.mkdir("/empty").unwrap();
+    fs.write("/file", b"x").unwrap();
+
+    assert_eq!(fs.ls("/empty"), Ok(Vec::new()));
+    assert_eq!(fs.ls("/file"), Err(Error::NotDir("/file".into())));
+    assert_eq!(fs.ls("/absent"), Err(Error::Missing("/absent".into())));
+}
+
+#[test]
+fn spec_r11_ls_rust_string_ordering() {
+    let mut fs = Fs::new();
+    fs.mkdir("/box").unwrap();
+    fs.write("/box/z", b"").unwrap();
+    fs.mkdir("/box/a").unwrap();
+    fs.write("/box/A", b"").unwrap();
+    fs.mkdir("/box/é").unwrap();
+
+    assert_eq!(
+        fs.ls("/box"),
+        Ok(vec![
+            ("A".into(), Kind::File),
+            ("a".into(), Kind::Dir),
+            ("z".into(), Kind::File),
+            ("é".into(), Kind::Dir),
+        ])
+    );
+}
+
+#[test]
+fn spec_r12_failed_mutations_preserve_entries_and_owned_listing() {
+    let mut fs = Fs::new();
+    fs.mkdir("/dir").unwrap();
+    fs.write("/dir/file", b"original").unwrap();
+
+    assert_eq!(fs.mkdir("/dir/file"), Err(Error::Exists("/dir/file".into())));
+    assert_eq!(
+        fs.write("/dir/missing/child", b"new"),
+        Err(Error::Missing("/dir/missing".into()))
+    );
+    assert_eq!(fs.read("/dir/file"), Ok(b"original".to_vec()));
+
+    let mut listing = fs.ls("/dir").unwrap();
+    listing[0].0.clear();
+    listing.clear();
+    assert_eq!(
+        fs.ls("/dir"),
+        Ok(vec![("file".into(), Kind::File)])
+    );
+}
+
+#[test]
+fn spec_r13_empty_data_truncation_and_copying() {
+    let mut fs = Fs::new();
+    let mut input = vec![1, 2, 3];
+
+    fs.write("/data", &input).unwrap();
+    input[0] = 9;
+    assert_eq!(fs.read("/data"), Ok(vec![1, 2, 3]));
+
+    let mut output = fs.read("/data").unwrap();
+    output[1] = 8;
+    assert_eq!(fs.read("/data"), Ok(vec![1, 2, 3]));
+
+    fs.write("/data", &[7]).unwrap();
+    assert_eq!(fs.read("/data"), Ok(vec![7]));
+    fs.write("/data", &[]).unwrap();
+    assert_eq!(fs.read("/data"), Ok(Vec::new()));
+}
+
+#[test]
+fn spec_r14_root_operation_rules() {
+    let mut fs = Fs::new();
+    fs.mkdir("/child").unwrap();
+
+    assert_eq!(fs.mkdir("/"), Err(Error::Exists("/".into())));
+    assert_eq!(fs.write("/", b"x"), Err(Error::IsDir("/".into())));
+    assert_eq!(fs.read("/"), Err(Error::IsDir("/".into())));
+    assert_eq!(
+        fs.ls("/"),
+        Ok(vec![("child".into(), Kind::Dir)])
+    );
+}
+
+#[test]
+fn spec_r15_ls_only_immediate_children_with_stored_kinds() {
+    let mut fs = Fs::new();
+    fs.mkdir("/parent").unwrap();
+    fs.mkdir("/parent/nested").unwrap();
+    fs.write("/parent/file", b"").unwrap();
+    fs.write("/parent/nested/deep", b"").unwrap();
+
+    assert_eq!(
+        fs.ls("/parent"),
+        Ok(vec![
+            ("file".into(), Kind::File),
+            ("nested".into(), Kind::Dir),
+        ])
+    );
+}
+
+#[test]
+fn spec_r16_verbatim_names_and_case_sensitivity() {
+    let mut fs = Fs::new();
+    fs.mkdir("/space name").unwrap();
+    fs.mkdir("/ユニコード").unwrap();
+    fs.write("/back\\slash", b"backslash").unwrap();
+    fs.write("/a.b..c", b"dots").unwrap();
+    fs.write("/Name", b"upper").unwrap();
+    fs.write("/name", b"lower").unwrap();
+
+    assert_eq!(fs.read("/back\\slash"), Ok(b"backslash".to_vec()));
+    assert_eq!(fs.read("/a.b..c"), Ok(b"dots".to_vec()));
+    assert_eq!(fs.read("/Name"), Ok(b"upper".to_vec()));
+    assert_eq!(fs.read("/name"), Ok(b"lower".to_vec()));
+    assert_eq!(fs.ls("/space name"), Ok(Vec::new()));
+    assert_eq!(fs.ls("/ユニコード"), Ok(Vec::new()));
+}
+
+#[test]
+fn spec_r17_mutations_do_not_change_entry_kind_or_unrelated_entries() {
+    let mut fs = Fs::new();
+    fs.mkdir("/dir").unwrap();
+    fs.write("/file", b"before").unwrap();
+    fs.write("/unrelated", b"kept").unwrap();
+
+    assert_eq!(fs.mkdir("/file"), Err(Error::Exists("/file".into())));
+    assert_eq!(fs.write("/dir", b"no"), Err(Error::IsDir("/dir".into())));
+    assert_eq!(fs.read("/file"), Ok(b"before".to_vec()));
+    assert_eq!(fs.ls("/dir"), Ok(Vec::new()));
+
+    fs.write("/file", b"after").unwrap();
+    assert_eq!(fs.read("/file"), Ok(b"after".to_vec()));
+    assert_eq!(fs.read("/unrelated"), Ok(b"kept".to_vec()));
+    assert_eq!(fs.ls("/"), Ok(vec![
+        ("dir".into(), Kind::Dir),
+        ("file".into(), Kind::File),
+        ("unrelated".into(), Kind::File),
+    ]));
+}
+
+#[test]
+fn spec_r18_validate_before_lookup_and_canonical_error_paths() {
+    let mut fs = Fs::new();
+    fs.write("/file", b"x").unwrap();
+
+    assert_eq!(fs.read("/missing/"), Err(Error::InvalidPath(8)));
+    assert_eq!(fs.read("/file/child/"), Err(Error::InvalidPath(12)));
+    assert_eq!(
+        fs.read("/file/child"),
+        Err(Error::NotDir("/file".into()))
+    );
+    assert_eq!(
+        fs.write("/missing/child", b"x"),
+        Err(Error::Missing("/missing".into()))
+    );
+    assert_eq!(
+        fs.ls("/file/child"),
+        Err(Error::NotDir("/file".into()))
+    );
+    assert_eq!(
+        fs.read("/absent/child"),
+        Err(Error::Missing("/absent".into()))
+    );
+}

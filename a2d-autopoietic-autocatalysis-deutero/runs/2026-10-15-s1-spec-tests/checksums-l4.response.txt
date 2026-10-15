@@ -1,0 +1,527 @@
+```rust
+#[test]
+fn spec_r1_source_compatible() {
+    let _: Hashes = checksums(&[]);
+}
+
+#[test]
+fn spec_r2_public_types_and_error_traits() {
+    fn assert_traits<T: std::fmt::Debug + Clone + Copy + PartialEq + Eq>() {}
+    assert_traits::<Span>();
+    assert_traits::<Hashes>();
+    assert_traits::<SpanError>();
+    assert_eq!(Span { start: 2, end: 5 }, Span { start: 2, end: 5 });
+    assert_eq!(Hashes { crc32: 1, adler32: 2 }, Hashes { crc32: 1, adler32: 2 });
+    assert_eq!(SpanError::Reversed { span: 0 }, SpanError::Reversed { span: 0 });
+}
+
+#[test]
+fn spec_r3_crc32_ieee_reference() {
+    assert_eq!(crc32(b"123456789"), 0xcbf43926);
+}
+
+#[test]
+fn spec_r4_crc32_empty_and_binary_bytes() {
+    assert_eq!(crc32(&[]), 0);
+    assert_eq!(crc32(&[0, 0x80, 0xff]), 0x6cdbfd73);
+}
+
+#[test]
+fn spec_r5_adler32_reference_and_recurrence() {
+    assert_eq!(adler32(b"Wikipedia"), 0x11e60398);
+    assert_eq!(adler32(&[1, 2, 3]), 0x000d0007);
+}
+
+#[test]
+fn spec_r6_adler32_long_slice_reduces_exactly() {
+    let data = vec![255u8; 100_000];
+    let mut a = 1u64;
+    let mut b = 0u64;
+    for &x in &data {
+        a = (a + x as u64) % 65_521;
+        b = (b + a) % 65_521;
+    }
+    assert_eq!(adler32(&data), ((b as u32) << 16) | a as u32);
+}
+
+#[test]
+fn spec_r7_checksums_match_individual_algorithms() {
+    let data = [0, 1, 127, 128, 255];
+    assert_eq!(checksums(&data), Hashes { crc32: crc32(&data), adler32: adler32(&data) });
+}
+
+#[test]
+fn spec_r8_spans_hash_ordered_concatenation_excluding_gaps() {
+    let data = b"abXXcdYYe";
+    let spans = [
+        Span { start: 0, end: 2 },
+        Span { start: 4, end: 6 },
+        Span { start: 8, end: 9 },
+    ];
+    assert_eq!(checksums_spans(data, &spans), Ok(checksums(b"abcde")));
+}
+
+#[test]
+fn spec_r9_first_failing_span_wins() {
+    let data = b"abcdef";
+    let spans = [
+        Span { start: 0, end: 2 },
+        Span { start: 8, end: 9 },
+        Span { start: 5, end: 4 },
+    ];
+    assert_eq!(checksums_spans(data, &spans), Err(SpanError::OutOfBounds { span: 1, offset: 8 }));
+}
+
+#[test]
+fn spec_r10_reversed_precedes_out_of_bounds() {
+    assert_eq!(
+        checksums_spans(b"x", &[Span { start: 3, end: 2 }]),
+        Err(SpanError::Reversed { span: 0 })
+    );
+}
+
+#[test]
+fn spec_r11_bounds_check_start_then_end_and_allow_length_endpoint() {
+    assert_eq!(
+        checksums_spans(b"abc", &[Span { start: 4, end: 5 }]),
+        Err(SpanError::OutOfBounds { span: 0, offset: 4 })
+    );
+    assert_eq!(
+        checksums_spans(b"abc", &[Span { start: 1, end: 4 }]),
+        Err(SpanError::OutOfBounds { span: 0, offset: 4 })
+    );
+    assert_eq!(
+        checksums_spans(b"abc", &[Span { start: 3, end: 3 }]),
+        Ok(checksums(&[]))
+    );
+}
+
+#[test]
+fn spec_r12_bounds_errors_precede_overlap() {
+    let spans = [
+        Span { start: 1, end: 4 },
+        Span { start: 2, end: 8 },
+    ];
+    assert_eq!(
+        checksums_spans(b"abcd", &spans),
+        Err(SpanError::OutOfBounds { span: 1, offset: 8 })
+    );
+    assert_eq!(
+        checksums_spans(b"abcd", &[Span { start: 1, end: 4 }, Span { start: 2, end: 3 }]),
+        Err(SpanError::Overlap { span: 1 })
+    );
+}
+
+#[test]
+fn spec_r13_empty_spans_participate_in_ordering() {
+    assert_eq!(
+        checksums_spans(b"abcdef", &[Span { start: 1, end: 4 }, Span { start: 3, end: 3 }]),
+        Err(SpanError::Overlap { span: 1 })
+    );
+    assert_eq!(
+        checksums_spans(b"abcdef", &[Span { start: 1, end: 2 }, Span { start: 4, end: 4 }, Span { start: 3, end: 5 }]),
+        Err(SpanError::Overlap { span: 2 })
+    );
+}
+
+#[test]
+fn spec_r14_adjacent_and_repeated_empty_spans_are_valid() {
+    let spans = [
+        Span { start: 1, end: 1 },
+        Span { start: 1, end: 1 },
+        Span { start: 1, end: 3 },
+        Span { start: 3, end: 3 },
+    ];
+    assert_eq!(checksums_spans(b"abc", &spans), Ok(checksums(b"bc")));
+}
+
+#[test]
+fn spec_r15_empty_selection_has_standard_empty_checksums() {
+    assert_eq!(checksums_spans(b"nonempty", &[]), Ok(Hashes { crc32: 0, adler32: 1 }));
+    assert_eq!(
+        checksums_spans(b"nonempty", &[Span { start: 2, end: 2 }, Span { start: 5, end: 5 }]),
+        Ok(Hashes { crc32: 0, adler32: 1 })
+    );
+}
+
+#[test]
+fn spec_r16_streaming_checksum_crosses_span_boundaries() {
+    let data = b"aXXbc";
+    let spans = [Span { start: 0, end: 1 }, Span { start: 3, end: 5 }];
+    assert_eq!(checksums_spans(data, &spans), Ok(checksums(b"abc")));
+}
+
+#[test]
+fn spec_r17_malformed_spans_return_errors_without_mutating_input() {
+    let data = *b"abc";
+    let _ = checksums_spans(&data, &[Span { start: 2, end: 1 }]);
+    assert_eq!(&data, b"abc");
+}
+
+#[test]
+fn spec_r18_spans_need_no_concatenated_copy_for_result() {
+    let data = [7u8; 128];
+    let spans = [Span { start: 0, end: 64 }, Span { start: 64, end: 128 }];
+    assert_eq!(checksums_spans(&data, &spans), Ok(checksums(&data)));
+}
+
+#[test]
+fn spec_r19_stream_snapshot_error_traits() {
+    fn assert_debug_clone<T: std::fmt::Debug + Clone>() {}
+    fn assert_traits<T: std::fmt::Debug + Clone + Copy + PartialEq + Eq>() {}
+    assert_debug_clone::<Stream>();
+    assert_traits::<SnapshotError>();
+    assert_eq!(SnapshotError::Shape, SnapshotError::Shape);
+}
+
+#[test]
+fn spec_r20_new_stream_starts_empty_and_checksum_is_read_only() {
+    let s = Stream::new();
+    assert_eq!(s.checksum(), Hashes { crc32: 0, adler32: 1 });
+    assert_eq!(s.checksum(), Hashes { crc32: 0, adler32: 1 });
+}
+
+#[test]
+fn spec_r21_from_seed_resumes_finalized_checksums() {
+    let mut s = Stream::from_seed(crc32(b"ab"), adler32(b"ab")).unwrap();
+    s.update(b"c");
+    assert_eq!(s.checksum(), checksums(b"abc"));
+}
+
+#[test]
+fn spec_r22_from_seed_adler_component_validation_order() {
+    assert_eq!(Stream::from_seed(0, 0x0001_ffff), Err(SnapshotError::Adler { component: 0 }));
+    assert_eq!(Stream::from_seed(0, 0xffff_0001), Err(SnapshotError::Adler { component: 1 }));
+    assert!(Stream::from_seed(u32::MAX, 0).is_ok());
+}
+
+#[test]
+fn spec_r23_stream_updates_are_chunking_independent_and_empty_is_identity() {
+    let mut one = Stream::new();
+    one.update(b"binary\x80\xff");
+    let mut chunks = Stream::new();
+    chunks.update(b"binary");
+    chunks.update(&[]);
+    chunks.update(b"\x80");
+    chunks.update(b"\xff");
+    assert_eq!(one.checksum(), chunks.checksum());
+
+    let seed = Stream::from_seed(0x12345678, 0).unwrap();
+    let mut unchanged = seed.clone();
+    unchanged.update(&[]);
+    assert_eq!(unchanged.checksum(), seed.checksum());
+}
+
+#[test]
+fn spec_r24_update_spans_is_atomic_and_appends_on_success() {
+    let mut s = Stream::new();
+    s.update(b"prefix");
+    let before = s.checksum();
+    let bad = [Span { start: 0, end: 1 }, Span { start: 2, end: 1 }];
+    assert_eq!(s.update_spans(b"abc", &bad), Err(SpanError::Reversed { span: 1 }));
+    assert_eq!(s.checksum(), before);
+
+    assert_eq!(
+        s.update_spans(b"aXXbc", &[Span { start: 0, end: 1 }, Span { start: 3, end: 5 }]),
+        Ok(())
+    );
+    assert_eq!(s.checksum(), checksums(b"prefixabc"));
+}
+
+#[test]
+fn spec_r25_reset_and_clone_stream_state() {
+    let mut original = Stream::new();
+    original.update(b"base");
+    let mut copy = original.clone();
+    original.update(b"a");
+    copy.update(b"b");
+    assert_eq!(original.checksum(), checksums(b"basea"));
+    assert_eq!(copy.checksum(), checksums(b"baseb"));
+
+    let mut seeded = Stream::from_seed(crc32(b"x"), adler32(b"x")).unwrap();
+    seeded.reset();
+    assert_eq!(seeded.checksum(), Hashes { crc32: 0, adler32: 1 });
+}
+
+#[test]
+fn spec_r26_snapshot_is_fixed_lowercase_format() {
+    assert_eq!(Stream::new().snapshot(), "c00000000:a00000001");
+    let mut s = Stream::new();
+    s.update(b"123456789");
+    assert_eq!(s.snapshot(), "ccb f43926:a091e01de".replace(' ', ""));
+}
+
+#[test]
+fn spec_r27_restore_checks_shape_before_other_errors() {
+    assert_eq!(Stream::restore("C0000000G:a00000001"), Err(SnapshotError::Shape));
+    assert_eq!(Stream::restore("c0000000G:a00000001!"), Err(SnapshotError::Shape));
+    assert_eq!(Stream::restore("c0000000G:a00000001"), Err(SnapshotError::Shape));
+}
+
+#[test]
+fn spec_r28_restore_scans_all_digits_in_byte_order() {
+    assert_eq!(Stream::restore("c0000000G:a00000001"), Err(SnapshotError::Hex { offset: 9 }));
+    assert_eq!(Stream::restore("c00000000:a0000000G"), Err(SnapshotError::Hex { offset: 18 }));
+    assert_eq!(Stream::restore("c00000000:a0000000é"), Err(SnapshotError::Hex { offset: 18 }));
+}
+
+#[test]
+fn spec_r29_restore_resumes_and_validates_seed_after_digits() {
+    assert_eq!(Stream::restore("c00000000:a0001ffff"), Err(SnapshotError::Adler { component: 0 }));
+    let token = Stream::new().snapshot();
+    let mut restored = Stream::restore(&token).unwrap();
+    restored.update(b"resume");
+    assert_eq!(restored.checksum(), checksums(b"resume"));
+}
+
+#[test]
+fn spec_r30_snapshot_and_restore_methods_are_usable() {
+    let mut s = Stream::new();
+    s.update(b"abc");
+    let snapshot = s.snapshot();
+    let mut restored = Stream::restore(&snapshot).unwrap();
+    restored.update(b"def");
+    assert_eq!(restored.checksum(), checksums(b"abcdef"));
+}
+
+#[test]
+fn spec_r31_fletcher16_canonical_residues() {
+    assert_eq!(fletcher16(&[]), 0);
+    assert_eq!(fletcher16(&[255]), 0x00ff);
+    assert_eq!(fletcher16(&[255, 255]), 0xff00);
+    assert_eq!(fletcher16(b"abcd"), 0xd78b);
+}
+
+#[test]
+fn spec_r32_fletcher32_word_order_and_odd_padding() {
+    assert_eq!(fletcher32(&[]), 0);
+    assert_eq!(fletcher32(b"ab"), 0x6262_6162);
+    assert_eq!(fletcher32(b"a"), 0x6161_6100);
+    assert_eq!(fletcher32(b"abcd"), 0x2629c4c6);
+}
+
+#[test]
+fn spec_r33_fletcher32_spans_carries_pending_byte_across_boundaries() {
+    let data = b"aXXb";
+    let spans = [Span { start: 0, end: 1 }, Span { start: 1, end: 3 }, Span { start: 3, end: 4 }];
+    assert_eq!(fletcher32_spans(data, &spans), Ok(fletcher32(b"ab")));
+    assert_eq!(
+        fletcher32_spans(b"abc", &[Span { start: 0, end: 2 }, Span { start: 1, end: 3 }]),
+        Err(SpanError::Overlap { span: 1 })
+    );
+}
+
+#[test]
+fn spec_r34_crc16_variant_type_and_known_values() {
+    fn assert_traits<T: std::fmt::Debug + Clone + Copy + PartialEq + Eq>() {}
+    assert_traits::<Crc16>();
+    assert_eq!(crc16(b"123456789", Crc16::Xmodem), 0x31c3);
+    assert_eq!(crc16(b"123456789", Crc16::False), 0x29b1);
+    assert_eq!(crc16(b"123456789", Crc16::X25), 0x906e);
+}
+
+#[test]
+fn spec_r35_crc16_xmodem_rule() {
+    assert_eq!(crc16(&[0x80], Crc16::Xmodem), 0x9188);
+}
+
+#[test]
+fn spec_r36_crc16_false_initial_register() {
+    assert_eq!(crc16(&[], Crc16::False), 0xffff);
+    assert_eq!(crc16(&[0], Crc16::False), 0xe1f0);
+}
+
+#[test]
+fn spec_r37_crc16_x25_reflected_numeric_result() {
+    assert_eq!(crc16(&[], Crc16::X25), 0);
+    assert_eq!(crc16(b"123456789", Crc16::X25), 0x906e);
+}
+
+#[test]
+fn spec_r38_crc16_empty_values_and_binary_input() {
+    assert_eq!(crc16(&[], Crc16::Xmodem), 0);
+    assert_eq!(crc16(&[], Crc16::False), 0xffff);
+    assert_eq!(crc16(&[], Crc16::X25), 0);
+    assert_eq!(crc16(&[0, 0xff, 0x80], Crc16::Xmodem), crc16(&[0, 0xff, 0x80], Crc16::Xmodem));
+}
+
+#[test]
+fn spec_r39_multi_public_shape_and_traits() {
+    fn assert_traits<T: std::fmt::Debug + Clone + Copy + PartialEq + Eq>() {}
+    assert_traits::<Multi>();
+    let result = multi_checksums(&[], &[], Crc16::Xmodem).unwrap();
+    assert_eq!(result, Multi { base: Hashes { crc32: 0, adler32: 1 }, fletcher16: 0, fletcher32: 0, crc16: 0 });
+}
+
+#[test]
+fn spec_r40_multi_algorithms_share_selected_concatenation() {
+    let data = b"aXXbc";
+    let spans = [Span { start: 0, end: 1 }, Span { start: 3, end: 5 }];
+    let got = multi_checksums(data, &spans, Crc16::False).unwrap();
+    assert_eq!(got.base, checksums(b"abc"));
+    assert_eq!(got.fletcher16, fletcher16(b"abc"));
+    assert_eq!(got.fletcher32, fletcher32(b"abc"));
+    assert_eq!(got.crc16, crc16(b"abc", Crc16::False));
+}
+
+#[test]
+fn spec_r41_fletcher_exact_for_long_input() {
+    let data = vec![255u8; 100_001];
+    let mut a16 = 0u64;
+    let mut b16 = 0u64;
+    for &x in &data {
+        a16 = (a16 + x as u64) % 255;
+        b16 = (b16 + a16) % 255;
+    }
+    assert_eq!(fletcher16(&data), ((b16 as u16) << 8) | a16 as u16);
+
+    let mut a32 = 0u64;
+    let mut b32 = 0u64;
+    for pair in data.chunks(2) {
+        let word = ((pair[0] as u64) << 8) | pair.get(1).copied().unwrap_or(0) as u64;
+        a32 = (a32 + word) % 65_535;
+        b32 = (b32 + a32) % 65_535;
+    }
+    assert_eq!(fletcher32(&data), ((b32 as u32) << 16) | a32 as u32);
+}
+
+#[test]
+fn spec_r42_crc32_combine_matches_block_concatenation() {
+    assert_eq!(crc32_combine(crc32(b"hello"), crc32(b" world"), 6), crc32(b"hello world"));
+}
+
+#[test]
+fn spec_r43_crc32_combine_algebra_applies_to_arbitrary_values() {
+    fn zero_byte(mut r: u32) -> u32 {
+        for _ in 0..8 {
+            r = (r >> 1) ^ if r & 1 != 0 { 0xedb88320 } else { 0 };
+        }
+        r
+    }
+    assert_eq!(crc32_combine(0x12345678, 0x9abcdef0, 1), zero_byte(0x12345678) ^ 0x9abcdef0);
+}
+
+#[test]
+fn spec_r44_crc32_combine_zero_length_ignores_right() {
+    assert_eq!(crc32_combine(0x12345678, 0xffffffff, 0), 0x12345678);
+}
+
+#[test]
+fn spec_r45_combine_parts_types_traits_and_empty_identity() {
+    fn assert_traits<T: std::fmt::Debug + Clone + Copy + PartialEq + Eq>() {}
+    assert_traits::<Part>();
+    assert_traits::<CombineError>();
+    assert_eq!(combine_parts(&[]), Ok(Part { crc32: 0, len: 0 }));
+}
+
+#[test]
+fn spec_r46_combine_parts_checks_length_overflow_first() {
+    let parts = [
+        Part { crc32: 1, len: 0 },
+        Part { crc32: 0, len: u64::MAX },
+        Part { crc32: 0, len: 1 },
+    ];
+    assert_eq!(combine_parts(&parts), Err(CombineError::LengthOverflow { part: 2 }));
+}
+
+#[test]
+fn spec_r47_combine_parts_checks_empty_crc_after_all_lengths() {
+    assert_eq!(
+        combine_parts(&[Part { crc32: 7, len: 0 }]),
+        Err(CombineError::EmptyCrc { part: 0 })
+    );
+    assert_eq!(
+        combine_parts(&[
+            Part { crc32: 7, len: 0 },
+            Part { crc32: 0, len: u64::MAX },
+            Part { crc32: 0, len: 1 },
+        ]),
+        Err(CombineError::LengthOverflow { part: 2 })
+    );
+}
+
+#[test]
+fn spec_r48_combine_parts_preserves_order_and_zero_length_identity() {
+    let parts = [
+        Part { crc32: 0, len: 0 },
+        Part { crc32: crc32(b"ab"), len: 2 },
+        Part { crc32: 0, len: 0 },
+        Part { crc32: crc32(b"c"), len: 1 },
+    ];
+    assert_eq!(combine_parts(&parts), Ok(Part { crc32: crc32(b"abc"), len: 3 }));
+}
+
+#[test]
+fn spec_r49_manifest_exact_fixed_width_format() {
+    assert_eq!(
+        manifest(b"", &[]),
+        Ok("len=0000000000000000;crc=00000000;adler=00000001".to_string())
+    );
+    assert_eq!(
+        manifest(b"abc", &[Span { start: 0, end: 3 }]),
+        Ok(format!("len=0000000000000003;crc={:08x};adler={:08x}", crc32(b"abc"), adler32(b"abc")))
+    );
+}
+
+#[test]
+fn spec_r50_verify_error_traits_and_success() {
+    fn assert_traits<T: std::fmt::Debug + Clone + Copy + PartialEq + Eq>() {}
+    assert_traits::<VerifyError>();
+    let token = manifest(b"", &[]).unwrap();
+    assert_eq!(verify(b"", &[], &token), Ok(()));
+}
+
+#[test]
+fn spec_r51_verify_spans_then_shape() {
+    assert_eq!(
+        verify(b"abc", &[Span { start: 4, end: 5 }], ""),
+        Err(VerifyError::Span(SpanError::OutOfBounds { span: 0, offset: 4 }))
+    );
+    assert_eq!(verify(b"", &[], "len=0000000000000000;crc=00000000;adler=00000001x"), Err(VerifyError::Shape));
+}
+
+#[test]
+fn spec_r52_verify_checks_all_ascii_hex_digits_left_to_right() {
+    let token = "len=0000000000000000;crc=0000000G;adler=0000000G";
+    assert_eq!(verify(b"", &[], token), Err(VerifyError::Hex { offset: 32 }));
+    let unicode = "len=000000000000000é;crc=00000000;adler=00000001";
+    assert_eq!(verify(b"", &[], unicode), Err(VerifyError::Shape));
+}
+
+#[test]
+fn spec_r53_verify_length_precedes_digest_mismatches() {
+    let token = "len=0000000000000001;crc=ffffffff;adler=ffffffff";
+    assert_eq!(verify(b"", &[], token), Err(VerifyError::Length));
+}
+
+#[test]
+fn spec_r54_verify_crc_then_adler_mismatch_with_expected_actual() {
+    assert_eq!(
+        verify(b"", &[], "len=0000000000000000;crc=00000001;adler=00000002"),
+        Err(VerifyError::Mismatch { field: 0, expected: 1, actual: 0 })
+    );
+    assert_eq!(
+        verify(b"", &[], "len=0000000000000000;crc=00000000;adler=00000002"),
+        Err(VerifyError::Mismatch { field: 1, expected: 2, actual: 1 })
+    );
+    assert_eq!(
+        verify(b"", &[], "len=0000000000000000;crc=00000000;adler=00010000"),
+        Err(VerifyError::Mismatch { field: 1, expected: 0x00010000, actual: 1 })
+    );
+}
+
+#[test]
+fn spec_r55_verify_is_exact_and_handles_multibyte_tokens_without_panicking() {
+    assert_eq!(verify(b"", &[], " len=0000000000000000;crc=00000000;adler=00000001"), Err(VerifyError::Shape));
+    assert_eq!(verify(b"", &[], "len=0000000000000000;crc=00000000;adler=0000000é"), Err(VerifyError::Shape));
+}
+
+#[test]
+fn spec_r56_manifest_and_verify_selected_gap_length() {
+    let data = b"abXXcd";
+    let spans = [Span { start: 0, end: 2 }, Span { start: 4, end: 6 }];
+    let token = manifest(data, &spans).unwrap();
+    assert!(token.starts_with("len=0000000000000004;"));
+    assert_eq!(verify(data, &spans, &token), Ok(()));
+}
+```

@@ -1,0 +1,461 @@
+```rust
+#[test]
+fn spec_r1_single_file_compatible_api() {
+    let customers = [Customer {
+        id: 7,
+        arrival: 0,
+        service: 1,
+    }];
+    assert_eq!(
+        simulate(&customers, 0),
+        Ok(vec![
+            Event {
+                time: 0,
+                customer: 7,
+                kind: Kind::Arrive,
+            },
+            Event {
+                time: 0,
+                customer: 7,
+                kind: Kind::Start {
+                    finish: 1,
+                    wake: true,
+                },
+            },
+            Event {
+                time: 1,
+                customer: 7,
+                kind: Kind::Finish,
+            },
+        ])
+    );
+}
+
+#[test]
+fn spec_r2_public_types_fields_and_variants() {
+    let customer = Customer {
+        id: 3,
+        arrival: 2,
+        service: 0,
+    };
+    let event = Event {
+        time: 2,
+        customer: customer.id,
+        kind: Kind::Start {
+            finish: 2,
+            wake: true,
+        },
+    };
+    assert_eq!(
+        event,
+        Event {
+            time: 2,
+            customer: 3,
+            kind: Kind::Start {
+                finish: 2,
+                wake: true,
+            },
+        }
+    );
+    assert_eq!(
+        simulate(&[customer], 0),
+        Ok(vec![
+            Event {
+                time: 2,
+                customer: 3,
+                kind: Kind::Arrive,
+            },
+            event,
+            Event {
+                time: 2,
+                customer: 3,
+                kind: Kind::Finish,
+            },
+        ])
+    );
+}
+
+#[test]
+fn spec_r3_empty_input_ignores_wake_cost() {
+    assert_eq!(simulate(&[], u64::MAX), Ok(Vec::new()));
+}
+
+#[test]
+fn spec_r4_validation_order_and_precedence() {
+    assert_eq!(
+        simulate(
+            &[
+                Customer {
+                    id: 4,
+                    arrival: 0,
+                    service: u64::MAX,
+                },
+                Customer {
+                    id: 4,
+                    arrival: u64::MAX,
+                    service: 1,
+                },
+                Customer {
+                    id: 0,
+                    arrival: 0,
+                    service: 0,
+                },
+            ],
+            u64::MAX,
+        ),
+        Err(Error::DuplicateId { index: 1, id: 4 })
+    );
+    assert_eq!(
+        simulate(
+            &[
+                Customer {
+                    id: 1,
+                    arrival: 0,
+                    service: u64::MAX,
+                },
+                Customer {
+                    id: 0,
+                    arrival: 0,
+                    service: 0,
+                },
+                Customer {
+                    id: 0,
+                    arrival: 0,
+                    service: 0,
+                },
+            ],
+            0,
+        ),
+        Err(Error::ZeroId { index: 1 })
+    );
+    assert_eq!(
+        simulate(
+            &[
+                Customer {
+                    id: 8,
+                    arrival: 0,
+                    service: 0,
+                },
+                Customer {
+                    id: 8,
+                    arrival: 1,
+                    service: 0,
+                },
+            ],
+            0,
+        ),
+        Err(Error::DuplicateId { index: 1, id: 8 })
+    );
+}
+
+#[test]
+fn spec_r5_arrival_sort_and_descending_id_ties() {
+    assert_eq!(
+        simulate(
+            &[
+                Customer { id: 2, arrival: 1, service: 0 },
+                Customer { id: 1, arrival: 0, service: 0 },
+                Customer { id: 9, arrival: 1, service: 0 },
+            ],
+            0,
+        ),
+        Ok(vec![
+            Event { time: 0, customer: 1, kind: Kind::Arrive },
+            Event { time: 0, customer: 1, kind: Kind::Start { finish: 0, wake: true } },
+            Event { time: 0, customer: 1, kind: Kind::Finish },
+            Event { time: 1, customer: 9, kind: Kind::Arrive },
+            Event { time: 1, customer: 2, kind: Kind::Arrive },
+            Event { time: 1, customer: 9, kind: Kind::Start { finish: 1, wake: true } },
+            Event { time: 1, customer: 9, kind: Kind::Finish },
+            Event { time: 1, customer: 2, kind: Kind::Start { finish: 1, wake: false } },
+            Event { time: 1, customer: 2, kind: Kind::Finish },
+        ])
+    );
+}
+
+#[test]
+fn spec_r6_never_starts_before_arrival_or_idles_with_waiters() {
+    assert_eq!(
+        simulate(
+            &[
+                Customer { id: 2, arrival: 1, service: 3 },
+                Customer { id: 1, arrival: 0, service: 4 },
+            ],
+            0,
+        ),
+        Ok(vec![
+            Event { time: 0, customer: 1, kind: Kind::Arrive },
+            Event { time: 0, customer: 1, kind: Kind::Start { finish: 4, wake: true } },
+            Event { time: 1, customer: 2, kind: Kind::Arrive },
+            Event { time: 4, customer: 1, kind: Kind::Finish },
+            Event { time: 4, customer: 2, kind: Kind::Start { finish: 7, wake: false } },
+            Event { time: 7, customer: 2, kind: Kind::Finish },
+        ])
+    );
+}
+
+#[test]
+fn spec_r7_finish_precedes_arrival_at_same_tick() {
+    assert_eq!(
+        simulate(
+            &[
+                Customer { id: 1, arrival: 0, service: 2 },
+                Customer { id: 2, arrival: 2, service: 1 },
+            ],
+            0,
+        ),
+        Ok(vec![
+            Event { time: 0, customer: 1, kind: Kind::Arrive },
+            Event { time: 0, customer: 1, kind: Kind::Start { finish: 2, wake: true } },
+            Event { time: 2, customer: 1, kind: Kind::Finish },
+            Event { time: 2, customer: 2, kind: Kind::Arrive },
+            Event { time: 2, customer: 2, kind: Kind::Start { finish: 3, wake: false } },
+            Event { time: 3, customer: 2, kind: Kind::Finish },
+        ])
+    );
+}
+
+#[test]
+fn spec_r8_arrival_cohort_is_emitted_before_dispatch() {
+    assert_eq!(
+        simulate(
+            &[
+                Customer { id: 2, arrival: 0, service: 3 },
+                Customer { id: 1, arrival: 0, service: 1 },
+                Customer { id: 4, arrival: 2, service: 1 },
+                Customer { id: 3, arrival: 2, service: 1 },
+            ],
+            0,
+        ),
+        Ok(vec![
+            Event { time: 0, customer: 2, kind: Kind::Arrive },
+            Event { time: 0, customer: 1, kind: Kind::Arrive },
+            Event { time: 0, customer: 2, kind: Kind::Start { finish: 3, wake: true } },
+            Event { time: 0, customer: 1, kind: Kind::Start { finish: 1, wake: false } },
+            Event { time: 1, customer: 1, kind: Kind::Finish },
+            Event { time: 2, customer: 4, kind: Kind::Arrive },
+            Event { time: 2, customer: 3, kind: Kind::Arrive },
+            Event { time: 3, customer: 2, kind: Kind::Finish },
+            Event { time: 3, customer: 4, kind: Kind::Start { finish: 4, wake: false } },
+            Event { time: 4, customer: 4, kind: Kind::Finish },
+            Event { time: 4, customer: 3, kind: Kind::Start { finish: 5, wake: false } },
+            Event { time: 5, customer: 3, kind: Kind::Finish },
+        ])
+    );
+}
+
+#[test]
+fn spec_r9_arrival_is_recorded_once_even_for_immediate_start() {
+    assert_eq!(
+        simulate(&[Customer { id: 6, arrival: 5, service: 2 }], 0),
+        Ok(vec![
+            Event { time: 5, customer: 6, kind: Kind::Arrive },
+            Event { time: 5, customer: 6, kind: Kind::Start { finish: 7, wake: true } },
+            Event { time: 7, customer: 6, kind: Kind::Finish },
+        ])
+    );
+}
+
+#[test]
+fn spec_r10_wake_tracks_idle_gap_after_previous_finish() {
+    assert_eq!(
+        simulate(
+            &[
+                Customer { id: 1, arrival: 0, service: 2 },
+                Customer { id: 2, arrival: 5, service: 1 },
+                Customer { id: 3, arrival: 6, service: 1 },
+            ],
+            0,
+        ),
+        Ok(vec![
+            Event { time: 0, customer: 1, kind: Kind::Arrive },
+            Event { time: 0, customer: 1, kind: Kind::Start { finish: 2, wake: true } },
+            Event { time: 2, customer: 1, kind: Kind::Finish },
+            Event { time: 5, customer: 2, kind: Kind::Arrive },
+            Event { time: 5, customer: 2, kind: Kind::Start { finish: 6, wake: true } },
+            Event { time: 6, customer: 2, kind: Kind::Finish },
+            Event { time: 6, customer: 3, kind: Kind::Arrive },
+            Event { time: 6, customer: 3, kind: Kind::Start { finish: 7, wake: false } },
+            Event { time: 7, customer: 3, kind: Kind::Finish },
+        ])
+    );
+}
+
+#[test]
+fn spec_r11_wake_surcharge_is_in_occupation_and_collects_arrivals() {
+    assert_eq!(
+        simulate(
+            &[
+                Customer { id: 1, arrival: 0, service: 2 },
+                Customer { id: 2, arrival: 3, service: 1 },
+            ],
+            3,
+        ),
+        Ok(vec![
+            Event { time: 0, customer: 1, kind: Kind::Arrive },
+            Event { time: 0, customer: 1, kind: Kind::Start { finish: 5, wake: true } },
+            Event { time: 3, customer: 2, kind: Kind::Arrive },
+            Event { time: 5, customer: 1, kind: Kind::Finish },
+            Event { time: 5, customer: 2, kind: Kind::Start { finish: 6, wake: false } },
+            Event { time: 6, customer: 2, kind: Kind::Finish },
+        ])
+    );
+}
+
+#[test]
+fn spec_r12_overflow_reports_dispatch_customer_and_time() {
+    assert_eq!(
+        simulate(&[Customer { id: 17, arrival: u64::MAX, service: 1 }], 0),
+        Err(Error::TimeOverflow { customer: 17, time: u64::MAX })
+    );
+    assert_eq!(
+        simulate(&[Customer { id: 18, arrival: 4, service: u64::MAX }], 1),
+        Err(Error::TimeOverflow { customer: 18, time: 4 })
+    );
+}
+
+#[test]
+fn spec_r13_zero_duration_finishes_inline_before_next_start() {
+    assert_eq!(
+        simulate(
+            &[
+                Customer { id: 2, arrival: 0, service: 0 },
+                Customer { id: 1, arrival: 0, service: 0 },
+            ],
+            0,
+        ),
+        Ok(vec![
+            Event { time: 0, customer: 2, kind: Kind::Arrive },
+            Event { time: 0, customer: 1, kind: Kind::Arrive },
+            Event { time: 0, customer: 2, kind: Kind::Start { finish: 0, wake: true } },
+            Event { time: 0, customer: 2, kind: Kind::Finish },
+            Event { time: 0, customer: 1, kind: Kind::Start { finish: 0, wake: false } },
+            Event { time: 0, customer: 1, kind: Kind::Finish },
+        ])
+    );
+}
+
+#[test]
+fn spec_r14_arrivals_do_not_interrupt_positive_occupation() {
+    assert_eq!(
+        simulate(
+            &[
+                Customer { id: 1, arrival: 0, service: 5 },
+                Customer { id: 2, arrival: 2, service: 1 },
+            ],
+            0,
+        ),
+        Ok(vec![
+            Event { time: 0, customer: 1, kind: Kind::Arrive },
+            Event { time: 0, customer: 1, kind: Kind::Start { finish: 5, wake: true } },
+            Event { time: 2, customer: 2, kind: Kind::Arrive },
+            Event { time: 5, customer: 1, kind: Kind::Finish },
+            Event { time: 5, customer: 2, kind: Kind::Start { finish: 6, wake: false } },
+            Event { time: 6, customer: 2, kind: Kind::Finish },
+        ])
+    );
+}
+
+#[test]
+fn spec_r15_terminates_after_finishes_without_idle_events() {
+    assert_eq!(
+        simulate(&[Customer { id: 3, arrival: 9, service: 0 }], 0),
+        Ok(vec![
+            Event { time: 9, customer: 3, kind: Kind::Arrive },
+            Event { time: 9, customer: 3, kind: Kind::Start { finish: 9, wake: true } },
+            Event { time: 9, customer: 3, kind: Kind::Finish },
+        ])
+    );
+}
+
+#[test]
+fn spec_r16_exactly_one_event_of_each_kind_per_customer() {
+    let events = simulate(
+        &[
+            Customer { id: 1, arrival: 1, service: 2 },
+            Customer { id: 2, arrival: 0, service: 1 },
+        ],
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        events,
+        vec![
+            Event { time: 0, customer: 2, kind: Kind::Arrive },
+            Event { time: 0, customer: 2, kind: Kind::Start { finish: 1, wake: true } },
+            Event { time: 1, customer: 2, kind: Kind::Finish },
+            Event { time: 1, customer: 1, kind: Kind::Arrive },
+            Event { time: 1, customer: 1, kind: Kind::Start { finish: 3, wake: false } },
+            Event { time: 3, customer: 1, kind: Kind::Finish },
+        ]
+    );
+}
+
+#[test]
+fn spec_r17_max_tick_and_zero_addition_are_legal() {
+    assert_eq!(
+        simulate(&[Customer { id: 1, arrival: u64::MAX, service: 0 }], 0),
+        Ok(vec![
+            Event { time: u64::MAX, customer: 1, kind: Kind::Arrive },
+            Event { time: u64::MAX, customer: 1, kind: Kind::Start { finish: u64::MAX, wake: true } },
+            Event { time: u64::MAX, customer: 1, kind: Kind::Finish },
+        ])
+    );
+    assert_eq!(
+        simulate(&[Customer { id: 2, arrival: u64::MAX - 1, service: 1 }], 0),
+        Ok(vec![
+            Event { time: u64::MAX - 1, customer: 2, kind: Kind::Arrive },
+            Event { time: u64::MAX - 1, customer: 2, kind: Kind::Start { finish: u64::MAX, wake: true } },
+            Event { time: u64::MAX, customer: 2, kind: Kind::Finish },
+        ])
+    );
+}
+
+#[test]
+fn spec_r18_ids_only_break_arrival_ties() {
+    assert_eq!(
+        simulate(
+            &[
+                Customer { id: 99, arrival: 0, service: 1 },
+                Customer { id: 1, arrival: 0, service: 4 },
+            ],
+            0,
+        ),
+        Ok(vec![
+            Event { time: 0, customer: 99, kind: Kind::Arrive },
+            Event { time: 0, customer: 1, kind: Kind::Arrive },
+            Event { time: 0, customer: 99, kind: Kind::Start { finish: 1, wake: true } },
+            Event { time: 0, customer: 1, kind: Kind::Start { finish: 4, wake: false } },
+            Event { time: 1, customer: 99, kind: Kind::Finish },
+            Event { time: 4, customer: 1, kind: Kind::Finish },
+        ])
+    );
+}
+
+#[test]
+fn spec_r19_calls_are_independent_and_input_is_unchanged() {
+    let customers = [
+        Customer { id: 2, arrival: 3, service: 0 },
+        Customer { id: 1, arrival: 0, service: 1 },
+    ];
+    let before = customers.clone();
+    let first = simulate(&customers, 2);
+    let second = simulate(&customers, 2);
+    assert_eq!(first, second);
+    assert_eq!(customers, before);
+}
+
+#[test]
+fn spec_r20_overflow_follows_chronological_dispatch_order() {
+    assert_eq!(
+        simulate(
+            &[
+                Customer { id: 1, arrival: u64::MAX, service: 1 },
+                Customer { id: 2, arrival: 0, service: u64::MAX },
+            ],
+            0,
+        ),
+        Err(Error::TimeOverflow { customer: 2, time: 0 })
+    );
+}
+```

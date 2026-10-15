@@ -1,0 +1,417 @@
+```rust
+#[test]
+fn spec_r1_public_api_compiles_and_operates() {
+    let mut q = IndexedHeap::new();
+    assert_eq!(q.push("A", 0, ""), Ok(()));
+    assert_eq!(q.pop().unwrap().key, "a");
+}
+
+#[test]
+fn spec_r2_public_types_and_error_variants() {
+    let item = Item {
+        key: "a".into(),
+        priority: 1,
+        value: "v".into(),
+    };
+    let cloned = item.clone();
+    assert_eq!(item, cloned);
+    let _: Error = Error::EmptyKey;
+    let _: Error = Error::InvalidKey { at: 0 };
+    let _: Error = Error::Duplicate { key: "a".into() };
+    let _: Error = Error::Missing { key: "a".into() };
+    let _: Error = Error::WrongDirection {
+        current: 1,
+        requested: 2,
+    };
+}
+
+#[test]
+fn spec_r3_trim_only_ascii_spaces_on_all_key_methods() {
+    let mut q = IndexedHeap::new();
+    q.push("  Alpha  ", 0, "v").unwrap();
+    assert_eq!(q.get(" Alpha ").unwrap().unwrap().key, "alpha");
+    assert_eq!(q.decrease_key(" Alpha ", -1), Ok(0));
+    assert_eq!(q.increase_key("Alpha", 1), Ok(-1));
+    assert_eq!(q.replace_value(" Alpha ", "w"), Ok("v".into()));
+    assert_eq!(q.remove(" Alpha ").unwrap().key, "alpha");
+
+    assert_eq!(q.get("\t").unwrap_err(), Error::InvalidKey { at: 0 });
+    assert_eq!(q.get("\nA").unwrap_err(), Error::InvalidKey { at: 0 });
+    assert_eq!(q.push("\u{00a0}", 0, ""), Err(Error::InvalidKey { at: 0 }));
+    assert_eq!(q.push("   ", 0, ""), Err(Error::EmptyKey));
+}
+
+#[test]
+fn spec_r4_key_validation_reports_original_byte_offsets() {
+    let mut q = IndexedHeap::new();
+    assert_eq!(q.push(" 1abc ", 0, ""), Err(Error::InvalidKey { at: 2 }));
+    assert_eq!(q.push(" a_b ", 0, ""), Err(Error::InvalidKey { at: 3 }));
+    assert_eq!(q.push(" abé ", 0, ""), Err(Error::InvalidKey { at: 3 }));
+    assert_eq!(q.push(" a-b-- ", 0, ""), Ok(()));
+    assert_eq!(q.push(" a- ", 0, ""), Ok(()));
+}
+
+#[test]
+fn spec_r5_canonicalize_storage_and_key_errors() {
+    let mut q = IndexedHeap::new();
+    q.push("  MiXeD-Key  ", 0, "v").unwrap();
+    assert_eq!(q.peek().unwrap().key, "mixed-key");
+    assert_eq!(
+        q.push("MIXED-KEY", 3, "other"),
+        Err(Error::Duplicate {
+            key: "mixed-key".into()
+        })
+    );
+    assert_eq!(
+        q.get("NoSuch").unwrap_err(),
+        Error::Missing {
+            key: "nosuch".into()
+        }
+    );
+}
+
+#[test]
+fn spec_r6_full_best_to_worst_order() {
+    let mut q = IndexedHeap::new();
+    q.push("Long", 0, "é").unwrap(); // 2 UTF-8 bytes
+    q.push("Short", 0, "x").unwrap();
+    q.push("Earlier", 0, "z").unwrap();
+    q.push("Priority", -1, "zzzz").unwrap();
+    assert_eq!(q.pop().unwrap().key, "priority");
+    assert_eq!(q.pop().unwrap().key, "short");
+    assert_eq!(q.pop().unwrap().key, "earlier");
+    assert_eq!(q.pop().unwrap().key, "long");
+}
+
+#[test]
+fn spec_r7_new_insertions_and_reinsertions_get_new_age() {
+    let mut q = IndexedHeap::new();
+    q.push("Old", 0, "x").unwrap();
+    q.push("Young", 0, "x").unwrap();
+    assert_eq!(q.remove("old").unwrap().key, "old");
+    q.push("Old", 0, "x").unwrap();
+    assert_eq!(q.pop().unwrap().key, "young");
+    assert_eq!(q.pop().unwrap().key, "old");
+}
+
+#[test]
+fn spec_r8_new_len_and_is_empty() {
+    let mut q = IndexedHeap::new();
+    assert_eq!(q.len(), 0);
+    assert!(q.is_empty());
+    q.push("A", 0, "").unwrap();
+    assert_eq!(q.len(), 1);
+    assert!(!q.is_empty());
+    q.pop();
+    assert_eq!(q.len(), 0);
+    assert!(q.is_empty());
+}
+
+#[test]
+fn spec_r9_push_inserts_and_retains_item() {
+    let mut q = IndexedHeap::new();
+    assert_eq!(q.push("Abc-9", -5, "value"), Ok(()));
+    assert_eq!(
+        q.get("ABC-9"),
+        Ok(Some(Item {
+            key: "abc-9".into(),
+            priority: -5,
+            value: "value".into(),
+        }))
+    );
+}
+
+#[test]
+fn spec_r10_duplicate_push_preserves_existing_item_and_age() {
+    let mut q = IndexedHeap::new();
+    q.push("First", 0, "x").unwrap();
+    q.push("Second", 0, "x").unwrap();
+    assert_eq!(
+        q.push(" FIRST ", 0, "x"),
+        Err(Error::Duplicate { key: "first".into() })
+    );
+    assert_eq!(q.get("first").unwrap().unwrap().priority, 0);
+    assert_eq!(q.pop().unwrap().key, "first");
+}
+
+#[test]
+fn spec_r11_peek_returns_best_owned_item_without_removal() {
+    let mut q = IndexedHeap::new();
+    q.push("A", 1, "v").unwrap();
+    let mut item = q.peek().unwrap();
+    item.key = "changed".into();
+    item.value.clear();
+    assert_eq!(q.len(), 1);
+    assert_eq!(q.peek().unwrap().key, "a");
+    assert_eq!(q.peek().unwrap().value, "v");
+}
+
+#[test]
+fn spec_r12_pop_removes_best_until_empty() {
+    let mut q = IndexedHeap::new();
+    q.push("A", 2, "").unwrap();
+    q.push("B", -1, "").unwrap();
+    assert_eq!(q.pop().unwrap().key, "b");
+    assert_eq!(q.pop().unwrap().key, "a");
+    assert_eq!(q.pop(), None);
+    assert_eq!(q.len(), 0);
+}
+
+#[test]
+fn spec_r13_get_validates_even_when_empty_and_returns_owned_clone() {
+    let mut q = IndexedHeap::new();
+    assert_eq!(q.get("Absent"), Ok(None));
+    assert_eq!(q.get("9bad"), Err(Error::InvalidKey { at: 0 }));
+    q.push("A", 0, "original").unwrap();
+    let mut item = q.get("a").unwrap().unwrap();
+    item.value.push_str(" changed");
+    assert_eq!(q.get("a").unwrap().unwrap().value, "original");
+}
+
+#[test]
+fn spec_r14_repeated_reads_do_not_change_order_or_data() {
+    let mut q = IndexedHeap::new();
+    q.push("A", 0, "long").unwrap();
+    q.push("B", 0, "x").unwrap();
+    for _ in 0..4 {
+        assert_eq!(q.peek().unwrap().key, "b");
+        assert_eq!(q.get("a").unwrap().unwrap().value, "long");
+        assert_eq!(q.get("missing"), Ok(None));
+    }
+    assert_eq!(q.pop().unwrap().key, "b");
+    assert_eq!(q.pop().unwrap().key, "a");
+}
+
+#[test]
+fn spec_r15_values_are_preserved_byte_for_byte() {
+    let mut q = IndexedHeap::new();
+    let value = "\0  É e\u{301}\n\t";
+    q.push("A", 0, value).unwrap();
+    assert_eq!(q.get("a").unwrap().unwrap().value.as_bytes(), value.as_bytes());
+    assert_eq!(q.pop().unwrap().value.as_bytes(), value.as_bytes());
+}
+
+#[test]
+fn spec_r16_all_signed_i64_priorities_compare_without_overflow() {
+    let mut q = IndexedHeap::new();
+    q.push("Max", i64::MAX, "").unwrap();
+    q.push("Zero", 0, "").unwrap();
+    q.push("Min", i64::MIN, "").unwrap();
+    q.push("Negative", -1, "").unwrap();
+    assert_eq!(q.pop().unwrap().key, "min");
+    assert_eq!(q.pop().unwrap().key, "negative");
+    assert_eq!(q.pop().unwrap().key, "zero");
+    assert_eq!(q.pop().unwrap().key, "max");
+}
+
+#[test]
+fn spec_r17_popped_key_can_be_queried_and_pushed_again() {
+    let mut q = IndexedHeap::new();
+    q.push("A", 0, "old").unwrap();
+    assert_eq!(q.pop().unwrap().key, "a");
+    assert_eq!(q.get("A"), Ok(None));
+    assert_eq!(q.push("A", 1, "new"), Ok(()));
+    assert_eq!(q.get("a").unwrap().unwrap().value, "new");
+}
+
+#[test]
+fn spec_r18_queues_have_independent_keys_and_histories() {
+    let mut first = IndexedHeap::new();
+    let mut second = IndexedHeap::new();
+    first.push("Same", 5, "first").unwrap();
+    second.push("Same", -5, "second").unwrap();
+    first.push("Other", 0, "first-other").unwrap();
+    assert_eq!(first.len(), 2);
+    assert_eq!(second.len(), 1);
+    assert_eq!(first.peek().unwrap().key, "other");
+    assert_eq!(second.peek().unwrap().value, "second");
+    first.remove("same").unwrap();
+    assert_eq!(second.get("same").unwrap().unwrap().value, "second");
+}
+
+#[test]
+fn spec_r19_errors_and_empty_removals_leave_receiver_unchanged() {
+    let mut q = IndexedHeap::new();
+    assert_eq!(q.pop(), None);
+    assert_eq!(q.len(), 0);
+    assert_eq!(q.remove("missing"), Err(Error::Missing { key: "missing".into() }));
+    assert_eq!(q.len(), 0);
+    q.push("A", 2, "v").unwrap();
+    let before = q.peek().unwrap();
+    assert_eq!(
+        q.push("A", 9, "other"),
+        Err(Error::Duplicate { key: "a".into() })
+    );
+    assert_eq!(q.peek(), Some(before));
+    assert_eq!(q.len(), 1);
+}
+
+#[test]
+fn spec_r20_only_retained_items_count_and_order() {
+    let mut q = IndexedHeap::new();
+    q.push("A", 0, "").unwrap();
+    q.push("B", 1, "").unwrap();
+    q.remove("a").unwrap();
+    assert_eq!(q.len(), 1);
+    assert_eq!(q.peek().unwrap().key, "b");
+    assert_eq!(q.get("a"), Ok(None));
+}
+
+#[test]
+fn spec_r21_decrease_key_strictly_lowers_and_preserves_item_fields() {
+    let mut q = IndexedHeap::new();
+    q.push("A", 5, "value").unwrap();
+    assert_eq!(q.decrease_key("A", -3), Ok(5));
+    assert_eq!(
+        q.get("a").unwrap().unwrap(),
+        Item {
+            key: "a".into(),
+            priority: -3,
+            value: "value".into(),
+        }
+    );
+}
+
+#[test]
+fn spec_r22_increase_key_strictly_raises_and_preserves_item_fields() {
+    let mut q = IndexedHeap::new();
+    q.push("A", -3, "value").unwrap();
+    assert_eq!(q.increase_key("A", 5), Ok(-3));
+    assert_eq!(
+        q.get("a").unwrap().unwrap(),
+        Item {
+            key: "a".into(),
+            priority: 5,
+            value: "value".into(),
+        }
+    );
+}
+
+#[test]
+fn spec_r23_wrong_direction_includes_equality_and_extreme_values() {
+    let mut q = IndexedHeap::new();
+    q.push("A", i64::MIN, "").unwrap();
+    q.push("B", i64::MAX, "").unwrap();
+    assert_eq!(
+        q.decrease_key("A", i64::MIN),
+        Err(Error::WrongDirection {
+            current: i64::MIN,
+            requested: i64::MIN
+        })
+    );
+    assert_eq!(
+        q.increase_key("B", i64::MAX),
+        Err(Error::WrongDirection {
+            current: i64::MAX,
+            requested: i64::MAX
+        })
+    );
+    assert_eq!(q.decrease_key("B", i64::MIN), Ok(i64::MAX));
+    assert_eq!(q.increase_key("A", i64::MAX), Ok(i64::MIN));
+}
+
+#[test]
+fn spec_r24_key_update_error_precedence_and_atomicity() {
+    let mut q = IndexedHeap::new();
+    assert_eq!(q.decrease_key("9bad", 0), Err(Error::InvalidKey { at: 0 }));
+    assert_eq!(
+        q.decrease_key("Missing", 0),
+        Err(Error::Missing { key: "missing".into() })
+    );
+    q.push("A", 4, "v").unwrap();
+    assert_eq!(
+        q.increase_key("A", 4),
+        Err(Error::WrongDirection {
+            current: 4,
+            requested: 4
+        })
+    );
+    assert_eq!(q.get("a").unwrap().unwrap().priority, 4);
+}
+
+#[test]
+fn spec_r25_replace_value_returns_previous_and_reorders_by_byte_length() {
+    let mut q = IndexedHeap::new();
+    q.push("A", 0, "long").unwrap();
+    q.push("B", 0, "x").unwrap();
+    assert_eq!(q.replace_value("A", "é"), Ok("long".into()));
+    assert_eq!(q.peek().unwrap().key, "a");
+    assert_eq!(q.replace_value("a", ""), Ok("é".into()));
+    assert_eq!(q.get("a").unwrap().unwrap().value, "");
+}
+
+#[test]
+fn spec_r26_remove_any_rank_and_missing_error() {
+    let mut q = IndexedHeap::new();
+    q.push("Best", -1, "").unwrap();
+    q.push("Middle", 0, "").unwrap();
+    q.push("Worst", 1, "").unwrap();
+    assert_eq!(q.remove("middle").unwrap().key, "middle");
+    assert_eq!(q.len(), 2);
+    assert_eq!(
+        q.remove("MISSING"),
+        Err(Error::Missing {
+            key: "missing".into()
+        })
+    );
+    assert_eq!(q.pop().unwrap().key, "best");
+    assert_eq!(q.pop().unwrap().key, "worst");
+}
+
+#[test]
+fn spec_r27_successful_updates_preserve_age_and_length() {
+    let mut q = IndexedHeap::new();
+    q.push("Old", 0, "x").unwrap();
+    q.push("Young", 0, "x").unwrap();
+
+    assert_eq!(q.decrease_key("old", -1), Ok(0));
+    assert_eq!(q.decrease_key("old", 0), Ok(-1));
+    assert_eq!(q.increase_key("old", 1), Ok(0));
+    assert_eq!(q.increase_key("old", 0), Ok(1));
+    assert_eq!(q.len(), 2);
+    assert_eq!(q.replace_value("old", "long"), Ok("x".into()));
+    assert_eq!(q.replace_value("old", "x"), Ok("long".into()));
+    assert_eq!(q.len(), 2);
+    assert_eq!(q.pop().unwrap().key, "old");
+    assert_eq!(q.pop().unwrap().key, "young");
+}
+
+#[test]
+fn spec_r28_replace_and_remove_validation_precedes_lookup_and_errors_are_atomic() {
+    let mut q = IndexedHeap::new();
+    assert_eq!(
+        q.replace_value("9bad", "x"),
+        Err(Error::InvalidKey { at: 0 })
+    );
+    assert_eq!(
+        q.remove("9bad"),
+        Err(Error::InvalidKey { at: 0 })
+    );
+    assert_eq!(
+        q.replace_value("Absent", "x"),
+        Err(Error::Missing {
+            key: "absent".into()
+        })
+    );
+    assert_eq!(
+        q.remove("Absent"),
+        Err(Error::Missing {
+            key: "absent".into()
+        })
+    );
+    assert_eq!(q.len(), 0);
+
+    q.push("A", 0, "v").unwrap();
+    assert_eq!(
+        q.replace_value("Absent", "new"),
+        Err(Error::Missing { key: "absent".into() })
+    );
+    assert_eq!(q.get("a").unwrap().unwrap().value, "v");
+    assert_eq!(
+        q.remove("Absent"),
+        Err(Error::Missing { key: "absent".into() })
+    );
+    assert_eq!(q.len(), 1);
+    assert_eq!(q.peek().unwrap().key, "a");
+}
+```

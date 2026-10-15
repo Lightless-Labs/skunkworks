@@ -1,0 +1,475 @@
+```rust
+#[test]
+fn spec_r1_source_compiles_as_single_file_api() {
+    let _ = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 0 }], [0; 4]);
+}
+
+#[test]
+fn spec_r2_public_types_and_methods_are_available() {
+    let product = Product { id: "a".into(), price: 1, stock: 0 };
+    let _: Product = product.clone();
+    let _: State = State { credit: 0, selected: None, escrow: vec![], tubes: [0; 4] }.clone();
+    let _: Receipt = Receipt { id: "a".into(), price: 1, change: vec![] }.clone();
+    let _: Error = Error::EmptyCatalog.clone();
+    let _: EventKind = EventKind::Inserted { coin: 1, credit: 1 }.clone();
+    let _: Event = Event { seq: 0, kind: EventKind::Selected { id: "a".into() } }.clone();
+    let mut machine = Machine::new(vec![product], [0; 4]).unwrap();
+    let _ = machine.state();
+    let _ = machine.insert(1);
+    let _ = machine.select("a");
+    let _ = machine.vend();
+    let _ = machine.refund();
+    let _ = machine.products();
+    let _ = machine.set_price("a", 1);
+    let _ = machine.restock("a", 1);
+    let _ = machine.events();
+}
+
+#[test]
+fn spec_r3_denominations_order_and_credit_boundary() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 1 }], [0; 4]).unwrap();
+    for coin in [1, 3, 4, 10] { m.insert(coin).unwrap(); }
+    assert_eq!(m.state().credit, 18);
+    assert_eq!(m.insert(81), Ok(()));
+    assert_eq!(m.state().credit, 99);
+    assert_eq!(m.insert(1), Ok(()));
+    assert_eq!(m.state().credit, 100);
+}
+
+#[test]
+fn spec_r4_constructor_owns_inputs_and_machines_are_independent() {
+    let products = vec![Product { id: "a".into(), price: 1, stock: 2 }];
+    let mut first = Machine::new(products, [0; 4]).unwrap();
+    let mut second = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 2 }], [0; 4]).unwrap();
+    first.insert(1).unwrap();
+    assert_eq!(first.state().credit, 1);
+    assert_eq!(second.state().credit, 0);
+    first.restock("a", 1).unwrap();
+    assert_eq!(first.products()[0].stock, 3);
+    assert_eq!(second.products()[0].stock, 2);
+}
+
+#[test]
+fn spec_r5_empty_catalog_precedes_other_constructor_validation() {
+    assert_eq!(Machine::new(vec![], [101, 0, 0, 0]).unwrap_err(), Error::EmptyCatalog);
+}
+
+#[test]
+fn spec_r6_catalog_id_syntax_and_exact_runtime_lookup() {
+    for id in ["", "A", "a1", "abcdefghi", "é"] {
+        assert_eq!(
+            Machine::new(vec![Product { id: id.into(), price: 1, stock: 0 }], [0; 4]).unwrap_err(),
+            Error::BadId { id: id.into() }
+        );
+    }
+    let mut m = Machine::new(vec![Product { id: "ab".into(), price: 1, stock: 0 }], [0; 4]).unwrap();
+    assert_eq!(m.select("AB"), Err(Error::UnknownProduct { id: "AB".into() }));
+}
+
+#[test]
+fn spec_r7_constructor_validation_order_and_first_error() {
+    assert_eq!(
+        Machine::new(
+            vec![
+                Product { id: "a".into(), price: 1, stock: 0 },
+                Product { id: "a".into(), price: 0, stock: 101 },
+            ],
+            [0; 4]
+        ).unwrap_err(),
+        Error::DuplicateId { id: "a".into() }
+    );
+    assert_eq!(
+        Machine::new(
+            vec![
+                Product { id: "a".into(), price: 0, stock: 0 },
+                Product { id: "B".into(), price: 0, stock: 0 },
+            ],
+            [0; 4]
+        ).unwrap_err(),
+        Error::BadPrice { id: "a".into() }
+    );
+    assert_eq!(
+        Machine::new(
+            vec![Product { id: "a".into(), price: 1, stock: 101 }],
+            [101, 0, 0, 0]
+        ).unwrap_err(),
+        Error::StockLimit { id: "a".into() }
+    );
+}
+
+#[test]
+fn spec_r8_price_bounds_are_inclusive() {
+    for price in [1, 100] {
+        assert!(Machine::new(vec![Product { id: "a".into(), price, stock: 0 }], [0; 4]).is_ok());
+    }
+    for price in [0, 101] {
+        assert_eq!(
+            Machine::new(vec![Product { id: "a".into(), price, stock: 0 }], [0; 4]).unwrap_err(),
+            Error::BadPrice { id: "a".into() }
+        );
+    }
+}
+
+#[test]
+fn spec_r9_initial_state_is_snapshot_and_escrow_preserves_insertion_order() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 10, stock: 1 }], [2, 3, 4, 5]).unwrap();
+    assert_eq!(m.state(), State { credit: 0, selected: None, escrow: vec![], tubes: [2, 3, 4, 5] });
+    let mut snapshot = m.state();
+    snapshot.tubes[0] = 99;
+    m.insert(4).unwrap();
+    m.insert(1).unwrap();
+    assert_eq!(m.state().tubes, [2, 3, 4, 5]);
+    assert_eq!(m.state().escrow, vec![4, 1]);
+}
+
+#[test]
+fn spec_r10_insert_validates_coin_then_credit_and_selection_does_not_block_it() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 1 }], [0; 4]).unwrap();
+    m.select("a").unwrap();
+    assert_eq!(m.insert(2), Err(Error::BadCoin { coin: 2 }));
+    for coin in [10, 10, 10, 10, 10, 10, 10, 10, 10, 10] { m.insert(coin).unwrap(); }
+    assert_eq!(m.insert(1), Err(Error::CreditLimit));
+}
+
+#[test]
+fn spec_r11_rejected_insert_is_atomic_and_arithmetic_does_not_wrap() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 1 }], [0; 4]).unwrap();
+    for _ in 0..10 { m.insert(10).unwrap(); }
+    let before = m.state();
+    assert_eq!(m.insert(u16::MAX), Err(Error::BadCoin { coin: u16::MAX }));
+    assert_eq!(m.state(), before);
+    assert_eq!(m.insert(1), Err(Error::CreditLimit));
+    assert_eq!(m.state(), before);
+}
+
+#[test]
+fn spec_r12_select_membership_precedes_same_selection_and_replaces_selection() {
+    let mut m = Machine::new(
+        vec![
+            Product { id: "a".into(), price: 1, stock: 0 },
+            Product { id: "b".into(), price: 1, stock: 1 },
+        ],
+        [0; 4]
+    ).unwrap();
+    m.select("a").unwrap();
+    assert_eq!(m.select("missing"), Err(Error::UnknownProduct { id: "missing".into() }));
+    assert_eq!(m.state().selected, Some("a".into()));
+    assert_eq!(m.select("a"), Err(Error::SameSelection));
+    m.insert(1).unwrap();
+    m.select("b").unwrap();
+    assert_eq!(m.state().selected, Some("b".into()));
+    assert_eq!(m.state().escrow, vec![1]);
+}
+
+#[test]
+fn spec_r13_repeated_zero_credit_selection_fails_without_changing_selection() {
+    let mut m = Machine::new(
+        vec![
+            Product { id: "a".into(), price: 1, stock: 1 },
+            Product { id: "b".into(), price: 1, stock: 1 },
+        ],
+        [0; 4]
+    ).unwrap();
+    m.select("a").unwrap();
+    assert_eq!(m.select("a"), Err(Error::SameSelection));
+    assert_eq!(m.state().selected, Some("a".into()));
+    assert_eq!(m.state().credit, 0);
+}
+
+#[test]
+fn spec_r14_vend_checks_selection_then_stock_before_payment() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 100, stock: 0 }], [0; 4]).unwrap();
+    assert_eq!(m.vend(), Err(Error::NoSelection));
+    m.select("a").unwrap();
+    assert_eq!(m.vend(), Err(Error::SoldOut { id: "a".into() }));
+}
+
+#[test]
+fn spec_r15_selected_product_without_credit_is_underpaid() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 1 }], [0; 4]).unwrap();
+    m.select("a").unwrap();
+    assert_eq!(m.vend(), Err(Error::Underpaid { price: 1, credit: 0 }));
+}
+
+#[test]
+fn spec_r16_successful_vend_returns_receipt_and_decrements_only_selected_stock() {
+    let mut m = Machine::new(
+        vec![
+            Product { id: "a".into(), price: 1, stock: 2 },
+            Product { id: "b".into(), price: 1, stock: 3 },
+        ],
+        [0; 4]
+    ).unwrap();
+    m.select("a").unwrap();
+    m.insert(1).unwrap();
+    assert_eq!(m.vend().unwrap(), Receipt { id: "a".into(), price: 1, change: vec![] });
+    assert_eq!(m.products(), vec![
+        Product { id: "a".into(), price: 1, stock: 1 },
+        Product { id: "b".into(), price: 1, stock: 3 },
+    ]);
+    assert_eq!(m.state().selected, None);
+    assert_eq!(m.state().credit, 0);
+    assert!(m.state().escrow.is_empty());
+}
+
+#[test]
+fn spec_r17_change_uses_tubes_before_vend_and_never_escrow() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 1 }], [0, 0, 0, 1]).unwrap();
+    m.insert(10).unwrap();
+    m.select("a").unwrap();
+    assert_eq!(m.vend().unwrap().change, vec![10]);
+    assert_eq!(m.state().tubes, [10, 0, 0, 0]);
+}
+
+#[test]
+fn spec_r18_refund_reverses_all_escrow_and_ignores_tubes() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 1 }], [2, 3, 4, 5]).unwrap();
+    m.select("a").unwrap();
+    m.insert(1).unwrap();
+    m.insert(3).unwrap();
+    m.insert(4).unwrap();
+    assert_eq!(m.refund().unwrap(), vec![4, 3, 1]);
+    assert_eq!(m.state(), State { credit: 0, selected: None, escrow: vec![], tubes: [2, 3, 4, 5] });
+}
+
+#[test]
+fn spec_r19_errors_are_atomic_and_payloads_use_pre_call_values() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 5, stock: 1 }], [0; 4]).unwrap();
+    m.select("a").unwrap();
+    m.insert(1).unwrap();
+    let state = m.state();
+    let products = m.products();
+    let events = m.events().to_vec();
+    assert_eq!(m.vend(), Err(Error::Underpaid { price: 5, credit: 1 }));
+    assert_eq!(m.state(), state);
+    assert_eq!(m.products(), products);
+    assert_eq!(m.events(), events.as_slice());
+    assert_eq!(m.restock("a", 0), Err(Error::ZeroRestock));
+    assert_eq!(m.events(), events.as_slice());
+}
+
+#[test]
+fn spec_r20_ids_are_exact_and_unmodified() {
+    let mut m = Machine::new(vec![Product { id: "abc".into(), price: 1, stock: 1 }], [0; 4]).unwrap();
+    assert_eq!(m.select(" abc"), Err(Error::UnknownProduct { id: " abc".into() }));
+    assert_eq!(m.select("ABC"), Err(Error::UnknownProduct { id: "ABC".into() }));
+    m.select("abc").unwrap();
+    assert_eq!(m.state().selected, Some("abc".into()));
+}
+
+#[test]
+fn spec_r21_receipt_and_state_snapshots_are_owned() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 2 }], [0; 4]).unwrap();
+    m.select("a").unwrap();
+    m.insert(1).unwrap();
+    let receipt = m.vend().unwrap();
+    let mut state_snapshot = m.state();
+    state_snapshot.credit = 88;
+    state_snapshot.tubes[0] = 77;
+    m.restock("a", 1).unwrap();
+    assert_eq!(receipt, Receipt { id: "a".into(), price: 1, change: vec![] });
+    assert_eq!(m.state().credit, 0);
+    assert_eq!(m.state().tubes[0], 0);
+}
+
+#[test]
+fn spec_r22_tube_bounds_checked_in_ascending_order_after_catalog() {
+    assert_eq!(
+        Machine::new(vec![Product { id: "a".into(), price: 1, stock: 0 }], [101, 101, 0, 0]).unwrap_err(),
+        Error::TubeLimit { coin: 1 }
+    );
+    assert_eq!(
+        Machine::new(vec![Product { id: "a".into(), price: 1, stock: 0 }], [0, 0, 101, 101]).unwrap_err(),
+        Error::TubeLimit { coin: 4 }
+    );
+    assert!(Machine::new(vec![Product { id: "a".into(), price: 1, stock: 0 }], [100; 4]).is_ok());
+}
+
+#[test]
+fn spec_r23_greedy_change_is_mandatory_when_exact() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 1 }], [0, 0, 3, 0]).unwrap();
+    m.insert(10).unwrap();
+    m.select("a").unwrap();
+    assert_eq!(m.vend().unwrap().change, vec![4, 4]);
+}
+
+#[test]
+fn spec_r24_fallback_minimizes_coin_count_then_uses_lexicographically_greatest_vector() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 1 }], [0, 2, 0, 0]).unwrap();
+    m.insert(10).unwrap();
+    m.select("a").unwrap();
+    assert_eq!(m.vend(), Err(Error::NoChange { amount: 9 }));
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 1 }], [1, 2, 1, 0]).unwrap();
+    m.insert(10).unwrap();
+    m.select("a").unwrap();
+    assert_eq!(m.vend().unwrap().change, vec![4, 3, 1]);
+}
+
+#[test]
+fn spec_r25_change_is_descending_exact_and_within_original_availability() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 1 }], [10, 3, 2, 1]).unwrap();
+    m.insert(10).unwrap();
+    m.select("a").unwrap();
+    let change = m.vend().unwrap().change;
+    assert_eq!(change, vec![4, 4]);
+    assert_eq!(change.iter().map(|c| *c as u32).sum::<u32>(), 8);
+}
+
+#[test]
+fn spec_r26_proposed_tube_overflow_checked_after_change_without_alternate_combination() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 1 }], [99, 0, 0, 1]).unwrap();
+    m.insert(1).unwrap();
+    m.insert(10).unwrap();
+    m.select("a").unwrap();
+    let before = m.state();
+    assert_eq!(m.vend(), Err(Error::TubeLimit { coin: 1 }));
+    assert_eq!(m.state(), before);
+}
+
+#[test]
+fn spec_r27_change_deduction_and_escrow_deposit_commit_together() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 1 }], [0, 0, 0, 1]).unwrap();
+    m.insert(10).unwrap();
+    m.select("a").unwrap();
+    m.vend().unwrap();
+    assert_eq!(m.state().tubes, [10, 0, 0, 0]);
+    assert_eq!(m.state().escrow, vec![]);
+}
+
+#[test]
+fn spec_r28_failed_change_allows_recovery_by_inserting_selecting_or_refunding() {
+    let mut m = Machine::new(
+        vec![
+            Product { id: "a".into(), price: 1, stock: 1 },
+            Product { id: "b".into(), price: 8, stock: 1 },
+        ],
+        [0; 4]
+    ).unwrap();
+    m.insert(10).unwrap();
+    m.select("a").unwrap();
+    assert_eq!(m.vend(), Err(Error::NoChange { amount: 9 }));
+    m.select("b").unwrap();
+    assert_eq!(m.vend().unwrap().change, vec![1, 1]);
+    let mut n = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 1 }], [0; 4]).unwrap();
+    n.insert(10).unwrap();
+    n.select("a").unwrap();
+    assert_eq!(n.vend(), Err(Error::NoChange { amount: 9 }));
+    assert_eq!(n.refund().unwrap(), vec![10]);
+}
+
+#[test]
+fn spec_r29_stock_bounds_and_products_sorted_by_id() {
+    assert_eq!(
+        Machine::new(vec![Product { id: "a".into(), price: 1, stock: 101 }], [0; 4]).unwrap_err(),
+        Error::StockLimit { id: "a".into() }
+    );
+    let m = Machine::new(
+        vec![
+            Product { id: "z".into(), price: 1, stock: 100 },
+            Product { id: "a".into(), price: 1, stock: 0 },
+        ],
+        [0; 4]
+    ).unwrap();
+    assert_eq!(m.products().iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), vec!["a", "z"]);
+}
+
+#[test]
+fn spec_r30_set_price_validation_order_busy_and_unchanged_success() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 5, stock: 1 }], [0; 4]).unwrap();
+    assert_eq!(m.set_price("missing", 0), Err(Error::UnknownProduct { id: "missing".into() }));
+    m.insert(1).unwrap();
+    assert_eq!(m.set_price("a", 0), Err(Error::Busy));
+    m.refund().unwrap();
+    assert_eq!(m.set_price("a", 0), Err(Error::BadPrice { id: "a".into() }));
+    m.select("a").unwrap();
+    assert_eq!(m.set_price("a", 5), Ok(()));
+    m.insert(5).unwrap();
+    assert_eq!(m.vend().unwrap().price, 5);
+}
+
+#[test]
+fn spec_r31_restock_validation_order_and_u16_overflow_safety() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 100 }], [0; 4]).unwrap();
+    assert_eq!(m.restock("missing", 0), Err(Error::UnknownProduct { id: "missing".into() }));
+    assert_eq!(m.restock("a", 0), Err(Error::ZeroRestock));
+    assert_eq!(m.restock("a", u16::MAX), Err(Error::StockLimit { id: "a".into() }));
+    assert_eq!(m.products()[0].stock, 100);
+    assert_eq!(m.restock("a", 1), Err(Error::StockLimit { id: "a".into() }));
+}
+
+#[test]
+fn spec_r32_successes_log_once_with_zero_based_chronological_sequences() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 1 }], [0; 4]).unwrap();
+    assert!(m.events().is_empty());
+    m.insert(1).unwrap();
+    m.select("a").unwrap();
+    m.set_price("a", 1).unwrap();
+    m.restock("a", 1).unwrap();
+    m.refund().unwrap();
+    assert_eq!(m.events().len(), 5);
+    assert_eq!(m.events().iter().map(|e| e.seq).collect::<Vec<_>>(), vec![0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn spec_r33_events_record_insert_select_vend_and_refund_values() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 1 }], [0, 0, 0, 1]).unwrap();
+    m.insert(10).unwrap();
+    m.select("a").unwrap();
+    m.vend().unwrap();
+    m.refund().unwrap();
+    assert_eq!(m.events().iter().map(|e| e.kind.clone()).collect::<Vec<_>>(), vec![
+        EventKind::Inserted { coin: 10, credit: 10 },
+        EventKind::Selected { id: "a".into() },
+        EventKind::Vended { id: "a".into(), price: 1, change: vec![10] },
+        EventKind::Refunded { coins: vec![] },
+    ]);
+}
+
+#[test]
+fn spec_r34_price_and_restock_events_keep_historical_values() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 2 }], [0; 4]).unwrap();
+    m.set_price("a", 5).unwrap();
+    m.set_price("a", 5).unwrap();
+    m.restock("a", 3).unwrap();
+    assert_eq!(m.events().iter().map(|e| e.kind.clone()).collect::<Vec<_>>(), vec![
+        EventKind::PriceChanged { id: "a".into(), old: 1, new: 5 },
+        EventKind::PriceChanged { id: "a".into(), old: 5, new: 5 },
+        EventKind::Restocked { id: "a".into(), added: 3, stock: 5 },
+    ]);
+}
+
+#[test]
+fn spec_r35_sold_out_vend_precedes_underpayment_change_and_capacity() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 100, stock: 0 }], [0; 4]).unwrap();
+    m.select("a").unwrap();
+    m.insert(1).unwrap();
+    assert_eq!(m.vend(), Err(Error::SoldOut { id: "a".into() }));
+    assert_eq!(m.products()[0].stock, 0);
+}
+
+#[test]
+fn spec_r36_failed_mutations_do_not_change_merchandise_money_or_events() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 5, stock: 1 }], [0; 4]).unwrap();
+    m.select("a").unwrap();
+    m.insert(1).unwrap();
+    let state = m.state();
+    let products = m.products();
+    let events = m.events().to_vec();
+    assert_eq!(m.vend(), Err(Error::Underpaid { price: 5, credit: 1 }));
+    assert_eq!(m.state(), state);
+    assert_eq!(m.products(), products);
+    assert_eq!(m.events(), events.as_slice());
+    assert_eq!(m.set_price("a", 0), Err(Error::Busy));
+    assert_eq!(m.restock("a", 0), Err(Error::ZeroRestock));
+    assert_eq!(m.events(), events.as_slice());
+}
+
+#[test]
+fn spec_r37_empty_refund_clears_selection_and_logs_empty_coins() {
+    let mut m = Machine::new(vec![Product { id: "a".into(), price: 1, stock: 1 }], [0; 4]).unwrap();
+    m.select("a").unwrap();
+    assert_eq!(m.refund().unwrap(), vec![]);
+    assert_eq!(m.state().selected, None);
+    assert_eq!(m.events().last().unwrap().kind, EventKind::Refunded { coins: vec![] });
+}
+```

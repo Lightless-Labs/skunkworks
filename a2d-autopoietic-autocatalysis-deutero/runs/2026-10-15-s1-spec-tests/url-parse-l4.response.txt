@@ -1,0 +1,721 @@
+```rust
+#[test]
+fn spec_r1_single_file_api_shape() {
+    let result = parse_url("x://h");
+    assert_eq!(result.unwrap().scheme, "x");
+}
+
+#[test]
+fn spec_r2_absolute_url_and_owned_fields() {
+    let input = String::from("http://host/path");
+    let parsed = parse_url(&input).unwrap();
+    drop(input);
+    assert_eq!(parsed.host, "host");
+    assert_eq!(parsed.path, "/path");
+}
+
+#[test]
+fn spec_r3_error_precedence() {
+    assert_eq!(parse_url(""), Err(ParseError::Empty));
+    assert_eq!(
+        parse_url("1://bad host"),
+        Err(ParseError::InvalidByte { at: 10 })
+    );
+    assert_eq!(
+        parse_url("1://h:0"),
+        Err(ParseError::InvalidScheme { at: 0 })
+    );
+    assert_eq!(
+        parse_url("http:/h"),
+        Err(ParseError::MissingAuthority { at: 5 })
+    );
+    assert_eq!(
+        parse_url("http://@"),
+        Err(ParseError::InvalidUserInfo { at: 7 })
+    );
+    assert_eq!(
+        parse_url("http://:0"),
+        Err(ParseError::InvalidHost { at: 7 })
+    );
+}
+
+#[test]
+fn spec_r4_global_byte_scan() {
+    assert_eq!(parse_url(""), Err(ParseError::Empty));
+    assert_eq!(
+        parse_url("x://h/a b"),
+        Err(ParseError::InvalidByte { at: 7 })
+    );
+    assert_eq!(
+        parse_url("x://h/\n"),
+        Err(ParseError::InvalidByte { at: 6 })
+    );
+    assert_eq!(
+        parse_url("x://h/\u{7f}"),
+        Err(ParseError::InvalidByte { at: 6 })
+    );
+    assert_eq!(
+        parse_url("x://h/é"),
+        Err(ParseError::InvalidByte { at: 6 })
+    );
+}
+
+#[test]
+fn spec_r5_scheme_rules_and_lowercasing() {
+    assert_eq!(
+        parse_url("abc"),
+        Err(ParseError::InvalidScheme { at: 3 })
+    );
+    assert_eq!(
+        parse_url("://h"),
+        Err(ParseError::InvalidScheme { at: 0 })
+    );
+    assert_eq!(
+        parse_url("1x://h"),
+        Err(ParseError::InvalidScheme { at: 0 })
+    );
+    assert_eq!(
+        parse_url("a_b://h"),
+        Err(ParseError::InvalidScheme { at: 1 })
+    );
+    assert_eq!(parse_url("A1+B.-://h").unwrap().scheme, "a1+b.-");
+}
+
+#[test]
+fn spec_r6_authority_marker_and_extra_slashes() {
+    assert_eq!(
+        parse_url("x:/h"),
+        Err(ParseError::MissingAuthority { at: 2 })
+    );
+    assert_eq!(
+        parse_url("x://"),
+        Err(ParseError::InvalidHost { at: 4 })
+    );
+    assert_eq!(
+        parse_url("x:///p"),
+        Err(ParseError::InvalidHost { at: 4 })
+    );
+}
+
+#[test]
+fn spec_r7_authority_delimiters() {
+    let u = parse_url("x://host/path?query#frag").unwrap();
+    assert_eq!(u.host, "host");
+    assert_eq!(u.path, "/path");
+    assert_eq!(u.query.as_deref(), Some("query"));
+    assert_eq!(u.fragment.as_deref(), Some("frag"));
+}
+
+#[test]
+fn spec_r8_userinfo_structure() {
+    assert_eq!(
+        parse_url("x://u@v@"),
+        Err(ParseError::InvalidUserInfo { at: 7 })
+    );
+    assert_eq!(
+        parse_url("x://@host"),
+        Err(ParseError::InvalidUserInfo { at: 4 })
+    );
+    let u = parse_url("x://Us:er@HOST").unwrap();
+    assert_eq!(u.userinfo.as_deref(), Some("Us:er"));
+    assert_eq!(u.host, "host");
+    assert_eq!(parse_url("x://host").unwrap().userinfo, None);
+}
+
+#[test]
+fn spec_r9_ordinary_host_rules() {
+    assert_eq!(
+        parse_url("x://"),
+        Err(ParseError::InvalidHost { at: 4 })
+    );
+    assert_eq!(
+        parse_url("x://h!st"),
+        Err(ParseError::InvalidHost { at: 5 })
+    );
+    assert_eq!(parse_url("x://.-_A").unwrap().host, ".-_a");
+}
+
+#[test]
+fn spec_r10_optional_and_empty_port() {
+    assert_eq!(parse_url("x://host").unwrap().port, None);
+    assert_eq!(
+        parse_url("x://host:"),
+        Err(ParseError::InvalidPort { at: 9 })
+    );
+}
+
+#[test]
+fn spec_r11_port_validation_order_and_bounds() {
+    assert_eq!(
+        parse_url("x://h:1x"),
+        Err(ParseError::InvalidPort { at: 7 })
+    );
+    assert_eq!(
+        parse_url("x://h:01"),
+        Err(ParseError::InvalidPort { at: 7 })
+    );
+    assert_eq!(
+        parse_url("x://h:0"),
+        Err(ParseError::InvalidPort { at: 7 })
+    );
+    assert_eq!(
+        parse_url("x://h:65536"),
+        Err(ParseError::InvalidPort { at: 7 })
+    );
+    assert_eq!(
+        parse_url("x://h:999999999999999999999999999999999999999999"),
+        Err(ParseError::InvalidPort { at: 7 })
+    );
+    assert_eq!(parse_url("x://h:1").unwrap().port, Some(1));
+    assert_eq!(parse_url("x://h:65535").unwrap().port, Some(65535));
+}
+
+#[test]
+fn spec_r12_fragment_delimiter_and_contents() {
+    assert_eq!(parse_url("x://h#").unwrap().fragment.as_deref(), Some(""));
+    assert_eq!(
+        parse_url("x://h#one#?two").unwrap().fragment.as_deref(),
+        Some("one#?two")
+    );
+    assert_eq!(parse_url("x://h").unwrap().fragment, None);
+}
+
+#[test]
+fn spec_r13_query_delimiter_and_contents() {
+    assert_eq!(parse_url("x://h?").unwrap().query.as_deref(), Some(""));
+    assert_eq!(
+        parse_url("x://h?a?b#c").unwrap().query.as_deref(),
+        Some("a?b")
+    );
+    assert_eq!(parse_url("x://h").unwrap().query, None);
+}
+
+#[test]
+fn spec_r14_path_default_and_spelling() {
+    assert_eq!(parse_url("x://h").unwrap().path, "/");
+    assert_eq!(parse_url("x://h/a//b").unwrap().path, "/a//b");
+}
+
+#[test]
+fn spec_r15_delimiters_end_authority_parsing() {
+    let u = parse_url("x://h/a:b@c?q:d@e#f:g@h").unwrap();
+    assert_eq!(u.host, "h");
+    assert_eq!(u.path, "/a:b@c");
+    assert_eq!(u.query.as_deref(), Some("q:d@e"));
+    assert_eq!(u.fragment.as_deref(), Some("f:g@h"));
+}
+
+#[test]
+fn spec_r16_percent_is_literal_at_level_one() {
+    let u = parse_url("x://h/%GG?%#%").unwrap();
+    assert_eq!(u.path, "/%GG");
+    assert_eq!(u.query.as_deref(), Some("%"));
+    assert_eq!(u.fragment.as_deref(), Some("%"));
+}
+
+#[test]
+fn spec_r17_preserve_spelling_except_scheme_and_host() {
+    let u = parse_url("HTTP://UsEr@ExAMPLE:81/A%2f?Q%2f#Frag").unwrap();
+    assert_eq!(u.scheme, "http");
+    assert_eq!(u.userinfo.as_deref(), Some("UsEr"));
+    assert_eq!(u.host, "example");
+    assert_eq!(u.port, Some(81));
+    assert_eq!(u.path, "/A%2f");
+    assert_eq!(u.query.as_deref(), Some("Q%2f"));
+    assert_eq!(u.fragment.as_deref(), Some("Frag"));
+}
+
+#[test]
+fn spec_r18_value_equality_and_absence() {
+    assert_eq!(parse_url("x://h"), parse_url("x://h"));
+    assert_ne!(parse_url("x://h?"), parse_url("x://h"));
+    assert_eq!(
+        parse_url("x://h"),
+        Ok(Url {
+            scheme: "x".into(),
+            userinfo: None,
+            host: "h".into(),
+            port: None,
+            path: "/".into(),
+            query: None,
+            fragment: None,
+            ipv6: false,
+        })
+    );
+    assert_eq!(
+        parse_url("x://h"),
+        parse_url("x://h")
+    );
+}
+
+#[test]
+fn spec_r19_ipv6_and_component_error_variants_exist() {
+    assert_eq!(
+        decode_component(Component::Path, "%"),
+        Err(CodecError::BadEscape { at: 0 })
+    );
+    assert_eq!(
+        decode_component(Component::Path, "%FF"),
+        Err(CodecError::InvalidUtf8 { at: 0 })
+    );
+    assert_eq!(
+        parse_url("x://[bad]"),
+        Err(ParseError::InvalidIpv6 { at: 4 })
+    );
+}
+
+#[test]
+fn spec_r20_ipv6_literal_validation_and_spelling() {
+    let u = parse_url("x://[2001:DB8::A]").unwrap();
+    assert!(u.ipv6);
+    assert_eq!(u.host, "2001:db8::a");
+    assert_eq!(
+        parse_url("x://[::ffff:192.0.2.1]").unwrap().host,
+        "::ffff:192.0.2.1"
+    );
+    assert_eq!(
+        parse_url("x://[fe80::1%25eth0]"),
+        Err(ParseError::InvalidIpv6 { at: 4 })
+    );
+    assert_eq!(
+        parse_url("x://[::1"),
+        Err(ParseError::InvalidIpv6 { at: 4 })
+    );
+}
+
+#[test]
+fn spec_r21_ipv6_suffix_and_bracket_placement() {
+    assert_eq!(
+        parse_url("x://[::1]x"),
+        Err(ParseError::InvalidHost { at: 9 })
+    );
+    assert_eq!(parse_url("x://[::1]:80").unwrap().port, Some(80));
+    assert_eq!(
+        parse_url("x://h[ost]"),
+        Err(ParseError::InvalidHost { at: 5 })
+    );
+    assert_eq!(
+        parse_url("x://2001:db8::1"),
+        Err(ParseError::InvalidPort { at: 11 })
+    );
+}
+
+#[test]
+fn spec_r22_decode_hex_and_plus_literal() {
+    for component in [
+        Component::UserInfo,
+        Component::Path,
+        Component::Query,
+        Component::Fragment,
+    ] {
+        assert_eq!(decode_component(component, "%2b+%2B").unwrap(), "+++".to_string());
+    }
+    assert_eq!(decode_component(Component::Path, "%aF").unwrap(), "�".to_string());
+}
+
+#[test]
+fn spec_r23_bad_escape_scan_precedes_utf8_check() {
+    assert_eq!(
+        decode_component(Component::Path, "%FF%"),
+        Err(CodecError::BadEscape { at: 3 })
+    );
+    assert_eq!(
+        decode_component(Component::Path, "a%"),
+        Err(CodecError::BadEscape { at: 1 })
+    );
+}
+
+#[test]
+fn spec_r24_decoded_utf8_error_offsets_and_binary_bytes() {
+    assert_eq!(
+        decode_component(Component::Path, "a%FF"),
+        Err(CodecError::InvalidUtf8 { at: 1 })
+    );
+    assert_eq!(
+        decode_component(Component::Path, "%C3x"),
+        Err(CodecError::InvalidUtf8 { at: 0 })
+    );
+    assert_eq!(decode_component(Component::Path, "%00%01").unwrap(), "\0\u{1}");
+    assert_eq!(decode_component(Component::Path, "é").unwrap(), "é");
+}
+
+#[test]
+fn spec_r25_component_encoding_safe_sets() {
+    assert_eq!(
+        encode_component(Component::UserInfo, "a:b/@+"),
+        "a:b%2F%40%2B"
+    );
+    assert_eq!(encode_component(Component::Path, "/a?b"), "/a%3Fb");
+    assert_eq!(encode_component(Component::Query, "/?&=+"), "/?%26%3D%2B");
+    assert_eq!(
+        encode_component(Component::Fragment, "/?#"),
+        "/?%23"
+    );
+    assert_eq!(encode_component(Component::Path, ""), "");
+    assert_eq!(encode_component(Component::Path, "é"), "%C3%A9");
+}
+
+#[test]
+fn spec_r26_parse_component_validation_order_and_offsets() {
+    assert_eq!(
+        parse_url("x://u%FF@h/%"),
+        Err(ParseError::InvalidUtf8 { at: 6 })
+    );
+    assert_eq!(
+        parse_url("x://h/%"),
+        Err(ParseError::BadEscape { at: 7 })
+    );
+    assert_eq!(
+        parse_url("x://h/%FF"),
+        Err(ParseError::InvalidUtf8 { at: 7 })
+    );
+    assert_eq!(
+        parse_url("x://h?%"),
+        Err(ParseError::BadEscape { at: 7 })
+    );
+    assert_eq!(
+        parse_url("x://h#%"),
+        Err(ParseError::BadEscape { at: 7 })
+    );
+    assert_eq!(parse_url("x://h").unwrap().path, "/");
+}
+
+#[test]
+fn spec_r27_percent_is_not_decoded_in_host_or_port() {
+    assert_eq!(
+        parse_url("x://%68"),
+        Err(ParseError::InvalidHost { at: 4 })
+    );
+    assert_eq!(
+        parse_url("x://h:%31"),
+        Err(ParseError::InvalidPort { at: 6 })
+    );
+    assert_eq!(parse_url("x://h/%2F").unwrap().path, "/%2F");
+}
+
+#[test]
+fn spec_r28_error_precedence_is_per_component() {
+    assert_eq!(
+        parse_url("x://u%FF@h/%"),
+        Err(ParseError::InvalidUtf8 { at: 6 })
+    );
+    assert_eq!(
+        parse_url("x://h/%FF?%"),
+        Err(ParseError::InvalidUtf8 { at: 7 })
+    );
+    assert_eq!(
+        parse_url("x://h/%FF?%"),
+        Err(ParseError::InvalidUtf8 { at: 7 })
+    );
+}
+
+#[test]
+fn spec_r29_codec_round_trip_long_input() {
+    let text = "é /+?%".repeat(2048);
+    for component in [
+        Component::UserInfo,
+        Component::Path,
+        Component::Query,
+        Component::Fragment,
+    ] {
+        let encoded = encode_component(component, &text);
+        assert_eq!(decode_component(component, &encoded).unwrap(), text);
+        assert_eq!(decode_component(component, &encoded), decode_component(component, &encoded));
+    }
+}
+
+#[test]
+fn spec_r30_operations_are_deterministic_and_do_not_mutate() {
+    let raw = String::from("A%20B");
+    let before = raw.clone();
+    assert_eq!(
+        decode_component(Component::Path, &raw),
+        decode_component(Component::Path, &raw)
+    );
+    assert_eq!(raw, before);
+    assert_eq!(parse_url("X://HOST"), parse_url("X://HOST"));
+}
+
+#[test]
+fn spec_r31_normalise_path_requires_raw_root() {
+    assert_eq!(normalise_path(""), Err(PathError::NotAbsolute));
+    assert_eq!(normalise_path("a/b"), Err(PathError::NotAbsolute));
+    assert_eq!(normalise_path("/a"), Ok("/a".into()));
+    assert_eq!(normalise_path("/é"), Ok("/é".into()));
+}
+
+#[test]
+fn spec_r32_normalise_validates_entire_path_and_decodes_segments() {
+    assert_eq!(
+        normalise_path("/ok/%"),
+        Err(PathError::BadEscape { at: 4 })
+    );
+    assert_eq!(
+        normalise_path("/%FF"),
+        Err(PathError::InvalidUtf8 { at: 1 })
+    );
+    assert_eq!(normalise_path("/%2E/x"), Ok("/x".into()));
+}
+
+#[test]
+fn spec_r33_stack_segment_processing() {
+    assert_eq!(normalise_path("/a//../b").unwrap(), "/a/b");
+    assert_eq!(normalise_path("/a///b").unwrap(), "/a///b");
+    assert_eq!(normalise_path("/../../a").unwrap(), "/a");
+}
+
+#[test]
+fn spec_r34_terminal_navigation_trailing_slash_and_idempotence() {
+    assert_eq!(normalise_path("/a/.").unwrap(), "/a/");
+    assert_eq!(normalise_path("/a/%2e%2E").unwrap(), "/");
+    assert_eq!(normalise_path("/").unwrap(), "/");
+    let once = normalise_path("/a//b/../").unwrap();
+    assert_eq!(normalise_path(&once).unwrap(), once);
+}
+
+#[test]
+fn spec_r35_resolve_base_then_reference_validation() {
+    assert_eq!(
+        resolve_url("not a url", "x://h"),
+        Err(ResolveError::Base(ParseError::InvalidByte { at: 3 }))
+    );
+    assert_eq!(
+        resolve_url("x://h/%", "x://other"),
+        Err(ResolveError::Path(PathError::BadEscape { at: 1 }))
+    );
+    assert_eq!(
+        resolve_url("x://h", "a b"),
+        Err(ResolveError::Reference(ParseError::InvalidByte { at: 1 }))
+    );
+    assert_eq!(resolve_url("x://h", "").unwrap().path, "/");
+}
+
+#[test]
+fn spec_r36_absolute_and_network_relative_references() {
+    let absolute = resolve_url("x://base/a", "y://other/b").unwrap();
+    assert_eq!(absolute.scheme, "y");
+    assert_eq!(absolute.host, "other");
+    assert_eq!(absolute.path, "/b");
+    let network = resolve_url("x://base/a", "//other/b").unwrap();
+    assert_eq!(network.scheme, "x");
+    assert_eq!(network.host, "other");
+    assert_eq!(network.path, "/b");
+    assert_eq!(
+        resolve_url("x://base", "//[bad"),
+        Err(ResolveError::Reference(ParseError::InvalidIpv6 { at: 4 }))
+    );
+}
+
+#[test]
+fn spec_r37_empty_path_query_and_fragment_inheritance() {
+    let u = resolve_url("x://h/a?base#old", "?new#fresh").unwrap();
+    assert_eq!(u.path, "/a");
+    assert_eq!(u.query.as_deref(), Some("new"));
+    assert_eq!(u.fragment.as_deref(), Some("fresh"));
+    let inherited = resolve_url("x://h/a?base#old", "#fresh").unwrap();
+    assert_eq!(inherited.query.as_deref(), Some("base"));
+    assert_eq!(inherited.fragment.as_deref(), Some("fresh"));
+    let cleared = resolve_url("x://h/a?base", "?").unwrap();
+    assert_eq!(cleared.query.as_deref(), Some(""));
+}
+
+#[test]
+fn spec_r38_relative_path_merge_and_normalization() {
+    assert_eq!(resolve_url("x://h/a/b", "c").unwrap().path, "/a/c");
+    assert_eq!(resolve_url("x://h/a/b", "/c").unwrap().path, "/c");
+    assert_eq!(resolve_url("x://h/a/b", "../c").unwrap().path, "/c");
+}
+
+#[test]
+fn spec_r39_constructed_url_validation_and_inherited_authority() {
+    let base = parse_url("HTTP://User@HOST:81/a/b").unwrap();
+    let u = resolve_url("HTTP://User@HOST:81/a/b", "c").unwrap();
+    assert_eq!(u.scheme, base.scheme);
+    assert_eq!(u.userinfo, base.userinfo);
+    assert_eq!(u.host, base.host);
+    assert_eq!(u.port, base.port);
+    assert_eq!(u.path, "/a/c");
+    assert_eq!(
+        resolve_url("x://h/a", "%"),
+        Err(ResolveError::Reference(ParseError::BadEscape { at: 8 }))
+    );
+}
+
+#[test]
+fn spec_r40_resolved_raw_components_and_explicit_port() {
+    let u = resolve_url("http://h:80/a?old#old", "b%2Fc?q%2f#f+g").unwrap();
+    assert_eq!(u.port, Some(80));
+    assert_eq!(u.path, "/b%2Fc");
+    assert_eq!(u.query.as_deref(), Some("q%2f"));
+    assert_eq!(u.fragment.as_deref(), Some("f+g"));
+    assert_eq!(u.fragment, resolve_url("http://h/a#old", "b").unwrap().fragment);
+}
+
+#[test]
+fn spec_r41_parse_query_fields_and_first_equals() {
+    assert_eq!(parse_query("&&").unwrap().entries, Vec::<(String, Vec<String>)>::new());
+    assert_eq!(
+        parse_query("a=b=c&x%26y=z%3Dq").unwrap().entries,
+        vec![
+            ("a".into(), vec!["b=c".into()]),
+            ("x&y".into(), vec!["z=q".into()])
+        ]
+    );
+    assert_eq!(
+        parse_query("?a=1").unwrap().entries,
+        vec![("?a".into(), vec!["1".into()])]
+    );
+}
+
+#[test]
+fn spec_r42_query_plus_replacement_and_validation_order() {
+    assert_eq!(
+        parse_query("a+b=c+d&%2B=x").unwrap().entries,
+        vec![
+            ("a b".into(), vec!["c d".into()]),
+            ("+".into(), vec!["x".into()])
+        ]
+    );
+    assert_eq!(
+        parse_query("=%"),
+        Err(QueryError::EmptyKey { at: 0 })
+    );
+    assert_eq!(parse_query("++=v").unwrap().entries[0].0, "  ");
+}
+
+#[test]
+fn spec_r43_query_error_offsets_and_empty_input() {
+    assert_eq!(
+        parse_query("a=ok&b=%"),
+        Err(QueryError::BadEscape { at: 6 })
+    );
+    assert_eq!(
+        parse_query("a=%FF"),
+        Err(QueryError::InvalidUtf8 { at: 2 })
+    );
+    assert_eq!(
+        parse_query("a=%FF&b=%"),
+        Err(QueryError::InvalidUtf8 { at: 2 })
+    );
+    assert_eq!(parse_query("").unwrap().entries, Vec::<(String, Vec<String>)>::new());
+}
+
+#[test]
+fn spec_r44_query_order_merge_and_empty_values() {
+    assert_eq!(
+        parse_query("b=1&a=2&b=3&%62=4").unwrap().entries,
+        vec![
+            ("b".into(), vec!["1".into(), "3".into(), "4".into()]),
+            ("a".into(), vec!["2".into()])
+        ]
+    );
+    assert_eq!(
+        parse_query("x&x=").unwrap().entries,
+        vec![("x".into(), vec!["".into(), "".into()])]
+    );
+    assert_ne!(parse_query("A=1").unwrap(), parse_query("a=1").unwrap());
+}
+
+#[test]
+fn spec_r45_serialise_arbitrary_query_map() {
+    let map = QueryMap {
+        entries: vec![
+            ("".into(), vec!["skip".into()]),
+            ("x".into(), vec!["1".into()]),
+            ("empty".into(), vec![]),
+            ("x".into(), vec!["2".into(), "".into()]),
+        ],
+    };
+    assert_eq!(serialise_query(&map), "x=1&x=2&x=");
+    assert_eq!(
+        serialise_query(&QueryMap { entries: vec![] }),
+        ""
+    );
+}
+
+#[test]
+fn spec_r46_query_form_serialization_encoding() {
+    let map = QueryMap {
+        entries: vec![("a b/+&=".into(), vec!["x y/+&=".into()])],
+    };
+    assert_eq!(
+        serialise_query(&map),
+        "a+b%2F%2B%26%3D=x+y%2F%2B%26%3D"
+    );
+}
+
+#[test]
+fn spec_r47_canonical_error_precedence() {
+    assert_eq!(
+        canonical_url("x://h/%?k=%"),
+        Err(CanonicalError::Parse(ParseError::BadEscape { at: 7 }))
+    );
+    assert_eq!(
+        canonical_url("x://h/a/../b?k=%"),
+        Err(CanonicalError::Query(QueryError::BadEscape { at: 2 }))
+    );
+}
+
+#[test]
+fn spec_r48_canonical_authority_userinfo_and_ipv6() {
+    assert_eq!(
+        canonical_url("HTTP://Us%65r@EXAMPLE").unwrap(),
+        "http://User@example/"
+    );
+    assert_eq!(
+        canonical_url("x://[2001:0DB8::1]/").unwrap(),
+        "x://[2001:db8::1]/"
+    );
+    assert_eq!(
+        canonical_url("x://h").unwrap(),
+        "x://h/"
+    );
+}
+
+#[test]
+fn spec_r49_canonical_default_port_rules() {
+    assert_eq!(canonical_url("http://h:80").unwrap(), "http://h/");
+    assert_eq!(canonical_url("https://h:443").unwrap(), "https://h/");
+    assert_eq!(canonical_url("http://h:443").unwrap(), "http://h:443/");
+    assert_eq!(canonical_url("x://h:80").unwrap(), "x://h:80/");
+}
+
+#[test]
+fn spec_r50_canonical_path_segments_encoding() {
+    assert_eq!(
+        canonical_url("x://h/a%2Fb//c").unwrap(),
+        "x://h/a%2Fb//c"
+    );
+    assert_eq!(
+        canonical_url("x://h/%7e/%2e").unwrap(),
+        "x://h/~"
+    );
+}
+
+#[test]
+fn spec_r51_canonical_query_order_and_fragment_encoding() {
+    assert_eq!(
+        canonical_url("x://h/?b=1&a=2&b=3#x+y").unwrap(),
+        "x://h/?b=1&b=3&a=2#x%2By"
+    );
+    assert_eq!(canonical_url("x://h/?#").unwrap(), "x://h/?#");
+    assert_eq!(
+        canonical_url("x://h/?x=%2B").unwrap(),
+        "x://h/?x=%2B"
+    );
+}
+
+#[test]
+fn spec_r52_canonicalization_idempotent_without_side_effects() {
+    let input = String::from("HTTP://EXAMPLE/a/./b?x=one+two#top");
+    let before = input.clone();
+    let once = canonical_url(&input).unwrap();
+    assert_eq!(canonical_url(&once).unwrap(), once);
+    assert_eq!(parse_url(&input).unwrap().path, "/a/./b");
+    assert_eq!(input, before);
+    assert_eq!(
+        decode_component(Component::Query, "+").unwrap(),
+        "+"
+    );
+}
+```

@@ -1,0 +1,888 @@
+```rust
+#[test]
+fn spec_r1_single_source_edition_2024_std_only() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut e = Encoder::new(c);
+    assert_eq!(e.push(b"f"), Ok(String::new()));
+    assert_eq!(e.finish(), Ok("MY".to_string()));
+}
+
+#[test]
+fn spec_r2_public_api_types_and_variants() {
+    assert_eq!(Alphabet::Standard, Alphabet::Standard);
+    assert_eq!(Padding::Required, Padding::Required);
+    let c = Config {
+        alphabet: Alphabet::Hex,
+        padding: Padding::Required,
+        canonical: false,
+    };
+    assert_eq!(c.alphabet, Alphabet::Hex);
+    assert_eq!(
+        StreamError::InvalidByte {
+            offset: 3,
+            byte: b'!'
+        },
+        StreamError::InvalidByte {
+            offset: 3,
+            byte: b'!'
+        }
+    );
+    assert_eq!(
+        StreamError::NonCanonical {
+            offset: 0,
+            expected: b'A'
+        },
+        StreamError::NonCanonical {
+            offset: 0,
+            expected: b'A'
+        }
+    );
+    assert_eq!(StreamError::Padding { offset: 1 }, StreamError::Padding { offset: 1 });
+    assert_eq!(
+        StreamError::InvalidLength { offset: 2 },
+        StreamError::InvalidLength { offset: 2 }
+    );
+    assert_eq!(
+        StreamError::TrailingBits { offset: 1 },
+        StreamError::TrailingBits { offset: 1 }
+    );
+    assert_eq!(StreamError::Closed, StreamError::Closed);
+}
+
+#[test]
+fn spec_r3_standard_alphabet_values() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut e = Encoder::new(c);
+    assert_eq!(e.push(&[0, 0, 0, 0, 0]).unwrap(), "AAAAAAAA");
+    let mut e = Encoder::new(c);
+    assert_eq!(e.push(&[255, 255, 255, 255, 255]).unwrap(), "77777777");
+}
+
+#[test]
+fn spec_r4_hex_alphabet_values_and_no_autodetection() {
+    let c = Config {
+        alphabet: Alphabet::Hex,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut e = Encoder::new(c);
+    assert_eq!(e.push(&[0, 0, 0, 0, 0]).unwrap(), "00000000");
+    let mut e = Encoder::new(c);
+    assert_eq!(e.push(&[255, 255, 255, 255, 255]).unwrap(), "VVVVVVVV");
+
+    let mut d = Decoder::new(c);
+    assert_eq!(
+        d.push("W"),
+        Err(StreamError::InvalidByte {
+            offset: 0,
+            byte: b'W'
+        })
+    );
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(
+        d.push("0"),
+        Err(StreamError::InvalidByte {
+            offset: 0,
+            byte: b'0'
+        })
+    );
+}
+
+#[test]
+fn spec_r5_new_instances_have_independent_fresh_state() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut d1 = Decoder::new(c);
+    assert_eq!(d1.push("M").unwrap(), vec![]);
+    let mut d2 = Decoder::new(c);
+    assert_eq!(d2.push("Y").unwrap(), vec![]);
+    assert_eq!(d2.finish(), Err(StreamError::InvalidLength { offset: 1 }));
+    assert_eq!(d1.push("Y").unwrap(), b"f");
+    assert_eq!(d1.finish(), Ok(vec![]));
+}
+
+#[test]
+fn spec_r6_encoder_reads_most_significant_bits_first() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut e = Encoder::new(c);
+    assert_eq!(e.push(&[0x80, 0, 0, 0, 0]).unwrap(), "QAAAAAAA");
+}
+
+#[test]
+fn spec_r7_encoder_emits_only_complete_five_byte_groups() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut e = Encoder::new(c);
+    assert_eq!(e.push(b"abcd").unwrap(), "");
+    assert_eq!(e.push(b"e").unwrap(), "MFRGGZDF");
+    assert_eq!(e.push(b"fghi").unwrap(), "");
+    assert_eq!(e.push(b"j").unwrap(), "MZXXE3DE");
+}
+
+#[test]
+fn spec_r8_empty_encoder_push_preserves_state() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut e = Encoder::new(c);
+    assert_eq!(e.push(b"ab").unwrap(), "");
+    assert_eq!(e.push(b"").unwrap(), "");
+    assert_eq!(e.push(b"c").unwrap(), "");
+    assert_eq!(e.finish().unwrap(), "MFRA");
+}
+
+#[test]
+fn spec_r9_encoder_finish_encodes_partial_symbols_without_extra_symbol() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let cases: [(&[u8], &str); 4] = [
+        (b"f", "MY"),
+        (b"fo", "MZXQ"),
+        (b"foo", "MZXW6"),
+        (b"foob", "MZXW6YQ"),
+    ];
+    for (input, expected) in cases {
+        let mut e = Encoder::new(c);
+        assert_eq!(e.push(input).unwrap(), "");
+        assert_eq!(e.finish().unwrap(), expected);
+    }
+}
+
+#[test]
+fn spec_r10_required_encoder_padding_completes_final_fragment() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: true,
+    };
+    for (input, expected) in [
+        (b"f".as_slice(), "MY======"),
+        (b"fo".as_slice(), "MZXQ===="),
+        (b"foo".as_slice(), "MZXW6==="),
+        (b"foob".as_slice(), "MZXW6YQ="),
+    ] {
+        let mut e = Encoder::new(c);
+        assert_eq!(e.finish().unwrap(), "");
+        let _ = (input, expected);
+    }
+    for (input, expected) in [
+        (b"f".as_slice(), "MY======"),
+        (b"fo".as_slice(), "MZXQ===="),
+        (b"foo".as_slice(), "MZXW6==="),
+        (b"foob".as_slice(), "MZXW6YQ="),
+    ] {
+        let mut e = Encoder::new(c);
+        assert_eq!(e.push(input).unwrap(), "");
+        assert_eq!(e.finish().unwrap(), expected);
+    }
+}
+
+#[test]
+fn spec_r11_omitted_encoder_never_emits_equals() {
+    let c = Config {
+        alphabet: Alphabet::Hex,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut e = Encoder::new(c);
+    assert_eq!(e.push(b"foo").unwrap(), "");
+    assert_eq!(e.finish().unwrap(), "CPNMU");
+}
+
+#[test]
+fn spec_r12_canonical_setting_does_not_change_encoding() {
+    for alphabet in [Alphabet::Standard, Alphabet::Hex] {
+        let mut a = Encoder::new(Config {
+            alphabet,
+            padding: Padding::Required,
+            canonical: true,
+        });
+        let mut b = Encoder::new(Config {
+            alphabet,
+            padding: Padding::Required,
+            canonical: false,
+        });
+        assert_eq!(a.push(b"arbitrary bytes").unwrap(), b.push(b"arbitrary bytes").unwrap());
+        assert_eq!(a.finish().unwrap(), b.finish().unwrap());
+    }
+}
+
+#[test]
+fn spec_r13_empty_and_block_aligned_encoder_finish() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: true,
+    };
+    let mut empty = Encoder::new(c);
+    assert_eq!(empty.finish().unwrap(), "");
+    let mut aligned = Encoder::new(c);
+    assert_eq!(aligned.push(b"12345").unwrap(), "GEZDGNBV");
+    assert_eq!(aligned.finish().unwrap(), "");
+}
+
+#[test]
+fn spec_r14_closed_stream_calls_return_closed_without_state_change() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut e = Encoder::new(c);
+    assert_eq!(e.finish(), Ok(String::new()));
+    assert_eq!(e.push(b""), Err(StreamError::Closed));
+    assert_eq!(e.push(b"x"), Err(StreamError::Closed));
+    assert_eq!(e.finish(), Err(StreamError::Closed));
+
+    let mut d = Decoder::new(c);
+    assert_eq!(d.finish(), Ok(vec![]));
+    assert_eq!(d.push(""), Err(StreamError::Closed));
+    assert_eq!(d.push("A"), Err(StreamError::Closed));
+    assert_eq!(d.finish(), Err(StreamError::Closed));
+}
+
+#[test]
+fn spec_r15_decoder_emits_available_bytes_and_retains_partial_bits() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("M").unwrap(), vec![]);
+    assert_eq!(d.push("Y").unwrap(), b"f");
+    assert_eq!(d.push("ZX").unwrap(), b"o");
+}
+
+#[test]
+fn spec_r16_decoder_finish_emits_no_partial_bits() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("MY").unwrap(), b"f");
+    assert_eq!(d.finish(), Ok(vec![]));
+}
+
+#[test]
+fn spec_r17_decoder_reports_lexical_case_and_padding_errors_during_push() {
+    let strict = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: true,
+    };
+    let mut d = Decoder::new(strict);
+    assert_eq!(
+        d.push("M?"),
+        Err(StreamError::InvalidByte {
+            offset: 1,
+            byte: b'?'
+        })
+    );
+
+    let mut d = Decoder::new(strict);
+    assert_eq!(d.push("MY=====").unwrap(), vec![b'f']);
+    assert_eq!(d.push("=").unwrap(), vec![]);
+    assert_eq!(d.push("A"), Err(StreamError::Padding { offset: 8 }));
+}
+
+#[test]
+fn spec_r18_decoder_offsets_are_absolute_utf8_byte_positions() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: false,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("MY").unwrap(), b"f");
+    assert_eq!(
+        d.push("é"),
+        Err(StreamError::InvalidByte {
+            offset: 2,
+            byte: 0xC3
+        })
+    );
+
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("MY").unwrap(), b"f");
+    assert_eq!(d.finish(), Err(StreamError::InvalidLength { offset: 2 }));
+}
+
+#[test]
+fn spec_r19_failed_calls_are_transactional_for_push_and_finish() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(
+        d.push("MY?"),
+        Err(StreamError::InvalidByte {
+            offset: 2,
+            byte: b'?'
+        })
+    );
+    assert_eq!(d.push("Y").unwrap(), b"f");
+    assert_eq!(d.finish(), Ok(vec![]));
+
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("M").unwrap(), vec![]);
+    assert_eq!(d.finish(), Err(StreamError::InvalidLength { offset: 1 }));
+    assert_eq!(d.push("Y").unwrap(), b"f");
+    assert_eq!(d.finish(), Ok(vec![]));
+}
+
+#[test]
+fn spec_r20_replacement_input_does_not_count_rejected_prefix() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: false,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(
+        d.push("MY?"),
+        Err(StreamError::InvalidByte {
+            offset: 2,
+            byte: b'?'
+        })
+    );
+    assert_eq!(d.push("MY").unwrap(), b"f");
+    assert_eq!(d.finish(), Ok(vec![]));
+}
+
+#[test]
+fn spec_r21_invalid_byte_carries_original_byte_and_lowercase_value_is_uppercase() {
+    let strict = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut d = Decoder::new(strict);
+    assert_eq!(
+        d.push("a"),
+        Err(StreamError::NonCanonical {
+            offset: 0,
+            expected: b'A'
+        })
+    );
+
+    let mut d = Decoder::new(Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: false,
+    });
+    assert_eq!(
+        d.push("!"),
+        Err(StreamError::InvalidByte {
+            offset: 0,
+            byte: b'!'
+        })
+    );
+}
+
+#[test]
+fn spec_r22_whitespace_separators_and_alphabet_exclusions_are_invalid() {
+    for byte in [" ", "-", "\n", "0", "1", "é"] {
+        let mut d = Decoder::new(Config {
+            alphabet: Alphabet::Standard,
+            padding: Padding::Omitted,
+            canonical: false,
+        });
+        let first = byte.as_bytes()[0];
+        assert_eq!(
+            d.push(byte),
+            Err(StreamError::InvalidByte {
+                offset: 0,
+                byte: first
+            })
+        );
+    }
+    for byte in ["W", "X", "Y", "Z", "-"] {
+        let mut d = Decoder::new(Config {
+            alphabet: Alphabet::Hex,
+            padding: Padding::Omitted,
+            canonical: false,
+        });
+        assert_eq!(
+            d.push(byte),
+            Err(StreamError::InvalidByte {
+                offset: 0,
+                byte: byte.as_bytes()[0]
+            })
+        );
+    }
+}
+
+#[test]
+fn spec_r23_non_ascii_fails_at_first_utf8_byte_and_invalid_beats_padding_state() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: false,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("MY======").unwrap(), b"f");
+    assert_eq!(
+        d.push("é"),
+        Err(StreamError::InvalidByte {
+            offset: 8,
+            byte: 0xC3
+        })
+    );
+}
+
+#[test]
+fn spec_r24_strict_mode_reports_expected_uppercase_for_lowercase_data() {
+    let c = Config {
+        alphabet: Alphabet::Hex,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(
+        d.push("c"),
+        Err(StreamError::NonCanonical {
+            offset: 0,
+            expected: b'C'
+        })
+    );
+}
+
+#[test]
+fn spec_r25_relaxed_mode_accepts_lowercase_and_digits() {
+    let c = Config {
+        alphabet: Alphabet::Hex,
+        padding: Padding::Omitted,
+        canonical: false,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("c").unwrap(), vec![]);
+    assert_eq!(d.push("p").unwrap(), b"f");
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("01").unwrap(), b"\0");
+}
+
+#[test]
+fn spec_r26_error_order_is_lexical_then_case_then_padding() {
+    let strict = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: true,
+    };
+    let mut d = Decoder::new(strict);
+    assert_eq!(d.push("MY======").unwrap(), b"f");
+    assert_eq!(
+        d.push("a"),
+        Err(StreamError::NonCanonical {
+            offset: 8,
+            expected: b'A'
+        })
+    );
+
+    let mut d = Decoder::new(Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: false,
+    });
+    assert_eq!(d.push("MY======").unwrap(), b"f");
+    assert_eq!(d.push("A"), Err(StreamError::Padding { offset: 8 }));
+
+    let mut d = Decoder::new(Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: false,
+    });
+    assert_eq!(d.push("MY======").unwrap(), b"f");
+    assert_eq!(
+        d.push("?"),
+        Err(StreamError::InvalidByte {
+            offset: 8,
+            byte: b'?'
+        })
+    );
+}
+
+#[test]
+fn spec_r27_omitted_padding_is_rejected_immediately() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: false,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("M").unwrap(), vec![]);
+    assert_eq!(d.push("=").unwrap_err(), StreamError::Padding { offset: 1 });
+}
+
+#[test]
+fn spec_r28_required_padding_counts_for_each_legal_residue() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: true,
+    };
+    for (data, pads) in [
+        ("", ""),
+        ("MY", "======"),
+        ("MZXQ", "===="),
+        ("MZXW6", "==="),
+        ("MZXW6YQ", "="),
+        ("MZXW6YTB", ""),
+    ] {
+        let mut d = Decoder::new(c);
+        assert!(d.push(&format!("{data}{pads}")).is_ok());
+        assert_eq!(d.finish(), Ok(vec![]));
+    }
+}
+
+#[test]
+fn spec_r29_first_equals_rejects_zero_or_illegal_data_residue_as_padding() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: false,
+    };
+    let mut empty = Decoder::new(c);
+    assert_eq!(empty.push("="), Err(StreamError::Padding { offset: 0 }));
+
+    let mut illegal = Decoder::new(c);
+    assert_eq!(illegal.push("A=").unwrap_err(), StreamError::Padding { offset: 1 });
+}
+
+#[test]
+fn spec_r30_alphabet_symbol_after_accepted_padding_is_padding_error() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: false,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("MY=").unwrap(), b"f");
+    assert_eq!(d.push("A"), Err(StreamError::Padding { offset: 3 }));
+}
+
+#[test]
+fn spec_r31_additional_equals_allowed_only_up_to_expected_count() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: true,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("MY======").unwrap(), b"f");
+    assert_eq!(d.push("="), Err(StreamError::Padding { offset: 8 }));
+}
+
+#[test]
+fn spec_r32_incomplete_length_or_padding_can_be_repaired_before_finish() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: true,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("M").unwrap(), vec![]);
+    assert_eq!(d.push("Y").unwrap(), b"f");
+    assert_eq!(d.push("======").unwrap(), vec![]);
+    assert_eq!(d.finish(), Ok(vec![]));
+
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("MY=").unwrap(), b"f");
+    assert_eq!(d.push("=====").unwrap(), vec![]);
+    assert_eq!(d.finish(), Ok(vec![]));
+}
+
+#[test]
+fn spec_r33_finish_error_order_is_length_then_padding_then_unused_bits() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: true,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("A=").unwrap_err(), StreamError::Padding { offset: 1 });
+    assert_eq!(d.push("AA").unwrap(), vec![0]);
+    assert_eq!(d.finish(), Err(StreamError::Padding { offset: 2 }));
+}
+
+#[test]
+fn spec_r34_illegal_finish_residue_is_invalid_length_in_both_modes() {
+    for padding in [Padding::Required, Padding::Omitted] {
+        let mut d = Decoder::new(Config {
+            alphabet: Alphabet::Standard,
+            padding,
+            canonical: false,
+        });
+        assert_eq!(d.push("A").unwrap(), vec![]);
+        assert_eq!(d.finish(), Err(StreamError::InvalidLength { offset: 1 }));
+    }
+}
+
+#[test]
+fn spec_r35_required_padding_completeness_reports_first_pad_or_end_offset() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: false,
+    };
+    let mut with_pad = Decoder::new(c);
+    assert_eq!(with_pad.push("MY=").unwrap(), b"f");
+    assert_eq!(with_pad.finish(), Err(StreamError::Padding { offset: 2 }));
+
+    let mut without_pad = Decoder::new(c);
+    assert_eq!(without_pad.push("MY").unwrap(), b"f");
+    assert_eq!(without_pad.finish(), Err(StreamError::Padding { offset: 2 }));
+}
+
+#[test]
+fn spec_r36_omitted_mode_allows_every_legal_residue_without_padding_check() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    for data in ["", "MY", "MZXQ", "MZXW6", "MZXW6YQ", "MZXW6YTB"] {
+        let mut d = Decoder::new(c);
+        assert!(d.push(data).is_ok());
+        assert_eq!(d.finish(), Ok(vec![]));
+    }
+}
+
+#[test]
+fn spec_r37_unused_low_bits_must_be_zero_for_each_partial_residue() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    for (data, bad) in [
+        ("MY", "MZ"),
+        ("MZXQ", "MZXR"),
+        ("MZXW6", "MZXW7"),
+        ("MZXW6YQ", "MZXW6YR"),
+    ] {
+        let mut valid = Decoder::new(c);
+        assert!(valid.push(data).is_ok());
+        assert_eq!(valid.finish(), Ok(vec![]));
+
+        let mut invalid = Decoder::new(c);
+        assert!(invalid.push(bad).is_ok());
+        assert_eq!(invalid.finish(), Err(StreamError::TrailingBits { offset: bad.len() - 1 }));
+    }
+}
+
+#[test]
+fn spec_r38_trailing_bits_offset_is_last_data_symbol_and_checked_at_finish() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: true,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("MZ=").unwrap(), vec![]);
+    assert_eq!(d.finish(), Err(StreamError::Padding { offset: 2 }));
+    assert_eq!(d.push("=====").unwrap(), vec![]);
+    assert_eq!(d.finish(), Err(StreamError::TrailingBits { offset: 1 }));
+}
+
+#[test]
+fn spec_r39_failed_finish_stays_open_and_can_be_repaired() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: true,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("MY=").unwrap(), b"f");
+    assert_eq!(d.finish(), Err(StreamError::Padding { offset: 2 }));
+    assert_eq!(d.push("=====").unwrap(), vec![]);
+    assert_eq!(d.finish(), Ok(vec![]));
+
+    let mut d = Decoder::new(Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    });
+    assert_eq!(d.push("MZ").unwrap(), vec![]);
+    assert_eq!(d.finish(), Err(StreamError::TrailingBits { offset: 1 }));
+    assert_eq!(d.push("A").unwrap(), vec![]);
+    assert_eq!(d.finish(), Err(StreamError::InvalidLength { offset: 3 }));
+}
+
+#[test]
+fn spec_r40_empty_decoder_push_and_finish_succeed_in_both_padding_modes() {
+    for padding in [Padding::Required, Padding::Omitted] {
+        let mut d = Decoder::new(Config {
+            alphabet: Alphabet::Hex,
+            padding,
+            canonical: true,
+        });
+        assert_eq!(d.push("").unwrap(), vec![]);
+        assert_eq!(d.finish(), Ok(vec![]));
+    }
+}
+
+#[test]
+fn spec_r41_chunk_boundaries_preserve_results_and_absolute_error_offsets() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut one = Encoder::new(c);
+    let whole = format!("{}{}", one.push(b"abcdefghij").unwrap(), one.finish().unwrap());
+
+    let mut chunked = Encoder::new(c);
+    let mut encoded = chunked.push(b"abc").unwrap();
+    encoded.push_str(&chunked.push(b"defg").unwrap());
+    encoded.push_str(&chunked.push(b"hij").unwrap());
+    encoded.push_str(&chunked.finish().unwrap());
+    assert_eq!(encoded, whole);
+
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push(&whole).unwrap(), b"abcdefghij");
+    assert_eq!(d.finish(), Ok(vec![]));
+
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push(&whole[..3]).unwrap(), vec![b'a']);
+    assert_eq!(d.push(&whole[3..]).unwrap(), b"bcdefghij");
+    assert_eq!(d.finish(), Ok(vec![]));
+
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push(&whole).unwrap(), b"abcdefghij");
+    assert_eq!(
+        d.push("?"),
+        Err(StreamError::InvalidByte {
+            offset: whole.len(),
+            byte: b'?'
+        })
+    );
+}
+
+#[test]
+fn spec_r42_first_failing_byte_wins_within_push() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: true,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("MY======").unwrap(), b"f");
+    assert_eq!(
+        d.push("!a"),
+        Err(StreamError::InvalidByte {
+            offset: 8,
+            byte: b'!'
+        })
+    );
+}
+
+#[test]
+fn spec_r43_long_streams_preserve_pending_state_and_absolute_indices() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let input = vec![0xA5; 5000];
+    let mut e = Encoder::new(c);
+    let mut encoded = String::new();
+    for chunk in input.chunks(3) {
+        encoded.push_str(&e.push(chunk).unwrap());
+    }
+    encoded.push_str(&e.finish().unwrap());
+
+    let mut d = Decoder::new(c);
+    let mut decoded = Vec::new();
+    for chunk in encoded.as_bytes().chunks(7) {
+        decoded.extend(d.push(std::str::from_utf8(chunk).unwrap()).unwrap());
+    }
+    assert_eq!(decoded, input);
+    assert_eq!(d.finish(), Ok(vec![]));
+
+    let mut d = Decoder::new(c);
+    let mut bad = "A".repeat(10_000);
+    bad.push('!');
+    assert_eq!(
+        d.push(&bad),
+        Err(StreamError::InvalidByte {
+            offset: 10_000,
+            byte: b'!'
+        })
+    );
+}
+
+#[test]
+fn spec_r44_push_output_is_provisional_even_if_finish_rejects() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("MZXW6").unwrap(), b"foo");
+    assert_eq!(d.finish(), Ok(vec![]));
+
+    let mut d = Decoder::new(Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Required,
+        canonical: true,
+    });
+    assert_eq!(d.push("MY").unwrap(), b"f");
+    assert_eq!(d.finish(), Err(StreamError::Padding { offset: 2 }));
+}
+
+#[test]
+fn spec_r45_finish_never_emits_partial_byte_and_success_requires_new_stream() {
+    let c = Config {
+        alphabet: Alphabet::Standard,
+        padding: Padding::Omitted,
+        canonical: true,
+    };
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("M").unwrap(), vec![]);
+    assert_eq!(d.finish(), Err(StreamError::InvalidLength { offset: 1 }));
+
+    let mut d = Decoder::new(c);
+    assert_eq!(d.push("MY").unwrap(), b"f");
+    assert_eq!(d.finish(), Ok(vec![]));
+    assert_eq!(d.push(""), Err(StreamError::Closed));
+}
+```

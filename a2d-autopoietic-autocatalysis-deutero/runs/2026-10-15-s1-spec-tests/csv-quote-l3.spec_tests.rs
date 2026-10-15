@@ -1,0 +1,897 @@
+#[test]
+fn spec_r1_public_api_and_config_fields() {
+    let config = Config {
+        delimiter: b';',
+        quote: b'!',
+        headers: false,
+        duplicates: DuplicatePolicy::KeepLast,
+    };
+    assert_eq!(config.delimiter, b';');
+    assert_eq!(config.quote, b'!');
+    assert!(!config.headers);
+    assert_eq!(config.duplicates, DuplicatePolicy::KeepLast);
+
+    let table = Table {
+        header: None,
+        rows: vec![vec!["value".to_string()]],
+        duplicates: DuplicatePolicy::KeepFirst,
+    };
+    assert_eq!(table.rows[0][0], "value");
+}
+
+#[test]
+fn spec_r2_csv_order_and_verbatim_field_contents() {
+    assert_eq!(
+        parse_csv("Ab,é\n  x ,Y").unwrap(),
+        vec![
+            vec!["Ab".to_string(), "é".to_string()],
+            vec!["  x ".to_string(), "Y".to_string()]
+        ]
+    );
+}
+
+#[test]
+fn spec_r3_csv_error_record_and_utf8_byte_offsets() {
+    assert_eq!(
+        parse_csv("é\nx\"").unwrap_err(),
+        CsvError::UnexpectedQuote { record: 1, byte: 4 }
+    );
+    assert_eq!(
+        parse_csv("\u{feff}x\"").unwrap_err(),
+        CsvError::UnexpectedQuote { record: 0, byte: 2 }
+    );
+}
+
+#[test]
+fn spec_r4_only_initial_bom_is_ignored() {
+    assert_eq!(parse_csv("\u{feff}").unwrap(), Vec::<Vec<String>>::new());
+    assert_eq!(
+        parse_csv("\u{feff}a\n\u{feff}b").unwrap(),
+        vec![
+            vec!["a".to_string()],
+            vec!["\u{feff}b".to_string()]
+        ]
+    );
+    assert_eq!(
+        parse_csv("\"\u{feff}x\"").unwrap(),
+        vec![vec!["\u{feff}x".to_string()]]
+    );
+}
+
+#[test]
+fn spec_r5_empty_eof_and_terminator_record_boundaries() {
+    assert_eq!(parse_csv("").unwrap(), Vec::<Vec<String>>::new());
+    assert_eq!(parse_csv("x").unwrap(), vec![vec!["x".to_string()]]);
+    assert_eq!(parse_csv("\n").unwrap(), vec![vec![String::new()]]);
+    assert_eq!(
+        parse_csv("\n\n").unwrap(),
+        vec![vec![String::new()], vec![String::new()]]
+    );
+    assert_eq!(parse_csv("x\n").unwrap(), vec![vec!["x".to_string()]]);
+}
+
+#[test]
+fn spec_r6_empty_fields_are_preserved() {
+    assert_eq!(
+        parse_csv(",").unwrap(),
+        vec![vec![String::new(), String::new()]]
+    );
+    assert_eq!(
+        parse_csv("a,,b,").unwrap(),
+        vec![vec![
+            "a".to_string(),
+            String::new(),
+            "b".to_string(),
+            String::new()
+        ]]
+    );
+    assert_eq!(
+        parse_csv("\"\"").unwrap(),
+        vec![vec![String::new()]]
+    );
+}
+
+#[test]
+fn spec_r7_outside_crlf_and_bare_cr_errors() {
+    assert_eq!(
+        parse_csv("a\r\nb").unwrap(),
+        vec![vec!["a".to_string()], vec!["b".to_string()]]
+    );
+    assert_eq!(
+        parse_csv("a\rb").unwrap_err(),
+        CsvError::BareCr { record: 0, byte: 1 }
+    );
+    assert_eq!(
+        parse_csv("a\r").unwrap_err(),
+        CsvError::BareCr { record: 0, byte: 1 }
+    );
+}
+
+#[test]
+fn spec_r8_quote_only_opens_at_field_start() {
+    assert_eq!(
+        parse_csv("ab\"c").unwrap_err(),
+        CsvError::UnexpectedQuote { record: 0, byte: 2 }
+    );
+    assert_eq!(
+        parse_csv(" \"x\"").unwrap_err(),
+        CsvError::UnexpectedQuote { record: 0, byte: 1 }
+    );
+    assert_eq!(
+        parse_csv("\"x\"").unwrap(),
+        vec![vec!["x".to_string()]]
+    );
+}
+
+#[test]
+fn spec_r9_quoted_escape_and_pair_at_eof() {
+    assert_eq!(
+        parse_csv("\"a\"\"b\"").unwrap(),
+        vec![vec!["a\"b".to_string()]]
+    );
+    assert_eq!(
+        parse_csv("\"a\"\"").unwrap_err(),
+        CsvError::UnclosedQuote { record: 0, byte: 0 }
+    );
+}
+
+#[test]
+fn spec_r10_quoted_newlines_and_cr_are_literal() {
+    assert_eq!(
+        parse_csv("\"a,\n\r\n\rb\",z").unwrap(),
+        vec![vec!["a,\n\r\n\rb".to_string(), "z".to_string()]]
+    );
+    assert_eq!(
+        parse_csv("\"x\n\"q\"").unwrap_err(),
+        CsvError::UnclosedQuote { record: 0, byte: 0 }
+    );
+}
+
+#[test]
+fn spec_r11_after_closing_quote_only_structural_bytes_are_legal() {
+    assert_eq!(
+        parse_csv("\"x\" y").unwrap_err(),
+        CsvError::TrailingByte { record: 0, byte: 3 }
+    );
+    assert_eq!(
+        parse_csv("\"x\"\t").unwrap_err(),
+        CsvError::TrailingByte { record: 0, byte: 3 }
+    );
+    assert_eq!(
+        parse_csv("\"x\",y").unwrap(),
+        vec![vec!["x".to_string(), "y".to_string()]]
+    );
+}
+
+#[test]
+fn spec_r12_unclosed_quote_points_to_opening_and_close_at_eof_is_valid() {
+    assert_eq!(
+        parse_csv("a,\"b").unwrap_err(),
+        CsvError::UnclosedQuote { record: 0, byte: 2 }
+    );
+    assert_eq!(
+        parse_csv("\"x\"").unwrap(),
+        vec![vec!["x".to_string()]]
+    );
+}
+
+#[test]
+fn spec_r13_nul_is_forbidden_inside_and_outside_quotes() {
+    assert_eq!(
+        parse_csv("a\0b").unwrap_err(),
+        CsvError::Nul { record: 0, byte: 1 }
+    );
+    assert_eq!(
+        parse_csv("\"\0\"").unwrap_err(),
+        CsvError::Nul { record: 0, byte: 1 }
+    );
+}
+
+#[test]
+fn spec_r14_first_lexical_error_and_nul_cr_precedence() {
+    assert_eq!(
+        parse_csv("\"\0\"\"").unwrap_err(),
+        CsvError::Nul { record: 0, byte: 1 }
+    );
+    assert_eq!(
+        parse_csv("\"x\"\r").unwrap_err(),
+        CsvError::BareCr { record: 0, byte: 3 }
+    );
+    assert_eq!(
+        parse_csv("\"a\nb\"\"c").unwrap_err(),
+        CsvError::TrailingByte { record: 0, byte: 5 }
+    );
+    assert_eq!(
+        parse_csv("\"x").unwrap_err(),
+        CsvError::UnclosedQuote { record: 0, byte: 0 }
+    );
+}
+
+#[test]
+fn spec_r15_no_backslash_escapes_or_comment_syntax() {
+    assert_eq!(
+        parse_csv("\\\"x").unwrap(),
+        vec![vec!["\\\"x".to_string()]]
+    );
+    assert_eq!(
+        parse_csv("#comment\nx").unwrap(),
+        vec![vec!["#comment".to_string()], vec!["x".to_string()]]
+    );
+}
+
+#[test]
+fn spec_r16_quote_syntax_is_discarded_and_escapes_decode_once() {
+    assert_eq!(
+        parse_csv(",\"\",a\"b").unwrap_err(),
+        CsvError::UnexpectedQuote { record: 0, byte: 7 }
+    );
+    assert_eq!(
+        parse_csv(",\"\", \"\"\"\"").unwrap_err(),
+        CsvError::UnexpectedQuote { record: 0, byte: 5 }
+    );
+    assert_eq!(
+        parse_csv("\"\"").unwrap(),
+        parse_csv("").unwrap_err().map(|_| Vec::<Vec<String>>::new()).unwrap_or_else(|_| vec![vec![String::new()]])
+    );
+    assert_eq!(
+        parse_csv("\"\"\"\"").unwrap(),
+        vec![vec!["\"".to_string()]]
+    );
+}
+
+#[test]
+fn spec_r17_many_records_and_large_field_are_supported() {
+    let input = vec!["x"; 4096].join("\n");
+    let parsed = parse_csv(&input).unwrap();
+    assert_eq!(parsed.len(), 4096);
+    assert!(parsed.iter().all(|row| row == &vec!["x".to_string()]));
+
+    let field = "é".repeat(8192);
+    assert_eq!(
+        parse_csv(&field).unwrap(),
+        vec![vec![field]]
+    );
+}
+
+#[test]
+fn spec_r18_parse_calls_are_independent() {
+    assert_eq!(parse_csv("a").unwrap(), vec![vec!["a".to_string()]]);
+    assert_eq!(parse_csv("b").unwrap(), vec![vec!["b".to_string()]]);
+    assert_eq!(parse_csv("a\"").unwrap_err(), CsvError::UnclosedQuote { record: 0, byte: 0 });
+    assert_eq!(parse_csv("").unwrap(), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn spec_r19_config_validation_order_and_allowed_ascii() {
+    let invalid_both = Config {
+        delimiter: b' ',
+        quote: b' ',
+        headers: false,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        read_csv("", invalid_both).unwrap_err(),
+        CsvError::InvalidConfig { component: ConfigPart::Delimiter }
+    );
+
+    let invalid_quote = Config {
+        delimiter: b';',
+        quote: b' ',
+        headers: false,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        read_csv("", invalid_quote).unwrap_err(),
+        CsvError::InvalidConfig { component: ConfigPart::Quote }
+    );
+
+    let equal = Config {
+        delimiter: b'!',
+        quote: b'!',
+        headers: false,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        read_csv("", equal).unwrap_err(),
+        CsvError::InvalidConfig { component: ConfigPart::Quote }
+    );
+
+    let valid = Config {
+        delimiter: b'!',
+        quote: b'~',
+        headers: false,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert!(read_csv("a!~b~", valid).is_ok());
+}
+
+#[test]
+fn spec_r20_config_dialect_and_fixed_parse_csv_dialect() {
+    let config = Config {
+        delimiter: b';',
+        quote: b'!',
+        headers: false,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        read_csv("a;!b;c!", config).unwrap().rows,
+        vec![vec!["a".to_string(), "b".to_string(), "c".to_string()]]
+    );
+    assert_eq!(
+        parse_csv("a;b").unwrap(),
+        vec![vec!["a;b".to_string()]]
+    );
+}
+
+#[test]
+fn spec_r21_stream_feeds_append_verbatim_and_defer_validation() {
+    let config = Config {
+        delimiter: b',',
+        quote: b'"',
+        headers: false,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let mut reader = StreamReader::new(config).unwrap();
+    assert_eq!(reader.feed("\"unfinished").unwrap(), ());
+    reader.feed("").unwrap();
+    reader.feed("\"").unwrap();
+    assert_eq!(
+        reader.finish().unwrap().rows,
+        vec![vec!["unfinished".to_string()]]
+    );
+
+    let mut invalid_later = StreamReader::new(config).unwrap();
+    invalid_later.feed("a\"").unwrap();
+    assert_eq!(
+        invalid_later.finish().unwrap_err(),
+        CsvError::UnexpectedQuote { record: 0, byte: 1 }
+    );
+}
+
+#[test]
+fn spec_r22_stream_finish_caches_result_and_feed_is_rejected_afterward() {
+    let config = Config {
+        delimiter: b',',
+        quote: b'"',
+        headers: false,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let mut reader = StreamReader::new(config).unwrap();
+    reader.feed("x\"").unwrap();
+    let first = reader.finish();
+    assert_eq!(first, Err(CsvError::UnexpectedQuote { record: 0, byte: 1 }));
+    assert_eq!(reader.finish(), first);
+    assert_eq!(reader.feed("").unwrap_err(), CsvError::ReaderFinished);
+
+    let mut success = StreamReader::new(config).unwrap();
+    success.feed("x").unwrap();
+    let first = success.finish();
+    assert_eq!(success.finish(), first);
+    assert_eq!(success.feed("y").unwrap_err(), CsvError::ReaderFinished);
+}
+
+#[test]
+fn spec_r23_stream_reset_clears_buffer_and_cached_result() {
+    let config = Config {
+        delimiter: b',',
+        quote: b'"',
+        headers: false,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let mut reader = StreamReader::new(config).unwrap();
+    reader.feed("x\"").unwrap();
+    assert!(reader.finish().is_err());
+    reader.reset();
+    reader.feed("").unwrap();
+    reader.feed("ok").unwrap();
+    assert_eq!(
+        reader.finish().unwrap().rows,
+        vec![vec!["ok".to_string()]]
+    );
+    reader.reset();
+    assert_eq!(reader.finish().unwrap().rows, Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn spec_r24_header_consumption_and_no_records() {
+    let no_headers = Config {
+        delimiter: b',',
+        quote: b'"',
+        headers: false,
+        duplicates: DuplicatePolicy::KeepLast,
+    };
+    let table = read_csv("\n", no_headers).unwrap();
+    assert_eq!(table.header, None);
+    assert_eq!(table.rows, vec![vec![String::new()]]);
+
+    let with_headers = Config { headers: true, ..no_headers };
+    let table = read_csv("h\n\nx,y", with_headers).unwrap();
+    assert_eq!(table.header, Some(vec!["h".to_string()]));
+    assert_eq!(
+        table.rows,
+        vec![vec![String::new()], vec!["x".to_string(), "y".to_string()]]
+    );
+    let empty = read_csv("", with_headers).unwrap();
+    assert_eq!(empty.header, None);
+    assert_eq!(empty.duplicates, DuplicatePolicy::KeepLast);
+}
+
+#[test]
+fn spec_r25_duplicate_header_policies_and_earliest_duplicate() {
+    let reject = Config {
+        delimiter: b',',
+        quote: b'"',
+        headers: true,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        read_csv("a,b,a,b", reject).unwrap_err(),
+        CsvError::DuplicateHeader { name: "a".to_string(), first: 0, second: 2 }
+    );
+
+    for policy in [DuplicatePolicy::KeepFirst, DuplicatePolicy::KeepLast] {
+        let config = Config { duplicates: policy, ..reject };
+        let table = read_csv("a,a\n1,2", config).unwrap();
+        assert_eq!(table.header, Some(vec!["a".to_string(), "a".to_string()]));
+        assert_eq!(table.rows, vec![vec!["1".to_string(), "2".to_string()]]);
+    }
+
+    assert_eq!(
+        read_csv("\"a\",a", reject).unwrap_err(),
+        CsvError::DuplicateHeader { name: "a".to_string(), first: 0, second: 1 }
+    );
+    assert!(read_csv(",x,", reject).is_ok());
+}
+
+#[test]
+fn spec_r26_header_width_first_data_record_and_exact_lengths() {
+    let config = Config {
+        delimiter: b',',
+        quote: b'"',
+        headers: true,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        read_csv("a,b\n1\n2,3,4", config).unwrap_err(),
+        CsvError::HeaderWidth { record: 1, expected: 2, actual: 1 }
+    );
+    assert_eq!(
+        read_csv("a,b\n1,2,3", config).unwrap_err(),
+        CsvError::HeaderWidth { record: 1, expected: 2, actual: 3 }
+    );
+    assert!(read_csv("a,b\n", config).is_ok());
+}
+
+#[test]
+fn spec_r27_read_error_precedence_config_lexical_duplicate_width() {
+    let invalid = Config {
+        delimiter: b',',
+        quote: b',',
+        headers: true,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        read_csv("a,a\nx\"", invalid).unwrap_err(),
+        CsvError::InvalidConfig { component: ConfigPart::Quote }
+    );
+
+    let config = Config {
+        delimiter: b',',
+        quote: b'"',
+        headers: true,
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        read_csv("a,a\nx\"", config).unwrap_err(),
+        CsvError::UnexpectedQuote { record: 1, byte: 7 }
+    );
+    assert_eq!(
+        read_csv("a,a\nx", config).unwrap_err(),
+        CsvError::DuplicateHeader { name: "a".to_string(), first: 0, second: 1 }
+    );
+}
+
+#[test]
+fn spec_r28_column_index_policy_and_manual_duplicate_headers() {
+    let first = Table {
+        header: Some(vec!["x".to_string(), "x".to_string(), "y".to_string()]),
+        rows: vec![vec![]],
+        duplicates: DuplicatePolicy::KeepFirst,
+    };
+    assert_eq!(first.column_index("x"), Some(0));
+    assert_eq!(first.column_index("missing"), None);
+
+    let last = Table { duplicates: DuplicatePolicy::KeepLast, ..first.clone() };
+    assert_eq!(last.column_index("x"), Some(1));
+
+    let reject = Table { duplicates: DuplicatePolicy::Reject, ..first };
+    assert_eq!(reject.column_index("x"), Some(0));
+    assert_eq!(Table { header: None, rows: vec![], duplicates: DuplicatePolicy::KeepLast }.column_index("x"), None);
+}
+
+#[test]
+fn spec_r29_read_csv_matches_stream_and_table_fields_are_public() {
+    let config = Config {
+        delimiter: b',',
+        quote: b'"',
+        headers: false,
+        duplicates: DuplicatePolicy::KeepFirst,
+    };
+    let expected = read_csv("a,b\nc", config).unwrap();
+    let mut reader = StreamReader::new(config).unwrap();
+    reader.feed("a,").unwrap();
+    reader.feed("b\nc").unwrap();
+    assert_eq!(reader.finish().unwrap(), expected);
+    assert_eq!(expected.duplicates, DuplicatePolicy::KeepFirst);
+}
+
+#[test]
+fn spec_r30_extract_order_and_row_indexes_are_data_row_indexes() {
+    let table = Table {
+        header: Some(vec!["n".to_string()]),
+        rows: vec![vec!["bad".to_string()], vec!["7".to_string()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let specs = [
+        ix(0, ColumnType::Integer, false),
+        ix(0, ColumnType::Text, false),
+    ];
+    let result = extract_columns(&table, &specs, ErrorPolicy::Collect);
+    assert_eq!(
+        result.rows,
+        vec![
+            vec![None, Some(Value::Text("bad".to_string()))],
+            vec![Some(Value::Integer(7)), Some(Value::Text("7".to_string()))]
+        ]
+    );
+    assert_eq!(
+        result.errors,
+        vec![CellError {
+            row: 0,
+            spec: 0,
+            column: Some(0),
+            kind: CellErrorKind::InvalidInteger
+        }]
+    );
+}
+
+#[test]
+fn spec_r31_column_resolution_and_missing_cells() {
+    let table = Table {
+        header: None,
+        rows: vec![vec!["x".to_string()], vec![]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let specs = [
+        cs(ColumnRef::Name("x".to_string()), ColumnType::Text, true),
+        ix(2, ColumnType::Text, true),
+    ];
+    let result = extract_columns(&table, &specs, ErrorPolicy::Collect);
+    assert_eq!(
+        result.rows,
+        vec![vec![None, None], vec![None, None]]
+    );
+    assert_eq!(
+        result.errors,
+        vec![
+            CellError { row: 0, spec: 0, column: None, kind: CellErrorKind::UnknownColumn },
+            CellError { row: 0, spec: 1, column: Some(2), kind: CellErrorKind::MissingCell },
+            CellError { row: 1, spec: 0, column: None, kind: CellErrorKind::UnknownColumn },
+            CellError { row: 1, spec: 1, column: Some(2), kind: CellErrorKind::MissingCell },
+        ]
+    );
+    let indexed_empty = Table {
+        header: None,
+        rows: vec![vec![String::new()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        extract_columns(&indexed_empty, &[ix(0, ColumnType::Text, false)], ErrorPolicy::Collect).rows,
+        vec![vec![Some(Value::Text(String::new()))]]
+    );
+}
+
+#[test]
+fn spec_r32_null_empty_and_text_verbatim() {
+    let table = Table {
+        header: None,
+        rows: vec![vec![
+            String::new(),
+            String::new(),
+            " ".to_string(),
+            "\0\n".to_string(),
+        ]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let result = extract_columns(
+        &table,
+        &[
+            ix(0, ColumnType::Integer, true),
+            ix(1, ColumnType::Integer, false),
+            ix(2, ColumnType::Text, true),
+            ix(3, ColumnType::Text, false),
+        ],
+        ErrorPolicy::Collect,
+    );
+    assert_eq!(
+        result.rows,
+        vec![vec![
+            Some(Value::Null),
+            None,
+            Some(Value::Text(" ".to_string())),
+            Some(Value::Text("\0\n".to_string()))
+        ]]
+    );
+    assert_eq!(result.errors[0].kind, CellErrorKind::Empty);
+}
+
+#[test]
+fn spec_r33_integer_grammar_bounds_and_error_precedence() {
+    let values = vec![
+        "0", "1", "-1", "9223372036854775807", "-9223372036854775808"
+    ];
+    let table = Table {
+        header: None,
+        rows: values.iter().map(|v| vec![v.to_string()]).collect(),
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let result = extract_columns(&table, &[ix(0, ColumnType::Integer, false)], ErrorPolicy::Collect);
+    assert_eq!(
+        result.rows,
+        vec![
+            vec![Some(Value::Integer(0))],
+            vec![Some(Value::Integer(1))],
+            vec![Some(Value::Integer(-1))],
+            vec![Some(Value::Integer(i64::MAX))],
+            vec![Some(Value::Integer(i64::MIN))]
+        ]
+    );
+
+    let invalids = ["+1", "01", "-0", " 1", "1 ", "1_0", "١"];
+    let table = Table {
+        header: None,
+        rows: invalids.iter().map(|v| vec![v.to_string()]).collect(),
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let result = extract_columns(&table, &[ix(0, ColumnType::Integer, false)], ErrorPolicy::Collect);
+    assert!(result.errors.iter().all(|e| e.kind == CellErrorKind::InvalidInteger));
+
+    let table = Table {
+        header: None,
+        rows: vec![vec!["999999999999999999999x".to_string()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        extract_columns(&table, &[ix(0, ColumnType::Integer, false)], ErrorPolicy::Collect).errors[0].kind,
+        CellErrorKind::InvalidInteger
+    );
+    let overflow = Table {
+        header: None,
+        rows: vec![vec!["9223372036854775808".to_string()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        extract_columns(&overflow, &[ix(0, ColumnType::Integer, false)], ErrorPolicy::Collect).errors[0].kind,
+        CellErrorKind::IntegerOverflow
+    );
+}
+
+#[test]
+fn spec_r34_decimal_grammar_bounds_and_error_precedence() {
+    let values = [
+        ("0.00", 0),
+        ("1.23", 123),
+        ("-0.01", -1),
+        ("92233720368547758.07", i64::MAX),
+        ("-92233720368547758.08", i64::MIN),
+    ];
+    let table = Table {
+        header: None,
+        rows: values.iter().map(|(s, _)| vec![s.to_string()]).collect(),
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let result = extract_columns(&table, &[ix(0, ColumnType::Decimal, false)], ErrorPolicy::Collect);
+    assert_eq!(
+        result.rows,
+        values.iter().map(|(_, v)| vec![Some(Value::Decimal(*v))]).collect::<Vec<_>>()
+    );
+
+    let invalids = ["+1.00", "01.00", "-0.00", "1.0", "1.000", "1e0.00", " 1.00", "١.00"];
+    let table = Table {
+        header: None,
+        rows: invalids.iter().map(|v| vec![v.to_string()]).collect(),
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let result = extract_columns(&table, &[ix(0, ColumnType::Decimal, false)], ErrorPolicy::Collect);
+    assert!(result.errors.iter().all(|e| e.kind == CellErrorKind::InvalidDecimal));
+
+    let overflow = Table {
+        header: None,
+        rows: vec![vec!["92233720368547758.08".to_string()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        extract_columns(&overflow, &[ix(0, ColumnType::Decimal, false)], ErrorPolicy::Collect).errors[0].kind,
+        CellErrorKind::DecimalOverflow
+    );
+    let malformed = Table {
+        header: None,
+        rows: vec![vec!["92233720368547758.08x".to_string()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    assert_eq!(
+        extract_columns(&malformed, &[ix(0, ColumnType::Decimal, false)], ErrorPolicy::Collect).errors[0].kind,
+        CellErrorKind::InvalidDecimal
+    );
+}
+
+#[test]
+fn spec_r35_boolean_spellings_are_exact() {
+    let values = ["yes", "1", "no", "0", "YES", "true"];
+    let table = Table {
+        header: None,
+        rows: values.iter().map(|v| vec![v.to_string()]).collect(),
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let result = extract_columns(&table, &[ix(0, ColumnType::Boolean, false)], ErrorPolicy::Collect);
+    assert_eq!(
+        result.rows,
+        vec![
+            vec![Some(Value::Boolean(true))],
+            vec![Some(Value::Boolean(true))],
+            vec![Some(Value::Boolean(false))],
+            vec![Some(Value::Boolean(false))],
+            vec![None],
+            vec![None]
+        ]
+    );
+    assert_eq!(result.errors.len(), 2);
+    assert!(result.errors.iter().all(|e| e.kind == CellErrorKind::InvalidBoolean));
+}
+
+#[test]
+fn spec_r36_cell_error_precedence_and_none_slots() {
+    let table = Table {
+        header: None,
+        rows: vec![vec![String::new()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let result = extract_columns(
+        &table,
+        &[
+            cs(ColumnRef::Name("missing".to_string()), ColumnType::Integer, true),
+            ix(1, ColumnType::Integer, true),
+            ix(0, ColumnType::Integer, true),
+            ix(0, ColumnType::Integer, false),
+        ],
+        ErrorPolicy::Collect,
+    );
+    assert_eq!(result.rows, vec![vec![None, None, Some(Value::Null), None]]);
+    assert_eq!(
+        result.errors.iter().map(|e| e.kind).collect::<Vec<_>>(),
+        vec![CellErrorKind::UnknownColumn, CellErrorKind::MissingCell, CellErrorKind::Empty]
+    );
+}
+
+#[test]
+fn spec_r37_collect_reports_all_errors_in_row_spec_order() {
+    let table = Table {
+        header: None,
+        rows: vec![vec!["bad".to_string(), "x".to_string()], vec!["no".to_string(), "y".to_string()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let result = extract_columns(
+        &table,
+        &[ix(0, ColumnType::Integer, false), ix(1, ColumnType::Boolean, false)],
+        ErrorPolicy::Collect,
+    );
+    assert_eq!(
+        result.errors,
+        vec![
+            CellError { row: 0, spec: 0, column: Some(0), kind: CellErrorKind::InvalidInteger },
+            CellError { row: 0, spec: 1, column: Some(1), kind: CellErrorKind::InvalidBoolean },
+            CellError { row: 1, spec: 0, column: Some(0), kind: CellErrorKind::InvalidInteger },
+            CellError { row: 1, spec: 1, column: Some(1), kind: CellErrorKind::InvalidBoolean },
+        ]
+    );
+}
+
+#[test]
+fn spec_r38_first_per_row_stops_at_each_rows_first_error() {
+    let table = Table {
+        header: None,
+        rows: vec![
+            vec!["bad".to_string(), "yes".to_string()],
+            vec!["1".to_string(), "no".to_string()],
+        ],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let result = extract_columns(
+        &table,
+        &[ix(0, ColumnType::Integer, false), ix(1, ColumnType::Boolean, false)],
+        ErrorPolicy::FirstPerRow,
+    );
+    assert_eq!(
+        result.rows,
+        vec![vec![None, None], vec![Some(Value::Integer(1)), Some(Value::Boolean(false))]]
+    );
+    assert_eq!(result.errors.len(), 1);
+    assert_eq!(result.errors[0].row, 0);
+    assert_eq!(result.errors[0].spec, 0);
+}
+
+#[test]
+fn spec_r39_stop_stops_globally_and_keeps_failing_row_prefix() {
+    let table = Table {
+        header: None,
+        rows: vec![
+            vec!["2".to_string(), "yes".to_string()],
+            vec!["3".to_string(), "bad".to_string()],
+            vec!["4".to_string(), "no".to_string()],
+        ],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let result = extract_columns(
+        &table,
+        &[ix(0, ColumnType::Integer, false), ix(1, ColumnType::Boolean, false)],
+        ErrorPolicy::Stop,
+    );
+    assert_eq!(
+        result.rows,
+        vec![
+            vec![Some(Value::Integer(2)), Some(Value::Boolean(true))],
+            vec![Some(Value::Integer(3)), None]
+        ]
+    );
+    assert_eq!(result.errors.len(), 1);
+    assert_eq!(result.errors[0].row, 1);
+    assert_eq!(result.errors[0].spec, 1);
+}
+
+#[test]
+fn spec_r40_zero_specs_and_zero_data_rows() {
+    let table = Table {
+        header: Some(vec!["h".to_string()]),
+        rows: vec![vec!["1".to_string()], vec!["2".to_string()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    for policy in [ErrorPolicy::Collect, ErrorPolicy::FirstPerRow, ErrorPolicy::Stop] {
+        let result = extract_columns(&table, &[], policy);
+        assert_eq!(result.rows, vec![Vec::<Option<Value>>::new(), Vec::new()]);
+        assert!(result.errors.is_empty());
+    }
+
+    let no_rows = Table {
+        header: None,
+        rows: vec![],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    for policy in [ErrorPolicy::Collect, ErrorPolicy::FirstPerRow, ErrorPolicy::Stop] {
+        let result = extract_columns(
+            &no_rows,
+            &[cs(ColumnRef::Name("missing".to_string()), ColumnType::Text, true)],
+            policy,
+        );
+        assert!(result.rows.is_empty());
+        assert!(result.errors.is_empty());
+    }
+}
+
+#[test]
+fn spec_r41_typed_extraction_does_not_mutate_table_or_specs() {
+    let table = Table {
+        header: None,
+        rows: vec![vec!["a,\0\né".to_string()]],
+        duplicates: DuplicatePolicy::Reject,
+    };
+    let specs = [ix(0, ColumnType::Text, false)];
+    let table_before = table.clone();
+    let specs_before = specs.clone();
+    let result = extract_columns(&table, &specs, ErrorPolicy::Collect);
+    assert_eq!(
+        result.rows,
+        vec![vec![Some(Value::Text("a,\0\né".to_string()))]]
+    );
+    assert_eq!(table, table_before);
+    assert_eq!(specs, specs_before);
+}

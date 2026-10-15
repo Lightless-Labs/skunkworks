@@ -1,0 +1,261 @@
+```rust
+#[test]
+fn spec_r1_single_file_std_only_api_compiles() {
+    assert_eq!(Sparse::from_coo(0, 0, &[]).unwrap().shape(), (0, 0));
+}
+
+#[test]
+fn spec_r2_traits_and_public_entry_fields() {
+    fn assert_clone<T: Clone>() {}
+    fn assert_debug<T: std::fmt::Debug>() {}
+    fn assert_partial_eq<T: PartialEq>() {}
+    fn assert_copy<T: Copy>() {}
+    assert_clone::<Sparse>();
+    assert_debug::<Sparse>();
+    assert_partial_eq::<Sparse>();
+    assert_clone::<Error>();
+    assert_debug::<Error>();
+    assert_partial_eq::<Error>();
+    assert_clone::<Axis>();
+    assert_copy::<Axis>();
+    assert_debug::<Axis>();
+    assert_partial_eq::<Axis>();
+    assert_clone::<Entry>();
+    assert_copy::<Entry>();
+    assert_debug::<Entry>();
+    assert_partial_eq::<Entry>();
+
+    let entry = Entry { row: 0, col: 0, value: 1.0 };
+    assert_eq!((entry.row, entry.col, entry.value), (0, 0, 1.0));
+    let a = Sparse::from_coo(1, 1, &[entry]).unwrap();
+    let b = a.clone();
+    assert_eq!(a, b);
+}
+
+#[test]
+fn spec_r3_dimension_limit_and_check_order() {
+    assert_eq!(
+        Sparse::from_coo(4097, 4097, &[]),
+        Err(Error::Shape { axis: Axis::Row, size: 4097 })
+    );
+    assert_eq!(
+        Sparse::from_coo(4096, 4097, &[]),
+        Err(Error::Shape { axis: Axis::Column, size: 4097 })
+    );
+    assert_eq!(Sparse::from_coo(4096, 4096, &[]).unwrap().shape(), (4096, 4096));
+}
+
+#[test]
+fn spec_r4_zero_dimensions_and_empty_coo() {
+    assert_eq!(Sparse::from_coo(0, 0, &[]).unwrap().shape(), (0, 0));
+    assert_eq!(Sparse::from_coo(0, 7, &[]).unwrap().shape(), (0, 7));
+    assert_eq!(Sparse::from_coo(8, 0, &[]).unwrap().shape(), (8, 0));
+    assert_eq!(
+        Sparse::from_coo(0, 4, &[Entry { row: 0, col: 0, value: 1.0 }]),
+        Err(Error::Bounds { entry: 0, axis: Axis::Row, index: 0, limit: 0 })
+    );
+    assert_eq!(
+        Sparse::from_coo(4, 0, &[Entry { row: 0, col: 0, value: 1.0 }]),
+        Err(Error::Bounds { entry: 0, axis: Axis::Column, index: 0, limit: 0 })
+    );
+}
+
+#[test]
+fn spec_r5_coo_validation_order_and_first_failure() {
+    let entries = [
+        Entry { row: 2, col: 3, value: f64::NAN },
+        Entry { row: 1, col: 3, value: f64::NAN },
+        Entry { row: 0, col: 0, value: f64::INFINITY },
+    ];
+    assert_eq!(
+        Sparse::from_coo(1, 1, &entries),
+        Err(Error::Bounds { entry: 0, axis: Axis::Row, index: 2, limit: 1 })
+    );
+
+    let entries = [
+        Entry { row: 0, col: 2, value: f64::NAN },
+        Entry { row: 0, col: 0, value: f64::NEG_INFINITY },
+    ];
+    assert_eq!(
+        Sparse::from_coo(1, 1, &entries),
+        Err(Error::Bounds { entry: 0, axis: Axis::Column, index: 2, limit: 1 })
+    );
+}
+
+#[test]
+fn spec_r6_nonfinite_values_and_bounds_priority() {
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(
+            Sparse::from_coo(1, 1, &[Entry { row: 0, col: 0, value }]),
+            Err(Error::NonFinite { entry: 0 })
+        );
+    }
+    assert!(Sparse::from_coo(1, 1, &[Entry { row: 0, col: 0, value: 0.0 }]).is_ok());
+    assert!(Sparse::from_coo(1, 1, &[Entry { row: 0, col: 0, value: -0.0 }]).is_ok());
+    assert!(Sparse::from_coo(1, 1, &[Entry { row: 0, col: 0, value: f64::MIN_POSITIVE / 2.0 }]).is_ok());
+    assert_eq!(
+        Sparse::from_coo(1, 1, &[Entry { row: 0, col: 1, value: f64::NAN }]),
+        Err(Error::Bounds { entry: 0, axis: Axis::Column, index: 1, limit: 1 })
+    );
+}
+
+#[test]
+fn spec_r7_validate_all_entries_before_duplicate_sums() {
+    let entries = [
+        Entry { row: 0, col: 0, value: f64::MAX },
+        Entry { row: 0, col: 0, value: f64::MAX },
+        Entry { row: 1, col: 0, value: f64::NAN },
+    ];
+    assert_eq!(
+        Sparse::from_coo(2, 1, &entries),
+        Err(Error::NonFinite { entry: 2 })
+    );
+}
+
+#[test]
+fn spec_r8_duplicate_addition_uses_input_order_and_includes_zeros() {
+    let entries = [
+        Entry { row: 0, col: 0, value: 1.0e16 },
+        Entry { row: 0, col: 0, value: 1.0 },
+        Entry { row: 0, col: 0, value: -1.0e16 },
+    ];
+    let sparse = Sparse::from_coo(1, 1, &entries).unwrap();
+    assert_eq!(sparse.entries(), &[]);
+}
+
+#[test]
+fn spec_r9_overflow_fails_at_adding_entry_before_later_cancellation() {
+    let entries = [
+        Entry { row: 0, col: 0, value: f64::MAX },
+        Entry { row: 0, col: 0, value: f64::MAX },
+        Entry { row: 0, col: 0, value: -f64::MAX },
+    ];
+    assert_eq!(
+        Sparse::from_coo(1, 1, &entries),
+        Err(Error::SumOverflow { entry: 1 })
+    );
+}
+
+#[test]
+fn spec_r10_zero_intermediate_sum_can_receive_later_contributions() {
+    let entries = [
+        Entry { row: 0, col: 0, value: 2.0 },
+        Entry { row: 0, col: 0, value: -2.0 },
+        Entry { row: 0, col: 0, value: 3.0 },
+        Entry { row: 1, col: 1, value: -0.0 },
+    ];
+    let sparse = Sparse::from_coo(2, 2, &entries).unwrap();
+    assert_eq!(sparse.entries(), &[Entry { row: 0, col: 0, value: 3.0 }]);
+}
+
+#[test]
+fn spec_r11_keep_finite_nonzero_subnormal_values() {
+    let tiny = f64::from_bits(1);
+    let sparse = Sparse::from_coo(1, 1, &[Entry { row: 0, col: 0, value: tiny }]).unwrap();
+    assert_eq!(sparse.entries(), &[Entry { row: 0, col: 0, value: tiny }]);
+}
+
+#[test]
+fn spec_r12_entries_are_canonical_by_row_then_column() {
+    let entries = [
+        Entry { row: 2, col: 1, value: 21.0 },
+        Entry { row: 0, col: 2, value: 2.0 },
+        Entry { row: 0, col: 0, value: 0.0 },
+        Entry { row: 1, col: 1, value: 11.0 },
+        Entry { row: 0, col: 1, value: 1.0 },
+    ];
+    let sparse = Sparse::from_coo(3, 3, &entries).unwrap();
+    assert_eq!(
+        sparse.entries(),
+        &[
+            Entry { row: 0, col: 1, value: 1.0 },
+            Entry { row: 0, col: 2, value: 2.0 },
+            Entry { row: 1, col: 1, value: 11.0 },
+            Entry { row: 2, col: 1, value: 21.0 },
+        ]
+    );
+}
+
+#[test]
+fn spec_r13_shape_preserved_for_empty_and_cancelled_matrices() {
+    let empty = Sparse::from_coo(7, 0, &[]).unwrap();
+    assert_eq!(empty.shape(), (7, 0));
+    assert_eq!(empty.entries(), &[]);
+
+    let cancelled = Sparse::from_coo(
+        2,
+        3,
+        &[Entry { row: 1, col: 2, value: 4.0 }, Entry { row: 1, col: 2, value: -4.0 }],
+    )
+    .unwrap();
+    assert_eq!(cancelled.shape(), (2, 3));
+    assert_eq!(cancelled.entries(), &[]);
+}
+
+#[test]
+fn spec_r14_input_unchanged_clone_and_accessors_preserve_contents() {
+    let input = [
+        Entry { row: 1, col: 0, value: 3.0 },
+        Entry { row: 0, col: 1, value: 2.0 },
+    ];
+    let original = input;
+    let sparse = Sparse::from_coo(2, 2, &input).unwrap();
+    assert_eq!(input, original);
+    let cloned = sparse.clone();
+    assert_eq!(cloned.shape(), (2, 2));
+    assert_eq!(cloned.entries(), sparse.entries());
+    let before = sparse.entries().to_vec();
+    let _ = sparse.shape();
+    let _ = sparse.entries();
+    assert_eq!(sparse.entries(), before.as_slice());
+}
+
+#[test]
+fn spec_r15_malformed_inputs_return_errors_without_panicking() {
+    let result = std::panic::catch_unwind(|| {
+        Sparse::from_coo(1, 1, &[Entry { row: usize::MAX, col: usize::MAX, value: f64::NAN }])
+    });
+    assert_eq!(
+        result.unwrap(),
+        Err(Error::Bounds { entry: 0, axis: Axis::Row, index: usize::MAX, limit: 1 })
+    );
+}
+
+#[test]
+fn spec_r16_error_indices_refer_to_original_coo_positions() {
+    let entries = [
+        Entry { row: 1, col: 0, value: 1.0 },
+        Entry { row: 0, col: 0, value: f64::MAX },
+        Entry { row: 0, col: 0, value: f64::MAX },
+    ];
+    assert_eq!(
+        Sparse::from_coo(2, 1, &entries),
+        Err(Error::SumOverflow { entry: 2 })
+    );
+}
+
+#[test]
+fn spec_r17_ieee_addition_keeps_signed_zero_semantics_and_finite_results() {
+    let sparse = Sparse::from_coo(
+        1,
+        1,
+        &[Entry { row: 0, col: 0, value: -0.0 }, Entry { row: 0, col: 0, value: f64::from_bits(1) }],
+    )
+    .unwrap();
+    assert_eq!(sparse.entries(), &[Entry { row: 0, col: 0, value: f64::from_bits(1) }]);
+    assert!(sparse.entries().iter().all(|entry| entry.value.is_finite()));
+}
+
+#[test]
+fn spec_r18_validation_reports_first_error_in_defined_pass_order() {
+    let entries = [
+        Entry { row: 0, col: 0, value: f64::MAX },
+        Entry { row: 0, col: 0, value: f64::MAX },
+        Entry { row: 0, col: 1, value: f64::NAN },
+    ];
+    assert_eq!(
+        Sparse::from_coo(1, 1, &entries),
+        Err(Error::Bounds { entry: 2, axis: Axis::Column, index: 1, limit: 1 })
+    );
+}
+```

@@ -1,0 +1,209 @@
+#[test]
+fn spec_r1_source_file_compatibility() {
+    assert_eq!(encode(&[]), "");
+    assert_eq!(decode(""), Ok(Vec::new()));
+}
+
+#[test]
+fn spec_r2_public_operations_and_error_traits() {
+    let error = DecodeError::InvalidByte {
+        offset: 0,
+        byte: b'!',
+    };
+    let cloned = error.clone();
+    assert_eq!(error, cloned);
+    assert_eq!(
+        format!("{:?}", error),
+        "InvalidByte { offset: 0, byte: 33 }"
+    );
+    assert_eq!(
+        decode("!"),
+        Err(DecodeError::InvalidByte {
+            offset: 0,
+            byte: b'!',
+        })
+    );
+}
+
+#[test]
+fn spec_r3_alphabet_values_and_uppercase_only() {
+    assert_eq!(encode(&[0]), "AA======");
+    assert_eq!(encode(&[255]), "74======");
+    assert_eq!(
+        decode("aA======"),
+        Err(DecodeError::InvalidByte {
+            offset: 0,
+            byte: b'a',
+        })
+    );
+}
+
+#[test]
+fn spec_r4_most_significant_bit_first_five_bit_groups() {
+    assert_eq!(encode(&[0b1010_1100]), "VM======");
+    assert_eq!(decode("VM======"), Ok(vec![0b1010_1100]));
+}
+
+#[test]
+fn spec_r5_final_partial_value_is_zero_padded_on_the_right() {
+    assert_eq!(encode(&[0b1111_1111]), "74======");
+    assert_eq!(decode("74======"), Ok(vec![0b1111_1111]));
+}
+
+#[test]
+fn spec_r6_padding_completes_eight_symbol_blocks() {
+    assert_eq!(encode(&[0, 0, 0, 0, 0]), "AAAAAAAA");
+    assert_eq!(encode(&[0]), "AA======");
+}
+
+#[test]
+fn spec_r7_empty_input_encodes_and_decodes_empty() {
+    assert_eq!(encode(&[]), "");
+    assert_eq!(decode(""), Ok(Vec::new()));
+}
+
+#[test]
+fn spec_r8_validation_pass_order() {
+    assert_eq!(
+        decode("A=!"),
+        Err(DecodeError::InvalidByte {
+            offset: 2,
+            byte: b'!',
+        })
+    );
+    assert_eq!(decode("A=A"), Err(DecodeError::Padding { offset: 2 }));
+    assert_eq!(decode("A"), Err(DecodeError::InvalidLength { offset: 1 }));
+    assert_eq!(decode("AA====="), Err(DecodeError::Padding { offset: 2 }));
+    assert_eq!(
+        decode("AB======"),
+        Err(DecodeError::TrailingBits { offset: 1 })
+    );
+}
+
+#[test]
+fn spec_r9_lexical_validation_scans_past_structural_problems() {
+    assert_eq!(
+        decode("A= "),
+        Err(DecodeError::InvalidByte {
+            offset: 2,
+            byte: b' ',
+        })
+    );
+}
+
+#[test]
+fn spec_r10_offsets_are_utf8_byte_offsets_and_invalid_bytes_are_reported() {
+    assert_eq!(
+        decode("A\n"),
+        Err(DecodeError::InvalidByte {
+            offset: 1,
+            byte: b'\n',
+        })
+    );
+    assert_eq!(
+        decode("é"),
+        Err(DecodeError::InvalidByte {
+            offset: 0,
+            byte: 0xC3,
+        })
+    );
+    assert_eq!(
+        decode("AA======-"),
+        Err(DecodeError::InvalidByte {
+            offset: 8,
+            byte: b'-',
+        })
+    );
+}
+
+#[test]
+fn spec_r11_padding_placement_and_only_padding_progresses() {
+    assert_eq!(decode("=A"), Err(DecodeError::Padding { offset: 1 }));
+    assert_eq!(decode("========"), Err(DecodeError::InvalidLength { offset: 8 }));
+}
+
+#[test]
+fn spec_r12_only_legal_data_length_residues_are_accepted() {
+    assert_eq!(decode("A"), Err(DecodeError::InvalidLength { offset: 1 }));
+    assert_eq!(decode("AAA"), Err(DecodeError::InvalidLength { offset: 3 }));
+    assert_eq!(decode("AAAAAA"), Err(DecodeError::InvalidLength { offset: 6 }));
+    assert_eq!(decode("AAAAAAAAA"), Err(DecodeError::InvalidLength { offset: 9 }));
+}
+
+#[test]
+fn spec_r13_required_padding_counts_and_total_block_length() {
+    assert_eq!(decode("AA======"), Ok(vec![0]));
+    assert_eq!(decode("AAAA===="), Ok(vec![0, 0]));
+    assert_eq!(decode("AAAAA==="), Ok(vec![0, 0, 0]));
+    assert_eq!(decode("AAAAAAA="), Ok(vec![0, 0, 0, 0]));
+    assert_eq!(decode("AAAAAAAA"), Ok(vec![0, 0, 0, 0, 0]));
+    assert_eq!(decode("AA====="), Err(DecodeError::Padding { offset: 2 }));
+    assert_eq!(decode("AA======A"), Err(DecodeError::Padding { offset: 2 }));
+}
+
+#[test]
+fn spec_r14_padding_shape_errors_point_to_first_padding_or_input_end() {
+    assert_eq!(decode("AA====="), Err(DecodeError::Padding { offset: 2 }));
+    assert_eq!(decode("AA"), Err(DecodeError::Padding { offset: 2 }));
+    assert_eq!(decode("AA======="), Err(DecodeError::Padding { offset: 2 }));
+}
+
+#[test]
+fn spec_r15_padding_contributes_no_decoded_bits() {
+    assert_eq!(decode("MY======"), Ok(b"f".to_vec()));
+    assert_eq!(decode("MZXQ===="), Ok(b"fo".to_vec()));
+}
+
+#[test]
+fn spec_r16_unused_low_bits_must_be_zero_for_each_partial_residue() {
+    assert_eq!(
+        decode("AB======"),
+        Err(DecodeError::TrailingBits { offset: 1 })
+    );
+    assert_eq!(
+        decode("AAB====="),
+        Err(DecodeError::TrailingBits { offset: 2 })
+    );
+    assert_eq!(
+        decode("AABAA==="),
+        Err(DecodeError::TrailingBits { offset: 4 })
+    );
+    assert_eq!(
+        decode("AAAAAAB="),
+        Err(DecodeError::TrailingBits { offset: 6 })
+    );
+    assert_eq!(decode("AA======"), Ok(vec![0]));
+}
+
+#[test]
+fn spec_r17_trailing_bits_error_uses_last_data_symbol_offset() {
+    assert_eq!(
+        decode("MZ======"),
+        Err(DecodeError::TrailingBits { offset: 1 })
+    );
+}
+
+#[test]
+fn spec_r18_errors_return_only_error_and_calls_are_independent() {
+    let input = String::from("AB======");
+    assert_eq!(
+        decode(&input),
+        Err(DecodeError::TrailingBits { offset: 1 })
+    );
+    assert_eq!(input, "AB======");
+    assert_eq!(decode("AA======"), Ok(vec![0]));
+    assert_eq!(
+        decode(&input),
+        Err(DecodeError::TrailingBits { offset: 1 })
+    );
+}
+
+#[test]
+fn spec_r19_arbitrary_binary_roundtrips_across_repeated_blocks() {
+    let bytes = [
+        0, 255, 0, 255, 1, 128, 0, 255, 17, 34, 51, 68, 85, 102, 119, 136, 153,
+    ];
+    let encoded = encode(&bytes);
+    assert_eq!(decode(&encoded), Ok(bytes.to_vec()));
+    assert_eq!(encode(&decode(&encoded).unwrap()), encoded);
+}

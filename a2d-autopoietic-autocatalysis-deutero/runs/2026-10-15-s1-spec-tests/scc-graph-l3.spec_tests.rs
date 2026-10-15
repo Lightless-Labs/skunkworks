@@ -1,0 +1,315 @@
+#[test]
+fn spec_r1_single_source_compatible() {
+    let g = analyze(0, &[]).unwrap();
+    assert!(g.components.is_empty());
+    assert!(g.component_of.is_empty());
+    assert!(g.cyclic.is_empty());
+    assert!(g.internal_edges.is_empty());
+    assert!(g.arcs.is_empty());
+    assert!(g.topo.is_empty());
+    assert!(g.depth.is_empty());
+}
+
+#[test]
+fn spec_r2_public_api_field_types_and_traits() {
+    fn assert_clone_debug_eq<T: Clone + std::fmt::Debug + PartialEq + Eq>() {}
+    assert_clone_debug_eq::<GraphError>();
+    assert_clone_debug_eq::<Arc>();
+    assert_clone_debug_eq::<Relation>();
+    assert_clone_debug_eq::<Query>();
+    assert_clone_debug_eq::<Graph>();
+
+    let _: usize = MAX_VERTICES;
+    let _: usize = MAX_EDGES;
+    let _: Result<Graph, GraphError> = analyze(0, &[]);
+    let _: Result<Query, GraphError> = analyze(0, &[]).unwrap().query(0, 0);
+}
+
+#[test]
+fn spec_r3_edges_are_directed_and_results_are_owned() {
+    let g = analyze(3, &[(0, 1)]).unwrap();
+    assert_eq!(g.components, vec![vec![0], vec![1], vec![2]]);
+    assert_eq!(g.arcs, vec![Arc { from: 0, to: 1, multiplicity: 1, first_edge: 0 }]);
+    let mut clone = g.clone();
+    clone.components[0][0] = 99;
+    assert_eq!(g.components[0], vec![0]);
+}
+
+#[test]
+fn spec_r4_vertex_limit_precedes_other_validation() {
+    assert_eq!(
+        analyze(MAX_VERTICES + 1, &[(usize::MAX, usize::MAX); MAX_EDGES + 1]),
+        Err(GraphError::TooManyVertices { count: MAX_VERTICES + 1, limit: MAX_VERTICES })
+    );
+    assert!(analyze(MAX_VERTICES, &[]).is_ok());
+}
+
+#[test]
+fn spec_r5_edge_limit_precedes_endpoint_validation() {
+    assert_eq!(
+        analyze(1, &[(usize::MAX, 0); MAX_EDGES + 1]),
+        Err(GraphError::TooManyEdges { limit: MAX_EDGES })
+    );
+    assert!(analyze(1, &[(0, 0); MAX_EDGES]).is_ok());
+}
+
+#[test]
+fn spec_r6_first_invalid_endpoint_and_source_precedence() {
+    assert_eq!(
+        analyze(2, &[(0, 1), (2, 2), (0, 2)]),
+        Err(GraphError::BadEndpoint { edge: 1, side: 0, vertex: 2 })
+    );
+    assert_eq!(
+        analyze(2, &[(0, 2)]),
+        Err(GraphError::BadEndpoint { edge: 0, side: 1, vertex: 2 })
+    );
+}
+
+#[test]
+fn spec_r7_endpoint_indices_include_duplicates_and_large_values() {
+    assert_eq!(
+        analyze(2, &[(0, 1), (0, 1), (1, 1), (usize::MAX, 0)]),
+        Err(GraphError::BadEndpoint { edge: 3, side: 0, vertex: usize::MAX })
+    );
+    assert_eq!(
+        analyze(2, &[(0, 1), (1, usize::MAX)]),
+        Err(GraphError::BadEndpoint { edge: 1, side: 1, vertex: usize::MAX })
+    );
+}
+
+#[test]
+fn spec_r8_reachability_includes_zero_length_paths() {
+    let g = analyze(1, &[]).unwrap();
+    assert_eq!(g.query(0, 0).unwrap(), Query { kind: Relation::Trivial, route: vec![0] });
+}
+
+#[test]
+fn spec_r9_components_are_maximal_mutual_reachability_sets() {
+    let g = analyze(5, &[(0, 1), (1, 0), (1, 2), (2, 3), (3, 2)]).unwrap();
+    assert_eq!(g.components, vec![vec![0, 1], vec![2, 3], vec![4]]);
+}
+
+#[test]
+fn spec_r10_component_members_are_distinct_and_sorted() {
+    let g = analyze(4, &[(3, 1), (1, 3), (3, 1), (2, 2)]).unwrap();
+    assert_eq!(g.components, vec![vec![1, 3], vec![0], vec![2]]);
+}
+
+#[test]
+fn spec_r11_component_order_and_canonical_ids() {
+    let g = analyze(7, &[(0, 1), (1, 0), (3, 4), (4, 3), (5, 6), (6, 5)]).unwrap();
+    assert_eq!(g.components, vec![vec![0, 1], vec![3, 4], vec![5, 6], vec![2]]);
+    assert_eq!(g.component_of, vec![0, 0, 3, 1, 1, 2, 2]);
+}
+
+#[test]
+fn spec_r12_component_of_uses_sorted_component_ids() {
+    let g = analyze(4, &[(0, 1), (1, 0), (2, 3), (3, 2)]).unwrap();
+    assert_eq!(g.components, vec![vec![0, 1], vec![2, 3]]);
+    assert_eq!(g.component_of, vec![0, 0, 1, 1]);
+}
+
+#[test]
+fn spec_r13_cyclic_flags_require_multi_vertex_component_or_self_loop() {
+    let g = analyze(5, &[(0, 1), (1, 0), (2, 3), (4, 4)]).unwrap();
+    assert_eq!(g.components, vec![vec![0, 1], vec![2], vec![3], vec![4]]);
+    assert_eq!(g.cyclic, vec![true, false, false, true]);
+}
+
+#[test]
+fn spec_r14_duplicates_and_self_loops_do_not_change_sccs_or_cycles() {
+    let plain = analyze(3, &[(0, 1), (1, 0)]).unwrap();
+    let repeated = analyze(3, &[(0, 1), (0, 1), (1, 0), (2, 2), (2, 2)]).unwrap();
+    assert_eq!(plain.components, repeated.components);
+    assert_eq!(plain.component_of, repeated.component_of);
+    assert_eq!(plain.cyclic, repeated.cyclic);
+    assert_eq!(repeated.internal_edges, vec![3, 2]);
+}
+
+#[test]
+fn spec_r15_empty_graph_and_nonempty_edges() {
+    let g = analyze(0, &[]).unwrap();
+    assert!(g.components.is_empty());
+    assert!(g.component_of.is_empty());
+    assert!(g.cyclic.is_empty());
+    assert!(g.internal_edges.is_empty());
+    assert!(g.arcs.is_empty());
+    assert!(g.topo.is_empty());
+    assert!(g.depth.is_empty());
+    assert_eq!(
+        analyze(0, &[(0, 0)]),
+        Err(GraphError::BadEndpoint { edge: 0, side: 0, vertex: 0 })
+    );
+}
+
+#[test]
+fn spec_r16_edgeless_nonempty_graph_has_singletons() {
+    let g = analyze(4, &[]).unwrap();
+    assert_eq!(g.components, vec![vec![0], vec![1], vec![2], vec![3]]);
+    assert_eq!(g.component_of, vec![0, 1, 2, 3]);
+    assert_eq!(g.cyclic, vec![false; 4]);
+}
+
+#[test]
+fn spec_r17_edge_permutation_preserves_scc_and_cycle_fields() {
+    let a = analyze(4, &[(0, 1), (1, 0), (1, 2), (3, 3)]).unwrap();
+    let b = analyze(4, &[(3, 3), (1, 2), (1, 0), (0, 1)]).unwrap();
+    assert_eq!(a.components, b.components);
+    assert_eq!(a.component_of, b.component_of);
+    assert_eq!(a.cyclic, b.cyclic);
+}
+
+#[test]
+fn spec_r18_long_path_and_maximum_vertex_count_are_supported() {
+    let n = MAX_VERTICES;
+    let edges: Vec<_> = (1..n).map(|v| (v - 1, v)).collect();
+    let g = analyze(n, &edges).unwrap();
+    assert_eq!(g.components.len(), n);
+    assert_eq!(g.topo.len(), n);
+    assert_eq!(g.depth[0], 0);
+    assert_eq!(g.depth[n - 1], n - 1);
+}
+
+#[test]
+fn spec_r19_internal_edges_count_per_component() {
+    let g = analyze(4, &[(0, 1), (1, 0), (0, 0), (0, 1), (2, 2), (1, 2)]).unwrap();
+    assert_eq!(g.components, vec![vec![0, 1], vec![2], vec![3]]);
+    assert_eq!(g.internal_edges, vec![4, 1, 0]);
+}
+
+#[test]
+fn spec_r20_internal_edge_occurrences_include_loops_and_duplicates() {
+    let g = analyze(2, &[(0, 0), (0, 0), (0, 1), (1, 1)]).unwrap();
+    assert_eq!(g.internal_edges, vec![2, 1]);
+}
+
+#[test]
+fn spec_r21_condensation_has_no_internal_arcs() {
+    let g = analyze(2, &[(0, 1), (1, 0), (0, 0)]).unwrap();
+    assert!(g.arcs.iter().all(|arc| arc.from != arc.to));
+    assert!(g.arcs.is_empty());
+}
+
+#[test]
+fn spec_r22_one_arc_per_ordered_component_pair() {
+    let g = analyze(4, &[(0, 1), (2, 3), (0, 2), (1, 3), (0, 3)]).unwrap();
+    assert_eq!(g.arcs.len(), 1);
+    assert_eq!((g.arcs[0].from, g.arcs[0].to), (0, 1));
+}
+
+#[test]
+fn spec_r23_arc_multiplicity_counts_all_original_occurrences() {
+    let g = analyze(4, &[(0, 2), (1, 3), (0, 2), (1, 2)]).unwrap();
+    assert_eq!(g.arcs, vec![Arc { from: 0, to: 1, multiplicity: 4, first_edge: 0 }]);
+}
+
+#[test]
+fn spec_r24_first_edge_is_original_smallest_input_position() {
+    let g = analyze(3, &[(0, 0), (0, 1), (1, 2), (0, 2)]).unwrap();
+    assert_eq!(g.arcs, vec![
+        Arc { from: 0, to: 2, multiplicity: 2, first_edge: 1 },
+        Arc { from: 2, to: 1, multiplicity: 1, first_edge: 2 },
+    ]);
+}
+
+#[test]
+fn spec_r25_arcs_sort_by_source_ascending_then_target_descending() {
+    let g = analyze(5, &[(0, 1), (0, 2), (0, 3), (1, 4), (2, 4), (3, 4)]).unwrap();
+    assert_eq!(
+        g.arcs.iter().map(|a| (a.from, a.to)).collect::<Vec<_>>(),
+        vec![(0, 3), (0, 2), (0, 1), (1, 4), (2, 4), (3, 4)]
+    );
+}
+
+#[test]
+fn spec_r26_arc_witness_indices_include_internal_edges_and_duplicates() {
+    let g = analyze(3, &[(0, 0), (0, 1), (0, 1), (1, 2)]).unwrap();
+    assert_eq!(g.arcs, vec![
+        Arc { from: 0, to: 1, multiplicity: 2, first_edge: 1 },
+        Arc { from: 1, to: 2, multiplicity: 1, first_edge: 3 },
+    ]);
+    assert_eq!(g.internal_edges.iter().sum::<usize>()
+        + g.arcs.iter().map(|a| a.multiplicity).sum::<usize>(), 4);
+}
+
+#[test]
+fn spec_r27_topological_order_emits_each_component_once() {
+    let g = analyze(4, &[(0, 1), (1, 2)]).unwrap();
+    assert_eq!(g.topo.len(), g.components.len());
+    let mut sorted = g.topo.clone();
+    sorted.sort_unstable();
+    assert_eq!(sorted, (0..g.components.len()).collect::<Vec<_>>());
+    let pos: Vec<_> = {
+        let mut p = vec![0; g.components.len()];
+        for (i, &c) in g.topo.iter().enumerate() { p[c] = i; }
+        p
+    };
+    assert!(g.arcs.iter().all(|a| pos[a.from] < pos[a.to]));
+}
+
+#[test]
+fn spec_r28_priority_kahn_uses_internal_edges_then_largest_vertex() {
+    let g = analyze(7, &[(0, 1), (2, 3), (2, 3), (4, 5), (5, 6)]).unwrap();
+    assert_eq!(g.components, vec![vec![0], vec![1], vec![2], vec![3], vec![4], vec![5], vec![6]]);
+    assert_eq!(g.topo, vec![2, 0, 4, 5, 6, 3, 1]);
+}
+
+#[test]
+fn spec_r29_newly_ready_components_compete_immediately() {
+    let g = analyze(5, &[(0, 2), (1, 3)]).unwrap();
+    assert_eq!(g.topo, vec![1, 3, 0, 2, 4]);
+}
+
+#[test]
+fn spec_r30_depth_is_longest_predecessor_path_by_component_id() {
+    let g = analyze(5, &[(0, 2), (1, 2), (2, 3)]).unwrap();
+    assert_eq!(g.depth, vec![0, 0, 1, 2, 0]);
+}
+
+#[test]
+fn spec_r31_query_checks_original_vertices_in_order_and_does_not_mutate() {
+    let g = analyze(2, &[]).unwrap();
+    assert_eq!(g.query(2, 2), Err(GraphError::BadQuery { side: 0, vertex: 2 }));
+    assert_eq!(g.query(0, usize::MAX), Err(GraphError::BadQuery { side: 1, vertex: usize::MAX }));
+    let before = g.clone();
+    let _ = g.query(0, 1).unwrap();
+    assert_eq!(g, before);
+}
+
+#[test]
+fn spec_r32_same_component_query_routes_depend_on_cyclicity() {
+    let g = analyze(3, &[(0, 1), (1, 0)]).unwrap();
+    assert_eq!(g.query(1, 1).unwrap(), Query { kind: Relation::Cycle, route: vec![0, 0] });
+    assert_eq!(g.query(2, 2).unwrap(), Query { kind: Relation::Trivial, route: vec![1] });
+}
+
+#[test]
+fn spec_r33_forward_route_is_inclusive_and_shortest() {
+    let g = analyze(5, &[(0, 1), (1, 4), (0, 2), (2, 3), (3, 4)]).unwrap();
+    assert_eq!(g.query(0, 4).unwrap(), Query { kind: Relation::Forward, route: vec![0, 1, 4] });
+}
+
+#[test]
+fn spec_r34_backward_route_reverses_selected_reachable_direction_route() {
+    let g = analyze(5, &[(0, 1), (1, 4), (0, 2), (2, 3), (3, 4)]).unwrap();
+    assert_eq!(g.query(4, 0).unwrap(), Query { kind: Relation::Backward, route: vec![4, 1, 0] });
+}
+
+#[test]
+fn spec_r35_incomparable_components_return_empty_separate_route() {
+    let g = analyze(3, &[(0, 1)]).unwrap();
+    assert_eq!(g.query(0, 2).unwrap(), Query { kind: Relation::Separate, route: vec![] });
+}
+
+#[test]
+fn spec_r36_equal_length_routes_use_lexicographically_smallest_component_ids() {
+    let g = analyze(5, &[(0, 1), (1, 4), (0, 2), (2, 4)]).unwrap();
+    assert_eq!(g.query(0, 4).unwrap(), Query { kind: Relation::Forward, route: vec![0, 1, 4] });
+}
+
+#[test]
+fn spec_r37_empty_graph_queries_always_fail_on_from() {
+    let g = analyze(0, &[]).unwrap();
+    assert_eq!(g.query(0, 0), Err(GraphError::BadQuery { side: 0, vertex: 0 }));
+    assert_eq!(g.clone().query(usize::MAX, usize::MAX), Err(GraphError::BadQuery { side: 0, vertex: usize::MAX }));
+}

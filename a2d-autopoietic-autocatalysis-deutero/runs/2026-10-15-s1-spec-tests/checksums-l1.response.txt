@@ -1,0 +1,237 @@
+```rust
+#[test]
+fn spec_r1_single_file_api_compiles() {
+    let _ = crc32(&[]);
+    let _ = adler32(&[]);
+    let _ = checksums(&[]);
+    let _ = checksums_spans(&[], &[]);
+}
+
+#[test]
+fn spec_r2_public_types_and_traits() {
+    fn assert_traits<T: std::fmt::Debug + Clone + Copy + PartialEq + Eq>() {}
+    assert_traits::<Span>();
+    assert_traits::<Hashes>();
+    assert_traits::<SpanError>();
+
+    let span = Span { start: 1, end: 2 };
+    let hashes = Hashes { crc32: 3, adler32: 4 };
+    let error = SpanError::Overlap { span: 0 };
+    assert_eq!(span, span);
+    assert_eq!(hashes, hashes);
+    assert_eq!(error, error);
+}
+
+#[test]
+fn spec_r3_crc_reflected_ieee() {
+    assert_eq!(crc32(b"a"), 0xe8b7be43);
+    assert_eq!(crc32(b"123456789"), 0xcbf43926);
+}
+
+#[test]
+fn spec_r4_crc_empty_and_binary_bytes() {
+    assert_eq!(crc32(&[]), 0);
+    assert_eq!(crc32(&[0x00]), 0xd202ef8d);
+    assert_eq!(crc32(&[0x80, 0xff]), 0x6cdbfd72);
+}
+
+#[test]
+fn spec_r5_adler_initialization_and_byte_updates() {
+    assert_eq!(adler32(&[]), 1);
+    assert_eq!(adler32(b"Wikipedia"), 0x11e60398);
+    assert_eq!(adler32(&[0, 0x80, 0xff]), 0x02810180);
+}
+
+#[test]
+fn spec_r6_adler_reductions_are_exact_for_long_slices() {
+    let data = vec![255u8; 1_000_000];
+    let n = data.len() as u64;
+    let a = (1 + 255 * n) % 65_521;
+    let b = (n + 255 * n * (n + 1) / 2) % 65_521;
+    assert_eq!(adler32(&data), ((b as u32) << 16) | a as u32);
+}
+
+#[test]
+fn spec_r7_checksums_match_individual_functions() {
+    let data = [0, 1, 127, 128, 255];
+    assert_eq!(
+        checksums(&data),
+        Hashes {
+            crc32: crc32(&data),
+            adler32: adler32(&data),
+        }
+    );
+}
+
+#[test]
+fn spec_r8_spans_hash_selected_concatenation_once() {
+    let data = b"ab--cd";
+    let selected = b"abcd";
+    assert_eq!(
+        checksums_spans(
+            data,
+            &[Span { start: 0, end: 2 }, Span { start: 4, end: 6 }]
+        ),
+        Ok(Hashes {
+            crc32: crc32(selected),
+            adler32: adler32(selected),
+        })
+    );
+}
+
+#[test]
+fn spec_r9_first_failing_span_in_supplied_order_wins() {
+    let data = b"1234";
+    assert_eq!(
+        checksums_spans(
+            data,
+            &[
+                Span { start: 0, end: 1 },
+                Span { start: 5, end: 6 },
+                Span { start: 3, end: 2 },
+            ]
+        ),
+        Err(SpanError::OutOfBounds { span: 1, offset: 5 })
+    );
+}
+
+#[test]
+fn spec_r10_reversed_precedes_out_of_bounds() {
+    assert_eq!(
+        checksums_spans(b"1234", &[Span { start: 8, end: 2 }]),
+        Err(SpanError::Reversed { span: 0 })
+    );
+}
+
+#[test]
+fn spec_r11_endpoint_bounds_and_end_equal_length() {
+    assert_eq!(
+        checksums_spans(b"1234", &[Span { start: 5, end: 5 }]),
+        Err(SpanError::OutOfBounds { span: 0, offset: 5 })
+    );
+    assert_eq!(
+        checksums_spans(b"1234", &[Span { start: 2, end: 5 }]),
+        Err(SpanError::OutOfBounds { span: 0, offset: 5 })
+    );
+    assert_eq!(
+        checksums_spans(b"1234", &[Span { start: 4, end: 4 }]),
+        Ok(Hashes { crc32: 0, adler32: 1 })
+    );
+}
+
+#[test]
+fn spec_r12_bounds_precede_overlap_at_same_span() {
+    assert_eq!(
+        checksums_spans(
+            b"1234",
+            &[Span { start: 1, end: 3 }, Span { start: 2, end: 5 }]
+        ),
+        Err(SpanError::OutOfBounds { span: 1, offset: 5 })
+    );
+    assert_eq!(
+        checksums_spans(
+            b"1234",
+            &[Span { start: 1, end: 3 }, Span { start: 2, end: 4 }]
+        ),
+        Err(SpanError::Overlap { span: 1 })
+    );
+}
+
+#[test]
+fn spec_r13_empty_spans_participate_in_ordering() {
+    assert_eq!(
+        checksums_spans(
+            b"abcdef",
+            &[Span { start: 1, end: 4 }, Span { start: 2, end: 2 }]
+        ),
+        Err(SpanError::Overlap { span: 1 })
+    );
+    assert_eq!(
+        checksums_spans(
+            b"abcdef",
+            &[
+                Span { start: 1, end: 2 },
+                Span { start: 4, end: 4 },
+                Span { start: 3, end: 5 },
+            ]
+        ),
+        Err(SpanError::Overlap { span: 2 })
+    );
+}
+
+#[test]
+fn spec_r14_adjacent_and_repeated_empty_spans_are_valid() {
+    let data = b"abcd";
+    assert_eq!(
+        checksums_spans(
+            data,
+            &[
+                Span { start: 0, end: 2 },
+                Span { start: 2, end: 4 },
+                Span { start: 4, end: 4 },
+                Span { start: 4, end: 4 },
+            ]
+        ),
+        Ok(checksums(data))
+    );
+    assert_eq!(
+        checksums_spans(
+            b"aaaa",
+            &[Span { start: 0, end: 1 }, Span { start: 2, end: 3 }]
+        ),
+        Ok(checksums(b"aa"))
+    );
+}
+
+#[test]
+fn spec_r15_no_spans_or_only_empty_spans_hashes_empty_input() {
+    let expected = Hashes { crc32: 0, adler32: 1 };
+    assert_eq!(checksums_spans(b"unselected", &[]), Ok(expected));
+    assert_eq!(
+        checksums_spans(
+            b"unselected",
+            &[Span { start: 0, end: 0 }, Span { start: 10, end: 10 }]
+        ),
+        Ok(expected)
+    );
+}
+
+#[test]
+fn spec_r16_checksum_accumulation_crosses_span_boundaries() {
+    let data = [0x00, 0x80, 0xff];
+    assert_eq!(
+        checksums_spans(
+            &data,
+            &[Span { start: 0, end: 1 }, Span { start: 1, end: 3 }]
+        ),
+        Ok(checksums(&data))
+    );
+}
+
+#[test]
+fn spec_r17_errors_do_not_panic_or_mutate_input() {
+    let mut data = *b"abcdef";
+    let original = data;
+    let result = checksums_spans(
+        &data,
+        &[Span { start: 0, end: 4 }, Span { start: 3, end: 5 }],
+    );
+    assert_eq!(result, Err(SpanError::Overlap { span: 1 }));
+    assert_eq!(data, original);
+}
+
+#[test]
+fn spec_r18_spans_process_selected_bytes_without_changing_semantics() {
+    let data = vec![42u8; 100_000];
+    let spans: Vec<Span> = (0..50_000)
+        .map(|i| Span {
+            start: i * 2,
+            end: i * 2 + 1,
+        })
+        .collect();
+    assert_eq!(
+        checksums_spans(&data, &spans),
+        Ok(checksums(&vec![42u8; 50_000]))
+    );
+}
+```

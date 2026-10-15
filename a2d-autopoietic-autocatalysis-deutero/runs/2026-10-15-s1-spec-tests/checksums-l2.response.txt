@@ -1,0 +1,390 @@
+```rust
+#[test]
+fn spec_r1_single_source_compatible() {
+    let _ = crc32(&[]);
+}
+
+#[test]
+fn spec_r2_public_types_and_traits() {
+    fn assert_traits<T: std::fmt::Debug + Clone + Copy + PartialEq + Eq>() {}
+    assert_traits::<Span>();
+    assert_traits::<Hashes>();
+    assert_traits::<SpanError>();
+    assert_traits::<SnapshotError>();
+
+    let span = Span { start: 1, end: 2 };
+    let hashes = Hashes { crc32: 3, adler32: 4 };
+    assert_eq!(span, span.clone());
+    assert_eq!(hashes, hashes.clone());
+}
+
+#[test]
+fn spec_r3_crc32_known_vector() {
+    assert_eq!(crc32(b"123456789"), 0xcbf43926);
+}
+
+#[test]
+fn spec_r4_crc32_empty_and_binary_bytes() {
+    assert_eq!(crc32(b""), 0);
+    assert_eq!(crc32(&[0, 0x80, 0xff]), 0x6cdbfd72);
+}
+
+#[test]
+fn spec_r5_adler32_known_vector() {
+    assert_eq!(adler32(b"123456789"), 0x091e01de);
+}
+
+#[test]
+fn spec_r6_adler32_empty_and_long_input() {
+    assert_eq!(adler32(b""), 1);
+    let data = vec![255u8; 1_000_000];
+    let mut a = 1u64;
+    let mut b = 0u64;
+    for _ in &data {
+        a = (a + 255) % 65521;
+        b = (b + a) % 65521;
+    }
+    assert_eq!(adler32(&data), ((b as u32) << 16) | a as u32);
+}
+
+#[test]
+fn spec_r7_checksums_match_individual_functions() {
+    let data = [0, 1, 0x80, 0xff, 42];
+    assert_eq!(
+        checksums(&data),
+        Hashes {
+            crc32: crc32(&data),
+            adler32: adler32(&data),
+        }
+    );
+}
+
+#[test]
+fn spec_r8_spans_hash_selected_concatenation() {
+    let data = b"ab--cd";
+    assert_eq!(
+        checksums_spans(
+            data,
+            &[Span { start: 0, end: 2 }, Span { start: 4, end: 6 }]
+        ),
+        Ok(checksums(b"abcd"))
+    );
+}
+
+#[test]
+fn spec_r9_first_failing_span_in_supplied_order() {
+    assert_eq!(
+        checksums_spans(
+            b"abc",
+            &[
+                Span { start: 0, end: 4 },
+                Span { start: 2, end: 1 },
+            ]
+        ),
+        Err(SpanError::OutOfBounds { span: 0, offset: 4 })
+    );
+}
+
+#[test]
+fn spec_r10_reversed_precedes_bounds() {
+    assert_eq!(
+        checksums_spans(b"x", &[Span { start: 2, end: 1 }]),
+        Err(SpanError::Reversed { span: 0 })
+    );
+}
+
+#[test]
+fn spec_r11_bounds_order_and_end_boundary() {
+    assert_eq!(
+        checksums_spans(b"x", &[Span { start: 2, end: 2 }]),
+        Err(SpanError::OutOfBounds { span: 0, offset: 2 })
+    );
+    assert_eq!(
+        checksums_spans(b"x", &[Span { start: 0, end: 2 }]),
+        Err(SpanError::OutOfBounds { span: 0, offset: 2 })
+    );
+    assert_eq!(
+        checksums_spans(b"x", &[Span { start: 1, end: 1 }]),
+        Ok(checksums(b""))
+    );
+}
+
+#[test]
+fn spec_r12_bounds_precede_overlap() {
+    assert_eq!(
+        checksums_spans(
+            b"abc",
+            &[
+                Span { start: 0, end: 2 },
+                Span { start: 1, end: 4 },
+            ]
+        ),
+        Err(SpanError::OutOfBounds { span: 1, offset: 4 })
+    );
+    assert_eq!(
+        checksums_spans(
+            b"abc",
+            &[
+                Span { start: 0, end: 2 },
+                Span { start: 1, end: 2 },
+            ]
+        ),
+        Err(SpanError::Overlap { span: 1 })
+    );
+}
+
+#[test]
+fn spec_r13_empty_spans_participate_in_ordering() {
+    assert_eq!(
+        checksums_spans(
+            b"abcd",
+            &[
+                Span { start: 0, end: 3 },
+                Span { start: 2, end: 2 },
+            ]
+        ),
+        Err(SpanError::Overlap { span: 1 })
+    );
+    assert_eq!(
+        checksums_spans(
+            b"abcd",
+            &[
+                Span { start: 0, end: 1 },
+                Span { start: 2, end: 2 },
+                Span { start: 1, end: 2 },
+            ]
+        ),
+        Err(SpanError::Overlap { span: 2 })
+    );
+}
+
+#[test]
+fn spec_r14_adjacent_and_repeated_empty_spans_are_valid() {
+    assert_eq!(
+        checksums_spans(
+            b"abcd",
+            &[
+                Span { start: 0, end: 2 },
+                Span { start: 2, end: 2 },
+                Span { start: 2, end: 4 },
+                Span { start: 4, end: 4 },
+                Span { start: 4, end: 4 },
+            ]
+        ),
+        Ok(checksums(b"abcd"))
+    );
+    assert_eq!(
+        checksums_spans(
+            b"aaaa",
+            &[Span { start: 0, end: 1 }, Span { start: 2, end: 3 }]
+        ),
+        Ok(checksums(b"aa"))
+    );
+}
+
+#[test]
+fn spec_r15_empty_span_collections_hash_empty_input() {
+    let empty = Hashes {
+        crc32: 0,
+        adler32: 1,
+    };
+    assert_eq!(checksums_spans(b"unselected", &[]), Ok(empty));
+    assert_eq!(
+        checksums_spans(
+            b"unselected",
+            &[Span { start: 3, end: 3 }, Span { start: 7, end: 7 }]
+        ),
+        Ok(empty)
+    );
+}
+
+#[test]
+fn spec_r16_binary_checksums_continue_across_span_boundaries() {
+    let parts = [0, 0x80, 0xff, 7];
+    assert_eq!(
+        checksums_spans(
+            &parts,
+            &[Span { start: 0, end: 2 }, Span { start: 2, end: 4 }]
+        ),
+        Ok(checksums(&parts))
+    );
+}
+
+#[test]
+fn spec_r17_errors_do_not_modify_input() {
+    let data = *b"abcd";
+    let _ = checksums_spans(&data, &[Span { start: 3, end: 2 }]);
+    assert_eq!(&data, b"abcd");
+}
+
+#[test]
+fn spec_r18_spans_do_not_require_contiguous_selection() {
+    let data = b"a---b---c";
+    assert_eq!(
+        checksums_spans(
+            data,
+            &[
+                Span { start: 0, end: 1 },
+                Span { start: 4, end: 5 },
+                Span { start: 8, end: 9 },
+            ]
+        ),
+        Ok(checksums(b"abc"))
+    );
+}
+
+#[test]
+fn spec_r19_stream_and_snapshot_error_traits() {
+    fn assert_debug_clone<T: std::fmt::Debug + Clone>() {}
+    fn assert_error_traits<T: std::fmt::Debug + Clone + Copy + PartialEq + Eq>() {}
+    assert_debug_clone::<Stream>();
+    assert_error_traits::<SnapshotError>();
+}
+
+#[test]
+fn spec_r20_stream_starts_empty_and_checksum_is_repeatable() {
+    let stream = Stream::new();
+    assert_eq!(stream.checksum(), checksums(b""));
+    assert_eq!(stream.checksum(), checksums(b""));
+}
+
+#[test]
+fn spec_r21_seed_resumes_from_finalized_checksums() {
+    let prefix = b"seeded prefix";
+    let seed = checksums(prefix);
+    let mut stream = Stream::from_seed(seed.crc32, seed.adler32).unwrap();
+    stream.update(b" suffix");
+    assert_eq!(stream.checksum(), checksums(b"seeded prefix suffix"));
+}
+
+#[test]
+fn spec_r22_seed_adler_components_are_validated_in_order() {
+    assert_eq!(
+        Stream::from_seed(0, 0x0001_0000),
+        Err(SnapshotError::Adler { component: 0 })
+    );
+    assert_eq!(
+        Stream::from_seed(0, 0x0001_0000 | 65_521),
+        Err(SnapshotError::Adler { component: 1 })
+    );
+    assert_eq!(
+        Stream::from_seed(0, 0),
+        Ok(Stream::from_seed(0, 0).unwrap())
+    );
+}
+
+#[test]
+fn spec_r23_stream_chunking_and_empty_update_preserve_seed() {
+    let mut whole = Stream::new();
+    whole.update(&[0, 1, 0x80, 0xff]);
+
+    let mut chunked = Stream::new();
+    chunked.update(&[0]);
+    chunked.update(&[]);
+    chunked.update(&[1, 0x80]);
+    chunked.update(&[0xff]);
+    assert_eq!(chunked.checksum(), whole.checksum());
+
+    let mut seeded = Stream::from_seed(0x12345678, 0x00020003).unwrap();
+    let before = seeded.checksum();
+    seeded.update(&[]);
+    assert_eq!(seeded.checksum(), before);
+}
+
+#[test]
+fn spec_r24_stream_span_update_is_atomic_on_error() {
+    let mut stream = Stream::new();
+    stream.update(b"prefix");
+    let before = stream.checksum();
+    assert_eq!(
+        stream.update_spans(
+            b"abcdef",
+            &[Span { start: 0, end: 2 }, Span { start: 5, end: 7 }]
+        ),
+        Err(SpanError::OutOfBounds { span: 1, offset: 7 })
+    );
+    assert_eq!(stream.checksum(), before);
+}
+
+#[test]
+fn spec_r25_reset_and_clone_are_independent() {
+    let mut original = Stream::new();
+    original.update(b"first");
+    let mut copy = original.clone();
+    original.update(b"!");
+    copy.update(b"?");
+    assert_eq!(original.checksum(), checksums(b"first!"));
+    assert_eq!(copy.checksum(), checksums(b"first?"));
+
+    let mut seeded = Stream::from_seed(checksums(b"seed").crc32, checksums(b"seed").adler32).unwrap();
+    seeded.reset();
+    assert_eq!(seeded.checksum(), checksums(b""));
+}
+
+#[test]
+fn spec_r26_snapshot_format_is_fixed_width_lowercase_hex() {
+    let stream = Stream::new();
+    assert_eq!(stream.snapshot(), "c00000000:a00000001");
+    assert_eq!(stream.snapshot().len(), 19);
+    assert!(stream.snapshot().bytes().all(|byte| byte.is_ascii()));
+}
+
+#[test]
+fn spec_r27_restore_checks_shape_first() {
+    assert_eq!(Stream::restore("C0000000?:a00000001"), Err(SnapshotError::Shape));
+    assert_eq!(Stream::restore("c0000000?:a00000001"), Err(SnapshotError::Shape));
+    assert_eq!(Stream::restore("c00000000-a00000001"), Err(SnapshotError::Shape));
+}
+
+#[test]
+fn spec_r28_restore_reports_first_bad_digit_offset() {
+    assert_eq!(
+        Stream::restore("c0000000G:a0000000G"),
+        Err(SnapshotError::Hex { offset: 9 })
+    );
+    assert_eq!(
+        Stream::restore("c00000000:a0000000G"),
+        Err(SnapshotError::Hex { offset: 18 })
+    );
+    assert_eq!(
+        Stream::restore("c0000000A:a00000001"),
+        Err(SnapshotError::Hex { offset: 9 })
+    );
+    assert_eq!(
+        Stream::restore("c0000000é:a00000001"),
+        Err(SnapshotError::Hex { offset: 9 })
+    );
+}
+
+#[test]
+fn spec_r29_restore_validates_all_hex_before_adler_seed() {
+    assert_eq!(
+        Stream::restore("c00000000:a0000000G"),
+        Err(SnapshotError::Hex { offset: 18 })
+    );
+    assert_eq!(
+        Stream::restore("c00000000:a00010000"),
+        Err(SnapshotError::Adler { component: 0 })
+    );
+
+    let mut original = Stream::new();
+    original.update(b"before");
+    let snapshot = original.snapshot();
+    let mut restored = Stream::restore(&snapshot).unwrap();
+    original.update(b"after");
+    restored.update(b"after");
+    assert_eq!(restored.checksum(), original.checksum());
+    assert_eq!(restored.snapshot(), original.snapshot());
+}
+
+#[test]
+fn spec_r30_snapshot_and_checksum_reads_do_not_change_future_updates() {
+    let mut stream = Stream::new();
+    stream.update(b"stable");
+    let _ = stream.snapshot();
+    let _ = stream.checksum();
+    let _ = stream.snapshot();
+    stream.update(b" continuation");
+    assert_eq!(stream.checksum(), checksums(b"stable continuation"));
+}
+```

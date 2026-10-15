@@ -1,0 +1,297 @@
+```rust
+#[test]
+fn spec_r1_rust_2024_compatible_public_api() {
+    let result = parse_email("a@b.co");
+    assert_eq!(
+        result,
+        Ok(Address {
+            local: "a".into(),
+            domain: "b.co".into(),
+            quoted: false,
+        })
+    );
+}
+
+#[test]
+fn spec_r2_exact_public_types_and_signature() {
+    let parsed: Result<Address, EmailError> = parse_email("x@y.z");
+    assert_eq!(
+        parsed,
+        Ok(Address {
+            local: "x".into(),
+            domain: "y.z".into(),
+            quoted: false,
+        })
+    );
+    assert_eq!(parse_email(""), Err(EmailError::EmptyInput));
+}
+
+#[test]
+fn spec_r3_byte_offsets_survive_root_dot_removal() {
+    assert_eq!(
+        parse_email("a@b.."),
+        Err(EmailError::EmptyLabel { at: 4 })
+    );
+    assert_eq!(
+        parse_email("a@b."),
+        Err(EmailError::DomainNeedsDot { at: 2 })
+    );
+}
+
+#[test]
+fn spec_r4_empty_then_first_non_ascii_before_syntax() {
+    assert_eq!(parse_email(""), Err(EmailError::EmptyInput));
+    assert_eq!(
+        parse_email("é"),
+        Err(EmailError::NonAscii { at: 0 })
+    );
+    assert_eq!(
+        parse_email("a@é@b"),
+        Err(EmailError::NonAscii { at: 2 })
+    );
+}
+
+#[test]
+fn spec_r5_whitespace_and_comments_are_not_stripped() {
+    assert_eq!(
+        parse_email(" a@b.co"),
+        Err(EmailError::LocalChar { at: 0 })
+    );
+    assert_eq!(
+        parse_email("a@b.co "),
+        Err(EmailError::DomainChar { at: 6 })
+    );
+    assert_eq!(
+        parse_email("a(comment)@b.co"),
+        Err(EmailError::LocalChar { at: 1 })
+    );
+}
+
+#[test]
+fn spec_r6_separator_inside_quotes_still_counts() {
+    assert_eq!(
+        parse_email("\"a@b\"@example.com"),
+        Err(EmailError::MultipleAt { at: 4 })
+    );
+}
+
+#[test]
+fn spec_r7_separator_count_and_empty_local_precedence() {
+    assert_eq!(parse_email("abc"), Err(EmailError::MissingAt));
+    assert_eq!(
+        parse_email("@bad.."),
+        Err(EmailError::EmptyLocal { at: 0 })
+    );
+    assert_eq!(
+        parse_email("a@b@"),
+        Err(EmailError::MultipleAt { at: 3 })
+    );
+}
+
+#[test]
+fn spec_r8_local_length_precedes_contents_and_allowed_bytes_work() {
+    let long_bad = format!("{}!@x.y", "a".repeat(64));
+    assert_eq!(
+        parse_email(&long_bad),
+        Err(EmailError::LocalTooLong { at: 64 })
+    );
+    assert_eq!(
+        parse_email("a!#$%&'*+-/=?^_`{|}~9@x.y"),
+        Ok(Address {
+            local: "a!#$%&'*+-/=?^_`{|}~9".into(),
+            domain: "x.y".into(),
+            quoted: false,
+        })
+    );
+    assert_eq!(
+        parse_email("a:@x.y"),
+        Err(EmailError::LocalChar { at: 1 })
+    );
+}
+
+#[test]
+fn spec_r9_local_dot_errors_are_left_to_right() {
+    assert_eq!(
+        parse_email(".a@x.y"),
+        Err(EmailError::LocalDot { at: 0 })
+    );
+    assert_eq!(
+        parse_email("a..b@x.y"),
+        Err(EmailError::LocalDot { at: 2 })
+    );
+    assert_eq!(
+        parse_email("a.@x.y"),
+        Err(EmailError::LocalDot { at: 1 })
+    );
+    assert_eq!(
+        parse_email("A.b@X.Y"),
+        Ok(Address {
+            local: "A.b".into(),
+            domain: "x.y".into(),
+            quoted: false,
+        })
+    );
+}
+
+#[test]
+fn spec_r10_remove_one_root_dot_and_report_empty_domain() {
+    assert_eq!(
+        parse_email("a@"),
+        Err(EmailError::EmptyDomain { at: 2 })
+    );
+    assert_eq!(
+        parse_email("a@."),
+        Err(EmailError::EmptyDomain { at: 2 })
+    );
+    assert_eq!(
+        parse_email("a@b.c."),
+        Ok(Address {
+            local: "a".into(),
+            domain: "b.c".into(),
+            quoted: false,
+        })
+    );
+}
+
+#[test]
+fn spec_r11_domain_length_excludes_one_root_marker() {
+    let at_limit = format!("a@{}.{}", "a".repeat(252), "b");
+    assert_eq!(
+        parse_email(&at_limit),
+        Err(EmailError::LabelTooLong { at: 65 })
+    );
+
+    let oversized = format!("a@{}.{}", "a".repeat(253), "b");
+    assert_eq!(
+        parse_email(&oversized),
+        Err(EmailError::DomainTooLong { at: 255 })
+    );
+}
+
+#[test]
+fn spec_r12_empty_labels_preserve_their_original_positions() {
+    assert_eq!(
+        parse_email("a@.b"),
+        Err(EmailError::EmptyLabel { at: 2 })
+    );
+    assert_eq!(
+        parse_email("a@b..c"),
+        Err(EmailError::EmptyLabel { at: 4 })
+    );
+    assert_eq!(
+        parse_email("a@b.c.."),
+        Err(EmailError::EmptyLabel { at: 6 })
+    );
+}
+
+#[test]
+fn spec_r13_label_length_precedes_label_content_and_hyphens() {
+    let long_bad = format!("a@-{}!.x", "a".repeat(63));
+    assert_eq!(
+        parse_email(&long_bad),
+        Err(EmailError::LabelTooLong { at: 66 })
+    );
+    let exactly_63 = format!("a@{}.x", "a".repeat(63));
+    assert_eq!(
+        parse_email(&exactly_63),
+        Ok(Address {
+            local: "a".into(),
+            domain: format!("{}.x", "a".repeat(63)),
+            quoted: false,
+        })
+    );
+}
+
+#[test]
+fn spec_r14_label_hyphens_precede_character_checks() {
+    assert_eq!(
+        parse_email("a@-a!.x"),
+        Err(EmailError::LabelHyphen { at: 2 })
+    );
+    assert_eq!(
+        parse_email("a@a!- .x"),
+        Err(EmailError::DomainChar { at: 4 })
+    );
+    assert_eq!(
+        parse_email("a@a-!.x"),
+        Err(EmailError::LabelHyphen { at: 3 })
+    );
+}
+
+#[test]
+fn spec_r15_domain_character_set_excludes_literals_and_underscores() {
+    assert_eq!(
+        parse_email("a@foo_bar.example"),
+        Err(EmailError::DomainChar { at: 5 })
+    );
+    assert_eq!(
+        parse_email("a@[127.0.0.1]"),
+        Err(EmailError::DomainChar { at: 2 })
+    );
+    assert_eq!(
+        parse_email("a@post-box.example"),
+        Ok(Address {
+            local: "a".into(),
+            domain: "post-box.example".into(),
+            quoted: false,
+        })
+    );
+}
+
+#[test]
+fn spec_r16_single_label_requires_dot_before_numeric_tld_check() {
+    assert_eq!(
+        parse_email("a@123"),
+        Err(EmailError::DomainNeedsDot { at: 2 })
+    );
+    assert_eq!(
+        parse_email("a@localhost"),
+        Err(EmailError::DomainNeedsDot { at: 2 })
+    );
+}
+
+#[test]
+fn spec_r17_numeric_final_label_and_domain_lowercasing() {
+    assert_eq!(
+        parse_email("a@Example.123"),
+        Err(EmailError::NumericTld { at: 10 })
+    );
+    assert_eq!(
+        parse_email("Ada@Mail.Example."),
+        Ok(Address {
+            local: "Ada".into(),
+            domain: "mail.example".into(),
+            quoted: false,
+        })
+    );
+    assert_eq!(
+        parse_email("a@example.1a"),
+        Ok(Address {
+            local: "a".into(),
+            domain: "example.1a".into(),
+            quoted: false,
+        })
+    );
+}
+
+#[test]
+fn spec_r18_precedence_and_no_total_address_length_limit() {
+    assert_eq!(
+        parse_email("@x@"),
+        Err(EmailError::MultipleAt { at: 2 })
+    );
+    assert_eq!(
+        parse_email("a..b@"),
+        Err(EmailError::LocalDot { at: 2 })
+    );
+    let long_address = format!("{}@{}.{}", "a".repeat(64), "b".repeat(63), "c".repeat(63));
+    assert_eq!(
+        parse_email(&long_address),
+        Ok(Address {
+            local: "a".repeat(64),
+            domain: format!("{}.{}", "b".repeat(63), "c".repeat(63)),
+            quoted: false,
+        })
+    );
+}
+```

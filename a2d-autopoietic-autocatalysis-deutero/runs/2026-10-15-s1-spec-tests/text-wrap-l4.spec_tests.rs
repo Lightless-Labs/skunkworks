@@ -1,0 +1,621 @@
+#[test]
+fn spec_r1_rust_api_compiles() {
+    let options = WrapOptions {
+        width: 4,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    let result: Result<Vec<String>, WrapError> = wrap("ab", &options);
+    assert_eq!(result, Ok(vec!["ab".to_string()]));
+}
+
+#[test]
+fn spec_r2_public_types_and_fields() {
+    let options = WrapOptions {
+        width: 3,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    let cloned = options.clone();
+    assert_eq!(options, cloned);
+    assert_eq!(format!("{:?}", options), "WrapOptions { width: 3, first_indent: 0, rest_indent: 0, hyphen_cost: 0, justify: false }");
+
+    let error = WrapError::WidthZero;
+    assert_eq!(error.clone(), error);
+    assert_eq!(format!("{:?}", error), "WidthZero");
+}
+
+#[test]
+fn spec_r3_width_validation_order_and_limit() {
+    let base = WrapOptions {
+        width: 0,
+        first_indent: usize::MAX,
+        rest_indent: usize::MAX,
+        hyphen_cost: usize::MAX,
+        justify: false,
+    };
+    assert_eq!(wrap("\u{1}", &base), Err(WrapError::WidthZero));
+
+    let options = WrapOptions { width: 257, ..base };
+    assert_eq!(
+        wrap("", &options),
+        Err(WrapError::WidthTooLarge { width: 257 })
+    );
+
+    let options = WrapOptions {
+        width: 256,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(wrap("x", &options), Ok(vec!["x".to_string()]));
+}
+
+#[test]
+fn spec_r4_indent_validation_and_content_column() {
+    let base = WrapOptions {
+        width: 4,
+        first_indent: 4,
+        rest_indent: 4,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(
+        wrap("", &base),
+        Err(WrapError::FirstIndentTooWide { indent: 4 })
+    );
+
+    let options = WrapOptions {
+        first_indent: 0,
+        ..base
+    };
+    assert_eq!(
+        wrap("", &options),
+        Err(WrapError::RestIndentTooWide { indent: 4 })
+    );
+
+    let options = WrapOptions {
+        width: 1,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(wrap("x", &options), Ok(vec!["x".to_string()]));
+}
+
+#[test]
+fn spec_r5_hyphen_cost_validation_and_zero() {
+    let options = WrapOptions {
+        width: 3,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 1_000_001,
+        justify: false,
+    };
+    assert_eq!(
+        wrap("", &options),
+        Err(WrapError::HyphenCostTooLarge { cost: 1_000_001 })
+    );
+
+    let options = WrapOptions {
+        hyphen_cost: 0,
+        ..options
+    };
+    assert_eq!(wrap("x", &options), Ok(vec!["x".to_string()]));
+}
+
+#[test]
+fn spec_r6_input_scalar_limit_counts_separators_and_markers() {
+    let options = WrapOptions {
+        width: 1,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    let input = format!("{}!", " ".repeat(512));
+    assert_eq!(wrap(&input, &options), Err(WrapError::InputTooLong { chars: 513 }));
+
+    let input = format!("{}!", " ".repeat(511));
+    assert_eq!(wrap(&input, &options), Ok(vec!["!".to_string()]));
+}
+
+#[test]
+fn spec_r7_control_validation_uses_original_byte_indices_and_precedes_markers() {
+    let options = WrapOptions {
+        width: 8,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(
+        wrap("é~a\u{1}", &options),
+        Err(WrapError::InvalidControl { index: 4 })
+    );
+    assert_eq!(
+        wrap("é\u{7f}", &options),
+        Err(WrapError::InvalidControl { index: 2 })
+    );
+    assert_eq!(
+        wrap("a\tb\r\nc", &options),
+        Ok(vec!["a b c".to_string()])
+    );
+    assert_eq!(
+        wrap("é\u{301}", &options),
+        Ok(vec!["é\u{301}".to_string()])
+    );
+}
+
+#[test]
+fn spec_r8_marker_validation_same_word_and_earliest_error() {
+    let options = WrapOptions {
+        width: 8,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(
+        wrap("~ab", &options),
+        Err(WrapError::InvalidMarker { index: 0 })
+    );
+    assert_eq!(
+        wrap("ab~", &options),
+        Err(WrapError::InvalidMarker { index: 2 })
+    );
+    assert_eq!(
+        wrap("ab~~cd", &options),
+        Err(WrapError::InvalidMarker { index: 2 })
+    );
+    assert_eq!(
+        wrap("ab ~ cd", &options),
+        Err(WrapError::InvalidMarker { index: 3 })
+    );
+    assert_eq!(
+        wrap("é~x", &options),
+        Ok(vec!["éx".to_string()])
+    );
+}
+
+#[test]
+fn spec_r9_crlf_normalization_preserves_original_error_indices() {
+    let options = WrapOptions {
+        width: 5,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(wrap("a\r\nb", &options), Ok(vec!["a b".to_string()]));
+    assert_eq!(
+        wrap("é\r\n\u{1}", &options),
+        Err(WrapError::InvalidControl { index: 4 })
+    );
+}
+
+#[test]
+fn spec_r10_only_defined_separators_split_words_and_scalars_cost_one_column() {
+    let options = WrapOptions {
+        width: 5,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(wrap("a\tb\u{00a0}c", &options), Ok(vec!["a b c".to_string()]));
+    assert_eq!(wrap("a\u{2003}b", &options), Ok(vec!["a\u{2003}b".to_string()]));
+    assert_eq!(wrap("a\u{00ad}b", &options), Ok(vec!["a\u{00ad}b".to_string()]));
+    assert_eq!(
+        wrap("e\u{301}🙂", &options),
+        Ok(vec!["e\u{301}🙂".to_string()])
+    );
+}
+
+#[test]
+fn spec_r11_lf_runs_create_exactly_n_minus_one_empty_lines() {
+    let options = WrapOptions {
+        width: 8,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(wrap("a\n\nb", &options), Ok(vec!["a".to_string(), "".to_string(), "b".to_string()]));
+    assert_eq!(wrap("a\n\n\nb", &options), Ok(vec!["a".to_string(), "".to_string(), "".to_string(), "b".to_string()]));
+    assert_eq!(wrap("a\n \nb", &options), Ok(vec!["a b".to_string()]));
+}
+
+#[test]
+fn spec_r12_segments_empty_at_boundaries_and_empty_input() {
+    let options = WrapOptions {
+        width: 8,
+        first_indent: 1,
+        rest_indent: 2,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(wrap("", &options), Ok(Vec::new()));
+    assert_eq!(wrap("\n\n", &options), Ok(vec!["".to_string()]));
+    assert_eq!(wrap(" \n\n \n\nx\n\n", &options), Ok(vec!["".to_string(), " x".to_string(), "".to_string()]));
+    assert_eq!(wrap(" \t\u{00a0}", &options), Ok(Vec::new()));
+}
+
+#[test]
+fn spec_r13_collapse_separators_and_remove_markers_from_display() {
+    let options = WrapOptions {
+        width: 20,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(wrap(" \ta  b\u{00a0}c ", &options), Ok(vec!["a b c".to_string()]));
+    assert_eq!(wrap("ab~cd", &options), Ok(vec!["abcd".to_string()]));
+}
+
+#[test]
+fn spec_r14_indentation_resets_for_each_paragraph() {
+    let options = WrapOptions {
+        width: 5,
+        first_indent: 1,
+        rest_indent: 2,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(
+        wrap("a b c\n\nx y", &options),
+        Ok(vec![
+            " a".to_string(),
+            "  b".to_string(),
+            "  c".to_string(),
+            "".to_string(),
+            " x".to_string(),
+            "  y".to_string()
+        ])
+    );
+}
+
+#[test]
+fn spec_r15_global_cost_can_choose_non_greedy_break() {
+    let options = WrapOptions {
+        width: 6,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(
+        wrap("aa bb cc dd", &options),
+        Ok(vec!["aa bb".to_string(), "cc dd".to_string()])
+    );
+}
+
+#[test]
+fn spec_r16_can_end_after_any_completed_word_even_if_more_fits() {
+    let options = WrapOptions {
+        width: 10,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(
+        wrap("a b c", &options),
+        Ok(vec!["a b c".to_string()])
+    );
+}
+
+#[test]
+fn spec_r17_marker_split_is_optional_even_when_suffix_fits() {
+    let options = WrapOptions {
+        width: 3,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(
+        wrap("a~bc", &options),
+        Ok(vec!["a-".to_string(), "bc".to_string()])
+    );
+}
+
+#[test]
+fn spec_r18_raw_split_only_on_empty_line_when_no_marker_prefix_fits() {
+    let options = WrapOptions {
+        width: 3,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(wrap("abcdef", &options), Ok(vec!["abc".to_string(), "def".to_string()]));
+
+    let options = WrapOptions {
+        width: 4,
+        ..options
+    };
+    assert_eq!(wrap("a abcdef", &options), Ok(vec!["a".to_string(), "abcd".to_string(), "ef".to_string()]));
+}
+
+#[test]
+fn spec_r19_lines_nonempty_bounded_and_consume_words() {
+    let options = WrapOptions {
+        width: 3,
+        first_indent: 1,
+        rest_indent: 1,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(wrap("abc", &options), Ok(vec![" a".to_string(), " b".to_string(), " c".to_string()]));
+}
+
+#[test]
+fn spec_r20_gap_counts_indent_spaces_and_hyphens() {
+    let options = WrapOptions {
+        width: 5,
+        first_indent: 1,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(
+        wrap("ab~cd", &options),
+        Ok(vec![" ab-".to_string(), "cd".to_string()])
+    );
+}
+
+#[test]
+fn spec_r21_final_line_uses_quarter gap_cost() {
+    let options = WrapOptions {
+        width: 5,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(wrap("a b", &options), Ok(vec!["a b".to_string()]));
+}
+
+#[test]
+fn spec_r22_marker_penalty_and_raw_split_penalty_affect_choice() {
+    let options = WrapOptions {
+        width: 4,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 100,
+        justify: false,
+    };
+    assert_eq!(wrap("ab~cd", &options), Ok(vec!["abcd".to_string()]));
+
+    let options = WrapOptions {
+        width: 2,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(wrap("abcd", &options), Ok(vec!["ab".to_string(), "cd".to_string()]));
+}
+
+#[test]
+fn spec_r23_nonfinal_single_piece_penalty_distinguishes_layouts() {
+    let options = WrapOptions {
+        width: 5,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(
+        wrap("a bb cc", &options),
+        Ok(vec!["a bb".to_string(), "cc".to_string()])
+    );
+}
+
+#[test]
+fn spec_r24_tie_break_order_counts_markers_lines_and_consumed_scalars() {
+    let options = WrapOptions {
+        width: 3,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(wrap("ab~cd", &options), Ok(vec!["ab-".to_string(), "cd".to_string()]));
+
+    let options = WrapOptions {
+        width: 4,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(
+        wrap("a b c d", &options),
+        Ok(vec!["a b".to_string(), "c d".to_string()])
+    );
+}
+
+#[test]
+fn spec_r25_final_tie_uses_lexicographically_smallest_prejustification_lines() {
+    let options = WrapOptions {
+        width: 3,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(
+        wrap("a b c", &options),
+        Ok(vec!["a".to_string(), "b c".to_string()])
+    );
+}
+
+#[test]
+fn spec_r26_capacity_one_raw_split_guarantees_continuation_and_resets_paragraph() {
+    let options = WrapOptions {
+        width: 1,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(
+        wrap("abc\n\nx", &options),
+        Ok(vec!["a".to_string(), "b".to_string(), "c".to_string(), "".to_string(), "x".to_string()])
+    );
+}
+
+#[test]
+fn spec_r27_justify_only_nonfinal_mult_piece_lines() {
+    let options = WrapOptions {
+        width: 6,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: true,
+    };
+    assert_eq!(
+        wrap("a bb cc", &options),
+        Ok(vec!["a    bb".to_string(), "cc".to_string()])
+    );
+
+    let options = WrapOptions {
+        width: 5,
+        ..options
+    };
+    assert_eq!(
+        wrap("abcd e", &options),
+        Ok(vec!["abcd".to_string(), "e".to_string()])
+    );
+}
+
+#[test]
+fn spec_r28_justification_remainder_starts_at_paragraph_line_index_mod_gaps() {
+    let options = WrapOptions {
+        width: 8,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: true,
+    };
+    assert_eq!(
+        wrap("a b c d e f g", &options),
+        Ok(vec![
+            "a  b c d".to_string(),
+            "e   f g".to_string()
+        ])
+    );
+}
+
+#[test]
+fn spec_r29_hyphen_prefix_after_prior_word_has_gap_but_continuation_has_none() {
+    let options = WrapOptions {
+        width: 5,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: true,
+    };
+    assert_eq!(
+        wrap("a bc~def", &options),
+        Ok(vec!["a bc-".to_string(), "def".to_string()])
+    );
+}
+
+#[test]
+fn spec_r30_output_has_no_line_breaks_trailing_spaces_and_uses_scalar_widths() {
+    let options = WrapOptions {
+        width: 2,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    let lines = wrap("é🙂", &options).unwrap();
+    assert_eq!(lines, vec!["é🙂".to_string()]);
+    assert!(lines.iter().all(|line| !line.contains('\n') && !line.contains('\r') && !line.ends_with(' ')));
+}
+
+#[test]
+fn spec_r31_validate_configuration_for_empty_and_separator_only_input() {
+    let options = WrapOptions {
+        width: 0,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(wrap("", &options), Err(WrapError::WidthZero));
+    assert_eq!(wrap(" \t\n", &options), Err(WrapError::WidthZero));
+}
+
+#[test]
+fn spec_r32_preserve_unicode_spelling_without_normalization_or_case_folding() {
+    let options = WrapOptions {
+        width: 10,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(
+        wrap("é e\u{301}", &options),
+        Ok(vec!["é e\u{301}".to_string()])
+    );
+}
+
+#[test]
+fn spec_r33_crlf_boundaries_and_lf_space_lf_are_distinct() {
+    let options = WrapOptions {
+        width: 8,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(
+        wrap("a\r\n\r\nb", &options),
+        Ok(vec!["a".to_string(), "".to_string(), "b".to_string()])
+    );
+    assert_eq!(wrap("a\n \nb", &options), Ok(vec!["a b".to_string()]));
+}
+
+#[test]
+fn spec_r34_literal_trailing_hyphen_is_not_a_marker_split() {
+    let options = WrapOptions {
+        width: 3,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(wrap("ab-", &options), Ok(vec!["ab-".to_string()]));
+}
+
+#[test]
+fn spec_r35_capacity_one_raw_splits_until_final_scalar_completes_word() {
+    let options = WrapOptions {
+        width: 1,
+        first_indent: 0,
+        rest_indent: 0,
+        hyphen_cost: 0,
+        justify: false,
+    };
+    assert_eq!(
+        wrap("abcd", &options),
+        Ok(vec!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()])
+    );
+    assert_eq!(
+        wrap("ab~cd", &options),
+        Ok(vec!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()])
+    );
+}

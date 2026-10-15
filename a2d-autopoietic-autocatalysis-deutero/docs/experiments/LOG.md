@@ -344,4 +344,24 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   4. End metric (offline): the hidden pass rate when re-selecting among B's 5 candidates by (public passed, spec passed, latest), against B's public pick (67.6%) and D (74.3%).
 - **Kill rule:** validity < 0.85 **or** AUC < 0.65 **or** recall < 0.45 kills mechanism 1. In that case clause review becomes the primary mechanism.
 - Data: development only. Outputs go to `runs/2026-10-15-s1-spec-tests/`.
+- Result: **KILLED by the pre-registered rule** (validity and AUC both below threshold).
+  - Generation: 68/68 calls, 2,120 tests, 721k tokens, 0 tool calls. 95% of tests compile against the reference (they are API-correct).
+  - **Validity 0.831** (< 0.85): about 17% of Luna-written spec tests assert the wrong behaviour.
+  - **AUC 0.630** (< 0.65), among 1,039 public-green candidates.
+  - Recall 0.910 on public-green but hidden-fail candidates, but the false-alarm rate on hidden-pass candidates is **0.872**: one wrong test fails almost every candidate.
+  - Not harness-realistic, for insight only: valid-tests-only AUC 0.758.
+  - Offline end metric, re-selecting among B's 5 candidates by (public, spec, latest): **0.743**, against B's public pick 0.676 and D 0.743.
+  - Artifacts: `runs/2026-10-15-s1-spec-tests/` (generation, tests, evaluation.json).
+- Decision: mechanism 1 as specified is killed. The signal exists but is swamped by wrong tests. The one allowed train-only revision is S1b (consensus filtering). If S1b also dies, clause review becomes primary.
+
+### S1b — consensus-filtered spec tests (the one train-only revision of mechanism 1)  [phase P3, development lane]
+- Registered: 2026-10-15, before computing. Zero new invocations: it reuses S1's tests and the S0 pool.
+- Mechanism: harness-realistic, no reference needed. Per tuple, among the candidates the harness would hold (B's 5), **drop every spec test that fails on more than half of the public-green candidates** (treated as likely wrong expectations). Select by (public passed, retained-spec pass fraction, compiled, latest).
+- Measurements on the same pool:
+  1. validity of the *retained* tests against the reference;
+  2. AUC of the retained-spec pass fraction among public-green candidates;
+  3. recall and false-alarm rate;
+  4. end: the selection pick rate against B's public pick and D.
+- **Kill rule** (same thresholds): retained validity < 0.85 **or** AUC < 0.65 kills mechanism 1 for P3. Separate promotion bar for the end metric: the offline pick must reach ≥ D + 5 pp (≥ 0.793) before any live harness is built around it.
 - Result: pending
+

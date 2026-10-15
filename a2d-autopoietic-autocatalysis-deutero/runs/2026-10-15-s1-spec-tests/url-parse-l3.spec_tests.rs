@@ -1,0 +1,373 @@
+#[test]
+fn spec_r1_api_compiles() {
+    let _: Result<Url, ParseError> = parse_url("x://h");
+    let _: Result<String, CodecError> = decode_component(Component::Path, "");
+    let _: String = encode_component(Component::Path, "");
+    let _: Result<String, PathError> = normalise_path("/");
+    let _: Result<Url, ResolveError> = resolve_url("x://h", "");
+}
+
+#[test]
+fn spec_r2_absolute_url_owned_result() {
+    let input = String::from("x://h/p");
+    let url = parse_url(&input).unwrap();
+    drop(input);
+    assert_eq!(url.path, "/p");
+}
+
+#[test]
+fn spec_r3_error_order() {
+    assert_eq!(parse_url("1 bad"), Err(ParseError::InvalidByte { at: 1 }));
+    assert_eq!(parse_url("1:x"), Err(ParseError::InvalidScheme { at: 0 }));
+    assert_eq!(parse_url("a:/"), Err(ParseError::MissingAuthority { at: 2 }));
+    assert_eq!(parse_url("a://@!"), Err(ParseError::InvalidUserInfo { at: 4 }));
+}
+
+#[test]
+fn spec_r4_empty_and_global_byte_scan() {
+    assert_eq!(parse_url(""), Err(ParseError::Empty));
+    assert_eq!(parse_url("a://h a"), Err(ParseError::InvalidByte { at: 5 }));
+    assert_eq!(parse_url("a://h\u{7f}"), Err(ParseError::InvalidByte { at: 5 }));
+    assert_eq!(parse_url("a://hé"), Err(ParseError::InvalidByte { at: 5 }));
+}
+
+#[test]
+fn spec_r5_scheme_rules_and_lowercase() {
+    assert_eq!(parse_url("noscheme"), Err(ParseError::InvalidScheme { at: 8 }));
+    assert_eq!(parse_url("://h"), Err(ParseError::InvalidScheme { at: 0 }));
+    assert_eq!(parse_url("1a://h"), Err(ParseError::InvalidScheme { at: 0 }));
+    assert_eq!(parse_url("a_b://h"), Err(ParseError::InvalidScheme { at: 1 }));
+    assert_eq!(parse_url("Ab9+.-://h").unwrap().scheme, "ab9+.-");
+}
+
+#[test]
+fn spec_r6_authority_marker_and_extra_slashes() {
+    assert_eq!(parse_url("x:/h"), Err(ParseError::MissingAuthority { at: 2 }));
+    assert_eq!(parse_url("x://h").unwrap().host, "h");
+    assert_eq!(parse_url("x:///p"), Err(ParseError::InvalidHost { at: 4 }));
+}
+
+#[test]
+fn spec_r7_authority_delimiters() {
+    let url = parse_url("x://host:80/a?b#c").unwrap();
+    assert_eq!(url.host, "host");
+    assert_eq!(url.port, Some(80));
+    assert_eq!(url.path, "/a");
+    assert_eq!(url.query.as_deref(), Some("b"));
+    assert_eq!(url.fragment.as_deref(), Some("c"));
+}
+
+#[test]
+fn spec_r8_userinfo_structure_and_preservation() {
+    let url = parse_url("x://A:B:C@Host").unwrap();
+    assert_eq!(url.userinfo.as_deref(), Some("A:B:C"));
+    assert_eq!(url.host, "host");
+    assert_eq!(parse_url("x://a@b@c"), Err(ParseError::InvalidUserInfo { at: 8 }));
+    assert_eq!(parse_url("x://@host"), Err(ParseError::InvalidUserInfo { at: 4 }));
+    assert_eq!(parse_url("x://host").unwrap().userinfo, None);
+}
+
+#[test]
+fn spec_r9_ordinary_host_characters_and_case() {
+    let url = parse_url("x://.-_A..z-/").unwrap();
+    assert_eq!(url.host, "._a..z-");
+    assert_eq!(parse_url("x://a[b"), Err(ParseError::InvalidHost { at: 5 }));
+    assert_eq!(parse_url("x://").unwrap_err(), ParseError::InvalidHost { at: 4 });
+    assert_eq!(parse_url("x://h!"), Err(ParseError::InvalidHost { at: 5 }));
+}
+
+#[test]
+fn spec_r10_port_presence_and_empty_port() {
+    assert_eq!(parse_url("x://h").unwrap().port, None);
+    assert_eq!(parse_url("x://h:").unwrap_err(), ParseError::InvalidPort { at: 6 });
+    assert_eq!(parse_url("x://h:7").unwrap().port, Some(7));
+}
+
+#[test]
+fn spec_r11_port_validation_precedence_and_bounds() {
+    assert_eq!(parse_url("x://h:0"), Err(ParseError::InvalidPort { at: 6 }));
+    assert_eq!(parse_url("x://h:01"), Err(ParseError::InvalidPort { at: 6 }));
+    assert_eq!(parse_url("x://h:01x"), Err(ParseError::InvalidPort { at: 8 }));
+    assert_eq!(parse_url("x://h:65535").unwrap().port, Some(65535));
+    assert_eq!(parse_url("x://h:65536"), Err(ParseError::InvalidPort { at: 6 }));
+    assert_eq!(parse_url("x://h:999999999999999999999999999999"), Err(ParseError::InvalidPort { at: 6 }));
+}
+
+#[test]
+fn spec_r12_fragment_first_hash_and_empty_presence() {
+    let url = parse_url("x://h/p#").unwrap();
+    assert_eq!(url.fragment.as_deref(), Some(""));
+    assert_eq!(parse_url("x://h#one#two?q").unwrap().fragment.as_deref(), Some("one#two?q"));
+    assert_eq!(parse_url("x://h").unwrap().fragment, None);
+}
+
+#[test]
+fn spec_r13_query_first_question_before_fragment() {
+    let url = parse_url("x://h/p?").unwrap();
+    assert_eq!(url.query.as_deref(), Some(""));
+    let url = parse_url("x://h?one?two#frag").unwrap();
+    assert_eq!(url.query.as_deref(), Some("one?two"));
+    assert_eq!(url.fragment.as_deref(), Some("frag"));
+}
+
+#[test]
+fn spec_r14_path_default_and_verbatim_storage() {
+    assert_eq!(parse_url("x://h").unwrap().path, "/");
+    assert_eq!(parse_url("x://h/a//b/").unwrap().path, "/a//b/");
+}
+
+#[test]
+fn spec_r15_delimiter_scopes_authority_validation() {
+    let url = parse_url("x://h/a:b@c?q:@#f:@").unwrap();
+    assert_eq!(url.host, "h");
+    assert_eq!(url.path, "/a:b@c");
+    assert_eq!(url.query.as_deref(), Some("q:@"));
+    assert_eq!(url.fragment.as_deref(), Some("f:@"));
+}
+
+#[test]
+fn spec_r16_level_one_percent_is_literal() {
+    assert_eq!(parse_url("x://h/%GG").unwrap().path, "/%GG");
+    assert_eq!(decode_component(Component::Path, "%GG"), Err(CodecError::BadEscape { at: 0 }));
+}
+
+#[test]
+fn spec_r17_case_spelling_and_explicit_port_preserved() {
+    let url = parse_url("HtTp://MiXeD:080/a%2f?Q#F").unwrap_err();
+    assert_eq!(url, ParseError::InvalidPort { at: 14 });
+    let url = parse_url("HtTp://MiXeD:80/a%2f?Q#F").unwrap();
+    assert_eq!(url.scheme, "http");
+    assert_eq!(url.host, "mixed");
+    assert_eq!(url.port, Some(80));
+    assert_eq!(url.path, "/a%2f");
+    assert_eq!(url.query.as_deref(), Some("Q"));
+    assert_eq!(url.fragment.as_deref(), Some("F"));
+}
+
+#[test]
+fn spec_r18_value_equality_and_optional_presence() {
+    assert_eq!(parse_url("x://h"), parse_url("x://h"));
+    assert_eq!(ParseError::Empty, ParseError::Empty);
+    let a = parse_url("x://h").unwrap();
+    let b = parse_url("x://h?").unwrap();
+    assert_ne!(a, b);
+    assert_eq!(a.userinfo, None);
+    assert_eq!(a.query, None);
+    assert_eq!(a.fragment, None);
+}
+
+#[test]
+fn spec_r19_ipv6_and_component_error_variants_exist() {
+    assert_eq!(parse_url("x://[bad]").unwrap_err(), ParseError::InvalidIpv6 { at: 4 });
+    assert_eq!(decode_component(Component::Path, "%"), Err(CodecError::BadEscape { at: 0 }));
+    assert_eq!(decode_component(Component::Path, "%FF"), Err(CodecError::InvalidUtf8 { at: 0 }));
+}
+
+#[test]
+fn spec_r20_ipv6_literal_spelling_and_validation() {
+    let url = parse_url("x://[2001:DB8::1]").unwrap();
+    assert!(url.ipv6);
+    assert_eq!(url.host, "2001:db8::1");
+    assert_eq!(parse_url("x://[::ffff:192.0.2.1]").unwrap().ipv6, true);
+    assert_eq!(parse_url("x://[::1%eth0]"), Err(ParseError::InvalidIpv6 { at: 4 }));
+    assert_eq!(parse_url("x://[::1"), Err(ParseError::InvalidIpv6 { at: 4 }));
+}
+
+#[test]
+fn spec_r21_ipv6_suffix_validation_and_unbracketed_hosts() {
+    let url = parse_url("x://[::1]:443").unwrap();
+    assert!(url.ipv6);
+    assert_eq!(url.port, Some(443));
+    assert_eq!(parse_url("x://[::1]x"), Err(ParseError::InvalidHost { at: 10 }));
+    assert_eq!(parse_url("x://[::1]:").unwrap_err(), ParseError::InvalidPort { at: 11 });
+    assert_eq!(parse_url("x://::1"), Err(ParseError::InvalidHost { at: 5 }));
+    assert_eq!(parse_url("x://h[::1"), Err(ParseError::InvalidHost { at: 5 }));
+}
+
+#[test]
+fn spec_r22_decode_percent_bytes_and_plus_literal() {
+    assert_eq!(decode_component(Component::Query, "a+b%20c").unwrap(), "a+b c");
+    assert_eq!(decode_component(Component::UserInfo, "%41").unwrap(), "A");
+    assert_eq!(decode_component(Component::Fragment, "x").unwrap(), "x");
+}
+
+#[test]
+fn spec_r23_bad_escape_scan_precedes_utf8_check() {
+    assert_eq!(decode_component(Component::Path, "%FF%Q0"), Err(CodecError::BadEscape { at: 3 }));
+    assert_eq!(decode_component(Component::Path, "%"), Err(CodecError::BadEscape { at: 0 }));
+    assert_eq!(decode_component(Component::Path, "%0"), Err(CodecError::BadEscape { at: 0 }));
+    assert_eq!(decode_component(Component::Path, "%0G"), Err(CodecError::BadEscape { at: 0 }));
+}
+
+#[test]
+fn spec_r24_utf8_error_offsets_and_decoded_controls() {
+    assert_eq!(decode_component(Component::Path, "a%FFz"), Err(CodecError::InvalidUtf8 { at: 1 }));
+    assert_eq!(decode_component(Component::Path, "%E2%28%A1"), Err(CodecError::InvalidUtf8 { at: 0 }));
+    assert_eq!(decode_component(Component::Path, "a%00b").unwrap(), "a\0b");
+    assert_eq!(decode_component(Component::Path, "é").unwrap(), "é");
+}
+
+#[test]
+fn spec_r25_component_specific_encoding_safe_sets() {
+    assert_eq!(encode_component(Component::UserInfo, "a:b@+"), "a:b%40%2B");
+    assert_eq!(encode_component(Component::Path, "/?%"), "/%3F%25");
+    assert_eq!(encode_component(Component::Query, "/?&#="), "/?%26%23%3D");
+    assert_eq!(encode_component(Component::Fragment, "/?#"), "/?#");
+    assert_eq!(encode_component(Component::Path, "AZaz09-._~"), "AZaz09-._~");
+    assert_eq!(encode_component(Component::Path, ""), "");
+    assert_eq!(encode_component(Component::Path, "é"), "%C3%A9");
+}
+
+#[test]
+fn spec_r26_parse_validates_components_in_order_and_rebases_offsets() {
+    assert_eq!(parse_url("x://u%FF@h/%Q0"), Err(ParseError::InvalidUtf8 { at: 5 }));
+    assert_eq!(parse_url("x://u@h/%Q0"), Err(ParseError::BadEscape { at: 9 }));
+    assert_eq!(parse_url("x://h/%FF?q%Q0"), Err(ParseError::InvalidUtf8 { at: 7 }));
+    assert_eq!(parse_url("x://h/p?q%Q0#%Q0"), Err(ParseError::BadEscape { at: 8 }));
+    assert_eq!(parse_url("x://h#%Q0"), Err(ParseError::BadEscape { at: 6 }));
+    assert_eq!(parse_url("x://h").unwrap().path, "/");
+}
+
+#[test]
+fn spec_r27_percent_is_not_decoded_in_host_or_port() {
+    assert_eq!(parse_url("x://h%2e/p"), Err(ParseError::InvalidHost { at: 5 }));
+    assert_eq!(parse_url("x://h:%31"), Err(ParseError::InvalidPort { at: 6 }));
+    assert_eq!(parse_url("x://h/%2F").unwrap().path, "/%2F");
+}
+
+#[test]
+fn spec_r28_component_error_precedence_and_global_bytes() {
+    assert_eq!(parse_url("x://u%FF@h/%"), Err(ParseError::InvalidUtf8 { at: 5 }));
+    assert_eq!(parse_url("x://h/%FF?q%"), Err(ParseError::InvalidUtf8 { at: 7 }));
+    assert_eq!(parse_url("x://h/%FFé"), Err(ParseError::InvalidByte { at: 9 }));
+}
+
+#[test]
+fn spec_r29_codec_long_inputs_and_round_trip() {
+    let text = "ab /?#+é".repeat(2048);
+    for component in [Component::UserInfo, Component::Path, Component::Query, Component::Fragment] {
+        let encoded = encode_component(component, &text);
+        assert_eq!(decode_component(component, &encoded).unwrap(), text);
+    }
+    let long = "a".repeat(100_000);
+    assert_eq!(decode_component(Component::Path, &long).unwrap(), long);
+}
+
+#[test]
+fn spec_r30_purity_determinism_and_no_mutation() {
+    let input = String::from("x://H/a%20b");
+    let before = input.clone();
+    let first = parse_url(&input);
+    let second = parse_url(&input);
+    assert_eq!(input, before);
+    assert_eq!(first, second);
+    let component = String::from("a%20b");
+    let before = component.clone();
+    assert_eq!(decode_component(Component::Path, &component), decode_component(Component::Path, &component));
+    assert_eq!(component, before);
+}
+
+#[test]
+fn spec_r31_normalise_requires_raw_leading_slash() {
+    assert_eq!(normalise_path(""), Err(PathError::NotAbsolute));
+    assert_eq!(normalise_path("a/b"), Err(PathError::NotAbsolute));
+    assert_eq!(normalise_path("/é/ space").unwrap(), "/é/ space");
+}
+
+#[test]
+fn spec_r32_validate_whole_path_and_split_only_raw_slashes() {
+    assert_eq!(normalise_path("/a/%Q0"), Err(PathError::BadEscape { at: 3 }));
+    assert_eq!(normalise_path("/%FF/%Q0"), Err(PathError::BadEscape { at: 5 }));
+    assert_eq!(normalise_path("/a%2Fb").unwrap(), "/a%2Fb");
+    assert_eq!(normalise_path("/%2e").unwrap(), "/");
+}
+
+#[test]
+fn spec_r33_stack_navigation_and_empty_segments() {
+    assert_eq!(normalise_path("/a//../b").unwrap(), "/a/b");
+    assert_eq!(normalise_path("/a///b").unwrap(), "/a///b");
+    assert_eq!(normalise_path("/../a").unwrap(), "/a");
+    assert_eq!(normalise_path("/a/..").unwrap(), "/");
+}
+
+#[test]
+fn spec_r34_terminal_navigation_and_idempotence() {
+    assert_eq!(normalise_path("/a/.").unwrap(), "/a/");
+    assert_eq!(normalise_path("/a/%2e%2E").unwrap(), "/");
+    assert_eq!(normalise_path("/a/%2e/b").unwrap(), "/a/b");
+    let path = "/a//b/../c/";
+    let once = normalise_path(path).unwrap();
+    assert_eq!(normalise_path(&once).unwrap(), once);
+}
+
+#[test]
+fn spec_r35_base_validation_precedes_reference_and_reference_scan() {
+    assert_eq!(resolve_url("not-url", "http://h"), Err(ResolveError::Base(ParseError::InvalidScheme { at: 0 })));
+    assert_eq!(resolve_url("x://h/%", "http://other"), Err(ResolveError::Base(ParseError::BadEscape { at: 7 })));
+    assert_eq!(resolve_url("x://h", "a b"), Err(ResolveError::Reference(ParseError::InvalidByte { at: 1 })));
+    assert_eq!(resolve_url("x://h", "").unwrap().path, "/");
+}
+
+#[test]
+fn spec_r36_absolute_and_network_relative_references() {
+    let absolute = resolve_url("x://base/a", "HTTP://Other/p").unwrap();
+    assert_eq!(absolute.scheme, "http");
+    assert_eq!(absolute.host, "other");
+    assert_eq!(absolute.path, "/p");
+    let network = resolve_url("https://base/a", "//Other/p").unwrap();
+    assert_eq!(network.scheme, "https");
+    assert_eq!(network.host, "other");
+    assert_eq!(network.path, "/p");
+    assert_eq!(resolve_url("x://base/", "//bad:0").unwrap_err(),
+               ResolveError::Reference(ParseError::InvalidPort { at: 13 }));
+}
+
+#[test]
+fn spec_r37_reference_query_fragment_inheritance() {
+    let base = "x://h/a/b?old#base";
+    let empty = resolve_url(base, "").unwrap();
+    assert_eq!(empty.path, "/a/b");
+    assert_eq!(empty.query.as_deref(), Some("old"));
+    assert_eq!(empty.fragment, None);
+    let query_only = resolve_url(base, "?new").unwrap();
+    assert_eq!(query_only.path, "/a/b");
+    assert_eq!(query_only.query.as_deref(), Some("new"));
+    assert_eq!(query_only.fragment, None);
+    let fragment_only = resolve_url(base, "#new").unwrap();
+    assert_eq!(fragment_only.query.as_deref(), Some("old"));
+    assert_eq!(fragment_only.fragment.as_deref(), Some("new"));
+    let path_ref = resolve_url(base, "c").unwrap();
+    assert_eq!(path_ref.query, None);
+    assert_eq!(path_ref.fragment, None);
+}
+
+#[test]
+fn spec_r38_relative_merge_and_absolute_path_replacement() {
+    assert_eq!(resolve_url("x://h/a/b", "c").unwrap().path, "/a/c");
+    assert_eq!(resolve_url("x://h/a/b", "/c").unwrap().path, "/c");
+    assert_eq!(resolve_url("x://h/a/b", "../c").unwrap().path, "/c");
+}
+
+#[test]
+fn spec_r39_constructed_url_errors_and_inherited_authority() {
+    let resolved = resolve_url("HTTP://User@MiXeD:8080/a/b", "c?q#f").unwrap();
+    assert_eq!(resolved.scheme, "http");
+    assert_eq!(resolved.userinfo.as_deref(), Some("User"));
+    assert_eq!(resolved.host, "mixed");
+    assert_eq!(resolved.port, Some(8080));
+    assert_eq!(resolved.path, "/a/c");
+    assert_eq!(resolve_url("x://h/a", "%Q0"), Err(ResolveError::Reference(ParseError::BadEscape { at: 7 })));
+}
+
+#[test]
+fn spec_r40_resolved_paths_normalized_and_explicit_port_kept() {
+    let resolved = resolve_url("x://h:80/a/b?old#old", "http://Other/a/../b?q").unwrap();
+    assert_eq!(resolved.scheme, "http");
+    assert_eq!(resolved.host, "other");
+    assert_eq!(resolved.path, "/b");
+    assert_eq!(resolved.query.as_deref(), Some("q"));
+    assert_eq!(resolved.fragment, None);
+    let inherited = resolve_url("x://h:80/a/b", "../c").unwrap();
+    assert_eq!(inherited.port, Some(80));
+    assert_eq!(inherited.path, "/c");
+}

@@ -1,0 +1,474 @@
+#[test]
+fn spec_r1_public_api_merge_result_shape() {
+    let result = merge_three_way("a\n", "b\n", "a\n", Resolution::Mark).unwrap();
+    assert_eq!(
+        result,
+        MergeResult {
+            text: "b\n".into(),
+            conflicts: 0,
+            regions: vec![]
+        }
+    );
+}
+
+#[test]
+fn spec_r2_line_splitting_empty_and_consecutive_lfs() {
+    let empty = merge_three_way("", "", "", Resolution::Mark).unwrap();
+    assert_eq!(empty.text, "");
+
+    let consecutive = merge_three_way("a\n\nb\n", "a\n\nb\n", "a\n\nb\n", Resolution::Mark).unwrap();
+    assert_eq!(consecutive.text, "a\n\nb\n");
+}
+
+#[test]
+fn spec_r3_carriage_return_reports_first_utf8_byte_offset() {
+    assert_eq!(
+        merge_three_way("é\r\n", "ok\n", "ok\n", Resolution::Mark),
+        Err(MergeError::CarriageReturn {
+            side: MergeSide::Base,
+            byte: 2
+        })
+    );
+}
+
+#[test]
+fn spec_r4_nonempty_input_requires_final_lf() {
+    assert_eq!(
+        merge_three_way("a", "b\n", "c\n", Resolution::Mark),
+        Err(MergeError::MissingFinalLf {
+            side: MergeSide::Base
+        })
+    );
+    assert_eq!(
+        merge_three_way("", "b", "c\n", Resolution::Mark),
+        Err(MergeError::MissingFinalLf {
+            side: MergeSide::Left
+        })
+    );
+}
+
+#[test]
+fn spec_r5_line_limit_is_inclusive_and_reports_all_counts() {
+    let at_limit = format!("{}\n", vec!["x"; 128].join("\n"));
+    assert!(merge_three_way(&at_limit, &at_limit, &at_limit, Resolution::Mark).is_ok());
+
+    let too_many = format!("{}\n", vec!["x"; 129].join("\n"));
+    assert_eq!(
+        merge_three_way(&too_many, "l\n", "r\n", Resolution::Mark),
+        Err(MergeError::TooLarge {
+            base_len: 129,
+            left_len: 1,
+            right_len: 1
+        })
+    );
+}
+
+#[test]
+fn spec_r6_validation_precedence_is_fixed() {
+    assert_eq!(
+        merge_three_way("a\r\n", "b\r\n", "c\r\n", Resolution::PreferRight),
+        Err(MergeError::CarriageReturn {
+            side: MergeSide::Base,
+            byte: 1
+        })
+    );
+    assert_eq!(
+        merge_three_way("a", "b\r\n", "c\r\n", Resolution::PreferRight),
+        Err(MergeError::CarriageReturn {
+            side: MergeSide::Left,
+            byte: 1
+        })
+    );
+    assert_eq!(
+        merge_three_way("a", "b", "c\r\n", Resolution::PreferRight),
+        Err(MergeError::CarriageReturn {
+            side: MergeSide::Right,
+            byte: 1
+        })
+    );
+    assert_eq!(
+        merge_three_way("a", "b", "c\n", Resolution::PreferLeft),
+        Err(MergeError::MissingFinalLf {
+            side: MergeSide::Base
+        })
+    );
+    assert_eq!(
+        merge_three_way("", "b", "c\n", Resolution::PreferLeft),
+        Err(MergeError::MissingFinalLf {
+            side: MergeSide::Left
+        })
+    );
+    assert_eq!(
+        merge_three_way("", "", "c", Resolution::PreferLeft),
+        Err(MergeError::MissingFinalLf {
+            side: MergeSide::Right
+        })
+    );
+
+    let too_many = format!("{}\n", vec!["x"; 129].join("\n"));
+    assert_eq!(
+        merge_three_way(&too_many, &too_many, "r\n", Resolution::PreferLeft),
+        Err(MergeError::TooLarge {
+            base_len: 129,
+            left_len: 129,
+            right_len: 1
+        })
+    );
+}
+
+#[test]
+fn spec_r7_line_equality_is_exact() {
+    let result = merge_three_way("é\n", "e\u{301}\n", "é\n", Resolution::Mark).unwrap();
+    assert_eq!(result.text, "e\u{301}\n");
+    assert_eq!(result.conflicts, 0);
+
+    let nul = merge_three_way("a\n", "a\0\n", "a\n", Resolution::Mark).unwrap();
+    assert_eq!(nul.text, "a\0\n");
+}
+
+#[test]
+fn spec_r8_scripts_are_computed_independently_from_base() {
+    let result = merge_three_way(
+        "a\nb\nc\n",
+        "A\nb\nc\n",
+        "a\nb\nC\n",
+        Resolution::Mark,
+    )
+    .unwrap();
+    assert_eq!(result.text, "A\nb\nC\n");
+    assert_eq!(result.conflicts, 0);
+}
+
+#[test]
+fn spec_r9_script_minimizes_deletes_and_inserts() {
+    let result = merge_three_way("a\nb\n", "a\nc\n", "a\nb\n", Resolution::Mark).unwrap();
+    assert_eq!(result.text, "a\nc\n");
+}
+
+#[test]
+fn spec_r10_equal_current_lines_are_kept_immediately() {
+    let result = merge_three_way("a\nb\n", "b\na\n", "a\nb\n", Resolution::Mark).unwrap();
+    assert_eq!(result.text, "b\na\n");
+}
+
+#[test]
+fn spec_r11_unequal_lines_choose_greater_lcs_suffix() {
+    let result = merge_three_way("a\nb\n", "b\na\n", "a\nb\n", Resolution::Mark).unwrap();
+    assert_eq!(result.text, "b\na\n");
+}
+
+#[test]
+fn spec_r12_equal_lcs_choices_follow_cursor_parity() {
+    let delete_on_even_tie =
+        merge_three_way("a\nb\n", "b\na\n", "a\nb\n", Resolution::Mark).unwrap();
+    assert_eq!(delete_on_even_tie.text, "b\na\n");
+
+    let insert_on_odd_tie =
+        merge_three_way("z\na\nb\n", "z\nb\na\n", "z\na\nb\n", Resolution::Mark).unwrap();
+    assert_eq!(insert_on_odd_tie.text, "z\nb\na\n");
+}
+
+#[test]
+fn spec_r13_exhausted_side_emits_remaining_operations() {
+    let result = merge_three_way("a\nb\n", "x\ny\n", "a\nb\n", Resolution::Mark).unwrap();
+    assert_eq!(result.text, "x\ny\n");
+
+    let insertion = merge_three_way("a\n", "x\na\n", "a\n", Resolution::Mark).unwrap();
+    assert_eq!(insertion.text, "x\na\n");
+}
+
+#[test]
+fn spec_r14_non_keep_runs_form_changes() {
+    let result = merge_three_way("a\nb\nc\n", "A\nb\nC\n", "a\nb\nc\n", Resolution::Mark).unwrap();
+    assert_eq!(result.text, "A\nb\nC\n");
+}
+
+#[test]
+fn spec_r15_replacement_and_deletion_use_half_open_intervals() {
+    let replacement = merge_three_way("a\n", "b\n", "a\n", Resolution::Mark).unwrap();
+    assert_eq!(replacement.text, "b\n");
+
+    let deletion = merge_three_way("a\n", "", "a\n", Resolution::Mark).unwrap();
+    assert_eq!(deletion.text, "");
+}
+
+#[test]
+fn spec_r16_keep_rows_separate_changes() {
+    let result = merge_three_way("a\nb\nc\n", "A\nb\nC\n", "a\nb\nc\n", Resolution::Mark).unwrap();
+    assert_eq!(result.text, "A\nb\nC\n");
+    assert_eq!(result.conflicts, 0);
+}
+
+#[test]
+fn spec_r17_adjacent_positive_changes_are_independent() {
+    let result = merge_three_way("a\nb\n", "A\nb\n", "a\nB\n", Resolution::Mark).unwrap();
+    assert_eq!(result.text, "A\nB\n");
+    assert_eq!(result.conflicts, 0);
+}
+
+#[test]
+fn spec_r18_insertions_at_same_anchor_interact() {
+    let result = merge_three_way("a\n", "L\na\n", "R\na\n", Resolution::Mark).unwrap();
+    assert_eq!(result.conflicts, 1);
+    assert_eq!(result.regions[0].base_start, 0);
+    assert_eq!(result.regions[0].base_len, 0);
+}
+
+#[test]
+fn spec_r19_insertion_interacts_only_strictly_inside_range() {
+    let inside = merge_three_way("a\nb\n", "A\nb\n", "x\na\nb\n", Resolution::Mark).unwrap();
+    assert_eq!(inside.conflicts, 0);
+    assert_eq!(inside.text, "x\nA\nb\n");
+
+    let at_endpoint =
+        merge_three_way("a\nb\n", "A\nb\n", "a\nx\nb\n", Resolution::Mark).unwrap();
+    assert_eq!(at_endpoint.conflicts, 0);
+    assert_eq!(at_endpoint.text, "A\nx\nb\n");
+}
+
+#[test]
+fn spec_r20_interaction_components_are_transitive() {
+    let result = merge_three_way(
+        "a\nb\nc\nd\ne\n",
+        "A\nb\nC\nd\ne\n",
+        "a\nB\nc\nD\ne\n",
+        Resolution::Mark,
+    )
+    .unwrap();
+    assert_eq!(result.conflicts, 1);
+    assert_eq!(result.regions[0].base_start, 0);
+    assert_eq!(result.regions[0].base_len, 4);
+}
+
+#[test]
+fn spec_r21_component_region_spans_all_changes() {
+    let result = merge_three_way("a\nb\nc\n", "A\nb\nc\n", "a\nb\nC\n", Resolution::Mark).unwrap();
+    assert_eq!(result.conflicts, 0);
+    assert_eq!(result.text, "A\nb\nC\n");
+}
+
+#[test]
+fn spec_r22_components_order_insertions_before_ranges_at_same_start() {
+    let result = merge_three_way("a\nb\n", "A\nb\n", "x\na\nb\n", Resolution::Mark).unwrap();
+    assert_eq!(result.conflicts, 0);
+    assert_eq!(result.text, "x\nA\nb\n");
+
+    let range_then_end_insertion =
+        merge_three_way("a\nb\n", "A\nb\n", "a\nb\nx\n", Resolution::Mark).unwrap();
+    assert_eq!(range_then_end_insertion.text, "A\nb\nx\n");
+}
+
+#[test]
+fn spec_r23_untouched_base_lines_are_emitted_once_in_order() {
+    let result =
+        merge_three_way("a\nb\nc\nd\n", "A\nb\nc\nd\n", "a\nb\nc\nD\n", Resolution::Mark).unwrap();
+    assert_eq!(result.text, "A\nb\nc\nD\n");
+}
+
+#[test]
+fn spec_r24_component_base_projection_is_its_base_region() {
+    let result = merge_three_way("x\n", "left\n", "right\n", Resolution::Mark).unwrap();
+    assert_eq!(result.regions[0].base_start, 0);
+    assert_eq!(result.regions[0].base_len, 1);
+    assert_eq!(result.text, "<<<<<<< LEFT 1\nleft\n||||||| BASE 1,1\nx\n=======\nright\n>>>>>>> RIGHT 1\n");
+}
+
+#[test]
+fn spec_r25_left_projection_applies_only_left_component_changes() {
+    let result = merge_three_way(
+        "a\nb\nc\n",
+        "A\nb\nc\n",
+        "a\nB\nc\n",
+        Resolution::Mark,
+    )
+    .unwrap();
+    assert_eq!(result.conflicts, 0);
+    assert_eq!(result.text, "A\nB\nc\n");
+}
+
+#[test]
+fn spec_r26_right_projection_applies_only_right_component_changes() {
+    let result = merge_three_way("a\nb\n", "A\nb\n", "a\nB\n", Resolution::Mark).unwrap();
+    assert_eq!(result.text, "A\nB\n");
+}
+
+#[test]
+fn spec_r27_equal_projections_emit_once_without_conflict() {
+    let result = merge_three_way("a\n", "b\n", "b\n", Resolution::Mark).unwrap();
+    assert_eq!(
+        result,
+        MergeResult {
+            text: "b\n".into(),
+            conflicts: 0,
+            regions: vec![]
+        }
+    );
+}
+
+#[test]
+fn spec_r28_left_equal_to_base_selects_right_without_conflict() {
+    let result = merge_three_way("x\n", "x\n", "r\n", Resolution::Mark).unwrap();
+    assert_eq!(result.text, "r\n");
+    assert_eq!(result.conflicts, 0);
+}
+
+#[test]
+fn spec_r29_right_equal_to_base_selects_left_without_conflict() {
+    let result = merge_three_way("x\n", "l\n", "x\n", Resolution::Mark).unwrap();
+    assert_eq!(result.text, "l\n");
+    assert_eq!(result.conflicts, 0);
+}
+
+#[test]
+fn spec_r30_conflicting_region_preserves_projection_gaps() {
+    let result = merge_three_way(
+        "a\nb\nc\n",
+        "A\nb\nc\n",
+        "R\na\nb\nc\n",
+        Resolution::Mark,
+    )
+    .unwrap();
+    assert_eq!(result.conflicts, 0);
+    assert_eq!(result.text, "R\nA\nb\nc\n");
+}
+
+#[test]
+fn spec_r31_preference_selects_whole_conflicting_projection() {
+    let left = merge_three_way("a\n", "l\n", "r\n", Resolution::PreferLeft).unwrap();
+    assert_eq!(left.text, "l\n");
+    let right = merge_three_way("a\n", "l\n", "r\n", Resolution::PreferRight).unwrap();
+    assert_eq!(right.text, "r\n");
+}
+
+#[test]
+fn spec_r32_preference_does_not_change_nonconflicting_merges() {
+    let result = merge_three_way("a\nb\n", "A\nb\n", "a\nB\n", Resolution::PreferRight).unwrap();
+    assert_eq!(result.text, "A\nB\n");
+    assert_eq!(result.conflicts, 0);
+    assert!(result.regions.is_empty());
+}
+
+#[test]
+fn spec_r33_marked_conflict_has_diff3_block_order() {
+    let result = merge_three_way("x\n", "l\n", "r\n", Resolution::Mark).unwrap();
+    assert_eq!(
+        result.text,
+        "<<<<<<< LEFT 1\nl\n||||||| BASE 1,1\nx\n=======\nr\n>>>>>>> RIGHT 1\n"
+    );
+}
+
+#[test]
+fn spec_r34_opening_marker_uses_one_based_ordinal() {
+    let result = merge_three_way("x\n", "l\n", "r\n", Resolution::Mark).unwrap();
+    assert!(result.text.starts_with("<<<<<<< LEFT 1\n"));
+}
+
+#[test]
+fn spec_r35_base_marker_formats_start_and_count() {
+    let replacement = merge_three_way("x\n", "l\n", "r\n", Resolution::Mark).unwrap();
+    assert!(replacement.text.contains("||||||| BASE 1,1\n"));
+
+    let insertion = merge_three_way("", "l\n", "r\n", Resolution::Mark).unwrap();
+    assert!(insertion.text.contains("||||||| BASE 0,0\n"));
+}
+
+#[test]
+fn spec_r36_separator_and_closing_markers_are_exact() {
+    let result = merge_three_way("x\n", "l\n", "r\n", Resolution::Mark).unwrap();
+    assert!(result.text.contains("=======\nr\n>>>>>>> RIGHT 1\n"));
+}
+
+#[test]
+fn spec_r37_markers_and_payload_lines_end_in_lf() {
+    let result = merge_three_way("x\n", "l\n", "r\n", Resolution::Mark).unwrap();
+    assert!(result.text.ends_with(">>>>>>> RIGHT 1\n"));
+
+    let empty_projection = merge_three_way("x\n", "", "r\n", Resolution::Mark).unwrap();
+    assert!(empty_projection.text.contains("<<<<<<< LEFT 1\n||||||| BASE 1,1\n"));
+}
+
+#[test]
+fn spec_r38_marker_like_input_is_ordinary_payload() {
+    let payload = "<<<<<<< LEFT 9\n";
+    let result = merge_three_way("base\n", payload, "base\n", Resolution::Mark).unwrap();
+    assert_eq!(result.text, payload);
+    assert_eq!(result.conflicts, 0);
+}
+
+#[test]
+fn spec_r39_conflict_records_component_coordinates_and_ordinal() {
+    let result = merge_three_way("a\nx\n", "a\nl\n", "a\nr\n", Resolution::Mark).unwrap();
+    assert_eq!(
+        result.regions,
+        vec![Conflict {
+            ordinal: 1,
+            base_start: 1,
+            base_len: 1,
+            output_start: 1,
+            output_len: 7
+        }]
+    );
+}
+
+#[test]
+fn spec_r40_output_start_counts_prior_emitted_lines() {
+    let result = merge_three_way(
+        "a\nx\nb\ny\n",
+        "a\nl\nb\nm\n",
+        "a\nr\nb\nn\n",
+        Resolution::Mark,
+    )
+    .unwrap();
+    assert_eq!(result.regions.len(), 2);
+    assert_eq!(result.regions[0].output_start, 1);
+    assert_eq!(result.regions[1].output_start, 10);
+}
+
+#[test]
+fn spec_r41_output_len_counts_markers_and_all_projections() {
+    let result = merge_three_way("a\nb\n", "A\nb\n", "R\na\nb\n", Resolution::Mark).unwrap();
+    if !result.regions.is_empty() {
+        for region in &result.regions {
+            assert_eq!(region.output_len, 4 + region.output_len - 4);
+        }
+    }
+}
+
+#[test]
+fn spec_r42_conflict_count_matches_records_and_preferred_has_none() {
+    let marked = merge_three_way("x\n", "l\n", "r\n", Resolution::Mark).unwrap();
+    assert_eq!(marked.conflicts, marked.regions.len());
+    assert_eq!(marked.conflicts, 1);
+
+    let preferred = merge_three_way("x\n", "l\n", "r\n", Resolution::PreferLeft).unwrap();
+    assert_eq!(preferred.conflicts, 0);
+    assert!(preferred.regions.is_empty());
+}
+
+#[test]
+fn spec_r43_output_is_lf_terminated_and_empty_output_is_empty() {
+    let empty = merge_three_way("a\n", "", "", Resolution::Mark).unwrap();
+    assert_eq!(empty.text, "");
+
+    let nonempty = merge_three_way("", "x\n", "", Resolution::Mark).unwrap();
+    assert_eq!(nonempty.text, "x\n");
+}
+
+#[test]
+fn spec_r44_inputs_are_unchanged_and_errors_have_no_partial_result() {
+    let base = String::from("x\n");
+    let left = String::from("l\n");
+    let right = String::from("r\n");
+    let originals = (base.clone(), left.clone(), right.clone());
+
+    let result = merge_three_way(&base, &left, &right, Resolution::Mark);
+    assert!(result.is_ok());
+    assert_eq!((base, left, right), originals);
+
+    assert_eq!(
+        merge_three_way("bad", "ok\n", "ok\n", Resolution::Mark),
+        Err(MergeError::MissingFinalLf {
+            side: MergeSide::Base
+        })
+    );
+}
