@@ -24,6 +24,8 @@
 //!   catalyst). The seed coder never sees its own code (LOG S0).
 //! - `lessons`: task-agnostic lessons (at most 12), rendered as a numbered
 //!   list after the task input; `a2d distill` writes them from train labels;
+//! - `dedupe_input`: keep the task input in `requirements` only; the seed
+//!   copies it into `design` and `plan` as well (three copies per prompt);
 //! - `stop_at_public_green`: end the task once a cycle's code passes every
 //!   public test, as arm D does; otherwise the remaining budget is spent on
 //!   post-green rewrites.
@@ -86,6 +88,7 @@ const HARNESS_KEYS: &[&str] = &[
     "route_previous_code",
     "stop_at_public_green",
     "lessons",
+    "dedupe_input",
 ];
 
 /// Header of the rendered `lessons` list in every enzyme's task input.
@@ -136,7 +139,7 @@ fn harness_germline(harness: &Value) -> Result<Germline, String> {
             .propose_remove(&EnzymeId::from(id))
             .map_err(|e| format!("cannot drop {id}: {e}"))?;
     }
-    for flag in ["route_previous_code", "stop_at_public_green"] {
+    for flag in ["route_previous_code", "stop_at_public_green", "dedupe_input"] {
         if harness.get(flag).is_some_and(|v| !v.is_boolean()) {
             return Err(format!("{flag} must be a boolean"));
         }
@@ -223,6 +226,16 @@ impl ArmC for MetabolismArm {
             .with_provider_failure_cooldown(Duration::ZERO)
             .without_max_cycle_wall_clock();
         seed_initial_runtime_artifacts(&mut metabolism, &harness_input(task, harness));
+        if harness["dedupe_input"].as_bool().unwrap_or(false) {
+            // The seed writes the whole task input into requirements, design
+            // and plan, so every prompt carries it three times (LOG S4).
+            for artifact in ["design", "plan"] {
+                metabolism.seed_artifact(
+                    ArtifactType::from(artifact),
+                    b"(identical to requirements)".to_vec(),
+                );
+            }
+        }
 
         let route = harness["route_previous_code"].as_bool().unwrap_or(false);
         let stop_at_green = harness["stop_at_public_green"].as_bool().unwrap_or(false);
@@ -528,6 +541,31 @@ mod tests {
         assert!(harness_germline(&serde_json::json!({ "lessons": too_many })).is_err());
         let too_long = "x".repeat(MAX_LESSON_CHARS + 1);
         assert!(harness_germline(&serde_json::json!({ "lessons": [too_long] })).is_err());
+    }
+
+    #[test]
+    fn dedupe_input_renders_the_task_once_per_coder_prompt() {
+        let task = PublicTask {
+            id: "t".into(),
+            family: "f".into(),
+            requirements: "Implement `fn double(x: i32) -> i32`. UNIQUE_SPEC_MARKER_7".into(),
+            public_tests: "#[test]\nfn doubles_two() { assert_eq!(double(2), 4); }\n".into(),
+            test_timeout_secs: 10,
+        };
+        let first_coder_prompt = |harness: Value| {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            MetabolismArm.run(Box::new(EnzymeMock { seen: seen.clone() }), &task, 5, &harness);
+            let seen = seen.lock().unwrap();
+            seen.iter().find(|p| p.contains("programmer")).cloned().unwrap()
+        };
+        let base = serde_json::json!({"drop_enzymes": ["architect", "tester"], "lessons": ["L."]});
+        let mut once = base.clone();
+        once["dedupe_input"] = Value::Bool(true);
+        assert_eq!(first_coder_prompt(base).matches("UNIQUE_SPEC_MARKER_7").count(), 3);
+        let prompt = first_coder_prompt(once);
+        assert_eq!(prompt.matches("UNIQUE_SPEC_MARKER_7").count(), 1);
+        assert_eq!(prompt.matches(LESSONS_HEADER).count(), 1);
+        assert!(harness_germline(&serde_json::json!({"dedupe_input": 1})).is_err());
     }
 
     #[test]
