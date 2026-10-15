@@ -17,6 +17,9 @@ E1_DIR = Path(__file__).resolve().parents[1] / "e1"
 if str(E1_DIR) not in sys.path:
     sys.path.insert(0, str(E1_DIR))
 
+# Run as a script (python3 bench/evolve/loop.py): make `bench` importable from the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 from bench.e1 import tasks
 from bench.evolve import episode, lock, researcher, stats
 
