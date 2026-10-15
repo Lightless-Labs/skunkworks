@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# lanes: judge=codex/gpt-6.1-sol:medium
 """Nanoharness candidate E002: sample 4, judge 1 (from C2-E1).
 
 Hypothesis: four independent coder samples, public-tested, plus ONE call to
@@ -9,9 +10,14 @@ same 5-call budget. Offline on the frozen train pool: 0.831 (Claude judge) and
 
 Budget per task (k = 5): 4 coder samples, then either 1 judge call (two or
 more distinct green files), 1 repair call (no green file), or nothing (one
-green file). The judge is the controller lane named "judge".
+green file). The judge is the controller lane named "judge" (Sol, medium
+effort, no tools). Candidates are shown in a seeded shuffle (seed = task id);
+the reply must name exactly one shown letter, otherwise the fallback (first
+green in generation order) is used and recorded. One DIAG line per task goes
+to stderr: branch, shown order, pick, fallback reason.
 """
 import json
+import random
 import re
 import sys
 
@@ -67,43 +73,57 @@ def rank(entry):
     return (public["passed"], public["compiled"]) if public else (0, False)
 
 
-def judge(task, greens):
-    letters = "ABCDEFGH"
+def judge(task, greens, diag):
+    letters = "ABCDEFGH"[: len(greens)]
+    order = list(range(len(greens)))
+    random.Random(task["id"]).shuffle(order)
+    shown = [greens[i] for i in order]
+    diag["shown_order"] = order
     body = "TASK:\n" + task["task_prompt"] + "\n\nCANDIDATES:\n"
-    for letter, code in zip(letters, greens):
+    for letter, code in zip(letters, shown):
         body += f"\n### {letter}.rs\n```rust\n{code.rstrip()}\n```\n"
     reply = request("model", lane="judge", system=JUDGE, prompt=body)
-    if reply.get("ok"):
-        match = re.search(r"\{.*\}", reply["text"], re.S)
-        try:
-            pick = json.loads(match.group(0))["pick"].strip().upper()[:1]
-            if pick in letters[: len(greens)]:
-                return greens[letters.index(pick)]
-        except Exception:
-            pass
-    return greens[0]
+    if not reply.get("ok"):
+        diag["fallback"] = "judge call failed: " + str(reply.get("error", ""))[:120]
+        return greens[0]
+    picks = re.findall(r'"pick"\s*:\s*"([^"]*)"', reply["text"])
+    if len(picks) != 1 or picks[0].strip().upper() not in letters or len(picks[0].strip()) != 1:
+        diag["fallback"] = "unparseable pick: " + reply["text"][:120]
+        return greens[0]
+    letter = picks[0].strip().upper()
+    diag["pick"] = letter
+    return shown[letters.index(letter)]
 
 
 def main():
     task = json.loads(sys.stdin.readline())["task"]
     base = task["task_prompt"]
+    diag = {"task": task["id"]}
     entries = [sample(task, base) for _ in range(min(4, task["k"]))]
     greens = []
     for code, public in entries:
         if public and public.get("all_passed") and code not in greens:
             greens.append(code)
+    diag["greens"] = len(greens)
     if len(greens) >= 2 and task["k"] >= 5:
-        request("done", codes=[judge(task, greens)])
+        diag["branch"] = "judge"
+        chosen = judge(task, greens, diag)
+        print("DIAG " + json.dumps(diag), file=sys.stderr, flush=True)
+        request("done", codes=[chosen])
         return
     if greens:
+        diag["branch"] = "one-green"
+        print("DIAG " + json.dumps(diag), file=sys.stderr, flush=True)
         request("done", codes=[greens[0]])
         return
+    diag["branch"] = "no-green-repair"
     best = max(entries, key=rank)
     codes = [c for c, _ in entries if c is not None]
     if task["k"] >= 5:
         code, public = sample(task, repair_prompt(base, best[0], best[1], task["max_feedback_chars"]))
         if code is not None:
             codes.append(code)
+    print("DIAG " + json.dumps(diag), file=sys.stderr, flush=True)
     request("done", codes=codes)
 
 

@@ -1,28 +1,55 @@
 #!/usr/bin/env python3
-"""Eval v2 for the nanoharness (A²D cycle 2): one keep/discard experiment.
+"""Eval v2.1 for the nanoharness (A²D cycle 2): one keep/discard experiment.
 
-    python3 -I nano/eval.py run --id E001 --candidate <file.py> --hypothesis "..." [--proposer me]
-    python3 -I nano/eval.py aa [--reps 1]        # A/A: incumbent vs itself; writes nano/aa.json
-    python3 -I nano/eval.py halves               # writes nano/halves.json (fixed seeded family split)
+    python3 -I nano/eval.py aa                  # 3-arm A/A + parity run; writes nano/aa.json
+    python3 -I nano/eval.py run --id E002 --candidate <file.py> --hypothesis "..." [--proposer claude]
 
-Protocol (docs/plans/2026-10-15-cycle2-nanoharness.md):
-- incumbent = nano/harness.py; candidate and incumbent run in ONE `a2d lift`
-  run as external arms X:inc and X:cand, paired by task (k = 5);
-- screen on half S of the dev families; a candidate whose screen delta is
-  below half the keep threshold is discarded there;
-- otherwise run the other half and pool: delta = mean paired difference in
-  hidden-test fraction over all dev tasks (all-pass difference reported);
-- keep iff delta > threshold, the 95th percentile of the family-bootstrap
-  null from the A/A run (centred per-task differences);
-- every experiment appends one line to nano/results.tsv; a keep replaces
-  nano/harness.py and archives the old one in nano/history/.
+Protocol (docs/plans/2026-10-15-cycle2-nanoharness.md, Addendum after the design review):
+- incumbent = nano/harness.py. Candidate and incumbent run in ONE `a2d lift`
+  run as external arms X:inc and X:cand, paired by task (k = 5). Model lanes a
+  harness needs are declared in a `# lanes: name=codex/<model>:<effort>`
+  header line and passed to the controller.
+- Every experiment is immutable: runs/c2-<id>/manifest.json records the code,
+  controller and suite hashes; cached runs are reused only if it matches.
+  The evaluated snapshot (not the mutable source path) is what is promoted.
+- Screen on a half of the dev families, chosen by a seed derived from the
+  experiment id. A screen delta below half the threshold is a discard.
+- Full stage: run the other half and pool. A provisional keep needs
+  delta > max(threshold, 1.645 * cluster SE), and the all-pass delta must
+  not be significantly negative (> -1.645 * its cluster SE).
+- Confirmation: a fresh full run (both halves, new seed). Promotion needs its
+  delta > threshold / 2. Keeps are exploratory; claims come only from the
+  dev-holdout and confirmation sets.
+- Every scored run must have exactly one score per expected task for each
+  arm; otherwise the run is invalid (operational failures are never
+  silently dropped).
+- threshold = 95th percentile of the family-bootstrap null from the A/A run
+  (centred per-task differences, one draw per task as in candidate runs).
+  The A/A run is a 3-arm run (D, X:a, X:b) so it also checks parity with
+  native D. It must match the current incumbent's hash.
 """
-import argparse, datetime, hashlib, json, os, pathlib, random, shutil, subprocess, sys
+import argparse, datetime, hashlib, json, os, pathlib, random, re, shutil, subprocess, sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 NANO = ROOT / "nano"
 DEV = ROOT / "tasks/train-all"
 A2D = str(ROOT / "target/debug/a2d")
+PROTOCOL = "eval-v2.1"
+FIELDS = ("id", "date", "proposer", "stage", "hypothesis", "delta_frac", "se", "delta_allpass",
+          "se_allpass", "threshold", "n_tasks", "n_families", "decision", "invocations", "calls_by_lane",
+          "tokens", "candidate_sha", "note")
+
+
+def sha(path):
+    return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+
+
+def git_head():
+    return subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+
+def suite_hash(suite):
+    return subprocess.run([A2D, "lift", "hash", str(suite)], capture_output=True, text=True).stdout.strip()
 
 
 def families(suite):
@@ -32,69 +59,93 @@ def families(suite):
     return fams
 
 
-def halves():
-    path = NANO / "halves.json"
-    if path.exists():
-        return json.loads(path.read_text())
-    fams = sorted(families(DEV))
-    rng = random.Random("A2D-C2-HALVES")
-    rng.shuffle(fams)
-    split = {"S": sorted(fams[: len(fams) // 2]), "R": sorted(fams[len(fams) // 2:])}
-    path.write_text(json.dumps(split, indent=1) + "\n")
-    return split
+def lanes_of(*files):
+    lanes = {}
+    for f in files:
+        for m in re.finditer(r"^# lanes:\s*(.+)$", pathlib.Path(f).read_text(), re.M):
+            for spec in m.group(1).split():
+                name, value = spec.split("=", 1)
+                lanes[name] = value
+    return lanes
 
 
-def half_suite(name):
-    d = NANO / "suites" / name
-    if not d.exists():
-        d.mkdir(parents=True)
-        fams = families(DEV)
-        for f in halves()[name]:
-            for task in fams[f]:
-                (d / task).symlink_to(os.path.relpath((DEV / task).resolve(), d))
+def make_suite(d, fam_names):
+    if d.exists():
+        return d
+    d.mkdir(parents=True)
+    fams = families(DEV)
+    for f in fam_names:
+        for task in fams[f]:
+            (d / task).symlink_to(os.path.relpath((DEV / task).resolve(), d))
     return d
 
 
-def lift(exp, suite, inc, cand, out, seed, jobs):
+def lift(exp, suite, arms, externals, lanes, out, seed, jobs):
     cmd = [A2D, "lift", "run", "--experiment", exp, "--unregistered", "--suite", str(suite),
-           "--model", "codex/gpt-6-luna", "--effort", "low", "--arms", "X:inc,X:cand",
-           "--external", f"inc={inc}", "--external", f"cand={cand}", "--k", "5",
+           "--model", "codex/gpt-6-luna", "--effort", "low", "--arms", ",".join(arms), "--k", "5",
            "--seed", str(seed), "--jobs", str(jobs), "--min-families", "1",
-           "--max-invocations", "1500", "--max-wall-clock-secs", "14400", "--out", str(out)]
+           "--max-invocations", "2000", "--max-wall-clock-secs", "21600", "--out", str(out)]
+    if "D" in arms:
+        cmd += ["--primary", "D"]
+    for name, path in externals.items():
+        cmd += ["--external", f"{name}={path}"]
+    for name, spec in lanes.items():
+        cmd += ["--lane", f"{name}={spec}"]
     with open(str(out) + ".log", "w") as log:
         code = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT).returncode
-    if code:
+    if code or not (out / "summary.json").exists():
         sys.exit(f"lift run failed ({code}); see {out}.log")
 
 
-def scores(run):
-    """{(arm, task): (fraction, all_passed, family)} plus invocations by arm."""
-    out, inv = {}, {}
+def scores(run, suite):
+    """{(arm, task): (fraction, all_passed, family)}; validates completeness."""
+    expected = {p.name for p in suite.iterdir() if (p / "task.json").exists()}
+    out, arms = {}, set()
     for line in (run / "ledger.jsonl").read_text().splitlines():
         r = json.loads(line)
         if r["kind"] == "score":
+            key = (r["arm"], r["task"])
+            if key in out:
+                sys.exit(f"{run}: duplicate score for {key}")
             res = r["result"]
             exp = res.get("expected") or 0
             frac = res["passed"] / exp if exp and res.get("compiled") else 0.0
-            out[(r["arm"], r["task"])] = (frac, 1.0 if res["all_passed"] else 0.0, r["family"])
-        elif r["kind"] == "invocation":
-            inv[r["arm"]] = inv.get(r["arm"], 0) + 1
-    return out, inv
+            out[key] = (frac, 1.0 if res["all_passed"] else 0.0, r["family"])
+            arms.add(r["arm"])
+    for arm in arms:
+        got = {t for (a, t) in out if a == arm}
+        if got != expected:
+            sys.exit(f"{run}: arm {arm} scored {len(got)} of {len(expected)} expected tasks; run invalid")
+    return out
 
 
-def paired(runs, x="X:cand", y="X:inc"):
-    """Per-task differences (fraction, all-pass) with families, over runs."""
+def spend(run):
+    """Invocations, calls by provider, and tokens by arm (from the ledger)."""
+    calls, tokens, total = {}, 0, 0
+    for line in (run / "ledger.jsonl").read_text().splitlines():
+        r = json.loads(line)
+        if r["kind"] == "invocation":
+            total += 1
+            key = f'{r.get("arm")}/{r.get("provider", "?")}'
+            calls[key] = calls.get(key, 0) + 1
+            usage = r.get("usage") or {}
+            tokens += usage.get("reported_total") or sum(
+                usage.get(k, 0) or 0 for k in ("prompt_tokens", "completion_tokens", "thinking_tokens"))
+    return total, calls, tokens
+
+
+def paired(runs_suites, x, y):
     rows = []
-    for run in runs:
-        s, _ = scores(run)
+    for run, suite in runs_suites:
+        s = scores(run, suite)
         for (arm, task), (fx, ax, fam) in s.items():
-            if arm == x and (y, task) in s:
+            if arm == x:
                 fy, ay, _ = s[(y, task)]
                 rows.append((fam, fx - fy, ax - ay))
     return rows
 
 
-def cluster_se(rows, idx=1, reps=2000, seed=7):
+def cluster_se(rows, idx, reps=2000, seed=7):
     by = {}
     for r in rows:
         by.setdefault(r[0], []).append(r[idx])
@@ -102,15 +153,13 @@ def cluster_se(rows, idx=1, reps=2000, seed=7):
     rng = random.Random(seed)
     means = []
     for _ in range(reps):
-        pick = [rng.choice(fams) for _ in fams]
-        vals = [v for f in pick for v in by[f]]
+        vals = [v for f in (rng.choice(fams) for _ in fams) for v in by[f]]
         means.append(sum(vals) / len(vals))
     mu = sum(means) / len(means)
     return (sum((m - mu) ** 2 for m in means) / (len(means) - 1)) ** 0.5
 
 
 def aa_threshold(rows, reps=4000, seed=11):
-    """95th percentile of the family-bootstrap mean of centred A/A differences."""
     mean = sum(r[1] for r in rows) / len(rows)
     by = {}
     for fam, d, _ in rows:
@@ -123,77 +172,137 @@ def aa_threshold(rows, reps=4000, seed=11):
     return means[int(0.95 * (reps - 1))]
 
 
+def mean(rows, idx):
+    return sum(r[idx] for r in rows) / len(rows)
+
+
 def log_result(fields):
-    with open(NANO / "results.tsv", "a") as f:
-        f.write("\t".join(str(fields.get(k, "")) for k in (
-            "id", "date", "proposer", "hypothesis", "delta_frac", "se", "delta_allpass",
-            "threshold", "decision", "invocations", "note")) + "\n")
+    path = NANO / "results.tsv"
+    if not path.exists() or not path.read_text().startswith("id\t"):
+        path.write_text("\t".join(FIELDS) + "\n")
+    with open(path, "a") as f:
+        f.write("\t".join(str(fields.get(k, "")).replace("\t", " ") for k in FIELDS) + "\n")
+
+
+def manifest(exp_dir, data):
+    path = exp_dir / "manifest.json"
+    if path.exists():
+        old = json.loads(path.read_text())
+        if old != data:
+            sys.exit(f"{exp_dir}: manifest mismatch (ids are immutable); differing keys: "
+                     f"{[k for k in data if old.get(k) != data.get(k)]}")
+    else:
+        path.write_text(json.dumps(data, indent=1) + "\n")
 
 
 def cmd_aa(args):
     inc = NANO / "harness.py"
-    runs = []
-    for rep in range(args.reps):
-        for half in ("S", "R"):
-            out = ROOT / "runs" / f"c2-aa-{half}-r{rep}"
-            if not (out / "summary.json").exists():
-                lift(f"C2-AA-{half}{rep}", half_suite(half), inc, inc, out, 1000 + rep * 10 + (half == "R"), args.jobs)
-            runs.append(out)
-    rows = paired(runs)
+    exp_dir = ROOT / "runs" / f"c2-aa-{sha(inc)[:12]}"
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    snap = exp_dir / "harness.py"
+    if not snap.exists():
+        shutil.copy(inc, snap)
+    lanes = lanes_of(snap)
+    manifest(exp_dir, {"protocol": PROTOCOL, "incumbent_sha": sha(snap), "controller": git_head(),
+                       "suite_hash": suite_hash(DEV), "lanes": lanes})
+    out = exp_dir / "run"
+    if not (out / "summary.json").exists():
+        lift("C2-AA", DEV, ["D", "X:a", "X:b"], {"a": snap, "b": snap}, lanes, out, 4242, args.jobs)
+    rows = paired([(out, DEV)], "X:b", "X:a")
     thr = aa_threshold(rows)
-    inv = sum(sum(scores(r)[1].values()) for r in runs)
-    result = {"harness_sha256": hashlib.sha256(inc.read_bytes()).hexdigest(), "n": len(rows),
-              "mean_delta_frac": sum(r[1] for r in rows) / len(rows),
-              "sd_task_frac": (sum((r[1]) ** 2 for r in rows) / len(rows)) ** 0.5,
-              "threshold_frac": thr, "runs": [str(r.relative_to(ROOT)) for r in runs], "invocations": inv}
+    parity = {f"{x} - D": {"delta_frac": mean(r, 1), "delta_allpass": mean(r, 2), "se_frac": cluster_se(r, 1)}
+              for x in ("X:a", "X:b") for r in [paired([(out, DEV)], x, "D")]}
+    total, calls, tokens = spend(out)
+    result = {"protocol": PROTOCOL, "incumbent_sha": sha(snap), "n": len(rows),
+              "aa_mean_delta_frac": mean(rows, 1), "aa_mean_delta_allpass": mean(rows, 2),
+              "threshold_frac": thr, "parity_vs_D": parity, "run": str(out.relative_to(ROOT)),
+              "invocations": total, "calls": calls, "tokens": tokens}
     (NANO / "aa.json").write_text(json.dumps(result, indent=1) + "\n")
     print(json.dumps(result, indent=1))
 
 
 def cmd_run(args):
     aa = json.loads((NANO / "aa.json").read_text())
+    inc_src = NANO / "harness.py"
+    if aa["incumbent_sha"] != sha(inc_src):
+        sys.exit("nano/aa.json does not match the current incumbent; re-run `eval.py aa` first")
     thr = aa["threshold_frac"]
-    inc = NANO / "harness.py"
-    cand = pathlib.Path(args.candidate).resolve()
     exp_dir = ROOT / "runs" / f"c2-{args.id}"
     exp_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy(inc, exp_dir / "incumbent.py")
-    shutil.copy(cand, exp_dir / "candidate.py")
-    (exp_dir / "hypothesis.txt").write_text(args.hypothesis + "\n")
+    inc, cand = exp_dir / "incumbent.py", exp_dir / "candidate.py"
+    if not cand.exists():
+        shutil.copy(inc_src, inc)
+        shutil.copy(args.candidate, cand)
+        (exp_dir / "hypothesis.txt").write_text(args.hypothesis + "\n")
+    lanes = lanes_of(inc, cand)
+    manifest(exp_dir, {"protocol": PROTOCOL, "id": args.id, "incumbent_sha": sha(inc), "candidate_sha": sha(cand),
+                       "aa_threshold": thr, "suite_hash": suite_hash(DEV), "lanes": lanes,
+                       "hypothesis": (exp_dir / "hypothesis.txt").read_text().strip()})
+    if sha(inc) != aa["incumbent_sha"]:
+        sys.exit("the snapshot incumbent differs from the A/A incumbent")
+    fams = sorted(families(DEV))
+    rng = random.Random(f"A2D-C2-SCREEN-{args.id}")
+    rng.shuffle(fams)
+    halves = {"S": sorted(fams[: len(fams) // 2]), "R": sorted(fams[len(fams) // 2:])}
+    (exp_dir / "halves.json").write_text(json.dumps(halves, indent=1) + "\n")
     seed = int(hashlib.sha256(args.id.encode()).hexdigest()[:6], 16)
-    runs = []
+    ext = {"inc": inc, "cand": cand}
+    arms = ["X:inc", "X:cand"]
+    common = {"id": args.id, "date": datetime.date.today().isoformat(), "proposer": args.proposer,
+              "hypothesis": (exp_dir / "hypothesis.txt").read_text().strip(), "threshold": f"{thr:.4f}",
+              "candidate_sha": sha(cand)[:12]}
+
+    def stage(name, runs_suites, decision, note=""):
+        rows = paired(runs_suites, "X:cand", "X:inc")
+        spent = [spend(r) for r, _ in runs_suites]
+        calls = {}
+        for _, c, _ in spent:
+            for k, v in c.items():
+                calls[k] = calls.get(k, 0) + v
+        rec = {**common, "stage": name, "delta_frac": f"{mean(rows, 1):+.4f}", "se": f"{cluster_se(rows, 1):.4f}",
+               "delta_allpass": f"{mean(rows, 2):+.4f}", "se_allpass": f"{cluster_se(rows, 2):.4f}",
+               "n_tasks": len(rows), "n_families": len({r[0] for r in rows}), "decision": decision,
+               "invocations": sum(t for t, _, _ in spent), "calls_by_lane": json.dumps(calls, sort_keys=True),
+               "tokens": sum(k for _, _, k in spent), "note": note}
+        return rows, rec
+
+    s_suite = make_suite(exp_dir / "suites/S", halves["S"])
+    r_suite = make_suite(exp_dir / "suites/R", halves["R"])
     screen = exp_dir / "screen"
     if not (screen / "summary.json").exists():
-        lift(f"C2-{args.id}-S", half_suite("S"), exp_dir / "incumbent.py", exp_dir / "candidate.py", screen, seed, args.jobs)
-    runs.append(screen)
-    rows = paired(runs)
-    d_screen = sum(r[1] for r in rows) / len(rows)
-    decision, note = None, f"screen delta {d_screen:+.4f} on {len(rows)}"
-    if d_screen < thr / 2:
-        decision = "discard (screen)"
-    else:
-        rest = exp_dir / "rest"
-        if not (rest / "summary.json").exists():
-            lift(f"C2-{args.id}-R", half_suite("R"), exp_dir / "incumbent.py", exp_dir / "candidate.py", rest, seed + 1, args.jobs)
-        runs.append(rest)
-        rows = paired(runs)
-    delta = sum(r[1] for r in rows) / len(rows)
-    d_all = sum(r[2] for r in rows) / len(rows)
-    se = cluster_se(rows)
-    if decision is None:
-        decision = "keep" if delta > thr else "discard"
-    inv = sum(sum(scores(r)[1].values()) for r in runs)
-    log_result({"id": args.id, "date": datetime.date.today().isoformat(), "proposer": args.proposer,
-                "hypothesis": args.hypothesis.replace("\t", " "), "delta_frac": f"{delta:+.4f}",
-                "se": f"{se:.4f}", "delta_allpass": f"{d_all:+.4f}", "threshold": f"{thr:.4f}",
-                "decision": decision, "invocations": inv, "note": note})
-    if decision == "keep":
+        lift(f"C2-{args.id}-S", s_suite, arms, ext, lanes, screen, seed, args.jobs)
+    rows, rec = stage("screen", [(screen, s_suite)], "")
+    if mean(rows, 1) < thr / 2:
+        rec["decision"] = "discard (screen)"
+        log_result(rec)
+        print(json.dumps(rec, indent=1))
+        return
+    rest = exp_dir / "rest"
+    if not (rest / "summary.json").exists():
+        lift(f"C2-{args.id}-R", r_suite, arms, ext, lanes, rest, seed + 1, args.jobs)
+    rows, rec = stage("full", [(screen, s_suite), (rest, r_suite)], "")
+    se, se_all = cluster_se(rows, 1), cluster_se(rows, 2)
+    provisional = mean(rows, 1) > max(thr, 1.645 * se) and mean(rows, 2) > -1.645 * se_all
+    if not provisional:
+        rec["decision"] = "discard (full)"
+        log_result(rec)
+        print(json.dumps(rec, indent=1))
+        return
+    rec["decision"] = "provisional keep"
+    log_result(rec)
+    confirm = exp_dir / "confirm"
+    if not (confirm / "summary.json").exists():
+        lift(f"C2-{args.id}-C", DEV, arms, ext, lanes, confirm, seed + 2, args.jobs)
+    rows_c, rec_c = stage("confirm", [(confirm, DEV)], "")
+    keep = mean(rows_c, 1) > thr / 2
+    rec_c["decision"] = "keep" if keep else "discard (confirm)"
+    log_result(rec_c)
+    if keep:
         hist = NANO / "history"
         hist.mkdir(exist_ok=True)
         shutil.copy(inc, hist / f"before-{args.id}.py")
-        shutil.copy(cand, inc)
-    print(json.dumps({"id": args.id, "delta_frac": delta, "se": se, "delta_allpass": d_all,
-                      "threshold": thr, "decision": decision, "invocations": inv, "n": len(rows)}, indent=1))
+        shutil.copy(cand, inc_src)
+    print(json.dumps(rec_c, indent=1))
 
 
 def main():
@@ -206,16 +315,9 @@ def main():
     r.add_argument("--proposer", default="claude")
     r.add_argument("--jobs", type=int, default=4)
     a = sub.add_parser("aa")
-    a.add_argument("--reps", type=int, default=1)
     a.add_argument("--jobs", type=int, default=4)
-    sub.add_parser("halves")
     args = ap.parse_args()
-    if args.cmd == "halves":
-        print(json.dumps(halves(), indent=1))
-    elif args.cmd == "aa":
-        cmd_aa(args)
-    else:
-        cmd_run(args)
+    cmd_aa(args) if args.cmd == "aa" else cmd_run(args)
 
 
 if __name__ == "__main__":

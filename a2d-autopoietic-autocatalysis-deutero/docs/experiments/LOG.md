@@ -800,3 +800,28 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
     - The equal-budget arm is 4 Luna samples plus 1 judge call = 5 invocations, but a judge call reads 3–5 files, so tokens per task are higher, and that must be reported.
     - Sol is a stronger model from the same vendor as Luna. For Sol, the information source is "a stronger reviewer" rather than "a different family".
   - **Next:** a live nanoharness experiment, "sample 4, judge 1". The Claude CLI is installed (2.1.301), but from a subprocess it answers `Not logged in`. The live judge is therefore `codex/gpt-6.1-sol` (the stronger judge here, 39/39), disclosed as "multi-model: Luna writes, Sol picks". A Claude-lane variant follows if CLI auth becomes available to subprocesses.
+
+### C2-AA — A/A threshold and native-D parity for nanoharness v0  [cycle 2, eval calibration]
+- Registered: 2026-10-15, before the run. Prerequisite: the zero-call parity fixture test passes (native D vs external v0 under a deterministic mock: identical prompts and identical submission).
+- One run on `tasks/train-all` (140 tasks): arms D, X:a, X:b. Both X arms are `nano/harness.py` v0. k = 5, seed 4242.
+- Outputs:
+  - **threshold** = 95th percentile of the family-bootstrap null of X:b − X:a (centred) in hidden-test fraction;
+  - **parity** = X:a − D and X:b − D.
+- Parity passes if both all-pass deltas are within ±5 pp **and** the first coder prompts are byte-identical to D's on every task (checked from the logs). If parity fails, no candidate runs until v0 is fixed.
+- Budget: ≤ 700 Luna invocations.
+- Result: pending
+
+### E002 — sample 4, judge 1 (Luna generation plus Sol selection) / E003 — sample 4, random green (control)  [cycle 2]
+- Registered: 2026-10-15, before any live run. Both go through `nano/eval.py run` (eval v2.1: screen, full, confirmation replicate), each against the A/A-calibrated incumbent v0.
+- **E002 hypothesis:** four Luna samples plus one Sol judge call over the distinct public-green files pass hidden tests more often than the repair loop (v0 = D) at the same 5-call cap. Offline (C2-E1): +8.8 pp (Claude judge), +10.3 pp (Sol judge) on train.
+  - Judge lane `codex/gpt-6.1-sol:medium`, no tools, empty cwd.
+  - Candidates are shown in a shuffle seeded by task id. Strict parsing; on a parse failure the fallback is the first green file, and it is logged.
+- **E003 (attribution control):** identical except a seeded random green replaces the judge (no fifth call).
+- **Reported:**
+  - Δfrac and Δall-pass vs v0, with cluster SE;
+  - E002 − E003, paired across their runs on the same tasks;
+  - branch frequencies (judge / one-green / no-green-repair), judge fallbacks;
+  - calls and tokens by lane per arm.
+- **Claim wording if kept:** "Luna generation plus Sol selection beats Luna's repair loop at an equal call cap" (exploratory; dev set). Not a different-family claim.
+- Budget: ≤ 1,500 Luna and ≤ 300 Sol invocations for both.
+- Result: pending

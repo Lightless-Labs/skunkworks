@@ -3,6 +3,34 @@
 **Created:** 2026-10-15
 **Status:** Active
 **Goal:** the session `/goal` of 2026-10-15 ("A²D cycle 2"). This plan is its working form.
+**Reviewed:** 2026-10-15, design review before the first live run (Codex `gpt-6.1-sol` high, fresh Claude subagent; copies-only dirs). Dispositions in the Addendum.
+**Addendum:** 2026-10-15 — **design review dispositions and definitions** (all accepted unless noted):
+- **Evaluator integrity** (`nano/eval.py` v2.1):
+  - experiments are immutable, with a manifest of code, controller and suite hashes, and the frozen snapshot is what gets promoted;
+  - every scored run needs exactly one score per expected task and arm, or the run is invalid;
+  - the A/A hash must match the current incumbent, and the A/A is re-run after every keep;
+  - the screen half is rotated per experiment id;
+  - structured fields: stage, n tasks, n families, calls by lane, tokens.
+- **Keep rule:**
+  - provisional if Δfrac > max(A/A threshold, 1.645 · cluster SE), and the all-pass Δ is not significantly negative;
+  - **promotion only after a fresh confirmation replicate with Δfrac > threshold / 2**.
+  - Keeps are exploratory; the reviewers' estimates are about 5% false keeps per test before confirmation and about 1% after.
+- **D parity:**
+  - a zero-call fixture test (native D vs external v0 under a deterministic mock: identical prompts and identical submission) is required before any scored run;
+  - the A/A is a 3-arm live run (D, X:a, X:b) whose D-vs-X deltas must lie within ±5 pp all-pass, with byte-identical first prompts.
+- **E002 controls:**
+  - **E003**: the same 4-sample policy with a random-green selector. E002 − E003 attributes the gain to the judge.
+  - Claim wording: **"Luna generation plus Sol selection"**. Sol is a stronger model from the same vendor, not a different family.
+  - Reported per arm: calls and tokens by lane, branch frequencies and fallbacks.
+  - A cost-matched control (D plus one Sol call) comes before any resource-efficiency claim.
+- **Gate metric** (to the confirmation set):
+  - the frozen incumbent's **all-pass** lift vs D on the dev-holdout is ≥ +10 pp as a point estimate, at r = 2, with a paired family-cluster CI lower bound > 0.
+  - Dev-holdout looks: one after each confirmed keep (at most 4), plus a final frozen-candidate look. Proposers learn only pass or fail.
+  - This replaces "every 10 keeps", which a 25k budget would almost never reach.
+- **Proposer comparison** (A²D's architect vs uninformed): primary metric = the mean paired Δ per proposal against the same frozen incumbent, in interleaved blocked rounds; keep rate is secondary. The protocol is frozen and pre-registered before it runs, including an inconclusive outcome.
+- **Authorship confound:** the train and dev-holdout tasks are Sol-authored, and Sol is also the live judge. This is disclosed. A Claude-lane judge replication is needed for a different-family claim (the CLI is unauthenticated from subprocesses).
+- **Not adopted:** O'Brien–Fleming group-sequential bounds. The confirmation replicate plus exploratory labelling covers the same risk more cheaply.
+
 **Lineage:** the lift-first roadmap (`docs/plans/2026-10-14-lift-first-roadmap.md`, Completed (falsified)), report `docs/reports/2026-10-15-lift-first-outcome.md`. That closed one plan, not the project.
 
 ## Outcome sought
