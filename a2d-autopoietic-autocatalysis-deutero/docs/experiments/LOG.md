@@ -799,4 +799,4 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
     - This is an offline estimate on train (c1-train families, the S0 pool).
     - The equal-budget arm is 4 Luna samples plus 1 judge call = 5 invocations, but a judge call reads 3–5 files, so tokens per task are higher, and that must be reported.
     - Sol is a stronger model from the same vendor as Luna. For Sol, the information source is "a stronger reviewer" rather than "a different family".
-  - **Next:** a live nanoharness experiment, "sample 4, judge 1". The Claude CLI lane is not usable from the controller (missing native binary), so the live judge is `codex/gpt-6.1-sol`, disclosed as such. A Claude-lane variant follows once the lane works.
+  - **Next:** a live nanoharness experiment, "sample 4, judge 1". The Claude CLI is installed (2.1.301), but from a subprocess it answers `Not logged in`. The live judge is therefore `codex/gpt-6.1-sol` (the stronger judge here, 39/39), disclosed as "multi-model: Luna writes, Sol picks". A Claude-lane variant follows if CLI auth becomes available to subprocesses.
