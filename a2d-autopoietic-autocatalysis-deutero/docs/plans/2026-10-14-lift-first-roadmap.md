@@ -170,6 +170,14 @@ Lesson: never spend confirmation data without development evidence at the claim 
   - **self-improvement process:** failed its development screen, unconfirmed, and not ruled out.
 - **Closing gate:** reviewed by Codex `gpt-6.1-sol` (high) and a fresh Claude subagent in copies-only temp dirs. Both approved the label subject to wording corrections, which were applied.
   - The fresh Claude reviewer found a classifier boundary bug (floating point at exactly 10 pp). It is fixed with a test; no registered decision changes.
+- **Tripwires at close (P3–P4): none hit.**
+  - T1: results came every few commits.
+  - T2: no external blocker. Account contention slowed runs; it did not block them.
+  - T3: the new safeguards are data isolation the plan requires (the P4 train-label rule). The argv rule followed a recorded incident.
+  - T4: plumbing is gated by `cargo test`, claims by the controller.
+  - T5: every live run had caps, and none reached 2×. Total spend is about 10.5k of the 20k cap.
+  - T6: goals are stated as outcomes.
+  - T7: P4 used 1 of 5 hypotheses; P1 used 2 of 2 redesigns.
 - **Process diagnostics** (deutero): in the report § Process diagnostics. They cover spend by phase, decisions made by rule vs adaptively, forking paths, and the asymmetry of defect hunts.
 - **Pivot:** report § Recommended pivot. In order:
   1. check the carrier at zero calls;
