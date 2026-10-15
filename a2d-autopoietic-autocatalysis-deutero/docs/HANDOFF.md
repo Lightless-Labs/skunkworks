@@ -1,29 +1,33 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-15 (session 144: the lift-first roadmap is **Completed (falsified)** after the closing gate; E13 recorded)
+**Last updated:** 2026-10-15 (session 144: **cycle 2 under way**. C2-E1: a stronger judge picks correct files where Luna's own signals fail. Nanoharness and eval v2.1 built; the A/A + parity run and dev-holdout validation are in flight.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
 
-- **Owner's framing:** A²D is *autoresearch on agentic coding harnesses*, and you have the reins. The rules are in `docs/PROTOCOL.md`.
-- **The lift-first roadmap is Completed (falsified)** (`docs/plans/2026-10-14-lift-first-roadmap.md`; report `docs/reports/2026-10-15-lift-first-outcome.md`). Three outcomes, kept separate:
-  1. **Seed: RULED OUT** on Confirmation-1 under the registered analysis (E07 + E07b: +1.4 pp [−5.4, +8.8]; two-look upper bound +9.8).
-  2. **Improved harness: none promoted.**
-     - Within-task self-signal configurations failed their screens.
-     - The parity base, H0 v6 (D's prompts plus a `main()` clause on the metabolism carrier), was +2.9 pp on train but −12.5 pp on validation (exploratory). Its parity on fresh families is not established.
-  3. **Self-modification (P4): failed its development screen, unconfirmed, and not ruled out.**
-     - Self-written lessons: E12 H\* = i1, 68.8% vs D 70.0%. That is the pre-registered **no-go**.
-     - The uninformed control tied, so the "learning from failures" attribution is withdrawn.
-     - Lessons beat C:h0 (+11 pp, exploratory) but never beat D.
-- **Confirmation-2** (144 tasks, 36 families, `cb7cb496…`) is **unspent and unopened** apart from the disclosed `spreadsheet-eval` exclusion. It is reserved for one registered claim in a future regime.
+- **Owner's framing:** A²D is *autoresearch on agentic coding harnesses*, and you have the reins. Never pause or ask for direction. A failed variant is a data point, not a verdict.
+- **Active goal: cycle 2,** the session `/goal` of 2026-10-15. Working plan: `docs/plans/2026-10-15-cycle2-nanoharness.md` (its addendum holds the design-review dispositions and definitions).
+- **Cycle 1 is closed:** the lift-first roadmap is Completed (falsified); report `docs/reports/2026-10-15-lift-first-outcome.md`. It closed one plan, not the project.
+- **C2-E1 (offline, train): the information source exists.**
+  - On the 39 tasks where Luna's public-green candidates disagree on hidden tests, a judge reading only the spec picked a passing file 37/39 times (Claude, Sonnet) and 39/39 times (Sol; audited, no leakage).
+  - Equal-budget pick rate: 0.83–0.85 vs D 0.74.
+  - Rule met, so cross-model review is the first lever. The live judge is Sol ("Luna generation plus Sol selection"), because the Claude CLI is unauthenticated from subprocesses.
+- **Instrument for cycle 2:**
+  - `--external name=path` runs a Python harness as arm `X:<name>` (JSON lines; metered model calls; public tests through D's oracle; hidden tests unreachable);
+  - `--lane name=codex/<model>[:effort]` adds judge lanes on the shared budget;
+  - `nano/harness.py` v0 equals D (fixture parity test);
+  - `nano/eval.py` v2.1 provides immutable experiments, completeness checks, an A/A threshold, screen → full → confirmation replicate, and a static isolation guard.
 
-## Open
-1. **E13 is recorded.** D + `main()` clause vs D: −0.7 pp [−7.1, +5.7], so the clause is not the cause. D's own never-green varies 1–4 per train run, so the carrier never-green excess does not hold on train; the report is corrected.
-2. **No new roadmap is active.** The report's § Recommended pivot is the proposed next step, pending an owner decision:
-   1. check the carrier at zero model calls: byte-diff C:h0 vs D repair prompts on train, and mine the E11 C-arm runs for never-green;
-   2. calibrate measurement (about 700 tuples per decision for ±5 pp; A/A and uninformed controls);
-   3. one "D + X vs D" hypothesis in a stated regime;
-   4. an owner decision on the instrument as a product.
+## In flight
+1. **C2-AA** (`python3 -I nano/eval.py aa`): a 3-arm run D, X:a, X:b on `tasks/train-all`, out `runs/c2-aa-200daaa763c4/`, stdout `$SCRATCH/c2-aa.out`. It writes `nano/aa.json` with the threshold and parity results. Parity rule: X − D within ±5 pp all-pass, and byte-identical first prompts.
+2. **Dev-holdout:** 25 new blind families (100 tasks) are authored and assembled in `~/.a2d-holdout/dev-holdout`. Validation is running (`$SCRATCH/devholdout-validate.txt`; read verdicts only). Next come an independent-solve audit (Sol, D, k = 3), adjudication if needed, and a hash in the LOG.
+
+## Next
+- After C2-AA, run E002 (sample 4 + Sol judge), E003 (random-green control) and E004 (repair to green, then judge), all pre-registered in the LOG:
+  - `python3 -I nano/eval.py run --id E002 --candidate nano/candidates/E002_judge.py --hypothesis "..." --jobs 8`.
+  - Avoid overlapping CPU-heavy validation with evaluations.
+- Seed list for proposers: `nano/seeds.md`. Results: `nano/results.tsv`.
+- Budget: ≤ 3k Luna invocations a day and ≤ 25k in total; deadline 2026-11-30. Spend is tracked in `results.tsv` and the LOG.
 
 ## The instrument (`a2d lift`, `crates/a2d-lift/`)
 
