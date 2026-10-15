@@ -393,4 +393,11 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - Mechanism, budget-faithful: 1 test-writer call plus **4 coder samples** (B's first four attempts per tuple). Group candidates with code by the exact set of spec tests they pass. Group score = (candidates in the group) × (spec tests the group passes). Restrict to public-green candidates when any exist. Pick from the top-scoring group, breaking ties on most public passes, then compiled, then latest.
 - Measurement: end pick rate (hidden pass) over the 136 train tuples, against D (0.743) and B's public pick.
 - **Promotion bar = kill rule:** end ≥ D + 5 pp (≥ 0.793), otherwise mechanism 3 is dead for P3. Also reported: the same rule over all 5 of B's candidates (not budget-faithful; for insight).
-- Result: pending
+- Result: **KILLED** (end 0.728 < 0.793).
+  - Budget-faithful (B's first 4 candidates): CodeT pick 0.728; the public pick on the same 4 is 0.699.
+  - Insight (all 5 of B): CodeT pick 0.721; public pick 0.676.
+  - D = 0.743.
+- Decision: agreement on the coder's own spec tests does not recover the any-pass headroom. Mechanisms 1–3 are dead offline (about 200 invocations in total).
+  - Pattern: every signal the low-effort coder generates about its own code is too noisy to beat a plain repair loop. Spec tests are 83% valid; self-review converts 19% of failures; agreement selection reaches 73%.
+  - Diversity across samples is real (86% any-pass in 5), but this model cannot tell which sample is right.
+
