@@ -770,3 +770,23 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - the E10b null figure corrected.
 - **Instrument fix:** the classifier boundary tolerance. The E12 exploratory classes C:i1 vs D and C:i1 vs C:u1 become Inconclusive; no registered decision changes.
 - **Open:** none. E13 is recorded: the clause is not the cause, and the train-side never-green excess does not hold. Confirmation-2 is unspent.
+
+## Cycle 2 — autoresearch on a minimal coding harness (goal set 2026-10-15)
+
+### C2-E1 — does a second model family see what Luna can't? Cross-family judge over Luna's candidates  [cycle 2, experiment 1, offline]
+- Registered: 2026-10-15, before any judge call.
+- **Question** (goal setup step 3): can a Claude judge reading only the spec (requirements + public tests) pick a hidden-passing file among Luna's public-green candidates better than the plain repair loop does?
+- **Data:** the frozen S0 pool (`runs/2026-10-15-s0-candidate-pool/`): E07 and E07b on the 17 c1-train families, 136 tuples.
+  - **Equal-budget arm:** the first 4 of B's samples plus 1 judge call = 5 invocations, the same as D.
+  - The judge picks among the public-green candidates. With fewer than 2 green candidates, the public rule picks.
+- **Only the 39 decisive tuples are judged:** those with ≥ 2 green candidates that differ in hidden outcome. Every other tuple's outcome is fixed whatever the pick: 76 passes.
+  - The judge gets the identical prompt for every tuple and is never told that the candidates differ.
+  - Candidates are shuffled with a seed and shown without metadata.
+  - No hidden test, hidden output or label is ever shown.
+- **Judges:**
+  - **primary:** Claude (Agent subagent, `sonnet`), one call per tuple;
+  - **secondary:** Codex `gpt-6.1-sol` (medium), to separate model family from model strength.
+- **Rule (from the goal):** the judge pick rate = (76 + correct) / 136. **If the Claude judge's rate is ≥ D's pick rate + 5 pp = 0.793 (≥ 32 of 39 correct),** cross-model review is the first lever, claimed as "multi-model system vs single model at equal invocation budget". Otherwise the loop moves to a tool-using multi-file regime.
+- **References:** D pick 0.743; B4 public pick 0.699; random pick among green candidates 0.704; perfect judge 0.846.
+- Budget: 39 Claude calls and 39 Sol calls.
+- Result: pending
