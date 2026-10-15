@@ -243,7 +243,30 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - public-green but hidden-fail counts;
   - family sign-flip p;
   - descriptive McNemar.
-- Result: pending
-- Artifacts: runs/2026-10-15-e07-confirmation-1/ (manifest, ledger, summary); the full run is in `$A2D_HOLDOUT_DIR/runs/E07` and is never opened.
+- Result: **INCONCLUSIVE** (scored once on 2026-10-15 against the committed anchor a235a0b; ledger chain verified, final head 5e0f5151…).
+  - Run: complete, 148/148 tuples, 0 void, 0 provider errors, 0 coder tool calls, 0 hidden-name hits, 0 suspicious submissions.
+  - Hidden pass rates:
+    - A 86/148 (58.1%)
+    - B 96 (64.9%)
+    - D 98 (66.2%)
+    - C 102 (68.9%)
+  - **Primary, C vs D:** lift +2.7 pp, 95% CI [−4.7, +11.5], 37 families, discordant 20/16, family sign-flip p = 0.65, McNemar (descriptive) p = 0.62. Not SUPPORTED (the CI includes 0) and not RULED OUT (the upper bound exceeds 10 pp).
+  - **Secondary, C vs B:** +4.1 pp, CI [−4.7, +12.8], discordant 23/17. Inconclusive.
+  - Exploratory comparisons:
+    - C vs A +10.8 pp, CI [+2.7, +18.9] (meets the SUPPORTED rule, but exploratory);
+    - D vs A +8.1 pp, CI [+1.4, +15.5];
+    - B vs A +6.8 pp, CI [−1.4, +14.2];
+    - D vs B +1.4 pp.
+  - Hidden-pass fraction (secondary): A 0.78, B 0.93, D 0.93, C 0.90. C vs D −3.0 pp: C's failures fail more hidden tests than D's.
+  - Public-green but hidden-fail: A 33, B 49, D 47, C 38.
+  - Spend at the equal invocation cap (k = 5):
+    | Arm | Invocations | Tokens | Provider time |
+    |---|---|---|---|
+    | A | 148 | 1.04M | 3,804 s |
+    | B | 740 | 5.03M | 19,478 s |
+    | D | 197 | 1.60M | 5,440 s |
+    | C | 740 (296 coder) | 5.97M | 15,058 s |
+    C used 3.8× D's invocations and 3.7× its tokens for +2.7 pp.
+- Artifacts: runs/2026-10-15-e07-confirmation-1/ (manifest.json committed pre-score, ledger.jsonl, summary.json); full run in `$A2D_HOLDOUT_DIR/runs/E07` (never opened)
 - Deviations: 2026-10-15, at launch: the sibling A² session was running `gpt-6-luna` jobs on the same Codex account (about 1 process, its E1 run). That violates the pre-registered "no other Codex jobs" condition, but this session cannot control it and A²'s schedule is open-ended. Generation proceeded. Tuple and arm orders are randomised, so the contention is noise, not bias. Call durations and provider errors are monitored and reported with the result. Recorded before any submission was scored or inspected.
 - Decision:
