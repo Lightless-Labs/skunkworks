@@ -87,6 +87,17 @@ Process changes adopted:
 - wait on run artifacts, not on `pgrep -f` of a pattern that matches the waiting loop itself.
 
 Next: E07 (P2 confirmation).
+**Addendum:** 2026-10-15 — **framing from the owner: autoresearch.**
+
+> "the whole point of it is having a coding agent iterate and experiment on a self-improving, self-iterating, self-experimenting coding agent harness and process, with added human insights (the major difference with a2). Think … Karpathy's autoresearch, applied to agentic tools and software development workflows."
+
+The roadmap already supplies the parts. The **harness** is the experimental object. `a2d lift` on development tasks is the fast experiment, with hidden pass rate as the metric and every run in the ledger. Changes are kept or discarded by that metric. Blind confirmation sets are the honest final claims. E07 is the baseline: the seed harness ≈ the plain repair loop, at 3.7× the tokens.
+
+Consequences:
+- **P3 becomes the outer research loop.** The developing agent is the researcher, taking human insights as they come. It proposes harness changes (ablations first, then edits), runs short registered experiments on development data, and keeps what moves the metric, with spend reported.
+- **P4 asks whether A²D's own inner loop** (architect editing the harness-as-data, `docs/plans/2026-10-15-p4-autopoietic-lift.md`) improves further on the outer loop's best harness.
+- Claims still come only from the confirmation sets: Confirmation-2, extended blind before P4.
+- Unchanged: oracle and controller isolation, pre-registration, T1–T7.
 **Supersedes as primary goal:** `swe-bench-pro-blind-evaluator-adapter.md` (parked), the Senior SWE-Bench retry chain (parked)
 **Grounding:** `docs/research/2026-10-14-direction-audit.md`, `docs/research/2026-10-14-dgm-rqgm-relevance.md`
 **Decision deadline:** P2 confirmation result recorded by **2026-11-30**. Missing it is a non-result, not a falsification: record "not measured by deadline", stop adding seed-cycle complexity, and continue per Completion.
