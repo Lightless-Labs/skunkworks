@@ -1,7 +1,7 @@
 # Plan: Lift-First Roadmap
 
 **Created:** 2026-10-14
-**Status:** Active — phase P2 (P0 exit 2026-10-14; P1 exit 2026-10-14)
+**Status:** Active — phase P3 (P0 and P1 exit 2026-10-14; P2 exit 2026-10-15: seed lift RULED OUT)
 **Reviewed:** 2026-10-14 (independent review, Codex gpt-6.1-sol xhigh). The other non-Claude lanes were unavailable; see Blockers. Changes adopted: repair-loop comparator, three-way result classification, pilot/development/confirmation split, frozen controller, B-headroom calibration, harness-first P4, process metrics as diagnostics only.
 **Addendum:** 2026-10-14 — coder lane: the owner stopped the Kimi, Z.ai, MiniMax and Gemini subscriptions on purpose and suggested Luna via Codex or Pi. `gpt-6-luna` works through Codex with A²D's provider flags. `gpt-6.1-luna` is not offered on this ChatGPT account (Codex model list fetched 2026-10-14 has 6.1 only as Sol). Pi's `openai-codex` provider is not authenticated. P0/P1 updated accordingly.
 **Addendum:** 2026-10-14 — P0 gate. Exit criteria met (isolation tests, four arms end to end on mocks, E01). Reviewed by Codex `gpt-6.1-sol` (high) and a fresh-context Claude subagent, each in an empty temp dir with copied inputs. Diversity reduced to one non-Claude family (see Blockers). Adopted (commits `e8e7fa3`, `2eefa0d`):
@@ -98,6 +98,11 @@ Consequences:
 - **P4 asks whether A²D's own inner loop** (architect editing the harness-as-data, `docs/plans/2026-10-15-p4-autopoietic-lift.md`) improves further on the outer loop's best harness.
 - Claims still come only from the confirmation sets: Confirmation-2, extended blind before P4.
 - Unchanged: oracle and controller isolation, pre-registration, T1–T7.
+**Addendum:** 2026-10-15 — **P2 exit: the seed lift is RULED OUT.**
+- Pooled E07 + E07b, the pre-registered single extension: Confirmation-1, 296 tuples in 37 families.
+- C vs D +1.4 pp, 95% CI [−5.4, +8.8]. C vs B +3.4 pp, CI [−2.7, +9.8].
+- C used 3.7× D's invocations and tokens.
+- That is half of "Completed (falsified)". Completion now depends on P4. Next: P3, the outer research loop, then P4.
 **Supersedes as primary goal:** `swe-bench-pro-blind-evaluator-adapter.md` (parked), the Senior SWE-Bench retry chain (parked)
 **Grounding:** `docs/research/2026-10-14-direction-audit.md`, `docs/research/2026-10-14-dgm-rqgm-relevance.md`
 **Decision deadline:** P2 confirmation result recorded by **2026-11-30**. Missing it is a non-result, not a falsification: record "not measured by deadline", stop adding seed-cycle complexity, and continue per Completion.

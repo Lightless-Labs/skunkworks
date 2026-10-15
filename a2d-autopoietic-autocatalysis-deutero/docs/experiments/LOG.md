@@ -281,7 +281,30 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **The pooled class is final.** E07 alone is not re-classified, there is no third look, and an INCONCLUSIVE pooled result means NO-GO for adding complexity (roadmap § Metric).
 - Infrastructure exceptions: as E07.
 - Deviation expected at launch: the sibling A² session may share the Codex account, as in E07. This will be recorded if observed.
-- Result: pending
+- Result, **FINAL (pooled E07 + E07b, as pre-registered): RULED OUT.** Each run was scored once against its committed anchor. The E07b ledger is verified (head ac83faa7…). Both runs are complete: 0 void, 0 errors, 0 coder tool calls, 0 hidden-name hits.
+  - Pooled over 296 tuples in 37 families, hidden pass rates:
+    - A 173/296 (58.4%)
+    - B 194 (65.5%)
+    - D 200 (67.6%)
+    - C 204 (68.9%)
+  - **Primary, C vs D:** lift **+1.4 pp, 95% CI [−5.4, +8.8]**, discordant 40/36, family sign-flip p = 0.79. The upper bound is below 10 pp, so **RULED OUT**.
+  - **Secondary, C vs B:** +3.4 pp, CI [−2.7, +9.8], discordant 44/34. RULED OUT.
+  - Exploratory comparisons:
+    - C vs A +10.5 pp, CI [+4.1, +17.2];
+    - D vs A +9.1 pp, CI [+3.7, +15.2];
+    - B vs A +7.1 pp, CI [+2.0, +12.2];
+    - D vs B +2.0 pp, CI [−3.7, +8.1].
+  - Hidden-pass fraction: A 0.80, B 0.92, D 0.93, C 0.88. When C fails, it fails more hidden tests than D does.
+  - Public-green but hidden-fail: A 71, B 95, D 88, C 71.
+  - Pooled spend at the equal invocation cap:
+    | Arm | Invocations | Tokens |
+    |---|---|---|
+    | A | 296 | 2.09M |
+    | B | 1,480 | 10.17M |
+    | D | 400 | 3.28M |
+    | C | 1,480 | 12.10M |
+    C used **3.7× D's invocations and tokens**.
+  - E07b alone: A 87, B 98, D 102, C 102 of 148. C vs D 0.0 pp, CI [−8.1, +8.8].
 - Artifacts: runs/2026-10-15-e07b-confirmation-1-r2/ (manifest, ledger, summary, pooled summary)
 - Deviations: 2026-10-15, at launch: the sibling A² session had 2–3 Codex processes on the account (its E1 workcells and one other job). As in E07, this cannot be controlled from this session. Tuple and arm orders are randomised. Recorded before any scoring.
-- Decision:
+- Decision: **P2 is complete. A lift of 10 pp or more for the seed A²D metabolism over its own coder in a plain repair loop, at an equal invocation cap, is ruled out on fresh families.** By the roadmap, this is the falsification half of "Completed (falsified)". The plan completes as falsified only if no P4 hypothesis is SUPPORTED within T7, so P3 and P4 proceed. They form the owner's autoresearch loop: outer-loop harness iteration on development data, then A²D's own inner loop, scored on Confirmation-2. The seed harness spends 3.7× the tokens for about +1 pp, so P3 starts by removing spend that cannot affect the submission.
