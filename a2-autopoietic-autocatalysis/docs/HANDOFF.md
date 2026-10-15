@@ -13,7 +13,7 @@ The audit remediation roadmap is [`docs/plans/2026-07-10-a2-remediation-roadmap.
 - Phase 0: maturity relabel + `--apply` lockout (`4c5d1e0`), bounded liveness harness (`e881ee7`, `46fb0a7`), Bazel crate graph (`53e723f`), Cargo/Bazel target parity checker 25/25 (`6715ddf`), boundary gate passing via inherited process-tree sandbox (`cd88992`). Evidence: `docs/evidence/remediation/phase-0/`.
 - Phase 0 not yet complete: `//crates/a2_workcell:a2_workcell_test` is red under Bazel because one pipeline test spawns `cargo` (not on the Bazel test PATH).
 - **Direction (2026-10-14):** roadmap frozen. The active plan is [`docs/plans/2026-10-14-value-test-first.md`](plans/2026-10-14-value-test-first.md) (see its addenda). E1 compares raw / stateless-retry / a2-full on a native-graded SWE-Bench Pro V2 ansible subset. Decision due 2026-11-30; INCONCLUSIVE = NO GO.
-- **E1 decided (2026-10-15): NO GO** — [`decision.md`](benchmark-results/external-value/e1/decision.md). a2-full 12/36 vs stateless-retry 10/36 (+5.6 pp, p = 0.31; GO needed +15 pp, p ≤ 0.10); raw 5/36. Re-decision: stop A² as a research runtime, Option E (archive + post-mortem). Roadmap, Phases 1–8 and E2 stay frozen; `--apply` stays locked.
+- **E1 decided (2026-10-15): NO GO** — [`decision.md`](benchmark-results/external-value/e1/decision.md). a2-full 12/36 vs stateless-retry 10/36 (+5.6 pp, p = 0.31; GO needed +15 pp, p ≤ 0.10); raw 5/36. Option E (archive) withdrawn by the owner: E1 is one discarded harness variant; next is an autoresearch-style loop that evolves harness variants against an E1-style fitness. Roadmap Phases 1–8 and E2 stay frozen; `--apply` stays locked.
 
 ## Current Numbers (test counts refreshed 2026-07-10; benchmark rows are historical unless dated below)
 

@@ -74,3 +74,15 @@ Consequences:
 - Remediation Phases 1–8 and the roadmap stay frozen permanently.
 - Live `--apply` stays locked.
 - E2 is not run, because it is gated on E1 GO.
+
+## Addendum: 2026-10-15 — re-decision withdrawn (owner direction)
+
+The result above stands as recorded. The re-decision section does not: archiving A² (Option E) is withdrawn.
+
+A² exists to be an agent that iterates on agent harnesses and development workflows, in the spirit of autoresearch. In that framing, E1 is one outer-loop experiment: a candidate harness, evaluated against a baseline with a frozen grader, was discarded. That outcome does not end the project.
+
+What E1 settles:
+- Lineage-as-memory in the current fixed loop is not worth its keep over stateless retry with visible-test feedback.
+- The E1 apparatus works as a fitness function, with known noise. Single-attempt variance alone produced 2 of a2-full's 3 wins.
+
+The next direction is to make that loop the system: an agent proposes harness variants and E1-style evaluation keeps or discards them.
