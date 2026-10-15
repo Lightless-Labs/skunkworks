@@ -27,7 +27,7 @@
 ## What the result says
 
 - **Retrying with visible-test feedback is what helps.** Both retry arms roughly double raw's resolve rate. That effect does not depend on anything A²-specific: the stateless arm is a plain loop that feeds back verifier output.
-- **The lineage-bearing loop adds no measurable value beyond that.** Of its 3 wins over stateless-retry, only one needed a later attempt drawing on lineage (`e1-9664d5ebf43e`, solved on attempt 2). The other two are sampling noise:
+- **The lineage-bearing loop adds no measurable value beyond that.** Of its 3 wins over stateless-retry, only one came from a later attempt: `e1-9664d5ebf43e`, solved on attempt 2. The data do not show whether lineage was consulted. The other two look like single-attempt sampling variance:
   - `e1-40102f94748d` was solved on a2-full's first attempt, which is equivalent to a raw run.
   - `e1-7502f821bb9f` was also solved by raw in one shot.
 - **Hidden tests show no edge.** On the hidden fail-to-pass tests plus pass-to-pass, the two retry arms tie at 12–12.
@@ -39,10 +39,16 @@
    - once on the private directory's *path* appearing in pytest tracebacks;
    - once on hidden node ids that are strict prefixes of visible ids.
 
-   Neither was a leak. A scan of all 188 recorded attempt rows, across every arm, found no hidden id or gold-patch text. The guard was narrowed in `33fecc34` and `bbc4626c`.
+   Neither was a leak. A scan of the verifier output tails recorded in all 188 attempt rows, across every arm, found no hidden id or gold-patch text. The visible verifier only ever selects visible node ids. The guard was narrowed in `33fecc34` and `bbc4626c`.
 
    The protocol's `leak_check` line still lists "private path"; the 2026-10-14 addendum supersedes it. Agent-visible text was never changed. Shards resumed from completed rows, and an interrupted (task, arm) re-ran from scratch, with no grade recorded for the aborted try.
-2. **Lineage reset.** `7cbd946c` makes the a2-full arm start from an empty lineage DB on retry or resume. It landed before the first resume, and every crash had been in the stateless arm, so no a2-full row inherited stale lineage.
+
+   **Re-run selection effect.** A stop could fire only after a failed stateless attempt 1, so five stateless-retry arms got a fresh draw after a discarded failure:
+   - first stop: `e1-1fd6bb17b447`, `e1-a04429d13db2`, `e1-d01a171a6d7e`;
+   - second stop: `e1-57d4935630ef`, `e1-59b1486201bd`.
+
+   The bias favours the control arm, and so runs against GO. All five final outcomes are concordant with a2-full: four unresolved in both arms, and `e1-59b1486201bd` resolved in both. No discordant pair was affected.
+2. **Lineage reset.** `7cbd946c` makes the a2-full arm start from an empty lineage DB on retry or resume. It landed before the first resume. Every crash traceback points at the stateless-retry branch (`run.py:199` at `0cb744b4`, `run.py:217` at `7cbd946c`), so no a2-full row inherited stale lineage.
 3. **Harness versions by row range:**
    - rows 1–22 ran on `0cb744b4`;
    - rows 23–96 ran on `7cbd946c`;
