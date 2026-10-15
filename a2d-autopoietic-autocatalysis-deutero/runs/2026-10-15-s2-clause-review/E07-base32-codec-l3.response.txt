@@ -1,0 +1,194 @@
+R1: GAP — The implementation lacks a standalone `main`, but it is valid as a Rust source file compiled as a library with `rustc --edition 2024`; no `main` is required for a library.
+R2: OK — `DecodeError`, `encode`, and `decode` expose the required API and derives.
+R3: OK — `DATA_ALPHABET` defines the required values 0–31.
+R4: OK — `encode` reads bits most significant first, zero-fills a partial group, and emits canonical uppercase symbols.
+R5: OK — `encode` emits unpadded data and no wholly empty group.
+R6: OK — `encode` emits `""` or `"0"` for empty input according to `checked`.
+R7: OK — `CHECK_ALPHABET` has the required 37 symbols; `encode` appends one check symbol when requested.
+R8: OK — `encode` updates the remainder for every emitted data symbol, including a partial group.
+R9: OK — `decode` skips every ASCII hyphen.
+R10: OK — `data_value` is ASCII case-insensitive and supports exactly the specified data aliases.
+R11: OK — `check_value` adds `*`, `~`, `$`, `=`, and `U` while retaining the specified letter aliases.
+R12: OK — `decode` preserves original byte offsets and reports the original invalid byte.
+R13: OK — Unrecognized bytes, including whitespace and non-ASCII UTF-8 bytes, fail lexical validation at their original byte offset.
+R14: OK — `decode` reserves the last non-hyphen byte as the check only in checked mode.
+R15: OK — Checked mode with no significant byte returns `MissingCheck` at `input.len()`.
+R16: OK — `decode` performs validation in the specified order: missing check, data lexing, check lexing, length, trailing bits, mismatch.
+R17: OK — Data lexical validation scans in original order and returns the first invalid data byte.
+R18: OK — Reserved check byte validation follows data lexical validation.
+R19: OK — `decode` accepts only residues 0, 2, 4, 5, and 7; invalid lengths use `input.len()`.
+R20: OK — `decode` reconstructs bytes from normalized values in most significant bit order.
+R21: OK — `decode` checks the required unused low bits for each legal residue.
+R22: OK — `decode` reports nonzero unused bits at the last data symbol’s original offset before remainder checking.
+R23: OK — The remainder uses normalized data values, so aliases, lowercase, and hyphens do not change it.
+R24: OK — `decode` reports numerical expected and found values at the original check offset.
+R25: OK — Unchecked empty data decodes empty; checked empty data succeeds only for a zero-valued check.
+R26: OK — `=` is accepted only as the reserved final significant checked symbol; elsewhere it fails as invalid data.
+R27: OK — `decode` returns no partial output on errors and leaves input untouched.
+R28: OK — `encode` and `decode` operate on arbitrary byte values and support full and partial groups.
+R29: OK — Successful decoding followed by encoding produces canonical output for the same checked mode.
+R30: OK — A single significant byte is reserved as the check in checked mode and is subject to data-length validation in unchecked mode.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    MissingCheck { offset: usize },
+    InvalidByte { offset: usize, byte: u8 },
+    InvalidLength { offset: usize },
+    TrailingBits { offset: usize },
+    CheckMismatch {
+        offset: usize,
+        expected: u8,
+        found: u8,
+    },
+}
+
+const DATA_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const CHECK_ALPHABET: &[u8; 37] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ*~$=U";
+
+fn data_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'A'..=b'Z' | b'a'..=b'z' => {
+            let upper = byte.to_ascii_uppercase();
+            match upper {
+                b'I' | b'L' => Some(1),
+                b'O' => Some(0),
+                _ => DATA_ALPHABET
+                    .iter()
+                    .position(|&symbol| symbol == upper)
+                    .map(|value| value as u8),
+            }
+        }
+        _ => None,
+    }
+}
+
+fn check_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'*' => Some(32),
+        b'~' => Some(33),
+        b'$' => Some(34),
+        b'=' => Some(35),
+        b'U' | b'u' => Some(36),
+        _ => data_value(byte),
+    }
+}
+
+pub fn encode(input: &[u8], checked: bool) -> String {
+    let mut output = String::new();
+    let mut remainder = 0u8;
+    let mut accumulator = 0u32;
+    let mut bit_count = 0u8;
+
+    for &byte in input {
+        accumulator = (accumulator << 8) | u32::from(byte);
+        bit_count += 8;
+
+        while bit_count >= 5 {
+            bit_count -= 5;
+            let value = ((accumulator >> bit_count) & 31) as u8;
+            output.push(DATA_ALPHABET[value as usize] as char);
+            remainder = ((u16::from(remainder) * 32 + u16::from(value)) % 37) as u8;
+        }
+    }
+
+    if bit_count > 0 {
+        let value = ((accumulator << (5 - bit_count)) & 31) as u8;
+        output.push(DATA_ALPHABET[value as usize] as char);
+        remainder = ((u16::from(remainder) * 32 + u16::from(value)) % 37) as u8;
+    }
+
+    if checked {
+        output.push(CHECK_ALPHABET[remainder as usize] as char);
+    }
+
+    output
+}
+
+pub fn decode(input: &str, checked: bool) -> Result<Vec<u8>, DecodeError> {
+    let bytes = input.as_bytes();
+    let significant: Vec<(usize, u8)> = bytes
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, byte)| *byte != b'-')
+        .collect();
+
+    if checked && significant.is_empty() {
+        return Err(DecodeError::MissingCheck {
+            offset: input.len(),
+        });
+    }
+
+    let data_len = significant.len() - usize::from(checked);
+    let data = &significant[..data_len];
+
+    let mut values = Vec::with_capacity(data_len);
+    for &(offset, byte) in data {
+        match data_value(byte) {
+            Some(value) => values.push(value),
+            None => return Err(DecodeError::InvalidByte { offset, byte }),
+        }
+    }
+
+    let check = if checked {
+        let (offset, byte) = significant[data_len];
+        let value = match check_value(byte) {
+            Some(value) => value,
+            None => return Err(DecodeError::InvalidByte { offset, byte }),
+        };
+        Some((offset, value))
+    } else {
+        None
+    };
+
+    let residue = data_len % 8;
+    let unused_bits = match residue {
+        0 | 2 | 4 | 5 | 7 => match residue {
+            2 => 2,
+            4 => 4,
+            5 => 1,
+            7 => 3,
+            _ => 0,
+        },
+        _ => return Err(DecodeError::InvalidLength { offset: input.len() }),
+    };
+
+    if unused_bits != 0
+        && values.last().copied().unwrap_or(0) & ((1 << unused_bits) - 1) != 0
+    {
+        return Err(DecodeError::TrailingBits {
+            offset: data.last().map_or(input.len(), |(offset, _)| *offset),
+        });
+    }
+
+    let mut remainder = 0u8;
+    let mut output = Vec::with_capacity(data_len * 5 / 8);
+    let mut accumulator = 0u32;
+    let mut bit_count = 0u8;
+
+    for &value in &values {
+        remainder = ((u16::from(remainder) * 32 + u16::from(value)) % 37) as u8;
+        accumulator = (accumulator << 5) | u32::from(value);
+        bit_count += 5;
+
+        while bit_count >= 8 {
+            bit_count -= 8;
+            output.push((accumulator >> bit_count) as u8);
+        }
+    }
+
+    if let Some((offset, found)) = check {
+        if found != remainder {
+            return Err(DecodeError::CheckMismatch {
+                offset,
+                expected: remainder,
+                found,
+            });
+        }
+    }
+
+    Ok(output)
+}
+```

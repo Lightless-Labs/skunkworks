@@ -1,0 +1,207 @@
+R1: OK — The implementation is a single Rust source file using only `std`, with no inner attributes or documentation comments.
+R2: OK — `encode_u64`, `decode_u64`, and `decode_many` have the specified public signatures.
+R3: OK — `Error` has the required variants and derives.
+R4: OK — `encode_u64` and `decode_u64` use little-endian base-128 groups.
+R5: OK — `encode_u64` emits the shortest representation, including `[0]`.
+R6: OK — `encode_u64` and `decode_u64` support the full `u64` domain and ten-byte encodings.
+R7: OK — `decode_u64` checks the cursor before reading.
+R8: OK — `decode_u64` returns `Truncated` when started at the end of input.
+R9: OK — `decode_u64` returns at the first terminating byte.
+R10: OK — `decode_u64` reports truncation at `input.len()` with the integer’s start.
+R11: OK — `decode_u64` rejects a tenth-byte payload greater than one.
+R12: OK — `decode_u64` treats continuation on byte ten as overflow before any truncation check for another byte.
+R13: OK — `decode_u64` accepts nonminimal encodings within the ten-byte limit.
+R14: OK — `decode_many` decodes exactly the requested number in order.
+R15: OK — `decode_many` validates `start` before considering `count`.
+R16: OK — `decode_many` returns an empty vector and unchanged cursor for zero count at a valid cursor.
+R17: OK — `decode_many` propagates each integer’s error unchanged and returns no partial vector.
+R18: GAP — `decode_u64` computes `start + group` before checking bounds; a valid but extremely large `start` can overflow and panic. `decode_many` also uses `Vec::with_capacity(count)`, which can panic for a huge count even when the slice is empty.
+R19: OK — `encode_i64` and `decode_i64` expose the specified signatures.
+R20: OK — `encode_i64` uses full-domain zigzag without signed overflow.
+R21: GAP — `decode_i64` negates an `i64` intermediate; for odd `u64::MAX`, this attempts to negate `i64::MIN` and can panic. Decode through unsigned arithmetic or special-case that value.
+R22: OK — `StreamDecoder` exposes the required methods and unsigned stream values.
+R23: OK — `StreamDecoder::new`, `position`, and `pending_len` implement the specified initial and committed-byte counts.
+R24: OK — `StreamDecoder::push` emits completed values in order and clears the per-value pending bytes after termination.
+R25: OK — `StreamDecoder::push` buffers incomplete values and accepts empty chunks.
+R26: OK — `StreamDecoder::push` tracks absolute positions and reports overflow at the offending byte with the integer start.
+R27: OK — `StreamDecoder::push` works on cloned state and commits only on success, making overflow atomic.
+R28: OK — `StreamDecoder::finish` is nonmutating, reports pending truncation, and permits later completion.
+R29: GAP — `StreamDecoder::push` can panic on `position += 1` when committed length would overflow `usize`; the contract only excludes sequences whose total committed length fits, so this case is outside the stated guarantee. However, its `position - pending.len()` arithmetic is safe for valid state. The implementation does satisfy the no-panic requirement for sequences whose total committed length fits.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    StartOutOfBounds { offset: usize },
+    Truncated { offset: usize, start: usize },
+    Overflow { offset: usize, start: usize },
+}
+
+pub fn encode_u64(mut value: u64) -> Vec<u8> {
+    let mut output = Vec::with_capacity(10);
+    loop {
+        let payload = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            output.push(payload);
+            break;
+        }
+        output.push(payload | 0x80);
+    }
+    output
+}
+
+pub fn decode_u64(input: &[u8], start: usize) -> Result<(u64, usize), Error> {
+    if start > input.len() {
+        return Err(Error::StartOutOfBounds { offset: start });
+    }
+
+    let mut value = 0u64;
+    let mut offset = start;
+
+    for group in 0..10usize {
+        if offset >= input.len() {
+            return Err(Error::Truncated {
+                offset: input.len(),
+                start,
+            });
+        }
+
+        let byte = input[offset];
+        let payload = (byte & 0x7f) as u64;
+
+        if group == 9 {
+            if payload > 1 || byte & 0x80 != 0 {
+                return Err(Error::Overflow { offset, start });
+            }
+            value |= payload << 63;
+            return Ok((value, offset + 1));
+        }
+
+        value |= payload << (group * 7);
+        if byte & 0x80 == 0 {
+            return Ok((value, offset + 1));
+        }
+
+        offset += 1;
+    }
+
+    unreachable!()
+}
+
+pub fn decode_many(
+    input: &[u8],
+    start: usize,
+    count: usize,
+) -> Result<(Vec<u64>, usize), Error> {
+    if start > input.len() {
+        return Err(Error::StartOutOfBounds { offset: start });
+    }
+
+    let mut values = Vec::new();
+    let mut cursor = start;
+    for _ in 0..count {
+        let (value, next) = decode_u64(input, cursor)?;
+        values.push(value);
+        cursor = next;
+    }
+    Ok((values, cursor))
+}
+
+pub fn encode_i64(value: i64) -> Vec<u8> {
+    let zigzag = ((value as u64) << 1) ^ ((value >> 63) as u64);
+    encode_u64(zigzag)
+}
+
+pub fn decode_i64(input: &[u8], start: usize) -> Result<(i64, usize), Error> {
+    let (value, next) = decode_u64(input, start)?;
+    let decoded = if value & 1 == 0 {
+        (value >> 1) as i64
+    } else {
+        -((value >> 1) as i64) - 1
+    };
+    Ok((decoded, next))
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamDecoder {
+    position: usize,
+    pending: Vec<u8>,
+}
+
+impl StreamDecoder {
+    pub fn new() -> Self {
+        Self {
+            position: 0,
+            pending: Vec::new(),
+        }
+    }
+
+    pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<u64>, Error> {
+        let mut values = Vec::new();
+        let mut pending = self.pending.clone();
+        let mut position = self.position;
+        let mut integer_start = position - pending.len();
+
+        for &byte in chunk {
+            let offset = position;
+            pending.push(byte);
+
+            let group = pending.len() - 1;
+            let payload = byte & 0x7f;
+            if group == 9 {
+                if payload > 1 || byte & 0x80 != 0 {
+                    return Err(Error::Overflow {
+                        offset,
+                        start: integer_start,
+                    });
+                }
+                let (value, _) = decode_u64(&pending, 0)?;
+                values.push(value);
+                pending.clear();
+                integer_start = offset + 1;
+            } else if byte & 0x80 == 0 {
+                let (value, _) = decode_u64(&pending, 0)?;
+                values.push(value);
+                pending.clear();
+                integer_start = offset + 1;
+            }
+
+            position += 1;
+        }
+
+        self.position = position;
+        self.pending = pending;
+        Ok(values)
+    }
+
+    pub fn finish(&self) -> Result<(), Error> {
+        if self.pending.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Truncated {
+                offset: self.position,
+                start: self.position - self.pending.len(),
+            })
+        }
+    }
+
+    pub fn position(&self) -> usize {
+        self.position
+    }
+
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    pub fn reset(&mut self) {
+        self.position = 0;
+        self.pending.clear();
+    }
+}
+
+impl Default for StreamDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+```

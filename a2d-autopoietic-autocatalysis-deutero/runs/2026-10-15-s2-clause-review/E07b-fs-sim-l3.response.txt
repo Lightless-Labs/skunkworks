@@ -1,0 +1,379 @@
+R1: OK — `Kind`, `Error`, and `Fs` expose the specified API; `Fs::default` is additional.
+R2: OK — `Fs::new` initializes only `/`; storage is in memory.
+R3: OK — `normalize` scans for NUL before checking for an empty path.
+R4: OK — `normalize` applies the specified lexical rules and returns an absolute canonical path.
+R5: GAP — `read`, `chdir`, and `ls` use `resolve_existing`, which checks the final component before reporting an earlier missing or nondirectory prefix. For example, a missing intermediate prefix can be misreported as `Missing` for a later prefix.
+R6: GAP — `write` and `mkdir` call `resolve_parent`, but `write` does not resolve intermediate components of the final path before checking or creating it. A path such as `/file/child` can report `Missing("/file/child")` instead of `NotDir("/file")`.
+R7: OK — `mkdir` checks the parent, then returns `Exists` for an existing final entry.
+R8: GAP — `write` checks the parent but does not validate traversal through intermediate components of the final path before creating or checking the final entry.
+R9: GAP — `read` relies on `resolve_existing`, whose traversal error precedence is incorrect.
+R10: OK — `ls` requires a directory at the resolved final path, though it inherits `resolve_existing`’s traversal precedence gap.
+R11: OK — `ls` sorts child names by Rust `String` ordering.
+R12: OK — mutating operations validate and perform their error checks before mutation; returned data is owned.
+R13: OK — `write` replaces file bytes, including with empty data, and copies input bytes.
+R14: OK — root-specific cases are handled by `mkdir`, `write`, `read`, and `ls`.
+R15: OK — `ls` filters to immediate children.
+R16: OK — `normalize` splits only on `/` and preserves other component text.
+R17: OK — `mkdir` and `write` enforce the existing-entry kind rules.
+R18: GAP — `resolve_existing` stops at the first missing prefix, but can return the wrong prefix because it checks each component without first ensuring every remaining component is valid to traverse; `write` also skips final-path traversal checks.
+R19: OK — `cwd` returns a clone; relative paths normalize from the operation’s current cwd.
+R20: GAP — `chdir` depends on `resolve_existing`, which can return the wrong traversal error and prefix.
+R21: OK — `normalize` removes dot components before lookup and ignores trailing slashes.
+R22: OK — normalization can resolve to root; root behavior is implemented for `mkdir` and `write`.
+R23: OK — error strings use canonical paths, and whitespace-only paths are preserved.
+R24: OK — these operations do not modify cwd.
+R25: OK — `rename` normalizes `from` then `to` before lookup and rejects root endpoints before lookup.
+R26: GAP — `rename` resolves parents, then directly checks the source entry; traversal inside an endpoint can be misreported because `resolve_parent` inherits the `resolve_existing` precedence defect.
+R27: OK — `rename` checks source existence and busy conditions before its same-path success case.
+R28: OK — `rename` checks destination parent before cycle and uses component-boundary containment.
+R29: OK — `rename` checks destination existence and returns `Exists` when overwrite is false.
+R30: OK — `rename` returns the specified type mismatch errors.
+R31: OK — `rename` checks directory destination emptiness and replaces it with the source tree.
+R32: OK — `rename` moves source descendants and preserves entries and bytes.
+R33: GAP — `remove` resolves the parent correctly in structure, but inherits the parent traversal error precedence issue.
+R34: OK — `remove` checks cwd containment before nonempty checks.
+R35: OK — `remove` implements recursive and nonrecursive directory removal.
+R36: OK — rename and remove preserve cwd and use component-boundary containment.
+
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidPath(usize),
+    Missing(String),
+    NotDir(String),
+    IsDir(String),
+    Exists(String),
+    Root,
+    Busy(String),
+    Cycle(String),
+    NotEmpty(String),
+}
+
+#[derive(Debug, Clone)]
+enum Entry {
+    Dir,
+    File(Vec<u8>),
+}
+
+impl Entry {
+    fn kind(&self) -> Kind {
+        match self {
+            Entry::Dir => Kind::Dir,
+            Entry::File(_) => Kind::File,
+        }
+    }
+}
+
+pub struct Fs {
+    entries: BTreeMap<String, Entry>,
+    cwd: String,
+}
+
+impl Fs {
+    pub fn new() -> Self {
+        let mut entries = BTreeMap::new();
+        entries.insert("/".to_string(), Entry::Dir);
+        Self {
+            entries,
+            cwd: "/".to_string(),
+        }
+    }
+
+    fn normalize(&self, path: &str) -> Result<String, Error> {
+        if let Some(i) = path.as_bytes().iter().position(|&b| b == 0) {
+            return Err(Error::InvalidPath(i));
+        }
+        if path.is_empty() {
+            return Err(Error::InvalidPath(0));
+        }
+
+        let mut parts: Vec<&str> = Vec::new();
+        if !path.starts_with('/') {
+            parts.extend(self.cwd.split('/').filter(|part| !part.is_empty()));
+        }
+        for part in path.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                other => parts.push(other),
+            }
+        }
+
+        if parts.is_empty() {
+            Ok("/".to_string())
+        } else {
+            Ok(format!("/{}", parts.join("/")))
+        }
+    }
+
+    fn parent_path(path: &str) -> (&str, &str) {
+        match path.rfind('/') {
+            Some(0) => ("/", &path[1..]),
+            Some(i) => (&path[..i], &path[i + 1..]),
+            _ => ("/", path),
+        }
+    }
+
+    fn is_within(path: &str, directory: &str) -> bool {
+        if directory == "/" {
+            path.starts_with('/')
+        } else {
+            path == directory
+                || (path.starts_with(directory)
+                    && path.as_bytes().get(directory.len()) == Some(&b'/'))
+        }
+    }
+
+    fn resolve_existing(&self, path: &str) -> Result<&Entry, Error> {
+        if path == "/" {
+            return Ok(self.entries.get("/").expect("root entry exists"));
+        }
+
+        let mut prefix = String::new();
+        let parts: Vec<&str> = path[1..].split('/').collect();
+        for (i, component) in parts.iter().enumerate() {
+            prefix.push('/');
+            prefix.push_str(component);
+            match self.entries.get(&prefix) {
+                None => return Err(Error::Missing(prefix)),
+                Some(entry) if i + 1 < parts.len() && !matches!(entry, Entry::Dir) => {
+                    return Err(Error::NotDir(prefix));
+                }
+                Some(entry) if i + 1 == parts.len() => return Ok(entry),
+                Some(_) => {}
+            }
+        }
+        Err(Error::Missing(path.to_string()))
+    }
+
+    fn resolve_parent(&self, path: &str) -> Result<(), Error> {
+        let (parent, _) = Self::parent_path(path);
+        match self.resolve_existing(parent)? {
+            Entry::Dir => Ok(()),
+            _ => Err(Error::NotDir(parent.to_string())),
+        }
+    }
+
+    pub fn mkdir(&mut self, path: &str) -> Result<(), Error> {
+        let path = self.normalize(path)?;
+        if path == "/" {
+            return Err(Error::Exists(path));
+        }
+        self.resolve_parent(&path)?;
+        if self.entries.contains_key(&path) {
+            return Err(Error::Exists(path));
+        }
+        self.entries.insert(path, Entry::Dir);
+        Ok(())
+    }
+
+    pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Error> {
+        let path = self.normalize(path)?;
+        if path == "/" {
+            return Err(Error::IsDir(path));
+        }
+        self.resolve_parent(&path)?;
+        match self.entries.get_mut(&path) {
+            Some(Entry::Dir) => Err(Error::IsDir(path)),
+            Some(Entry::File(contents)) => {
+                contents.clear();
+                contents.extend_from_slice(data);
+                Ok(())
+            }
+            None => {
+                self.entries.insert(path, Entry::File(data.to_vec()));
+                Ok(())
+            }
+        }
+    }
+
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let path = self.normalize(path)?;
+        match self.resolve_existing(&path)? {
+            Entry::File(contents) => Ok(contents.clone()),
+            Entry::Dir => Err(Error::IsDir(path)),
+        }
+    }
+
+    pub fn ls(&self, path: &str) -> Result<Vec<(String, Kind)>, Error> {
+        let path = self.normalize(path)?;
+        match self.resolve_existing(&path)? {
+            Entry::File(_) => return Err(Error::NotDir(path)),
+            Entry::Dir => {}
+        }
+
+        let mut children = Vec::new();
+        for (entry_path, entry) in &self.entries {
+            if entry_path == "/" {
+                continue;
+            }
+            let (parent, name) = Self::parent_path(entry_path);
+            if parent == path {
+                children.push((name.to_string(), entry.kind()));
+            }
+        }
+        children.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(children)
+    }
+
+    pub fn cwd(&self) -> String {
+        self.cwd.clone()
+    }
+
+    pub fn chdir(&mut self, path: &str) -> Result<(), Error> {
+        let path = self.normalize(path)?;
+        match self.resolve_existing(&path)? {
+            Entry::Dir => {
+                self.cwd = path;
+                Ok(())
+            }
+            Entry::File(_) => Err(Error::NotDir(path)),
+        }
+    }
+
+    pub fn rename(&mut self, from: &str, to: &str, overwrite: bool) -> Result<(), Error> {
+        let source = self.normalize(from)?;
+        let destination = self.normalize(to)?;
+
+        if source == "/" || destination == "/" {
+            return Err(Error::Root);
+        }
+
+        self.resolve_parent(&source)?;
+        let source_entry = self
+            .entries
+            .get(&source)
+            .ok_or_else(|| Error::Missing(source.clone()))?;
+
+        if matches!(source_entry, Entry::Dir) && Self::is_within(&self.cwd, &source) {
+            return Err(Error::Busy(source));
+        }
+
+        self.resolve_parent(&destination)?;
+        if matches!(self.entries.get(&destination), Some(Entry::Dir))
+            && Self::is_within(&self.cwd, &destination)
+        {
+            return Err(Error::Busy(destination));
+        }
+
+        if source == destination {
+            return Ok(());
+        }
+
+        if matches!(source_entry, Entry::Dir) && Self::is_within(&destination, &source) {
+            return Err(Error::Cycle(destination));
+        }
+
+        let destination_entry = self.entries.get(&destination);
+        if destination_entry.is_some() && !overwrite {
+            return Err(Error::Exists(destination));
+        }
+
+        if let Some(destination_entry) = destination_entry {
+            match (source_entry, destination_entry) {
+                (Entry::Dir, Entry::File(_)) => {
+                    return Err(Error::NotDir(destination));
+                }
+                (Entry::File(_), Entry::Dir) => {
+                    return Err(Error::IsDir(destination));
+                }
+                (Entry::Dir, Entry::Dir) => {
+                    if self.entries.keys().any(|entry_path| {
+                        entry_path != &destination && Self::is_within(entry_path, &destination)
+                    }) {
+                        return Err(Error::NotEmpty(destination));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let moving_paths: Vec<String> = self
+            .entries
+            .keys()
+            .filter(|entry_path| Self::is_within(entry_path, &source))
+            .cloned()
+            .collect();
+
+        let mut moved = Vec::with_capacity(moving_paths.len());
+        for old_path in &moving_paths {
+            let suffix = &old_path[source.len()..];
+            let new_path = format!("{destination}{suffix}");
+            let entry = self.entries.get(old_path).expect("listed entry exists").clone();
+            moved.push((old_path.clone(), new_path, entry));
+        }
+
+        if destination_entry.is_some() {
+            let to_remove: Vec<String> = self
+                .entries
+                .keys()
+                .filter(|entry_path| Self::is_within(entry_path, &destination))
+                .cloned()
+                .collect();
+            for path in to_remove {
+                self.entries.remove(&path);
+            }
+        }
+
+        for old_path in moving_paths {
+            self.entries.remove(&old_path);
+        }
+        for (_, new_path, entry) in moved {
+            self.entries.insert(new_path, entry);
+        }
+        Ok(())
+    }
+
+    pub fn remove(&mut self, path: &str, recursive: bool) -> Result<(), Error> {
+        let path = self.normalize(path)?;
+        if path == "/" {
+            return Err(Error::Root);
+        }
+
+        self.resolve_parent(&path)?;
+        let entry = self
+            .entries
+            .get(&path)
+            .ok_or_else(|| Error::Missing(path.clone()))?;
+
+        if matches!(entry, Entry::Dir) && Self::is_within(&self.cwd, &path) {
+            return Err(Error::Busy(path));
+        }
+
+        let has_children = matches!(entry, Entry::Dir)
+            && self.entries.keys().any(|entry_path| {
+                entry_path != &path && Self::is_within(entry_path, &path)
+            });
+        if has_children && !recursive {
+            return Err(Error::NotEmpty(path));
+        }
+
+        let to_remove: Vec<String> = self
+            .entries
+            .keys()
+            .filter(|entry_path| Self::is_within(entry_path, &path))
+            .cloned()
+            .collect();
+        for entry_path in to_remove {
+            self.entries.remove(&entry_path);
+        }
+        Ok(())
+    }
+}
+
+impl Default for Fs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+```

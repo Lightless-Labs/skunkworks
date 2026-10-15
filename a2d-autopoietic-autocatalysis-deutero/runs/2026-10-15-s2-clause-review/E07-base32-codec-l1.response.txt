@@ -1,0 +1,151 @@
+R1: OK — `encode`, `decode`, and `DecodeError` use only `std` and compile as a standalone Rust source file with edition 2024; there are no inner attributes or doc comments.
+
+R2: OK — the public API and error derives match the specification exactly.
+
+R3: OK — `ALPHABET` contains the required 32 uppercase symbols in order; `decode` accepts only those symbols and `=`.
+
+R4: OK — `encode` consumes bytes most significant bit first and emits five-bit values in alphabet order.
+
+R5: OK — `encode` right-pads the final partial value with zero bits and emits no empty value.
+
+R6: OK — `encode` adds `=` until the output length is divisible by eight.
+
+R7: OK — `encode` and `decode` both handle empty input as specified.
+
+R8: OK — `decode` performs lexical, padding placement, data length, padding shape, and trailing bits validation in the required order.
+
+R9: OK — `decode` lexically scans every input byte from left to right before structural validation.
+
+R10: OK — `decode` reports offsets as UTF-8 byte offsets and reports the actual offending byte.
+
+R11: OK — `decode` finds the first `=` and reports the first alphabet byte after it; strings containing only `=` continue to later passes.
+
+R12: OK — `decode` checks the data length residue and reports `InvalidLength { offset: n }` for illegal residues.
+
+R13: OK — `decode` checks both the exact padding count and total length divisibility.
+
+R14: OK — `decode` reports padding shape failures at `p`, including missing, unnecessary, or excess padding.
+
+R15: OK — `decode` converts data symbols to bytes in most significant bit first order; padding contributes no bits.
+
+R16: OK — `decode` checks the required unused low bits for each legal residue.
+
+R17: OK — `decode` reports nonzero unused bits as `TrailingBits { offset: d - 1 }`, only after prior validation succeeds.
+
+R18: OK — `decode` returns errors without partial output, and both operations leave their input untouched.
+
+R19: OK — `encode` and `decode` support arbitrary bytes, and the bit handling preserves successful round trips.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    InvalidByte { offset: usize, byte: u8 },
+    Padding { offset: usize },
+    InvalidLength { offset: usize },
+    TrailingBits { offset: usize },
+}
+
+const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+pub fn encode(input: &[u8]) -> String {
+    let mut output = String::new();
+    let mut buffer: u32 = 0;
+    let mut bits = 0;
+
+    for &byte in input {
+        buffer = (buffer << 8) | u32::from(byte);
+        bits += 8;
+
+        while bits >= 5 {
+            bits -= 5;
+            output.push(ALPHABET[((buffer >> bits) & 0x1f) as usize] as char);
+        }
+    }
+
+    if bits > 0 {
+        output.push(ALPHABET[((buffer << (5 - bits)) & 0x1f) as usize] as char);
+    }
+
+    while output.len() % 8 != 0 {
+        output.push('=');
+    }
+
+    output
+}
+
+pub fn decode(input: &str) -> Result<Vec<u8>, DecodeError> {
+    let bytes = input.as_bytes();
+    let n = bytes.len();
+
+    // Lexical validation.
+    for (offset, &byte) in bytes.iter().enumerate() {
+        if byte != b'=' && !ALPHABET.contains(&byte) {
+            return Err(DecodeError::InvalidByte { offset, byte });
+        }
+    }
+
+    // Padding placement.
+    let p = bytes.iter().position(|&byte| byte == b'=').unwrap_or(n);
+    if let Some(offset) = (p..n).find(|&offset| bytes[offset] != b'=') {
+        return Err(DecodeError::Padding { offset });
+    }
+
+    // Data length.
+    let residue = p % 8;
+    if !matches!(residue, 0 | 2 | 4 | 5 | 7) {
+        return Err(DecodeError::InvalidLength { offset: n });
+    }
+
+    // Padding shape.
+    let required_padding = match residue {
+        0 => 0,
+        2 => 6,
+        4 => 4,
+        5 => 3,
+        7 => 1,
+        _ => unreachable!(),
+    };
+    if n - p != required_padding || n % 8 != 0 {
+        return Err(DecodeError::Padding { offset: p });
+    }
+
+    // Trailing bits.
+    let unused_bits = match residue {
+        0 => 0,
+        2 => 2,
+        4 => 4,
+        5 => 1,
+        7 => 3,
+        _ => unreachable!(),
+    };
+    if unused_bits > 0 {
+        let value = ALPHABET
+            .iter()
+            .position(|&symbol| symbol == bytes[p - 1])
+            .expect("lexical validation guarantees an alphabet symbol");
+        if value & ((1 << unused_bits) - 1) != 0 {
+            return Err(DecodeError::TrailingBits { offset: p - 1 });
+        }
+    }
+
+    let mut output = Vec::with_capacity(p * 5 / 8);
+    let mut buffer: u32 = 0;
+    let mut bits = 0;
+
+    for &symbol in &bytes[..p] {
+        let value = ALPHABET
+            .iter()
+            .position(|&candidate| candidate == symbol)
+            .expect("lexical validation guarantees an alphabet symbol");
+        buffer = (buffer << 5) | value as u32;
+        bits += 5;
+
+        while bits >= 8 {
+            bits -= 8;
+            output.push(((buffer >> bits) & 0xff) as u8);
+        }
+    }
+
+    Ok(output)
+}
+```

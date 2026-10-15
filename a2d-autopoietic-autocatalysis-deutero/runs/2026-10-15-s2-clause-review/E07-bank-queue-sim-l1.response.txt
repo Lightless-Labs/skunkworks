@@ -1,0 +1,173 @@
+R1: GAP — The review response must include a checklist before the source, but R1 requires output only Rust source.
+R2: OK — `Customer`, `Kind`, `Event`, `Error`, and `simulate` have the required public API and derives.
+R3: OK — `simulate` handles empty input and uses `u64` ticks and durations.
+R4: OK — `simulate` validates IDs in original order before simulation, checking zero before duplicates; runtime arithmetic is deferred.
+R5: OK — `simulate` sorts by ascending arrival and descending ID, then enqueues in that order.
+R6: OK — `simulate` starts idle, dispatches only after arrivals at the current tick, and never dispatches before arrival.
+R7: OK — `simulate` emits a scheduled `Finish` before processing same-time arrivals.
+R8: OK — `simulate` emits the full same-time arrival cohort before dispatch.
+R9: OK — `simulate` dispatches the oldest queued customer after the arrival cohort.
+R10: GAP — `simulate` derives `wake` from `started_once` and `previous_finish`, so after a zero-duration inline finish it can mark a later same-tick dispatch as wake=true. R13 requires that dispatch to be wake=false.
+R11: OK — `simulate` includes the wake surcharge in the checked occupation finish time.
+R12: OK — `simulate` checks service addition before surcharge addition and reports the dispatched customer and start time.
+R13: GAP — `simulate` handles only one zero-duration inline completion per tick. If multiple zero-duration customers are waiting, it leaves the server idle until another event instead of dispatching the next customer immediately.
+R14: OK — `simulate` retains the scheduled completion across arrivals during a positive occupation.
+R15: GAP — `simulate` can terminate with waiting customers after an inline zero-duration finish when no later arrival or scheduled completion exists.
+R16: GAP — Because inline dispatch stops after one customer, `simulate` may omit required Start and Finish events.
+R17: OK — `simulate` uses checked additions, which allow adding zero at `u64::MAX`.
+R18: OK — `simulate` uses IDs only for validation, arrival tie-breaks, and event/error identity.
+R19: OK — `simulate` keeps all state local and does not mutate input.
+R20: OK — `simulate` dispatches chronologically, so runtime overflow follows actual dispatch order.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Arrive,
+    Start { finish: u64, wake: bool },
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub time: u64,
+    pub customer: u32,
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroId { index: usize },
+    DuplicateId { index: usize, id: u32 },
+    TimeOverflow { customer: u32, time: u64 },
+}
+
+pub fn simulate(customers: &[Customer], wake_cost: u64) -> Result<Vec<Event>, Error> {
+    use std::collections::{HashSet, VecDeque};
+
+    let mut seen = HashSet::with_capacity(customers.len());
+    for (index, customer) in customers.iter().enumerate() {
+        if customer.id == 0 {
+            return Err(Error::ZeroId { index });
+        }
+        if !seen.insert(customer.id) {
+            return Err(Error::DuplicateId {
+                index,
+                id: customer.id,
+            });
+        }
+    }
+
+    if customers.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut arrivals: Vec<&Customer> = customers.iter().collect();
+    arrivals.sort_by(|a, b| {
+        a.arrival
+            .cmp(&b.arrival)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+
+    let mut events = Vec::with_capacity(customers.len() * 3);
+    let mut waiting: VecDeque<&Customer> = VecDeque::new();
+    let mut next_arrival = 0usize;
+    let mut completion: Option<(u64, &Customer)> = None;
+    let mut previous_finish: Option<u64> = None;
+    let mut started_once = false;
+
+    while next_arrival < arrivals.len() || completion.is_some() || !waiting.is_empty() {
+        if completion.is_none() && waiting.is_empty() {
+            if let Some(customer) = arrivals.get(next_arrival) {
+                let tick = customer.arrival;
+                while next_arrival < arrivals.len() && arrivals[next_arrival].arrival == tick {
+                    let customer = arrivals[next_arrival];
+                    events.push(Event {
+                        time: tick,
+                        customer: customer.id,
+                        kind: Kind::Arrive,
+                    });
+                    waiting.push_back(customer);
+                    next_arrival += 1;
+                }
+            }
+        }
+
+        let tick = if let Some((finish, _)) = completion {
+            finish
+        } else {
+            waiting.front().expect("waiting customer must exist").arrival
+        };
+
+        if let Some((finish, customer)) = completion {
+            if finish == tick {
+                events.push(Event {
+                    time: tick,
+                    customer: customer.id,
+                    kind: Kind::Finish,
+                });
+                completion = None;
+                previous_finish = Some(tick);
+            }
+        }
+
+        while next_arrival < arrivals.len() && arrivals[next_arrival].arrival == tick {
+            let customer = arrivals[next_arrival];
+            events.push(Event {
+                time: tick,
+                customer: customer.id,
+                kind: Kind::Arrive,
+            });
+            waiting.push_back(customer);
+            next_arrival += 1;
+        }
+
+        while completion.is_none() {
+            let Some(customer) = waiting.pop_front() else {
+                break;
+            };
+
+            let wake = !started_once
+                || previous_finish.is_some_and(|finish_time| tick > finish_time);
+
+            let finish = tick
+                .checked_add(customer.service)
+                .ok_or(Error::TimeOverflow {
+                    customer: customer.id,
+                    time: tick,
+                })?
+                .checked_add(if wake { wake_cost } else { 0 })
+                .ok_or(Error::TimeOverflow {
+                    customer: customer.id,
+                    time: tick,
+                })?;
+
+            events.push(Event {
+                time: tick,
+                customer: customer.id,
+                kind: Kind::Start { finish, wake },
+            });
+            started_once = true;
+
+            if finish == tick {
+                events.push(Event {
+                    time: tick,
+                    customer: customer.id,
+                    kind: Kind::Finish,
+                });
+                previous_finish = Some(tick);
+            } else {
+                completion = Some((finish, customer));
+            }
+        }
+    }
+
+    Ok(events)
+}
+```

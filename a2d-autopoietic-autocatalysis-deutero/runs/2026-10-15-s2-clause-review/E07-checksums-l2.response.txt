@@ -1,0 +1,285 @@
+R1: OK — the implementation is a single Rust source file using only `std`, with no inner attributes or inner doc comments.
+
+R2: OK — `Span`, `Hashes`, `SpanError`, and `SnapshotError` are public and derive the required traits.
+
+R3: OK — `crc32` follows the reflected IEEE CRC-32 algorithm.
+
+R4: OK — `crc32` processes all bytes as `u8`; an empty slice returns `0`.
+
+R5: OK — `adler32` initializes `a=1, b=0`, reduces after each update, and packs `(b << 16) | a`.
+
+R6: GAP — `update_state` uses `u32` for `a + byte` and `b + a`; those additions can overflow on long inputs before the modulo. Use a wider intermediate or bounded Adler reduction.
+
+R7: OK — `checksums` returns the CRC-32 and Adler-32 results for the input.
+
+R8: OK — `checksums_spans` hashes selected slices in supplied order with one initial state.
+
+R9: OK — `validate_spans` checks spans in supplied order and returns the first failure.
+
+R10: OK — `validate_spans` checks reversed endpoints before bounds.
+
+R11: OK — `validate_spans` checks start bounds before end bounds; endpoints equal to `data.len()` are accepted.
+
+R12: OK — `validate_spans` checks overlap only after endpoint validation, against the immediately preceding span’s end.
+
+R13: OK — `validate_spans` lets empty spans participate in ordering, and `update_state` contributes no bytes for them.
+
+R14: OK — `validate_spans` permits adjacent spans and repeated empty spans at the same position.
+
+R15: OK — `checksums_spans` initializes the standard empty state, so no spans or only empty spans return the empty checksums.
+
+R16: GAP — `update_state` shares CRC and Adler state across spans, but its Adler additions can overflow; correcting R6 fixes this clause too.
+
+R17: OK — malformed spans are validated before slicing or updating, and the APIs do not modify input.
+
+R18: OK — `checksums_spans` and `update_spans` process selected slices without copying; validation and hashing are linear in span and selected-byte counts.
+
+R19: OK — `Stream` has private fields and derives `Debug, Clone`; `SnapshotError` has the required variants and traits.
+
+R20: OK — `Stream::new` initializes the standard state, and `checksum` reads it without mutation.
+
+R21: OK — `from_seed` resumes from finalized CRC and packed Adler state without processing seed bytes.
+
+R22: OK — `from_seed` validates `a` before `b`, accepts zero, and accepts any CRC.
+
+R23: OK — `update` appends bytes to the current state, including empty updates.
+
+R24: OK — `update_spans` validates the complete span list before mutating either checksum component.
+
+R25: OK — `reset` restores the standard state; derived `Clone` copies the state.
+
+R26: OK — `snapshot` formats the finalized checksums as the required lowercase, zero-padded token.
+
+R27: OK — `restore` checks token length and fixed marker bytes before parsing digits.
+
+R28: GAP — `restore` parses CRC digits before scanning Adler digits, so a malformed CRC seed can be reported before an earlier invalid Adler digit. It must validate all digit bytes in offset order before parsing either number.
+
+R29: GAP — `restore` delegates seed validation correctly after parsing, but does not satisfy the required all-digits-first validation order; fix the scan before parsing.
+
+R30: OK — `Stream` exposes the specified methods, retains only constant-sized state, and snapshot/restore use fixed-size tokens.
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hashes {
+    pub crc32: u32,
+    pub adler32: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanError {
+    Reversed { span: usize },
+    OutOfBounds { span: usize, offset: usize },
+    Overlap { span: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotError {
+    Shape,
+    Hex { offset: usize },
+    Adler { component: usize },
+}
+
+const ADLER_MOD: u32 = 65_521;
+
+fn update_state(crc: &mut u32, a: &mut u32, b: &mut u32, data: &[u8]) {
+    for &byte in data {
+        *crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let low_bit = *crc & 1;
+            *crc >>= 1;
+            if low_bit != 0 {
+                *crc ^= 0xedb8_8320;
+            }
+        }
+
+        *a = ((*a as u64 + u64::from(byte)) % u64::from(ADLER_MOD)) as u32;
+        *b = ((*b as u64 + u64::from(*a)) % u64::from(ADLER_MOD)) as u32;
+    }
+}
+
+fn finalized(crc: u32, a: u32, b: u32) -> Hashes {
+    Hashes {
+        crc32: crc ^ 0xffff_ffff,
+        adler32: (b << 16) | a,
+    }
+}
+
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffff;
+    let mut a = 1;
+    let mut b = 0;
+    update_state(&mut crc, &mut a, &mut b, data);
+    crc ^ 0xffff_ffff
+}
+
+pub fn adler32(data: &[u8]) -> u32 {
+    let mut crc = 0;
+    let mut a = 1;
+    let mut b = 0;
+    update_state(&mut crc, &mut a, &mut b, data);
+    (b << 16) | a
+}
+
+pub fn checksums(data: &[u8]) -> Hashes {
+    let mut crc = 0xffff_ffff;
+    let mut a = 1;
+    let mut b = 0;
+    update_state(&mut crc, &mut a, &mut b, data);
+    finalized(crc, a, b)
+}
+
+fn validate_spans(data_len: usize, spans: &[Span]) -> Result<(), SpanError> {
+    let mut previous_end = None;
+
+    for (index, span) in spans.iter().enumerate() {
+        if span.start > span.end {
+            return Err(SpanError::Reversed { span: index });
+        }
+        if span.start > data_len {
+            return Err(SpanError::OutOfBounds {
+                span: index,
+                offset: span.start,
+            });
+        }
+        if span.end > data_len {
+            return Err(SpanError::OutOfBounds {
+                span: index,
+                offset: span.end,
+            });
+        }
+        if let Some(end) = previous_end {
+            if span.start < end {
+                return Err(SpanError::Overlap { span: index });
+            }
+        }
+        previous_end = Some(span.end);
+    }
+
+    Ok(())
+}
+
+pub fn checksums_spans(data: &[u8], spans: &[Span]) -> Result<Hashes, SpanError> {
+    validate_spans(data.len(), spans)?;
+
+    let mut crc = 0xffff_ffff;
+    let mut a = 1;
+    let mut b = 0;
+    for span in spans {
+        update_state(&mut crc, &mut a, &mut b, &data[span.start..span.end]);
+    }
+    Ok(finalized(crc, a, b))
+}
+
+#[derive(Debug, Clone)]
+pub struct Stream {
+    crc: u32,
+    a: u32,
+    b: u32,
+}
+
+impl Stream {
+    pub fn new() -> Self {
+        Self {
+            crc: 0xffff_ffff,
+            a: 1,
+            b: 0,
+        }
+    }
+
+    pub fn checksum(&self) -> Hashes {
+        finalized(self.crc, self.a, self.b)
+    }
+
+    pub fn from_seed(crc32: u32, adler32: u32) -> Result<Self, SnapshotError> {
+        let a = adler32 & 0xffff;
+        let b = adler32 >> 16;
+        if a >= ADLER_MOD {
+            return Err(SnapshotError::Adler { component: 0 });
+        }
+        if b >= ADLER_MOD {
+            return Err(SnapshotError::Adler { component: 1 });
+        }
+        Ok(Self {
+            crc: crc32 ^ 0xffff_ffff,
+            a,
+            b,
+        })
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        update_state(&mut self.crc, &mut self.a, &mut self.b, data);
+    }
+
+    pub fn update_spans(
+        &mut self,
+        data: &[u8],
+        spans: &[Span],
+    ) -> Result<(), SpanError> {
+        validate_spans(data.len(), spans)?;
+
+        for span in spans {
+            update_state(
+                &mut self.crc,
+                &mut self.a,
+                &mut self.b,
+                &data[span.start..span.end],
+            );
+        }
+        Ok(())
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    pub fn snapshot(&self) -> String {
+        let hashes = self.checksum();
+        format!("c{:08x}:a{:08x}", hashes.crc32, hashes.adler32)
+    }
+
+    pub fn restore(token: &str) -> Result<Self, SnapshotError> {
+        let bytes = token.as_bytes();
+        if bytes.len() != 19 || bytes[0] != b'c' || bytes[9] != b':' || bytes[10] != b'a' {
+            return Err(SnapshotError::Shape);
+        }
+
+        for offset in (1..9).chain(11..19) {
+            if hex_digit(bytes[offset]).is_none() {
+                return Err(SnapshotError::Hex { offset });
+            }
+        }
+
+        let mut crc = 0u32;
+        for &byte in &bytes[1..9] {
+            crc = (crc << 4) | u32::from(hex_digit(byte).unwrap());
+        }
+
+        let mut adler = 0u32;
+        for &byte in &bytes[11..19] {
+            adler = (adler << 4) | u32::from(hex_digit(byte).unwrap());
+        }
+
+        Self::from_seed(crc, adler)
+    }
+}
+
+impl Default for Stream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+```

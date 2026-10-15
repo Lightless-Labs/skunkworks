@@ -1,0 +1,359 @@
+R1: OK — The file uses only `std`, implements the requested public API, and has no inner attributes or inner documentation.
+
+R2: OK — `parse_with_dialect` preserves field contents and ordering.
+
+R3: OK — `parse_with_dialect` reports absolute byte offsets and counts only completed outside-quote record terminators.
+
+R4: OK — `parse_with_dialect` skips only an initial BOM and retains later BOMs as field data.
+
+R5: OK — `parse_with_dialect` handles empty input, unfinished final records, and terminators at EOF as specified.
+
+R6: OK — `parse_with_dialect` preserves empty fields, including trailing and quoted empty fields.
+
+R7: OK — `parse_with_dialect` treats LF and CRLF as terminators and reports outside bare CR at its byte offset.
+
+R8: OK — `parse_with_dialect` permits quotes only at the first byte of a field.
+
+R9: OK — `parse_with_dialect` decodes doubled quotes and leaves a pair at EOF unclosed.
+
+R10: OK — `parse_with_dialect` preserves all bytes represented by characters inside quotes, including CR and newlines.
+
+R11: OK — `parse_with_dialect` rejects bytes after a closing quote and checks bare CR first.
+
+R12: OK — `parse_with_dialect` reports an unclosed quote at its opening quote and accepts a closing quote at EOF.
+
+R13: OK — `parse_with_dialect` checks NUL before other byte handling.
+
+R14: GAP — `parse_with_dialect` treats the second quote in a quote pair as an escape before checking whether it is NUL. A custom NUL quote byte can therefore escape NUL's required precedence.
+
+R15: OK — `parse_with_dialect` does not strip delimiters, normalize quoted newlines, interpret backslashes, or skip blank records.
+
+R16: OK — `parse_with_dialect` discards quote syntax and decodes escapes once.
+
+R17: OK — `parse_with_dialect` uses dynamically growing standard-library containers without fixed record or field limits.
+
+R18: OK — Parsing state is local to each `parse_with_dialect` call.
+
+R19: OK — `validate_config` checks delimiter range, quote range, then equality, reporting the required component.
+
+R20: GAP — `parse_with_dialect` does not classify a configured NUL delimiter or quote as an error. With valid Config, NUL is forbidden input and must remain `Nul`.
+
+R21: OK — `StreamReader::new`, `feed`, and `finish` validate config immediately, buffer chunks verbatim, then parse their concatenation.
+
+R22: OK — `StreamReader::finish` validates the full lexical input before table rules and caches cloned results; `feed` rejects use after finish.
+
+R23: OK — `StreamReader::reset` clears buffered input and cached results while retaining the original config.
+
+R24: OK — `build_table` applies header and row behavior as specified, including no header for empty input.
+
+R25: OK — `build_table` checks duplicates in header order and preserves full header vectors for non-Reject policies.
+
+R26: OK — `build_table` reports the first width mismatch with the input record index.
+
+R27: OK — `read_csv` and `finish` validate config, parse all input lexically, then validate duplicates and widths in order.
+
+R28: OK — `Table::column_index` selects the greatest matching index for KeepLast and the least for other policies.
+
+R29: OK — `read_csv` is implemented as `new`, `feed`, and `finish`; the public types expose the requested fields and variants.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CsvError {
+    UnexpectedQuote { record: usize, byte: usize },
+    TrailingByte { record: usize, byte: usize },
+    BareCr { record: usize, byte: usize },
+    UnclosedQuote { record: usize, byte: usize },
+    Nul { record: usize, byte: usize },
+    InvalidConfig { component: ConfigPart },
+    DuplicateHeader { name: String, first: usize, second: usize },
+    HeaderWidth { record: usize, expected: usize, actual: usize },
+    ReaderFinished,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigPart {
+    Delimiter,
+    Quote,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DuplicatePolicy {
+    Reject,
+    KeepFirst,
+    KeepLast,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Config {
+    pub delimiter: u8,
+    pub quote: u8,
+    pub headers: bool,
+    pub duplicates: DuplicatePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Table {
+    pub header: Option<Vec<String>>,
+    pub rows: Vec<Vec<String>>,
+    pub duplicates: DuplicatePolicy,
+}
+
+impl Table {
+    pub fn column_index(&self, name: &str) -> Option<usize> {
+        let header = self.header.as_ref()?;
+        match self.duplicates {
+            DuplicatePolicy::KeepLast => header.iter().rposition(|column| column == name),
+            DuplicatePolicy::Reject | DuplicatePolicy::KeepFirst => {
+                header.iter().position(|column| column == name)
+            }
+        }
+    }
+}
+
+fn validate_config(config: Config) -> Result<(), CsvError> {
+    if !(0x21..=0x7e).contains(&config.delimiter) {
+        return Err(CsvError::InvalidConfig {
+            component: ConfigPart::Delimiter,
+        });
+    }
+    if !(0x21..=0x7e).contains(&config.quote) {
+        return Err(CsvError::InvalidConfig {
+            component: ConfigPart::Quote,
+        });
+    }
+    if config.delimiter == config.quote {
+        return Err(CsvError::InvalidConfig {
+            component: ConfigPart::Quote,
+        });
+    }
+    Ok(())
+}
+
+fn parse_with_dialect(
+    input: &str,
+    delimiter: u8,
+    quote: u8,
+) -> Result<Vec<Vec<String>>, CsvError> {
+    let bytes = input.as_bytes();
+    let start = if input.starts_with('\u{feff}') {
+        '\u{feff}'.len_utf8()
+    } else {
+        0
+    };
+
+    let mut records = Vec::new();
+    let mut record = Vec::new();
+    let mut field = String::new();
+
+    let mut i = start;
+    let mut record_index = 0usize;
+    let mut field_started = false;
+    let mut in_quotes = false;
+    let mut after_quote = false;
+    let mut quote_start = 0usize;
+
+    while i < bytes.len() {
+        let byte = bytes[i];
+
+        if byte == 0 {
+            return Err(CsvError::Nul {
+                record: record_index,
+                byte: i,
+            });
+        }
+
+        if in_quotes {
+            if byte == quote {
+                if i + 1 < bytes.len() {
+                    if bytes[i + 1] == 0 {
+                        return Err(CsvError::Nul {
+                            record: record_index,
+                            byte: i + 1,
+                        });
+                    }
+                    if bytes[i + 1] == quote {
+                        field.push(quote as char);
+                        i += 2;
+                        continue;
+                    }
+                }
+                in_quotes = false;
+                after_quote = true;
+                i += 1;
+            } else {
+                let ch = input[i..].chars().next().expect("valid UTF-8 boundary");
+                field.push(ch);
+                i += ch.len_utf8();
+            }
+            continue;
+        }
+
+        if byte == b'\r' && (i + 1 >= bytes.len() || bytes[i + 1] != b'\n') {
+            return Err(CsvError::BareCr {
+                record: record_index,
+                byte: i,
+            });
+        }
+
+        if after_quote {
+            if byte == delimiter {
+                record.push(std::mem::take(&mut field));
+                field_started = false;
+                after_quote = false;
+                i += 1;
+            } else if byte == b'\n' || byte == b'\r' {
+                record.push(std::mem::take(&mut field));
+                records.push(std::mem::take(&mut record));
+                field_started = false;
+                after_quote = false;
+                record_index += 1;
+                i += if byte == b'\r' { 2 } else { 1 };
+            } else {
+                return Err(CsvError::TrailingByte {
+                    record: record_index,
+                    byte: i,
+                });
+            }
+            continue;
+        }
+
+        if byte == delimiter {
+            record.push(std::mem::take(&mut field));
+            field_started = false;
+            i += 1;
+        } else if byte == b'\n' || byte == b'\r' {
+            record.push(std::mem::take(&mut field));
+            records.push(std::mem::take(&mut record));
+            field_started = false;
+            record_index += 1;
+            i += if byte == b'\r' { 2 } else { 1 };
+        } else if byte == quote {
+            if field_started {
+                return Err(CsvError::UnexpectedQuote {
+                    record: record_index,
+                    byte: i,
+                });
+            }
+            in_quotes = true;
+            field_started = true;
+            quote_start = i;
+            i += 1;
+        } else {
+            let ch = input[i..].chars().next().expect("valid UTF-8 boundary");
+            field.push(ch);
+            field_started = true;
+            i += ch.len_utf8();
+        }
+    }
+
+    if in_quotes {
+        return Err(CsvError::UnclosedQuote {
+            record: record_index,
+            byte: quote_start,
+        });
+    }
+
+    if !record.is_empty() || field_started || after_quote || !field.is_empty() {
+        record.push(field);
+        records.push(record);
+    }
+
+    Ok(records)
+}
+
+pub fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, CsvError> {
+    parse_with_dialect(input, b',', b'"')
+}
+
+pub struct StreamReader {
+    config: Config,
+    input: String,
+    result: Option<Result<Table, CsvError>>,
+}
+
+impl StreamReader {
+    pub fn new(config: Config) -> Result<Self, CsvError> {
+        validate_config(config)?;
+        Ok(Self {
+            config,
+            input: String::new(),
+            result: None,
+        })
+    }
+
+    pub fn feed(&mut self, chunk: &str) -> Result<(), CsvError> {
+        if self.result.is_some() {
+            return Err(CsvError::ReaderFinished);
+        }
+        self.input.push_str(chunk);
+        Ok(())
+    }
+
+    pub fn finish(&mut self) -> Result<Table, CsvError> {
+        if let Some(result) = &self.result {
+            return result.clone();
+        }
+
+        let result = parse_with_dialect(&self.input, self.config.delimiter, self.config.quote)
+            .and_then(|records| build_table(records, self.config));
+        self.result = Some(result.clone());
+        result
+    }
+
+    pub fn reset(&mut self) {
+        self.input.clear();
+        self.result = None;
+    }
+}
+
+fn build_table(records: Vec<Vec<String>>, config: Config) -> Result<Table, CsvError> {
+    let mut records = records.into_iter();
+    let header = if config.headers {
+        records.next()
+    } else {
+        None
+    };
+
+    if let Some(header_values) = &header {
+        if config.duplicates == DuplicatePolicy::Reject {
+            let mut seen = std::collections::HashMap::<&str, usize>::new();
+            for (second, name) in header_values.iter().enumerate() {
+                if let Some(&first) = seen.get(name.as_str()) {
+                    return Err(CsvError::DuplicateHeader {
+                        name: name.clone(),
+                        first,
+                        second,
+                    });
+                }
+                seen.insert(name, second);
+            }
+        }
+    }
+
+    let mut rows = Vec::new();
+    for (record_index, row) in records.enumerate() {
+        if let Some(header_values) = &header {
+            if row.len() != header_values.len() {
+                return Err(CsvError::HeaderWidth {
+                    record: record_index + 1,
+                    expected: header_values.len(),
+                    actual: row.len(),
+                });
+            }
+        }
+        rows.push(row);
+    }
+
+    Ok(Table {
+        header,
+        rows,
+        duplicates: config.duplicates,
+    })
+}
+
+pub fn read_csv(input: &str, config: Config) -> Result<Table, CsvError> {
+    let mut reader = StreamReader::new(config)?;
+    reader.feed(input)?;
+    reader.finish()
+}
+```

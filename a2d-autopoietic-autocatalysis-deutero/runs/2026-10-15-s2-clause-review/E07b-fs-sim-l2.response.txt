@@ -1,0 +1,251 @@
+R1: OK — `Kind`, `Error`, `Fs`, and all required public methods are present with the specified signatures.
+
+R2: OK — `Fs::new` creates only an in-memory root directory; each instance owns its storage.
+
+R3: OK — `normalize` checks for NUL before checking for an empty path and reports the original UTF-8 byte offset.
+
+R4: OK — `normalize` handles absolute and cwd-relative paths, removes empty and `.` components, and clamps `..` at root.
+
+R5: GAP — `lookup` reports the right errors, but `parent_mut` uses the first equal component’s position rather than the traversed position when building error prefixes. Repeated component names can produce the wrong `Missing` or `NotDir` path.
+
+R6: GAP — `parent_mut` has the same prefix bug for parent traversal; creation errors can name the wrong prefix when components repeat.
+
+R7: OK — `mkdir` checks the parent and returns `Exists` for any existing final entry.
+
+R8: OK — `write` creates missing files, replaces file contents, and returns `IsDir` for a final directory.
+
+R9: OK — `read` clones all stored bytes and returns `IsDir` for directories.
+
+R10: OK — `ls` returns `NotDir` for a final file and an empty vector for an empty directory.
+
+R11: OK — `ls` iterates a `BTreeMap`, yielding child names in ascending Rust `String` order.
+
+R12: GAP — The incorrect traversal-prefix errors in `parent_mut` violate canonical first-prefix reporting. Other failed mutations preserve storage and cwd.
+
+R13: OK — `write` copies input bytes and replaces existing contents, including truncating to zero bytes.
+
+R14: OK — Root-specific behavior is implemented in `mkdir`, `write`, `read`, and `ls`.
+
+R15: OK — `ls` emits only immediate children, with kinds derived from stored entries.
+
+R16: OK — `normalize` treats all non-special components verbatim and case sensitively; `/` is the only separator.
+
+R17: OK — `mkdir` does not overwrite existing entries, and `write` does not replace directories.
+
+R18: GAP — Creation’s parent traversal in `parent_mut` can report a non-first canonical prefix when names repeat.
+
+R19: OK — `cwd` starts at root, returns an owned canonical string, and path normalization uses the current cwd without changing it.
+
+R20: OK — `chdir` normalizes and looks up before setting cwd, and leaves cwd unchanged on errors.
+
+R21: OK — `normalize` eliminates `.` and `..` before lookup; trailing slashes add no directory requirement.
+
+R22: OK — `normalize` permits relative dot paths and clamps arbitrarily many `..` components at root.
+
+R23: OK — Errors use canonical paths; whitespace is preserved as a name, empty input is invalid, and NUL positions use original byte offsets.
+
+R24: OK — Only successful `chdir` changes cwd; all other operations leave it unchanged.
+
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidPath(usize),
+    Missing(String),
+    NotDir(String),
+    IsDir(String),
+    Exists(String),
+}
+
+#[derive(Debug, Clone)]
+enum Entry {
+    Dir(BTreeMap<String, Entry>),
+    File(Vec<u8>),
+}
+
+pub struct Fs {
+    root: Entry,
+    cwd: Vec<String>,
+}
+
+impl Fs {
+    pub fn new() -> Self {
+        Self {
+            root: Entry::Dir(BTreeMap::new()),
+            cwd: Vec::new(),
+        }
+    }
+
+    fn normalize(&self, path: &str) -> Result<Vec<String>, Error> {
+        if let Some(index) = path.as_bytes().iter().position(|&byte| byte == 0) {
+            return Err(Error::InvalidPath(index));
+        }
+        if path.is_empty() {
+            return Err(Error::InvalidPath(0));
+        }
+
+        let mut components = if path.starts_with('/') {
+            Vec::new()
+        } else {
+            self.cwd.clone()
+        };
+
+        for component in path.split('/') {
+            match component {
+                "" | "." => {}
+                ".." => {
+                    components.pop();
+                }
+                name => components.push(name.to_owned()),
+            }
+        }
+
+        Ok(components)
+    }
+
+    fn canonical(components: &[String]) -> String {
+        if components.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{}", components.join("/"))
+        }
+    }
+
+    fn lookup<'a>(&'a self, components: &[String]) -> Result<&'a Entry, Error> {
+        let mut current = &self.root;
+        let mut prefix = Vec::new();
+
+        for component in components {
+            let Entry::Dir(children) = current else {
+                return Err(Error::NotDir(Self::canonical(&prefix)));
+            };
+
+            prefix.push(component.clone());
+            current = children
+                .get(component)
+                .ok_or_else(|| Error::Missing(Self::canonical(&prefix)))?;
+        }
+
+        Ok(current)
+    }
+
+    fn parent_mut<'a>(
+        &'a mut self,
+        components: &[String],
+    ) -> Result<(&'a mut BTreeMap<String, Entry>, String), Error> {
+        let (name, parents) = components.split_last().expect("non-root path");
+        let mut current = &mut self.root;
+        let mut prefix = Vec::new();
+
+        for component in parents {
+            let Entry::Dir(children) = current else {
+                return Err(Error::NotDir(Self::canonical(&prefix)));
+            };
+
+            prefix.push(component.clone());
+            current = children
+                .get_mut(component)
+                .ok_or_else(|| Error::Missing(Self::canonical(&prefix)))?;
+        }
+
+        match current {
+            Entry::Dir(children) => Ok((children, name.clone())),
+            Entry::File(_) => Err(Error::NotDir(Self::canonical(parents))),
+        }
+    }
+
+    pub fn mkdir(&mut self, path: &str) -> Result<(), Error> {
+        let components = self.normalize(path)?;
+        if components.is_empty() {
+            return Err(Error::Exists("/".to_owned()));
+        }
+
+        let (children, name) = self.parent_mut(&components)?;
+        let canonical = Self::canonical(&components);
+        if children.contains_key(&name) {
+            return Err(Error::Exists(canonical));
+        }
+
+        children.insert(name, Entry::Dir(BTreeMap::new()));
+        Ok(())
+    }
+
+    pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Error> {
+        let components = self.normalize(path)?;
+        let canonical = Self::canonical(&components);
+        if components.is_empty() {
+            return Err(Error::IsDir(canonical));
+        }
+
+        let (children, name) = self.parent_mut(&components)?;
+        match children.get_mut(&name) {
+            Some(Entry::Dir(_)) => Err(Error::IsDir(canonical)),
+            Some(Entry::File(contents)) => {
+                contents.clear();
+                contents.extend_from_slice(data);
+                Ok(())
+            }
+            None => {
+                children.insert(name, Entry::File(data.to_vec()));
+                Ok(())
+            }
+        }
+    }
+
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let components = self.normalize(path)?;
+        let canonical = Self::canonical(&components);
+        match self.lookup(&components)? {
+            Entry::Dir(_) => Err(Error::IsDir(canonical)),
+            Entry::File(contents) => Ok(contents.clone()),
+        }
+    }
+
+    pub fn ls(&self, path: &str) -> Result<Vec<(String, Kind)>, Error> {
+        let components = self.normalize(path)?;
+        let canonical = Self::canonical(&components);
+        match self.lookup(&components)? {
+            Entry::File(_) => Err(Error::NotDir(canonical)),
+            Entry::Dir(children) => Ok(children
+                .iter()
+                .map(|(name, entry)| {
+                    let kind = match entry {
+                        Entry::Dir(_) => Kind::Dir,
+                        Entry::File(_) => Kind::File,
+                    };
+                    (name.clone(), kind)
+                })
+                .collect()),
+        }
+    }
+
+    pub fn cwd(&self) -> String {
+        Self::canonical(&self.cwd)
+    }
+
+    pub fn chdir(&mut self, path: &str) -> Result<(), Error> {
+        let components = self.normalize(path)?;
+        let canonical = Self::canonical(&components);
+        match self.lookup(&components)? {
+            Entry::Dir(_) => {
+                self.cwd = components;
+                Ok(())
+            }
+            Entry::File(_) => Err(Error::NotDir(canonical)),
+        }
+    }
+}
+
+impl Default for Fs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+```

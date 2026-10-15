@@ -1,0 +1,373 @@
+R1: GAP — No crate-level attributes are used, and the implementation uses only `std`, but the response’s required clause checklist is not Rust source. The corrected source below is standalone for `rustc --edition 2024`.
+R2: OK — `Axis`, `Entry`, `Sparse`, `Csr`, and `Error` have the required derives and public API; storage is private except `Entry` fields.
+R3: OK — `validate_shape`, called first by both constructors, checks rows before columns and permits the 4096 boundary.
+R4: OK — `from_coo` accepts empty input for zero-sized shapes; no dense allocation is used.
+R5: OK — `Sparse::from_coo` checks each entry’s row, column, then finiteness in original order.
+R6: OK — `Sparse::from_coo` rejects all nonfinite values after bounds checks and accepts finite values including signed zero and subnormals.
+R7: OK — `Sparse::from_coo` completes validation before summing.
+R8: OK — `Sparse::from_coo` adds each coordinate’s values in input order, starting from `+0.0`.
+R9: OK — `Sparse::from_coo` checks each addition immediately and reports the original entry index on overflow.
+R10: OK — `Sparse::from_coo` filters zero only after all sums succeed.
+R11: OK — `Sparse::from_coo` retains every finite nonzero sum without a threshold.
+R12: OK — `BTreeMap` ordering in `Sparse::from_coo` yields row-then-column canonical entries.
+R13: OK — `Sparse::shape` preserves the supplied shape; `Sparse::entries` borrows canonical entries.
+R14: OK — `Sparse::from_coo` does not mutate its input; derived `Clone` and immutable accessors preserve contents.
+R15: OK — Constructor and arithmetic error paths return `Result`; the validated dimensions keep row pointer sizing in range.
+R16: OK — Errors use original COO indices and zero-based slot, row, column, and vector indices.
+R17: OK — Arithmetic uses ordinary `f64` operations in order and successful numeric values are finite.
+R18: OK — Each validation pass returns its first error in the specified order.
+R19: OK — `Sparse::to_csr` builds `rows + 1` row pointers with cumulative counts; columns and values retain canonical order.
+R20: OK — `Csr` accessors borrow arrays; `shape` and `to_coo` preserve shape and values without mutation.
+R21: OK — `Csr::from_parts` validates shape, row pointer length, then column/value length with the specified fields.
+R22: OK — `Csr::from_parts` checks start and end pointers before monotonicity and slots, including the zero-row case.
+R23: OK — `Csr::from_parts` checks all pointer pairs before slot access; the endpoint checks ensure interior slot ranges cannot exceed the array when pointers are monotonic.
+R24: GAP — `Csr::from_parts` dereferences slots before ensuring each row’s end pointer is within `values.len()`. An interior pointer can exceed the endpoint while remaining monotonic, causing a panic instead of a specified error. The specification has no error variant for this malformed pointer case; the corrected implementation returns `RowPtrOrder` for the first row whose pointer exceeds the array length, preventing the panic.
+R25: OK — `Csr::mul_vector` checks length, then scans all vector elements for nonfinite values before arithmetic.
+R26: OK — `Csr::mul_vector` scans rows and slots in order, checking each product before accumulation.
+R27: OK — `Csr::mul_vector` starts at `+0.0`, adds every product in order, and checks each accumulation.
+R28: OK — `Csr::mul_vector` returns one result per row and normalizes zero to `+0.0`.
+
+```rust
+pub const MAX_DIM: usize = 4096;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Axis {
+    Row,
+    Column,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Entry {
+    pub row: usize,
+    pub col: usize,
+    pub value: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sparse {
+    rows: usize,
+    cols: usize,
+    entries: Vec<Entry>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Csr {
+    rows: usize,
+    cols: usize,
+    row_ptr: Vec<usize>,
+    col_idx: Vec<usize>,
+    values: Vec<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Error {
+    Shape {
+        axis: Axis,
+        size: usize,
+    },
+    Bounds {
+        entry: usize,
+        axis: Axis,
+        index: usize,
+        limit: usize,
+    },
+    NonFinite {
+        entry: usize,
+    },
+    SumOverflow {
+        entry: usize,
+    },
+    RowPtrLength {
+        expected: usize,
+        actual: usize,
+    },
+    ColumnValueLength {
+        columns: usize,
+        values: usize,
+    },
+    RowPtrStart {
+        found: usize,
+    },
+    RowPtrEnd {
+        found: usize,
+        expected: usize,
+    },
+    RowPtrOrder {
+        row: usize,
+    },
+    ColumnBounds {
+        slot: usize,
+        column: usize,
+        limit: usize,
+    },
+    ColumnOrder {
+        slot: usize,
+    },
+    NonFiniteValue {
+        slot: usize,
+    },
+    ExplicitZero {
+        slot: usize,
+    },
+    VectorLength {
+        expected: usize,
+        actual: usize,
+    },
+    NonFiniteVector {
+        index: usize,
+    },
+    ProductOverflow {
+        row: usize,
+        column: usize,
+    },
+    AccumulationOverflow {
+        row: usize,
+        column: usize,
+    },
+}
+
+fn validate_shape(rows: usize, cols: usize) -> Result<(), Error> {
+    if rows > MAX_DIM {
+        return Err(Error::Shape {
+            axis: Axis::Row,
+            size: rows,
+        });
+    }
+    if cols > MAX_DIM {
+        return Err(Error::Shape {
+            axis: Axis::Column,
+            size: cols,
+        });
+    }
+    Ok(())
+}
+
+impl Sparse {
+    pub fn from_coo(rows: usize, cols: usize, entries: &[Entry]) -> Result<Self, Error> {
+        validate_shape(rows, cols)?;
+
+        for (entry, item) in entries.iter().enumerate() {
+            if item.row >= rows {
+                return Err(Error::Bounds {
+                    entry,
+                    axis: Axis::Row,
+                    index: item.row,
+                    limit: rows,
+                });
+            }
+            if item.col >= cols {
+                return Err(Error::Bounds {
+                    entry,
+                    axis: Axis::Column,
+                    index: item.col,
+                    limit: cols,
+                });
+            }
+            if !item.value.is_finite() {
+                return Err(Error::NonFinite { entry });
+            }
+        }
+
+        let mut sums = std::collections::BTreeMap::<(usize, usize), f64>::new();
+        for (entry, item) in entries.iter().enumerate() {
+            let sum = sums.entry((item.row, item.col)).or_insert(0.0);
+            *sum += item.value;
+            if !sum.is_finite() {
+                return Err(Error::SumOverflow { entry });
+            }
+        }
+
+        let canonical = sums
+            .into_iter()
+            .filter_map(|((row, col), value)| {
+                if value == 0.0 {
+                    None
+                } else {
+                    Some(Entry { row, col, value })
+                }
+            })
+            .collect();
+
+        Ok(Self {
+            rows,
+            cols,
+            entries: canonical,
+        })
+    }
+
+    pub fn shape(&self) -> (usize, usize) {
+        (self.rows, self.cols)
+    }
+
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
+    pub fn to_csr(&self) -> Csr {
+        let mut row_ptr = vec![0; self.rows + 1];
+        for entry in &self.entries {
+            row_ptr[entry.row + 1] += 1;
+        }
+        for row in 0..self.rows {
+            row_ptr[row + 1] += row_ptr[row];
+        }
+
+        let col_idx = self.entries.iter().map(|entry| entry.col).collect();
+        let values = self.entries.iter().map(|entry| entry.value).collect();
+
+        Csr {
+            rows: self.rows,
+            cols: self.cols,
+            row_ptr,
+            col_idx,
+            values,
+        }
+    }
+}
+
+impl Csr {
+    pub fn from_parts(
+        rows: usize,
+        cols: usize,
+        row_ptr: Vec<usize>,
+        col_idx: Vec<usize>,
+        values: Vec<f64>,
+    ) -> Result<Self, Error> {
+        validate_shape(rows, cols)?;
+
+        let expected_ptr_len = rows + 1;
+        if row_ptr.len() != expected_ptr_len {
+            return Err(Error::RowPtrLength {
+                expected: expected_ptr_len,
+                actual: row_ptr.len(),
+            });
+        }
+        if col_idx.len() != values.len() {
+            return Err(Error::ColumnValueLength {
+                columns: col_idx.len(),
+                values: values.len(),
+            });
+        }
+        if row_ptr[0] != 0 {
+            return Err(Error::RowPtrStart { found: row_ptr[0] });
+        }
+        if row_ptr[rows] != values.len() {
+            return Err(Error::RowPtrEnd {
+                found: row_ptr[rows],
+                expected: values.len(),
+            });
+        }
+
+        for row in 0..rows {
+            if row_ptr[row] > row_ptr[row + 1] || row_ptr[row + 1] > values.len() {
+                return Err(Error::RowPtrOrder { row });
+            }
+        }
+
+        for row in 0..rows {
+            let start = row_ptr[row];
+            let end = row_ptr[row + 1];
+            let mut previous = None;
+            for slot in start..end {
+                let column = col_idx[slot];
+                if column >= cols {
+                    return Err(Error::ColumnBounds {
+                        slot,
+                        column,
+                        limit: cols,
+                    });
+                }
+                if previous.is_some_and(|prev| column <= prev) {
+                    return Err(Error::ColumnOrder { slot });
+                }
+                previous = Some(column);
+
+                if !values[slot].is_finite() {
+                    return Err(Error::NonFiniteValue { slot });
+                }
+                if values[slot] == 0.0 {
+                    return Err(Error::ExplicitZero { slot });
+                }
+            }
+        }
+
+        Ok(Self {
+            rows,
+            cols,
+            row_ptr,
+            col_idx,
+            values,
+        })
+    }
+
+    pub fn shape(&self) -> (usize, usize) {
+        (self.rows, self.cols)
+    }
+
+    pub fn row_ptr(&self) -> &[usize] {
+        &self.row_ptr
+    }
+
+    pub fn col_indices(&self) -> &[usize] {
+        &self.col_idx
+    }
+
+    pub fn values(&self) -> &[f64] {
+        &self.values
+    }
+
+    pub fn to_coo(&self) -> Sparse {
+        let mut entries = Vec::with_capacity(self.values.len());
+        for row in 0..self.rows {
+            for slot in self.row_ptr[row]..self.row_ptr[row + 1] {
+                entries.push(Entry {
+                    row,
+                    col: self.col_idx[slot],
+                    value: self.values[slot],
+                });
+            }
+        }
+        Sparse {
+            rows: self.rows,
+            cols: self.cols,
+            entries,
+        }
+    }
+
+    pub fn mul_vector(&self, x: &[f64]) -> Result<Vec<f64>, Error> {
+        if x.len() != self.cols {
+            return Err(Error::VectorLength {
+                expected: self.cols,
+                actual: x.len(),
+            });
+        }
+
+        for (index, value) in x.iter().enumerate() {
+            if !value.is_finite() {
+                return Err(Error::NonFiniteVector { index });
+            }
+        }
+
+        let mut result = Vec::with_capacity(self.rows);
+        for row in 0..self.rows {
+            let mut accumulator = 0.0;
+            for slot in self.row_ptr[row]..self.row_ptr[row + 1] {
+                let column = self.col_idx[slot];
+                let product = self.values[slot] * x[column];
+                if !product.is_finite() {
+                    return Err(Error::ProductOverflow { row, column });
+                }
+                accumulator += product;
+                if !accumulator.is_finite() {
+                    return Err(Error::AccumulationOverflow { row, column });
+                }
+            }
+            if accumulator == 0.0 {
+                accumulator = 0.0;
+            }
+            result.push(accumulator);
+        }
+        Ok(result)
+    }
+}
+```

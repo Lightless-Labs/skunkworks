@@ -1,0 +1,170 @@
+R1: OK — `simulate` is implemented in one Rust source file using only `std`.
+R2: OK — all specified public types, fields, variants, and derives are present.
+R3: OK — `simulate` handles empty input and uses `u64` ticks and durations.
+R4: OK — `simulate` validates IDs in original order, checking zero before duplicates, before runtime arithmetic.
+R5: OK — `simulate` sorts by ascending arrival, then descending ID; its FIFO queue preserves that order.
+R6: OK — `simulate` starts idle, dispatches only after arrivals, and only dispatches when idle.
+R7: OK — `simulate` emits a scheduled `Finish` before processing arrivals at that tick.
+R8: OK — `simulate` emits the full arrival cohort in descending ID order before dispatch.
+R9: OK — `simulate` emits each arrival once and dispatches the queue head after the cohort.
+R10: OK — `simulate` marks the first dispatch as wake and later dispatches as wake only after a strictly positive idle gap.
+R11: OK — `simulate` includes the wake surcharge in the checked finish time.
+R12: OK — `simulate` checks service addition before surcharge addition and returns the dispatched customer’s overflow.
+R13: OK — `simulate` finishes zero-duration occupations inline and continues at the same tick.
+R14: OK — `simulate` leaves an occupied customer’s finish unchanged as arrivals join the queue.
+R15: OK — `simulate` ends after all customers finish and emits no idle events.
+R16: OK — `simulate` emits one arrival, start, and finish per customer in the specified phase order.
+R17: OK — `simulate` uses checked addition, which permits adding zero at `u64::MAX`.
+R18: OK — `simulate` uses IDs only for validation, arrival tie-breaking, and event/error identity.
+R19: OK — `simulate` uses only local state and does not mutate its input.
+R20: OK — `simulate` dispatches in chronological order, so runtime overflow is detected in dispatch order.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Arrive,
+    Start { finish: u64, wake: bool },
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub time: u64,
+    pub customer: u32,
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroId { index: usize },
+    DuplicateId { index: usize, id: u32 },
+    TimeOverflow { customer: u32, time: u64 },
+}
+
+pub fn simulate(customers: &[Customer], wake_cost: u64) -> Result<Vec<Event>, Error> {
+    use std::collections::{HashSet, VecDeque};
+
+    let mut seen = HashSet::with_capacity(customers.len());
+    for (index, customer) in customers.iter().enumerate() {
+        if customer.id == 0 {
+            return Err(Error::ZeroId { index });
+        }
+        if !seen.insert(customer.id) {
+            return Err(Error::DuplicateId {
+                index,
+                id: customer.id,
+            });
+        }
+    }
+
+    if customers.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut arrivals: Vec<usize> = (0..customers.len()).collect();
+    arrivals.sort_by(|&a, &b| {
+        customers[a]
+            .arrival
+            .cmp(&customers[b].arrival)
+            .then_with(|| customers[b].id.cmp(&customers[a].id))
+    });
+
+    let mut events = Vec::with_capacity(customers.len() * 3);
+    let mut queue: VecDeque<usize> = VecDeque::new();
+    let mut next_arrival = 0usize;
+    let mut completed = 0usize;
+    let mut now = 0u64;
+    let mut occupied: Option<(usize, u64)> = None;
+    let mut previous_finish: Option<u64> = None;
+    let mut first_dispatch = true;
+
+    while completed < customers.len() {
+        let next_finish = occupied.map(|(_, finish)| finish);
+        let next_arrival_time = arrivals
+            .get(next_arrival)
+            .map(|&index| customers[index].arrival);
+
+        let tick = match (next_finish, next_arrival_time) {
+            (Some(finish), Some(arrival)) => finish.min(arrival),
+            (Some(finish), None) => finish,
+            (None, Some(arrival)) => arrival,
+            (None, None) => break,
+        };
+        now = tick;
+
+        if let Some((index, finish)) = occupied {
+            if finish == now {
+                events.push(Event {
+                    time: now,
+                    customer: customers[index].id,
+                    kind: Kind::Finish,
+                });
+                occupied = None;
+                completed += 1;
+                previous_finish = Some(now);
+            }
+        }
+
+        while let Some(&index) = arrivals.get(next_arrival) {
+            if customers[index].arrival != now {
+                break;
+            }
+            events.push(Event {
+                time: now,
+                customer: customers[index].id,
+                kind: Kind::Arrive,
+            });
+            queue.push_back(index);
+            next_arrival += 1;
+        }
+
+        if occupied.is_none() {
+            if let Some(index) = queue.pop_front() {
+                let customer = &customers[index];
+                let wake = first_dispatch
+                    || previous_finish.is_some_and(|finish| now > finish);
+
+                let service_finish =
+                    now.checked_add(customer.service).ok_or(Error::TimeOverflow {
+                        customer: customer.id,
+                        time: now,
+                    })?;
+                let finish = service_finish
+                    .checked_add(if wake { wake_cost } else { 0 })
+                    .ok_or(Error::TimeOverflow {
+                        customer: customer.id,
+                        time: now,
+                    })?;
+
+                events.push(Event {
+                    time: now,
+                    customer: customer.id,
+                    kind: Kind::Start { finish, wake },
+                });
+                first_dispatch = false;
+
+                if finish == now {
+                    events.push(Event {
+                        time: now,
+                        customer: customer.id,
+                        kind: Kind::Finish,
+                    });
+                    completed += 1;
+                    previous_finish = Some(now);
+                } else {
+                    occupied = Some((index, finish));
+                }
+            }
+        }
+    }
+
+    Ok(events)
+}
+```

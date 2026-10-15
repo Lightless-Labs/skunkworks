@@ -1,0 +1,407 @@
+R1: OK — The implementation is a single Rust source file and uses only `std`; it contains no inner attributes or documentation comments.
+
+R2: OK — `Message`, `Field`, and both public functions have the specified API and derives.
+
+R3: OK — `Error` has exactly the specified variants and derives.
+
+R4: OK — `encode_message` prefixes the body length; an empty body encodes as `[0]`.
+
+R5: OK — `put_varint` writes minimal unsigned LEB128, and `read_varint` checks canonicality.
+
+R6: OK — `read_varint` detects an invalid tenth byte before truncation and never reads an eleventh byte.
+
+R7: OK — `read_varint` uses the supplied container end for truncation and varint start.
+
+R8: OK — `decode_message` validates depth first, then the start; offsets are absolute.
+
+R9: OK — `decode_message` checks the declared root length against remaining input before decoding the body.
+
+R10: OK — `decode_message` returns the end of exactly one root frame and ignores following bytes.
+
+R11: OK — `decode_body` fully decodes each key before splitting its tag and wire.
+
+R12: OK — `decode_body` validates the tag before wire type and ordering.
+
+R13: OK — `decode_body` supports wires 0, 1, 2, 3, and 5; other wire types are rejected before ordering or payload reads.
+
+R14: OK — `decode_body` enforces nondecreasing tags, including skipped fields, before reading payloads.
+
+R15: OK — `decode_body` permits equal tags only when the immediately previous and current wires are both 2.
+
+R16: OK — `decode_body` retains supported known wire types and skips known fixed-width fields.
+
+R17: GAP — `decode_body` validates skipped nested content only when its depth is within the limit; its recursive traversal otherwise correctly checks skipped fields.
+
+R18: OK — `decode_body` merges repeated retained wire-2 fragments into one `Bytes` field and permits skipped wire-2 repeats.
+
+R19: OK — `read_varint` starts wire-0 payload errors at the payload cursor.
+
+R20: OK — `decode_body` reports insufficient fixed-width payload bytes as `LengthOutOfBounds` at the key start.
+
+R21: OK — `decode_body` checks length-varint integrity before comparing data or child-body lengths with remaining frame bytes.
+
+R22: OK — Raw byte payloads are copied without interpreting their contents.
+
+R23: OK — Decoder error checks follow the specified order, including depth-limit validation before root cursor validation.
+
+R24: OK — `encode_body` accepts only tags 1–15 and reports the local field index for invalid tags.
+
+R25: OK — `encode_body` checks supplied fields in order, with tag validity before ordering and duplicate checks.
+
+R26: OK — `encode_body` emits the specified wire types, preserves repeated byte fragments, and uses minimal varints.
+
+R27: OK — Empty field vectors and empty byte payloads encode successfully without mutating the message.
+
+R28: OK — `decode_body` returns an empty field vector for empty frames and frames containing only skipped fields.
+
+R29: OK — The code returns errors without partial messages and uses no input-dependent panic path.
+
+R30: OK — `decode_body` applies ordering and repeat rules across retained and skipped fields.
+
+R31: OK — `read_varint` recognizes noncanonical encodings exactly when a multi-byte varint ends with a zero payload.
+
+R32: OK — `read_varint` checks overflow before canonicality and reports truncation for incomplete varints.
+
+R33: OK — `read_varint` validates canonicality before keys, values, or lengths are used.
+
+R34: OK — `decode_body` parses nested wire-3 bodies directly, without an extra frame header.
+
+R35: GAP — Encoder depth errors use the field index, as required, but decoder depth handling must remain exact when the nested field is skipped; the current check reports the correct nested key and child depth.
+
+R36: OK — Both public functions reject limits above 32 before processing input or fields.
+
+R37: OK — `decode_body` validates child length integrity and bounds before checking child depth, then checks depth before content.
+
+R38: OK — Recursive `decode_body` calls reset ordering state and use each child body’s end as the container boundary.
+
+R39: OK — `decode_body` retains empty known nested messages and validates unknown nested content before discarding it.
+
+R40: OK — `decode_body` applies duplicate checks before nested length or depth validation.
+
+R41: OK — `encode_body` checks a nested field’s tag/order/duplicate status, then child depth, then child fields before later siblings.
+
+R42: OK — `encode_body` reports child field errors with child-local indices and reports parent depth errors at the parent field index.
+
+R43: OK — `encode_body` prefixes nested body lengths and the root frame length; raw bytes remain opaque.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Message {
+    pub fields: Vec<Field>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Field {
+    UInt { tag: u32, value: u64 },
+    Bytes { tag: u32, data: Vec<u8> },
+    Nested { tag: u32, message: Message },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    StartOutOfBounds { offset: usize },
+    Truncated { offset: usize, start: usize },
+    Overflow { offset: usize, start: usize },
+    LengthOutOfBounds { offset: usize, length: u64 },
+    InvalidTag { offset: usize, tag: u64 },
+    InvalidWire { offset: usize, wire: u8 },
+    OutOfOrder { offset: usize, previous: u32, tag: u32 },
+    Duplicate { offset: usize, tag: u32 },
+    NonCanonical { offset: usize },
+    DepthExceeded { offset: usize, depth: usize },
+    InvalidDepthLimit { limit: usize },
+}
+
+fn put_varint(mut value: u64, output: &mut Vec<u8>) {
+    while value >= 0x80 {
+        output.push((value as u8) | 0x80);
+        value >>= 7;
+    }
+    output.push(value as u8);
+}
+
+fn read_varint(
+    input: &[u8],
+    mut cursor: usize,
+    end: usize,
+) -> Result<(u64, usize), Error> {
+    let start = cursor;
+    let mut value = 0u64;
+
+    for index in 0..10 {
+        if cursor >= end {
+            return Err(Error::Truncated {
+                offset: end,
+                start,
+            });
+        }
+
+        let byte = input[cursor];
+        let payload = byte & 0x7f;
+
+        if index == 9 && (payload > 1 || byte & 0x80 != 0) {
+            return Err(Error::Overflow {
+                offset: cursor,
+                start,
+            });
+        }
+
+        value |= (payload as u64) << (index * 7);
+        cursor += 1;
+
+        if byte & 0x80 == 0 {
+            if index > 0 && payload == 0 {
+                return Err(Error::NonCanonical { offset: start });
+            }
+            return Ok((value, cursor));
+        }
+    }
+
+    unreachable!()
+}
+
+fn encode_body(
+    message: &Message,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Vec<u8>, Error> {
+    let mut body = Vec::new();
+    let mut previous: Option<(u32, u8)> = None;
+
+    for (index, field) in message.fields.iter().enumerate() {
+        let (tag, wire) = match field {
+            Field::UInt { tag, .. } => (*tag, 0),
+            Field::Bytes { tag, .. } => (*tag, 2),
+            Field::Nested { tag, .. } => (*tag, 3),
+        };
+
+        if !(1..=15).contains(&tag) {
+            return Err(Error::InvalidTag {
+                offset: index,
+                tag: tag as u64,
+            });
+        }
+
+        if let Some((previous_tag, previous_wire)) = previous {
+            if tag < previous_tag {
+                return Err(Error::OutOfOrder {
+                    offset: index,
+                    previous: previous_tag,
+                    tag,
+                });
+            }
+            if tag == previous_tag && !(previous_wire == 2 && wire == 2) {
+                return Err(Error::Duplicate { offset: index, tag });
+            }
+        }
+
+        previous = Some((tag, wire));
+
+        match field {
+            Field::UInt { value, .. } => {
+                put_varint(((tag as u64) << 3) | 0, &mut body);
+                put_varint(*value, &mut body);
+            }
+            Field::Bytes { data, .. } => {
+                put_varint(((tag as u64) << 3) | 2, &mut body);
+                put_varint(data.len() as u64, &mut body);
+                body.extend_from_slice(data);
+            }
+            Field::Nested { message, .. } => {
+                let child_depth = depth + 1;
+                if child_depth > max_depth {
+                    return Err(Error::DepthExceeded {
+                        offset: index,
+                        depth: child_depth,
+                    });
+                }
+                let child_body = encode_body(message, child_depth, max_depth)?;
+                put_varint(((tag as u64) << 3) | 3, &mut body);
+                put_varint(child_body.len() as u64, &mut body);
+                body.extend_from_slice(&child_body);
+            }
+        }
+    }
+
+    Ok(body)
+}
+
+pub fn encode_message(message: &Message, max_depth: usize) -> Result<Vec<u8>, Error> {
+    if max_depth > 32 {
+        return Err(Error::InvalidDepthLimit { limit: max_depth });
+    }
+
+    let body = encode_body(message, 0, max_depth)?;
+    let mut output = Vec::new();
+    put_varint(body.len() as u64, &mut output);
+    output.extend_from_slice(&body);
+    Ok(output)
+}
+
+fn decode_body(
+    input: &[u8],
+    start: usize,
+    end: usize,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Message, Error> {
+    let mut fields = Vec::new();
+    let mut cursor = start;
+    let mut previous: Option<(u32, u8)> = None;
+
+    while cursor < end {
+        let key_start = cursor;
+        let (key, next) = read_varint(input, cursor, end)?;
+        cursor = next;
+
+        let tag_value = key >> 3;
+        let wire = (key & 7) as u8;
+
+        if !(1..=255).contains(&tag_value) {
+            return Err(Error::InvalidTag {
+                offset: key_start,
+                tag: tag_value,
+            });
+        }
+        if !matches!(wire, 0 | 1 | 2 | 3 | 5) {
+            return Err(Error::InvalidWire {
+                offset: key_start,
+                wire,
+            });
+        }
+
+        let tag = tag_value as u32;
+        if let Some((previous_tag, previous_wire)) = previous {
+            if tag < previous_tag {
+                return Err(Error::OutOfOrder {
+                    offset: key_start,
+                    previous: previous_tag,
+                    tag,
+                });
+            }
+            if tag == previous_tag && !(previous_wire == 2 && wire == 2) {
+                return Err(Error::Duplicate {
+                    offset: key_start,
+                    tag,
+                });
+            }
+        }
+        previous = Some((tag, wire));
+
+        match wire {
+            0 => {
+                let payload_start = cursor;
+                let (value, next) = read_varint(input, cursor, end)?;
+                cursor = next;
+                if tag <= 15 {
+                    fields.push(Field::UInt { tag, value });
+                }
+                let _ = payload_start;
+            }
+            1 | 5 => {
+                let length = if wire == 1 { 8usize } else { 4usize };
+                if end - cursor < length {
+                    return Err(Error::LengthOutOfBounds {
+                        offset: key_start,
+                        length: length as u64,
+                    });
+                }
+                cursor += length;
+            }
+            2 => {
+                let length_start = cursor;
+                let (length, next) = read_varint(input, cursor, end)?;
+                cursor = next;
+                let remaining = end - cursor;
+                if length > remaining as u64 {
+                    return Err(Error::LengthOutOfBounds {
+                        offset: length_start,
+                        length,
+                    });
+                }
+                let data_end = cursor + length as usize;
+                if tag <= 15 {
+                    let data = &input[cursor..data_end];
+                    if let Some(Field::Bytes {
+                        tag: previous_tag,
+                        data: previous_data,
+                    }) = fields.last_mut()
+                    {
+                        if *previous_tag == tag {
+                            previous_data.extend_from_slice(data);
+                        } else {
+                            fields.push(Field::Bytes {
+                                tag,
+                                data: data.to_vec(),
+                            });
+                        }
+                    } else {
+                        fields.push(Field::Bytes {
+                            tag,
+                            data: input[cursor..data_end].to_vec(),
+                        });
+                    }
+                }
+                cursor = data_end;
+            }
+            3 => {
+                let length_start = cursor;
+                let (length, next) = read_varint(input, cursor, end)?;
+                cursor = next;
+                let remaining = end - cursor;
+                if length > remaining as u64 {
+                    return Err(Error::LengthOutOfBounds {
+                        offset: length_start,
+                        length,
+                    });
+                }
+                let child_end = cursor + length as usize;
+                let child_depth = depth + 1;
+                if child_depth > max_depth {
+                    return Err(Error::DepthExceeded {
+                        offset: key_start,
+                        depth: child_depth,
+                    });
+                }
+                let child = decode_body(input, cursor, child_end, child_depth, max_depth)?;
+                if tag <= 15 {
+                    fields.push(Field::Nested {
+                        tag,
+                        message: child,
+                    });
+                }
+                cursor = child_end;
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    Ok(Message { fields })
+}
+
+pub fn decode_message(
+    input: &[u8],
+    start: usize,
+    max_depth: usize,
+) -> Result<(Message, usize), Error> {
+    if max_depth > 32 {
+        return Err(Error::InvalidDepthLimit { limit: max_depth });
+    }
+    if start > input.len() {
+        return Err(Error::StartOutOfBounds { offset: start });
+    }
+
+    let (body_length, body_start) = read_varint(input, start, input.len())?;
+    let remaining = input.len() - body_start;
+    if body_length > remaining as u64 {
+        return Err(Error::LengthOutOfBounds {
+            offset: start,
+            length: body_length,
+        });
+    }
+
+    let body_end = body_start + body_length as usize;
+    let message = decode_body(input, body_start, body_end, 0, max_depth)?;
+    Ok((message, body_end))
+}
+```

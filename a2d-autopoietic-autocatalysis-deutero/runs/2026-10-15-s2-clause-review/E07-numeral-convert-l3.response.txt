@@ -1,0 +1,204 @@
+```rust
+// R1: OK — signed_encode enforces the inclusive ±L bound and returns OutOfRange outside it.
+// R2: OK — signed_encode uses balanced base-3 digits with T for -1.
+// R3: OK — signed_encode and signed_decode use base -2 with digits 0 and 1.
+// R4: OK — signed_encode and signed_decode use no sign character; balanced T is uppercase.
+// R5: OK — signed_encode emits the unique zero spelling "0".
+// R6: OK — signed_encode emits shortest digits; signed_decode rejects nonzero leading zeroes.
+// R7: OK — signed_encode selects a balanced remainder and updates the quotient.
+// R8: OK — signed_encode uses the Euclidean remainder for negabinary conversion.
+// R9: OK — signed_encode omits the suffix when checksum is false.
+// R10: OK — signed_encode appends a colon and one decimal checksum digit when requested.
+// R11: OK — checksum_digit uses left-based one-indexed positions and the specified character codes.
+// R12: OK — signed_decode accepts bare input and verifies a supplied checksum.
+// R13: OK — signed_decode does not trim; byte indices are offsets in the original UTF-8 input.
+// R14: OK — signed_decode returns Empty for empty input or an empty payload before other validation.
+// R15: OK — signed_decode scans the entire payload for invalid bytes before later checks.
+// R16: OK — signed_decode enforces the selected ASCII digit alphabet.
+// R17: OK — signed_decode validates the suffix after payload lexical validation.
+// R18: OK — signed_decode reports malformed suffixes at the first colon.
+// R19: OK — signed_decode validates checksum syntax before leading zero and numeric range checks.
+// R20: OK — signed_decode reports LeadingZero after suffix syntax validation.
+// R21: OK — signed_decode evaluates each payload digit left to right using the selected base.
+// R22: OK — signed_decode checks the bound after each step and reports the violating digit index.
+// R23: OK — signed_decode returns Range for decode overflow; signed_encode uses OutOfRange.
+// R24: OK — signed_decode completes payload lexical validation before prefix evaluation.
+// R25: OK — signed_decode checks a well-formed supplied checksum after range validation.
+// R26: OK — signed_decode gives LeadingZero and Range precedence over checksum mismatch.
+// R27: OK — signed_decode returns the final accumulator without an additional canonical comparison.
+// R28: OK — signed_recode propagates signed_decode errors before attempting encoding.
+// R29: OK — signed_recode encodes the decoded value anew, recalculating any requested checksum.
+// R30: OK — signed_encode and signed_decode handle signed values directly in both systems.
+// R31: OK — the API is deterministic and stateless; both public enums derive the required traits.
+// R32: OK — signed_decode follows the required validation precedence; checked arithmetic avoids panics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignedSystem {
+    BalancedTernary,
+    Negabinary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignedError {
+    Empty,
+    InvalidByte { index: usize },
+    InvalidChecksum { index: usize },
+    LeadingZero,
+    Range { index: usize },
+    ChecksumMismatch { expected: u8, found: u8 },
+    OutOfRange,
+}
+
+const LIMIT: i128 = (1i128 << 120) - 1;
+
+fn base(system: &SignedSystem) -> i128 {
+    match system {
+        SignedSystem::BalancedTernary => 3,
+        SignedSystem::Negabinary => -2,
+    }
+}
+
+fn checksum_digit(payload: &[u8]) -> u8 {
+    let mut sum = 0u64;
+    for (index, &byte) in payload.iter().enumerate() {
+        let code = match byte {
+            b'T' => 2,
+            b'0' => 0,
+            b'1' => 1,
+            _ => 0,
+        };
+        sum += (index as u64 + 1) * code;
+    }
+    (sum % 7) as u8
+}
+
+pub fn signed_encode(
+    value: i128,
+    system: SignedSystem,
+    checksum: bool,
+) -> Result<String, SignedError> {
+    if !(-LIMIT..=LIMIT).contains(&value) {
+        return Err(SignedError::OutOfRange);
+    }
+
+    let mut digits = Vec::new();
+    if value == 0 {
+        digits.push(b'0');
+    } else {
+        let mut current = value;
+        match system {
+            SignedSystem::BalancedTernary => {
+                while current != 0 {
+                    let mut remainder = current % 3;
+                    current /= 3;
+                    if remainder == 2 {
+                        remainder = -1;
+                        current += 1;
+                    } else if remainder == -2 {
+                        remainder = 1;
+                        current -= 1;
+                    }
+                    digits.push(match remainder {
+                        -1 => b'T',
+                        0 => b'0',
+                        1 => b'1',
+                        _ => unreachable!(),
+                    });
+                }
+            }
+            SignedSystem::Negabinary => {
+                while current != 0 {
+                    let remainder = current.rem_euclid(2);
+                    digits.push(if remainder == 0 { b'0' } else { b'1' });
+                    current = (current - remainder) / -2;
+                }
+            }
+        }
+        digits.reverse();
+    }
+
+    let mut result = String::from_utf8(digits.clone()).expect("ASCII digits");
+    if checksum {
+        result.push(':');
+        result.push(char::from(b'0' + checksum_digit(&digits)));
+    }
+    Ok(result)
+}
+
+pub fn signed_decode(input: &str, system: SignedSystem) -> Result<i128, SignedError> {
+    if input.is_empty() {
+        return Err(SignedError::Empty);
+    }
+
+    let bytes = input.as_bytes();
+    let colon = bytes.iter().position(|&byte| byte == b':');
+    let payload_end = colon.unwrap_or(bytes.len());
+
+    if payload_end == 0 {
+        return Err(SignedError::Empty);
+    }
+
+    let payload = &bytes[..payload_end];
+
+    for (index, &byte) in payload.iter().enumerate() {
+        let valid = match system {
+            SignedSystem::BalancedTernary => matches!(byte, b'T' | b'0' | b'1'),
+            SignedSystem::Negabinary => matches!(byte, b'0' | b'1'),
+        };
+        if !valid {
+            return Err(SignedError::InvalidByte { index });
+        }
+    }
+
+    let supplied_checksum = if let Some(colon_index) = colon {
+        let suffix = &bytes[colon_index + 1..];
+        if suffix.len() != 1 || !matches!(suffix[0], b'0'..=b'6') {
+            return Err(SignedError::InvalidChecksum { index: colon_index });
+        }
+        Some(suffix[0] - b'0')
+    } else {
+        None
+    };
+
+    if payload.len() > 1 && payload[0] == b'0' {
+        return Err(SignedError::LeadingZero);
+    }
+
+    let radix = base(&system);
+    let mut accumulator: i128 = 0;
+    for (index, &byte) in payload.iter().enumerate() {
+        let digit = match byte {
+            b'T' => -1,
+            b'0' => 0,
+            b'1' => 1,
+            _ => unreachable!(),
+        };
+        accumulator = accumulator
+            .checked_mul(radix)
+            .and_then(|value| value.checked_add(digit))
+            .ok_or(SignedError::Range { index })?;
+
+        if !(-LIMIT..=LIMIT).contains(&accumulator) {
+            return Err(SignedError::Range { index });
+        }
+    }
+
+    if let Some(found) = supplied_checksum {
+        let expected = checksum_digit(payload);
+        if expected != found {
+            return Err(SignedError::ChecksumMismatch { expected, found });
+        }
+    }
+
+    Ok(accumulator)
+}
+
+pub fn signed_recode(
+    input: &str,
+    from: SignedSystem,
+    to: SignedSystem,
+    checksum: bool,
+) -> Result<String, SignedError> {
+    let value = signed_decode(input, from)?;
+    signed_encode(value, to, checksum)
+}
+```

@@ -1,0 +1,159 @@
+R1: OK — `Side`, `Edit`, `DiffError`, and `diff_lines` match the specified public API and derives.
+
+R2: OK — `diff_lines` treats empty slices as zero lines and permits empty-string elements.
+
+R3: OK — `diff_lines` accepts up to 128 elements per side and returns `TooLarge` above that.
+
+R4: OK — `diff_lines` checks both lengths before examining line contents.
+
+R5: OK — `diff_lines` rejects LF and CR, and permits other characters.
+
+R6: OK — `diff_lines` reports the side and zero-based element index.
+
+R7: OK — `diff_lines` validates all Old lines in ascending order before validating New lines.
+
+R8: OK — the LCS construction and cursor comparison in `diff_lines` use exact string equality.
+
+R9: OK — `diff_lines` advances each cursor exactly when its operation consumes that side’s element.
+
+R10: OK — the LCS table and reconstruction in `diff_lines` produce a minimum-insert/delete script.
+
+R11: OK — `lcs` in `diff_lines` stores suffix LCS lengths, with exhausted suffixes initialized to zero.
+
+R12: OK — `diff_lines` emits `Keep` immediately when the available lines are equal.
+
+R13: OK — `diff_lines` selects `Delete` or `Insert` according to the larger successor LCS value.
+
+R14: OK — `diff_lines` resolves ties using the current `(i + j)` parity.
+
+R15: OK — `diff_lines` emits all remaining operations when either side is exhausted.
+
+R16: OK — `diff_lines` copies each consumed line verbatim and records its original index.
+
+R17: OK — `diff_lines` returns operations in execution order without coalescing; identical inputs yield one `Keep` per element.
+
+R18: OK — `diff_lines` borrows inputs without modifying them and returns errors before constructing a script.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Side {
+    Old,
+    New,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    Keep {
+        old_index: usize,
+        new_index: usize,
+        line: String,
+    },
+    Delete {
+        old_index: usize,
+        line: String,
+    },
+    Insert {
+        new_index: usize,
+        line: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffError {
+    TooLarge { old_len: usize, new_len: usize },
+    EmbeddedNewline { side: Side, index: usize },
+}
+
+pub fn diff_lines(old: &[String], new: &[String]) -> Result<Vec<Edit>, DiffError> {
+    if old.len() > 128 || new.len() > 128 {
+        return Err(DiffError::TooLarge {
+            old_len: old.len(),
+            new_len: new.len(),
+        });
+    }
+
+    for (index, line) in old.iter().enumerate() {
+        if line.contains('\n') || line.contains('\r') {
+            return Err(DiffError::EmbeddedNewline {
+                side: Side::Old,
+                index,
+            });
+        }
+    }
+
+    for (index, line) in new.iter().enumerate() {
+        if line.contains('\n') || line.contains('\r') {
+            return Err(DiffError::EmbeddedNewline {
+                side: Side::New,
+                index,
+            });
+        }
+    }
+
+    let old_len = old.len();
+    let new_len = new.len();
+
+    // L(i, j): LCS length of old[i..] and new[j..].
+    let mut lcs = vec![vec![0usize; new_len + 1]; old_len + 1];
+
+    for i in (0..old_len).rev() {
+        for j in (0..new_len).rev() {
+            lcs[i][j] = if old[i] == new[j] {
+                1 + lcs[i + 1][j + 1]
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+
+    let mut edits = Vec::with_capacity(old_len + new_len);
+    let (mut i, mut j) = (0, 0);
+
+    while i < old_len && j < new_len {
+        if old[i] == new[j] {
+            edits.push(Edit::Keep {
+                old_index: i,
+                new_index: j,
+                line: old[i].clone(),
+            });
+            i += 1;
+            j += 1;
+        } else {
+            let delete_lcs = lcs[i + 1][j];
+            let insert_lcs = lcs[i][j + 1];
+
+            if delete_lcs > insert_lcs || (delete_lcs == insert_lcs && (i + j) % 2 == 0) {
+                edits.push(Edit::Delete {
+                    old_index: i,
+                    line: old[i].clone(),
+                });
+                i += 1;
+            } else {
+                edits.push(Edit::Insert {
+                    new_index: j,
+                    line: new[j].clone(),
+                });
+                j += 1;
+            }
+        }
+    }
+
+    while i < old_len {
+        edits.push(Edit::Delete {
+            old_index: i,
+            line: old[i].clone(),
+        });
+        i += 1;
+    }
+
+    while j < new_len {
+        edits.push(Edit::Insert {
+            new_index: j,
+            line: new[j].clone(),
+        });
+        j += 1;
+    }
+
+    Ok(edits)
+}
+```

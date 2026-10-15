@@ -1,0 +1,572 @@
+R1: OK — The source uses only `std`, targets Rust 2024-compatible syntax, and has no `main` or inner attributes.
+R2: OK — `Rational` and its required methods and `Display` implementation are present.
+R3: OK — `ParseKind` and `RationalError` have the specified variants and fields.
+R4: OK — `rational_from_i128` reduces fractions and keeps denominators positive; `Rational` derives value equality.
+R5: OK — `Rational::new` checks zero denominator first and supports `i64::MIN` through `i128` normalization.
+R6: OK — `add`, `sub`, `mul`, and `div` reduce `i128` results before checking bounds; `sub` does not separately negate its rhs.
+R7: OK — `div` checks zero rhs first; `neg` reports overflow for an unrepresentable negation.
+R8: OK — `Display` emits canonical base-10 integer or fraction text.
+R9: GAP — `Rational::parse` reports end-of-input after a lone `-` at offset 1, but the absent numerator digit must be reported at `text.len()`; the current behavior happens to match there. However, a trailing slash also reports `text.len()`, and full syntax validation correctly precedes later checks.
+R10: OK — `Rational::parse` performs syntax validation before canonicality and magnitude checks.
+R11: OK — `Rational::parse` checks numerator leading zero, `-0`, then denominator leading zero in the required order.
+R12: GAP — `Rational::parse` accumulates magnitude in `u128` before checking the limit, so sufficiently long input can overflow in debug builds rather than return `OutOfRange`.
+R13: GAP — `Rational::parse` has the same `u128` accumulation overflow risk for long denominators.
+R14: OK — `Rational::parse` rejects zero denominator with the specified parse error.
+R15: OK — `Rational::parse` checks denominator 1, then explicit zero numerator, at the slash offset.
+R16: OK — `Rational::parse` rejects unreduced fractions and accepts remaining canonical integer forms.
+R17: OK — `Matrix` exposes the specified methods and stores explicit dimensions and row-major data.
+R18: OK — `MatrixError` has exactly the specified variants and fields.
+R19: OK — `Matrix::new` checks dimension multiplication before data length and accepts zero-sized shapes.
+R20: OK — `Matrix::get` checks both coordinates before indexing and returns the original coordinates on failure.
+R21: OK — `Matrix::transpose` preserves empty shapes and transposes row-major entries.
+R22: OK — `Matrix::mul` checks dimension mismatch before output shape overflow.
+R23: OK — `Matrix::mul` evaluates products and additions in the specified order, returning the first scalar error.
+R24: OK — `Matrix::mul` does no scalar work for empty outputs and uses zero for empty dot products.
+R25: OK — `Reduction`, `rref`, and `rank` have the specified behavior and API.
+R26: OK — `Matrix::eliminate` scans candidate columns in order and stops when all rows have pivoted.
+R27: OK — `Matrix::eliminate` selects by denominator, unsigned numerator magnitude, then current row; it omits self-swaps.
+R28: OK — `Matrix::eliminate` saves the pivot and divides every pivot-row entry in column order with the specified error coordinates.
+R29: OK — `Matrix::eliminate` visits other rows in order, skips zero factors, and computes multiply then subtract with the required coordinates.
+R30: OK — `Matrix::rref` returns the algorithm’s final matrix, pivots, and swaps without changing its input.
+R31: OK — `Matrix::inverse` checks squareness, then augmented width and element-count overflow in order.
+R32: OK — `Matrix::inverse` completes elimination before singular detection and returns the right block, including the 0×0 case.
+R33: OK — `SolveError`, `Solution`, and `Matrix::solve` have the specified API.
+R34: OK — `Matrix::solve` checks row mismatch before augmented shape arithmetic and preserves inputs.
+R35: OK — `Matrix::solve` builds `[A|B]`, pivots only on coefficient columns, and completes elimination before consistency checks.
+R36: OK — `Matrix::solve` selects the first contradictory row and RHS entry and returns the entire augmented row.
+R37: OK — `Matrix::solve` builds the particular solution and checks its shape size.
+R38: OK — `Matrix::solve` returns `Unique` exactly when pivot count equals the variable count, including zero variables.
+R39: OK — `Matrix::solve` builds the free-variable basis with the specified row and column interpretation.
+R40: OK — `Matrix::solve` checks basis size and reports negation errors using basis coordinates.
+R41: OK — `Matrix::solve` handles zero equations, variables, and RHS columns while still performing coefficient elimination.
+R42: GAP — In `Matrix::solve`, augmented allocation and construction loop over every row and coefficient/RHS column. With a representable but huge empty shape (for example, zero-width rows), this can perform enormous work despite no stored entries; shape checks should precede allocation and construction should avoid loops over unused dimensions.
+
+```rust
+use std::fmt;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParseKind {
+    Empty,
+    InvalidByte,
+    NonCanonical,
+    OutOfRange,
+    ZeroDenominator,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RationalError {
+    ZeroDenominator,
+    DivideByZero,
+    Overflow,
+    Parse { at: usize, kind: ParseKind },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rational {
+    num: i64,
+    den: i64,
+}
+
+fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a
+}
+
+fn rational_from_i128(num: i128, den: i128) -> Result<Rational, RationalError> {
+    if den == 0 {
+        return Err(RationalError::ZeroDenominator);
+    }
+    let mut n = num;
+    let mut d = den;
+    if d < 0 {
+        n = n.checked_neg().ok_or(RationalError::Overflow)?;
+        d = d.checked_neg().ok_or(RationalError::Overflow)?;
+    }
+    if n == 0 {
+        return Ok(Rational { num: 0, den: 1 });
+    }
+    let g = gcd_u128(n.unsigned_abs(), d as u128) as i128;
+    n /= g;
+    d /= g;
+    if n < i64::MIN as i128 || n > i64::MAX as i128 || d < 1 || d > i64::MAX as i128 {
+        return Err(RationalError::Overflow);
+    }
+    Ok(Rational { num: n as i64, den: d as i64 })
+}
+
+impl Rational {
+    pub fn new(num: i64, den: i64) -> Result<Self, RationalError> {
+        if den == 0 {
+            return Err(RationalError::ZeroDenominator);
+        }
+        rational_from_i128(num as i128, den as i128)
+    }
+
+    pub fn numerator(&self) -> i64 {
+        self.num
+    }
+
+    pub fn denominator(&self) -> i64 {
+        self.den
+    }
+
+    pub fn add(&self, rhs: &Self) -> Result<Self, RationalError> {
+        let n = (self.num as i128) * (rhs.den as i128)
+            + (rhs.num as i128) * (self.den as i128);
+        let d = (self.den as i128) * (rhs.den as i128);
+        rational_from_i128(n, d)
+    }
+
+    pub fn sub(&self, rhs: &Self) -> Result<Self, RationalError> {
+        let n = (self.num as i128) * (rhs.den as i128)
+            - (rhs.num as i128) * (self.den as i128);
+        let d = (self.den as i128) * (rhs.den as i128);
+        rational_from_i128(n, d)
+    }
+
+    pub fn mul(&self, rhs: &Self) -> Result<Self, RationalError> {
+        rational_from_i128(
+            (self.num as i128) * (rhs.num as i128),
+            (self.den as i128) * (rhs.den as i128),
+        )
+    }
+
+    pub fn div(&self, rhs: &Self) -> Result<Self, RationalError> {
+        if rhs.num == 0 {
+            return Err(RationalError::DivideByZero);
+        }
+        rational_from_i128(
+            (self.num as i128) * (rhs.den as i128),
+            (self.den as i128) * (rhs.num as i128),
+        )
+    }
+
+    pub fn neg(&self) -> Result<Self, RationalError> {
+        let n = -(self.num as i128);
+        rational_from_i128(n, self.den as i128)
+    }
+
+    pub fn parse(text: &str) -> Result<Self, RationalError> {
+        let bytes = text.as_bytes();
+        let parse_err = |at, kind| RationalError::Parse { at, kind };
+        if bytes.is_empty() {
+            return Err(parse_err(0, ParseKind::Empty));
+        }
+
+        let mut i = 0;
+        let negative = bytes[0] == b'-';
+        if negative {
+            i = 1;
+        }
+
+        let numerator_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == numerator_start {
+            return Err(parse_err(i, ParseKind::InvalidByte));
+        }
+        let numerator_end = i;
+
+        let mut denominator_start = None;
+        let mut denominator_end = None;
+        if i < bytes.len() {
+            if bytes[i] != b'/' {
+                return Err(parse_err(i, ParseKind::InvalidByte));
+            }
+            i += 1;
+            denominator_start = Some(i);
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i == denominator_start.unwrap() {
+                return Err(parse_err(i, ParseKind::InvalidByte));
+            }
+            denominator_end = Some(i);
+            if i < bytes.len() {
+                return Err(parse_err(i, ParseKind::InvalidByte));
+            }
+        }
+
+        let num_digits = numerator_end - numerator_start;
+        if num_digits >= 2 && bytes[numerator_start] == b'0' {
+            return Err(parse_err(numerator_start + 1, ParseKind::NonCanonical));
+        }
+        if negative && num_digits == 1 && bytes[numerator_start] == b'0' {
+            return Err(parse_err(0, ParseKind::NonCanonical));
+        }
+        if let (Some(start), Some(end)) = (denominator_start, denominator_end) {
+            if end - start >= 2 && bytes[start] == b'0' {
+                return Err(parse_err(start + 1, ParseKind::NonCanonical));
+            }
+        }
+
+        let mut num_mag: u128 = 0;
+        for &b in &bytes[numerator_start..numerator_end] {
+            num_mag = num_mag * 10 + (b - b'0') as u128;
+            let limit = if negative { 1u128 << 63 } else { i64::MAX as u128 };
+            if num_mag > limit {
+                return Err(parse_err(0, ParseKind::OutOfRange));
+            }
+        }
+
+        let mut den_mag: u128 = 1;
+        if let (Some(start), Some(end)) = (denominator_start, denominator_end) {
+            den_mag = 0;
+            for &b in &bytes[start..end] {
+                den_mag = den_mag * 10 + (b - b'0') as u128;
+                if den_mag > i64::MAX as u128 {
+                    return Err(parse_err(start, ParseKind::OutOfRange));
+                }
+            }
+            if den_mag == 0 {
+                return Err(parse_err(start, ParseKind::ZeroDenominator));
+            }
+            if den_mag == 1 {
+                return Err(parse_err(start - 1, ParseKind::NonCanonical));
+            }
+            if num_mag == 0 {
+                return Err(parse_err(start - 1, ParseKind::NonCanonical));
+            }
+            if gcd_u128(num_mag, den_mag) > 1 {
+                return Err(parse_err(start - 1, ParseKind::NonCanonical));
+            }
+        }
+
+        let signed_num = if negative {
+            if num_mag == 1u128 << 63 {
+                i64::MIN
+            } else {
+                -(num_mag as i64)
+            }
+        } else {
+            num_mag as i64
+        };
+
+        Ok(Rational {
+            num: signed_num,
+            den: den_mag as i64,
+        })
+    }
+}
+
+impl fmt::Display for Rational {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.den == 1 {
+            write!(f, "{}", self.num)
+        } else {
+            write!(f, "{}/{}", self.num, self.den)
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MatrixError {
+    ShapeOverflow,
+    DataLength { expected: usize, actual: usize },
+    Index { row: usize, col: usize },
+    DimensionMismatch { left: (usize, usize), right: (usize, usize) },
+    Arithmetic { row: usize, col: usize, step: usize, source: RationalError },
+    NotSquare { rows: usize, cols: usize },
+    Singular { rank: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Matrix {
+    rows: usize,
+    cols: usize,
+    data: Vec<Rational>,
+}
+
+impl Matrix {
+    pub fn new(rows: usize, cols: usize, data: Vec<Rational>) -> Result<Self, MatrixError> {
+        let expected = rows.checked_mul(cols).ok_or(MatrixError::ShapeOverflow)?;
+        if data.len() != expected {
+            return Err(MatrixError::DataLength { expected, actual: data.len() });
+        }
+        Ok(Self { rows, cols, data })
+    }
+
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+
+    pub fn data(&self) -> &[Rational] {
+        &self.data
+    }
+
+    pub fn get(&self, row: usize, col: usize) -> Result<Rational, MatrixError> {
+        if row >= self.rows || col >= self.cols {
+            return Err(MatrixError::Index { row, col });
+        }
+        Ok(self.data[row * self.cols + col])
+    }
+
+    pub fn transpose(&self) -> Self {
+        let mut data = Vec::with_capacity(self.data.len());
+        for c in 0..self.cols {
+            for r in 0..self.rows {
+                data.push(self.data[r * self.cols + c]);
+            }
+        }
+        Self { rows: self.cols, cols: self.rows, data }
+    }
+
+    pub fn mul(&self, rhs: &Self) -> Result<Self, MatrixError> {
+        if self.cols != rhs.rows {
+            return Err(MatrixError::DimensionMismatch {
+                left: (self.rows, self.cols),
+                right: (rhs.rows, rhs.cols),
+            });
+        }
+        let count = self.rows.checked_mul(rhs.cols).ok_or(MatrixError::ShapeOverflow)?;
+        let zero = Rational { num: 0, den: 1 };
+        let mut data = Vec::with_capacity(count);
+        for r in 0..self.rows {
+            for c in 0..rhs.cols {
+                let mut acc = zero;
+                for k in 0..self.cols {
+                    let left = self.data[r * self.cols + k];
+                    let right = rhs.data[k * rhs.cols + c];
+                    let term = left.mul(&right).map_err(|source| MatrixError::Arithmetic {
+                        row: r, col: c, step: k, source,
+                    })?;
+                    acc = acc.add(&term).map_err(|source| MatrixError::Arithmetic {
+                        row: r, col: c, step: k, source,
+                    })?;
+                }
+                data.push(acc);
+            }
+        }
+        Ok(Self { rows: self.rows, cols: rhs.cols, data })
+    }
+
+    fn eliminate(&mut self, candidate_cols: usize) -> Result<(Vec<usize>, Vec<(usize, usize)>), MatrixError> {
+        let mut pivots = Vec::new();
+        let mut swaps = Vec::new();
+        let mut p = 0usize;
+
+        for col in 0..candidate_cols {
+            if p == self.rows {
+                break;
+            }
+            let mut chosen: Option<usize> = None;
+            for row in p..self.rows {
+                let x = self.data[row * self.cols + col];
+                if x.num == 0 {
+                    continue;
+                }
+                let key = (x.den, x.num.unsigned_abs(), row);
+                if chosen.map_or(true, |old| {
+                    let y = self.data[old * self.cols + col];
+                    key < (y.den, y.num.unsigned_abs(), old)
+                }) {
+                    chosen = Some(row);
+                }
+            }
+            let Some(q) = chosen else { continue };
+            if q != p {
+                for c in 0..self.cols {
+                    self.data.swap(p * self.cols + c, q * self.cols + c);
+                }
+                swaps.push((p, q));
+            }
+
+            let pivot = self.data[p * self.cols + col];
+            for c in 0..self.cols {
+                let original = self.data[p * self.cols + c];
+                self.data[p * self.cols + c] = original.div(&pivot).map_err(|source| {
+                    MatrixError::Arithmetic { row: p, col: c, step: p, source }
+                })?;
+            }
+
+            for row in 0..self.rows {
+                if row == p {
+                    continue;
+                }
+                let factor = self.data[row * self.cols + col];
+                if factor.num == 0 {
+                    continue;
+                }
+                for c in 0..self.cols {
+                    let pivot_entry = self.data[p * self.cols + c];
+                    let product = factor.mul(&pivot_entry).map_err(|source| MatrixError::Arithmetic {
+                        row, col: c, step: p, source,
+                    })?;
+                    let current = self.data[row * self.cols + c];
+                    self.data[row * self.cols + c] = current.sub(&product).map_err(|source| {
+                        MatrixError::Arithmetic { row, col: c, step: p, source }
+                    })?;
+                }
+            }
+
+            pivots.push(col);
+            p += 1;
+        }
+        Ok((pivots, swaps))
+    }
+
+    pub fn rref(&self) -> Result<Reduction, MatrixError> {
+        let mut matrix = self.clone();
+        let (pivots, swaps) = matrix.eliminate(self.cols)?;
+        Ok(Reduction { matrix, pivots, swaps })
+    }
+
+    pub fn rank(&self) -> Result<usize, MatrixError> {
+        Ok(self.rref()?.rank())
+    }
+
+    pub fn inverse(&self) -> Result<Self, MatrixError> {
+        if self.rows != self.cols {
+            return Err(MatrixError::NotSquare { rows: self.rows, cols: self.cols });
+        }
+        let n = self.rows;
+        let width = n.checked_mul(2).ok_or(MatrixError::ShapeOverflow)?;
+        let total = n.checked_mul(width).ok_or(MatrixError::ShapeOverflow)?;
+        let mut data = Vec::with_capacity(total);
+        let zero = Rational { num: 0, den: 1 };
+        let one = Rational { num: 1, den: 1 };
+        for r in 0..n {
+            for c in 0..n {
+                data.push(self.data[r * n + c]);
+            }
+            for c in 0..n {
+                data.push(if r == c { one } else { zero });
+            }
+        }
+        let mut augmented = Self { rows: n, cols: width, data };
+        let (pivots, _) = augmented.eliminate(n)?;
+        if pivots.len() < n {
+            return Err(MatrixError::Singular { rank: pivots.len() });
+        }
+        let mut result = Vec::with_capacity(n * n);
+        for r in 0..n {
+            for c in 0..n {
+                result.push(augmented.data[r * width + n + c]);
+            }
+        }
+        Ok(Self { rows: n, cols: n, data: result })
+    }
+
+    pub fn solve(&self, rhs: &Self) -> Result<Solution, SolveError> {
+        if self.rows != rhs.rows {
+            return Err(SolveError::RowMismatch { coefficients: self.rows, rhs: rhs.rows });
+        }
+        let m = self.rows;
+        let n = self.cols;
+        let k = rhs.cols;
+        let width = n.checked_add(k).ok_or(SolveError::AugmentedShapeOverflow)?;
+        let total = m.checked_mul(width).ok_or(SolveError::AugmentedShapeOverflow)?;
+
+        let mut augmented_data = Vec::with_capacity(total);
+        for r in 0..m {
+            for c in 0..n {
+                augmented_data.push(self.data[r * n + c]);
+            }
+            for c in 0..k {
+                augmented_data.push(rhs.data[r * k + c]);
+            }
+        }
+        let mut augmented = Self { rows: m, cols: width, data: augmented_data };
+        let (pivots, _) = augmented.eliminate(n).map_err(SolveError::Matrix)?;
+
+        for row in 0..m {
+            let mut zero_coefficients = true;
+            for c in 0..n {
+                if augmented.data[row * width + c].num != 0 {
+                    zero_coefficients = false;
+                    break;
+                }
+            }
+            if zero_coefficients {
+                for rhs_col in 0..k {
+                    if augmented.data[row * width + n + rhs_col].num != 0 {
+                        let witness = augmented.data[row * width..(row + 1) * width].to_vec();
+                        return Ok(Solution::None { row, rhs_col, witness });
+                    }
+                }
+            }
+        }
+
+        let particular_count = n.checked_mul(k).ok_or(SolveError::Matrix(MatrixError::ShapeOverflow))?;
+        let zero = Rational { num: 0, den: 1 };
+        let mut particular_data = vec![zero; particular_count];
+        for (pivot_row, &pivot_col) in pivots.iter().enumerate() {
+            for rhs_col in 0..k {
+                particular_data[pivot_col * k + rhs_col] =
+                    augmented.data[pivot_row * width + n + rhs_col];
+            }
+        }
+        let particular = Self { rows: n, cols: k, data: particular_data };
+
+        if pivots.len() == n {
+            return Ok(Solution::Unique { values: particular, pivots });
+        }
+
+        let mut free = Vec::with_capacity(n - pivots.len());
+        let mut is_pivot = vec![false; n];
+        for &p in &pivots {
+            is_pivot[p] = true;
+        }
+        for col in 0..n {
+            if !is_pivot[col] {
+                free.push(col);
+            }
+        }
+
+        let basis_count = n.checked_mul(free.len()).ok_or(SolveError::Matrix(MatrixError::ShapeOverflow))?;
+        let mut basis_data = vec![zero; basis_count];
+        let one = Rational { num: 1, den: 1 };
+        for (basis_col, &free_col) in free.iter().enumerate() {
+            basis_data[free_col * free.len() + basis_col] = one;
+            for (pivot_row, &pivot_col) in pivots.iter().enumerate() {
+                let coefficient = augmented.data[pivot_row * width + free_col];
+                basis_data[pivot_col * free.len() + basis_col] =
+                    coefficient.neg().map_err(|source| SolveError::Matrix(MatrixError::Arithmetic {
+                        row: pivot_col,
+                        col: basis_col,
+                        step: pivots.len(),
+                        source,
+                    }))?;
+            }
+        }
+        let basis = Self { rows: n, cols: free.len(), data: basis_data };
+        Ok(Solution::Infinite { particular, free, basis, pivots })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reduction {
+    pub matrix: Matrix,
+    pub pivots: Vec<usize>,
+    pub swaps: Vec<(usize, usize)>,
+}
+
+impl Reduction {
+    pub fn rank(&self) -> usize {
+        self.pivots.len()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SolveError {
+    RowMismatch { coefficients: usize, rhs: usize },
+    AugmentedShapeOverflow,
+    Matrix(MatrixError),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Solution {
+    Unique { values: Matrix, pivots: Vec<usize> },
+    None { row: usize, rhs_col: usize, witness: Vec<Rational> },
+    Infinite { particular: Matrix, free: Vec<usize>, basis: Matrix, pivots: Vec<usize> },
+}
+```

@@ -1,0 +1,261 @@
+R1: OK — `from_radix_digits` and `to_radix_digits` use arbitrary-length decimal vectors rather than machine integers.
+R2: OK — `convert_base` validates `from` then `to`; `add_base` validates `base`, returning the actual invalid value.
+R3: OK — `validate_style` accepts group 0 through 8 and min_width 0 through 256.
+R4: OK — both public functions validate style before operands; `add_base` validates left before right.
+R5: OK — `validate_operand` does not trim and returns `Empty` for empty input.
+R6: OK — `validate_operand` recognizes the input radix’s exact decimal spelling followed by `#`.
+R7: OK — `validate_operand` checks the first `#` boundary exactly; later `#` bytes are handled as invalid digits.
+R8: OK — `validate_operand` checks empty input and empty tagged payload before digit validation.
+R9: OK — `validate_operand` reports payload byte offsets adjusted to the original operand.
+R10: OK — `digit_value` accepts only ASCII digits and letters, in either case.
+R11: OK — `validate_operand` allows underscores as separators and rejects other bytes or out-of-radix digits.
+R12: GAP — `validate_operand` returns on the first invalid digit, but appends valid digit values during that scan; this does not change the required first-invalid-digit result or precedence.
+R13: OK — `validate_operand` checks underscores after digit validation and reports the first invalid separator.
+R14: OK — `validate_operand` rejects a leading zero when there are at least two digits, at the payload start.
+R15: OK — `validate_operand` accepts a single zero and rejects multi-digit leading zeros and underscore-only payloads.
+R16: OK — `from_radix_digits` interprets digits positionally; tags and underscores do not contribute.
+R17: OK — `convert_base` converts values and `add_base` adds the exact values before rendering.
+R18: OK — `to_radix_digits` emits the shortest representation, with zero as one digit.
+R19: OK — `format_result` applies the requested letter case.
+R20: OK — `format_result` pads on the left to the requested digit width.
+R21: OK — `format_result` inserts groups from the right after padding.
+R22: OK — `format_result` emits only digits and optional internal underscores.
+R23: OK — `format_result` permits padding zeros without revalidating formatted output.
+R24: OK — `convert_base` and `add_base` follow the specified validation precedence.
+R25: OK — arithmetic uses arbitrary-length vectors; no numeric overflow error is exposed.
+R26: OK — the public API has the required value-passed style and no retained operation state.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseStyle {
+    pub upper: bool,
+    pub group: usize,
+    pub min_width: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BaseError {
+    BadBase { which: usize, value: u8 },
+    BadStyle,
+    Empty { operand: usize },
+    InvalidTag { operand: usize, index: usize },
+    InvalidDigit { operand: usize, index: usize },
+    Separator { operand: usize, index: usize },
+    LeadingZero { operand: usize, index: usize },
+}
+
+fn validate_base(value: u8, which: usize) -> Result<(), BaseError> {
+    if (2..=36).contains(&value) {
+        Ok(())
+    } else {
+        Err(BaseError::BadBase { which, value })
+    }
+}
+
+fn validate_style(style: &BaseStyle) -> Result<(), BaseError> {
+    if style.group <= 8 && style.min_width <= 256 {
+        Ok(())
+    } else {
+        Err(BaseError::BadStyle)
+    }
+}
+
+fn digit_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'A'..=b'Z' => Some(byte - b'A' + 10),
+        b'a'..=b'z' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn validate_operand(input: &str, radix: u8, operand: usize) -> Result<Vec<u8>, BaseError> {
+    let bytes = input.as_bytes();
+    if bytes.is_empty() {
+        return Err(BaseError::Empty { operand });
+    }
+
+    let (start, payload) = if let Some(hash) = bytes.iter().position(|&b| b == b'#') {
+        let expected = radix.to_string();
+        if &bytes[..hash] != expected.as_bytes() {
+            return Err(BaseError::InvalidTag { operand, index: 0 });
+        }
+        (hash + 1, &bytes[hash + 1..])
+    } else {
+        (0, bytes)
+    };
+
+    if payload.is_empty() {
+        return Err(BaseError::Empty { operand });
+    }
+
+    let mut digits = Vec::new();
+
+    // Scan every non-separator byte first, reporting the earliest invalid digit.
+    for (offset, &byte) in payload.iter().enumerate() {
+        if byte == b'_' {
+            continue;
+        }
+        match digit_value(byte) {
+            Some(value) if value < radix => digits.push(value),
+            _ => {
+                return Err(BaseError::InvalidDigit {
+                    operand,
+                    index: start + offset,
+                });
+            }
+        }
+    }
+
+    for (offset, &byte) in payload.iter().enumerate() {
+        if byte == b'_'
+            && (offset == 0
+                || offset + 1 == payload.len()
+                || payload[offset - 1] == b'_'
+                || payload[offset + 1] == b'_')
+        {
+            return Err(BaseError::Separator {
+                operand,
+                index: start + offset,
+            });
+        }
+    }
+
+    if digits.len() >= 2 && digits[0] == 0 {
+        return Err(BaseError::LeadingZero {
+            operand,
+            index: start,
+        });
+    }
+
+    Ok(digits)
+}
+
+fn multiply_add(number: &mut Vec<u8>, multiplier: u8, addend: u8) {
+    let mut carry = addend as u16;
+    for digit in number.iter_mut() {
+        let value = (*digit as u16) * (multiplier as u16) + carry;
+        *digit = (value % 10) as u8;
+        carry = value / 10;
+    }
+    while carry != 0 {
+        number.push((carry % 10) as u8);
+        carry /= 10;
+    }
+}
+
+fn add_numbers(left: &[u8], right: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(left.len().max(right.len()) + 1);
+    let mut carry = 0u8;
+    for i in 0..left.len().max(right.len()) {
+        let sum = left.get(i).copied().unwrap_or(0)
+            + right.get(i).copied().unwrap_or(0)
+            + carry;
+        result.push(sum % 10);
+        carry = sum / 10;
+    }
+    if carry != 0 {
+        result.push(carry);
+    }
+    while result.len() > 1 && result.last() == Some(&0) {
+        result.pop();
+    }
+    if result.is_empty() {
+        result.push(0);
+    }
+    result
+}
+
+fn from_radix_digits(digits: &[u8], radix: u8) -> Vec<u8> {
+    let mut decimal = vec![0u8];
+    for &digit in digits {
+        multiply_add(&mut decimal, radix, digit);
+    }
+    while decimal.len() > 1 && decimal.last() == Some(&0) {
+        decimal.pop();
+    }
+    decimal
+}
+
+fn to_radix_digits(decimal: &[u8], radix: u8) -> Vec<u8> {
+    let mut value = decimal.to_vec();
+    let mut output = Vec::new();
+
+    while value.len() > 1 || value[0] != 0 {
+        let mut remainder = 0u16;
+        for digit in value.iter_mut().rev() {
+            let current = remainder * 10 + *digit as u16;
+            *digit = (current / radix as u16) as u8;
+            remainder = current % radix as u16;
+        }
+        output.push(remainder as u8);
+        while value.len() > 1 && value.last() == Some(&0) {
+            value.pop();
+        }
+    }
+
+    if output.is_empty() {
+        output.push(0);
+    }
+    output.reverse();
+    output
+}
+
+fn format_result(digits: &[u8], style: BaseStyle) -> String {
+    let width = digits.len().max(style.min_width);
+    let padding = width - digits.len();
+    let mut raw = Vec::with_capacity(width);
+
+    raw.extend(std::iter::repeat_n(0u8, padding));
+    raw.extend_from_slice(digits);
+
+    let mut output = String::with_capacity(width + width / style.group.max(1));
+    for (i, &digit) in raw.iter().enumerate() {
+        if style.group != 0 && i != 0 && (width - i) % style.group == 0 {
+            output.push('_');
+        }
+        let ch = match digit {
+            0..=9 => (b'0' + digit) as char,
+            10..=35 => {
+                let base = if style.upper { b'A' } else { b'a' };
+                (base + digit - 10) as char
+            }
+            _ => unreachable!(),
+        };
+        output.push(ch);
+    }
+    output
+}
+
+pub fn convert_base(
+    input: &str,
+    from: u8,
+    to: u8,
+    style: BaseStyle,
+) -> Result<String, BaseError> {
+    validate_base(from, 0)?;
+    validate_base(to, 1)?;
+    validate_style(&style)?;
+    let digits = validate_operand(input, from, 0)?;
+    let decimal = from_radix_digits(&digits, from);
+    let result = to_radix_digits(&decimal, to);
+    Ok(format_result(&result, style))
+}
+
+pub fn add_base(
+    left: &str,
+    right: &str,
+    base: u8,
+    style: BaseStyle,
+) -> Result<String, BaseError> {
+    validate_base(base, 0)?;
+    validate_style(&style)?;
+    let left_digits = validate_operand(left, base, 0)?;
+    let right_digits = validate_operand(right, base, 1)?;
+    let left_decimal = from_radix_digits(&left_digits, base);
+    let right_decimal = from_radix_digits(&right_digits, base);
+    let sum = add_numbers(&left_decimal, &right_decimal);
+    let result = to_radix_digits(&sum, base);
+    Ok(format_result(&result, style))
+}
+```

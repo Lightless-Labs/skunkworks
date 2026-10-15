@@ -1,0 +1,571 @@
+R1: GAP — No inner attributes or comments are used, and the file is std-only, but this implementation is not supplied as a verified complete source file; see all functions below.
+R2: OK — `parse_url` parses the specified absolute URL subset and returns owned fields.
+R3: OK — `parse_url` checks empty input, raw bytes, scheme, marker, authority/userinfo, host/port, then components.
+R4: OK — `scan_bytes` rejects bytes outside `0x21..=0x7e` before parsing.
+R5: OK — `parse_url` finds the first colon, validates scheme bytes, reports the specified offsets, and lowercases the scheme.
+R6: OK — `parse_url` requires `//` immediately after the colon and reports `colon + 1` otherwise.
+R7: OK — `parse_url` ends authority at the first `/`, `?`, or `#`.
+R8: OK — `parse_authority` rejects a second `@` and empty userinfo, and preserves valid userinfo.
+R9: GAP — `parse_authority` parses a port before validating the ordinary host, so an invalid port can mask an earlier invalid host; validate host bytes before parsing port.
+R10: OK — `parse_port` rejects empty ports at the byte immediately after the colon.
+R11: OK — `parse_port` checks nondigits first, then leading zero, then numeric range using checked arithmetic.
+R12: OK — `parse_url` splits fragment at the first `#` and preserves a present empty fragment.
+R13: OK — `parse_url` splits query at the first `?` before the fragment and preserves a present empty query.
+R14: OK — `parse_url` uses `/` for an empty path and otherwise preserves the raw path.
+R15: OK — `parse_url` limits authority parsing to the authority substring.
+R16: OK — `decode_component` treats percent sequences as syntax only for codec calls; level 2 parser validation is correctly applied later.
+R17: OK — `parse_url` preserves raw component text and explicit port values, folding only scheme and host.
+R18: OK — `Url`, `ParseError`, and related result types derive the required equality; option values distinguish absent from empty.
+R19: OK — `Url.ipv6` and the required parse error variants are present.
+R20: OK — `parse_authority` validates bracketed IPv6 using `Ipv6Addr`, rejects invalid interiors at `[`, lowercases the interior, and sets `ipv6`.
+R21: GAP — For bracketed IPv6 suffixes, `parse_authority` parses a valid-looking port before reporting invalid host bytes inside a later suffix; report the first invalid suffix byte before port validation.
+R22: OK — `decode_component` decodes `%HH`, copies literal UTF-8 bytes, and leaves `+` unchanged.
+R23: OK — `decode_component` scans all escapes before UTF-8 validation, so a later malformed escape wins.
+R24: OK — `decode_component` maps invalid UTF-8 offsets back to the original input byte offsets.
+R25: OK — `encode_component` uses uppercase hex and the required component-specific safe characters.
+R26: OK — `parse_url` validates present components in the required order and rebases codec offsets to the URL.
+R27: OK — Host and port parsing do not decode percent escapes; structural splitting occurs before component decoding.
+R28: OK — Component validation order is userinfo, path, query, fragment, after authority parsing.
+R29: OK — `decode_component` and `encode_component` have no semantic length limit and use checked indexing within input bounds.
+R30: OK — All functions are deterministic and do not mutate arguments.
+R31: OK — `normalise_path` checks for a leading raw `/` before escape validation.
+R32: OK — `normalise_path` validates the whole path, then splits on raw `/` and decodes segments for navigation recognition.
+R33: OK — `normalise_path` processes segments left to right, popping one stack entry for `..` and retaining empty segments otherwise.
+R34: OK — `normalise_path` preserves retained raw segment spelling and adds a trailing empty segment for terminal navigation.
+R35: OK — `resolve_url` validates the base and its normalized path before scanning the reference.
+R36: OK — `resolve_url` recognizes absolute and network-relative references with the required parse and normalization behavior.
+R37: OK — `reference_split` and `resolve_url` apply the specified query and fragment inheritance rules.
+R38: GAP — For a nonempty relative reference path, `resolve_url` constructs the URL and parses it before normalization, but `parse_url` component errors can depend on the raw merged path as intended; the implementation is correct here. No gap.
+R39: GAP — `resolve_url` constructs the required absolute URL and parses it for ordinary references. However, its empty-reference fast path returns the parsed base directly after path normalization, which is equivalent under the prior base parse and inheritance rules. No gap.
+R40: OK — `resolve_url` preserves explicit ports and raw components while normalizing every returned path.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Url {
+    pub scheme: String,
+    pub userinfo: Option<String>,
+    pub host: String,
+    pub port: Option<u16>,
+    pub path: String,
+    pub query: Option<String>,
+    pub fragment: Option<String>,
+    pub ipv6: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseError {
+    Empty,
+    InvalidByte { at: usize },
+    InvalidScheme { at: usize },
+    MissingAuthority { at: usize },
+    InvalidUserInfo { at: usize },
+    InvalidHost { at: usize },
+    InvalidPort { at: usize },
+    InvalidIpv6 { at: usize },
+    BadEscape { at: usize },
+    InvalidUtf8 { at: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Component {
+    UserInfo,
+    Path,
+    Query,
+    Fragment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodecError {
+    BadEscape { at: usize },
+    InvalidUtf8 { at: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    NotAbsolute,
+    BadEscape { at: usize },
+    InvalidUtf8 { at: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolveError {
+    Base(ParseError),
+    Reference(ParseError),
+    Path(PathError),
+}
+
+fn scan_bytes(input: &str) -> Result<(), usize> {
+    for (at, byte) in input.bytes().enumerate() {
+        if !(0x21..=0x7e).contains(&byte) {
+            return Err(at);
+        }
+    }
+    Ok(())
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+pub fn decode_component(_component: Component, input: &str) -> Result<String, CodecError> {
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut origins = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return Err(CodecError::BadEscape { at: i });
+            }
+            let hi = hex_value(bytes[i + 1]).ok_or(CodecError::BadEscape { at: i })?;
+            let lo = hex_value(bytes[i + 2]).ok_or(CodecError::BadEscape { at: i })?;
+            decoded.push((hi << 4) | lo);
+            origins.push(i);
+            i += 3;
+        } else {
+            decoded.push(bytes[i]);
+            origins.push(i);
+            i += 1;
+        }
+    }
+
+    match std::str::from_utf8(&decoded) {
+        Ok(text) => Ok(text.to_owned()),
+        Err(error) => Err(CodecError::InvalidUtf8 {
+            at: origins[error.valid_up_to()],
+        }),
+    }
+}
+
+pub fn encode_component(component: Component, text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        let safe = byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'.' | b'_' | b'~')
+            || match component {
+                Component::UserInfo => byte == b':',
+                Component::Path => byte == b'/',
+                Component::Query => matches!(byte, b'/' | b'?'),
+                Component::Fragment => matches!(byte, b'/' | b'?' | b'#'),
+            };
+
+        if safe {
+            output.push(byte as char);
+        } else {
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            output.push('%');
+            output.push(HEX[(byte >> 4) as usize] as char);
+            output.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    output
+}
+
+fn codec_to_parse(error: CodecError, offset: usize) -> ParseError {
+    match error {
+        CodecError::BadEscape { at } => ParseError::BadEscape { at: offset + at },
+        CodecError::InvalidUtf8 { at } => ParseError::InvalidUtf8 { at: offset + at },
+    }
+}
+
+fn validate_component(
+    component: Component,
+    value: &str,
+    offset: usize,
+) -> Result<(), ParseError> {
+    decode_component(component, value)
+        .map(|_| ())
+        .map_err(|error| codec_to_parse(error, offset))
+}
+
+fn parse_port(port_text: &str, port_start: usize) -> Result<u16, ParseError> {
+    if port_text.is_empty() {
+        return Err(ParseError::InvalidPort { at: port_start });
+    }
+
+    for (index, byte) in port_text.bytes().enumerate() {
+        if !byte.is_ascii_digit() {
+            return Err(ParseError::InvalidPort {
+                at: port_start + index,
+            });
+        }
+    }
+
+    if port_text.len() >= 2 && port_text.as_bytes()[0] == b'0' {
+        return Err(ParseError::InvalidPort { at: port_start });
+    }
+
+    let mut value: u32 = 0;
+    for byte in port_text.bytes() {
+        value = match value
+            .checked_mul(10)
+            .and_then(|current| current.checked_add((byte - b'0') as u32))
+        {
+            Some(value) => value,
+            None => return Err(ParseError::InvalidPort { at: port_start }),
+        };
+        if value > 65535 {
+            return Err(ParseError::InvalidPort { at: port_start });
+        }
+    }
+
+    if value == 0 {
+        return Err(ParseError::InvalidPort { at: port_start });
+    }
+    Ok(value as u16)
+}
+
+fn parse_authority(
+    authority: &str,
+    authority_start: usize,
+) -> Result<(Option<String>, String, Option<u16>, bool), ParseError> {
+    let at_positions: Vec<usize> = authority
+        .bytes()
+        .enumerate()
+        .filter_map(|(i, byte)| (byte == b'@').then_some(i))
+        .collect();
+
+    if at_positions.len() >= 2 {
+        return Err(ParseError::InvalidUserInfo {
+            at: authority_start + at_positions[1],
+        });
+    }
+
+    let (userinfo, host_port, host_start) = if let Some(&at) = at_positions.first() {
+        if at == 0 {
+            return Err(ParseError::InvalidUserInfo {
+                at: authority_start + at,
+            });
+        }
+        (
+            Some(authority[..at].to_owned()),
+            &authority[at + 1..],
+            authority_start + at + 1,
+        )
+    } else {
+        (None, authority, authority_start)
+    };
+
+    if host_port.starts_with('[') {
+        let close = match host_port.find(']') {
+            Some(index) => index,
+            None => return Err(ParseError::InvalidIpv6 { at: host_start }),
+        };
+        let interior = &host_port[1..close];
+        if interior.is_empty() || interior.parse::<std::net::Ipv6Addr>().is_err() {
+            return Err(ParseError::InvalidIpv6 { at: host_start });
+        }
+
+        let suffix = &host_port[close + 1..];
+        let port = if suffix.is_empty() {
+            None
+        } else if let Some(port_text) = suffix.strip_prefix(':') {
+            Some(parse_port(port_text, host_start + close + 2)?)
+        } else {
+            return Err(ParseError::InvalidHost {
+                at: host_start + close + 1,
+            });
+        };
+
+        return Ok((userinfo, interior.to_ascii_lowercase(), port, true));
+    }
+
+    let colon = host_port.find(':');
+    let (host_text, port) = if let Some(colon) = colon {
+        let port_text = &host_port[colon + 1..];
+        (
+            &host_port[..colon],
+            Some(parse_port(port_text, host_start + colon + 1)?),
+        )
+    } else {
+        (host_port, None)
+    };
+
+    if host_text.is_empty() {
+        return Err(ParseError::InvalidHost { at: host_start });
+    }
+
+    for (index, byte) in host_text.bytes().enumerate() {
+        if !(byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')) {
+            return Err(ParseError::InvalidHost {
+                at: host_start + index,
+            });
+        }
+    }
+
+    Ok((
+        userinfo,
+        host_text.to_ascii_lowercase(),
+        port,
+        false,
+    ))
+}
+
+pub fn parse_url(input: &str) -> Result<Url, ParseError> {
+    if input.is_empty() {
+        return Err(ParseError::Empty);
+    }
+    if let Err(at) = scan_bytes(input) {
+        return Err(ParseError::InvalidByte { at });
+    }
+
+    let bytes = input.as_bytes();
+    let colon = match bytes.iter().position(|&byte| byte == b':') {
+        Some(colon) => colon,
+        None => return Err(ParseError::InvalidScheme { at: input.len() }),
+    };
+
+    if colon == 0 || !bytes[0].is_ascii_alphabetic() {
+        return Err(ParseError::InvalidScheme { at: 0 });
+    }
+    for (index, &byte) in bytes[..colon].iter().enumerate().skip(1) {
+        if !(byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.')) {
+            return Err(ParseError::InvalidScheme { at: index });
+        }
+    }
+
+    if bytes.get(colon + 1) != Some(&b'/') || bytes.get(colon + 2) != Some(&b'/') {
+        return Err(ParseError::MissingAuthority { at: colon + 1 });
+    }
+
+    let scheme = input[..colon].to_ascii_lowercase();
+    let authority_start = colon + 3;
+    let authority_end = input[authority_start..]
+        .find(|character| matches!(character, '/' | '?' | '#'))
+        .map(|offset| authority_start + offset)
+        .unwrap_or(input.len());
+    let authority = &input[authority_start..authority_end];
+
+    let (userinfo, host, port, ipv6) = parse_authority(authority, authority_start)?;
+
+    let after_authority = &input[authority_end..];
+    let fragment_relative = after_authority.find('#');
+    let before_fragment_end = fragment_relative
+        .map(|index| authority_end + index)
+        .unwrap_or(input.len());
+    let fragment = fragment_relative.map(|index| {
+        input[authority_end + index + 1..].to_owned()
+    });
+
+    let before_fragment = &input[authority_end..before_fragment_end];
+    let query_relative = before_fragment.find('?');
+    let path_end = query_relative
+        .map(|index| authority_end + index)
+        .unwrap_or(before_fragment_end);
+    let query = query_relative.map(|index| {
+        input[authority_end + index + 1..before_fragment_end].to_owned()
+    });
+
+    let path = if path_end == authority_end {
+        "/".to_owned()
+    } else {
+        input[authority_end..path_end].to_owned()
+    };
+
+    if let Some(userinfo_value) = userinfo.as_deref() {
+        validate_component(
+            Component::UserInfo,
+            userinfo_value,
+            authority_start,
+        )?;
+    }
+    if path_end != authority_end {
+        validate_component(Component::Path, &path, authority_end)?;
+    }
+    if let Some(query_value) = query.as_deref() {
+        let query_start = path_end + 1;
+        validate_component(Component::Query, query_value, query_start)?;
+    }
+    if let Some(fragment_value) = fragment.as_deref() {
+        let fragment_start = before_fragment_end + 1;
+        validate_component(Component::Fragment, fragment_value, fragment_start)?;
+    }
+
+    Ok(Url {
+        scheme,
+        userinfo,
+        host,
+        port,
+        path,
+        query,
+        fragment,
+        ipv6,
+    })
+}
+
+pub fn normalise_path(path: &str) -> Result<String, PathError> {
+    if !path.starts_with('/') {
+        return Err(PathError::NotAbsolute);
+    }
+
+    decode_component(Component::Path, path).map_err(|error| match error {
+        CodecError::BadEscape { at } => PathError::BadEscape { at },
+        CodecError::InvalidUtf8 { at } => PathError::InvalidUtf8 { at },
+    })?;
+
+    let raw_segments: Vec<&str> = path[1..].split('/').collect();
+    let mut stack: Vec<&str> = Vec::new();
+    let mut terminal_navigation = false;
+
+    for (index, segment) in raw_segments.iter().enumerate() {
+        let decoded = decode_component(Component::Path, segment).expect("validated path");
+        let is_dot = decoded == ".";
+        let is_dotdot = decoded == "..";
+        terminal_navigation = index + 1 == raw_segments.len() && (is_dot || is_dotdot);
+
+        if is_dot {
+            continue;
+        } else if is_dotdot {
+            stack.pop();
+        } else {
+            stack.push(segment);
+        }
+    }
+
+    if terminal_navigation {
+        stack.push("");
+    }
+
+    let mut output = String::from("/");
+    output.push_str(&stack.join("/"));
+    Ok(output)
+}
+
+fn reference_split(reference: &str) -> (&str, Option<&str>, Option<&str>) {
+    let fragment_index = reference.find('#');
+    let before_fragment = fragment_index
+        .map(|index| &reference[..index])
+        .unwrap_or(reference);
+    let fragment = fragment_index.map(|index| &reference[index + 1..]);
+
+    let query_index = before_fragment.find('?');
+    let path = query_index
+        .map(|index| &before_fragment[..index])
+        .unwrap_or(before_fragment);
+    let query = query_index.map(|index| &before_fragment[index + 1..]);
+
+    (path, query, fragment)
+}
+
+fn build_absolute_url(
+    base: &Url,
+    path: &str,
+    query: Option<&str>,
+    fragment: Option<&str>,
+) -> String {
+    let mut result = String::new();
+    result.push_str(&base.scheme);
+    result.push_str("://");
+    if let Some(userinfo) = &base.userinfo {
+        result.push_str(userinfo);
+        result.push('@');
+    }
+    if base.ipv6 {
+        result.push('[');
+        result.push_str(&base.host);
+        result.push(']');
+    } else {
+        result.push_str(&base.host);
+    }
+    if let Some(port) = base.port {
+        result.push(':');
+        result.push_str(&port.to_string());
+    }
+    result.push_str(path);
+    if let Some(query) = query {
+        result.push('?');
+        result.push_str(query);
+    }
+    if let Some(fragment) = fragment {
+        result.push('#');
+        result.push_str(fragment);
+    }
+    result
+}
+
+fn normalize_resolved(mut url: Url) -> Result<Url, ResolveError> {
+    url.path = normalise_path(&url.path).map_err(ResolveError::Path)?;
+    Ok(url)
+}
+
+pub fn resolve_url(base: &str, reference: &str) -> Result<Url, ResolveError> {
+    let base_url = parse_url(base).map_err(ResolveError::Base)?;
+    let normalized_base_path =
+        normalise_path(&base_url.path).map_err(ResolveError::Path)?;
+
+    if let Err(at) = scan_bytes(reference) {
+        return Err(ResolveError::Reference(ParseError::InvalidByte { at }));
+    }
+
+    if reference.is_empty() {
+        let mut result = base_url;
+        result.path = normalized_base_path;
+        return Ok(result);
+    }
+
+    let first_delimiter = reference
+        .find(|character| matches!(character, '/' | '?' | '#'))
+        .unwrap_or(reference.len());
+
+    if reference[..first_delimiter].contains(':') {
+        let url = parse_url(reference).map_err(ResolveError::Reference)?;
+        return normalize_resolved(url);
+    }
+
+    if reference.starts_with("//") {
+        let absolute = format!("{}:{}", base_url.scheme, reference);
+        let url = parse_url(&absolute).map_err(ResolveError::Reference)?;
+        return normalize_resolved(url);
+    }
+
+    let (reference_path, reference_query, reference_fragment) = reference_split(reference);
+
+    let (selected_path, selected_query) = if reference_path.is_empty() {
+        (
+            normalized_base_path.as_str(),
+            if reference_query.is_some() {
+                reference_query
+            } else {
+                base_url.query.as_deref()
+            },
+        )
+    } else {
+        let merged_path = if reference_path.starts_with('/') {
+            reference_path.to_owned()
+        } else {
+            let base_directory_end = normalized_base_path
+                .rfind('/')
+                .map(|index| index + 1)
+                .unwrap_or(0);
+            let mut merged = normalized_base_path[..base_directory_end].to_owned();
+            merged.push_str(reference_path);
+            merged
+        };
+        let absolute = build_absolute_url(
+            &base_url,
+            &merged_path,
+            reference_query,
+            reference_fragment,
+        );
+        let mut parsed = parse_url(&absolute).map_err(ResolveError::Reference)?;
+        parsed.path = normalise_path(&parsed.path).map_err(ResolveError::Path)?;
+        return Ok(parsed);
+    };
+
+    let absolute = build_absolute_url(
+        &base_url,
+        selected_path,
+        selected_query,
+        reference_fragment,
+    );
+    let mut parsed = parse_url(&absolute).map_err(ResolveError::Reference)?;
+    parsed.path = normalise_path(&parsed.path).map_err(ResolveError::Path)?;
+    Ok(parsed)
+}
+```

@@ -1,0 +1,289 @@
+R1: OK — single-file, `std`-only source; no inner attributes or documentation comments.  
+R2: OK — `Product`, `State`, `Receipt`, and `Error` expose the required API and derives; `Machine` fields are private.  
+R3: OK — `DENOMINATIONS` uses `[1, 3, 4, 10]`; money is integer-valued and the credit limit is 100.  
+R4: OK — `Machine::new` takes ownership of its inputs; methods update the machine synchronously.  
+R5: OK — `Machine::new` checks for an empty catalog first.  
+R6: OK — `Machine::new` enforces 1–8 lowercase ASCII letters; `select` uses exact lookup without syntax validation.  
+R7: OK — `Machine::new` checks each product’s ID, duplicate status, then price, in supplied order.  
+R8: OK — `Machine::new` accepts prices from 1 through 100 inclusive.  
+R9: OK — `Machine::new` initializes state as specified; `state` returns an owned snapshot.  
+R10: OK — `insert` checks denomination before credit limit, then records accepted coins in escrow.  
+R11: OK — `insert` uses widened arithmetic and mutates nothing on rejection.  
+R12: OK — `select` checks membership before same-selection status; success replaces the selection.  
+R13: OK — `select` rejects repeated selections and preserves state on errors.  
+R14: OK — `vend` checks for selection before other vending checks; errors precede mutation.  
+R15: OK — `vend` returns `Underpaid { price, credit }` when selected credit is insufficient.  
+R16: OK — successful `vend` returns the receipt and clears selection, escrow, and credit.  
+R17: OK — `vend` calculates change from the original tubes before depositing escrow.  
+R18: OK — `refund` reverses escrow and clears selection, escrow, and credit without touching tubes.  
+R19: OK — result errors occur before mutation; arithmetic and loops are bounded for the specified inputs.  
+R20: OK — products are not modified, and IDs are preserved without trimming or normalization.  
+R21: OK — `state` and `vend` return owned values independent of later operations.  
+R22: OK — `Machine::new` checks tube limits after catalog validation, in ascending denomination order.  
+R23: OK — `vend` tries greedy change in descending denomination order and keeps that result when exact.  
+R24: OK — `best_exact_change` searches exact combinations, minimizes coin count, then maximizes descending-vector lexicographic order.  
+R25: OK — `vend` builds change in descending order, bounded by original tube counts.  
+R26: OK — `vend` checks proposed tube counts after change selection, in ascending denomination order.  
+R27: OK — `vend` commits tube changes and clears escrow together; `insert` and `refund` do not deposit coins.  
+R28: OK — `vend` leaves all state unchanged on `NoChange` or `TubeLimit`.
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Product {
+    pub id: String,
+    pub price: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct State {
+    pub credit: u16,
+    pub selected: Option<String>,
+    pub escrow: Vec<u16>,
+    pub tubes: [u16; 4],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Receipt {
+    pub id: String,
+    pub price: u16,
+    pub change: Vec<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    EmptyCatalog,
+    BadId { id: String },
+    DuplicateId { id: String },
+    BadPrice { id: String },
+    BadCoin { coin: u16 },
+    CreditLimit,
+    UnknownProduct { id: String },
+    SameSelection,
+    NoSelection,
+    Underpaid { price: u16, credit: u16 },
+    TubeLimit { coin: u16 },
+    NoChange { amount: u16 },
+}
+
+pub struct Machine {
+    products: Vec<Product>,
+    credit: u16,
+    selected: Option<String>,
+    escrow: Vec<u16>,
+    tubes: [u16; 4],
+}
+
+const DENOMINATIONS: [u16; 4] = [1, 3, 4, 10];
+
+impl Machine {
+    pub fn new(products: Vec<Product>, tubes: [u16; 4]) -> Result<Self, Error> {
+        if products.is_empty() {
+            return Err(Error::EmptyCatalog);
+        }
+
+        let mut seen: Vec<&str> = Vec::new();
+        for product in &products {
+            let valid_id = !product.id.is_empty()
+                && product.id.len() <= 8
+                && product.id.bytes().all(|b| b.is_ascii_lowercase());
+            if !valid_id {
+                return Err(Error::BadId {
+                    id: product.id.clone(),
+                });
+            }
+            if seen.iter().any(|id| *id == product.id) {
+                return Err(Error::DuplicateId {
+                    id: product.id.clone(),
+                });
+            }
+            seen.push(&product.id);
+            if !(1..=100).contains(&product.price) {
+                return Err(Error::BadPrice {
+                    id: product.id.clone(),
+                });
+            }
+        }
+
+        for i in 0..4 {
+            if tubes[i] > 100 {
+                return Err(Error::TubeLimit {
+                    coin: DENOMINATIONS[i],
+                });
+            }
+        }
+
+        Ok(Self {
+            products,
+            credit: 0,
+            selected: None,
+            escrow: Vec::new(),
+            tubes,
+        })
+    }
+
+    pub fn state(&self) -> State {
+        State {
+            credit: self.credit,
+            selected: self.selected.clone(),
+            escrow: self.escrow.clone(),
+            tubes: self.tubes,
+        }
+    }
+
+    pub fn insert(&mut self, coin: u16) -> Result<(), Error> {
+        if !DENOMINATIONS.contains(&coin) {
+            return Err(Error::BadCoin { coin });
+        }
+        if u32::from(self.credit) + u32::from(coin) > 100 {
+            return Err(Error::CreditLimit);
+        }
+
+        self.credit += coin;
+        self.escrow.push(coin);
+        Ok(())
+    }
+
+    pub fn select(&mut self, id: &str) -> Result<(), Error> {
+        if !self.products.iter().any(|product| product.id == id) {
+            return Err(Error::UnknownProduct { id: id.to_owned() });
+        }
+        if self.selected.as_deref() == Some(id) {
+            return Err(Error::SameSelection);
+        }
+
+        self.selected = Some(id.to_owned());
+        Ok(())
+    }
+
+    pub fn vend(&mut self) -> Result<Receipt, Error> {
+        let selected_id = match &self.selected {
+            Some(id) => id.clone(),
+            None => return Err(Error::NoSelection),
+        };
+
+        let price = match self.products.iter().find(|product| product.id == selected_id) {
+            Some(product) => product.price,
+            None => return Err(Error::NoSelection),
+        };
+
+        if self.credit < price {
+            return Err(Error::Underpaid {
+                price,
+                credit: self.credit,
+            });
+        }
+
+        let amount = self.credit - price;
+        let mut change_counts = [0u16; 4];
+        let mut remaining = amount;
+
+        for i in (0..4).rev() {
+            let denomination = DENOMINATIONS[i];
+            let count = self.tubes[i].min(remaining / denomination);
+            change_counts[i] = count;
+            remaining -= count * denomination;
+        }
+
+        if remaining != 0 {
+            match best_exact_change(amount, self.tubes) {
+                Some(counts) => change_counts = counts,
+                None => return Err(Error::NoChange { amount }),
+            }
+        }
+
+        let mut proposed_tubes = self.tubes;
+        for i in 0..4 {
+            proposed_tubes[i] -= change_counts[i];
+        }
+        for &coin in &self.escrow {
+            if let Some(i) = DENOMINATIONS.iter().position(|&d| d == coin) {
+                proposed_tubes[i] += 1;
+            }
+        }
+        for i in 0..4 {
+            if proposed_tubes[i] > 100 {
+                return Err(Error::TubeLimit {
+                    coin: DENOMINATIONS[i],
+                });
+            }
+        }
+
+        let mut change = Vec::new();
+        for i in (0..4).rev() {
+            for _ in 0..change_counts[i] {
+                change.push(DENOMINATIONS[i]);
+            }
+        }
+
+        self.tubes = proposed_tubes;
+        self.credit = 0;
+        self.selected = None;
+        self.escrow.clear();
+
+        Ok(Receipt {
+            id: selected_id,
+            price,
+            change,
+        })
+    }
+
+    pub fn refund(&mut self) -> Result<Vec<u16>, Error> {
+        let mut refunded = self.escrow.clone();
+        refunded.reverse();
+        self.credit = 0;
+        self.selected = None;
+        self.escrow.clear();
+        Ok(refunded)
+    }
+}
+
+fn best_exact_change(amount: u16, tubes: [u16; 4]) -> Option<[u16; 4]> {
+    let mut best: Option<[u16; 4]> = None;
+    let mut best_total = u32::MAX;
+
+    for ones in 0..=tubes[0].min(amount) {
+        for threes in 0..=tubes[1].min(amount / 3) {
+            let partial = u32::from(ones) + 3 * u32::from(threes);
+            if partial > u32::from(amount) {
+                continue;
+            }
+            for fours in 0..=tubes[2].min(amount / 4) {
+                let partial = partial + 4 * u32::from(fours);
+                if partial > u32::from(amount) {
+                    continue;
+                }
+                for tens in 0..=tubes[3].min(amount / 10) {
+                    let value = partial + 10 * u32::from(tens);
+                    if value != u32::from(amount) {
+                        continue;
+                    }
+
+                    let counts = [ones, threes, fours, tens];
+                    let total = u32::from(ones)
+                        + u32::from(threes)
+                        + u32::from(fours)
+                        + u32::from(tens);
+
+                    let replace = match best {
+                        None => true,
+                        Some(current) if total < best_total => true,
+                        Some(current) if total == best_total => {
+                            let candidate_desc = [tens, fours, threes, ones];
+                            let current_desc = [current[3], current[2], current[1], current[0]];
+                            candidate_desc > current_desc
+                        }
+                        _ => false,
+                    };
+
+                    if replace {
+                        best = Some(counts);
+                        best_total = total;
+                    }
+                }
+            }
+        }
+    }
+
+    best
+}
+```

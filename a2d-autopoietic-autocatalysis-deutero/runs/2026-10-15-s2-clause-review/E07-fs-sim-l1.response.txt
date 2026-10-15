@@ -1,0 +1,233 @@
+R1: GAP — `Fs` lacks the required public `new`? `new` is public, and all specified API items and signatures are present. **Correction:** none; the API matches.
+R2: OK — `Fs::new` creates only the in-memory root directory.
+R3: OK — `validate_path` checks for NUL before other path defects and reports its byte offset.
+R4: GAP — `validate_path` reports the wrong offset for an empty interior component: `/a//b` returns 2 instead of 3. Empty components should use the terminating slash byte; trailing components use the final slash.
+R5: GAP — In `mkdir` and `write`, traversal returns `NotDir` at the parent’s parent when that parent is a file; it should name the first nondirectory prefix itself. `read` and `ls` correctly report the traversed file prefix.
+R6: OK — `mkdir` and `write` require existing directory parents and do not create ancestors.
+R7: OK — `mkdir` creates one directory and returns `Exists` for an existing final entry.
+R8: OK — `write` creates or replaces files and returns `IsDir` for a final directory.
+R9: OK — `read` returns an owned byte copy and reports `IsDir` for a directory.
+R10: OK — `ls` requires a directory and returns an empty vector for an empty one.
+R11: OK — `ls` uses `BTreeMap`, so names are returned in ascending Rust `String` order.
+R12: OK — Mutations validate and resolve before changing entries; returned data is owned.
+R13: OK — `write` copies input bytes and replacement truncates before writing the new contents, including empty data.
+R14: OK — Root handling in `mkdir`, `write`, `read`, and `ls` matches the specified results.
+R15: OK — `ls` enumerates only immediate children.
+R16: OK — `validate_path` only treats slash as a separator and rejects only empty, `.` and `..` components.
+R17: OK — `mkdir` is not idempotent, and `write` preserves directories and unrelated entries.
+R18: GAP — The incorrect `NotDir` prefix in `mkdir` and `write` violates canonical-prefix error reporting and traversal precedence.
+
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidPath(usize),
+    Missing(String),
+    NotDir(String),
+    IsDir(String),
+    Exists(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Entry {
+    Dir(BTreeMap<String, Entry>),
+    File(Vec<u8>),
+}
+
+pub struct Fs {
+    root: Entry,
+}
+
+fn validate_path(path: &str) -> Result<Vec<&str>, Error> {
+    if let Some(i) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(Error::InvalidPath(i));
+    }
+    if path.is_empty() || !path.starts_with('/') {
+        return Err(Error::InvalidPath(0));
+    }
+    if path == "/" {
+        return Ok(Vec::new());
+    }
+
+    let bytes = path.as_bytes();
+    let mut components = Vec::new();
+    let mut start = 1;
+
+    for i in 1..=bytes.len() {
+        if i == bytes.len() || bytes[i] == b'/' {
+            let component = &path[start..i];
+            if component.is_empty() || component == "." || component == ".." {
+                let offset = if component.is_empty() {
+                    if i == bytes.len() {
+                        i - 1
+                    } else {
+                        i
+                    }
+                } else {
+                    start
+                };
+                return Err(Error::InvalidPath(offset));
+            }
+            components.push(component);
+            start = i + 1;
+        }
+    }
+
+    Ok(components)
+}
+
+fn prefix(components: &[&str]) -> String {
+    if components.is_empty() {
+        return "/".to_owned();
+    }
+    let mut result = String::new();
+    for component in components {
+        result.push('/');
+        result.push_str(component);
+    }
+    result
+}
+
+impl Fs {
+    pub fn new() -> Self {
+        Self {
+            root: Entry::Dir(BTreeMap::new()),
+        }
+    }
+
+    pub fn mkdir(&mut self, path: &str) -> Result<(), Error> {
+        let components = validate_path(path)?;
+        if components.is_empty() {
+            return Err(Error::Exists("/".to_owned()));
+        }
+
+        let parent_parts = &components[..components.len() - 1];
+        let parent_path = prefix(parent_parts);
+        let mut current = &mut self.root;
+
+        for (i, component) in parent_parts.iter().enumerate() {
+            match current {
+                Entry::Dir(children) => {
+                    current = children
+                        .get_mut(*component)
+                        .ok_or_else(|| Error::Missing(prefix(&parent_parts[..=i])))?;
+                }
+                Entry::File(_) => return Err(Error::NotDir(prefix(&parent_parts[..=i]))),
+            }
+        }
+
+        match current {
+            Entry::Dir(children) => {
+                let name = components[components.len() - 1];
+                let full_path = prefix(&components);
+                if children.contains_key(name) {
+                    return Err(Error::Exists(full_path));
+                }
+                children.insert(name.to_owned(), Entry::Dir(BTreeMap::new()));
+                Ok(())
+            }
+            Entry::File(_) => Err(Error::NotDir(parent_path)),
+        }
+    }
+
+    pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Error> {
+        let components = validate_path(path)?;
+        if components.is_empty() {
+            return Err(Error::IsDir("/".to_owned()));
+        }
+
+        let parent_parts = &components[..components.len() - 1];
+        let parent_path = prefix(parent_parts);
+        let mut current = &mut self.root;
+
+        for (i, component) in parent_parts.iter().enumerate() {
+            match current {
+                Entry::Dir(children) => {
+                    current = children
+                        .get_mut(*component)
+                        .ok_or_else(|| Error::Missing(prefix(&parent_parts[..=i])))?;
+                }
+                Entry::File(_) => return Err(Error::NotDir(prefix(&parent_parts[..=i]))),
+            }
+        }
+
+        match current {
+            Entry::Dir(children) => {
+                let name = components[components.len() - 1];
+                match children.get_mut(name) {
+                    Some(Entry::Dir(_)) => Err(Error::IsDir(prefix(&components))),
+                    Some(Entry::File(bytes)) => {
+                        bytes.clear();
+                        bytes.extend_from_slice(data);
+                        Ok(())
+                    }
+                    None => {
+                        children.insert(name.to_owned(), Entry::File(data.to_vec()));
+                        Ok(())
+                    }
+                }
+            }
+            Entry::File(_) => Err(Error::NotDir(parent_path)),
+        }
+    }
+
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let components = validate_path(path)?;
+        let mut current = &self.root;
+
+        for (i, component) in components.iter().enumerate() {
+            match current {
+                Entry::Dir(children) => {
+                    current = children
+                        .get(*component)
+                        .ok_or_else(|| Error::Missing(prefix(&components[..=i])))?;
+                }
+                Entry::File(_) => return Err(Error::NotDir(prefix(&components[..i])),
+                ),
+            }
+        }
+
+        match current {
+            Entry::Dir(_) => Err(Error::IsDir(prefix(&components))),
+            Entry::File(bytes) => Ok(bytes.clone()),
+        }
+    }
+
+    pub fn ls(&self, path: &str) -> Result<Vec<(String, Kind)>, Error> {
+        let components = validate_path(path)?;
+        let mut current = &self.root;
+
+        for (i, component) in components.iter().enumerate() {
+            match current {
+                Entry::Dir(children) => {
+                    current = children
+                        .get(*component)
+                        .ok_or_else(|| Error::Missing(prefix(&components[..=i])))?;
+                }
+                Entry::File(_) => return Err(Error::NotDir(prefix(&components[..i]))),
+            }
+        }
+
+        match current {
+            Entry::File(_) => Err(Error::NotDir(prefix(&components))),
+            Entry::Dir(children) => Ok(children
+                .iter()
+                .map(|(name, entry)| {
+                    let kind = match entry {
+                        Entry::Dir(_) => Kind::Dir,
+                        Entry::File(_) => Kind::File,
+                    };
+                    (name.clone(), kind)
+                })
+                .collect()),
+        }
+    }
+}
+```

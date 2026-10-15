@@ -1,0 +1,184 @@
+R1: OK — `wrap` and its helper functions use only Rust’s standard library and compile as a single source file with edition 2024.
+R2: OK — `WrapError`, `WrapOptions`, and `wrap` match the specified public API and derives.
+R3: OK — `wrap` checks zero width, then width above 256, before scanning input.
+R4: OK — `wrap` checks first indent, then rest indent, and rejects indents that leave no content column.
+R5: OK — `wrap` scans original scalar values in byte-index order and reports the first disallowed control at its UTF-8 byte offset.
+R6: OK — `wrap` normalizes CRLF, then remaining CR; control errors are checked before normalization.
+R7: OK — `is_separator` recognizes exactly the specified separators; each other scalar is retained and counted once.
+R8: OK — `wrap` treats each maximal normalized LF run of length at least two as a boundary, emitting `n-1` empty strings; separator interruptions prevent adjacency.
+R9: OK — `wrap` lays out each segment independently and preserves boundary empties; `layout_segment` emits no content for separator-only segments.
+R10: OK — `layout_segment` collapses separator runs, discards leading/trailing separators, and preserves word scalars.
+R11: OK — `layout_segment` restarts first-line indentation for each nonempty segment and uses width minus indent as capacity.
+R12: OK — `layout_segment` appends a fitting suffix whole, adding one space when the line already has content.
+R13: OK — `layout_segment` emits a non-fitting line and retries the same suffix with the next line’s capacity.
+R14: OK — `layout_segment` splits oversized suffixes on empty lines by scalar count and emits full lines.
+R15: GAP — `layout_segment` computes `capacity - content_length - 1` without guarding against underflow when fewer than two columns remain; it must emit the current line and retry the suffix in that case.
+R16: OK — `layout_segment` emits split lines before the next word and only appends a nonempty final line.
+R17: OK — `layout_segment` constructs lines without embedded newlines or trailing spaces; layout lengths use scalar counts.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WrapError {
+    WidthZero,
+    WidthTooLarge { width: usize },
+    FirstIndentTooWide { indent: usize },
+    RestIndentTooWide { indent: usize },
+    InvalidControl { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapOptions {
+    pub width: usize,
+    pub first_indent: usize,
+    pub rest_indent: usize,
+}
+
+pub fn wrap(input: &str, options: &WrapOptions) -> Result<Vec<String>, WrapError> {
+    if options.width == 0 {
+        return Err(WrapError::WidthZero);
+    }
+    if options.width > 256 {
+        return Err(WrapError::WidthTooLarge {
+            width: options.width,
+        });
+    }
+    if options.first_indent >= options.width {
+        return Err(WrapError::FirstIndentTooWide {
+            indent: options.first_indent,
+        });
+    }
+    if options.rest_indent >= options.width {
+        return Err(WrapError::RestIndentTooWide {
+            indent: options.rest_indent,
+        });
+    }
+
+    for (index, ch) in input.char_indices() {
+        if ch.is_control() && ch != '\t' && ch != '\r' && ch != '\n' {
+            return Err(WrapError::InvalidControl { index });
+        }
+    }
+
+    let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
+    let chars: Vec<char> = normalized.chars().collect();
+    let mut output = Vec::new();
+    let mut segment_start = 0;
+
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\n' {
+            let run_start = i;
+            while i < chars.len() && chars[i] == '\n' {
+                i += 1;
+            }
+
+            let run_len = i - run_start;
+            if run_len >= 2 {
+                layout_segment(&chars[segment_start..run_start], options, &mut output);
+                output.extend((1..run_len).map(|_| String::new()));
+                segment_start = i;
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    layout_segment(&chars[segment_start..], options, &mut output);
+    Ok(output)
+}
+
+fn is_separator(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{00A0}')
+}
+
+fn layout_segment(segment: &[char], options: &WrapOptions, output: &mut Vec<String>) {
+    let mut words: Vec<Vec<char>> = Vec::new();
+    let mut word = Vec::new();
+
+    for &ch in segment {
+        if is_separator(ch) {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+        } else {
+            word.push(ch);
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+
+    if words.is_empty() {
+        return;
+    }
+
+    let mut first_line = true;
+    let mut line = String::new();
+    let mut content_length = 0usize;
+
+    for word in words {
+        let mut offset = 0usize;
+
+        while offset < word.len() {
+            let indent = if first_line {
+                options.first_indent
+            } else {
+                options.rest_indent
+            };
+            let capacity = options.width - indent;
+            let suffix_length = word.len() - offset;
+
+            if suffix_length <= capacity {
+                let separator_length = usize::from(content_length > 0);
+                if content_length + separator_length + suffix_length <= capacity {
+                    if line.is_empty() {
+                        line.extend(std::iter::repeat(' ').take(indent));
+                    }
+                    if separator_length > 0 {
+                        line.push(' ');
+                        content_length += 1;
+                    }
+                    line.extend(word[offset..].iter());
+                    content_length += suffix_length;
+                    offset = word.len();
+                } else {
+                    emit_line(&mut line, &mut content_length, output);
+                    first_line = false;
+                }
+            } else if content_length == 0 {
+                line.extend(std::iter::repeat(' ').take(indent));
+                line.extend(word[offset..offset + capacity].iter());
+                content_length = capacity;
+                offset += capacity;
+                emit_line(&mut line, &mut content_length, output);
+                first_line = false;
+            } else {
+                let available = if capacity > content_length {
+                    capacity - content_length - 1
+                } else {
+                    0
+                };
+                if available >= 2 {
+                    line.push(' ');
+                    line.extend(word[offset..offset + available].iter());
+                    content_length += 1 + available;
+                    offset += available;
+                }
+                emit_line(&mut line, &mut content_length, output);
+                first_line = false;
+            }
+        }
+    }
+
+    if content_length > 0 {
+        output.push(line);
+    }
+}
+
+fn emit_line(line: &mut String, content_length: &mut usize, output: &mut Vec<String>) {
+    if !line.is_empty() {
+        output.push(std::mem::take(line));
+    }
+    *content_length = 0;
+}
+```

@@ -1,0 +1,243 @@
+R1: OK — uses one source file, Rust 2024 compatible, with only `std`; no inner attributes or doc comments.
+R2: OK — `Span`, `Hashes`, `SpanError`, and `SnapshotError` have the required public fields/variants and derives.
+R3: OK — `crc32` implements reflected IEEE CRC-32.
+R4: OK — `crc32` processes every byte, including empty and binary input.
+R5: OK — `adler32` uses the specified initialization, reductions, and packing.
+R6: OK — `adler32` reduces after each addition, so its `u32` arithmetic cannot overflow.
+R7: OK — `checksums` returns the two numeric checksum results.
+R8: OK — `checksums_spans` hashes selected ranges in supplied order with one stream initialization.
+R9: OK — `validate_spans` checks spans in supplied order and returns the first error.
+R10: OK — `validate_spans` checks reversed ranges before endpoint bounds.
+R11: OK — `validate_spans` checks start then end bounds; endpoints equal to the data length are accepted.
+R12: OK — `validate_spans` checks overlap only after bounds.
+R13: OK — `validate_spans` lets empty spans participate in ordering; empty ranges select no bytes.
+R14: OK — `validate_spans` permits adjacent and repeated empty spans while requiring ordered ranges.
+R15: OK — `checksums_spans` returns the standard empty checksums when no selected bytes are present.
+R16: OK — `update_state` carries both accumulators across span boundaries.
+R17: OK — span indexing follows validation; inputs are read only and malformed spans return errors.
+R18: OK — spans are processed without copying selected bytes; work is linear in selected bytes plus span count.
+R19: OK — `Stream` has private state and implements `Debug` and `Clone`; `SnapshotError` has the required derives.
+R20: OK — `Stream::new` and `Stream::checksum` implement the empty state and non-mutating checksum read.
+R21: OK — `Stream::from_seed` resumes from finalized CRC and packed Adler state without processing seed bytes.
+R22: OK — `Stream::from_seed` checks `a` before `b`, accepting zero and any CRC.
+R23: OK — `Stream::update` appends bytes; empty updates preserve state.
+R24: OK — `Stream::update_spans` validates before mutation, so errors leave both checksum components unchanged.
+R25: OK — `Stream::reset` restores the standard state; derived `Clone` copies state independently.
+R26: OK — `Stream::snapshot` formats the finalized values as the required lowercase, zero-padded token.
+R27: OK — `Stream::restore` checks byte length and marker positions before parsing.
+R28: GAP — `Stream::restore` parses CRC digits before checking Adler digits, so an invalid CRC digit can mask an earlier bad Adler digit at a lower byte offset.
+R29: OK — after digit parsing, `Stream::restore` delegates seed validity to `from_seed`; snapshots do not mutate state.
+R30: GAP — `Stream::snapshot` uses `format!`, which is valid but allocates the required returned `String`; the implementation otherwise has constant stream state and linear update work. No contract violation. (Corrected with R28.)
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hashes {
+    pub crc32: u32,
+    pub adler32: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanError {
+    Reversed { span: usize },
+    OutOfBounds { span: usize, offset: usize },
+    Overlap { span: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotError {
+    Shape,
+    Hex { offset: usize },
+    Adler { component: usize },
+}
+
+#[derive(Debug, Clone)]
+pub struct Stream {
+    crc: u32,
+    a: u32,
+    b: u32,
+}
+
+impl Stream {
+    pub fn new() -> Self {
+        Self {
+            crc: 0xffff_ffff,
+            a: 1,
+            b: 0,
+        }
+    }
+
+    pub fn checksum(&self) -> Hashes {
+        Hashes {
+            crc32: self.crc ^ 0xffff_ffff,
+            adler32: (self.b << 16) | self.a,
+        }
+    }
+
+    pub fn from_seed(crc32: u32, adler32: u32) -> Result<Self, SnapshotError> {
+        let a = adler32 & 0xffff;
+        let b = adler32 >> 16;
+
+        if a >= 65521 {
+            return Err(SnapshotError::Adler { component: 0 });
+        }
+        if b >= 65521 {
+            return Err(SnapshotError::Adler { component: 1 });
+        }
+
+        Ok(Self {
+            crc: crc32 ^ 0xffff_ffff,
+            a,
+            b,
+        })
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        update_state(&mut self.crc, &mut self.a, &mut self.b, data);
+    }
+
+    pub fn update_spans(
+        &mut self,
+        data: &[u8],
+        spans: &[Span],
+    ) -> Result<(), SpanError> {
+        validate_spans(data.len(), spans)?;
+
+        for span in spans {
+            self.update(&data[span.start..span.end]);
+        }
+        Ok(())
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    pub fn snapshot(&self) -> String {
+        let hashes = self.checksum();
+        format!("c{:08x}:a{:08x}", hashes.crc32, hashes.adler32)
+    }
+
+    pub fn restore(token: &str) -> Result<Self, SnapshotError> {
+        let bytes = token.as_bytes();
+        if bytes.len() != 19 || bytes[0] != b'c' || bytes[9] != b':' || bytes[10] != b'a' {
+            return Err(SnapshotError::Shape);
+        }
+
+        // Validate all digit positions in byte order before parsing either value.
+        for offset in (1..9).chain(11..19) {
+            hex_value(bytes[offset], offset)?;
+        }
+
+        let mut crc = 0u32;
+        for &byte in &bytes[1..9] {
+            crc = (crc << 4) | u32::from(hex_value(byte, 0)?);
+        }
+
+        let mut adler = 0u32;
+        for &byte in &bytes[11..19] {
+            adler = (adler << 4) | u32::from(hex_value(byte, 0)?);
+        }
+
+        Self::from_seed(crc, adler)
+    }
+}
+
+impl Default for Stream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn hex_value(byte: u8, offset: usize) -> Result<u8, SnapshotError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        _ => Err(SnapshotError::Hex { offset }),
+    }
+}
+
+fn update_state(crc: &mut u32, a: &mut u32, b: &mut u32, data: &[u8]) {
+    for &byte in data {
+        *crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = 0u32.wrapping_sub(*crc & 1);
+            *crc = (*crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+
+        *a = (*a + u32::from(byte)) % 65521;
+        *b = (*b + *a) % 65521;
+    }
+}
+
+fn validate_spans(data_len: usize, spans: &[Span]) -> Result<(), SpanError> {
+    let mut previous_end = 0;
+
+    for (index, span) in spans.iter().enumerate() {
+        if span.start > span.end {
+            return Err(SpanError::Reversed { span: index });
+        }
+        if span.start > data_len {
+            return Err(SpanError::OutOfBounds {
+                span: index,
+                offset: span.start,
+            });
+        }
+        if span.end > data_len {
+            return Err(SpanError::OutOfBounds {
+                span: index,
+                offset: span.end,
+            });
+        }
+        if index > 0 && span.start < previous_end {
+            return Err(SpanError::Overlap { span: index });
+        }
+        previous_end = span.end;
+    }
+
+    Ok(())
+}
+
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffff;
+    let mut a = 1;
+    let mut b = 0;
+    update_state(&mut crc, &mut a, &mut b, data);
+    crc ^ 0xffff_ffff
+}
+
+pub fn adler32(data: &[u8]) -> u32 {
+    let mut a = 1u32;
+    let mut b = 0u32;
+
+    for &byte in data {
+        a = (a + u32::from(byte)) % 65521;
+        b = (b + a) % 65521;
+    }
+
+    (b << 16) | a
+}
+
+pub fn checksums(data: &[u8]) -> Hashes {
+    Hashes {
+        crc32: crc32(data),
+        adler32: adler32(data),
+    }
+}
+
+pub fn checksums_spans(data: &[u8], spans: &[Span]) -> Result<Hashes, SpanError> {
+    validate_spans(data.len(), spans)?;
+
+    let mut stream = Stream::new();
+    for span in spans {
+        stream.update(&data[span.start..span.end]);
+    }
+
+    Ok(stream.checksum())
+}
+```

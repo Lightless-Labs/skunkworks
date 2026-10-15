@@ -1,0 +1,291 @@
+R1: OK — single Rust source file, compatible with `rustc --edition 2024`; no inner attributes or documentation.
+R2: OK — `Item`, `Error`, and `IndexedHeap` expose the specified API and exact error variants.
+R3: OK — `canonical_key` trims only ASCII space bytes at both ends.
+R4: OK — `canonical_key` enforces the byte rules and reports the original input byte offset.
+R5: OK — `canonical_key` ASCII-lowercases valid keys; stored keys and key-bearing errors use the canonical spelling.
+R6: OK — `less` orders by signed priority, value byte length, then age; key is not a tie-breaker.
+R7: GAP — `push` uses `u128::wrapping_add` for age. After wraparound, a new item can become older than retained items.
+R8: OK — `new`, `len`, and `is_empty` implement the specified empty-queue behavior.
+R9: OK — `push` validates and canonicalizes before insertion.
+R10: OK — `push` returns canonical `Duplicate` without replacing an existing item.
+R11: OK — `peek` returns an owned clone of the best item without mutation.
+R12: OK — `pop` removes and returns the best item.
+R13: OK — `get` validates before lookup and returns an owned clone or `Ok(None)`.
+R14: OK — `peek` and `get` clone items; neither changes the queue.
+R15: OK — `push` and `replace_value` preserve values exactly as Rust strings.
+R16: OK — priority comparisons use signed `i64` ordering without arithmetic.
+R17: OK — `remove_at` updates the moved slot’s index; popped keys can be pushed again.
+R18: OK — queue state is held per `IndexedHeap` instance.
+R19: OK — returned errors are checked before mutation; empty `pop` leaves the queue empty.
+R20: OK — `len` counts retained entries, and ordering uses retained entries only.
+R21: OK — `decrease_key` strictly lowers priority and returns the prior priority.
+R22: OK — `increase_key` strictly raises priority and returns the prior priority.
+R23: OK — both methods check direction by direct comparison; equality is rejected.
+R24: OK — `decrease_key` and `increase_key` validate, look up, then check direction before mutation.
+R25: OK — `replace_value` replaces only the value, returns the previous one, and repairs ordering.
+R26: OK — `remove` removes the matching item regardless of rank and reports canonical `Missing`.
+R27: OK — priority and value updates preserve the entry’s age.
+R28: OK — `replace_value` and `remove` validate before lookup; errors do not mutate the receiver.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub key: String,
+    pub priority: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyKey,
+    InvalidKey { at: usize },
+    Duplicate { key: String },
+    Missing { key: String },
+    WrongDirection { current: i64, requested: i64 },
+}
+
+#[derive(Debug, Clone)]
+struct Entry {
+    item: Item,
+    age: u128,
+}
+
+pub struct IndexedHeap {
+    entries: Vec<Entry>,
+    indices: std::collections::HashMap<String, usize>,
+    next_age: u128,
+}
+
+impl IndexedHeap {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            indices: std::collections::HashMap::new(),
+            next_age: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn push(&mut self, key: &str, priority: i64, value: &str) -> Result<(), Error> {
+        let key = canonical_key(key)?;
+        if self.indices.contains_key(&key) {
+            return Err(Error::Duplicate { key });
+        }
+
+        let entry = Entry {
+            item: Item {
+                key: key.clone(),
+                priority,
+                value: value.to_owned(),
+            },
+            age: self.next_age,
+        };
+
+        // Renumber retained entries before the counter can wrap. This preserves
+        // their relative age order and makes the new item younger than all of them.
+        if self.next_age == u128::MAX {
+            let mut order: Vec<usize> = (0..self.entries.len()).collect();
+            order.sort_by_key(|&index| self.entries[index].age);
+            for (age, index) in order.into_iter().enumerate() {
+                self.entries[index].age = age as u128;
+            }
+            self.next_age = self.entries.len() as u128;
+        }
+
+        let mut entry = entry;
+        entry.age = self.next_age;
+        self.next_age += 1;
+
+        let index = self.entries.len();
+        self.entries.push(entry);
+        self.indices.insert(key, index);
+        self.sift_up(index);
+        Ok(())
+    }
+
+    pub fn peek(&self) -> Option<Item> {
+        self.entries.first().map(|entry| entry.item.clone())
+    }
+
+    pub fn pop(&mut self) -> Option<Item> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        Some(self.remove_at(0).item)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Item>, Error> {
+        let key = canonical_key(key)?;
+        Ok(self
+            .indices
+            .get(&key)
+            .map(|&index| self.entries[index].item.clone()))
+    }
+
+    pub fn decrease_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        let key = canonical_key(key)?;
+        let index = *self
+            .indices
+            .get(&key)
+            .ok_or_else(|| Error::Missing { key })?;
+        let current = self.entries[index].item.priority;
+        if priority >= current {
+            return Err(Error::WrongDirection {
+                current,
+                requested: priority,
+            });
+        }
+        self.entries[index].item.priority = priority;
+        self.repair(index);
+        Ok(current)
+    }
+
+    pub fn increase_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        let key = canonical_key(key)?;
+        let index = *self
+            .indices
+            .get(&key)
+            .ok_or_else(|| Error::Missing { key })?;
+        let current = self.entries[index].item.priority;
+        if priority <= current {
+            return Err(Error::WrongDirection {
+                current,
+                requested: priority,
+            });
+        }
+        self.entries[index].item.priority = priority;
+        self.repair(index);
+        Ok(current)
+    }
+
+    pub fn replace_value(&mut self, key: &str, value: &str) -> Result<String, Error> {
+        let key = canonical_key(key)?;
+        let index = *self
+            .indices
+            .get(&key)
+            .ok_or_else(|| Error::Missing { key })?;
+        let previous = std::mem::replace(
+            &mut self.entries[index].item.value,
+            value.to_owned(),
+        );
+        self.repair(index);
+        Ok(previous)
+    }
+
+    pub fn remove(&mut self, key: &str) -> Result<Item, Error> {
+        let key = canonical_key(key)?;
+        let index = *self
+            .indices
+            .get(&key)
+            .ok_or_else(|| Error::Missing { key })?;
+        Ok(self.remove_at(index).item)
+    }
+
+    fn less(&self, left: usize, right: usize) -> bool {
+        let a = &self.entries[left];
+        let b = &self.entries[right];
+        a.item
+            .priority
+            .cmp(&b.item.priority)
+            .then_with(|| a.item.value.len().cmp(&b.item.value.len()))
+            .then_with(|| a.age.cmp(&b.age))
+            .is_lt()
+    }
+
+    fn swap_entries(&mut self, left: usize, right: usize) {
+        self.entries.swap(left, right);
+        let left_key = self.entries[left].item.key.clone();
+        let right_key = self.entries[right].item.key.clone();
+        self.indices.insert(left_key, left);
+        self.indices.insert(right_key, right);
+    }
+
+    fn sift_up(&mut self, mut index: usize) {
+        while index > 0 {
+            let parent = (index - 1) / 2;
+            if !self.less(index, parent) {
+                break;
+            }
+            self.swap_entries(index, parent);
+            index = parent;
+        }
+    }
+
+    fn sift_down(&mut self, mut index: usize) {
+        let len = self.entries.len();
+        loop {
+            let left = index.saturating_mul(2).saturating_add(1);
+            if left >= len {
+                break;
+            }
+            let right = left + 1;
+            let mut best = left;
+            if right < len && self.less(right, left) {
+                best = right;
+            }
+            if !self.less(best, index) {
+                break;
+            }
+            self.swap_entries(index, best);
+            index = best;
+        }
+    }
+
+    fn repair(&mut self, index: usize) {
+        if index > 0 && self.less(index, (index - 1) / 2) {
+            self.sift_up(index);
+        } else {
+            self.sift_down(index);
+        }
+    }
+
+    fn remove_at(&mut self, index: usize) -> Entry {
+        let removed = self.entries.swap_remove(index);
+        self.indices.remove(&removed.item.key);
+
+        if index < self.entries.len() {
+            let moved_key = self.entries[index].item.key.clone();
+            self.indices.insert(moved_key, index);
+            self.repair(index);
+        }
+        removed
+    }
+}
+
+fn canonical_key(input: &str) -> Result<String, Error> {
+    let bytes = input.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && bytes[start] == b' ' {
+        start += 1;
+    }
+    while end > start && bytes[end - 1] == b' ' {
+        end -= 1;
+    }
+
+    if start == end {
+        return Err(Error::EmptyKey);
+    }
+
+    for (offset, &byte) in bytes[start..end].iter().enumerate() {
+        let valid = if offset == 0 {
+            byte.is_ascii_alphabetic()
+        } else {
+            byte.is_ascii_alphanumeric() || byte == b'-'
+        };
+        if !valid {
+            return Err(Error::InvalidKey { at: start + offset });
+        }
+    }
+
+    Ok(input[start..end].to_ascii_lowercase())
+}
+```

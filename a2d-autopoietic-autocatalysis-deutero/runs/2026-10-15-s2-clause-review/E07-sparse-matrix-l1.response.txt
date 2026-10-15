@@ -1,0 +1,135 @@
+R1: OK — `Sparse::from_coo` is std-only and the file has no inner attributes or documentation comments.
+R2: OK — `Axis`, `Entry`, `Sparse`, and `Error` have the required derives, visibility, and API.
+R3: OK — `Sparse::from_coo` checks row and then column dimensions before other checks; 4096 is allowed.
+R4: OK — `Sparse::from_coo` supports zero-sized dimensions and empty input without dense allocation.
+R5: OK — `Sparse::from_coo` validates each entry in input order, checking row, column, then finiteness.
+R6: OK — `Sparse::from_coo` rejects all nonfinite values after bounds checks.
+R7: OK — `Sparse::from_coo` completes validation before summing duplicates.
+R8: OK — `Sparse::from_coo` processes entries in input order, starting each coordinate at `+0.0` and adding every occurrence.
+R9: OK — `Sparse::from_coo` reports `SumOverflow` at the original entry whose addition becomes nonfinite.
+R10: OK — `Sparse::from_coo` filters only final sums equal to zero, after all additions succeed.
+R11: OK — `Sparse::from_coo` retains every finite nonzero sum, including subnormals.
+R12: OK — `Sparse::from_coo` uses `BTreeMap` iteration to produce row/column order with one entry per retained coordinate.
+R13: OK — `Sparse::shape` preserves the supplied dimensions and `Sparse::entries` borrows canonical entries.
+R14: OK — `Sparse::from_coo` does not mutate the input; derived `Clone` preserves the matrix.
+R15: OK — `Sparse::from_coo` returns the specified errors and imposes no extra size limit for allowed dimensions.
+R16: OK — `Sparse::from_coo` uses zero-based original entry indices in errors; there are no text line numbers.
+R17: OK — `Sparse::from_coo` uses ordinary `f64` addition and checks that successful sums are finite.
+R18: OK — `Sparse::from_coo` follows the specified shape, validation, and summation error precedence.
+
+```rust
+pub const MAX_DIM: usize = 4096;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Axis {
+    Row,
+    Column,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Entry {
+    pub row: usize,
+    pub col: usize,
+    pub value: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sparse {
+    rows: usize,
+    cols: usize,
+    entries: Vec<Entry>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Error {
+    Shape {
+        axis: Axis,
+        size: usize,
+    },
+    Bounds {
+        entry: usize,
+        axis: Axis,
+        index: usize,
+        limit: usize,
+    },
+    NonFinite {
+        entry: usize,
+    },
+    SumOverflow {
+        entry: usize,
+    },
+}
+
+impl Sparse {
+    pub fn from_coo(rows: usize, cols: usize, entries: &[Entry]) -> Result<Self, Error> {
+        if rows > MAX_DIM {
+            return Err(Error::Shape {
+                axis: Axis::Row,
+                size: rows,
+            });
+        }
+        if cols > MAX_DIM {
+            return Err(Error::Shape {
+                axis: Axis::Column,
+                size: cols,
+            });
+        }
+
+        for (entry_index, entry) in entries.iter().enumerate() {
+            if entry.row >= rows {
+                return Err(Error::Bounds {
+                    entry: entry_index,
+                    axis: Axis::Row,
+                    index: entry.row,
+                    limit: rows,
+                });
+            }
+            if entry.col >= cols {
+                return Err(Error::Bounds {
+                    entry: entry_index,
+                    axis: Axis::Column,
+                    index: entry.col,
+                    limit: cols,
+                });
+            }
+            if !entry.value.is_finite() {
+                return Err(Error::NonFinite { entry: entry_index });
+            }
+        }
+
+        let mut sums = std::collections::BTreeMap::<(usize, usize), f64>::new();
+        for (entry_index, entry) in entries.iter().enumerate() {
+            let sum = sums.entry((entry.row, entry.col)).or_insert(0.0);
+            *sum = *sum + entry.value;
+            if !sum.is_finite() {
+                return Err(Error::SumOverflow { entry: entry_index });
+            }
+        }
+
+        let canonical = sums
+            .into_iter()
+            .filter_map(|((row, col), value)| {
+                if value == 0.0 {
+                    None
+                } else {
+                    Some(Entry { row, col, value })
+                }
+            })
+            .collect();
+
+        Ok(Self {
+            rows,
+            cols,
+            entries: canonical,
+        })
+    }
+
+    pub fn shape(&self) -> (usize, usize) {
+        (self.rows, self.cols)
+    }
+
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+}
+```

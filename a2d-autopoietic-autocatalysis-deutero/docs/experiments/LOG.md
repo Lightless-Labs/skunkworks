@@ -380,4 +380,17 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - end: D + review pick rate against D (0.743 on these 136 tuples).
   - Break-even for +10 pp: conv × 32 − regr × 101 ≥ 13.6, i.e. conv ≥ 0.43 at regr = 0.
 - **Kill rule:** conv < 0.25 **or** regr > 0.05 (more than 5 of 101 broken). **Promotion bar** (before building a live harness around it): end ≥ D + 5 pp (≥ 0.793).
+- Result: **KILLED** (conv 0.188 < 0.25).
+  - 133 calls, 1.38M tokens, 0 tool calls. Code changed in 82 of 133 reviews; 10 fixes were reverted because they broke public tests or returned no code.
+  - **conv 6/32 = 0.188, regr 3/101 = 0.030.**
+  - End: D + review 104/136 = 0.765 against D 0.743 (+2.2 pp), below the 0.793 bar.
+  - Artifacts: `runs/2026-10-15-s2-clause-review/`.
+- Decision: clause self-review by the low-effort coder model finds too few real gaps. Mechanism 2 is dead for P3 unless a train-only revision changes the signal. The next mechanism is selection by agreement (S3), which uses the 86%-any-pass headroom within 5 candidates.
+
+
+### S3 — dual-agreement selection (CodeT-style) at the k = 5 budget, offline  [phase P3, development lane]
+- Registered: 2026-10-15, before computing. Zero new invocations: it reuses S1's Luna spec tests (API-correct subset, unfiltered) and S0's B candidates.
+- Mechanism, budget-faithful: 1 test-writer call plus **4 coder samples** (B's first four attempts per tuple). Group candidates with code by the exact set of spec tests they pass. Group score = (candidates in the group) × (spec tests the group passes). Restrict to public-green candidates when any exist. Pick from the top-scoring group, breaking ties on most public passes, then compiled, then latest.
+- Measurement: end pick rate (hidden pass) over the 136 train tuples, against D (0.743) and B's public pick.
+- **Promotion bar = kill rule:** end ≥ D + 5 pp (≥ 0.793), otherwise mechanism 3 is dead for P3. Also reported: the same rule over all 5 of B's candidates (not budget-faithful; for insight).
 - Result: pending

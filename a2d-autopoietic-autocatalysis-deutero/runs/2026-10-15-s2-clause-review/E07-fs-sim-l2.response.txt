@@ -1,0 +1,238 @@
+R1: OK — `Kind`, `Error`, and `Fs` expose the required public API; the file uses only `std`.
+R2: OK — `Fs::new` initializes an independent in-memory root directory.
+R3: OK — `normalize` checks for NUL before checking for an empty path and reports its byte offset.
+R4: OK — `normalize` lexically resolves absolute and cwd-relative paths, including repeated slashes and `..`.
+R5: OK — `lookup` reports the first missing prefix or nondirectory prefix while traversing.
+R6: OK — `lookup_parent_mut` requires an existing directory parent; `write` alone creates a missing final entry.
+R7: OK — `mkdir` checks the parent and returns `Exists` for any existing final entry.
+R8: OK — `write` replaces file contents and returns `IsDir` for a directory.
+R9: OK — `read` returns a cloned byte vector and returns `IsDir` for a directory.
+R10: OK — `ls` requires a directory and returns an empty vector for an empty directory.
+R11: OK — `ls` uses `BTreeMap` iteration, which sorts names by Rust `String` ordering.
+R12: OK — mutations occur only after validation and parent checks; returned strings and vectors are owned.
+R13: OK — `write` copies input bytes and replaces the full file contents, including with empty data.
+R14: OK — root handling in `mkdir`, `write`, `read`, and `ls` matches the specified results.
+R15: OK — `ls` returns only immediate children with their stored kinds.
+R16: OK — `normalize` treats all nonempty components except `.` and `..` verbatim.
+R17: OK — `mkdir` does not overwrite entries, and `write` does not turn directories into files.
+R18: OK — each operation calls `normalize` before lookup, and reported paths are canonical.
+R19: OK — `cwd` starts at `/`, returns an owned canonical path, and relative normalization uses its current value.
+R20: OK — `chdir` normalizes, looks up, requires a directory, and changes cwd only on success.
+R21: OK — `normalize` removes dot components before lookup and ignores trailing slashes.
+R22: OK — normalized root paths receive the specified root behavior; relative `.` and `..` are accepted.
+R23: OK — errors use canonical paths; whitespace remains an ordinary name and NUL offsets refer to the input bytes.
+R24: OK — only successful `chdir` changes cwd; all other operations leave it unchanged.
+
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidPath(usize),
+    Missing(String),
+    NotDir(String),
+    IsDir(String),
+    Exists(String),
+}
+
+#[derive(Debug, Clone)]
+enum Entry {
+    Dir(BTreeMap<String, Entry>),
+    File(Vec<u8>),
+}
+
+pub struct Fs {
+    root: Entry,
+    cwd: Vec<String>,
+}
+
+impl Fs {
+    pub fn new() -> Self {
+        Self {
+            root: Entry::Dir(BTreeMap::new()),
+            cwd: Vec::new(),
+        }
+    }
+
+    fn normalize(&self, path: &str) -> Result<Vec<String>, Error> {
+        if let Some(index) = path.as_bytes().iter().position(|&byte| byte == 0) {
+            return Err(Error::InvalidPath(index));
+        }
+        if path.is_empty() {
+            return Err(Error::InvalidPath(0));
+        }
+
+        let mut parts = if path.starts_with('/') {
+            Vec::new()
+        } else {
+            self.cwd.clone()
+        };
+
+        for component in path.split('/') {
+            match component {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                name => parts.push(name.to_owned()),
+            }
+        }
+
+        Ok(parts)
+    }
+
+    fn canonical(parts: &[String]) -> String {
+        if parts.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{}", parts.join("/"))
+        }
+    }
+
+    fn lookup<'a>(&'a self, parts: &[String]) -> Result<&'a Entry, Error> {
+        let mut current = &self.root;
+        let mut prefix = Vec::<String>::new();
+
+        for (index, component) in parts.iter().enumerate() {
+            let children = match current {
+                Entry::Dir(children) => children,
+                Entry::File(_) => return Err(Error::NotDir(Self::canonical(&prefix))),
+            };
+
+            prefix.push(component.clone());
+            let path = Self::canonical(&prefix);
+            current = children
+                .get(component)
+                .ok_or_else(|| Error::Missing(path.clone()))?;
+
+            if index + 1 < parts.len() && matches!(current, Entry::File(_)) {
+                return Err(Error::NotDir(path));
+            }
+        }
+
+        Ok(current)
+    }
+
+    fn lookup_parent_mut<'a>(
+        &'a mut self,
+        parent: &[String],
+    ) -> Result<&'a mut BTreeMap<String, Entry>, Error> {
+        let mut current = &mut self.root;
+        let mut prefix = Vec::<String>::new();
+
+        for component in parent {
+            let children = match current {
+                Entry::Dir(children) => children,
+                Entry::File(_) => return Err(Error::NotDir(Self::canonical(&prefix))),
+            };
+
+            prefix.push(component.clone());
+            let path = Self::canonical(&prefix);
+            current = match children.get_mut(component) {
+                Some(entry @ Entry::Dir(_)) => entry,
+                Some(Entry::File(_)) => return Err(Error::NotDir(path)),
+                None => return Err(Error::Missing(path)),
+            };
+        }
+
+        match current {
+            Entry::Dir(children) => Ok(children),
+            Entry::File(_) => Err(Error::NotDir(Self::canonical(parent))),
+        }
+    }
+
+    pub fn mkdir(&mut self, path: &str) -> Result<(), Error> {
+        let parts = self.normalize(path)?;
+        if parts.is_empty() {
+            return Err(Error::Exists("/".to_owned()));
+        }
+
+        let (name, parent) = parts.split_last().expect("nonempty path");
+        let full_path = Self::canonical(&parts);
+        let children = self.lookup_parent_mut(parent)?;
+
+        if children.contains_key(name) {
+            return Err(Error::Exists(full_path));
+        }
+
+        children.insert(name.clone(), Entry::Dir(BTreeMap::new()));
+        Ok(())
+    }
+
+    pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Error> {
+        let parts = self.normalize(path)?;
+        if parts.is_empty() {
+            return Err(Error::IsDir("/".to_owned()));
+        }
+
+        let (name, parent) = parts.split_last().expect("nonempty path");
+        let full_path = Self::canonical(&parts);
+        let children = self.lookup_parent_mut(parent)?;
+
+        match children.get_mut(name) {
+            Some(Entry::Dir(_)) => Err(Error::IsDir(full_path)),
+            Some(Entry::File(contents)) => {
+                contents.clear();
+                contents.extend_from_slice(data);
+                Ok(())
+            }
+            None => {
+                children.insert(name.clone(), Entry::File(data.to_vec()));
+                Ok(())
+            }
+        }
+    }
+
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let parts = self.normalize(path)?;
+        match self.lookup(&parts)? {
+            Entry::File(contents) => Ok(contents.clone()),
+            Entry::Dir(_) => Err(Error::IsDir(Self::canonical(&parts))),
+        }
+    }
+
+    pub fn ls(&self, path: &str) -> Result<Vec<(String, Kind)>, Error> {
+        let parts = self.normalize(path)?;
+        match self.lookup(&parts)? {
+            Entry::Dir(children) => Ok(children
+                .iter()
+                .map(|(name, entry)| {
+                    let kind = match entry {
+                        Entry::Dir(_) => Kind::Dir,
+                        Entry::File(_) => Kind::File,
+                    };
+                    (name.clone(), kind)
+                })
+                .collect()),
+            Entry::File(_) => Err(Error::NotDir(Self::canonical(&parts))),
+        }
+    }
+
+    pub fn cwd(&self) -> String {
+        Self::canonical(&self.cwd)
+    }
+
+    pub fn chdir(&mut self, path: &str) -> Result<(), Error> {
+        let parts = self.normalize(path)?;
+        match self.lookup(&parts)? {
+            Entry::Dir(_) => {
+                self.cwd = parts;
+                Ok(())
+            }
+            Entry::File(_) => Err(Error::NotDir(Self::canonical(&parts))),
+        }
+    }
+}
+
+impl Default for Fs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+```

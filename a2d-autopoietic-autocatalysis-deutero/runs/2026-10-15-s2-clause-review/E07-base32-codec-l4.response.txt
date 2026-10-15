@@ -1,0 +1,370 @@
+R1: OK — The implementation is a single Rust source file using only `std`, with no inner attributes or doc comments.
+R2: OK — The public enums, `Config`, `StreamError`, `Encoder`, and `Decoder` APIs and required derives are present.
+R3: OK — `encode_bytes` and `classify` use the required Standard alphabet.
+R4: OK — `encode_bytes` and `classify` use the required Hex alphabet.
+R5: OK — `Encoder::new` and `Decoder::new` initialize fresh state at position zero.
+R6: OK — `encode_bytes` reads bits most significant first and uses the selected uppercase alphabet.
+R7: OK — `Encoder::push` emits only complete five-byte groups and buffers the remainder.
+R8: OK — `Encoder::push` returns an empty string for empty input while open.
+R9: OK — `encode_bytes` zero-fills the final partial symbol without adding an extra symbol.
+R10: OK — `Encoder::finish` pads a nonempty final fragment to a multiple of eight symbols in Required mode.
+R11: OK — `Encoder::finish` adds no padding in Omitted mode.
+R12: OK — Encoding uses only `alphabet`; `canonical` affects decoding only.
+R13: OK — `Encoder::finish` returns an empty string for empty or block-aligned state and closes on success.
+R14: OK — Both stream types check `closed` before handling input or changing state.
+R15: OK — `Decoder::push` emits complete bytes and retains fewer than eight pending bits.
+R16: OK — `Decoder::finish` returns an empty vector and closes on successful validation.
+R17: OK — `Decoder::push` scans bytes left to right and returns immediate lexical, canonical, or placement errors.
+R18: OK — `Decoder::push` tracks absolute UTF-8 byte positions; `finish` uses the consumed byte count.
+R19: OK — `Decoder::push` stages state in `DecoderState`; `finish` validates before mutation, so failures preserve state.
+R20: OK — Failed calls do not commit staged state or output, allowing replacement input to be retried.
+R21: OK — `classify` distinguishes padding, selected-alphabet data after uppercase conversion, and invalid bytes.
+R22: OK — `classify` accepts only symbols in the selected alphabet and rejects whitespace, separators, and other bytes.
+R23: OK — `Decoder::push` classifies each byte before padding-placement checks; UTF-8 is scanned by byte.
+R24: OK — `Decoder::push` returns `NonCanonical` with the uppercase expected byte for strict lowercase data.
+R25: OK — `classify` accepts lowercase data in relaxed mode; digits are accepted in both modes.
+R26: OK — `Decoder::push` applies lexical recognition, canonical-case validation, then padding-placement checks.
+R27: OK — `Decoder::push` immediately rejects `=` in Omitted mode.
+R28: OK — `Decoder::push` assigns the required pad counts for legal nonzero residues.
+R29: OK — `Decoder::push` immediately rejects `=` at residue zero or an illegal residue.
+R30: OK — `Decoder::push` rejects data symbols after padding, after lexical and canonical checks.
+R31: OK — `Decoder::push` accepts padding up to the expected count and rejects the first excess `=`.
+R32: OK — `Decoder::push` permits incomplete data residues or padding at the end of a successful push.
+R33: OK — `Decoder::finish` checks data length, required padding completeness, then unused bits.
+R34: OK — `Decoder::finish` returns `InvalidLength` at the total consumed position for illegal residues.
+R35: OK — `Decoder::finish` reports missing or incomplete Required padding at the first pad offset, or end position.
+R36: OK — `Decoder::finish` has no divisibility or padding-completeness check for Omitted mode.
+R37: OK — `Decoder::finish` checks the required low unused bits for each legal residue.
+R38: OK — `Decoder::finish` reports nonzero unused bits at the last data symbol’s offset.
+R39: OK — `Decoder::finish` applies length and padding checks before tail-bit checks and leaves the stream open on failure.
+R40: OK — `Decoder::push` accepts empty input while open; `Decoder::finish` succeeds on an empty stream in either mode.
+R41: OK — State buffering and byte-based positions support arbitrary chunk boundaries without changing results.
+R42: OK — `Decoder::push` returns the first error encountered while scanning the current push.
+R43: OK — `Vec` buffers, `u32` bit state, and `usize` counts and offsets support long streams without fixed-size truncation.
+R44: OK — `Decoder::push` returns provisional complete bytes; `finish` can still reject the stream without changing prior output.
+R45: OK — Neither finish emits partial bits as a byte, and successful finish closes the instance.
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alphabet {
+    Standard,
+    Hex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Padding {
+    Required,
+    Omitted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Config {
+    pub alphabet: Alphabet,
+    pub padding: Padding,
+    pub canonical: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamError {
+    InvalidByte { offset: usize, byte: u8 },
+    NonCanonical { offset: usize, expected: u8 },
+    Padding { offset: usize },
+    InvalidLength { offset: usize },
+    TrailingBits { offset: usize },
+    Closed,
+}
+
+pub struct Encoder {
+    config: Config,
+    pending: Vec<u8>,
+    closed: bool,
+}
+
+impl Encoder {
+    pub fn new(config: Config) -> Self {
+        Self {
+            config,
+            pending: Vec::new(),
+            closed: false,
+        }
+    }
+
+    pub fn push(&mut self, input: &[u8]) -> Result<String, StreamError> {
+        if self.closed {
+            return Err(StreamError::Closed);
+        }
+
+        let mut combined = self.pending.clone();
+        combined.extend_from_slice(input);
+        let complete_len = (combined.len() / 5) * 5;
+        let output = encode_bytes(&combined[..complete_len], self.config.alphabet);
+        self.pending = combined[complete_len..].to_vec();
+        Ok(output)
+    }
+
+    pub fn finish(&mut self) -> Result<String, StreamError> {
+        if self.closed {
+            return Err(StreamError::Closed);
+        }
+
+        let mut output = encode_bytes(&self.pending, self.config.alphabet);
+        if !self.pending.is_empty() && self.config.padding == Padding::Required {
+            while output.len() % 8 != 0 {
+                output.push('=');
+            }
+        }
+        self.pending.clear();
+        self.closed = true;
+        Ok(output)
+    }
+}
+
+fn encode_bytes(bytes: &[u8], alphabet: Alphabet) -> String {
+    let table: &[u8; 32] = match alphabet {
+        Alphabet::Standard => b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+        Alphabet::Hex => b"0123456789ABCDEFGHIJKLMNOPQRSTUV",
+    };
+
+    let mut output = String::new();
+    let mut acc: u32 = 0;
+    let mut bits = 0u32;
+
+    for &byte in bytes {
+        acc = (acc << 8) | byte as u32;
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            output.push(table[((acc >> bits) & 31) as usize] as char);
+        }
+    }
+
+    if bits > 0 {
+        output.push(table[((acc << (5 - bits)) & 31) as usize] as char);
+    }
+    output
+}
+
+pub struct Decoder {
+    config: Config,
+    bit_buffer: u32,
+    bit_count: u8,
+    data_count: usize,
+    last_data_offset: Option<usize>,
+    tail_value: u8,
+    first_padding_offset: Option<usize>,
+    padding_count: usize,
+    expected_padding: usize,
+    position: usize,
+    closed: bool,
+}
+
+impl Decoder {
+    pub fn new(config: Config) -> Self {
+        Self {
+            config,
+            bit_buffer: 0,
+            bit_count: 0,
+            data_count: 0,
+            last_data_offset: None,
+            tail_value: 0,
+            first_padding_offset: None,
+            padding_count: 0,
+            expected_padding: 0,
+            position: 0,
+            closed: false,
+        }
+    }
+
+    pub fn push(&mut self, input: &str) -> Result<Vec<u8>, StreamError> {
+        if self.closed {
+            return Err(StreamError::Closed);
+        }
+
+        let mut next = self.clone_state();
+        let mut output = Vec::new();
+
+        for &byte in input.as_bytes() {
+            let offset = next.position;
+            match classify(byte, next.config.alphabet) {
+                Classified::Invalid => {
+                    return Err(StreamError::InvalidByte { offset, byte });
+                }
+                Classified::Data(value, canonical) => {
+                    if next.config.canonical && byte != canonical {
+                        return Err(StreamError::NonCanonical {
+                            offset,
+                            expected: canonical,
+                        });
+                    }
+                    if next.first_padding_offset.is_some() {
+                        return Err(StreamError::Padding { offset });
+                    }
+
+                    next.data_count += 1;
+                    next.last_data_offset = Some(offset);
+                    next.tail_value = value;
+                    next.bit_buffer = (next.bit_buffer << 5) | value as u32;
+                    next.bit_count += 5;
+                    while next.bit_count >= 8 {
+                        next.bit_count -= 8;
+                        output.push(((next.bit_buffer >> next.bit_count) & 0xff) as u8);
+                    }
+                    if next.bit_count == 0 {
+                        next.bit_buffer = 0;
+                    } else {
+                        next.bit_buffer &= (1u32 << next.bit_count) - 1;
+                    }
+                }
+                Classified::Padding => {
+                    if next.config.padding == Padding::Omitted {
+                        return Err(StreamError::Padding { offset });
+                    }
+                    if next.first_padding_offset.is_none() {
+                        let residue = next.data_count % 8;
+                        let expected = match residue {
+                            2 => 6,
+                            4 => 4,
+                            5 => 3,
+                            7 => 1,
+                            _ => return Err(StreamError::Padding { offset }),
+                        };
+                        next.first_padding_offset = Some(offset);
+                        next.expected_padding = expected;
+                    }
+                    if next.padding_count >= next.expected_padding {
+                        return Err(StreamError::Padding { offset });
+                    }
+                    next.padding_count += 1;
+                }
+            }
+            next.position += 1;
+        }
+
+        self.restore_state(next);
+        Ok(output)
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<u8>, StreamError> {
+        if self.closed {
+            return Err(StreamError::Closed);
+        }
+
+        let residue = self.data_count % 8;
+        let expected_padding = match residue {
+            0 => 0,
+            2 => 6,
+            4 => 4,
+            5 => 3,
+            7 => 1,
+            _ => {
+                return Err(StreamError::InvalidLength {
+                    offset: self.position,
+                });
+            }
+        };
+
+        if self.config.padding == Padding::Required && self.padding_count != expected_padding {
+            return Err(StreamError::Padding {
+                offset: self.first_padding_offset.unwrap_or(self.position),
+            });
+        }
+
+        let unused_bits = match residue {
+            2 => 2,
+            4 => 4,
+            5 => 1,
+            7 => 3,
+            _ => 0,
+        };
+        if unused_bits > 0 && (self.tail_value & ((1u8 << unused_bits) - 1)) != 0 {
+            return Err(StreamError::TrailingBits {
+                offset: self.last_data_offset.unwrap_or(self.position),
+            });
+        }
+
+        self.closed = true;
+        Ok(Vec::new())
+    }
+
+    fn clone_state(&self) -> DecoderState {
+        DecoderState {
+            config: self.config,
+            bit_buffer: self.bit_buffer,
+            bit_count: self.bit_count,
+            data_count: self.data_count,
+            last_data_offset: self.last_data_offset,
+            tail_value: self.tail_value,
+            first_padding_offset: self.first_padding_offset,
+            padding_count: self.padding_count,
+            expected_padding: self.expected_padding,
+            position: self.position,
+            closed: self.closed,
+        }
+    }
+
+    fn restore_state(&mut self, state: DecoderState) {
+        self.config = state.config;
+        self.bit_buffer = state.bit_buffer;
+        self.bit_count = state.bit_count;
+        self.data_count = state.data_count;
+        self.last_data_offset = state.last_data_offset;
+        self.tail_value = state.tail_value;
+        self.first_padding_offset = state.first_padding_offset;
+        self.padding_count = state.padding_count;
+        self.expected_padding = state.expected_padding;
+        self.position = state.position;
+        self.closed = state.closed;
+    }
+}
+
+struct DecoderState {
+    config: Config,
+    bit_buffer: u32,
+    bit_count: u8,
+    data_count: usize,
+    last_data_offset: Option<usize>,
+    tail_value: u8,
+    first_padding_offset: Option<usize>,
+    padding_count: usize,
+    expected_padding: usize,
+    position: usize,
+    closed: bool,
+}
+
+enum Classified {
+    Data(u8, u8),
+    Padding,
+    Invalid,
+}
+
+fn classify(byte: u8, alphabet: Alphabet) -> Classified {
+    if byte == b'=' {
+        return Classified::Padding;
+    }
+
+    let upper = byte.to_ascii_uppercase();
+    let value = match alphabet {
+        Alphabet::Standard => match upper {
+            b'A'..=b'Z' => Some(upper - b'A'),
+            b'2'..=b'7' => Some(26 + upper - b'2'),
+            _ => None,
+        },
+        Alphabet::Hex => match upper {
+            b'0'..=b'9' => Some(upper - b'0'),
+            b'A'..=b'V' => Some(10 + upper - b'A'),
+            _ => None,
+        },
+    };
+
+    match value {
+        Some(value) => {
+            let canonical = match alphabet {
+                Alphabet::Standard => b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"[value as usize],
+                Alphabet::Hex => b"0123456789ABCDEFGHIJKLMNOPQRSTUV"[value as usize],
+            };
+            Classified::Data(value, canonical)
+        }
+        None => Classified::Invalid,
+    }
+}
+```

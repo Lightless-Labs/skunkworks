@@ -1,0 +1,422 @@
+Checklist
+
+R1: OK — `Kind`, `Error`, `Fs`, and all requested methods are public with the specified signatures.
+
+R2: OK — `Fs::new` stores only the root directory; storage is in memory and per instance.
+
+R3: OK — `normalize` scans for NUL before checking for an empty path.
+
+R4: OK — `normalize` handles absolute and cwd-relative paths, removes empty and `.` components, resolves `..` lexically, and returns a canonical absolute path.
+
+R5: GAP — `lookup_entry` calls `lookup_parent`, which checks the parent directory itself rather than walking components in order. If an earlier component is missing but a later parent prefix is a file, it can report `NotDir` instead of the first `Missing` prefix.
+
+R6: OK — `mkdir` and `write` check the parent, and `write` creates only the final missing entry.
+
+R7: OK — `mkdir` rejects root and any existing final entry with `Exists`.
+
+R8: OK — `write` replaces file bytes and returns `IsDir` for a directory at the final path.
+
+R9: OK — `read` clones file bytes and returns `IsDir` for a directory.
+
+R10: OK — `ls` requires a directory at the final path and returns an empty vector for an empty directory.
+
+R11: OK — `direct_children` derives entries from the `BTreeMap`, so basenames are sorted by Rust `String` ordering.
+
+R12: OK — mutations validate and complete their checks before changing entries; returned data and paths are owned.
+
+R13: OK — `write` copies input bytes, including empty data, and replaces the full file contents.
+
+R14: OK — root-specific behavior is handled by `mkdir`, `write`, `read`, and `ls`.
+
+R15: OK — `direct_children` includes only immediate children.
+
+R16: OK — `normalize` treats only `/`, `.`, and `..` specially; other component text is preserved.
+
+R17: OK — `mkdir` and `write` reject incompatible existing entries, and successful changes preserve unrelated entries.
+
+R18: GAP — The component-order lookup defect in `lookup_entry` also violates the required first-prefix error ordering for one-path operations.
+
+R19: OK — `cwd` starts at `/`, returns an owned string, and normalization uses its value without changing it.
+
+R20: OK — `chdir` changes cwd only after successful lookup of a directory.
+
+R21: OK — `normalize` resolves dot components before lookup; trailing slashes impose no extra requirement.
+
+R22: OK — normalization can yield root; root handling and `..` clamping are implemented.
+
+R23: OK — errors use canonical paths; whitespace-only names are preserved and NUL offsets are byte offsets.
+
+R24: OK — `read`, `ls`, `mkdir`, and `write` do not modify cwd; failed `chdir` leaves it unchanged.
+
+R25: OK — `rename` normalizes `from` then `to` before lookup, then checks for root endpoints.
+
+R26: GAP — `rename` checks source and destination parents using `lookup_parent`, which can return a later `NotDir` before an earlier `Missing` prefix.
+
+R27: OK — `rename` checks source existence and Busy before allowing same-path success.
+
+R28: OK — `rename` checks destination parent before cycle and uses whole-component containment.
+
+R29: OK — `rename` checks `Exists(destination)` after Busy, same-path, and cycle checks.
+
+R30: OK — `rename` returns the specified type mismatch errors for overwrite.
+
+R31: OK — `rename` requires an empty destination directory and replaces it with the source tree.
+
+R32: OK — `rename` moves the source entry and descendants while preserving their stored entries and bytes.
+
+R33: GAP — `remove` uses the same parent lookup defect, so a later nondirectory prefix can mask an earlier missing prefix.
+
+R34: OK — `remove` checks Busy before nonempty handling, using whole-component containment.
+
+R35: OK — `remove` rejects nonempty directories unless recursive, then removes the subtree.
+
+R36: OK — `rename` and `remove` do not change cwd, and their containment checks protect it.
+
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidPath(usize),
+    Missing(String),
+    NotDir(String),
+    IsDir(String),
+    Exists(String),
+    Root,
+    Busy(String),
+    Cycle(String),
+    NotEmpty(String),
+}
+
+#[derive(Debug, Clone)]
+enum Entry {
+    Dir,
+    File(Vec<u8>),
+}
+
+pub struct Fs {
+    entries: BTreeMap<String, Entry>,
+    cwd: String,
+}
+
+impl Fs {
+    pub fn new() -> Self {
+        let mut entries = BTreeMap::new();
+        entries.insert("/".to_string(), Entry::Dir);
+        Self {
+            entries,
+            cwd: "/".to_string(),
+        }
+    }
+
+    fn normalize(&self, path: &str) -> Result<String, Error> {
+        if let Some(i) = path.as_bytes().iter().position(|&b| b == 0) {
+            return Err(Error::InvalidPath(i));
+        }
+        if path.is_empty() {
+            return Err(Error::InvalidPath(0));
+        }
+
+        let mut components: Vec<&str> = Vec::new();
+        if !path.starts_with('/') {
+            components.extend(self.cwd.split('/').filter(|part| !part.is_empty()));
+        }
+
+        for part in path.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    components.pop();
+                }
+                other => components.push(other),
+            }
+        }
+
+        if components.is_empty() {
+            Ok("/".to_string())
+        } else {
+            let mut result = String::new();
+            for component in components {
+                result.push('/');
+                result.push_str(component);
+            }
+            Ok(result)
+        }
+    }
+
+    fn parent_and_name(path: &str) -> Option<(&str, &str)> {
+        if path == "/" {
+            return None;
+        }
+        match path.rfind('/') {
+            Some(0) => Some(("/", &path[1..])),
+            Some(index) => Some((&path[..index], &path[index + 1..])),
+            None => None,
+        }
+    }
+
+    fn lookup_parent<'a>(&self, path: &'a str) -> Result<(&'a str, &'a str), Error> {
+        let (parent, name) = Self::parent_and_name(path).expect("non-root path");
+        self.lookup_directory(parent)?;
+        Ok((parent, name))
+    }
+
+    fn lookup_directory(&self, path: &str) -> Result<(), Error> {
+        if path == "/" {
+            return Ok(());
+        }
+
+        let mut prefix = String::new();
+        for component in path.split('/').filter(|part| !part.is_empty()) {
+            prefix.push('/');
+            prefix.push_str(component);
+            match self.entries.get(&prefix) {
+                None => return Err(Error::Missing(prefix)),
+                Some(Entry::File(_)) => return Err(Error::NotDir(prefix)),
+                Some(Entry::Dir) => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn lookup_entry(&self, path: &str) -> Result<&Entry, Error> {
+        if path == "/" {
+            return self.entries.get("/").ok_or_else(|| Error::Missing("/".into()));
+        }
+
+        let mut prefixes = path
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .peekable();
+        let mut prefix = String::new();
+
+        while let Some(component) = prefixes.next() {
+            prefix.push('/');
+            prefix.push_str(component);
+
+            match self.entries.get(&prefix) {
+                None => return Err(Error::Missing(prefix)),
+                Some(entry @ Entry::File(_)) => {
+                    if prefixes.peek().is_some() {
+                        return Err(Error::NotDir(prefix));
+                    }
+                    return Ok(entry);
+                }
+                Some(entry @ Entry::Dir) => {
+                    if prefixes.peek().is_none() {
+                        return Ok(entry);
+                    }
+                }
+            }
+        }
+
+        self.entries
+            .get("/")
+            .ok_or_else(|| Error::Missing("/".into()))
+    }
+
+    fn direct_children(&self, path: &str) -> Vec<(String, Kind)> {
+        self.entries
+            .iter()
+            .filter_map(|(candidate, entry)| {
+                let (parent, name) = Self::parent_and_name(candidate)?;
+                if parent != path {
+                    return None;
+                }
+                let kind = match entry {
+                    Entry::Dir => Kind::Dir,
+                    Entry::File(_) => Kind::File,
+                };
+                Some((name.to_string(), kind))
+            })
+            .collect()
+    }
+
+    pub fn mkdir(&mut self, path: &str) -> Result<(), Error> {
+        let path = self.normalize(path)?;
+        if path == "/" {
+            return Err(Error::Exists(path));
+        }
+        self.lookup_parent(&path)?;
+        if self.entries.contains_key(&path) {
+            return Err(Error::Exists(path));
+        }
+        self.entries.insert(path, Entry::Dir);
+        Ok(())
+    }
+
+    pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Error> {
+        let path = self.normalize(path)?;
+        if path == "/" {
+            return Err(Error::IsDir(path));
+        }
+        self.lookup_parent(&path)?;
+        match self.entries.get(&path) {
+            Some(Entry::Dir) => return Err(Error::IsDir(path)),
+            Some(Entry::File(_)) | None => {}
+        }
+        self.entries.insert(path, Entry::File(data.to_vec()));
+        Ok(())
+    }
+
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let path = self.normalize(path)?;
+        match self.lookup_entry(&path)? {
+            Entry::Dir => Err(Error::IsDir(path)),
+            Entry::File(data) => Ok(data.clone()),
+        }
+    }
+
+    pub fn ls(&self, path: &str) -> Result<Vec<(String, Kind)>, Error> {
+        let path = self.normalize(path)?;
+        match self.lookup_entry(&path)? {
+            Entry::Dir => Ok(self.direct_children(&path)),
+            Entry::File(_) => Err(Error::NotDir(path)),
+        }
+    }
+
+    pub fn cwd(&self) -> String {
+        self.cwd.clone()
+    }
+
+    pub fn chdir(&mut self, path: &str) -> Result<(), Error> {
+        let path = self.normalize(path)?;
+        match self.lookup_entry(&path)? {
+            Entry::Dir => {
+                self.cwd = path;
+                Ok(())
+            }
+            Entry::File(_) => Err(Error::NotDir(path)),
+        }
+    }
+
+    pub fn rename(&mut self, from: &str, to: &str, overwrite: bool) -> Result<(), Error> {
+        let source = self.normalize(from)?;
+        let destination = self.normalize(to)?;
+
+        if source == "/" || destination == "/" {
+            return Err(Error::Root);
+        }
+
+        self.lookup_parent(&source)?;
+        let source_entry = self
+            .entries
+            .get(&source)
+            .cloned()
+            .ok_or_else(|| Error::Missing(source.clone()))?;
+
+        if matches!(source_entry, Entry::Dir) && Self::contains_path(&source, &self.cwd) {
+            return Err(Error::Busy(source));
+        }
+
+        self.lookup_parent(&destination)?;
+        if matches!(self.entries.get(&destination), Some(Entry::Dir))
+            && Self::contains_path(&destination, &self.cwd)
+        {
+            return Err(Error::Busy(destination));
+        }
+
+        if source == destination {
+            return Ok(());
+        }
+
+        if matches!(source_entry, Entry::Dir) && Self::contains_path(&source, &destination) {
+            return Err(Error::Cycle(destination));
+        }
+
+        let destination_entry = self.entries.get(&destination).cloned();
+        if destination_entry.is_some() && !overwrite {
+            return Err(Error::Exists(destination));
+        }
+
+        if let Some(existing) = &destination_entry {
+            match (&source_entry, existing) {
+                (Entry::Dir, Entry::File(_)) => return Err(Error::NotDir(destination)),
+                (Entry::File(_), Entry::Dir) => return Err(Error::IsDir(destination)),
+                (Entry::Dir, Entry::Dir) => {
+                    if !self.direct_children(&destination).is_empty() {
+                        return Err(Error::NotEmpty(destination));
+                    }
+                }
+                (Entry::File(_), Entry::File(_)) => {}
+            }
+        }
+
+        let moved: Vec<(String, Entry)> = self
+            .entries
+            .iter()
+            .filter(|(path, _)| Self::contains_path(&source, path))
+            .map(|(path, entry)| (path.clone(), entry.clone()))
+            .collect();
+
+        if destination_entry.is_some() {
+            self.entries.remove(&destination);
+        }
+
+        for (old_path, _) in &moved {
+            self.entries.remove(old_path);
+        }
+
+        for (old_path, entry) in moved {
+            let suffix = &old_path[source.len()..];
+            let new_path = format!("{destination}{suffix}");
+            self.entries.insert(new_path, entry);
+        }
+
+        Ok(())
+    }
+
+    pub fn remove(&mut self, path: &str, recursive: bool) -> Result<(), Error> {
+        let path = self.normalize(path)?;
+        if path == "/" {
+            return Err(Error::Root);
+        }
+
+        self.lookup_parent(&path)?;
+        let entry = self
+            .entries
+            .get(&path)
+            .ok_or_else(|| Error::Missing(path.clone()))?;
+
+        if matches!(entry, Entry::Dir) && Self::contains_path(&path, &self.cwd) {
+            return Err(Error::Busy(path));
+        }
+
+        let children = if matches!(entry, Entry::Dir) {
+            self.direct_children(&path)
+        } else {
+            Vec::new()
+        };
+        if !children.is_empty() && !recursive {
+            return Err(Error::NotEmpty(path));
+        }
+
+        let to_remove: Vec<String> = self
+            .entries
+            .keys()
+            .filter(|candidate| Self::contains_path(&path, candidate))
+            .cloned()
+            .collect();
+        for candidate in to_remove {
+            self.entries.remove(&candidate);
+        }
+        Ok(())
+    }
+
+    fn contains_path(parent: &str, child: &str) -> bool {
+        if parent == "/" {
+            return child.starts_with('/');
+        }
+        child == parent
+            || child
+                .strip_prefix(parent)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+    }
+}
+```

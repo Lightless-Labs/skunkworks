@@ -1,0 +1,497 @@
+R1: OK — The implementation is a single std-only Rust source file and uses no inner attributes or documentation.
+R2: OK — The public types and signatures match the specified API.
+R3: OK — `analyze` treats edges as directed and returns owned data.
+R4: OK — `validate` checks the vertex limit first and permits exactly `MAX_VERTICES`.
+R5: OK — `validate` checks the edge limit before inspecting endpoints and permits exactly `MAX_EDGES`.
+R6: OK — `validate` scans in input order and checks each source before its target.
+R7: OK — `validate` uses original edge positions and treats all out-of-range values uniformly.
+R8: OK — `Graph::query` handles same-component reachability, including zero-length paths.
+R9: OK — `analyze` computes maximal mutually reachable components, including isolated vertices.
+R10: OK — `analyze` sorts each component’s distinct members ascending.
+R11: OK — `analyze` sorts components by decreasing size, then increasing minimum vertex.
+R12: OK — `analyze` builds `component_of` using canonical component IDs.
+R13: OK — `analyze` marks multi-vertex components and self-loop components cyclic.
+R14: OK — `analyze` counts duplicate edges and self-loops without changing SCC membership.
+R15: OK — `validate` rejects the first endpoint for nonempty edges when `n == 0`; empty input produces empty fields.
+R16: OK — `analyze` produces singleton components in vertex order for an edgeless graph.
+R17: OK — SCC membership, canonical IDs, and cyclic flags are independent of edge order.
+R18: OK — `analyze` uses iterative Kosaraju traversal and supports the stated limits and graph shapes.
+R19: OK — `analyze` counts every internal edge occurrence per component.
+R20: OK — `analyze` counts internal duplicates and loops individually.
+R21: OK — `analyze` emits only inter-component arcs.
+R22: OK — `analyze` aggregates arcs by distinct ordered component pair.
+R23: OK — `analyze` counts all occurrences represented by each arc.
+R24: OK — `analyze` retains the minimum original edge index for each arc.
+R25: OK — `analyze` sorts arcs by ascending source ID, then descending target ID.
+R26: OK — `analyze` uses original edge positions and accounts for each edge exactly once.
+R27: OK — `analyze` performs Kahn traversal over unique condensation arcs.
+R28: OK — `analyze` prioritizes greatest internal-edge count, then greatest minimum vertex.
+R29: OK — `analyze` admits newly zero-indegree components immediately to the ready set.
+R30: OK — `analyze` computes longest-path depth indexed by component ID.
+R31: OK — `Graph::query` validates source first, then target, even when they are equal.
+R32: OK — `Graph::query` returns the prescribed same-component route encodings.
+R33: OK — `Graph::query` returns a shortest forward component route.
+R34: OK — `Graph::query` selects the backward route in the reachable direction before reversing it.
+R35: OK — `Graph::query` returns an empty route when neither component reaches the other.
+R36: OK — `shortest_route` uses BFS with ascending neighbors, yielding the lexicographically smallest shortest route.
+R37: OK — `Graph::query` rejects all queries on an empty graph at side 0.
+R38: OK — `Incremental::new` uses `analyze` validation, retains input order, and starts with empty history.
+R39: OK — `snapshot` and `history` return owned clones; the stored graph is rebuilt from retained edges.
+R40: OK — `Incremental::insert` checks total capacity before endpoints and permits an exactly full total.
+R41: OK — `Incremental::insert` validates the whole batch before mutating state; failed validation leaves state unchanged.
+R42: OK — `Incremental::insert` processes occurrences sequentially and rebuilds graph metadata after each.
+R43: OK — `Incremental::insert` assigns global retained-edge indices.
+R44: OK — `Incremental::insert` captures canonical component IDs immediately before and after each insertion.
+R45: OK — `Incremental::insert` applies the required duplicate/internal/merge/link precedence.
+R46: OK — `Incremental::insert` treats a new self-loop as internal and rebuilds occurrence metadata.
+R47: OK — `Incremental::insert` emits one merge event for each `Merge` step, with the united component’s members.
+R48: OK — `Incremental::insert` collects distinct pre-insertion IDs for all components united by the edge.
+R49: OK — `Incremental::insert` appends immutable event snapshots to history and the current batch.
+R50: OK — `Incremental::insert` returns the final owned graph snapshot.
+R51: OK — `Incremental::insert` accepts empty batches without changing state.
+R52: OK — `Incremental` derives `Clone` and `Debug`, and its state is independently owned.
+
+```rust
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+    BadQuery { side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arc {
+    pub from: usize,
+    pub to: usize,
+    pub multiplicity: usize,
+    pub first_edge: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Relation {
+    Cycle,
+    Trivial,
+    Forward,
+    Backward,
+    Separate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Query {
+    pub kind: Relation,
+    pub route: Vec<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EdgeStatus {
+    Duplicate,
+    Internal,
+    Link,
+    Merge,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Step {
+    pub edge_index: usize,
+    pub status: EdgeStatus,
+    pub before: (usize, usize),
+    pub after: (usize, usize),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Merge {
+    pub edge_index: usize,
+    pub before: Vec<usize>,
+    pub after: usize,
+    pub members: Vec<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Batch {
+    pub steps: Vec<Step>,
+    pub merges: Vec<Merge>,
+    pub graph: Graph,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+    pub internal_edges: Vec<usize>,
+    pub arcs: Vec<Arc>,
+    pub topo: Vec<usize>,
+    pub depth: Vec<usize>,
+}
+
+fn validate(n: usize, edges: &[(usize, usize)]) -> Result<(), GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges { limit: MAX_EDGES });
+    }
+    for (i, &(from, to)) in edges.iter().enumerate() {
+        if from >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 0,
+                vertex: from,
+            });
+        }
+        if to >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 1,
+                vertex: to,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn shortest_route(adjacency: &[Vec<usize>], start: usize, goal: usize) -> Option<Vec<usize>> {
+    let mut parent = vec![usize::MAX; adjacency.len()];
+    let mut queue = std::collections::VecDeque::new();
+    parent[start] = start;
+    queue.push_back(start);
+
+    while let Some(v) = queue.pop_front() {
+        if v == goal {
+            break;
+        }
+        let mut neighbors = adjacency[v].clone();
+        neighbors.sort_unstable();
+        neighbors.dedup();
+        for w in neighbors {
+            if parent[w] == usize::MAX {
+                parent[w] = v;
+                queue.push_back(w);
+            }
+        }
+    }
+
+    if parent[goal] == usize::MAX {
+        return None;
+    }
+
+    let mut route = vec![goal];
+    let mut current = goal;
+    while current != start {
+        current = parent[current];
+        route.push(current);
+    }
+    route.reverse();
+    Some(route)
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    validate(n, edges)?;
+
+    let mut adjacency = vec![Vec::new(); n];
+    let mut reverse = vec![Vec::new(); n];
+    for &(from, to) in edges {
+        adjacency[from].push(to);
+        reverse[to].push(from);
+    }
+
+    let mut seen = vec![false; n];
+    let mut order = Vec::with_capacity(n);
+    for root in 0..n {
+        if seen[root] {
+            continue;
+        }
+        seen[root] = true;
+        let mut stack = vec![(root, 0usize)];
+        while let Some((v, next)) = stack.last_mut() {
+            if *next < adjacency[*v].len() {
+                let w = adjacency[*v][*next];
+                *next += 1;
+                if !seen[w] {
+                    seen[w] = true;
+                    stack.push((w, 0));
+                }
+            } else {
+                let (done, _) = stack.pop().unwrap();
+                order.push(done);
+            }
+        }
+    }
+
+    let mut assigned = vec![false; n];
+    let mut components = Vec::new();
+    for &root in order.iter().rev() {
+        if assigned[root] {
+            continue;
+        }
+        assigned[root] = true;
+        let mut members = Vec::new();
+        let mut stack = vec![root];
+        while let Some(v) = stack.pop() {
+            members.push(v);
+            for &w in &reverse[v] {
+                if !assigned[w] {
+                    assigned[w] = true;
+                    stack.push(w);
+                }
+            }
+        }
+        members.sort_unstable();
+        components.push(members);
+    }
+
+    components.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0])));
+    let mut component_of = vec![0usize; n];
+    for (id, members) in components.iter().enumerate() {
+        for &v in members {
+            component_of[v] = id;
+        }
+    }
+
+    let count = components.len();
+    let mut cyclic = vec![false; count];
+    for (id, members) in components.iter().enumerate() {
+        cyclic[id] = members.len() > 1;
+    }
+    let mut internal_edges = vec![0usize; count];
+    let mut arc_map: std::collections::BTreeMap<(usize, usize), (usize, usize)> =
+        std::collections::BTreeMap::new();
+
+    for (i, &(from, to)) in edges.iter().enumerate() {
+        let a = component_of[from];
+        let b = component_of[to];
+        if a == b {
+            internal_edges[a] += 1;
+            if from == to {
+                cyclic[a] = true;
+            }
+        } else {
+            let entry = arc_map.entry((a, b)).or_insert((0, i));
+            entry.0 += 1;
+            entry.1 = entry.1.min(i);
+        }
+    }
+
+    let mut arcs = Vec::with_capacity(arc_map.len());
+    for ((from, to), (multiplicity, first_edge)) in arc_map {
+        arcs.push(Arc {
+            from,
+            to,
+            multiplicity,
+            first_edge,
+        });
+    }
+    arcs.sort_by(|a, b| a.from.cmp(&b.from).then_with(|| b.to.cmp(&a.to)));
+
+    let mut dag = vec![Vec::new(); count];
+    let mut indegree = vec![0usize; count];
+    for arc in &arcs {
+        dag[arc.from].push(arc.to);
+        indegree[arc.to] += 1;
+    }
+
+    let mut ready = std::collections::BTreeSet::new();
+    for id in 0..count {
+        if indegree[id] == 0 {
+            ready.insert((internal_edges[id], components[id][0], id));
+        }
+    }
+    let mut topo = Vec::with_capacity(count);
+    let mut depth = vec![0usize; count];
+    while let Some(key) = ready.iter().next_back().copied() {
+        ready.remove(&key);
+        let v = key.2;
+        topo.push(v);
+        for &w in &dag[v] {
+            depth[w] = depth[w].max(depth[v] + 1);
+            indegree[w] -= 1;
+            if indegree[w] == 0 {
+                ready.insert((internal_edges[w], components[w][0], w));
+            }
+        }
+    }
+
+    Ok(Graph {
+        components,
+        component_of,
+        cyclic,
+        internal_edges,
+        arcs,
+        topo,
+        depth,
+    })
+}
+
+impl Graph {
+    pub fn query(&self, from: usize, to: usize) -> Result<Query, GraphError> {
+        let n = self.component_of.len();
+        if from >= n {
+            return Err(GraphError::BadQuery {
+                side: 0,
+                vertex: from,
+            });
+        }
+        if to >= n {
+            return Err(GraphError::BadQuery {
+                side: 1,
+                vertex: to,
+            });
+        }
+
+        let a = self.component_of[from];
+        let b = self.component_of[to];
+        if a == b {
+            return if self.cyclic[a] {
+                Ok(Query {
+                    kind: Relation::Cycle,
+                    route: vec![a, a],
+                })
+            } else {
+                Ok(Query {
+                    kind: Relation::Trivial,
+                    route: vec![a],
+                })
+            };
+        }
+
+        let mut adjacency = vec![Vec::new(); self.components.len()];
+        for arc in &self.arcs {
+            adjacency[arc.from].push(arc.to);
+        }
+
+        if let Some(route) = shortest_route(&adjacency, a, b) {
+            return Ok(Query {
+                kind: Relation::Forward,
+                route,
+            });
+        }
+        if let Some(mut route) = shortest_route(&adjacency, b, a) {
+            route.reverse();
+            return Ok(Query {
+                kind: Relation::Backward,
+                route,
+            });
+        }
+        Ok(Query {
+            kind: Relation::Separate,
+            route: Vec::new(),
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Incremental {
+    n: usize,
+    edges: Vec<(usize, usize)>,
+    history: Vec<Merge>,
+    graph: Graph,
+}
+
+impl Incremental {
+    pub fn new(n: usize, edges: &[(usize, usize)]) -> Result<Self, GraphError> {
+        let graph = analyze(n, edges)?;
+        Ok(Self {
+            n,
+            edges: edges.to_vec(),
+            history: Vec::new(),
+            graph,
+        })
+    }
+
+    pub fn snapshot(&self) -> Graph {
+        self.graph.clone()
+    }
+
+    pub fn history(&self) -> Vec<Merge> {
+        self.history.clone()
+    }
+
+    pub fn insert(&mut self, edges: &[(usize, usize)]) -> Result<Batch, GraphError> {
+        if self.edges.len() + edges.len() > MAX_EDGES {
+            return Err(GraphError::TooManyEdges { limit: MAX_EDGES });
+        }
+        for (i, &(from, to)) in edges.iter().enumerate() {
+            if from >= self.n {
+                return Err(GraphError::BadEndpoint {
+                    edge: i,
+                    side: 0,
+                    vertex: from,
+                });
+            }
+            if to >= self.n {
+                return Err(GraphError::BadEndpoint {
+                    edge: i,
+                    side: 1,
+                    vertex: to,
+                });
+            }
+        }
+
+        let mut steps = Vec::with_capacity(edges.len());
+        let mut merges = Vec::new();
+        for &(from, to) in edges {
+            let edge_index = self.edges.len();
+            let before = (self.graph.component_of[from], self.graph.component_of[to]);
+            let duplicate = self.edges.iter().any(|&(u, v)| u == from && v == to);
+            self.edges.push((from, to));
+            self.graph = analyze(self.n, &self.edges).expect("validated retained graph");
+            let after = (self.graph.component_of[from], self.graph.component_of[to]);
+
+            let status = if duplicate {
+                EdgeStatus::Duplicate
+            } else if before.0 == before.1 {
+                EdgeStatus::Internal
+            } else if after.0 == after.1 {
+                EdgeStatus::Merge
+            } else {
+                EdgeStatus::Link
+            };
+
+            if status == EdgeStatus::Merge {
+                let mut before_ids = Vec::new();
+                for (id, members) in analyze(self.n, &self.edges[..edge_index])
+                    .expect("validated prior graph")
+                    .components
+                    .iter()
+                    .enumerate()
+                {
+                    if members.iter().any(|&v| self.graph.component_of[v] == after.0) {
+                        before_ids.push(id);
+                    }
+                }
+                before_ids.sort_unstable();
+                before_ids.dedup();
+                let members = self.graph.components[after.0].clone();
+                let event = Merge {
+                    edge_index,
+                    before: before_ids,
+                    after: after.0,
+                    members,
+                };
+                self.history.push(event.clone());
+                merges.push(event);
+            }
+
+            steps.push(Step {
+                edge_index,
+                status,
+                before,
+                after,
+            });
+        }
+
+        Ok(Batch {
+            steps,
+            merges,
+            graph: self.graph.clone(),
+        })
+    }
+}
+```
