@@ -326,3 +326,22 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - In 9/24 it received a compiler or test diagnostic about code it could not see.
   - D always sees its previous file plus the public output.
   - This explains E05's coin-flip second attempts (fixed 5, broke 3) and C ≈ B-like behaviour. **The first fix in any A²D harness is to route the previous attempt to the coder.**
+- **Selection headroom** (E07/E07b candidates on `tasks/c1-train`: 1,263 candidates, 68 tasks × 2 runs = 136 tuples; `docs/experiments/analysis/candidate_pool.py`):
+  - The public-rule pick passes hidden in: A 63.2%, B 67.6%, **D 74.3%**, C 69.9%.
+  - Any of the ~19 candidates passes hidden in **92.6%** of tuples.
+  - **Within B's 5 candidates** (the realistic pool at k = 5), any-pass is **86.0%**. In 32.4% of tuples B's public-green candidates are mixed (some pass hidden, some fail).
+  - P(hidden pass | public-green candidate) = 0.73.
+  - **Conclusion:** a selector with a signal beyond public tests has up to about 12 pp of headroom over D within 5 candidates. Selection alone cannot reach +15 pp; generation must improve too.
+- **Inertness** of the architect and tester in lift mode is certified by a unit test: their outputs never reach a coder prompt (`lift_arm_c::tests::architect_and_tester_outputs_never_reach_a_coder_prompt`).
+
+### S1 — blind spec tests, offline falsification  [phase P3, development lane]
+- Registered: 2026-10-15, before any call.
+- Mechanism: a test-writer (`codex/gpt-6-luna`, effort low, no-tools lane, the harness's own model) sees only the numbered requirements and the public tests (for the API shape), never any implementation. It writes `#[test]` functions per clause. One call per `tasks/c1-train` task: **68 calls, cap 80**.
+- Measurements, on the frozen S0 candidate pool:
+  1. **Validity:** the share of generated tests that pass against `reference.rs`. Tests that do not compile against the reference are dropped and counted.
+  2. **AUC:** the spec-test pass fraction as a predictor of hidden pass, among public-green candidates.
+  3. **Recall:** the share of public-green but hidden-fail candidates that fail at least one reference-compiling spec test.
+  4. End metric (offline): the hidden pass rate when re-selecting among B's 5 candidates by (public passed, spec passed, latest), against B's public pick (67.6%) and D (74.3%).
+- **Kill rule:** validity < 0.85 **or** AUC < 0.65 **or** recall < 0.45 kills mechanism 1. In that case clause review becomes the primary mechanism.
+- Data: development only. Outputs go to `runs/2026-10-15-s1-spec-tests/`.
+- Result: pending
