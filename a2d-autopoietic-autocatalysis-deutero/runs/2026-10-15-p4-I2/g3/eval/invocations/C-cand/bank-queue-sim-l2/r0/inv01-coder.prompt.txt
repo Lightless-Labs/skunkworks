@@ -1,0 +1,491 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else. Include an empty `fn main() {}` (the file is compiled as a program).
+
+PROMPT:
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences.
+
+R2. Use exactly this public API; all listed items, variants and fields are public. All types derive Debug, Clone, PartialEq, Eq. Extra private helpers are allowed.
+```rust
+pub struct Customer { pub id: u32, pub arrival: u64, pub service: u64 }
+pub struct Server { pub id: u32, pub opens: u64, pub overhead: u64 }
+pub enum Event {
+    Open { time: u64, server: u32 }, Arrive { time: u64, customer: u32 },
+    Start { time: u64, customer: u32, server: u32, finish: u64 },
+    Finish { time: u64, customer: u32, server: u32 }
+}
+pub enum Error {
+    NoServers, TooManyServers { count: usize }, ZeroServerId { index: usize },
+    DuplicateServerId { index: usize, id: u32 }, ZeroCustomerId { index: usize },
+    DuplicateCustomerId { index: usize, id: u32 }, TimeOverflow { customer: u32, server: u32, time: u64 }
+}
+pub fn simulate(customers: &[Customer], servers: &[Server]) -> Result<Vec<Event>, Error>;
+```
+
+R3. All times are u64 ticks. Customer and server IDs are separate u32 namespaces; equal IDs across the two namespaces are allowed. Inputs may be unsorted and customers may be empty.
+
+R4. Validate before simulation: first reject zero servers with NoServers, then more than 32 with TooManyServers { count }. These errors take precedence over row validation.
+
+R5. Then validate servers in original slice order: id == 0 gives ZeroServerId, else a repeated earlier server ID gives DuplicateServerId. Stop at the first failing row.
+
+R6. After all server rows pass, validate customers in original slice order: zero ID before duplicate ID. Report ZeroCustomerId or DuplicateCustomerId with the original index. All these checks precede any runtime time overflow.
+
+R7. Do not prevalidate arithmetic. All u64 values for opens, arrival, overhead and service are legal; detect overflow only at a dispatch. There is no limit on the number of customers.
+
+R8. Initially every server is closed. At its opens time it becomes idle and emits Open, exactly once. All servers must emit Open even when there are no customers or all customers have already finished.
+
+R9. At each tick: first emit all scheduled Finish events in ascending SERVER ID order, freeing those servers; next emit all Open events in descending SERVER ID order; next emit all Arrive events in descending CUSTOMER ID order; finally dispatch. These phases also apply at time 0.
+
+R10. Customers enter one shared FIFO sorted by arrival time ascending and, within a simultaneous cohort, ID descending. Complete the entire arrival phase before dispatch; never skip an older waiter.
+
+R11. An idle server has idle_since = opens initially, and idle_since = the latest Finish time after any occupation. A closed or occupied server is ineligible for dispatch.
+
+R12. To dispatch, take the oldest waiting customer and select the eligible server with smallest idle_since; ties choose the smallest overhead; remaining ties choose the greatest server ID. Input order is never a server tie-break.
+
+R13. Append Start at the dispatch tick. The server is occupied for service + overhead on EVERY start, including contiguous starts and zero service. Compute finish by checked (time + service) followed by checked + overhead.
+
+R14. Either checked-add failure returns TimeOverflow { customer, server, time } for the selected dispatch. No partial trace is returned. Never retry a different idle server to avoid overflow.
+
+R15. If finish == time, append Finish immediately after Start and set that server idle_since to time. This inline completion does not return to the earlier completion phase or interleave arrivals/opens.
+
+R16. After every Start (and any inline Finish), recompute the eligible-server ranking, then dispatch the next FIFO customer if possible. A zero-duration server may serve multiple customers at a single tick.
+
+R17. Once dispatch is exhausted, advance directly to the least next arrival, server opening or occupied-server finish. Do not emit idle records. All customers eventually finish.
+
+R18. An arrival during occupation or before all servers open still emits Arrive at its specified time. Occupation is nonpreemptive and never changes its scheduled finish.
+
+R19. Return an event vector in nondecreasing time with the exact phase and inline ordering above. Every customer has exactly one Arrive, Start and Finish; every server exactly one Open.
+
+R20. u64::MAX is legal for any event/finish time and adding zero there succeeds. A server opening at that boundary can serve a zero-duration customer if overhead is zero.
+
+R21. Repeated calls are independent and both input slices remain unchanged.
+
+R22. Runtime errors follow chronological dispatch order, regardless of input order. A same-tick later FIFO customer can overflow after earlier successful dispatches, but the result is still only Err.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+fn c(id: u32, arrival: u64, service: u64) -> Customer {
+    Customer {
+        id,
+        arrival,
+        service,
+    }
+}
+fn s(id: u32, opens: u64, overhead: u64) -> Server {
+    Server {
+        id,
+        opens,
+        overhead,
+    }
+}
+#[test]
+fn public_two_servers() {
+    assert_eq!(
+        simulate(&[c(1, 0, 3), c(2, 1, 2)], &[s(1, 0, 0), s(2, 0, 0)]).unwrap(),
+        vec![
+            Event::Open { time: 0, server: 2 },
+            Event::Open { time: 0, server: 1 },
+            Event::Arrive {
+                time: 0,
+                customer: 1
+            },
+            Event::Start {
+                time: 0,
+                customer: 1,
+                server: 2,
+                finish: 3
+            },
+            Event::Arrive {
+                time: 1,
+                customer: 2
+            },
+            Event::Start {
+                time: 1,
+                customer: 2,
+                server: 1,
+                finish: 3
+            },
+            Event::Finish {
+                time: 3,
+                customer: 2,
+                server: 1
+            },
+            Event::Finish {
+                time: 3,
+                customer: 1,
+                server: 2
+            }
+        ]
+    );
+}
+#[test]
+fn public_wait_for_open() {
+    let v = simulate(&[c(8, 2, 4)], &[s(5, 7, 1)]).unwrap();
+    assert_eq!(
+        v,
+        vec![
+            Event::Arrive {
+                time: 2,
+                customer: 8
+            },
+            Event::Open { time: 7, server: 5 },
+            Event::Start {
+                time: 7,
+                customer: 8,
+                server: 5,
+                finish: 12
+            },
+            Event::Finish {
+                time: 12,
+                customer: 8,
+                server: 5
+            }
+        ]
+    );
+}
+#[test]
+fn public_empty_and_no_servers() {
+    assert_eq!(
+        simulate(&[], &[s(3, 4, 0)]),
+        Ok(vec![Event::Open { time: 4, server: 3 }])
+    );
+    assert_eq!(simulate(&[], &[]), Err(Error::NoServers));
+}
+```
+
+
+Lessons from earlier tasks (task-agnostic; apply each one that is relevant):
+1. Validate caller-controlled sizes and bound resource use before allocating or doing work; keep extreme-input error paths safe.
+2. Apply every specified validation rule consistently across all operations that accept the same input, before lookup or mutation.
+3. Honor validation precedence across all inputs: check error categories in the specified order before returning an error.
+4. Track original byte ranges through parsing and transformation; report errors at the byte that caused them, without normalizing before validation.
+5. Check every consumed byte in the required order before changing parser state, and define safe error paths for all valid input lengths.
+6. Preserve causal state before mutating related items, then derive outputs from that snapshot; exclude replaced state consistently from feasibility checks and accounting.
+7. Compute finalized canonical paths before deriving provenance, and compare complete candidate paths when resolving lexicographic ties.
+8. Translate ordering rules into explicit boundary cases, and reason about ordered-domain intervals and successors rather than sampling representative values.
+
+## Previous attempt
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Server {
+    pub id: u32,
+    pub opens: u64,
+    pub overhead: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Open { time: u64, server: u32 },
+    Arrive { time: u64, customer: u32 },
+    Start {
+        time: u64,
+        customer: u32,
+        server: u32,
+        finish: u64,
+    },
+    Finish { time: u64, customer: u32, server: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    NoServers,
+    TooManyServers { count: usize },
+    ZeroServerId { index: usize },
+    DuplicateServerId { index: usize, id: u32 },
+    ZeroCustomerId { index: usize },
+    DuplicateCustomerId { index: usize, id: u32 },
+    TimeOverflow {
+        customer: u32,
+        server: u32,
+        time: u64,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct ServerState {
+    server: Server,
+    opened: bool,
+    busy_until: Option<u64>,
+    idle_since: u64,
+}
+
+pub fn simulate(customers: &[Customer], servers: &[Server]) -> Result<Vec<Event>, Error> {
+    if servers.is_empty() {
+        return Err(Error::NoServers);
+    }
+    if servers.len() > 32 {
+        return Err(Error::TooManyServers {
+            count: servers.len(),
+        });
+    }
+
+    for (index, server) in servers.iter().enumerate() {
+        if server.id == 0 {
+            return Err(Error::ZeroServerId { index });
+        }
+        if servers[..index].iter().any(|previous| previous.id == server.id) {
+            return Err(Error::DuplicateServerId {
+                index,
+                id: server.id,
+            });
+        }
+    }
+
+    for (index, customer) in customers.iter().enumerate() {
+        if customer.id == 0 {
+            return Err(Error::ZeroCustomerId { index });
+        }
+        if customers[..index]
+            .iter()
+            .any(|previous| previous.id == customer.id)
+        {
+            return Err(Error::DuplicateCustomerId {
+                index,
+                id: customer.id,
+            });
+        }
+    }
+
+    let mut ordered_customers = customers.to_vec();
+    ordered_customers.sort_by(|a, b| {
+        a.arrival
+            .cmp(&b.arrival)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+
+    let mut states: Vec<ServerState> = servers
+        .iter()
+        .copied()
+        .map(|server| ServerState {
+            server,
+            opened: false,
+            busy_until: None,
+            idle_since: server.opens,
+        })
+        .collect();
+
+    let mut events = Vec::new();
+    let mut waiting: Vec<Customer> = Vec::new();
+    let mut next_customer = 0;
+    let mut finished_customers = 0;
+
+    while finished_customers < customers.len() || states.iter().any(|s| !s.opened) {
+        let mut next_time = u64::MAX;
+        let mut have_next = false;
+
+        if let Some(customer) = ordered_customers.get(next_customer) {
+            next_time = customer.arrival;
+            have_next = true;
+        }
+        for state in &states {
+            if !state.opened && (!have_next || state.server.opens < next_time) {
+                next_time = state.server.opens;
+                have_next = true;
+            }
+            if let Some(finish) = state.busy_until {
+                if !have_next || finish < next_time {
+                    next_time = finish;
+                    have_next = true;
+                }
+            }
+        }
+        if !have_next {
+            break;
+        }
+
+        let time = next_time;
+
+        let mut finishing: Vec<(u32, usize)> = states
+            .iter()
+            .enumerate()
+            .filter_map(|(index, state)| {
+                (state.busy_until == Some(time)).then_some((state.server.id, index))
+            })
+            .collect();
+        finishing.sort_by_key(|&(id, _)| id);
+        for (_, index) in finishing {
+            let state = &mut states[index];
+            state.busy_until = None;
+            state.idle_since = time;
+            // The customer associated with this finish is recovered from its
+            // scheduled event record below.
+            let customer_id = match events.iter().rev().find_map(|event| match event {
+                Event::Start {
+                    time: start_time,
+                    customer,
+                    server,
+                    finish,
+                } if *server == state.server.id && *finish == time && *start_time <= time => {
+                    Some(*customer)
+                }
+                _ => None,
+            }) {
+                Some(id) => id,
+                None => unreachable!(),
+            };
+            events.push(Event::Finish {
+                time,
+                customer: customer_id,
+                server: state.server.id,
+            });
+            finished_customers += 1;
+        }
+
+        let mut opening: Vec<(u32, usize)> = states
+            .iter()
+            .enumerate()
+            .filter_map(|(index, state)| {
+                (!state.opened && state.server.opens == time)
+                    .then_some((state.server.id, index))
+            })
+            .collect();
+        opening.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, index) in opening {
+            let state = &mut states[index];
+            state.opened = true;
+            state.idle_since = time;
+            events.push(Event::Open {
+                time,
+                server: state.server.id,
+            });
+        }
+
+        while next_customer < ordered_customers.len()
+            && ordered_customers[next_customer].arrival == time
+        {
+            let customer = ordered_customers[next_customer];
+            waiting.push(customer);
+            events.push(Event::Arrive {
+                time,
+                customer: customer.id,
+            });
+            next_customer += 1;
+        }
+
+        while !waiting.is_empty() {
+            let selected = states
+                .iter()
+                .enumerate()
+                .filter(|(_, state)| state.opened && state.busy_until.is_none())
+                .min_by(|(_, a), (_, b)| {
+                    a.idle_since
+                        .cmp(&b.idle_since)
+                        .then_with(|| a.server.overhead.cmp(&b.server.overhead))
+                        .then_with(|| b.server.id.cmp(&a.server.id))
+                })
+                .map(|(index, _)| index);
+
+            let Some(server_index) = selected else {
+                break;
+            };
+            let customer = waiting.remove(0);
+            let server = states[server_index].server;
+
+            let service_end = time.checked_add(customer.service).ok_or(Error::TimeOverflow {
+                customer: customer.id,
+                server: server.id,
+                time,
+            })?;
+            let finish = service_end.checked_add(server.overhead).ok_or(Error::TimeOverflow {
+                customer: customer.id,
+                server: server.id,
+                time,
+            })?;
+
+            events.push(Event::Start {
+                time,
+                customer: customer.id,
+                server: server.id,
+                finish,
+            });
+
+            if finish == time {
+                events.push(Event::Finish {
+                    time,
+                    customer: customer.id,
+                    server: server.id,
+                });
+                states[server_index].idle_since = time;
+                finished_customers += 1;
+            } else {
+                states[server_index].busy_until = Some(finish);
+            }
+        }
+    }
+
+    Ok(events)
+}
+
+fn main() {}
+```
+
+## Public test results
+
+COMPILATION FAILED:
+error[E0204]: the trait `Copy` cannot be implemented for this type
+  --> /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpXPUNo5/main.rs:44:8
+   |
+43 | #[derive(Clone, Copy)]
+   |                 ---- in this derive macro expansion
+44 | struct ServerState {
+   |        ^^^^^^^^^^^
+45 |     server: Server,
+   |     -------------- this field does not implement `Copy`
+
+error[E0277]: the trait bound `Server: Copy` is not satisfied
+    --> /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpXPUNo5/main.rs:97:10
+     |
+  97 |         .copied()
+     |          ^^^^^^ the trait `Copy` is not implemented for `Server`
+     |
+note: required by a bound in `copied`
+    --> /Users/thomas/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:3513:12
+     |
+3511 |     fn copied<'a, T>(self) -> Copied<Self>
+     |        ------ required by a bound in this associated function
+3512 |     where
+3513 |         T: Copy + 'a,
+     |            ^^^^ required by this bound in `Iterator::copied`
+help: consider annotating `Server` with `#[derive(Copy)]`
+     |
+   9 + #[derive(Copy)]
+  10 | pub struct Server {
+     |
+
+error[E0599]: `Copied<std::slice::Iter<'_, Server>>` is not an iterator
+  --> /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpXPUNo5/main.rs:98:10
+   |
+95 |       let mut states: Vec<ServerState> = servers
+   |  ________________________________________-
+96 | |         .iter()
+97 | |         .copied()
+98 | |         .map(|server| ServerState {
+   | |         -^^^ `Copied<std::slice::Iter<'_, Server>>` is not an iterator
+   | |_________|
+   |
+   |
+  ::: /Users/thomas/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/adapters/copied.rs:19:1
+   |
+19 |   pub struct Copied<I> {
+   |   -------------------- doesn't satisfy `Copied<std::slice::Iter<'_, Server>>: Iterator`
+   |
+   = note: the following trait bounds were not satisfied:
+           `Copied<std::slice::Iter<'_, Server>>: Iterator`
+           which is required by `&mut Copied<std::slice::Iter<'_, Server>>: Iterator`
+
+error: aborting due to 3 previous errors
+
+Some errors have detailed explanations: E0204, E0277, E0599.
+For more information about an error, try `rustc --explain E0204`.
+
+Fix the file. Respond with the whole corrected file in a single ```rust block.

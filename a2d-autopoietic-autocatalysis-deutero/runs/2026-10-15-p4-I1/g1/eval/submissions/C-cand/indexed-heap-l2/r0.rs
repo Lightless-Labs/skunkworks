@@ -1,0 +1,251 @@
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub key: String,
+    pub priority: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyKey,
+    InvalidKey { at: usize },
+    Duplicate { key: String },
+    Missing { key: String },
+    WrongDirection { current: i64, requested: i64 },
+}
+
+#[derive(Debug, Clone)]
+struct Entry {
+    item: Item,
+    age: u64,
+}
+
+pub struct IndexedHeap {
+    heap: Vec<Entry>,
+    indices: HashMap<String, usize>,
+    next_age: u64,
+}
+
+impl IndexedHeap {
+    pub fn new() -> Self {
+        Self {
+            heap: Vec::new(),
+            indices: HashMap::new(),
+            next_age: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.heap.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn push(&mut self, key: &str, priority: i64, value: &str) -> Result<(), Error> {
+        let key = canonicalize_key(key)?;
+        if self.indices.contains_key(&key) {
+            return Err(Error::Duplicate { key });
+        }
+
+        let age = self.next_age;
+        self.next_age = self.next_age.wrapping_add(1);
+
+        let index = self.heap.len();
+        self.heap.push(Entry {
+            item: Item {
+                key: key.clone(),
+                priority,
+                value: value.to_owned(),
+            },
+            age,
+        });
+        self.indices.insert(key, index);
+        self.sift_up(index);
+        Ok(())
+    }
+
+    pub fn peek(&self) -> Option<Item> {
+        self.heap.first().map(|entry| entry.item.clone())
+    }
+
+    pub fn pop(&mut self) -> Option<Item> {
+        if self.heap.is_empty() {
+            return None;
+        }
+        Some(self.remove_at(0).item)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Item>, Error> {
+        let key = canonicalize_key(key)?;
+        Ok(self.indices.get(&key).map(|&index| self.heap[index].item.clone()))
+    }
+
+    pub fn decrease_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        let key = canonicalize_key(key)?;
+        let index = *self
+            .indices
+            .get(&key)
+            .ok_or_else(|| Error::Missing { key: key.clone() })?;
+        let current = self.heap[index].item.priority;
+        if priority >= current {
+            return Err(Error::WrongDirection {
+                current,
+                requested: priority,
+            });
+        }
+
+        self.heap[index].item.priority = priority;
+        self.sift_up(index);
+        Ok(current)
+    }
+
+    pub fn increase_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        let key = canonicalize_key(key)?;
+        let index = *self
+            .indices
+            .get(&key)
+            .ok_or_else(|| Error::Missing { key: key.clone() })?;
+        let current = self.heap[index].item.priority;
+        if priority <= current {
+            return Err(Error::WrongDirection {
+                current,
+                requested: priority,
+            });
+        }
+
+        self.heap[index].item.priority = priority;
+        self.sift_down(index);
+        Ok(current)
+    }
+
+    pub fn replace_value(&mut self, key: &str, value: &str) -> Result<String, Error> {
+        let key = canonicalize_key(key)?;
+        let index = *self
+            .indices
+            .get(&key)
+            .ok_or_else(|| Error::Missing { key: key.clone() })?;
+
+        let previous = std::mem::replace(&mut self.heap[index].item.value, value.to_owned());
+        self.repair(index);
+        Ok(previous)
+    }
+
+    pub fn remove(&mut self, key: &str) -> Result<Item, Error> {
+        let key = canonicalize_key(key)?;
+        let index = *self
+            .indices
+            .get(&key)
+            .ok_or_else(|| Error::Missing { key: key.clone() })?;
+        Ok(self.remove_at(index).item)
+    }
+
+    fn comes_before(a: &Entry, b: &Entry) -> bool {
+        (
+            a.item.priority,
+            a.item.value.len(),
+            a.age,
+        ) < (
+            b.item.priority,
+            b.item.value.len(),
+            b.age,
+        )
+    }
+
+    fn swap_entries(&mut self, a: usize, b: usize) {
+        self.heap.swap(a, b);
+        let key_a = self.heap[a].item.key.clone();
+        let key_b = self.heap[b].item.key.clone();
+        self.indices.insert(key_a, a);
+        self.indices.insert(key_b, b);
+    }
+
+    fn sift_up(&mut self, mut index: usize) {
+        while index > 0 {
+            let parent = (index - 1) / 2;
+            if !Self::comes_before(&self.heap[index], &self.heap[parent]) {
+                break;
+            }
+            self.swap_entries(index, parent);
+            index = parent;
+        }
+    }
+
+    fn sift_down(&mut self, mut index: usize) {
+        let len = self.heap.len();
+        loop {
+            let left = index.saturating_mul(2).saturating_add(1);
+            if left >= len {
+                break;
+            }
+
+            let right = left + 1;
+            let best = if right < len && Self::comes_before(&self.heap[right], &self.heap[left]) {
+                right
+            } else {
+                left
+            };
+
+            if !Self::comes_before(&self.heap[best], &self.heap[index]) {
+                break;
+            }
+            self.swap_entries(index, best);
+            index = best;
+        }
+    }
+
+    fn repair(&mut self, index: usize) {
+        if index > 0 && Self::comes_before(&self.heap[index], &self.heap[(index - 1) / 2]) {
+            self.sift_up(index);
+        } else {
+            self.sift_down(index);
+        }
+    }
+
+    fn remove_at(&mut self, index: usize) -> Entry {
+        let last = self.heap.len() - 1;
+        self.swap_entries(index, last);
+        let removed = self.heap.pop().expect("index is valid");
+        self.indices.remove(&removed.item.key);
+
+        if index < self.heap.len() {
+            self.repair(index);
+        }
+        removed
+    }
+}
+
+fn canonicalize_key(input: &str) -> Result<String, Error> {
+    let bytes = input.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && bytes[start] == b' ' {
+        start += 1;
+    }
+    while end > start && bytes[end - 1] == b' ' {
+        end -= 1;
+    }
+
+    if start == end {
+        return Err(Error::EmptyKey);
+    }
+
+    for (offset, &byte) in bytes[start..end].iter().enumerate() {
+        let valid = if offset == 0 {
+            byte.is_ascii_alphabetic()
+        } else {
+            byte.is_ascii_alphanumeric() || byte == b'-'
+        };
+        if !valid {
+            return Err(Error::InvalidKey { at: start + offset });
+        }
+    }
+
+    Ok(input[start..end].to_ascii_lowercase())
+}
+
+fn main() {}

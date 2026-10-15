@@ -1,0 +1,335 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Url {
+    pub scheme: String,
+    pub userinfo: Option<String>,
+    pub host: String,
+    pub port: Option<u16>,
+    pub path: String,
+    pub query: Option<String>,
+    pub fragment: Option<String>,
+    pub ipv6: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseError {
+    Empty,
+    InvalidByte { at: usize },
+    InvalidScheme { at: usize },
+    MissingAuthority { at: usize },
+    InvalidUserInfo { at: usize },
+    InvalidHost { at: usize },
+    InvalidPort { at: usize },
+    InvalidIpv6 { at: usize },
+    BadEscape { at: usize },
+    InvalidUtf8 { at: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Component {
+    UserInfo,
+    Path,
+    Query,
+    Fragment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodecError {
+    BadEscape { at: usize },
+    InvalidUtf8 { at: usize },
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+pub fn decode_component(component: Component, input: &str) -> Result<String, CodecError> {
+    let _ = component;
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut offsets = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return Err(CodecError::BadEscape { at: i });
+            }
+            let Some(high) = hex_value(bytes[i + 1]) else {
+                return Err(CodecError::BadEscape { at: i });
+            };
+            let Some(low) = hex_value(bytes[i + 2]) else {
+                return Err(CodecError::BadEscape { at: i });
+            };
+            decoded.push((high << 4) | low);
+            offsets.push(i);
+            i += 3;
+        } else {
+            decoded.push(bytes[i]);
+            offsets.push(i);
+            i += 1;
+        }
+    }
+
+    match std::str::from_utf8(&decoded) {
+        Ok(s) => Ok(s.to_owned()),
+        Err(error) => {
+            let decoded_offset = error.valid_up_to();
+            let original_offset = offsets.get(decoded_offset).copied().unwrap_or(input.len());
+            Err(CodecError::InvalidUtf8 {
+                at: original_offset,
+            })
+        }
+    }
+}
+
+pub fn encode_component(component: Component, text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    for &byte in text.as_bytes() {
+        let safe = byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'.' | b'_' | b'~')
+            || match component {
+                Component::UserInfo => byte == b':',
+                Component::Path => byte == b'/',
+                Component::Query => matches!(byte, b'/' | b'?'),
+                Component::Fragment => matches!(byte, b'/' | b'?' | b'#'),
+            };
+
+        if safe {
+            output.push(byte as char);
+        } else {
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            output.push('%');
+            output.push(HEX[(byte >> 4) as usize] as char);
+            output.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    output
+}
+
+fn parse_port(input: &str, start: usize) -> Result<u16, ParseError> {
+    let bytes = input.as_bytes();
+    if bytes.is_empty() {
+        return Err(ParseError::InvalidPort { at: start });
+    }
+
+    if let Some(index) = bytes.iter().position(|b| !b.is_ascii_digit()) {
+        return Err(ParseError::InvalidPort { at: start + index });
+    }
+
+    if bytes.len() >= 2 && bytes[0] == b'0' {
+        return Err(ParseError::InvalidPort { at: start });
+    }
+
+    let mut value: u32 = 0;
+    for &byte in bytes {
+        value = value * 10 + u32::from(byte - b'0');
+        if value > 65535 {
+            return Err(ParseError::InvalidPort { at: start });
+        }
+    }
+
+    if value == 0 {
+        return Err(ParseError::InvalidPort { at: start });
+    }
+    Ok(value as u16)
+}
+
+fn validate_component(
+    component: Component,
+    value: &str,
+    original_start: usize,
+) -> Result<(), ParseError> {
+    match decode_component(component, value) {
+        Ok(_) => Ok(()),
+        Err(CodecError::BadEscape { at }) => {
+            Err(ParseError::BadEscape { at: original_start + at })
+        }
+        Err(CodecError::InvalidUtf8 { at }) => {
+            Err(ParseError::InvalidUtf8 { at: original_start + at })
+        }
+    }
+}
+
+pub fn parse_url(input: &str) -> Result<Url, ParseError> {
+    if input.is_empty() {
+        return Err(ParseError::Empty);
+    }
+
+    let bytes = input.as_bytes();
+    if let Some(at) = bytes.iter().position(|&b| !(0x21..=0x7e).contains(&b)) {
+        return Err(ParseError::InvalidByte { at });
+    }
+
+    let Some(colon) = bytes.iter().position(|&b| b == b':') else {
+        return Err(ParseError::InvalidScheme { at: input.len() });
+    };
+
+    if colon == 0 || !bytes[0].is_ascii_alphabetic() {
+        return Err(ParseError::InvalidScheme { at: 0 });
+    }
+    for (at, &byte) in bytes[..colon].iter().enumerate().skip(1) {
+        if !(byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.')) {
+            return Err(ParseError::InvalidScheme { at });
+        }
+    }
+
+    if bytes.get(colon + 1) != Some(&b'/') || bytes.get(colon + 2) != Some(&b'/') {
+        return Err(ParseError::MissingAuthority { at: colon + 1 });
+    }
+
+    let authority_start = colon + 3;
+    let authority_end = bytes[authority_start..]
+        .iter()
+        .position(|&b| matches!(b, b'/' | b'?' | b'#'))
+        .map(|n| authority_start + n)
+        .unwrap_or(bytes.len());
+    let authority = &input[authority_start..authority_end];
+
+    let mut at_positions = authority
+        .as_bytes()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &b)| (b == b'@').then_some(i));
+    let first_at = at_positions.next();
+    if let Some(second_at) = at_positions.next() {
+        return Err(ParseError::InvalidUserInfo {
+            at: authority_start + second_at,
+        });
+    }
+
+    let (userinfo, hostport_start) = match first_at {
+        Some(at) if at == 0 => {
+            return Err(ParseError::InvalidUserInfo {
+                at: authority_start + at,
+            });
+        }
+        Some(at) => (
+            Some(authority[..at].to_owned()),
+            authority_start + at + 1,
+        ),
+        None => (None, authority_start),
+    };
+    let hostport = &input[hostport_start..authority_end];
+
+    let (host, port, ipv6) = if hostport.as_bytes().first() == Some(&b'[') {
+        let opening = hostport_start;
+        let Some(close_relative) = hostport.as_bytes()[1..]
+            .iter()
+            .position(|&b| b == b']')
+        else {
+            return Err(ParseError::InvalidIpv6 { at: opening });
+        };
+        let close = close_relative + 1;
+        let interior = &hostport[1..close];
+        if interior.parse::<std::net::Ipv6Addr>().is_err() {
+            return Err(ParseError::InvalidIpv6 { at: opening });
+        }
+
+        let suffix = &hostport[close + 1..];
+        let port = if suffix.is_empty() {
+            None
+        } else if suffix.as_bytes()[0] == b':' {
+            Some(parse_port(
+                &suffix[1..],
+                hostport_start + close + 2,
+            )?)
+        } else {
+            return Err(ParseError::InvalidHost {
+                at: hostport_start + close + 1,
+            });
+        };
+
+        (interior.to_ascii_lowercase(), port, true)
+    } else {
+        let host_colon = hostport.as_bytes().iter().position(|&b| b == b':');
+        let (host_text, port) = match host_colon {
+            Some(at) => (
+                &hostport[..at],
+                Some(parse_port(&hostport[at + 1..], hostport_start + at + 1)?),
+            ),
+            None => (hostport, None),
+        };
+
+        if host_text.is_empty() {
+            return Err(ParseError::InvalidHost { at: hostport_start });
+        }
+        if let Some(offset) = host_text
+            .as_bytes()
+            .iter()
+            .position(|&b| !(b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_')))
+        {
+            return Err(ParseError::InvalidHost {
+                at: hostport_start + offset,
+            });
+        }
+        (host_text.to_ascii_lowercase(), port, false)
+    };
+
+    let fragment_relative = input[authority_end..]
+        .as_bytes()
+        .iter()
+        .position(|&b| b == b'#');
+    let before_fragment_end = fragment_relative
+        .map(|n| authority_end + n)
+        .unwrap_or(bytes.len());
+
+    let query_relative = input[authority_end..before_fragment_end]
+        .as_bytes()
+        .iter()
+        .position(|&b| b == b'?');
+    let query_start = query_relative.map(|n| authority_end + n + 1);
+    let component_end = query_relative
+        .map(|n| authority_end + n)
+        .unwrap_or(before_fragment_end);
+
+    let path = if component_end == authority_end {
+        "/".to_owned()
+    } else {
+        input[authority_end..component_end].to_owned()
+    };
+    let query = query_start.map(|start| input[start..before_fragment_end].to_owned());
+    let fragment = fragment_relative.map(|n| {
+        let start = authority_end + n + 1;
+        input[start..].to_owned()
+    });
+
+    if let Some(value) = &userinfo {
+        validate_component(
+            Component::UserInfo,
+            value,
+            authority_start,
+        )?;
+    }
+    if component_end != authority_end {
+        validate_component(
+            Component::Path,
+            &input[authority_end..component_end],
+            authority_end,
+        )?;
+    }
+    if let (Some(value), Some(start)) = (&query, query_start) {
+        validate_component(Component::Query, value, start)?;
+    }
+    if let Some(value) = &fragment {
+        let start = before_fragment_end + 1;
+        validate_component(Component::Fragment, value, start)?;
+    }
+
+    Ok(Url {
+        scheme: input[..colon].to_ascii_lowercase(),
+        userinfo,
+        host,
+        port,
+        path,
+        query,
+        fragment,
+        ipv6,
+    })
+}
+
+fn main() {}

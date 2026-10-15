@@ -1,0 +1,220 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseStyle {
+    pub upper: bool,
+    pub group: usize,
+    pub min_width: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BaseError {
+    BadBase { which: usize, value: u8 },
+    BadStyle,
+    Empty { operand: usize },
+    InvalidTag { operand: usize, index: usize },
+    InvalidDigit { operand: usize, index: usize },
+    Separator { operand: usize, index: usize },
+    LeadingZero { operand: usize, index: usize },
+}
+
+fn validate_base(value: u8, which: usize) -> Result<(), BaseError> {
+    if !(2..=36).contains(&value) {
+        Err(BaseError::BadBase { which, value })
+    } else {
+        Ok(())
+    }
+}
+
+fn digit_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'A'..=b'Z' => Some(byte - b'A' + 10),
+        b'a'..=b'z' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn parse_operand(input: &str, base: u8, operand: usize) -> Result<Vec<u8>, BaseError> {
+    if input.is_empty() {
+        return Err(BaseError::Empty { operand });
+    }
+
+    let bytes = input.as_bytes();
+    let payload_start = if let Some(hash) = bytes.iter().position(|&b| b == b'#') {
+        let expected = base.to_string();
+        if &bytes[..hash] != expected.as_bytes() {
+            return Err(BaseError::InvalidTag { operand, index: 0 });
+        }
+        hash + 1
+    } else {
+        0
+    };
+
+    if payload_start == bytes.len() {
+        return Err(BaseError::Empty { operand });
+    }
+
+    let payload = &bytes[payload_start..];
+    for (offset, &byte) in payload.iter().enumerate() {
+        if byte == b'_' {
+            continue;
+        }
+        if !digit_value(byte).is_some_and(|value| value < base) {
+            return Err(BaseError::InvalidDigit {
+                operand,
+                index: payload_start + offset,
+            });
+        }
+    }
+
+    for (offset, &byte) in payload.iter().enumerate() {
+        if byte == b'_'
+            && (offset == 0
+                || offset + 1 == payload.len()
+                || payload[offset - 1] == b'_'
+                || payload[offset + 1] == b'_')
+        {
+            return Err(BaseError::Separator {
+                operand,
+                index: payload_start + offset,
+            });
+        }
+    }
+
+    let digits: Vec<u8> = payload
+        .iter()
+        .filter(|&&byte| byte != b'_')
+        .map(|&byte| digit_value(byte).unwrap())
+        .collect();
+
+    if digits.len() >= 2 && digits[0] == 0 {
+        return Err(BaseError::LeadingZero {
+            operand,
+            index: payload_start,
+        });
+    }
+
+    Ok(digits)
+}
+
+fn mul_add_small(value: &mut Vec<u8>, multiplier: u8, addend: u8) {
+    let mut carry = addend as u16;
+    for digit in value.iter_mut() {
+        let n = (*digit as u16) * (multiplier as u16) + carry;
+        *digit = (n % 10) as u8;
+        carry = n / 10;
+    }
+    while carry != 0 {
+        value.push((carry % 10) as u8);
+        carry /= 10;
+    }
+}
+
+fn parse_to_decimal(digits: &[u8], base: u8) -> Vec<u8> {
+    let mut value = vec![0];
+    for &digit in digits {
+        mul_add_small(&mut value, base, digit);
+    }
+    value
+}
+
+fn add_decimal(left: &[u8], right: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(left.len().max(right.len()) + 1);
+    let mut carry = 0u8;
+    for i in 0..left.len().max(right.len()) {
+        let sum = left.get(i).copied().unwrap_or(0)
+            + right.get(i).copied().unwrap_or(0)
+            + carry;
+        result.push(sum % 10);
+        carry = sum / 10;
+    }
+    if carry != 0 {
+        result.push(carry);
+    }
+    while result.len() > 1 && result.last() == Some(&0) {
+        result.pop();
+    }
+    result
+}
+
+fn div_rem_small(value: &mut Vec<u8>, divisor: u8) -> u8 {
+    let mut remainder = 0u16;
+    for digit in value.iter_mut().rev() {
+        let n = remainder * 10 + *digit as u16;
+        *digit = (n / divisor as u16) as u8;
+        remainder = n % divisor as u16;
+    }
+    while value.len() > 1 && value.last() == Some(&0) {
+        value.pop();
+    }
+    remainder as u8
+}
+
+fn format_value(mut decimal: Vec<u8>, base: u8, style: BaseStyle) -> String {
+    let mut digits = Vec::new();
+    if decimal.iter().all(|&d| d == 0) {
+        digits.push(0);
+    } else {
+        while decimal.iter().any(|&d| d != 0) {
+            digits.push(div_rem_small(&mut decimal, base));
+        }
+        digits.reverse();
+    }
+
+    while digits.len() < style.min_width {
+        digits.insert(0, 0);
+    }
+
+    let mut output = String::new();
+    for (i, &digit) in digits.iter().enumerate() {
+        if style.group != 0 && i > 0 && (digits.len() - i) % style.group == 0 {
+            output.push('_');
+        }
+        let ch = if digit < 10 {
+            b'0' + digit
+        } else if style.upper {
+            b'A' + digit - 10
+        } else {
+            b'a' + digit - 10
+        };
+        output.push(ch as char);
+    }
+    output
+}
+
+fn validate_style(style: &BaseStyle) -> Result<(), BaseError> {
+    if style.group > 8 || style.min_width > 256 {
+        Err(BaseError::BadStyle)
+    } else {
+        Ok(())
+    }
+}
+
+pub fn convert_base(
+    input: &str,
+    from: u8,
+    to: u8,
+    style: BaseStyle,
+) -> Result<String, BaseError> {
+    validate_base(from, 0)?;
+    validate_base(to, 1)?;
+    validate_style(&style)?;
+    let digits = parse_operand(input, from, 0)?;
+    Ok(format_value(parse_to_decimal(&digits, from), to, style))
+}
+
+pub fn add_base(
+    left: &str,
+    right: &str,
+    base: u8,
+    style: BaseStyle,
+) -> Result<String, BaseError> {
+    validate_base(base, 0)?;
+    validate_style(&style)?;
+    let left_digits = parse_operand(left, base, 0)?;
+    let right_digits = parse_operand(right, base, 1)?;
+    let left_value = parse_to_decimal(&left_digits, base);
+    let right_value = parse_to_decimal(&right_digits, base);
+    Ok(format_value(add_decimal(&left_value, &right_value), base, style))
+}
+
+fn main() {}

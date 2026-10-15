@@ -1,0 +1,172 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CsvError {
+    UnexpectedQuote { record: usize, byte: usize },
+    TrailingByte { record: usize, byte: usize },
+    BareCr { record: usize, byte: usize },
+    UnclosedQuote { record: usize, byte: usize },
+    Nul { record: usize, byte: usize },
+}
+
+pub fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, CsvError> {
+    let bytes = input.as_bytes();
+    let mut index = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        3
+    } else {
+        0
+    };
+
+    if index == bytes.len() {
+        return Ok(Vec::new());
+    }
+
+    let mut records = Vec::new();
+    let mut record = Vec::new();
+    let mut field = String::new();
+    let mut record_index = 0usize;
+
+    #[derive(Clone, Copy)]
+    enum State {
+        FieldStart,
+        Unquoted,
+        Quoted { opening_quote: usize },
+        AfterQuote,
+    }
+
+    let mut state = State::FieldStart;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+
+        if byte == 0 {
+            return Err(CsvError::Nul {
+                record: record_index,
+                byte: index,
+            });
+        }
+
+        match state {
+            State::Quoted { opening_quote } => {
+                if byte == b'"' {
+                    if index + 1 < bytes.len() && bytes[index + 1] == b'"' {
+                        field.push('"');
+                        index += 2;
+                    } else {
+                        state = State::AfterQuote;
+                        index += 1;
+                    }
+                } else {
+                    let ch = input[index..].chars().next().expect("valid UTF-8");
+                    field.push(ch);
+                    index += ch.len_utf8();
+                    let _ = opening_quote;
+                }
+            }
+            State::FieldStart | State::Unquoted | State::AfterQuote => {
+                if byte == b'\r' {
+                    if index + 1 >= bytes.len() || bytes[index + 1] != b'\n' {
+                        return Err(CsvError::BareCr {
+                            record: record_index,
+                            byte: index,
+                        });
+                    }
+                    record.push(std::mem::take(&mut field));
+                    records.push(std::mem::take(&mut record));
+                    record_index += 1;
+                    index += 2;
+                    state = State::FieldStart;
+                    continue;
+                }
+
+                match state {
+                    State::FieldStart => match byte {
+                        b'"' => {
+                            state = State::Quoted {
+                                opening_quote: index,
+                            };
+                            index += 1;
+                        }
+                        b',' => {
+                            record.push(String::new());
+                            index += 1;
+                        }
+                        b'\n' => {
+                            record.push(String::new());
+                            records.push(std::mem::take(&mut record));
+                            record_index += 1;
+                            index += 1;
+                            state = State::FieldStart;
+                        }
+                        _ => {
+                            let ch = input[index..].chars().next().expect("valid UTF-8");
+                            field.push(ch);
+                            index += ch.len_utf8();
+                            state = State::Unquoted;
+                        }
+                    },
+                    State::Unquoted => match byte {
+                        b'"' => {
+                            return Err(CsvError::UnexpectedQuote {
+                                record: record_index,
+                                byte: index,
+                            });
+                        }
+                        b',' => {
+                            record.push(std::mem::take(&mut field));
+                            index += 1;
+                            state = State::FieldStart;
+                        }
+                        b'\n' => {
+                            record.push(std::mem::take(&mut field));
+                            records.push(std::mem::take(&mut record));
+                            record_index += 1;
+                            index += 1;
+                            state = State::FieldStart;
+                        }
+                        _ => {
+                            let ch = input[index..].chars().next().expect("valid UTF-8");
+                            field.push(ch);
+                            index += ch.len_utf8();
+                        }
+                    },
+                    State::AfterQuote => match byte {
+                        b',' => {
+                            record.push(std::mem::take(&mut field));
+                            index += 1;
+                            state = State::FieldStart;
+                        }
+                        b'\n' => {
+                            record.push(std::mem::take(&mut field));
+                            records.push(std::mem::take(&mut record));
+                            record_index += 1;
+                            index += 1;
+                            state = State::FieldStart;
+                        }
+                        _ => {
+                            return Err(CsvError::TrailingByte {
+                                record: record_index,
+                                byte: index,
+                            });
+                        }
+                    },
+                    State::Quoted { .. } => unreachable!(),
+                }
+            }
+        }
+    }
+
+    if let State::Quoted { opening_quote } = state {
+        return Err(CsvError::UnclosedQuote {
+            record: record_index,
+            byte: opening_quote,
+        });
+    }
+
+    if !matches!(state, State::FieldStart) || !record.is_empty() {
+        record.push(field);
+        records.push(record);
+    }
+
+    Ok(records)
+}
+
+fn main() {}

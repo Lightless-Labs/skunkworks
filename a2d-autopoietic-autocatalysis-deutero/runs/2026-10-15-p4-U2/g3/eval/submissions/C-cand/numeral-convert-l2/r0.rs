@@ -1,0 +1,222 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseStyle {
+    pub upper: bool,
+    pub group: usize,
+    pub min_width: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BaseError {
+    BadBase { which: usize, value: u8 },
+    BadStyle,
+    Empty { operand: usize },
+    InvalidTag { operand: usize, index: usize },
+    InvalidDigit { operand: usize, index: usize },
+    Separator { operand: usize, index: usize },
+    LeadingZero { operand: usize, index: usize },
+}
+
+fn validate_base(value: u8, which: usize) -> Result<(), BaseError> {
+    if !(2..=36).contains(&value) {
+        Err(BaseError::BadBase { which, value })
+    } else {
+        Ok(())
+    }
+}
+
+fn style_is_valid(style: &BaseStyle) -> bool {
+    style.group <= 8 && style.min_width <= 256
+}
+
+fn digit_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'A'..=b'Z' => Some(byte - b'A' + 10),
+        b'a'..=b'z' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn parse_operand(input: &str, base: u8, operand: usize) -> Result<Vec<u8>, BaseError> {
+    let bytes = input.as_bytes();
+    if bytes.is_empty() {
+        return Err(BaseError::Empty { operand });
+    }
+
+    let mut payload_start = 0;
+    if let Some(tag_end) = bytes.iter().position(|&b| b == b'#') {
+        let expected = base.to_string();
+        if &bytes[..tag_end] != expected.as_bytes() {
+            return Err(BaseError::InvalidTag { operand, index: 0 });
+        }
+        payload_start = tag_end + 1;
+    }
+
+    if payload_start == bytes.len() {
+        return Err(BaseError::Empty { operand });
+    }
+
+    let payload = &bytes[payload_start..];
+
+    // Validate all non-separator bytes before checking separator placement.
+    for (i, &byte) in payload.iter().enumerate() {
+        if byte == b'_' {
+            continue;
+        }
+        if !matches!(digit_value(byte), Some(value) if value < base) {
+            return Err(BaseError::InvalidDigit {
+                operand,
+                index: payload_start + i,
+            });
+        }
+    }
+
+    for (i, &byte) in payload.iter().enumerate() {
+        if byte == b'_'
+            && (i == 0
+                || i + 1 == payload.len()
+                || payload[i - 1] == b'_'
+                || payload[i + 1] == b'_')
+        {
+            return Err(BaseError::Separator {
+                operand,
+                index: payload_start + i,
+            });
+        }
+    }
+
+    let digits: Vec<u8> = payload
+        .iter()
+        .filter_map(|&byte| (byte != b'_').then(|| digit_value(byte).unwrap()))
+        .collect();
+
+    if digits.len() >= 2 && digits[0] == 0 {
+        return Err(BaseError::LeadingZero {
+            operand,
+            index: payload_start,
+        });
+    }
+
+    Ok(digits)
+}
+
+// Little-endian base-256 magnitude.
+fn accumulate_digits(digits: &[u8], base: u8) -> Vec<u8> {
+    let mut value = Vec::new();
+    for &digit in digits {
+        let mut carry = digit as u16;
+        for byte in &mut value {
+            let n = (*byte as u16) * (base as u16) + carry;
+            *byte = n as u8;
+            carry = n >> 8;
+        }
+        while carry != 0 {
+            value.push(carry as u8);
+            carry >>= 8;
+        }
+    }
+    value
+}
+
+fn add_magnitudes(left: &[u8], right: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(left.len().max(right.len()) + 1);
+    let mut carry = 0u16;
+    for i in 0..left.len().max(right.len()) {
+        let a = left.get(i).copied().unwrap_or(0) as u16;
+        let b = right.get(i).copied().unwrap_or(0) as u16;
+        let sum = a + b + carry;
+        result.push(sum as u8);
+        carry = sum >> 8;
+    }
+    if carry != 0 {
+        result.push(carry as u8);
+    }
+    result
+}
+
+fn magnitude_is_zero(value: &[u8]) -> bool {
+    value.iter().all(|&byte| byte == 0)
+}
+
+fn magnitude_divide(value: &mut Vec<u8>, divisor: u8) -> u8 {
+    let mut remainder = 0u16;
+    for byte in value.iter_mut().rev() {
+        let current = (remainder << 8) | *byte as u16;
+        *byte = (current / divisor as u16) as u8;
+        remainder = current % divisor as u16;
+    }
+    while value.last() == Some(&0) {
+        value.pop();
+    }
+    remainder as u8
+}
+
+fn render(mut value: Vec<u8>, base: u8, style: &BaseStyle) -> String {
+    let mut digits = Vec::new();
+    if magnitude_is_zero(&value) {
+        digits.push(0);
+    } else {
+        while !value.is_empty() {
+            digits.push(magnitude_divide(&mut value, base));
+        }
+        digits.reverse();
+    }
+
+    if digits.len() < style.min_width {
+        let mut padded = vec![0; style.min_width - digits.len()];
+        padded.extend(digits);
+        digits = padded;
+    }
+
+    let alphabet = if style.upper {
+        b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    } else {
+        b"0123456789abcdefghijklmnopqrstuvwxyz"
+    };
+
+    let mut output = String::with_capacity(digits.len() + digits.len() / style.group.max(1));
+    for (i, digit) in digits.iter().copied().enumerate() {
+        if style.group != 0 && i != 0 && (digits.len() - i) % style.group == 0 {
+            output.push('_');
+        }
+        output.push(alphabet[digit as usize] as char);
+    }
+    output
+}
+
+pub fn convert_base(
+    input: &str,
+    from: u8,
+    to: u8,
+    style: BaseStyle,
+) -> Result<String, BaseError> {
+    validate_base(from, 0)?;
+    validate_base(to, 1)?;
+    if !style_is_valid(&style) {
+        return Err(BaseError::BadStyle);
+    }
+
+    let digits = parse_operand(input, from, 0)?;
+    let value = accumulate_digits(&digits, from);
+    Ok(render(value, to, &style))
+}
+
+pub fn add_base(
+    left: &str,
+    right: &str,
+    base: u8,
+    style: BaseStyle,
+) -> Result<String, BaseError> {
+    validate_base(base, 0)?;
+    if !style_is_valid(&style) {
+        return Err(BaseError::BadStyle);
+    }
+
+    let left_digits = parse_operand(left, base, 0)?;
+    let right_digits = parse_operand(right, base, 1)?;
+    let left_value = accumulate_digits(&left_digits, base);
+    let right_value = accumulate_digits(&right_digits, base);
+    Ok(render(add_magnitudes(&left_value, &right_value), base, &style))
+}
+
+fn main() {}

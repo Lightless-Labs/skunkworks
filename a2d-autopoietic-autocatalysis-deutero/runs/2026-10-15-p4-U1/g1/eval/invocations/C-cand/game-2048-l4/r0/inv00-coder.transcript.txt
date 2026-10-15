@@ -1,0 +1,630 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-97140-1792071096329594000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a13fc2-e285-79e0-820d-81cc587e6192
+--------
+user
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else. Include an empty `fn main() {}` (the file is compiled as a program).
+
+2048 mechanics, level 4.
+
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner documentation comments.
+
+R2. The exact public API is:
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction { Up, Left, Down, Right }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error { Shape, InvalidTile { index: usize, value: u32 }, MergeOverflow { first: usize, second: usize }, ScoreOverflow }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Board { pub width: usize, pub height: usize, pub cells: Vec<u32> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Merge { pub from: [usize; 2], pub to: usize, pub value: u32 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MoveResult { pub board: Board, pub score: u64, pub changed: bool, pub merges: Vec<Merge> }
+pub fn move_board(board: &Board, direction: Direction) -> Result<MoveResult, Error>;
+pub fn legal_moves(board: &Board) -> Result<Vec<Direction>, Error>;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Spawn { pub index: usize, pub value: u32 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpawnResult { pub board: Board, pub rng: u64, pub spawn: Option<Spawn> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Turn { pub board: Board, pub rng: u64, pub score: u64, pub changed: bool, pub merges: Vec<Merge>, pub spawn: Option<Spawn> }
+pub fn spawn_tile(board: &Board, rng: u64) -> Result<SpawnResult, Error>;
+pub fn play_turn(board: &Board, rng: u64, direction: Direction) -> Result<Turn, Error>;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct State { pub board: Board, pub score: u64, pub rng: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Game { /* private fields, constructed only by new_game */ }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Command { Move(Direction), Undo, Check }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Event { Moved(Turn), Undone(bool), Checked(bool) }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Replay { pub state: State, pub can_undo: bool, pub events: Vec<Event> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayError { pub index: Option<usize>, pub error: Error, pub state: State, pub can_undo: bool, pub events: Vec<Event> }
+pub fn new_game(initial: State) -> Result<Game, Error>;
+pub fn snapshot(game: &Game) -> State;
+pub fn step(game: &mut Game, direction: Direction) -> Result<Turn, Error>;
+pub fn undo(game: &mut Game) -> bool;
+pub fn can_undo(game: &Game) -> bool;
+pub fn game_over(game: &Game) -> bool;
+pub fn replay(initial: State, commands: &[Command]) -> Result<Replay, ReplayError>;
+```
+
+R3. Use the shown derives; all indices are zero-based row-major flat indices. Equality compares all fields. Game, where present, compares its current state AND its saved undo state.
+
+R4. Board width and height must each be in 1..=8 and cells.len() must equal width*height. Otherwise return Shape. Even usize::MAX dimensions must return Shape without arithmetic overflow.
+
+R5. A valid cell is 0 or a power of two in 2..=2147483648. Otherwise return InvalidTile with the original flat index and value.
+
+R6. Validation precedence: Shape first, then scan ALL cells in increasing flat index for InvalidTile, then attempt moves. Invalid tiles beat merge overflow anywhere on the board.
+
+R7. move_board and legal_moves never modify the input. Returned boards preserve dimensions and contain owned cells.
+
+R8. Left/Right process rows; Up/Down process columns. Each line is scanned from its destination edge (Left: leftmost, Right: rightmost, Up: topmost, Down: bottommost).
+
+R9. Process horizontal lines in increasing row number and vertical lines in increasing column number, INCLUDING for Right and Down.
+
+R10. Ignore zeroes when deciding which tiles are consecutive, so equal values separated by empty cells can merge.
+
+R11. Greedily merge consecutive equal input tiles once each, consume both, and never merge a newly produced output again in this move. Unequal tiles remain single.
+
+R12. An attempted merge of two 2147483648 tiles returns MergeOverflow; never wrap or saturate.
+
+R13. For overflow return first and second as the original flat indices of the overflowing pair in scan order; among several overflows choose the first in line-processing then within-line scan order. Return no partial move.
+
+R14. Pack all outputs against the destination edge in scan order, with zeroes filling the rest of each line.
+
+R15. For each merge, from holds the original flat indices of the consumed pair in scan order, even across zeroes.
+
+R16. Merge.to is its final flat output index after compaction, and value is the new doubled value.
+
+R17. merges is in line-processing order, then encounter order within each line; never sort the vector by numeric indices.
+
+R18. MoveResult.score is the u64 sum of all new merged values, excluding unmerged tiles.
+
+R19. MoveResult.changed is exactly whether the moved board cells differ from the input cells.
+
+R20. An unchanged successful move has score 0 and no merges. A pure slide can be changed with score 0.
+
+R21. legal_moves returns directions in the fixed order Up, Left, Down, Right, with no duplicates.
+
+R22. A direction is legal exactly when move_board for that direction would succeed with changed=true.
+
+R23. legal_moves skips directions with MergeOverflow instead of returning that error; a board can have empty cells yet no legal directions (for example an all-zero board).
+
+R24. legal_moves validates first and returns the same Shape or lowest-index InvalidTile error even if no direction could change the board.
+
+R25. There is no winning-tile stop condition: 2048 and larger valid tiles remain movable. One-cell boards and all-zero boards are allowed.
+
+R26. spawn_tile validates using R4-R6 before inspecting empties or RNG. Invalid full boards still return validation errors.
+
+R27. On a full valid board, spawn_tile returns an identical board, the unchanged rng, and spawn=None, consuming no random draws.
+
+R28. Each random draw replaces the u64 state x by (x*6364136223846793005 + 1442695040888963407) modulo 2^64. Use wrapping arithmetic.
+
+R29. For a non-full board, list empty indices in increasing row-major order. Draw once to obtain a; select the empty at zero-based rank a % number_of_empties. Modulo is applied in u64 before converting to usize.
+
+R30. Draw a second time to obtain b; insert value 4 exactly when b % 10 == 0, otherwise value 2. Never merge during spawn.
+
+R31. Return rng=b and spawn=Some(Spawn { index, value }); change exactly that one cell and preserve board dimensions.
+
+R32. Treat every seed, including 0 and u64::MAX, literally; do not normalize seeds, discard draws, reject values, or use an external RNG.
+
+R33. play_turn first calls the move semantics. Any shape/tile/merge error returns that error without spawning; the caller-owned board remains untouched.
+
+R34. For an unchanged move, play_turn returns the moved board, the input rng, score=0, changed=false, empty merges and spawn=None. Do not consume random draws even if the board has empties.
+
+R35. For a changed move, play_turn spawns exactly once into the moved board using R26-R32 and returns the spawned board and rng.
+
+R36. Turn.score, changed and merges describe the move BEFORE spawning; spawn describes only the insertion. Never update merge provenance after insertion.
+
+R37. There is no automatic initial spawning. spawn_tile is independent of move legality and may insert into an all-zero or one-cell board.
+
+R38. State.score is a cumulative u64 score and State.rng is the spawning state. Game keeps a current State and at most one previous State privately.
+
+R39. new_game accepts an initial State, with no additional spawning, and creates a game with no undo history. Use R4-R6 for board validation; every initial score and rng, including u64::MAX, is accepted.
+
+R40. snapshot returns an owned clone of the current State. Mutating the snapshot must not mutate the Game.
+
+R41. step first computes move_board. On success it adds the move score to State.score with checked u64 addition. Return ScoreOverflow on failure BEFORE spawning. MergeOverflow has precedence over ScoreOverflow. Zero score added to u64::MAX succeeds.
+
+R42. For a changed successful step, spawn exactly as play_turn, set the cumulative score to the checked sum, and save the entire pre-step State as the undo slot. Return a Turn containing the move score delta (not cumulative score).
+
+R43. An unchanged step returns the same no-op Turn as play_turn and preserves both the current State and the existing undo slot.
+
+R44. Any failed step preserves both the entire current State and the existing undo slot; no random draw is committed.
+
+R45. A changed successful step replaces any older undo slot. Undo history has depth one, not an unbounded stack.
+
+R46. undo returns true if a slot exists, restores its exact board, cumulative score and rng, and clears the slot. It never spawns.
+
+R47. undo with no saved state returns false and leaves the game unchanged, including after a previous undo.
+
+R48. can_undo is exactly whether a saved State exists; snapshot, can_undo and game_over never change state or history.
+
+R49. game_over is true exactly when legal_moves on the current board is empty. It ignores cumulative score overflow, rng and undo availability; an all-zero board is game-over, and legal merging full boards are not.
+
+R50. Command::Move runs step, Command::Undo runs undo, and Command::Check runs game_over, strictly in input order.
+
+R51. replay starts with new_game(initial), with empty history and no automatic spawning; even an empty command list validates initial.
+
+R52. Each successful command appends exactly one Event: Moved(the exact returned Turn), Undone(the returned bool), or Checked(the returned bool). No-op moves and unsuccessful undo attempts are successful commands and append events.
+
+R53. On full success replay returns the exact final snapshot, final can_undo and all events in order. Caller inputs are not modified.
+
+R54. On a failed Move, stop before any later command. Return ReplayError with index=Some(zero-based command index), the exact Error, and state/can_undo/events for the successful prefix ONLY. Do not include an event for the failed command.
+
+R55. On initial validation failure return ReplayError with index=None, the exact validation Error, state equal to the supplied initial State (even though invalid), can_undo=false and empty events.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+fn b(w:usize,h:usize,c:&[u32])->Board { Board {width:w,height:h,cells:c.to_vec()} }
+fn mg(a:usize,b:usize,to:usize,value:u32)->Merge { Merge {from:[a,b],to,value} }
+fn st(board:Board,score:u64,rng:u64)->State { State {board,score,rng} }
+// R7-R24
+#[test]
+fn public_board_operations() {
+{
+let x=b(2,2,&[2,2,0,4]);let r=move_board(&x,Direction::Left).unwrap();assert_eq!(r,MoveResult {board:b(2,2,&[4,0,4,0]),score:4,changed:true,merges:vec![mg(0,1,0,4)]});
+}
+{
+assert_eq!(legal_moves(&b(2,2,&[2,0,0,0])).unwrap(),vec![Direction::Down,Direction::Right]);assert_eq!(move_board(&b(0,2,&[]),Direction::Left),Err(Error::Shape));
+}
+}
+
+// R26-R36
+#[test]
+fn public_random_operations() {
+{
+let x=b(2,2,&vec![2,0,0,0]);let old=x.clone();let r=spawn_tile(&x,5).unwrap();assert_eq!(r,SpawnResult {board:b(2,2,&vec![2,2,0,0]),rng:2587011477941047999,spawn:Some(Spawn {index:1,value:2})});assert_eq!(x,old);
+}
+{
+let x=b(2,2,&[2,2,0,0]);let t=play_turn(&x,5,Direction::Left).unwrap();assert!(t.changed);assert_eq!(t.score,4);assert_eq!(t.merges,vec![mg(0,1,0,4)]);let s=spawn_tile(&b(2,2,&[4,0,0,0]),5).unwrap();assert_eq!(t.board,s.board);assert_eq!(t.rng,s.rng);assert_eq!(t.spawn,s.spawn);
+}
+}
+
+// R38-R42,R46-R49
+#[test]
+fn public_game_lifecycle() {
+let initial=st(b(2,2,&[2,2,0,0]),10,5);let mut g=new_game(initial.clone()).unwrap();assert_eq!(snapshot(&g),initial);assert!(!can_undo(&g));assert!(!game_over(&g));let t=step(&mut g,Direction::Left).unwrap();assert_eq!(t.score,4);assert_eq!(snapshot(&g).score,14);assert_eq!(snapshot(&g).board,t.board);assert!(can_undo(&g));assert!(undo(&mut g));assert_eq!(snapshot(&g),initial);assert!(!can_undo(&g));assert!(!undo(&mut g));
+}
+
+// R50-R53
+#[test]
+fn public_replay() {
+let initial=st(b(2,2,&[2,2,0,0]),0,5);let r=replay(initial.clone(),&[Command::Move(Direction::Left),Command::Undo,Command::Check]).unwrap();assert_eq!(r.state,initial);assert!(!r.can_undo);assert_eq!(r.events.len(),3);assert!(matches!(&r.events[0],Event::Moved(t) if t.score==4));assert_eq!(r.events[1],Event::Undone(true));assert_eq!(r.events[2],Event::Checked(false));
+}
+```
+
+
+Lessons from earlier tasks (task-agnostic; apply each one that is relevant):
+1. Translate requirements into explicit invariants and ordered validation phases; validate complete inputs before transformation, evaluation, or mutation.
+2. Separate parsing, syntax validation, semantic checks, and value processing; define delimiter, encoding, empty-value, and error-precedence rules explicitly.
+3. Track source byte offsets, indices, boundaries, and cursors throughout processing; report errors at the earliest specified position.
+4. Compute fallible outcomes before committing state; preserve atomicity, input order, and branch-local state when searching or mutating.
+5. Model boundary and successor rules explicitly; reduce exact values before applying representation limits, and guard long-running arithmetic against overflow.
+6. Build shared semantic primitives before derived behavior; test interactions, edge cases, deterministic tie-breaking, and formatting order.
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-15T13:31:39.697505Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    Up,
+    Left,
+    Down,
+    Right,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Shape,
+    InvalidTile { index: usize, value: u32 },
+    MergeOverflow { first: usize, second: usize },
+    ScoreOverflow,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Board {
+    pub width: usize,
+    pub height: usize,
+    pub cells: Vec<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Merge {
+    pub from: [usize; 2],
+    pub to: usize,
+    pub value: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MoveResult {
+    pub board: Board,
+    pub score: u64,
+    pub changed: bool,
+    pub merges: Vec<Merge>,
+}
+
+pub fn move_board(board: &Board, direction: Direction) -> Result<MoveResult, Error> {
+    validate(board)?;
+
+    let mut result = board.clone();
+    let mut merges = Vec::new();
+    let mut score = 0u64;
+
+    let horizontal = matches!(direction, Direction::Left | Direction::Right);
+    let line_count = if horizontal { board.height } else { board.width };
+    let line_len = if horizontal { board.width } else { board.height };
+    let reverse = matches!(direction, Direction::Right | Direction::Down);
+
+    for line in 0..line_count {
+        let indices: Vec<usize> = (0..line_len)
+            .map(|offset| {
+                let position = if reverse {
+                    line_len - 1 - offset
+                } else {
+                    offset
+                };
+                if horizontal {
+                    line * board.width + position
+                } else {
+                    position * board.width + line
+                }
+            })
+            .collect();
+
+        let tiles: Vec<(usize, u32)> = indices
+            .iter()
+            .filter_map(|&index| {
+                let value = board.cells[index];
+                (value != 0).then_some((index, value))
+            })
+            .collect();
+
+        let mut outputs: Vec<(u32, Option<[usize; 2]>)> = Vec::new();
+        let mut cursor = 0;
+        while cursor < tiles.len() {
+            let (first_index, first_value) = tiles[cursor];
+            if cursor + 1 < tiles.len() && tiles[cursor + 1].1 == first_value {
+                let (second_index, _) = tiles[cursor + 1];
+                let Some(value) = first_value.checked_mul(2) else {
+                    return Err(Error::MergeOverflow {
+                        first: first_index,
+                        second: second_index,
+                    });
+                };
+                score = score
+                    .checked_add(value as u64)
+                    .ok_or(Error::ScoreOverflow)?;
+                outputs.push((value, Some([first_index, second_index])));
+                cursor += 2;
+            } else {
+                outputs.push((first_value, None));
+                cursor += 1;
+            }
+        }
+
+        for (offset, &index) in indices.iter().enumerate() {
+            result.cells[index] = outputs.get(offset).map_or(0, |(value, _)| *value);
+        }
+
+        for (offset, (value, provenance)) in outputs.into_iter().enumerate() {
+            if let Some(from) = provenance {
+                merges.push(Merge {
+                    from,
+                    to: indices[offset],
+                    value,
+                });
+            }
+        }
+    }
+
+    let changed = result.cells != board.cells;
+    if !changed {
+        score = 0;
+        merges.clear();
+    }
+
+    Ok(MoveResult {
+        board: result,
+        score,
+        changed,
+        merges,
+    })
+}
+
+pub fn legal_moves(board: &Board) -> Result<Vec<Direction>, Error> {
+    validate(board)?;
+    let mut legal = Vec::new();
+    for direction in [
+        Direction::Up,
+        Direction::Left,
+        Direction::Down,
+        Direction::Right,
+    ] {
+        if matches!(
+            move_board(board, direction),
+            Ok(MoveResult { changed: true, .. })
+        ) {
+            legal.push(direction);
+        }
+    }
+    Ok(legal)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Spawn {
+    pub index: usize,
+    pub value: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpawnResult {
+    pub board: Board,
+    pub rng: u64,
+    pub spawn: Option<Spawn>,
+}
+
+fn next_rng(rng: u64) -> u64 {
+    rng.wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407)
+}
+
+pub fn spawn_tile(board: &Board, rng: u64) -> Result<SpawnResult, Error> {
+    validate(board)?;
+
+    let empty: Vec<usize> = board
+        .cells
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &value)| (value == 0).then_some(index))
+        .collect();
+
+    if empty.is_empty() {
+        return Ok(SpawnResult {
+            board: board.clone(),
+            rng,
+            spawn: None,
+        });
+    }
+
+    let a = next_rng(rng);
+    let index = empty[(a % empty.len() as u64) as usize];
+    let b = next_rng(a);
+    let value = if b % 10 == 0 { 4 } else { 2 };
+
+    let mut spawned_board = board.clone();
+    spawned_board.cells[index] = value;
+
+    Ok(SpawnResult {
+        board: spawned_board,
+        rng: b,
+        spawn: Some(Spawn { index, value }),
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Turn {
+    pub board: Board,
+    pub rng: u64,
+    pub score: u64,
+    pub changed: bool,
+    pub merges: Vec<Merge>,
+    pub spawn: Option<Spawn>,
+}
+
+pub fn play_turn(board: &Board, rng: u64, direction: Direction) -> Result<Turn, Error> {
+    let moved = move_board(board, direction)?;
+    if !moved.changed {
+        return Ok(Turn {
+            board: moved.board,
+            rng,
+            score: 0,
+            changed: false,
+            merges: Vec::new(),
+            spawn: None,
+        });
+    }
+
+    let spawned = spawn_tile(&moved.board, rng)?;
+    Ok(Turn {
+        board: spawned.board,
+        rng: spawned.rng,
+        score: moved.score,
+        changed: true,
+        merges: moved.merges,
+        spawn: spawned.spawn,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct State {
+    pub board: Board,
+    pub score: u64,
+    pub rng: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Game {
+    current: State,
+    undo_state: Option<State>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Command {
+    Move(Direction),
+    Undo,
+    Check,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Event {
+    Moved(Turn),
+    Undone(bool),
+    Checked(bool),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Replay {
+    pub state: State,
+    pub can_undo: bool,
+    pub events: Vec<Event>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayError {
+    pub index: Option<usize>,
+    pub error: Error,
+    pub state: State,
+    pub can_undo: bool,
+    pub events: Vec<Event>,
+}
+
+pub fn new_game(initial: State) -> Result<Game, Error> {
+    validate(&initial.board)?;
+    Ok(Game {
+        current: initial,
+        undo_state: None,
+    })
+}
+
+pub fn snapshot(game: &Game) -> State {
+    game.current.clone()
+}
+
+pub fn step(game: &mut Game, direction: Direction) -> Result<Turn, Error> {
+    let moved = move_board(&game.current.board, direction)?;
+    if !moved.changed {
+        return Ok(Turn {
+            board: moved.board,
+            rng: game.current.rng,
+            score: 0,
+            changed: false,
+            merges: Vec::new(),
+            spawn: None,
+        });
+    }
+
+    let cumulative_score = game
+        .current
+        .score
+        .checked_add(moved.score)
+        .ok_or(Error::ScoreOverflow)?;
+
+    let spawned = spawn_tile(&moved.board, game.current.rng)?;
+    let previous = game.current.clone();
+    let turn = Turn {
+        board: spawned.board.clone(),
+        rng: spawned.rng,
+        score: moved.score,
+        changed: true,
+        merges: moved.merges,
+        spawn: spawned.spawn,
+    };
+
+    game.current = State {
+        board: spawned.board,
+        score: cumulative_score,
+        rng: spawned.rng,
+    };
+    game.undo_state = Some(previous);
+
+    Ok(turn)
+}
+
+pub fn undo(game: &mut Game) -> bool {
+    if let Some(previous) = game.undo_state.take() {
+        game.current = previous;
+        true
+    } else {
+        false
+    }
+}
+
+pub fn can_undo(game: &Game) -> bool {
+    game.undo_state.is_some()
+}
+
+pub fn game_over(game: &Game) -> bool {
+    legal_moves(&game.current.board)
+        .map(|moves| moves.is_empty())
+        .unwrap_or(true)
+}
+
+pub fn replay(initial: State, commands: &[Command]) -> Result<Replay, ReplayError> {
+    let mut game = match new_game(initial.clone()) {
+        Ok(game) => game,
+        Err(error) => {
+            return Err(ReplayError {
+                index: None,
+                error,
+                state: initial,
+                can_undo: false,
+                events: Vec::new(),
+            });
+        }
+    };
+
+    let mut events = Vec::new();
+    for (index, command) in commands.iter().enumerate() {
+        match command {
+            Command::Move(direction) => match step(&mut game, *direction) {
+                Ok(turn) => events.push(Event::Moved(turn)),
+                Err(error) => {
+                    return Err(ReplayError {
+                        index: Some(index),
+                        error,
+                        state: snapshot(&game),
+                        can_undo: can_undo(&game),
+                        events,
+                    });
+                }
+            },
+            Command::Undo => events.push(Event::Undone(undo(&mut game))),
+            Command::Check => events.push(Event::Checked(game_over(&game))),
+        }
+    }
+
+    Ok(Replay {
+        state: snapshot(&game),
+        can_undo: can_undo(&game),
+        events,
+    })
+}
+
+fn validate(board: &Board) -> Result<(), Error> {
+    if !(1..=8).contains(&board.width) || !(1..=8).contains(&board.height) {
+        return Err(Error::Shape);
+    }
+    let expected = board.width * board.height;
+    if board.cells.len() != expected {
+        return Err(Error::Shape);
+    }
+
+    for (index, &value) in board.cells.iter().enumerate() {
+        if value != 0 && (value < 2 || value > 2_147_483_648 || !value.is_power_of_two()) {
+            return Err(Error::InvalidTile { index, value });
+        }
+    }
+    Ok(())
+}
+
+fn main() {}
+```
+tokens used
+7,862

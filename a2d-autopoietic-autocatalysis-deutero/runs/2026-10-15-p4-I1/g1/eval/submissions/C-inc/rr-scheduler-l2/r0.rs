@@ -1,0 +1,167 @@
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: u32,
+    pub arrival: u32,
+    pub ticks: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub id: u32,
+    pub start: u64,
+    pub end: u64,
+    pub finished: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub idle: Vec<(u64, u64)>,
+    pub completion: Vec<(u32, u64)>,
+    pub end: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Quantum,
+    SwitchCost,
+    TooManyJobs,
+    DuplicateId { index: usize },
+    Arrival { index: usize },
+    Ticks { index: usize },
+}
+
+pub fn schedule(jobs: &[Job], quantum: u32, switch_cost: u32) -> Result<Schedule, Error> {
+    if !(1..=1000).contains(&quantum) {
+        return Err(Error::Quantum);
+    }
+    if switch_cost > 1000 {
+        return Err(Error::SwitchCost);
+    }
+    if jobs.len() > 64 {
+        return Err(Error::TooManyJobs);
+    }
+
+    for (index, job) in jobs.iter().enumerate() {
+        if jobs[..index].iter().any(|earlier| earlier.id == job.id) {
+            return Err(Error::DuplicateId { index });
+        }
+        if job.arrival > 1000 {
+            return Err(Error::Arrival { index });
+        }
+        if job.ticks > 1000 {
+            return Err(Error::Ticks { index });
+        }
+    }
+
+    let mut events: Vec<usize> = (0..jobs.len()).collect();
+    events.sort_by_key(|&index| (jobs[index].arrival, index));
+
+    let mut remaining: Vec<u32> = jobs.iter().map(|job| job.ticks).collect();
+    let mut completion: Vec<Option<u64>> = vec![None; jobs.len()];
+    let mut ready = std::collections::VecDeque::new();
+    let mut runs = Vec::new();
+    let mut idle = Vec::new();
+
+    let mut event_index = 0;
+    let mut time = 0u64;
+    let mut last_id: Option<u32> = None;
+    let quantum = quantum as u64;
+    let switch_cost = switch_cost as u64;
+
+    while completion.iter().any(Option::is_none) {
+        while event_index < events.len()
+            && jobs[events[event_index]].arrival as u64 <= time
+        {
+            let index = events[event_index];
+            if jobs[index].ticks == 0 {
+                completion[index] = Some(jobs[index].arrival as u64);
+            } else {
+                ready.push_back(index);
+            }
+            event_index += 1;
+        }
+
+        if let Some(index) = ready.pop_front() {
+            let id = jobs[index].id;
+            if last_id.is_some_and(|previous| previous != id) {
+                time += switch_cost;
+            }
+
+            while event_index < events.len()
+                && jobs[events[event_index]].arrival as u64 <= time
+            {
+                let arriving = events[event_index];
+                if jobs[arriving].ticks == 0 {
+                    completion[arriving] = Some(jobs[arriving].arrival as u64);
+                } else {
+                    ready.push_back(arriving);
+                }
+                event_index += 1;
+            }
+
+            let start = time;
+            let consumed = (remaining[index] as u64).min(quantum);
+            time += consumed;
+            remaining[index] -= consumed as u32;
+            let finished = remaining[index] == 0;
+            runs.push(Run {
+                id,
+                start,
+                end: time,
+                finished,
+            });
+
+            while event_index < events.len()
+                && jobs[events[event_index]].arrival as u64 <= time
+            {
+                let arriving = events[event_index];
+                if jobs[arriving].ticks == 0 {
+                    completion[arriving] = Some(jobs[arriving].arrival as u64);
+                } else {
+                    ready.push_back(arriving);
+                }
+                event_index += 1;
+            }
+
+            if finished {
+                completion[index] = Some(time);
+            } else {
+                ready.push_back(index);
+            }
+            last_id = Some(id);
+        } else if event_index < events.len() {
+            let next_time = jobs[events[event_index]].arrival as u64;
+            if next_time > time {
+                if let Some((_, end)) = idle.last_mut() {
+                    if *end == time {
+                        *end = next_time;
+                    } else {
+                        idle.push((time, next_time));
+                    }
+                } else {
+                    idle.push((time, next_time));
+                }
+                time = next_time;
+                last_id = None;
+            }
+        } else {
+            break;
+        }
+    }
+
+    let completion = jobs
+        .iter()
+        .enumerate()
+        .map(|(index, job)| (job.id, completion[index].unwrap()))
+        .collect();
+
+    Ok(Schedule {
+        runs,
+        idle,
+        completion,
+        end: time,
+    })
+}
+
+fn main() {}

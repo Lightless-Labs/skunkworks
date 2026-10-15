@@ -1,0 +1,181 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else. Include an empty `fn main() {}` (the file is compiled as a program).
+
+PROMPT:
+Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. All listed API items and fields must be pub. Derive Debug, Clone, PartialEq, Eq for data/error enums and records (engine structs need not implement these). No main function is required. 
+
+Exact public API:
+```rust
+pub struct Job { pub id: String, pub priority: u8, pub dependencies: Vec<String>, pub max_attempts: u8 }
+pub enum State { Waiting { ready_at: u64 }, Running { attempt: u8 }, Succeeded, Failed, Blocked }
+pub struct Ticket { pub id: String, pub attempt: u8 }
+pub enum Error { Config, BadId(usize), BadPriority(usize), BadAttempts(usize), Duplicate(usize), DuplicateDependency(usize, usize), MissingDependency(usize, usize), Cycle, TimeReversed, Busy, NoCycle, Unknown, NotRunning }
+pub struct Runner { /* private fields */ }
+impl Runner {
+ pub fn new(jobs: Vec<Job>, aging_ms: u64, retry_base: u64, retry_cap: u64) -> Result<Self, Error>;
+ pub fn begin_cycle(&mut self, now: u64) -> Result<(), Error>;
+ pub fn next_ready(&mut self, now: u64) -> Result<Option<Ticket>, Error>;
+ pub fn complete(&mut self, now: u64, id: &str, success: bool) -> Result<(), Error>;
+ pub fn status(&self, id: &str) -> Result<State, Error>;
+}
+```
+
+R1. A Runner holds a fixed dependency graph and reuses it across explicit cycles. Time is u64 milliseconds, initially 0; no wall clock is read.
+R2. new first validates retry_base>0 and retry_cap>=retry_base, else Config. aging_ms may be zero. Empty job input is valid.
+R3. Validate jobs in input order, with per-job precedence BadId(index), BadPriority(index), BadAttempts(index), Duplicate(index). Indices are zero-based; Duplicate identifies the later job.
+R4. IDs contain 1..=16 ASCII lowercase-letter/digit/hyphen bytes. Priority is 0..=9; max_attempts is 1..=32, counting the initial attempt.
+R5. After all local job validation succeeds, validate dependencies in job order and then list order. For each dependency check repeated spelling first (DuplicateDependency(job index, dependency index)), then exact existence (MissingDependency with those indices). No separate dependency-ID syntax check applies.
+R6. After dependency validation reject any directed cycle, including a self-edge, with Cycle. Forward references are allowed.
+R7. All failed calls are atomic: no state, time, attempt counters, or ordering changes.
+R8. begin_cycle, next_ready and complete check now less than last successful timed call first and return TimeReversed. Equal timestamps are allowed. A successful timed call, including Ok(None), records now.
+R9. Before any cycle, next_ready and complete return NoCycle after the time check. status returns NoCycle before looking up its ID.
+R10. begin_cycle is Busy when any job in the previous cycle is Waiting or Running; this check follows the time check.
+R11. begin_cycle otherwise resets every job to Waiting { ready_at: now } and attempts to zero. It also clears all previous success/failure/blocked results.
+R12. An empty cycle is immediately terminal. begin_cycle may immediately begin another empty cycle.
+R13. status after a cycle begins uses exact ID lookup; unknown gives Unknown. It returns an owned State snapshot and changes nothing.
+R14. next_ready can dispatch a Waiting job only when ready_at<=now and all dependencies have Succeeded in this same cycle.
+R15. Waiting includes jobs held by unsatisfied dependencies. Running jobs never dispatch again until completed.
+R16. Effective priority is base priority if aging_ms=0, else min(9, base priority + floor((now-ready_at)/aging_ms)), with overflow-safe arithmetic.
+R17. Aging starts at the job waiting-state ready_at, even while dependencies prevent dispatch. After a retry, aging instead starts at the retry ready_at.
+R18. Pick highest effective priority; ties use original job input order, independent of dependency-list order or ID spelling.
+R19. On dispatch increment that job attempt count, set Running { attempt: count }, and return Ticket with ID and count.
+R20. No eligible job yields Ok(None); next_ready never advances time beyond its argument and never auto-completes work.
+R21. Any number of independent jobs may be Running simultaneously. There is no worker-capacity constraint in this level.
+R22. complete checks time, then NoCycle, then exact lookup (Unknown), then state (NotRunning unless Running). Do not validate ID syntax here.
+R23. complete(success=true) sets Succeeded, regardless of attempt number.
+R24. complete(success=false) when attempt count equals max_attempts sets Failed.
+R25. Otherwise a failed completion schedules Waiting { ready_at: now + delay }; addition saturates at u64::MAX.
+R26. Delay after failed attempt a is min(retry_cap, retry_base * 2^(a-1)), computed mathematically without overflow.
+R27. Failed attempts do not satisfy dependencies. Retrying a parent must succeed before its dependents become dispatchable.
+R28. After terminal failure, repeatedly mark any Waiting job Blocked if any dependency is Failed or Blocked. Propagate transitively through the entire graph, including jobs with future ready_at.
+R29. Propagation does not increment blocked jobs attempts, and does not block unrelated jobs.
+R30. Failed and Blocked are terminal within a cycle; only begin_cycle can reset them. Succeeded is also terminal.
+R31. Once every job is Succeeded, Failed or Blocked, a later or equal begin_cycle is allowed, reusing exactly the same graph and job order.
+R32. All state returned by status refers to the current cycle only. Previously returned snapshots remain unchanged.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R11 R19 R23 R31
+#[test]
+fn public_cycle() {
+    let mut r = Runner::new(
+        vec![Job {
+            id: "pub-a".into(),
+            priority: 1,
+            dependencies: vec![],
+            max_attempts: 2,
+        }],
+        0,
+        5,
+        20,
+    )
+    .unwrap();
+    r.begin_cycle(0).unwrap();
+    assert_eq!(
+        r.next_ready(0).unwrap(),
+        Some(Ticket {
+            id: "pub-a".into(),
+            attempt: 1
+        })
+    );
+    r.complete(1, "pub-a", true).unwrap();
+    assert_eq!(r.status("pub-a"), Ok(State::Succeeded));
+    r.begin_cycle(2).unwrap();
+}
+
+// R14 R27
+#[test]
+fn public_dependency() {
+    let mut r = Runner::new(
+        vec![
+            Job {
+                id: "pub-child".into(),
+                priority: 9,
+                dependencies: vec!["pub-root".into()],
+                max_attempts: 2,
+            },
+            Job {
+                id: "pub-root".into(),
+                priority: 1,
+                dependencies: vec![],
+                max_attempts: 2,
+            },
+        ],
+        0,
+        5,
+        20,
+    )
+    .unwrap();
+    r.begin_cycle(0).unwrap();
+    assert_eq!(r.next_ready(0).unwrap().unwrap().id, "pub-root");
+    r.complete(0, "pub-root", true).unwrap();
+    assert_eq!(r.next_ready(0).unwrap().unwrap().id, "pub-child");
+}
+
+// R25 R26
+#[test]
+fn public_retry() {
+    let mut r = Runner::new(
+        vec![Job {
+            id: "pub-a".into(),
+            priority: 1,
+            dependencies: vec![],
+            max_attempts: 2,
+        }],
+        0,
+        5,
+        20,
+    )
+    .unwrap();
+    r.begin_cycle(0).unwrap();
+    r.next_ready(0).unwrap();
+    r.complete(1, "pub-a", false).unwrap();
+    assert_eq!(r.status("pub-a"), Ok(State::Waiting { ready_at: 6 }));
+    assert_eq!(r.next_ready(5), Ok(None));
+    assert_eq!(r.next_ready(6).unwrap().unwrap().attempt, 2);
+}
+
+// R24 R28
+#[test]
+fn public_failure() {
+    let mut r = Runner::new(
+        vec![
+            Job {
+                id: "pub-root".into(),
+                priority: 1,
+                dependencies: vec![],
+                max_attempts: 1,
+            },
+            Job {
+                id: "pub-leaf".into(),
+                priority: 1,
+                dependencies: vec!["pub-root".into()],
+                max_attempts: 2,
+            },
+        ],
+        0,
+        5,
+        20,
+    )
+    .unwrap();
+    r.begin_cycle(0).unwrap();
+    r.next_ready(0).unwrap();
+    r.complete(0, "pub-root", false).unwrap();
+    assert_eq!(r.status("pub-root"), Ok(State::Failed));
+    assert_eq!(r.status("pub-leaf"), Ok(State::Blocked));
+}
+```
+
+
+Lessons from earlier tasks (task-agnostic; apply each one that is relevant):
+1. Check intermediate arithmetic across the full input range; use wider or overflow-safe comparisons when products can exceed the destination type.
+2. Apply every specified validation rule to each relevant operation, preserving required error precedence before lookup or mutation.
+3. Track cumulative resource consumption explicitly across state transitions; do not infer historical totals from entries removed during transitions.
+4. Continue same-tick state processing after immediate completion until no event or dispatch remains enabled.
+5. Compare a square-root radicand against the exact squared midpoint between neighboring integers, handling ties explicitly.
+6. Track parser state explicitly, validate complete delimited structures and boundaries, and finalize each accepted construct immediately.
+7. Preserve input context through shared parsing helpers so every failure path reports the required error classification.
+8. Use valid character boundaries for UTF-8 slicing, and carry exact delimiter positions forward when reporting offsets after splitting.

@@ -1,0 +1,291 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WrapError {
+    WidthZero,
+    WidthTooLarge { width: usize },
+    FirstIndentTooWide { indent: usize },
+    RestIndentTooWide { indent: usize },
+    HyphenCostTooLarge { cost: usize },
+    InvalidControl { index: usize },
+    InvalidMarker { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapOptions {
+    pub width: usize,
+    pub first_indent: usize,
+    pub rest_indent: usize,
+    pub hyphen_cost: usize,
+    pub justify: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Piece {
+    Word(String),
+    Hyphenated(String),
+}
+
+fn is_separator(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{00A0}')
+}
+
+fn marker_valid(chars: &[char], index: usize) -> bool {
+    index > 0
+        && index + 1 < chars.len()
+        && chars[index - 1] != '~'
+        && chars[index + 1] != '~'
+        && !is_separator(chars[index - 1])
+        && !is_separator(chars[index + 1])
+}
+
+fn wrap_segment(segment: &[char], options: &WrapOptions, output: &mut Vec<String>) {
+    let mut words: Vec<Vec<char>> = Vec::new();
+    let mut word = Vec::new();
+
+    for &c in segment {
+        if is_separator(c) {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+        } else if c != '~' {
+            word.push(c);
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    if words.is_empty() {
+        return;
+    }
+
+    let mut lines: Vec<(usize, Vec<Piece>)> = Vec::new();
+    let mut line_no = 0usize;
+    let mut pieces: Vec<Piece> = Vec::new();
+    let mut content_len = 0usize;
+
+    let emit = |lines: &mut Vec<(usize, Vec<Piece>)>,
+                line_no: &mut usize,
+                pieces: &mut Vec<Piece>,
+                content_len: &mut usize| {
+        lines.push((*line_no, std::mem::take(pieces)));
+        *line_no += 1;
+        *content_len = 0;
+    };
+
+    for original_word in words {
+        let mut offset = 0usize;
+        while offset < original_word.len() {
+            let indent = if line_no == 0 {
+                options.first_indent
+            } else {
+                options.rest_indent
+            };
+            let capacity = options.width - indent;
+            let gap = usize::from(!pieces.is_empty());
+            let room = capacity - content_len - gap;
+            let suffix_len = original_word.len() - offset;
+
+            if suffix_len <= room {
+                if gap != 0 {
+                    content_len += 1;
+                }
+                let text: String = original_word[offset..].iter().collect();
+                content_len += suffix_len;
+                pieces.push(Piece::Word(text));
+                offset = original_word.len();
+                continue;
+            }
+
+            let mut best: Option<(usize, usize)> = None;
+            for marker in offset + 1..original_word.len() {
+                if original_word[marker] == '~' {
+                    let prefix_len = marker - offset;
+                    if prefix_len + 1 <= room {
+                        best = Some((marker, prefix_len));
+                    }
+                }
+            }
+
+            if let Some((marker, prefix_len)) = best {
+                let used = prefix_len + 1;
+                let unused = room - used;
+                let should_break = if pieces.is_empty() {
+                    true
+                } else {
+                    let baseline = capacity - content_len;
+                    (unused as u128) * (unused as u128)
+                        + (options.hyphen_cost as u128)
+                        < (baseline as u128) * (baseline as u128)
+                };
+
+                if should_break {
+                    if gap != 0 {
+                        content_len += 1;
+                    }
+                    let mut text: String = original_word[offset..marker].iter().collect();
+                    text.push('-');
+                    content_len += used;
+                    pieces.push(Piece::Hyphenated(text));
+                    emit(&mut lines, &mut line_no, &mut pieces, &mut content_len);
+                    offset = marker + 1;
+                    continue;
+                }
+            }
+
+            if !pieces.is_empty() {
+                emit(&mut lines, &mut line_no, &mut pieces, &mut content_len);
+                continue;
+            }
+
+            let indent = if line_no == 0 {
+                options.first_indent
+            } else {
+                options.rest_indent
+            };
+            let capacity = options.width - indent;
+            let mut take = 0usize;
+            let mut i = offset;
+            while i < original_word.len() && take < capacity {
+                if original_word[i] != '~' {
+                    take += 1;
+                }
+                i += 1;
+            }
+            let text: String = original_word[offset..i]
+                .iter()
+                .copied()
+                .filter(|&c| c != '~')
+                .collect();
+            content_len = text.chars().count();
+            pieces.push(Piece::Word(text));
+            offset = i;
+            emit(&mut lines, &mut line_no, &mut pieces, &mut content_len);
+        }
+    }
+
+    if !pieces.is_empty() {
+        lines.push((line_no, pieces));
+    }
+
+    let final_index = lines.len().saturating_sub(1);
+    for (index, (paragraph_line_index, line_pieces)) in lines.into_iter().enumerate() {
+        let indent = if paragraph_line_index == 0 {
+            options.first_indent
+        } else {
+            options.rest_indent
+        };
+        let piece_count = line_pieces.len();
+        let gaps = piece_count.saturating_sub(1);
+        let base_width: usize = line_pieces
+            .iter()
+            .map(|p| match p {
+                Piece::Word(s) | Piece::Hyphenated(s) => s.chars().count(),
+            })
+            .sum::<usize>()
+            + gaps;
+        let justify = options.justify && index != final_index && piece_count >= 2;
+        let extra = if justify {
+            options.width - indent - base_width
+        } else {
+            0
+        };
+        let each = if gaps > 0 { extra / gaps } else { 0 };
+        let remainder = if gaps > 0 { extra % gaps } else { 0 };
+        let start_gap = if gaps > 0 { paragraph_line_index % gaps } else { 0 };
+
+        let mut rendered = " ".repeat(indent);
+        for (piece_index, piece) in line_pieces.iter().enumerate() {
+            if piece_index > 0 {
+                let gap_index = piece_index - 1;
+                let bonus = usize::from(
+                    remainder > 0 && (gap_index + gaps - start_gap) % gaps < remainder,
+                );
+                rendered.push_str(&" ".repeat(1 + each + bonus));
+            }
+            match piece {
+                Piece::Word(s) | Piece::Hyphenated(s) => rendered.push_str(s),
+            }
+        }
+        output.push(rendered);
+    }
+}
+
+pub fn wrap(input: &str, options: &WrapOptions) -> Result<Vec<String>, WrapError> {
+    if options.width == 0 {
+        return Err(WrapError::WidthZero);
+    }
+    if options.width > 256 {
+        return Err(WrapError::WidthTooLarge {
+            width: options.width,
+        });
+    }
+    if options.first_indent >= options.width {
+        return Err(WrapError::FirstIndentTooWide {
+            indent: options.first_indent,
+        });
+    }
+    if options.rest_indent >= options.width {
+        return Err(WrapError::RestIndentTooWide {
+            indent: options.rest_indent,
+        });
+    }
+    if options.hyphen_cost > 1_000_000 {
+        return Err(WrapError::HyphenCostTooLarge {
+            cost: options.hyphen_cost,
+        });
+    }
+
+    for (index, c) in input.char_indices() {
+        if c.is_control() && !matches!(c, '\t' | '\r' | '\n') {
+            return Err(WrapError::InvalidControl { index });
+        }
+    }
+
+    let original: Vec<(usize, char)> = input.char_indices().collect();
+    let chars: Vec<char> = original.iter().map(|&(_, ch)| ch).collect();
+    for (position, &(byte_index, c)) in original.iter().enumerate() {
+        if c == '~' && !marker_valid(&chars, position) {
+            return Err(WrapError::InvalidMarker { index: byte_index });
+        }
+    }
+
+    let mut normalized = Vec::new();
+    let mut iter = input.chars().peekable();
+    while let Some(c) = iter.next() {
+        if c == '\r' {
+            if iter.peek() == Some(&'\n') {
+                iter.next();
+            }
+            normalized.push('\n');
+        } else {
+            normalized.push(c);
+        }
+    }
+
+    let mut output = Vec::new();
+    let mut segment_start = 0usize;
+    let mut i = 0usize;
+    while i < normalized.len() {
+        if normalized[i] == '\n' {
+            let run_start = i;
+            while i < normalized.len() && normalized[i] == '\n' {
+                i += 1;
+            }
+            let run_len = i - run_start;
+            if run_len >= 2 {
+                wrap_segment(&normalized[segment_start..run_start], options, &mut output);
+                for _ in 1..run_len {
+                    output.push(String::new());
+                }
+                segment_start = i;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    wrap_segment(&normalized[segment_start..], options, &mut output);
+    Ok(output)
+}
+
+fn main() {}
+```

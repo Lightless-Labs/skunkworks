@@ -1,0 +1,157 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    UnexpectedClose { pos: usize },
+    Unclosed { pos: usize },
+    NestedOpen { pos: usize },
+    EmptyExpression { pos: usize },
+    UnsupportedOperator { pos: usize },
+    EmptyVariable { pos: usize },
+    InvalidName { pos: usize },
+    DuplicateVariable { pos: usize },
+}
+
+pub fn expand(template: &str, vars: &[(&str, &str)]) -> Result<String, Error> {
+    let bytes = template.as_bytes();
+    let mut expressions = Vec::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'}' => return Err(Error::UnexpectedClose { pos: i }),
+            b'{' => {
+                let open = i;
+                let mut close = open + 1;
+                while close < bytes.len() && bytes[close] != b'}' {
+                    close += 1;
+                }
+                if close == bytes.len() {
+                    return Err(Error::Unclosed { pos: open });
+                }
+
+                if let Some(offset) = bytes[open + 1..close].iter().position(|&b| b == b'{') {
+                    return Err(Error::NestedOpen {
+                        pos: open + 1 + offset,
+                    });
+                }
+
+                expressions.push((open, close));
+                i = close + 1;
+            }
+            _ => i += 1,
+        }
+    }
+
+    let mut parsed = Vec::with_capacity(expressions.len());
+    for &(open, close) in &expressions {
+        let mut content_start = open + 1;
+        if content_start == close {
+            return Err(Error::EmptyExpression { pos: close });
+        }
+
+        if matches!(bytes[content_start], b'+' | b'#' | b'.' | b'/' | b';' | b'?' | b'&') {
+            return Err(Error::UnsupportedOperator { pos: content_start });
+        }
+
+        let mut names = Vec::new();
+        let mut start = content_start;
+        loop {
+            let end = bytes[start..close]
+                .iter()
+                .position(|&b| b == b',')
+                .map_or(close, |offset| start + offset);
+
+            if start == end {
+                return Err(Error::EmptyVariable { pos: start });
+            }
+
+            let name_bytes = &bytes[start..end];
+            if !is_name_start(name_bytes[0]) {
+                return Err(Error::InvalidName { pos: start });
+            }
+            if let Some(offset) = name_bytes[1..].iter().position(|&b| !is_name_continue(b)) {
+                return Err(Error::InvalidName {
+                    pos: start + 1 + offset,
+                });
+            }
+
+            let name = &template[start..end];
+            if names.iter().any(|&previous| previous == name) {
+                return Err(Error::DuplicateVariable { pos: start });
+            }
+            names.push(name);
+
+            if end == close {
+                break;
+            }
+            start = end + 1;
+        }
+        parsed.push(names);
+        content_start = close;
+        let _ = content_start;
+    }
+
+    let mut output = String::new();
+    let mut cursor = 0;
+
+    for ((open, close), names) in expressions.into_iter().zip(parsed.into_iter()) {
+        output.push_str(&template[cursor..open]);
+
+        let mut first = true;
+        for name in names {
+            if let Some(value) = vars.iter().rev().find(|(key, _)| *key == name).map(|(_, value)| *value) {
+                if !first {
+                    output.push(',');
+                }
+                first = false;
+                encode_value(value, &mut output);
+            }
+        }
+
+        cursor = close + 1;
+    }
+
+    output.push_str(&template[cursor..]);
+    Ok(output)
+}
+
+fn is_name_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_'
+}
+
+fn is_name_continue(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn encode_value(value: &str, output: &mut String) {
+    let bytes = value.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() && is_hex(bytes[i + 1]) && is_hex(bytes[i + 2]) {
+            output.push('%');
+            output.push((bytes[i + 1] as char).to_ascii_uppercase());
+            output.push((bytes[i + 2] as char).to_ascii_uppercase());
+            i += 3;
+            continue;
+        }
+
+        let byte = bytes[i];
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            output.push(byte as char);
+        } else {
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            output.push('%');
+            output.push(HEX[(byte >> 4) as usize] as char);
+            output.push(HEX[(byte & 0x0F) as usize] as char);
+        }
+        i += 1;
+    }
+}
+
+fn is_hex(byte: u8) -> bool {
+    byte.is_ascii_hexdigit()
+}
+
+fn main() {}
+```

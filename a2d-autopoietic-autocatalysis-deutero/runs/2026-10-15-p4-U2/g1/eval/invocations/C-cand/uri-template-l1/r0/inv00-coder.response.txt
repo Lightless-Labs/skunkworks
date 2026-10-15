@@ -1,0 +1,198 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    UnexpectedClose { pos: usize },
+    Unclosed { pos: usize },
+    NestedOpen { pos: usize },
+    EmptyExpression { pos: usize },
+    UnsupportedOperator { pos: usize },
+    EmptyVariable { pos: usize },
+    InvalidName { pos: usize },
+    DuplicateVariable { pos: usize },
+}
+
+#[derive(Debug)]
+struct Expression {
+    start: usize,
+    end: usize,
+    operator: Option<usize>,
+    names: Vec<(usize, usize)>,
+}
+
+enum Part {
+    Literal(usize, usize),
+    Expression(Expression),
+}
+
+pub fn expand(template: &str, vars: &[(&str, &str)]) -> Result<String, Error> {
+    let bytes = template.as_bytes();
+    let mut parts = Vec::new();
+    let mut cursor = 0;
+
+    while cursor < bytes.len() {
+        if bytes[cursor] == b'}' {
+            return Err(Error::UnexpectedClose { pos: cursor });
+        }
+
+        if bytes[cursor] != b'{' {
+            let literal_start = cursor;
+            while cursor < bytes.len() && bytes[cursor] != b'{' && bytes[cursor] != b'}' {
+                cursor += 1;
+            }
+            parts.push(Part::Literal(literal_start, cursor));
+            continue;
+        }
+
+        let open = cursor;
+        let close = match bytes[open + 1..].iter().position(|&b| b == b'}') {
+            Some(offset) => open + 1 + offset,
+            None => return Err(Error::Unclosed { pos: open }),
+        };
+
+        if let Some(offset) = bytes[open + 1..close].iter().position(|&b| b == b'{') {
+            return Err(Error::NestedOpen {
+                pos: open + 1 + offset,
+            });
+        }
+
+        let content_start = open + 1;
+        let mut spec_start = content_start;
+        let operator = if content_start < close
+            && matches!(bytes[content_start], b'+' | b'#' | b'.' | b'/' | b';' | b'?' | b'&')
+        {
+            let op = content_start;
+            return Err(Error::UnsupportedOperator { pos: op });
+        } else {
+            None
+        };
+
+        if spec_start == close {
+            return Err(Error::EmptyExpression { pos: close });
+        }
+
+        let mut names = Vec::new();
+        let mut seen: Vec<&str> = Vec::new();
+        loop {
+            let entry_start = spec_start;
+            let entry_end = bytes[entry_start..close]
+                .iter()
+                .position(|&b| b == b',')
+                .map_or(close, |offset| entry_start + offset);
+
+            if entry_start == entry_end {
+                return Err(Error::EmptyVariable { pos: entry_start });
+            }
+
+            let name_bytes = &bytes[entry_start..entry_end];
+            if !is_name_start(name_bytes[0]) {
+                return Err(Error::InvalidName { pos: entry_start });
+            }
+            for (offset, &byte) in name_bytes.iter().enumerate().skip(1) {
+                if !is_name_continue(byte) {
+                    return Err(Error::InvalidName {
+                        pos: entry_start + offset,
+                    });
+                }
+            }
+
+            let name = &template[entry_start..entry_end];
+            if seen.contains(&name) {
+                return Err(Error::DuplicateVariable { pos: entry_start });
+            }
+            seen.push(name);
+            names.push((entry_start, entry_end));
+
+            if entry_end == close {
+                break;
+            }
+            spec_start = entry_end + 1;
+            if spec_start == close {
+                return Err(Error::EmptyVariable { pos: close });
+            }
+        }
+
+        parts.push(Part::Expression(Expression {
+            start: open,
+            end: close + 1,
+            operator,
+            names,
+        }));
+        cursor = close + 1;
+    }
+
+    let mut output = String::new();
+    for part in parts {
+        match part {
+            Part::Literal(start, end) => output.push_str(&template[start..end]),
+            Part::Expression(expression) => {
+                let mut fields = Vec::new();
+                for (start, end) in expression.names {
+                    let name = &template[start..end];
+                    if let Some((_, value)) = vars.iter().rev().find(|(key, _)| *key == name) {
+                        fields.push(encode_value(value));
+                    }
+                }
+                if !fields.is_empty() {
+                    output.push_str(&fields.join(","));
+                }
+                let _ = (expression.start, expression.end, expression.operator);
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn is_name_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_'
+}
+
+fn is_name_continue(byte: u8) -> bool {
+    is_name_start(byte) || byte.is_ascii_digit()
+}
+
+fn encode_value(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut encoded = String::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if byte == b'%' && i + 2 < bytes.len() {
+            if let (Some(high), Some(low)) = (hex_value(bytes[i + 1]), hex_value(bytes[i + 2])) {
+                encoded.push('%');
+                encoded.push(HEX[high as usize] as char);
+                encoded.push(HEX[low as usize] as char);
+                i += 3;
+                continue;
+            }
+        }
+
+        if is_unreserved(byte) {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        i += 1;
+    }
+    encoded
+}
+
+const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn is_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+}
+
+fn main() {}
+```

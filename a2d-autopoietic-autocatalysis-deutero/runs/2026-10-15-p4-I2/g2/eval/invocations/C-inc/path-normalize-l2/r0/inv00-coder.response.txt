@@ -1,0 +1,171 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    Ok(())
+}
+
+fn directory_intent(path: &str) -> bool {
+    path.as_bytes().last() == Some(&b'/')
+        || path
+            .rsplit('/')
+            .find(|component| !component.is_empty())
+            .is_some_and(|component| component == "." || component == "..")
+}
+
+fn reduce(
+    path: &str,
+    start: Vec<String>,
+    absolute: bool,
+    offset: usize,
+) -> Result<Vec<String>, PathError> {
+    let mut components = start;
+    let mut byte_offset = offset;
+
+    for component in path.split('/') {
+        if component.is_empty() {
+            byte_offset += 1;
+            continue;
+        }
+
+        match component {
+            "." => {}
+            ".." => {
+                if components.last().is_some_and(|part| part != "..") {
+                    components.pop();
+                } else if absolute {
+                    return Err(PathError::Escape { at: byte_offset });
+                } else {
+                    components.push("..".to_owned());
+                }
+            }
+            _ => components.push(component.to_owned()),
+        }
+
+        byte_offset += component.len() + 1;
+    }
+
+    Ok(components)
+}
+
+fn render(components: &[String], absolute: bool, dir_intent: bool) -> String {
+    let mut result = if absolute {
+        format!("/{}", components.join("/"))
+    } else if components.is_empty() {
+        ".".to_owned()
+    } else {
+        components.join("/")
+    };
+
+    if absolute && components.is_empty() {
+        return "/".to_owned();
+    }
+
+    if dir_intent && result != "." && result != "/" {
+        result.push('/');
+    }
+
+    result
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+
+    let absolute = path.starts_with('/');
+    let intent = directory_intent(path);
+    let components = reduce(path, Vec::new(), absolute, 0)?;
+
+    Ok(render(&components, absolute, intent))
+}
+
+fn validated_absolute_context(path: &str, error: PathError) -> Result<Vec<String>, PathError> {
+    if !path.starts_with('/') {
+        return Err(error);
+    }
+
+    match normalize(path) {
+        Ok(normalized) => Ok(normalized
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .map(str::to_owned)
+            .collect()),
+        Err(_) => Err(error),
+    }
+}
+
+pub fn resolve(
+    path: &str,
+    cwd: &str,
+    home: Option<&str>,
+) -> Result<String, PathError> {
+    let cwd_components = validated_absolute_context(cwd, PathError::InvalidCwd)?;
+
+    let home_components = match home {
+        Some(home) => Some(validated_absolute_context(home, PathError::InvalidHome)?),
+        None => None,
+    };
+
+    validate_raw(path)?;
+
+    let (remainder, mut components, absolute, offset) =
+        if path.starts_with('~') {
+            if path != "~" && !path.starts_with("~/") {
+                return Err(PathError::UnsupportedTilde { at: 1 });
+            }
+
+            let home_components =
+                home_components.ok_or(PathError::MissingHome)?;
+
+            let remainder = if path == "~" {
+                ""
+            } else {
+                &path[2..]
+            };
+            let offset = if path == "~" { path.len() } else { 2 };
+
+            (remainder, home_components, true, offset)
+        } else if path.starts_with('/') {
+            (path, Vec::new(), true, 0)
+        } else {
+            (path, cwd_components, true, 0)
+        };
+
+    let intent = directory_intent(path);
+    components = reduce(remainder, components, absolute, offset)?;
+
+    Ok(render(&components, true, intent))
+}
+
+fn main() {}
+```

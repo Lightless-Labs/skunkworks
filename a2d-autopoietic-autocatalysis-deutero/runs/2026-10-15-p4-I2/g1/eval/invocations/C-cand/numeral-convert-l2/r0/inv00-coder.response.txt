@@ -1,0 +1,235 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseStyle {
+    pub upper: bool,
+    pub group: usize,
+    pub min_width: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BaseError {
+    BadBase { which: usize, value: u8 },
+    BadStyle,
+    Empty { operand: usize },
+    InvalidTag { operand: usize, index: usize },
+    InvalidDigit { operand: usize, index: usize },
+    Separator { operand: usize, index: usize },
+    LeadingZero { operand: usize, index: usize },
+}
+
+fn check_base(value: u8, which: usize) -> Result<(), BaseError> {
+    if !(2..=36).contains(&value) {
+        Err(BaseError::BadBase { which, value })
+    } else {
+        Ok(())
+    }
+}
+
+fn check_style(style: &BaseStyle) -> Result<(), BaseError> {
+    if style.group > 8 || style.min_width > 256 {
+        Err(BaseError::BadStyle)
+    } else {
+        Ok(())
+    }
+}
+
+fn digit_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'A'..=b'Z' => Some(byte - b'A' + 10),
+        b'a'..=b'z' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn parse_operand(input: &str, radix: u8, operand: usize) -> Result<Vec<u8>, BaseError> {
+    if input.is_empty() {
+        return Err(BaseError::Empty { operand });
+    }
+
+    let bytes = input.as_bytes();
+    let payload_start = if let Some(hash) = bytes.iter().position(|&b| b == b'#') {
+        let expected = radix.to_string();
+        if &bytes[..hash] != expected.as_bytes() {
+            return Err(BaseError::InvalidTag { operand, index: 0 });
+        }
+        hash + 1
+    } else {
+        0
+    };
+
+    if payload_start == bytes.len() {
+        return Err(BaseError::Empty { operand });
+    }
+
+    let payload = &bytes[payload_start..];
+
+    // Validate all non-separator bytes before checking separator placement.
+    for (offset, &byte) in payload.iter().enumerate() {
+        if byte == b'_' {
+            continue;
+        }
+        match digit_value(byte) {
+            Some(value) if value < radix => {}
+            _ => {
+                return Err(BaseError::InvalidDigit {
+                    operand,
+                    index: payload_start + offset,
+                });
+            }
+        }
+    }
+
+    for (offset, &byte) in payload.iter().enumerate() {
+        if byte == b'_' {
+            let has_digit_before = offset > 0 && payload[offset - 1] != b'_';
+            let has_digit_after = offset + 1 < payload.len() && payload[offset + 1] != b'_';
+            if !has_digit_before || !has_digit_after {
+                return Err(BaseError::Separator {
+                    operand,
+                    index: payload_start + offset,
+                });
+            }
+        }
+    }
+
+    let digit_count = payload.iter().filter(|&&byte| byte != b'_').count();
+    if digit_count == 0 {
+        // Every underscore lacks an adjacent digit, so the separator scan
+        // above must already have returned. This is only a defensive fallback.
+        return Err(BaseError::Separator {
+            operand,
+            index: payload_start,
+        });
+    }
+
+    let first_digit = payload.iter().copied().find(|&byte| byte != b'_').unwrap();
+    if digit_count >= 2 && digit_value(first_digit) == Some(0) {
+        return Err(BaseError::LeadingZero {
+            operand,
+            index: payload_start,
+        });
+    }
+
+    Ok(payload
+        .iter()
+        .filter(|&&byte| byte != b'_')
+        .map(|&byte| digit_value(byte).unwrap())
+        .collect())
+}
+
+// Little-endian base-256 magnitude. Multiplication and addition are small-radix
+// operations, so carry propagation is independent of the operand's length.
+fn from_digits(digits: &[u8], radix: u8) -> Vec<u8> {
+    let mut value = vec![0u8];
+    for &digit in digits {
+        let mut carry = digit as u16;
+        for byte in &mut value {
+            let n = (*byte as u16) * radix as u16 + carry;
+            *byte = (n & 0xff) as u8;
+            carry = n >> 8;
+        }
+        while carry != 0 {
+            value.push((carry & 0xff) as u8);
+            carry >>= 8;
+        }
+    }
+    value
+}
+
+fn add_magnitudes(left: &[u8], right: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(left.len().max(right.len()) + 1);
+    let mut carry = 0u16;
+    for i in 0..left.len().max(right.len()) {
+        let a = left.get(i).copied().unwrap_or(0) as u16;
+        let b = right.get(i).copied().unwrap_or(0) as u16;
+        let sum = a + b + carry;
+        result.push((sum & 0xff) as u8);
+        carry = sum >> 8;
+    }
+    if carry != 0 {
+        result.push(carry as u8);
+    }
+    result
+}
+
+fn div_rem(value: &mut Vec<u8>, divisor: u8) -> u8 {
+    let mut remainder = 0u16;
+    for byte in value.iter_mut().rev() {
+        let n = (remainder << 8) | *byte as u16;
+        *byte = (n / divisor as u16) as u8;
+        remainder = n % divisor as u16;
+    }
+    while value.len() > 1 && value.last() == Some(&0) {
+        value.pop();
+    }
+    remainder as u8
+}
+
+fn render(mut value: Vec<u8>, radix: u8, style: BaseStyle) -> String {
+    let mut digits = Vec::new();
+    if value.iter().all(|&byte| byte == 0) {
+        digits.push(0);
+    } else {
+        while value.iter().any(|&byte| byte != 0) {
+            digits.push(div_rem(&mut value, radix));
+        }
+        digits.reverse();
+    }
+
+    if digits.len() < style.min_width {
+        let padding = style.min_width - digits.len();
+        let mut padded = vec![0; padding];
+        padded.extend(digits);
+        digits = padded;
+    }
+
+    let mut output = String::new();
+    for (index, digit) in digits.iter().copied().enumerate() {
+        if style.group != 0
+            && index != 0
+            && (digits.len() - index) % style.group == 0
+        {
+            output.push('_');
+        }
+        let byte = match digit {
+            0..=9 => b'0' + digit,
+            _ if style.upper => b'A' + (digit - 10),
+            _ => b'a' + (digit - 10),
+        };
+        output.push(byte as char);
+    }
+    output
+}
+
+pub fn convert_base(
+    input: &str,
+    from: u8,
+    to: u8,
+    style: BaseStyle,
+) -> Result<String, BaseError> {
+    check_base(from, 0)?;
+    check_base(to, 1)?;
+    check_style(&style)?;
+    let digits = parse_operand(input, from, 0)?;
+    let value = from_digits(&digits, from);
+    Ok(render(value, to, style))
+}
+
+pub fn add_base(
+    left: &str,
+    right: &str,
+    base: u8,
+    style: BaseStyle,
+) -> Result<String, BaseError> {
+    check_base(base, 0)?;
+    check_style(&style)?;
+    let left_digits = parse_operand(left, base, 0)?;
+    let right_digits = parse_operand(right, base, 1)?;
+    let left_value = from_digits(&left_digits, base);
+    let right_value = from_digits(&right_digits, base);
+    Ok(render(add_magnitudes(&left_value, &right_value), base, style))
+}
+
+fn main() {}
+```

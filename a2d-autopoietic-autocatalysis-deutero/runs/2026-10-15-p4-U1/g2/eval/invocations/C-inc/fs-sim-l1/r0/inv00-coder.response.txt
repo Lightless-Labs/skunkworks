@@ -1,0 +1,185 @@
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidPath(usize),
+    Missing(String),
+    NotDir(String),
+    IsDir(String),
+    Exists(String),
+}
+
+#[derive(Debug, Clone)]
+enum Entry {
+    Dir,
+    File(Vec<u8>),
+}
+
+pub struct Fs {
+    entries: std::collections::HashMap<String, Entry>,
+}
+
+impl Fs {
+    pub fn new() -> Self {
+        let mut entries = std::collections::HashMap::new();
+        entries.insert("/".to_string(), Entry::Dir);
+        Self { entries }
+    }
+
+    fn canonical(path: &str) -> Result<Vec<String>, Error> {
+        if let Some(i) = path.as_bytes().iter().position(|&b| b == 0) {
+            return Err(Error::InvalidPath(i));
+        }
+        if path.is_empty() || !path.starts_with('/') {
+            return Err(Error::InvalidPath(0));
+        }
+        if path == "/" {
+            return Ok(Vec::new());
+        }
+
+        let mut components = Vec::new();
+        let mut start = 1;
+        for (i, component) in path[1..].split('/').enumerate() {
+            let offset = start;
+            if component.is_empty() || component == "." || component == ".." {
+                let invalid_at = if component.is_empty() {
+                    if offset == path.len() {
+                        path.len() - 1
+                    } else {
+                        offset - 1
+                    }
+                } else {
+                    offset
+                };
+                return Err(Error::InvalidPath(invalid_at));
+            }
+            components.push(component.to_string());
+            start = offset + component.len() + 1;
+            let _ = i;
+        }
+        Ok(components)
+    }
+
+    fn path_from_components(components: &[String]) -> String {
+        if components.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", components.join("/"))
+        }
+    }
+
+    fn lookup(&self, components: &[String]) -> Result<&Entry, Error> {
+        let mut prefix = Vec::new();
+        let mut current = self.entries.get("/").expect("root exists");
+        for (i, component) in components.iter().enumerate() {
+            if !matches!(current, Entry::Dir) {
+                return Err(Error::NotDir(Self::path_from_components(&prefix)));
+            }
+            prefix.push(component.clone());
+            let path = Self::path_from_components(&prefix);
+            current = self.entries.get(&path).ok_or(Error::Missing(path))?;
+            if i + 1 < components.len() && !matches!(current, Entry::Dir) {
+                return Err(Error::NotDir(Self::path_from_components(&prefix)));
+            }
+        }
+        Ok(current)
+    }
+
+    fn lookup_parent(&self, components: &[String]) -> Result<(), Error> {
+        if components.is_empty() {
+            return Ok(());
+        }
+        match self.lookup(&components[..components.len() - 1])? {
+            Entry::Dir => Ok(()),
+            Entry::File(_) => Err(Error::NotDir(Self::path_from_components(
+                &components[..components.len() - 1],
+            ))),
+        }
+    }
+
+    pub fn mkdir(&mut self, path: &str) -> Result<(), Error> {
+        let components = Self::canonical(path)?;
+        if components.is_empty() {
+            return Err(Error::Exists("/".to_string()));
+        }
+
+        self.lookup_parent(&components)?;
+        let canonical = Self::path_from_components(&components);
+        if self.entries.contains_key(&canonical) {
+            return Err(Error::Exists(canonical));
+        }
+
+        self.entries.insert(canonical, Entry::Dir);
+        Ok(())
+    }
+
+    pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Error> {
+        let components = Self::canonical(path)?;
+        if components.is_empty() {
+            return Err(Error::IsDir("/".to_string()));
+        }
+
+        self.lookup_parent(&components)?;
+        let canonical = Self::path_from_components(&components);
+        if matches!(self.entries.get(&canonical), Some(Entry::Dir)) {
+            return Err(Error::IsDir(canonical));
+        }
+
+        self.entries
+            .insert(canonical, Entry::File(data.to_vec()));
+        Ok(())
+    }
+
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let components = Self::canonical(path)?;
+        match self.lookup(&components)? {
+            Entry::Dir => Err(Error::IsDir(Self::path_from_components(&components))),
+            Entry::File(data) => Ok(data.clone()),
+        }
+    }
+
+    pub fn ls(&self, path: &str) -> Result<Vec<(String, Kind)>, Error> {
+        let components = Self::canonical(path)?;
+        match self.lookup(&components)? {
+            Entry::File(_) => {
+                Err(Error::NotDir(Self::path_from_components(&components)))
+            }
+            Entry::Dir => {
+                let parent = Self::path_from_components(&components);
+                let prefix = if parent == "/" {
+                    "/".to_string()
+                } else {
+                    format!("{}/", parent)
+                };
+                let mut children = self
+                    .entries
+                    .iter()
+                    .filter_map(|(path, entry)| {
+                        if !path.starts_with(&prefix) {
+                            return None;
+                        }
+                        let remainder = &path[prefix.len()..];
+                        if remainder.is_empty() || remainder.contains('/') {
+                            return None;
+                        }
+                        let kind = match entry {
+                            Entry::Dir => Kind::Dir,
+                            Entry::File(_) => Kind::File,
+                        };
+                        Some((remainder.to_string(), kind))
+                    })
+                    .collect::<Vec<_>>();
+                children.sort_by(|a, b| a.0.cmp(&b.0));
+                Ok(children)
+            }
+        }
+    }
+}
+
+fn main() {}
+```

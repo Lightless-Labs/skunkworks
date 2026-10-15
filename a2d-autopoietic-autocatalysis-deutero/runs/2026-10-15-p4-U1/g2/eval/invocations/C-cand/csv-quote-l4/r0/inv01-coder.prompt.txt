@@ -1,0 +1,1072 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else. Include an empty `fn main() {}` (the file is compiled as a program).
+
+PROMPT:
+R1. Implement in Rust as a SINGLE source file that compiles with `rustc --edition 2024`, using std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes (`#![...]`) or inner documentation (`//!`). All specified API items and listed fields are public; private helpers and private StreamReader fields are allowed. Implement exactly the public API below, with the listed derives (additional derives are allowed). API prototypes denote functions to implement, not declarations to copy verbatim.
+
+R2. parse_csv parses comma-delimited fields, using ASCII double quote as quote byte, and returns records in input order and fields in column order. Field contents are strings; retain all Unicode, whitespace and case without trimming or normalization.
+
+R3. Every CsvError record index is zero-based: it counts record terminators outside quotes consumed before the error. Every byte is a zero-based absolute UTF-8 byte offset in the original input, including an ignored initial BOM. Count bytes, not Unicode scalar values.
+
+R4. If the input begins with U+FEFF, ignore that one initial character before parsing. An input consisting only of this BOM is empty. All other U+FEFF characters are ordinary field data, including one at the start of a later record or inside a quoted field.
+
+R5. Empty input yields no records. A nonempty unfinished record at EOF is returned. A record terminator at EOF does not create an additional record. One LF represents one record containing one empty field; consecutive terminators each represent a record.
+
+R6. A delimiter ends a field, including an empty field. Preserve all leading, consecutive and trailing empty fields: a lone comma is one record with two empty fields. Even an empty quoted field counts as a field and therefore a record.
+
+R7. Outside quotes, LF and CRLF terminate a record. CRLF is one terminator, not two. An outside CR not immediately followed by LF is BareCr at that CR byte; this includes a CR at EOF.
+
+R8. A quote can open a quoted field only as its first byte (after the initial BOM was removed). A quote appearing in an unquoted field is UnexpectedQuote at that quote byte; leading spaces do not make a subsequent quote legal.
+
+R9. In a quoted field, a pair of consecutive quote bytes represents one literal quote. A single quote closes the field. A pair at EOF is still an escape and leaves the field unclosed.
+
+R10. Inside a quoted field, delimiters, LF, CRLF and bare CR are literal data and must be preserved exactly. Embedded newlines do not increase the error record index.
+
+R11. After a closing quote, only a delimiter, LF, CRLF or EOF is legal. Any other byte yields TrailingByte at that byte, except for the NUL and bare CR rules below. No spaces or tabs are allowed after a closing quote.
+
+R12. EOF while inside a quoted field yields UnclosedQuote at its opening quote, not at EOF. A closing quote at EOF is valid.
+
+R13. The NUL byte is forbidden everywhere, including quoted fields. Return Nul at the NUL byte. U+0000 is the only forbidden field character.
+
+R14. Scan left to right and return the first encountered lexical error, never a partial result. At any byte, check NUL first. Outside quotes, check CR validity before state-specific checks, so a bare CR after a closing quote is BareCr, not TrailingByte. An UnclosedQuote is checked only after all input bytes have been scanned.
+
+R15. Do not strip a final delimiter, normalize newlines inside quotes, interpret backslash escapes, recognize comments, or skip blank records. A backslash is ordinary data.
+
+R16. Quoted and unquoted empty strings have equal field values. Quote syntax is discarded, and escaped quotes are decoded exactly once.
+
+R17. All functions must work for arbitrarily many records and UTF-8 field bytes (within available memory) without imposing undocumented field or record limits.
+
+R18. Calling parse_csv repeatedly is independent; it retains no state between calls.
+
+R19. For Config, delimiter and quote must each be in inclusive ASCII byte range 0x21..=0x7e, and must differ. Validate delimiter range first, then quote range, then equality (equality reports Quote). Invalid values return InvalidConfig with the indicated ConfigPart, before examining input. Both bytes may be punctuation or letters; no other restrictions apply.
+
+R20. read_csv and StreamReader use Config delimiter and quote in place of comma and double quote in all parsing rules above. Other punctuation becomes ordinary data. parse_csv always retains its fixed original dialect. Config headers and duplicates do not affect lexical parsing.
+
+R21. StreamReader::new validates Config immediately. Each feed appends its entire &str chunk verbatim, including empty chunks, and returns Ok without lexical or header validation while unfinished. Chunks are valid UTF-8 strings, but CRLF, escapes, quotes and records may cross chunk boundaries. finish parses their concatenation exactly as read_csv does, with absolute offsets over that concatenation.
+
+R22. finish validates the entire CSV lexically before any header rules. It caches its Result (including errors). Every later finish returns an equal clone of that result. After any finish, feed returns ReaderFinished even for an empty chunk; it never modifies the cached result.
+
+R23. reset clears all buffered input and cached results, allowing reuse with the original Config. It succeeds after errors, success, or before finish. Empty feeds and reset do not manufacture records or offsets.
+
+R24. With headers=false, Table.header is None and all parsed records become Table.rows, including blank records and different row widths. With headers=true, consume the first parsed record as Table.header; remaining records become Table.rows. With no parsed records, header is None, not Some(empty vector). Table.duplicates always equals Config.duplicates.
+
+R25. Header names are decoded CSV field values, compared case-sensitively with no trimming; empty names are valid. Reject returns DuplicateHeader for the earliest second occurrence scanning header columns left to right: name is the repeated value, first is its earliest column, and second is the current column, both zero-based. KeepFirst and KeepLast preserve the full header vector and all row cells, including duplicate columns.
+
+R26. When a header exists, every data record must have exactly the header width. The first data record of wrong width returns HeaderWidth with record equal to its zero-based input record index (thus first data record is 1), expected=header length, actual=row length. No padding or truncation occurs.
+
+R27. Error precedence for read_csv/finish is invalid Config, then the first lexical error anywhere in input, then duplicate-header validation, then the first width mismatch. DuplicatePolicy only changes duplicate-header validation, not this order.
+
+R28. Table::column_index returns None with no header or no exact name match. With KeepLast, return the greatest matching column; with KeepFirst or Reject, return the least. This also applies to manually constructed Tables, even ones with duplicate names under Reject. This lookup never validates row widths.
+
+R29. read_csv is equivalent to new(config), feed(input), finish(). Table, Config and DuplicatePolicy expose the public fields and variants listed in the API so callers may construct tables without parsing.
+
+R30. extract_columns processes each Table.rows row in order and each ColumnSpec in slice order. Output values keep that same order; repeated requested columns are allowed. Row indexes in CellError refer only to data rows, starting at zero, independently of whether a header exists. spec is the zero-based requested-spec index, not the source-column index.
+
+R31. ColumnRef::Index(k) resolves to Some(k) even if no row has that cell. ColumnRef::Name resolves via column_index. A name with no match (including absent header) produces UnknownColumn with column=None at that spec for each processed row. A resolved index absent from the current row produces MissingCell with column=Some(index). extract_columns does not validate CSV headers or require equal row widths.
+
+R32. For an existing cell, nullable=true and the exact empty string yields Value::Null for every type. There are no other null spellings and whitespace is never trimmed. Text accepts every non-null string verbatim, including empty text when nullable=false. A non-nullable empty cell of the other types produces Empty.
+
+R33. Integer syntax is exactly 0 or an optional minus followed by a nonzero ASCII digit and then zero or more ASCII digits. No plus sign, leading zero, -0, whitespace, separator or Unicode digit is permitted. Values must fit i64, including i64::MIN and i64::MAX. InvalidInteger takes precedence over IntegerOverflow: check syntax of the entire string first, regardless of magnitude.
+
+R34. Decimal syntax is optional minus, an integral part (0 or nonzero ASCII digit followed by ASCII digits), a literal dot, and exactly two ASCII fractional digits. -0.00 is invalid; -0.01 is valid. No plus, spaces, exponent, leading zeros or Unicode digits. Value::Decimal stores the signed count of hundredths, which must fit i64, including both endpoints. InvalidDecimal takes precedence over DecimalOverflow by validating the entire spelling first.
+
+R35. Boolean accepts exactly yes and 1 for true, no and 0 for false, case-sensitively. Any other nonempty spelling is InvalidBoolean. Numeric grammar does not affect Boolean.
+
+R36. Each evaluated spec produces Some(value) on success and None on failure. CellError precedence is unresolved name, missing cell, nullable-empty success, non-nullable typed-empty error, then type syntax, then type range. Even a nullable unknown or missing cell is an error.
+
+R37. Under Collect, evaluate every spec in every row; append all errors ordered by row then spec. Valid cells in rows with errors still appear in the output. No error limit applies.
+
+R38. Under FirstPerRow, evaluate a row only through its first error, append that one error, and leave the failing and all later spec positions None, even if later cells would be valid. Continue to the next row, resetting that stopping condition.
+
+R39. Under Stop, evaluate only through the first error globally. Include the failing row with the successful prefix and None from the failing spec onward. Do not include any later rows. If no error occurs, return all rows.
+
+R40. With zero requested specs, return one empty output row per input data row and no errors under every policy. With zero data rows, return zero rows and zero errors, even for unresolved names. Header cells are never extracted as data.
+
+R41. Typed extraction never changes Table or ColumnSpec, and never calls CSV validation on manually constructed cells; Text may contain any Unicode, NUL, delimiter or line break.
+
+R42. write_csv uses the same delimiter/quote validation and precedence as Config and reports WriteError::InvalidConfig. WriteConfig uses its own dialect independently of any input dialect. Table.duplicates determines canonical duplicate handling; writer does not mutate Table.
+
+R43. Preflight all original cells before transformation: header, if present, is record 0, and data records then start at 1; without a header, data starts at 0. NUL anywhere yields WriteError::Nul at the first original record/column in row-major order, byte being its UTF-8 byte offset within that field. This scan occurs before all structural validation, including errors in earlier records.
+
+R44. Next, when a header exists, check every data row against its original header width and return Width for the first wrong row with original record index, expected and actual lengths. Without a header, differing row widths are permitted. Then reject the first original record with zero fields using ZeroColumns. A header with zero fields is a record, not an absent header.
+
+R45. After NUL, width and zero-column checks, Canonical with a header and Reject policy reports DuplicateHeader for the earliest repeated header column, using the same name/first/second rule as the reader. Preserve never rejects or removes duplicate header names, regardless of policy.
+
+R46. Preserve serializes the original header (when present) followed by all original data rows, keeping every field and row order.
+
+R47. Canonical with a header keeps one column per distinct header name. KeepFirst and Reject retain the earliest original occurrence, KeepLast the latest. Order the retained columns by ascending UTF-8 bytewise header name order, and project every row onto those original column indexes. Case and whitespace remain significant; an empty header name sorts before all nonempty names.
+
+R48. Canonical sorts the projected data rows lexicographically by their vectors of decoded field strings in UTF-8 bytewise order; a proper prefix vector sorts first. Sort after projecting, never by encoded CSV or by discarded cells. Preserve identical duplicate data rows (no deduplication). Header remains the first record.
+
+R49. Canonical without a header sorts original data rows lexicographically by field vectors with the same prefix rule, and does not reorder or drop columns; differing nonzero widths remain valid.
+
+R50. For each output field, quote it if and only if it contains the configured delimiter, configured quote, CR or LF; OR it starts or ends with ASCII space or tab; OR it is the first field of the first output record and starts with U+FEFF; OR it is the sole, empty field of a record. The BOM condition prevents readers from stripping actual field data. Non-ASCII whitespace does not itself trigger quoting; empty fields in multi-field records remain unquoted.
+
+R51. To quote a field, enclose it in the configured quote byte and double every occurrence of that quote inside; preserve all other field bytes exactly, including line breaks. Unquoted fields are emitted verbatim. Join fields with one configured delimiter, with no other padding.
+
+R52. Preserve separates records using the configured LineEnding (Lf means LF, CrLf means CRLF). If final_terminator=true, append one chosen terminator after the last record; otherwise do not. No other terminators are added. Empty output (no header and no rows) always returns an empty string.
+
+R53. Canonical always uses LF between records and exactly one final LF after the last record, ignoring line_ending and final_terminator. If there are no output records, return an empty string.
+
+R54. For any successful Preserve write, reading with the same dialect and headers equal to header.is_some() recovers the same header and rows provided the reader duplicate policy permits those names. For Canonical it recovers the projected/sorted table described above. Preserve actual initial BOM data, embedded CR/LF, quotes, empty records and Unicode, including when no final terminator is requested.
+
+R55. Writer error precedence is invalid config, first NUL in the entire original table, first header width mismatch, first zero-column record, then canonical duplicate rejection. Field byte positions and structural record indexes never change because of canonical ordering or column projection.
+
+Exact public API (all prototypes must have bodies):
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CsvError {
+    UnexpectedQuote { record: usize, byte: usize },
+    TrailingByte { record: usize, byte: usize },
+    BareCr { record: usize, byte: usize },
+    UnclosedQuote { record: usize, byte: usize },
+    Nul { record: usize, byte: usize },
+    InvalidConfig { component: ConfigPart },
+    DuplicateHeader { name: String, first: usize, second: usize },
+    HeaderWidth { record: usize, expected: usize, actual: usize },
+    ReaderFinished,
+}
+pub fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, CsvError>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigPart { Delimiter, Quote }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DuplicatePolicy { Reject, KeepFirst, KeepLast }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Config {
+    pub delimiter: u8, pub quote: u8,
+    pub headers: bool, pub duplicates: DuplicatePolicy,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Table {
+    pub header: Option<Vec<String>>, pub rows: Vec<Vec<String>>,
+    pub duplicates: DuplicatePolicy,
+}
+impl Table { pub fn column_index(&self, name: &str) -> Option<usize>; }
+pub struct StreamReader { /* private implementation fields permitted */ }
+impl StreamReader {
+    pub fn new(config: Config) -> Result<Self, CsvError>;
+    pub fn feed(&mut self, chunk: &str) -> Result<(), CsvError>;
+    pub fn finish(&mut self) -> Result<Table, CsvError>;
+    pub fn reset(&mut self);
+}
+pub fn read_csv(input: &str, config: Config) -> Result<Table, CsvError>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColumnRef { Index(usize), Name(String) }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnType { Text, Integer, Decimal, Boolean }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnSpec {
+    pub column: ColumnRef, pub kind: ColumnType, pub nullable: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Value { Null, Text(String), Integer(i64), Decimal(i64), Boolean(bool) }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellErrorKind {
+    UnknownColumn, MissingCell, Empty, InvalidInteger, IntegerOverflow,
+    InvalidDecimal, DecimalOverflow, InvalidBoolean,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellError {
+    pub row: usize, pub spec: usize, pub column: Option<usize>,
+    pub kind: CellErrorKind,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorPolicy { Collect, FirstPerRow, Stop }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedResult {
+    pub rows: Vec<Vec<Option<Value>>>, pub errors: Vec<CellError>,
+}
+pub fn extract_columns(table: &Table, columns: &[ColumnSpec], policy: ErrorPolicy) -> TypedResult;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineEnding { Lf, CrLf }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteMode { Preserve, Canonical }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteConfig {
+    pub delimiter: u8, pub quote: u8, pub line_ending: LineEnding,
+    pub final_terminator: bool, pub mode: WriteMode,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteError {
+    InvalidConfig { component: ConfigPart },
+    Nul { record: usize, column: usize, byte: usize },
+    Width { record: usize, expected: usize, actual: usize },
+    ZeroColumns { record: usize },
+    DuplicateHeader { name: String, first: usize, second: usize },
+}
+pub fn write_csv(table: &Table, config: WriteConfig) -> Result<String, WriteError>;
+```
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+fn cfg(headers: bool, duplicates: DuplicatePolicy) -> Config {
+    Config { delimiter:b',', quote:b'"', headers, duplicates }
+}
+fn strings(values: &[&str]) -> Vec<String> { values.iter().map(|s| s.to_string()).collect() }
+fn table(header: Option<&[&str]>, rows: &[&[&str]], duplicates: DuplicatePolicy) -> Table {
+    Table { header:header.map(strings), rows:rows.iter().map(|r| strings(r)).collect(), duplicates }
+}
+fn cs(column: ColumnRef, kind: ColumnType, nullable: bool) -> ColumnSpec { ColumnSpec{column,kind,nullable} }
+fn ix(index: usize, kind: ColumnType, nullable: bool) -> ColumnSpec { cs(ColumnRef::Index(index),kind,nullable) }
+fn err(row: usize, spec: usize, column: Option<usize>, kind: CellErrorKind) -> CellError { CellError{row,spec,column,kind} }
+fn wc(mode: WriteMode) -> WriteConfig { WriteConfig{delimiter:b',',quote:b'"',line_ending:LineEnding::CrLf,final_terminator:false,mode} }
+
+// R9, R10, R16
+#[test]
+fn public_escaped_and_quoted() {
+assert_eq!(parse_csv("\"red,blue\",\"say \"\"hi\"\"\""),Ok(vec![vec!["red,blue".to_string(),"say \"hi\"".to_string()]]));
+}
+
+// R21, R22
+#[test]
+fn public_stream_chunks() {
+let c=cfg(false,DuplicatePolicy::KeepFirst); let mut reader=StreamReader::new(c).unwrap(); reader.feed("left,").unwrap(); reader.feed("\"right\"\r").unwrap(); reader.feed("\n").unwrap(); assert_eq!(reader.finish().unwrap().rows,vec![strings(&["left","right"])]); reader.reset(); reader.feed("again,done").unwrap(); assert_eq!(reader.finish().unwrap().rows,vec![strings(&["again","done"])]);
+}
+
+// R29, R30, R31, R33, R34, R35
+#[test]
+fn public_named_typed() {
+let t=read_csv("id,cost,ok\n12,4.50,yes",cfg(true,DuplicatePolicy::Reject)).unwrap(); assert_eq!(t.column_index("cost"),Some(1)); let specs=[cs(ColumnRef::Name("id".into()),ColumnType::Integer,false),ix(1,ColumnType::Decimal,false),ix(2,ColumnType::Boolean,false)]; let r=extract_columns(&t,&specs,ErrorPolicy::Collect); assert_eq!(r.rows,vec![vec![Some(Value::Integer(12)),Some(Value::Decimal(450)),Some(Value::Boolean(true))]]); assert!(r.errors.is_empty());
+}
+
+// R42, R46, R47, R48, R51, R52, R53
+#[test]
+fn public_writer_modes() {
+let t=table(Some(&["b","a"]),&[&["2","z"],&["1","y"]],DuplicatePolicy::Reject); assert_eq!(write_csv(&t,wc(WriteMode::Preserve)),Ok("b,a\r\n2,z\r\n1,y".into())); assert_eq!(write_csv(&t,wc(WriteMode::Canonical)),Ok("a,b\ny,1\nz,2\n".into()));
+}
+```
+
+
+Lessons from earlier tasks (task-agnostic; apply each one that is relevant):
+1. Translate requirements into explicit validation order, output invariants, stable ordering, and edge cases before choosing an algorithm.
+2. Validate inputs and preflight failure conditions before mutation; preserve original indices, offsets, metadata, and optional-value distinctions explicitly.
+3. Model operations as ordered phases, applying admission, expiry, validation, and mutation exactly when specified.
+4. Use checked arithmetic at each required operation or prefix, and define bounds, rounding stages, and overflow precedence explicitly.
+5. Separate scanning and parsing phases from output construction; track source positions and transformed output positions independently.
+6. Track streaming state and physical input offsets across chunks; emit results only after the required validation succeeds.
+7. Keep each ordering structure aligned with its contract, using complete comparators instead of incidental container order.
+8. Preserve failed items and commit only completed work; represent scoped data, snapshots, and deadlines independently.
+
+## Previous attempt
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CsvError {
+    UnexpectedQuote { record: usize, byte: usize },
+    TrailingByte { record: usize, byte: usize },
+    BareCr { record: usize, byte: usize },
+    UnclosedQuote { record: usize, byte: usize },
+    Nul { record: usize, byte: usize },
+    InvalidConfig { component: ConfigPart },
+    DuplicateHeader { name: String, first: usize, second: usize },
+    HeaderWidth { record: usize, expected: usize, actual: usize },
+    ReaderFinished,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigPart {
+    Delimiter,
+    Quote,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DuplicatePolicy {
+    Reject,
+    KeepFirst,
+    KeepLast,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Config {
+    pub delimiter: u8,
+    pub quote: u8,
+    pub headers: bool,
+    pub duplicates: DuplicatePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Table {
+    pub header: Option<Vec<String>>,
+    pub rows: Vec<Vec<String>>,
+    pub duplicates: DuplicatePolicy,
+}
+
+impl Table {
+    pub fn column_index(&self, name: &str) -> Option<usize> {
+        let header = self.header.as_ref()?;
+        match self.duplicates {
+            DuplicatePolicy::KeepLast => header.iter().rposition(|v| v == name),
+            DuplicatePolicy::KeepFirst | DuplicatePolicy::Reject => {
+                header.iter().position(|v| v == name)
+            }
+        }
+    }
+}
+
+fn validate_dialect(delimiter: u8, quote: u8) -> Result<(), ConfigPart> {
+    if !(0x21..=0x7e).contains(&delimiter) {
+        return Err(ConfigPart::Delimiter);
+    }
+    if !(0x21..=0x7e).contains(&quote) {
+        return Err(ConfigPart::Quote);
+    }
+    if delimiter == quote {
+        return Err(ConfigPart::Quote);
+    }
+    Ok(())
+}
+
+fn parse_dialect(
+    input: &str,
+    delimiter: u8,
+    quote: u8,
+) -> Result<Vec<Vec<String>>, CsvError> {
+    let bytes = input.as_bytes();
+    let mut pos = if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+        3
+    } else {
+        0
+    };
+    if pos == bytes.len() {
+        return Ok(Vec::new());
+    }
+
+    let mut records = Vec::new();
+    let mut fields = Vec::new();
+    let mut field = Vec::new();
+    let mut record_index = 0usize;
+    let mut field_start = true;
+    let mut in_quotes = false;
+    let mut quote_open = 0usize;
+    let mut after_quote = false;
+
+    while pos < bytes.len() {
+        let b = bytes[pos];
+
+        if b == 0 {
+            return Err(CsvError::Nul {
+                record: record_index,
+                byte: pos,
+            });
+        }
+
+        if in_quotes {
+            if b == quote {
+                if pos + 1 < bytes.len() && bytes[pos + 1] == quote {
+                    field.push(quote);
+                    pos += 2;
+                } else {
+                    in_quotes = false;
+                    after_quote = true;
+                    pos += 1;
+                }
+            } else {
+                field.push(b);
+                pos += 1;
+            }
+            continue;
+        }
+
+        if b == b'\r' && bytes.get(pos + 1) != Some(&b'\n') {
+            return Err(CsvError::BareCr {
+                record: record_index,
+                byte: pos,
+            });
+        }
+
+        if after_quote {
+            if b == delimiter {
+                fields.push(String::from_utf8(field).unwrap());
+                field = Vec::new();
+                field_start = true;
+                after_quote = false;
+                pos += 1;
+            } else if b == b'\n' || b == b'\r' {
+                fields.push(String::from_utf8(field).unwrap());
+                records.push(fields);
+                fields = Vec::new();
+                field = Vec::new();
+                field_start = true;
+                after_quote = false;
+                record_index += 1;
+                pos += if b == b'\r' { 2 } else { 1 };
+            } else {
+                return Err(CsvError::TrailingByte {
+                    record: record_index,
+                    byte: pos,
+                });
+            }
+            continue;
+        }
+
+        if b == quote {
+            if field_start {
+                in_quotes = true;
+                quote_open = pos;
+                field_start = false;
+                pos += 1;
+            } else {
+                return Err(CsvError::UnexpectedQuote {
+                    record: record_index,
+                    byte: pos,
+                });
+            }
+        } else if b == delimiter {
+            fields.push(String::from_utf8(field).unwrap());
+            field = Vec::new();
+            field_start = true;
+            pos += 1;
+        } else if b == b'\n' || b == b'\r' {
+            fields.push(String::from_utf8(field).unwrap());
+            records.push(fields);
+            fields = Vec::new();
+            field = Vec::new();
+            field_start = true;
+            record_index += 1;
+            pos += if b == b'\r' { 2 } else { 1 };
+        } else {
+            field.push(b);
+            field_start = false;
+            pos += 1;
+        }
+    }
+
+    if in_quotes {
+        return Err(CsvError::UnclosedQuote {
+            record: record_index,
+            byte: quote_open,
+        });
+    }
+
+    if !fields.is_empty() || !field.is_empty() || field_start || after_quote {
+        fields.push(String::from_utf8(field).unwrap());
+        records.push(fields);
+    }
+
+    Ok(records)
+}
+
+pub fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, CsvError> {
+    parse_dialect(input, b',', b'"')
+}
+
+fn duplicate_header(header: &[String]) -> Option<CsvError> {
+    for second in 0..header.len() {
+        if let Some(first) = header[..second].iter().position(|v| v == &header[second]) {
+            return Some(CsvError::DuplicateHeader {
+                name: header[second].clone(),
+                first,
+                second,
+            });
+        }
+    }
+    None
+}
+
+fn table_from_records(
+    records: Vec<Vec<String>>,
+    config: Config,
+) -> Result<Table, CsvError> {
+    let (header, rows) = if config.headers {
+        if records.is_empty() {
+            (None, Vec::new())
+        } else {
+            let mut iter = records.into_iter();
+            (iter.next(), iter.collect())
+        }
+    } else {
+        (None, records)
+    };
+
+    if config.duplicates == DuplicatePolicy::Reject {
+        if let Some(ref h) = header {
+            if let Some(error) = duplicate_header(h) {
+                return Err(error);
+            }
+        }
+    }
+
+    if let Some(ref h) = header {
+        for (i, row) in rows.iter().enumerate() {
+            if row.len() != h.len() {
+                return Err(CsvError::HeaderWidth {
+                    record: i + 1,
+                    expected: h.len(),
+                    actual: row.len(),
+                });
+            }
+        }
+    }
+
+    Ok(Table {
+        header,
+        rows,
+        duplicates: config.duplicates,
+    })
+}
+
+pub struct StreamReader {
+    config: Config,
+    input: String,
+    finished: bool,
+    cached: Option<Result<Table, CsvError>>,
+}
+
+impl StreamReader {
+    pub fn new(config: Config) -> Result<Self, CsvError> {
+        validate_dialect(config.delimiter, config.quote)
+            .map_err(|component| CsvError::InvalidConfig { component })?;
+        Ok(Self {
+            config,
+            input: String::new(),
+            finished: false,
+            cached: None,
+        })
+    }
+
+    pub fn feed(&mut self, chunk: &str) -> Result<(), CsvError> {
+        if self.finished {
+            return Err(CsvError::ReaderFinished);
+        }
+        self.input.push_str(chunk);
+        Ok(())
+    }
+
+    pub fn finish(&mut self) -> Result<Table, CsvError> {
+        if let Some(result) = &self.cached {
+            return result.clone();
+        }
+        self.finished = true;
+        let result = parse_dialect(&self.input, self.config.delimiter, self.config.quote)
+            .and_then(|records| table_from_records(records, self.config));
+        self.cached = Some(result.clone());
+        result
+    }
+
+    pub fn reset(&mut self) {
+        self.input.clear();
+        self.finished = false;
+        self.cached = None;
+    }
+}
+
+pub fn read_csv(input: &str, config: Config) -> Result<Table, CsvError> {
+    let mut reader = StreamReader::new(config)?;
+    reader.feed(input)?;
+    reader.finish()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColumnRef {
+    Index(usize),
+    Name(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnType {
+    Text,
+    Integer,
+    Decimal,
+    Boolean,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnSpec {
+    pub column: ColumnRef,
+    pub kind: ColumnType,
+    pub nullable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Value {
+    Null,
+    Text(String),
+    Integer(i64),
+    Decimal(i64),
+    Boolean(bool),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellErrorKind {
+    UnknownColumn,
+    MissingCell,
+    Empty,
+    InvalidInteger,
+    IntegerOverflow,
+    InvalidDecimal,
+    DecimalOverflow,
+    InvalidBoolean,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellError {
+    pub row: usize,
+    pub spec: usize,
+    pub column: Option<usize>,
+    pub kind: CellErrorKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorPolicy {
+    Collect,
+    FirstPerRow,
+    Stop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedResult {
+    pub rows: Vec<Vec<Option<Value>>>,
+    pub errors: Vec<CellError>,
+}
+
+fn valid_integer_syntax(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.is_empty() {
+        return false;
+    }
+    let start = usize::from(b[0] == b'-');
+    if start == b.len() {
+        return false;
+    }
+    if b[start] == b'0' {
+        return start + 1 == b.len();
+    }
+    (b[start].is_ascii_digit() && b[start] != b'0')
+        && b[start + 1..].iter().all(u8::is_ascii_digit)
+}
+
+fn parse_integer(s: &str) -> Result<i64, CellErrorKind> {
+    if !valid_integer_syntax(s) {
+        return Err(CellErrorKind::InvalidInteger);
+    }
+    s.parse::<i64>()
+        .map_err(|_| CellErrorKind::IntegerOverflow)
+}
+
+fn valid_decimal_syntax(s: &str) -> bool {
+    let b = s.as_bytes();
+    let start = usize::from(b.first() == Some(&b'-'));
+    if b.len() < start + 4 {
+        return false;
+    }
+    let dot = b.len() - 3;
+    if b[dot] != b'.'
+        || !b[dot + 1..].iter().all(u8::is_ascii_digit)
+        || dot <= start
+    {
+        return false;
+    }
+    let integral = &b[start..dot];
+    if integral == b"0" {
+        return start == 0;
+    }
+    integral[0].is_ascii_digit()
+        && integral[0] != b'0'
+        && integral[1..].iter().all(u8::is_ascii_digit)
+}
+
+fn parse_decimal(s: &str) -> Result<i64, CellErrorKind> {
+    if !valid_decimal_syntax(s) {
+        return Err(CellErrorKind::InvalidDecimal);
+    }
+    let negative = s.starts_with('-');
+    let unsigned = if negative { &s[1..] } else { s };
+    let value = unsigned
+        .as_bytes()
+        .iter()
+        .filter(|&&b| b != b'.')
+        .try_fold(0i128, |acc, &b| {
+            acc.checked_mul(10)?.checked_add((b - b'0') as i128)
+        })
+        .ok_or(CellErrorKind::DecimalOverflow)?;
+    let signed = if negative { -value } else { value };
+    i64::try_from(signed).map_err(|_| CellErrorKind::DecimalOverflow)
+}
+
+fn evaluate_cell(
+    raw: Option<&String>,
+    column: Option<usize>,
+    spec: &ColumnSpec,
+) -> Result<Value, CellErrorKind> {
+    let raw = raw.ok_or(CellErrorKind::MissingCell)?;
+    if spec.nullable && raw.is_empty() {
+        return Ok(Value::Null);
+    }
+    if raw.is_empty() {
+        return match spec.kind {
+            ColumnType::Text => Ok(Value::Text(String::new())),
+            _ => Err(CellErrorKind::Empty),
+        };
+    }
+    match spec.kind {
+        ColumnType::Text => Ok(Value::Text(raw.clone())),
+        ColumnType::Integer => parse_integer(raw).map(Value::Integer),
+        ColumnType::Decimal => parse_decimal(raw).map(Value::Decimal),
+        ColumnType::Boolean => match raw.as_str() {
+            "yes" | "1" => Ok(Value::Boolean(true)),
+            "no" | "0" => Ok(Value::Boolean(false)),
+            _ => Err(CellErrorKind::InvalidBoolean),
+        },
+    }
+}
+
+pub fn extract_columns(
+    table: &Table,
+    columns: &[ColumnSpec],
+    policy: ErrorPolicy,
+) -> TypedResult {
+    let mut result = TypedResult {
+        rows: Vec::new(),
+        errors: Vec::new(),
+    };
+
+    'rows: for (row_index, row) in table.rows.iter().enumerate() {
+        let mut out = Vec::with_capacity(columns.len());
+        let mut row_failed = false;
+
+        for (spec_index, spec) in columns.iter().enumerate() {
+            let resolved = match &spec.column {
+                ColumnRef::Index(i) => Some(*i),
+                ColumnRef::Name(name) => table.column_index(name),
+            };
+
+            if matches!(spec.column, ColumnRef::Name(_)) && resolved.is_none() {
+                out.push(None);
+                result.errors.push(CellError {
+                    row: row_index,
+                    spec: spec_index,
+                    column: None,
+                    kind: CellErrorKind::UnknownColumn,
+                });
+                row_failed = true;
+            } else {
+                let index = resolved.unwrap();
+                match evaluate_cell(row.get(index), Some(index), spec) {
+                    Ok(value) => out.push(Some(value)),
+                    Err(kind) => {
+                        out.push(None);
+                        result.errors.push(CellError {
+                            row: row_index,
+                            spec: spec_index,
+                            column: Some(index),
+                            kind,
+                        });
+                        row_failed = true;
+                    }
+                }
+            }
+
+            if row_failed && policy != ErrorPolicy::Collect {
+                out.resize(columns.len(), None);
+                result.rows.push(out);
+                if policy == ErrorPolicy::Stop {
+                    break 'rows;
+                }
+                break;
+            }
+        }
+        result.rows.push(out);
+    }
+
+    result
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineEnding {
+    Lf,
+    CrLf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteMode {
+    Preserve,
+    Canonical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteConfig {
+    pub delimiter: u8,
+    pub quote: u8,
+    pub line_ending: LineEnding,
+    pub final_terminator: bool,
+    pub mode: WriteMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteError {
+    InvalidConfig { component: ConfigPart },
+    Nul {
+        record: usize,
+        column: usize,
+        byte: usize,
+    },
+    Width {
+        record: usize,
+        expected: usize,
+        actual: usize,
+    },
+    ZeroColumns { record: usize },
+    DuplicateHeader {
+        name: String,
+        first: usize,
+        second: usize,
+    },
+}
+
+fn write_duplicate(header: &[String]) -> Option<WriteError> {
+    for second in 0..header.len() {
+        if let Some(first) = header[..second].iter().position(|v| v == &header[second]) {
+            return Some(WriteError::DuplicateHeader {
+                name: header[second].clone(),
+                first,
+                second,
+            });
+        }
+    }
+    None
+}
+
+fn scan_nul_record(record: &[String], record_index: usize) -> Option<WriteError> {
+    for (column, value) in record.iter().enumerate() {
+        if let Some(byte) = value.as_bytes().iter().position(|&b| b == 0) {
+            return Some(WriteError::Nul {
+                record: record_index,
+                column,
+                byte,
+            });
+        }
+    }
+    None
+}
+
+fn compare_rows(a: &[String], b: &[String]) -> std::cmp::Ordering {
+    for (x, y) in a.iter().zip(b.iter()) {
+        let order = x.as_bytes().cmp(y.as_bytes());
+        if order != std::cmp::Ordering::Equal {
+            return order;
+        }
+    }
+    a.len().cmp(&b.len())
+}
+
+fn encode_field(
+    value: &str,
+    delimiter: u8,
+    quote: u8,
+    first_field_first_record: bool,
+    sole_empty: bool,
+) -> String {
+    let bytes = value.as_bytes();
+    let quote_it = bytes.contains(&delimiter)
+        || bytes.contains(&quote)
+        || bytes.contains(&b'\r')
+        || bytes.contains(&b'\n')
+        || bytes.first().is_some_and(|&b| b == b' ' || b == b'\t')
+        || bytes.last().is_some_and(|&b| b == b' ' || b == b'\t')
+        || (first_field_first_record && value.starts_with('\u{feff}'))
+        || (sole_empty && value.is_empty());
+
+    if !quote_it {
+        return value.to_string();
+    }
+
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push(quote as char);
+    for ch in value.chars() {
+        if ch as u32 == quote as u32 {
+            out.push(quote as char);
+        }
+        out.push(ch);
+    }
+    out.push(quote as char);
+    out
+}
+
+pub fn write_csv(table: &Table, config: WriteConfig) -> Result<String, WriteError> {
+    validate_dialect(config.delimiter, config.quote)
+        .map_err(|component| WriteError::InvalidConfig { component })?;
+
+    if let Some(header) = &table.header {
+        if let Some(error) = scan_nul_record(header, 0) {
+            return Err(error);
+        }
+    }
+    let data_start = usize::from(table.header.is_some());
+    for (i, row) in table.rows.iter().enumerate() {
+        if let Some(error) = scan_nul_record(row, i + data_start) {
+            return Err(error);
+        }
+    }
+
+    if let Some(header) = &table.header {
+        for (i, row) in table.rows.iter().enumerate() {
+            if row.len() != header.len() {
+                return Err(WriteError::Width {
+                    record: i + 1,
+                    expected: header.len(),
+                    actual: row.len(),
+                });
+            }
+        }
+    }
+
+    if let Some(header) = &table.header {
+        if header.is_empty() {
+            return Err(WriteError::ZeroColumns { record: 0 });
+        }
+    }
+    for (i, row) in table.rows.iter().enumerate() {
+        if row.is_empty() {
+            return Err(WriteError::ZeroColumns {
+                record: i + data_start,
+            });
+        }
+    }
+
+    if config.mode == WriteMode::Canonical {
+        if table.header.is_some() && table.duplicates == DuplicatePolicy::Reject {
+            if let Some(error) = write_duplicate(table.header.as_ref().unwrap()) {
+                return Err(error);
+            }
+        }
+    }
+
+    let mut output_records: Vec<Vec<String>> = Vec::new();
+    if config.mode == WriteMode::Preserve {
+        if let Some(header) = &table.header {
+            output_records.push(header.clone());
+        }
+        output_records.extend(table.rows.clone());
+    } else if let Some(header) = &table.header {
+        let mut retained = Vec::new();
+        for (i, name) in header.iter().enumerate() {
+            let selected = match table.duplicates {
+                DuplicatePolicy::KeepFirst | DuplicatePolicy::Reject => {
+                    header[..i].iter().all(|prior| prior != name)
+                }
+                DuplicatePolicy::KeepLast => header[i + 1..].iter().all(|later| later != name),
+            };
+            if selected {
+                retained.push((name.clone(), i));
+            }
+        }
+        retained.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+        output_records.push(retained.iter().map(|(name, _)| name.clone()).collect());
+
+        let indexes: Vec<usize> = retained.iter().map(|(_, i)| *i).collect();
+        let mut projected: Vec<Vec<String>> = table
+            .rows
+            .iter()
+            .map(|row| indexes.iter().map(|&i| row[i].clone()).collect())
+            .collect();
+        projected.sort_by(|a, b| compare_rows(a, b));
+        output_records.extend(projected);
+    } else {
+        let mut rows = table.rows.clone();
+        rows.sort_by(|a, b| compare_rows(a, b));
+        output_records = rows;
+    }
+
+    if output_records.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut encoded_records = Vec::with_capacity(output_records.len());
+    for (record_index, record) in output_records.iter().enumerate() {
+        let sole_empty = record.len() == 1 && record[0].is_empty();
+        let mut fields = Vec::with_capacity(record.len());
+        for (column, value) in record.iter().enumerate() {
+            fields.push(encode_field(
+                value,
+                config.delimiter,
+                config.quote,
+                record_index == 0 && column == 0,
+                sole_empty,
+            ));
+        }
+        encoded_records.push(fields.join(&(config.delimiter as char).to_string()));
+    }
+
+    let ending = match config.mode {
+        WriteMode::Canonical => "\n",
+        WriteMode::Preserve => match config.line_ending {
+            LineEnding::Lf => "\n",
+            LineEnding::CrLf => "\r\n",
+        },
+    };
+
+    let mut output = encoded_records.join(ending);
+    let final_terminator = config.mode == WriteMode::Canonical || config.final_terminator;
+    if final_terminator {
+        output.push_str(ending);
+    }
+    Ok(output)
+}
+
+fn main() {}
+```
+
+## Public test results
+
+COMPILATION FAILED:
+warning: unused variable: `column`
+   --> /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpvZ0cO3/main.rs:436:5
+    |
+436 |     column: Option<usize>,
+    |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_column`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+error[E0382]: use of moved value: `out`
+   --> /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpvZ0cO3/main.rs:516:26
+    |
+472 |         let mut out = Vec::with_capacity(columns.len());
+    |             -------   --------------------------------- this reinitialization might get skipped
+    |             |
+    |             move occurs because `out` has type `Vec<Option<Value>>`, which does not implement the `Copy` trait
+...
+475 |         for (spec_index, spec) in columns.iter().enumerate() {
+    |         ---------------------------------------------------- inside of this loop
+...
+509 |                 result.rows.push(out);
+    |                                  --- value moved here
+...
+516 |         result.rows.push(out);
+    |                          ^^^ value used here after move
+    |
+note: verify that your loop breaking logic is correct
+   --> /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpvZ0cO3/main.rs:511:21
+    |
+471 |     'rows: for (row_index, row) in table.rows.iter().enumerate() {
+    |     ------------------------------------------------------------
+...
+475 |         for (spec_index, spec) in columns.iter().enumerate() {
+    |         ----------------------------------------------------
+...
+511 |                     break 'rows;
+    |                     ^^^^^^^^^^^ this `break` exits the loop at line 471
+512 |                 }
+513 |                 break;
+    |                 ^^^^^ this `break` exits the loop at line 475
+help: consider moving the expression out of the loop so it is only moved once
+    |
+475 ~         let mut value = result.rows.push(out);
+476 ~         for (spec_index, spec) in columns.iter().enumerate() {
+477 |             let resolved = match &spec.column {
+...
+509 |                 out.resize(columns.len(), None);
+510 ~                 value;
+    |
+help: consider cloning the value if the performance cost is acceptable
+    |
+509 |                 result.rows.push(out.clone());
+    |                                     ++++++++
+
+error: aborting due to 1 previous error; 1 warning emitted
+
+For more information about this error, try `rustc --explain E0382`.
+
+Fix the file. Respond with the whole corrected file in a single ```rust block.

@@ -1,0 +1,101 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    RowTooLong { len: usize },
+    InvalidTile { index: usize, value: u32 },
+    MergeOverflow { first: usize, second: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Merge {
+    pub from: [usize; 2],
+    pub to: usize,
+    pub value: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowResult {
+    pub cells: Vec<u32>,
+    pub score: u64,
+    pub changed: bool,
+    pub merges: Vec<Merge>,
+}
+
+pub fn slide_row(row: &[u32], side: Side) -> Result<RowResult, Error> {
+    if row.len() > 32 {
+        return Err(Error::RowTooLong { len: row.len() });
+    }
+
+    for (index, &value) in row.iter().enumerate() {
+        if value != 0 && (value < 2 || value > 2_147_483_648 || !value.is_power_of_two()) {
+            return Err(Error::InvalidTile { index, value });
+        }
+    }
+
+    let indices: Box<dyn Iterator<Item = usize>> = match side {
+        Side::Left => Box::new(0..row.len()),
+        Side::Right => Box::new((0..row.len()).rev()),
+    };
+
+    let tiles: Vec<(usize, u32)> = indices
+        .filter_map(|index| (row[index] != 0).then_some((index, row[index])))
+        .collect();
+
+    let mut output = Vec::with_capacity(row.len());
+    let mut merges = Vec::new();
+    let mut score = 0u64;
+    let mut i = 0;
+
+    while i < tiles.len() {
+        if i + 1 < tiles.len() && tiles[i].1 == tiles[i + 1].1 {
+            let value = tiles[i]
+                .1
+                .checked_mul(2)
+                .ok_or(Error::MergeOverflow {
+                    first: tiles[i].0,
+                    second: tiles[i + 1].0,
+                })?;
+            let to = match side {
+                Side::Left => output.len(),
+                Side::Right => row.len() - 1 - output.len(),
+            };
+            output.push(value);
+            merges.push(Merge {
+                from: [tiles[i].0, tiles[i + 1].0],
+                to,
+                value,
+            });
+            score += u64::from(value);
+            i += 2;
+        } else {
+            output.push(tiles[i].1);
+            i += 1;
+        }
+    }
+
+    let mut cells = vec![0; row.len()];
+    match side {
+        Side::Left => {
+            cells[..output.len()].copy_from_slice(&output);
+        }
+        Side::Right => {
+            let start = row.len() - output.len();
+            cells[start..].copy_from_slice(&output);
+        }
+    }
+
+    let changed = cells != row;
+    Ok(RowResult {
+        cells,
+        score,
+        changed,
+        merges,
+    })
+}
+
+fn main() {}

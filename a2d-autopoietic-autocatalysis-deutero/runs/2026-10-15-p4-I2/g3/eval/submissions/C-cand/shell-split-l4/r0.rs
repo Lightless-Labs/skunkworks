@@ -1,0 +1,420 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitError {
+    Nul { pos: usize },
+    TrailingEscape { pos: usize },
+    UnterminatedSingle { pos: usize },
+    UnterminatedDouble { pos: usize },
+    UnterminatedExpansion { pos: usize },
+    InvalidExpansion { pos: usize },
+    CommandSubstitution { pos: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Word {
+    pub text: String,
+    pub glob: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JoinError {
+    Nul { word: usize, pos: usize },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Quote {
+    None,
+    Single(usize),
+    Double(usize),
+}
+
+fn is_name_start(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '_'
+}
+
+fn is_name_continue(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+fn is_separator(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\r' | '\n')
+}
+
+fn lookup<'a>(name: &str, env: &'a [(&str, &str)]) -> &'a str {
+    for &(key, value) in env {
+        if key == name {
+            return value;
+        }
+    }
+    ""
+}
+
+fn append_literal(word: &mut Word, c: char, active_glob: bool) {
+    if active_glob && matches!(c, '*' | '?' | '[') {
+        word.glob.push(word.text.len());
+    }
+    word.text.push(c);
+}
+
+fn append_expansion(word: &mut Word, value: &str, active_glob: bool) {
+    for c in value.chars() {
+        append_literal(word, c, active_glob);
+    }
+}
+
+fn parse_braced(input: &str, dollar: usize) -> Result<(usize, String), SplitError> {
+    let after_open = dollar + 2;
+    let mut cursor = after_open;
+
+    while cursor < input.len() {
+        let c = input[cursor..].chars().next().unwrap();
+        if c == '\\' {
+            cursor += 1;
+            if cursor < input.len() {
+                cursor += input[cursor..].chars().next().unwrap().len_utf8();
+            }
+        } else if c == '}' {
+            break;
+        } else {
+            cursor += c.len_utf8();
+        }
+    }
+
+    if cursor >= input.len() {
+        return Err(SplitError::UnterminatedExpansion { pos: dollar });
+    }
+
+    let contents = &input[after_open..cursor];
+    let chars: Vec<(usize, char)> = contents.char_indices().collect();
+
+    let mut name_end = 0;
+    if let Some(&(_, first)) = chars.first() {
+        if is_name_start(first) {
+            name_end = first.len_utf8();
+            for &(offset, c) in chars.iter().skip(1) {
+                if is_name_continue(c) {
+                    name_end = offset + c.len_utf8();
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    if name_end == 0 {
+        return Err(SplitError::InvalidExpansion { pos: dollar });
+    }
+
+    let name = &contents[..name_end];
+    let remainder = &contents[name_end..];
+
+    if remainder.is_empty() {
+        return Ok((cursor + 1, lookup(name, &[]).to_string()));
+    }
+
+    if !remainder.starts_with(":-") {
+        return Err(SplitError::InvalidExpansion { pos: dollar });
+    }
+
+    let text = &remainder[2..];
+    let mut decoded = String::new();
+    let mut iter = text.chars();
+    while let Some(c) = iter.next() {
+        if c == '\\' {
+            if let Some(next) = iter.next() {
+                decoded.push(next);
+            } else {
+                decoded.push('\\');
+            }
+        } else {
+            decoded.push(c);
+        }
+    }
+
+    Ok((cursor + 1, format!("\0DEFAULT\0{}\0{}\0", name, decoded)))
+}
+
+pub fn split(input: &str, env: &[(&str, &str)]) -> Result<Vec<Word>, SplitError> {
+    if let Some(pos) = input.find('\0') {
+        return Err(SplitError::Nul { pos });
+    }
+
+    let mut words = Vec::new();
+    let mut word = Word {
+        text: String::new(),
+        glob: Vec::new(),
+    };
+    let mut active = false;
+    let mut quote = Quote::None;
+    let mut i = 0;
+
+    while i < input.len() {
+        let c = input[i..].chars().next().unwrap();
+        let next_i = i + c.len_utf8();
+
+        match quote {
+            Quote::Single(_) => {
+                if c == '\'' {
+                    quote = Quote::None;
+                } else {
+                    append_literal(&mut word, c, false);
+                }
+                i = next_i;
+            }
+            Quote::Double(open) => {
+                if c == '"' {
+                    quote = Quote::None;
+                    i = next_i;
+                } else if c == '\\' {
+                    if next_i >= input.len() {
+                        return Err(SplitError::TrailingEscape { pos: i });
+                    }
+                    let n = input[next_i..].chars().next().unwrap();
+                    let after_n = next_i + n.len_utf8();
+                    if matches!(n, '"' | '\\' | '$') {
+                        append_literal(&mut word, n, false);
+                        i = after_n;
+                    } else if n == '\n' {
+                        i = after_n;
+                    } else {
+                        append_literal(&mut word, '\\', false);
+                        i = next_i;
+                    }
+                } else if c == '`' {
+                    return Err(SplitError::CommandSubstitution { pos: i });
+                } else if c == '$' {
+                    if next_i < input.len() {
+                        let n = input[next_i..].chars().next().unwrap();
+                        if n == '(' {
+                            return Err(SplitError::CommandSubstitution { pos: i });
+                        }
+                        if n == '{' {
+                            let (end, marker) = parse_braced(input, i)?;
+                            if marker.starts_with("\0DEFAULT\0") {
+                                let mut parts = marker.splitn(4, '\0');
+                                let _ = parts.next();
+                                let _ = parts.next();
+                                let name = parts.next().unwrap_or("");
+                                let default = parts.next().unwrap_or("").trim_end_matches('\0');
+                                let value = lookup(name, env);
+                                let selected = if value.is_empty() { default } else { value };
+                                append_expansion(&mut word, selected, false);
+                            } else {
+                                append_expansion(&mut word, &marker, false);
+                            }
+                            active = true;
+                            i = end;
+                        } else if is_name_start(n) {
+                            let start = next_i;
+                            let mut end = start + n.len_utf8();
+                            while end < input.len() {
+                                let ch = input[end..].chars().next().unwrap();
+                                if is_name_continue(ch) {
+                                    end += ch.len_utf8();
+                                } else {
+                                    break;
+                                }
+                            }
+                            append_expansion(&mut word, lookup(&input[start..end], env), false);
+                            active = true;
+                            i = end;
+                        } else {
+                            append_literal(&mut word, '$', false);
+                            active = true;
+                            i = next_i;
+                        }
+                    } else {
+                        append_literal(&mut word, '$', false);
+                        active = true;
+                        i = next_i;
+                    }
+                } else {
+                    append_literal(&mut word, c, false);
+                    i = next_i;
+                }
+                let _ = open;
+            }
+            Quote::None => {
+                if is_separator(c) {
+                    if active {
+                        words.push(word);
+                        word = Word {
+                            text: String::new(),
+                            glob: Vec::new(),
+                        };
+                        active = false;
+                    }
+                    i = next_i;
+                } else if c == '\'' {
+                    active = true;
+                    quote = Quote::Single(i);
+                    i = next_i;
+                } else if c == '"' {
+                    active = true;
+                    quote = Quote::Double(i);
+                    i = next_i;
+                } else if c == '\\' {
+                    if next_i >= input.len() {
+                        return Err(SplitError::TrailingEscape { pos: i });
+                    }
+                    let n = input[next_i..].chars().next().unwrap();
+                    let after_n = next_i + n.len_utf8();
+                    if n == '\n' {
+                        i = after_n;
+                    } else {
+                        append_literal(&mut word, n, false);
+                        active = true;
+                        i = after_n;
+                    }
+                } else if c == '`' {
+                    return Err(SplitError::CommandSubstitution { pos: i });
+                } else if c == '$' {
+                    if next_i < input.len() {
+                        let n = input[next_i..].chars().next().unwrap();
+                        if n == '(' {
+                            return Err(SplitError::CommandSubstitution { pos: i });
+                        }
+                        if n == '{' {
+                            let (end, marker) = parse_braced(input, i)?;
+                            if marker.starts_with("\0DEFAULT\0") {
+                                let mut parts = marker.splitn(4, '\0');
+                                let _ = parts.next();
+                                let _ = parts.next();
+                                let name = parts.next().unwrap_or("");
+                                let default = parts.next().unwrap_or("").trim_end_matches('\0');
+                                let value = lookup(name, env);
+                                let selected = if value.is_empty() { default } else { value };
+                                append_expansion(&mut word, selected, true);
+                            } else {
+                                append_expansion(&mut word, &marker, true);
+                            }
+                            active = true;
+                            i = end;
+                        } else if is_name_start(n) {
+                            let start = next_i;
+                            let mut end = start + n.len_utf8();
+                            while end < input.len() {
+                                let ch = input[end..].chars().next().unwrap();
+                                if is_name_continue(ch) {
+                                    end += ch.len_utf8();
+                                } else {
+                                    break;
+                                }
+                            }
+                            append_expansion(&mut word, lookup(&input[start..end], env), true);
+                            active = true;
+                            i = end;
+                        } else {
+                            append_literal(&mut word, '$', false);
+                            active = true;
+                            i = next_i;
+                        }
+                    } else {
+                        append_literal(&mut word, '$', false);
+                        active = true;
+                        i = next_i;
+                    }
+                } else {
+                    append_literal(&mut word, c, true);
+                    active = true;
+                    i = next_i;
+                }
+            }
+        }
+    }
+
+    match quote {
+        Quote::Single(pos) => return Err(SplitError::UnterminatedSingle { pos }),
+        Quote::Double(pos) => return Err(SplitError::UnterminatedDouble { pos }),
+        Quote::None => {}
+    }
+
+    if active {
+        words.push(word);
+    }
+    Ok(words)
+}
+
+fn bare_candidate(word: &str) -> Option<String> {
+    if word.is_empty() || word.contains('\n') {
+        return None;
+    }
+    let mut out = String::new();
+    for c in word.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':' | '=' | ',' | '+' | '@' | '%') {
+            out.push(c);
+        } else {
+            out.push('\\');
+            out.push(c);
+        }
+    }
+    Some(out)
+}
+
+fn single_candidate(word: &str) -> Option<String> {
+    if word.contains('\'') {
+        None
+    } else {
+        Some(format!("'{}'", word))
+    }
+}
+
+fn double_candidate(word: &str) -> Option<String> {
+    if word.contains('`') {
+        return None;
+    }
+    let mut out = String::from("\"");
+    for c in word.chars() {
+        if matches!(c, '\\' | '"' | '$') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    Some(out)
+}
+
+pub fn join(words: &[String]) -> Result<String, JoinError> {
+    for (index, word) in words.iter().enumerate() {
+        if let Some(pos) = word.find('\0') {
+            return Err(JoinError::Nul { word: index, pos });
+        }
+    }
+
+    let mut encoded = Vec::with_capacity(words.len());
+    for word in words {
+        let mut candidates = Vec::new();
+        if let Some(candidate) = bare_candidate(word) {
+            candidates.push((0u8, candidate));
+        }
+        if let Some(candidate) = single_candidate(word) {
+            candidates.push((1u8, candidate));
+        }
+        if let Some(candidate) = double_candidate(word) {
+            candidates.push((2u8, candidate));
+        }
+
+        let result = if candidates.is_empty() {
+            let mut fallback = String::from("'");
+            for c in word.chars() {
+                if c == '\'' {
+                    fallback.push('\'');
+                    fallback.push('\\');
+                    fallback.push('\'');
+                    fallback.push('\'');
+                } else {
+                    fallback.push(c);
+                }
+            }
+            fallback.push('\'');
+            fallback
+        } else {
+            candidates.sort_by_key(|(priority, candidate)| (candidate.len(), *priority));
+            candidates.remove(0).1
+        };
+        encoded.push(result);
+    }
+
+    Ok(encoded.join(" "))
+}
+
+fn main() {}

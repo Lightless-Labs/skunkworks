@@ -1,0 +1,176 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else. Include an empty `fn main() {}` (the file is compiled as a program).
+
+PROMPT:
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences.
+
+R2. Use exactly this public API; all listed items, variants and fields are public. All types derive Debug, Clone, PartialEq, Eq. Extra private helpers are allowed.
+```rust
+pub struct Customer { pub id: u32, pub arrival: u64, pub service: u64, pub priority: u8 }
+pub enum Kind {
+    Arrive, Start { remaining: u64, work_at: u64, finish: u64 },
+    Resume { remaining: u64, work_at: u64, finish: u64 },
+    Preempt { remaining: u64, by: u32 }, Finish
+}
+pub struct Event { pub time: u64, pub customer: u32, pub kind: Kind }
+pub enum Error {
+    ZeroId { index: usize }, DuplicateId { index: usize, id: u32 },
+    BadPriority { index: usize, value: u8 }, TimeOverflow { customer: u32, time: u64 }
+}
+pub fn simulate(customers: &[Customer], switch_cost: u64) -> Result<Vec<Event>, Error>;
+```
+
+R3. Time, service and switch_cost are u64 integer ticks; IDs are u32. The customer input may be unsorted or empty. Empty input returns Ok(vec![]) for any switch_cost.
+
+R4. Validate the entire original slice before simulation, scanning index 0 upward. At each row check zero ID, then duplicate of an earlier ID, then priority > 3, returning respectively ZeroId, DuplicateId, BadPriority at the original index. Stop at the first failing check; this precedence also overrides runtime overflow.
+
+R5. Priorities are 0, 1, 2, 3 with 0 the highest. Smaller numeric priority is strictly superior; equal priority never preempts.
+
+R6. Sort arrivals by time ascending, then priority ascending, then ID descending. All arrivals at a tick form one cohort even when their priorities differ.
+
+R7. At a tick the scheduled Finish, if any, is emitted first, freeing the server. A customer whose finish equals an arrival or internal work boundary completes before any preemption decision.
+
+R8. Then emit all cohort Arrive events in the order above, enqueueing every arrival. No dispatch/preemption is allowed between these Arrive events.
+
+R9. Waiting selection always chooses highest priority first. Within a priority class, paused customers rank ahead of customers that have never started, even if a fresh customer arrived earlier.
+
+R10. Within one class, paused customers are ordered by most recent preemption time ascending, then ID ascending. Fresh customers are ordered by arrival ascending, then ID descending. Repeated preemption replaces that customer's pause time.
+
+R11. After the arrival phase, if a customer is running and switching protection has ended, compare it with the best waiter. If and only if the waiter has strictly superior priority, emit Preempt for the running customer with by = that best waiter's ID; enqueue the paused customer and free the server.
+
+R12. Switching overhead occupies the server and cannot be preempted: the active customer is protected while time < work_at. Arrivals during protection only wait, regardless of priority.
+
+R13. Every work_at is also an internal simulation tick. At time == work_at protection ends and preemption is reconsidered after that tick's arrivals, even if no arrival occurs at this boundary. Emit no event just for the work boundary.
+
+R14. On preemption at time t (which must be >= work_at and < finish), remaining work becomes finish - t. Switching overhead is never part of remaining work; elapsed service is not restarted. Preempt.remaining is this value.
+
+R15. If the server is idle after the preceding phases, select the best waiter and dispatch at the current tick. Its first dispatch emits Start; all subsequent dispatches emit Resume. Both events report the remaining service before dispatch.
+
+R16. The first dispatch of the whole simulation pays no switching cost. Thereafter a dispatch pays switch_cost exactly when its customer ID differs from the most recently DISPATCHED customer ID. Update that remembered ID on every dispatch, including zero-duration ones.
+
+R17. At dispatch t, work_at = t + applicable switch cost; finish = work_at + remaining service. Both use checked u64 addition in that order. The server is occupied on [t, finish), including [t, work_at) switching.
+
+R18. If either addition overflows, return TimeOverflow { customer: the selected ID, time: dispatch tick }. No partial trace is returned. Do not check arithmetic earlier or try a different waiter.
+
+R19. If finish == dispatch time, emit Finish immediately after Start/Resume and repeat best-waiter dispatch at this same tick. Inline finishes occur after the entire arrival cohort and do not revisit the earlier Finish phase. Zero service with positive switching cost is occupied until work_at == finish.
+
+R20. Preemption is allowed repeatedly, preserves priority and ID, and never emits Finish for the paused customer. A Resume can itself be protected by switching overhead and can later be preempted.
+
+R21. The remembered dispatch ID persists across idle gaps; thus a different customer after an idle gap still pays switching cost. No switching cost is charged during idle time.
+
+R22. Advance to the least pending arrival, active finish, or future active work_at. Terminate after all customers finish. Do not append idle events, and do not emit time-zero events unless required by actual arrivals/dispatches/finishes.
+
+R23. Return the exact ordered trace: scheduled Finish, all Arrive events, optional Preempt, then Start/Resume and inline Finish/dispatch repetitions. Timestamps are nondecreasing. Each customer has one Arrive, one Start, one eventual Finish; Resume count equals its Preempt count.
+
+R24. u64::MAX timestamps and exactly-boundary finishes are legal. Adding zero to u64::MAX succeeds. switch_cost = u64::MAX is legal when no dispatch requires a positive addition that overflows.
+
+R25. Repeated calls are independent and the input slice remains unchanged.
+
+R26. Runtime overflow follows chronological dispatch/priority selection order, not input order. Validation never checks arrival + service or switch_cost arithmetic.
+
+R27. The by field of Preempt names the best waiter BEFORE the paused customer is re-enqueued. The entire new arrival cohort can change this choice; it is not necessarily the first ID in input order.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+fn c(id: u32, arrival: u64, service: u64, priority: u8) -> Customer {
+    Customer {
+        id,
+        arrival,
+        service,
+        priority,
+    }
+}
+fn e(time: u64, customer: u32, kind: Kind) -> Event {
+    Event {
+        time,
+        customer,
+        kind,
+    }
+}
+#[test]
+fn public_priority_preemption() {
+    assert_eq!(
+        simulate(&[c(1, 0, 6, 2), c(2, 2, 1, 0)], 0).unwrap(),
+        vec![
+            e(0, 1, Kind::Arrive),
+            e(
+                0,
+                1,
+                Kind::Start {
+                    remaining: 6,
+                    work_at: 0,
+                    finish: 6
+                }
+            ),
+            e(2, 2, Kind::Arrive),
+            e(
+                2,
+                1,
+                Kind::Preempt {
+                    remaining: 4,
+                    by: 2
+                }
+            ),
+            e(
+                2,
+                2,
+                Kind::Start {
+                    remaining: 1,
+                    work_at: 2,
+                    finish: 3
+                }
+            ),
+            e(3, 2, Kind::Finish),
+            e(
+                3,
+                1,
+                Kind::Resume {
+                    remaining: 4,
+                    work_at: 3,
+                    finish: 7
+                }
+            ),
+            e(7, 1, Kind::Finish)
+        ]
+    );
+}
+#[test]
+fn public_switching_cost() {
+    let v = simulate(&[c(4, 0, 2, 0), c(5, 1, 2, 1)], 3).unwrap();
+    assert_eq!(
+        v[4],
+        e(
+            2,
+            5,
+            Kind::Start {
+                remaining: 2,
+                work_at: 5,
+                finish: 7
+            }
+        )
+    );
+    assert_eq!(v.last(), Some(&e(7, 5, Kind::Finish)));
+}
+#[test]
+fn public_empty_and_bad_priority() {
+    assert_eq!(simulate(&[], 3), Ok(vec![]));
+    assert_eq!(
+        simulate(&[c(8, 0, 1, 4)], 0),
+        Err(Error::BadPriority { index: 0, value: 4 })
+    );
+}
+```
+
+
+Lessons from earlier tasks (task-agnostic; apply each one that is relevant):
+1. Translate requirements into explicit ordered validation, parsing, and state-transition phases; define error precedence, invariants, and boundary cases before choosing an algorithm.
+2. Validate all required input before mutation or output; preserve original indices, offsets, metadata, and distinctions that affect equality or errors.
+3. Track positions and state explicitly across transformations, chunks, and boundaries; preserve source offsets, token boundaries, and UTF-8 scalar boundaries.
+4. Model operations as ordered phases, applying admission, expiry, validation, and mutation exactly when specified; commit only completed work and preserve failed items.
+5. Use checked arithmetic at each required operation or prefix; define bounds, rounding stages, and overflow precedence explicitly.
+6. Use complete comparators and explicit tie-breaks; never rely on incidental container order.
+7. Separate scanning and parsing from output construction; track source and transformed positions independently, and emit only after required validation succeeds.
+8. Verify every observable result, including logs and counters, and test shared behavior, error precedence, and boundary cases across public operations.

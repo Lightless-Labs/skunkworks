@@ -1,0 +1,674 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-91478-1792072450893650000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a13fd7-8685-71e1-80ac-4e5cc90842b6
+--------
+user
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else. Include an empty `fn main() {}` (the file is compiled as a program).
+
+R1. Implement a vending machine in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner documentation comments.
+
+R2. The exact public API follows. Machine has private implementation fields. Every listed type, variant, field and method must be public. All value types listed below (everything except Machine) implement Clone, Debug, PartialEq and Eq. No other API is required.
+```rust
+pub struct Product { pub id: String, pub price: u16, pub stock: u16 }
+pub struct State { pub credit: u16, pub selected: Option<String>, pub escrow: Vec<u16>, pub tubes: [u16; 4], pub maintenance: bool }
+pub struct Receipt { pub id: String, pub price: u16, pub change: Vec<u16> }
+pub enum Error { EmptyCatalog, BadId { id: String }, DuplicateId { id: String }, BadPrice { id: String }, BadCoin { coin: u16 }, CreditLimit, UnknownProduct { id: String }, SameSelection, NoSelection, Underpaid { price: u16, credit: u16 }, TubeLimit { coin: u16 }, NoChange { amount: u16 }, StockLimit { id: String }, SoldOut { id: String }, Busy, ZeroRestock, MaintenanceActive, MaintenanceRequired, AlreadyMode, ReconcileMismatch { coin: u16, expected: u16, found: u16 }, ValueDrift { before: u64, after: u64 } }
+pub enum EventKind { Inserted { coin: u16, credit: u16 }, Selected { id: String }, Vended { id: String, price: u16, change: Vec<u16> }, Refunded { coins: Vec<u16> }, PriceChanged { id: String, old: u16, new: u16 }, Restocked { id: String, added: u16, stock: u16 }, Maintenance { enabled: bool }, Reconciled { before: [u16; 4], after: [u16; 4] } }
+pub struct Event { pub seq: usize, pub kind: EventKind }
+pub struct Audit { pub inserted: u64, pub refunded: u64, pub sales: u64, pub change: u64, pub adjustment: i64, pub cash: u64 }
+pub struct Machine { /* private fields */ }
+impl Machine {
+    pub fn new(products: Vec<Product>, tubes: [u16; 4]) -> Result<Self, Error>;
+    pub fn state(&self) -> State;
+    pub fn insert(&mut self, coin: u16) -> Result<(), Error>;
+    pub fn select(&mut self, id: &str) -> Result<(), Error>;
+    pub fn vend(&mut self) -> Result<Receipt, Error>;
+    pub fn refund(&mut self) -> Result<Vec<u16>, Error>;
+    pub fn products(&self) -> Vec<Product>;
+    pub fn set_price(&mut self, id: &str, price: u16) -> Result<(), Error>;
+    pub fn restock(&mut self, id: &str, count: u16) -> Result<(), Error>;
+    pub fn events(&self) -> &[Event];
+    pub fn set_maintenance(&mut self, enabled: bool) -> Result<(), Error>;
+    pub fn audit(&self) -> Audit;
+    pub fn reconcile(&mut self, expected: [u16; 4], actual: [u16; 4]) -> Result<(), Error>;
+}
+```
+
+R3. Money, prices and coins are integer units, never floating point. The only accepted denominations are 1, 3, 4, 10. Where an array describes coin counts, indices are ALWAYS in ascending denomination order [1,3,4,10]. Credit limit is 100 inclusive.
+
+R4. new owns its inputs; machines are independent. Each method is synchronous; all successful changes are visible in subsequent calls.
+
+R5. new rejects an empty product vector with EmptyCatalog before any other validation.
+
+R6. A catalog ID must consist of 1..=8 lowercase ASCII letters a..z. Any invalid ID yields BadId { id: the entire offending ID }. Runtime ID lookup is exact and case sensitive and does not run this syntax validator.
+
+R7. new scans products in supplied order. For each product check ID syntax, then whether its ID was already seen, then price, then stock. Stop at the first failing check. DuplicateId carries the duplicate ID, even if its price or stock is invalid. Later products never override an earlier error.
+
+R8. Each price must be 1..=100 inclusive; invalid prices yield BadPrice { id }. Boundary prices are valid.
+
+R9. Initially credit is zero, selected is None, escrow is empty, tubes equal the supplied counts, maintenance is false. state returns an owned snapshot; modifying it does not affect the machine. Escrow is the accepted coin list in insertion order.
+
+R10. insert validates denomination first (BadCoin { coin }), then whether credit + coin exceeds 100 (CreditLimit). Successful insertion appends the coin to escrow and adds it to credit. Selection does not restrict insertion. See R38 for the preceding maintenance gate.
+
+R11. Credit 100 is permitted. A rejected insertion changes nothing, including escrow; arithmetic must not wrap for any u16 coin input.
+
+R12. select first checks catalog membership (UnknownProduct { id: the supplied string }), then equality with the currently selected ID (SameSelection). A successful selection replaces any previous selection without changing credit or escrow. Sold-out products may be selected.
+
+R13. Repeated selection of the same product is an error, including when credit is zero. Any failed selection preserves the existing selection.
+
+R14. vend checks for selection first (NoSelection). Next check selected product stock (SoldOut { id }) before payment errors. All error checks described for vend happen before any mutation.
+
+R15. After the checks in R14, vend requires credit >= current selected price, otherwise Underpaid { price, credit }. No credit still uses this variant if a product is selected.
+
+R16. Successful vend returns Receipt with selected ID, current price and change coins, clears selection and escrow and sets credit to zero. It also decrements exactly the selected product stock by one.
+
+R17. vend owes amount = credit - price. Change comes ONLY from tubes present before this vend; escrow is unavailable for change. Zero change always has an empty coin vector. Change selection and capacity checks are specified in R23..R27.
+
+R18. Outside maintenance, refund succeeds even with no credit. Return every escrow coin in REVERSE insertion order, clear selection and escrow and set credit to zero. It never reads or changes tubes.
+
+R19. All Err returns are atomic: no state, product, tube, event or audit mutation. Error payloads report the pre-call values. Result-returning methods never panic for any arguments. Successful snapshot/read methods do not mutate anything.
+
+R20. At this level catalog IDs are fixed; prices and stock change only through the specified methods. All String outputs preserve exact ID bytes. No trim or normalization occurs.
+
+R21. Receipt and snapshot values are owned and independent; subsequent operations cannot alter earlier values. No undocumented automatic selection, refund or vending occurs.
+
+R22. Each tube count must be 0..=100. new validates tubes only after the entire catalog passes, scanning indices from 0 to 3; first violation yields TubeLimit { coin: denomination }. Escrow coins do not count toward tube capacity until vend.
+
+R23. First attempt GREEDY change: starting with the owed amount, visit denominations 10,4,3,1, taking min(available count, floor(remaining/coin)) at each. If this finishes at remainder zero, that exact greedy vector is mandatory even if another combination uses fewer coins.
+
+R24. If greedy leaves a nonzero remainder, discard its tentative choices and search all exact combinations from the original tubes. Among exact combinations minimize total number of coins; among ties choose the lexicographically greatest descending coin vector (usual integer lexicographic order). If no exact combination exists return NoChange { amount }.
+
+R25. Every change vector is sorted descending, has the exact requested value, and respects original tube availability. Greedy takes as many of a denomination as specified, including on exact boundaries.
+
+R26. After choosing change, compute proposed tubes by removing the chosen coins from original tubes and then adding every escrow coin. If any proposed count exceeds 100, return TubeLimit for the first overflowing denomination in ascending [1,3,4,10] order. This check comes after payment and NoChange; do NOT try a different change combination to avoid overflow.
+
+R27. On successful vend commit proposed tubes and clear escrow. insert does not deposit into tubes; refund returns escrow directly. Change deducted and escrow deposited are a single atomic update.
+
+R28. NoChange or TubeLimit preserves selection, credit, escrow and original tubes. A caller may insert more coins, select another product or refund after such a failure.
+
+R29. Product stock is 0..=100; constructor stock violations yield StockLimit { id }, after that product's price check. products returns owned Product snapshots sorted by ascending ID bytes, regardless of constructor order.
+
+R30. set_price validates in order: catalog membership (UnknownProduct), nonzero credit (Busy), price range 1..=100 (BadPrice). Within maintenance there is no additional selection restriction; vend always uses the updated price. An unchanged valid price is a successful action.
+
+R31. restock validates in order: membership (UnknownProduct), count == 0 (ZeroRestock), stock + count > 100 (StockLimit). Addition must not wrap for any u16 count. Within maintenance, restocking does not impose additional credit or selection restrictions; the R39 mode gate applies first.
+
+R32. events returns the entire immutable success log in chronological order, initially empty. There is exactly one Event per successful insert, select, vend, refund, set_price or restock, maintenance toggle or reconciliation. Errors never log. seq is the zero-based index in this log; read calls never log.
+
+R33. Inserted records accepted coin and resulting credit; Selected records selected ID; Vended records ID, charged price and exact returned change; Refunded records the exact returned reverse escrow vector, including an empty vector for an empty refund.
+
+R34. PriceChanged records ID and old/new price, even for an unchanged price. Restocked records ID, added count and resulting stock. Events retain their historical values after later operations.
+
+R35. A sold-out vend checks stock before underpayment, change impossibility or capacity. Stock is not reserved by select and cannot fall below zero.
+
+R36. Mutation errors are atomic across both merchandise and money; a failed vend does not reduce stock, and rejected price/restock changes do not append events. Reading products, state and events is allowed in any machine state.
+
+R37. The catalog is fixed after construction; there is no product deletion or insertion. Empty refunds are successful and clear selection and append Refunded { coins: [] }.
+
+R38. When maintenance is true, insert, select, vend and refund immediately return MaintenanceActive before ALL argument, selection, stock, credit and change checks. No mutation or event occurs.
+
+R39. set_price and restock require maintenance true, otherwise return MaintenanceRequired before their normal validation. When maintenance is true retain the R30/R31 order. Reads (state, products, events, audit) are always permitted.
+
+R40. set_maintenance first checks enabled equals current mode (AlreadyMode), then nonzero credit (Busy), then succeeds: set mode, clear selection, leave money/products unchanged. It logs Maintenance { enabled }. Repeated toggles never clear selection or log.
+
+R41. audit returns owned Audit counters. inserted, refunded, sales, change and adjustment start at zero, including when tubes initially contain money. cash is computed as current tubes value plus credit; initial tube cash is NOT inserted revenue.
+
+R42. On successful insert add coin to inserted; on successful refund add pre-call credit to refunded; on successful vend add charged price to sales and total returned change value to change. Cumulative unsigned counters use saturating u64 addition. Failed calls and all other operations leave these four counters unchanged.
+
+R43. reconcile is allowed only in maintenance, otherwise MaintenanceRequired before any count validation. Its expected array describes the caller's assumed CURRENT tube counts, not amounts. Scan ascending denominations; first expected count unequal to stored count yields ReconcileMismatch { coin, expected: supplied count, found: stored count }. No capacity validation of expected occurs.
+
+R44. Only after all expected counts match, validate actual counts <=100 in ascending denomination order, returning TubeLimit for the first violation. This takes precedence over value drift.
+
+R45. After R43/R44 compute before and after tube values using denomination weights. If absolute value difference is MORE than 20 units return ValueDrift { before, after }. Difference exactly 20 is allowed. Changes in coin composition of equal total value are allowed.
+
+R46. Successful reconciliation replaces tubes with actual, adds signed (after - before) to adjustment using saturating i64 addition, and logs Reconciled { before: previous counts, after: actual }. Identical arrays are a successful logged reconciliation. Merchandise and unsigned audit counters stay unchanged.
+
+R47. Audit cash changes immediately with inserts, refunds, change payouts and reconciliations; a sale retains the charged price inside tubes. With no counter saturation, cash = initial tube value + inserted - refunded - change + adjustment. sales is informational and is not subtracted from cash.
+
+R48. Maintenance does not empty tubes, reset audit totals or erase historical events. Entry/exit only clears selection. Reconciliation errors are atomic, including adjustment and log; mode precedence is MaintenanceRequired, then expected mismatch, then actual capacity, then value drift.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+fn pub_product(id: &str, price: u16) -> Product { Product { id: id.into(), price, stock: 5 } }
+fn pub_new(price: u16, tubes: [u16;4]) -> Machine {
+    Machine::new(vec![pub_product("tea",price), pub_product("juice",7)], tubes).unwrap()
+}
+fn pub_admin(m: &mut Machine) { m.set_maintenance(true).unwrap(); }
+fn pub_normal(m: &mut Machine) { m.set_maintenance(false).unwrap(); }
+// Checks R9, R10, R12, R14-R16.
+#[test]
+fn public_exact_sale() {
+    let mut m = pub_new(6, [20,10,10,10]);
+    m.select("tea").unwrap();
+    m.insert(3).unwrap(); m.insert(3).unwrap();
+    assert_eq!(m.vend().unwrap(), Receipt { id: "tea".into(), price: 6, change: vec![] });
+    assert_eq!(m.state().credit,0); assert_eq!(m.state().selected,None);
+}
+// Checks R12, R18.
+#[test]
+fn public_refund_and_selection() {
+    let mut m = pub_new(6, [20,10,10,10]);
+    m.select("juice").unwrap(); m.insert(1).unwrap(); m.insert(4).unwrap();
+    assert_eq!(m.refund().unwrap(),vec![4,1]);
+    assert_eq!(m.state().escrow,Vec::<u16>::new());
+}
+// Checks R17, R23, R25, R27.
+#[test]
+fn public_change() {
+    let mut m = pub_new(6, [20,10,10,10]);
+    m.insert(10).unwrap(); m.select("tea").unwrap();
+    assert_eq!(m.vend().unwrap().change,vec![4]);
+    assert_eq!(m.state().tubes,[20,10,9,11]);
+}
+// Checks R29-R36, R39-R47.
+#[test]
+fn public_catalog_log_and_service() {
+    let mut m = pub_new(6, [20,10,10,10]);
+    pub_admin(&mut m);
+    m.set_price("tea",8).unwrap(); m.restock("tea",2).unwrap();
+    let products = m.products();
+    assert_eq!(products.iter().map(|p|p.id.as_str()).collect::<Vec<_>>(),vec!["juice","tea"]);
+    assert_eq!(products[1].price,8); assert_eq!(products[1].stock,7);
+    assert!(m.events().iter().any(|e| e.kind == EventKind::PriceChanged { id:"tea".into(),old:6,new:8 }));
+    assert_eq!(m.audit().cash,20+30+40+100);
+    m.reconcile([20,10,10,10],[21,10,10,10]).unwrap();
+    assert_eq!(m.audit().adjustment,1);
+    pub_normal(&mut m); assert!(!m.state().maintenance);
+
+}
+```
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-15T13:54:12.113973Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Product {
+    pub id: String,
+    pub price: u16,
+    pub stock: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct State {
+    pub credit: u16,
+    pub selected: Option<String>,
+    pub escrow: Vec<u16>,
+    pub tubes: [u16; 4],
+    pub maintenance: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Receipt {
+    pub id: String,
+    pub price: u16,
+    pub change: Vec<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    EmptyCatalog,
+    BadId { id: String },
+    DuplicateId { id: String },
+    BadPrice { id: String },
+    BadCoin { coin: u16 },
+    CreditLimit,
+    UnknownProduct { id: String },
+    SameSelection,
+    NoSelection,
+    Underpaid { price: u16, credit: u16 },
+    TubeLimit { coin: u16 },
+    NoChange { amount: u16 },
+    StockLimit { id: String },
+    SoldOut { id: String },
+    Busy,
+    ZeroRestock,
+    MaintenanceActive,
+    MaintenanceRequired,
+    AlreadyMode,
+    ReconcileMismatch { coin: u16, expected: u16, found: u16 },
+    ValueDrift { before: u64, after: u64 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EventKind {
+    Inserted { coin: u16, credit: u16 },
+    Selected { id: String },
+    Vended { id: String, price: u16, change: Vec<u16> },
+    Refunded { coins: Vec<u16> },
+    PriceChanged { id: String, old: u16, new: u16 },
+    Restocked { id: String, added: u16, stock: u16 },
+    Maintenance { enabled: bool },
+    Reconciled { before: [u16; 4], after: [u16; 4] },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Event {
+    pub seq: usize,
+    pub kind: EventKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Audit {
+    pub inserted: u64,
+    pub refunded: u64,
+    pub sales: u64,
+    pub change: u64,
+    pub adjustment: i64,
+    pub cash: u64,
+}
+
+pub struct Machine {
+    products: Vec<Product>,
+    credit: u16,
+    selected: Option<String>,
+    escrow: Vec<u16>,
+    tubes: [u16; 4],
+    maintenance: bool,
+    events: Vec<Event>,
+    inserted: u64,
+    refunded: u64,
+    sales: u64,
+    change: u64,
+    adjustment: i64,
+}
+
+const DENOMS: [u16; 4] = [1, 3, 4, 10];
+
+impl Machine {
+    pub fn new(products: Vec<Product>, tubes: [u16; 4]) -> Result<Self, Error> {
+        if products.is_empty() {
+            return Err(Error::EmptyCatalog);
+        }
+
+        let mut seen = Vec::<String>::new();
+        for p in &products {
+            if !(1..=8).contains(&p.id.len())
+                || !p.id.bytes().all(|b| b.is_ascii_lowercase())
+            {
+                return Err(Error::BadId { id: p.id.clone() });
+            }
+            if seen.iter().any(|id| id == &p.id) {
+                return Err(Error::DuplicateId { id: p.id.clone() });
+            }
+            seen.push(p.id.clone());
+            if !(1..=100).contains(&p.price) {
+                return Err(Error::BadPrice { id: p.id.clone() });
+            }
+            if p.stock > 100 {
+                return Err(Error::StockLimit { id: p.id.clone() });
+            }
+        }
+
+        for i in 0..4 {
+            if tubes[i] > 100 {
+                return Err(Error::TubeLimit { coin: DENOMS[i] });
+            }
+        }
+
+        Ok(Self {
+            products,
+            credit: 0,
+            selected: None,
+            escrow: Vec::new(),
+            tubes,
+            maintenance: false,
+            events: Vec::new(),
+            inserted: 0,
+            refunded: 0,
+            sales: 0,
+            change: 0,
+            adjustment: 0,
+        })
+    }
+
+    fn log(&mut self, kind: EventKind) {
+        let seq = self.events.len();
+        self.events.push(Event { seq, kind });
+    }
+
+    fn product_index(&self, id: &str) -> Option<usize> {
+        self.products.iter().position(|p| p.id == id)
+    }
+
+    pub fn state(&self) -> State {
+        State {
+            credit: self.credit,
+            selected: self.selected.clone(),
+            escrow: self.escrow.clone(),
+            tubes: self.tubes,
+            maintenance: self.maintenance,
+        }
+    }
+
+    pub fn insert(&mut self, coin: u16) -> Result<(), Error> {
+        if self.maintenance {
+            return Err(Error::MaintenanceActive);
+        }
+        let index = match coin {
+            1 => 0,
+            3 => 1,
+            4 => 2,
+            10 => 3,
+            _ => return Err(Error::BadCoin { coin }),
+        };
+        let _ = index;
+        let new_credit = self.credit as u32 + coin as u32;
+        if new_credit > 100 {
+            return Err(Error::CreditLimit);
+        }
+        self.credit = new_credit as u16;
+        self.escrow.push(coin);
+        self.inserted = self.inserted.saturating_add(coin as u64);
+        self.log(EventKind::Inserted {
+            coin,
+            credit: self.credit,
+        });
+        Ok(())
+    }
+
+    pub fn select(&mut self, id: &str) -> Result<(), Error> {
+        if self.maintenance {
+            return Err(Error::MaintenanceActive);
+        }
+        let Some(index) = self.product_index(id) else {
+            return Err(Error::UnknownProduct { id: id.to_owned() });
+        };
+        if self.selected.as_deref() == Some(id) {
+            return Err(Error::SameSelection);
+        }
+        let selected_id = self.products[index].id.clone();
+        self.selected = Some(selected_id.clone());
+        self.log(EventKind::Selected { id: selected_id });
+        Ok(())
+    }
+
+    pub fn vend(&mut self) -> Result<Receipt, Error> {
+        if self.maintenance {
+            return Err(Error::MaintenanceActive);
+        }
+        let Some(id) = self.selected.clone() else {
+            return Err(Error::NoSelection);
+        };
+        let index = self.product_index(&id).expect("selected catalog product");
+        let product = &self.products[index];
+        if product.stock == 0 {
+            return Err(Error::SoldOut { id });
+        }
+        let price = product.price;
+        if self.credit < price {
+            return Err(Error::Underpaid {
+                price,
+                credit: self.credit,
+            });
+        }
+        let amount = self.credit - price;
+
+        let mut counts = [0u16; 4];
+        let mut remaining = amount as u32;
+        for i in (0..4).rev() {
+            let denom = DENOMS[i] as u32;
+            let take = (self.tubes[i] as u32).min(remaining / denom);
+            counts[i] = take as u16;
+            remaining -= take * denom;
+        }
+
+        if remaining != 0 {
+            let mut best: Option<[u16; 4]> = None;
+            let mut best_total = u32::MAX;
+            for c10 in 0..=self.tubes[3].min(amount / 10) {
+                for c4 in 0..=self.tubes[2].min(amount / 4) {
+                    for c3 in 0..=self.tubes[1].min(amount / 3) {
+                        let used = c10 as u32 * 10 + c4 as u32 * 4 + c3 as u32 * 3;
+                        if used > amount as u32 {
+                            continue;
+                        }
+                        let rem = amount as u32 - used;
+                        if rem > self.tubes[0] as u32 {
+                            continue;
+                        }
+                        let candidate = [rem as u16, c3, c4, c10];
+                        let total = candidate.iter().map(|&n| n as u32).sum();
+                        let better = match &best {
+                            None => true,
+                            Some(old) => {
+                                total < best_total
+                                    || (total == best_total
+                                        && (3..=0).rev().any(|_| false))
+                                    || (total == best_total
+                                        && (0..4).rev().find_map(|i| {
+                                            if candidate[i] != old[i] {
+                                                Some(candidate[i] > old[i])
+                                            } else {
+                                                None
+                                            }
+                                        }).unwrap_or(false))
+                            }
+                        };
+                        if better {
+                            best = Some(candidate);
+                            best_total = total;
+                        }
+                    }
+                }
+            }
+            let Some(best_counts) = best else {
+                return Err(Error::NoChange { amount });
+            };
+            counts = best_counts;
+        }
+
+        let mut proposed = self.tubes;
+        for i in 0..4 {
+            proposed[i] -= counts[i];
+        }
+        for &coin in &self.escrow {
+            let i = match coin {
+                1 => 0,
+                3 => 1,
+                4 => 2,
+                10 => 3,
+                _ => unreachable!(),
+            };
+            let next = proposed[i] as u32 + 1;
+            if next > 100 {
+                return Err(Error::TubeLimit { coin: DENOMS[i] });
+            }
+            proposed[i] = next as u16;
+        }
+
+        let mut change_coins = Vec::new();
+        for i in (0..4).rev() {
+            for _ in 0..counts[i] {
+                change_coins.push(DENOMS[i]);
+            }
+        }
+        let change_value = amount as u64;
+
+        self.tubes = proposed;
+        self.products[index].stock -= 1;
+        self.credit = 0;
+        self.escrow.clear();
+        self.selected = None;
+        self.sales = self.sales.saturating_add(price as u64);
+        self.change = self.change.saturating_add(change_value);
+        self.log(EventKind::Vended {
+            id: id.clone(),
+            price,
+            change: change_coins.clone(),
+        });
+        Ok(Receipt {
+            id,
+            price,
+            change: change_coins,
+        })
+    }
+
+    pub fn refund(&mut self) -> Result<Vec<u16>, Error> {
+        if self.maintenance {
+            return Err(Error::MaintenanceActive);
+        }
+        let coins: Vec<u16> = self.escrow.iter().rev().copied().collect();
+        let value = self.credit as u64;
+        self.credit = 0;
+        self.escrow.clear();
+        self.selected = None;
+        self.refunded = self.refunded.saturating_add(value);
+        self.log(EventKind::Refunded {
+            coins: coins.clone(),
+        });
+        Ok(coins)
+    }
+
+    pub fn products(&self) -> Vec<Product> {
+        let mut products = self.products.clone();
+        products.sort_by(|a, b| a.id.as_bytes().cmp(b.id.as_bytes()));
+        products
+    }
+
+    pub fn set_price(&mut self, id: &str, price: u16) -> Result<(), Error> {
+        if !self.maintenance {
+            return Err(Error::MaintenanceRequired);
+        }
+        let Some(index) = self.product_index(id) else {
+            return Err(Error::UnknownProduct { id: id.to_owned() });
+        };
+        if self.credit != 0 {
+            return Err(Error::Busy);
+        }
+        if !(1..=100).contains(&price) {
+            return Err(Error::BadPrice { id: id.to_owned() });
+        }
+        let old = self.products[index].price;
+        self.products[index].price = price;
+        self.log(EventKind::PriceChanged {
+            id: id.to_owned(),
+            old,
+            new: price,
+        });
+        Ok(())
+    }
+
+    pub fn restock(&mut self, id: &str, count: u16) -> Result<(), Error> {
+        if !self.maintenance {
+            return Err(Error::MaintenanceRequired);
+        }
+        let Some(index) = self.product_index(id) else {
+            return Err(Error::UnknownProduct { id: id.to_owned() });
+        };
+        if count == 0 {
+            return Err(Error::ZeroRestock);
+        }
+        let stock = self.products[index].stock as u32 + count as u32;
+        if stock > 100 {
+            return Err(Error::StockLimit { id: id.to_owned() });
+        }
+        self.products[index].stock = stock as u16;
+        self.log(EventKind::Restocked {
+            id: id.to_owned(),
+            added: count,
+            stock: stock as u16,
+        });
+        Ok(())
+    }
+
+    pub fn events(&self) -> &[Event] {
+        &self.events
+    }
+
+    pub fn set_maintenance(&mut self, enabled: bool) -> Result<(), Error> {
+        if enabled == self.maintenance {
+            return Err(Error::AlreadyMode);
+        }
+        if self.credit != 0 {
+            return Err(Error::Busy);
+        }
+        self.maintenance = enabled;
+        self.selected = None;
+        self.log(EventKind::Maintenance { enabled });
+        Ok(())
+    }
+
+    pub fn audit(&self) -> Audit {
+        let tube_value: u64 = self
+            .tubes
+            .iter()
+            .zip(DENOMS)
+            .map(|(&count, denom)| count as u64 * denom as u64)
+            .sum();
+        Audit {
+            inserted: self.inserted,
+            refunded: self.refunded,
+            sales: self.sales,
+            change: self.change,
+            adjustment: self.adjustment,
+            cash: tube_value + self.credit as u64,
+        }
+    }
+
+    pub fn reconcile(
+        &mut self,
+        expected: [u16; 4],
+        actual: [u16; 4],
+    ) -> Result<(), Error> {
+        if !self.maintenance {
+            return Err(Error::MaintenanceRequired);
+        }
+        for i in 0..4 {
+            if expected[i] != self.tubes[i] {
+                return Err(Error::ReconcileMismatch {
+                    coin: DENOMS[i],
+                    expected: expected[i],
+                    found: self.tubes[i],
+                });
+            }
+        }
+        for i in 0..4 {
+            if actual[i] > 100 {
+                return Err(Error::TubeLimit { coin: DENOMS[i] });
+            }
+        }
+        let before_value: u64 = self
+            .tubes
+            .iter()
+            .zip(DENOMS)
+            .map(|(&count, denom)| count as u64 * denom as u64)
+            .sum();
+        let after_value: u64 = actual
+            .iter()
+            .zip(DENOMS)
+            .map(|(&count, denom)| count as u64 * denom as u64)
+            .sum();
+        if before_value.abs_diff(after_value) > 20 {
+            return Err(Error::ValueDrift {
+                before: before_value,
+                after: after_value,
+            });
+        }
+        let delta = after_value as i128 - before_value as i128;
+        let delta_i64 = delta as i64;
+        self.adjustment = self.adjustment.saturating_add(delta_i64);
+        let before = self.tubes;
+        self.tubes = actual;
+        self.log(EventKind::Reconciled {
+            before,
+            after: actual,
+        });
+        Ok(())
+    }
+}
+
+fn main() {}
+```
+tokens used
+8,986

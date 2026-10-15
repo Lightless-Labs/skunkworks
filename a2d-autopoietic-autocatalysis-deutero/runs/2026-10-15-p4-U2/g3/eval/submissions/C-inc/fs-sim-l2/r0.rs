@@ -1,0 +1,204 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidPath(usize),
+    Missing(String),
+    NotDir(String),
+    IsDir(String),
+    Exists(String),
+}
+
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone)]
+enum Entry {
+    Dir,
+    File(Vec<u8>),
+}
+
+pub struct Fs {
+    entries: BTreeMap<String, Entry>,
+    cwd: String,
+}
+
+impl Fs {
+    pub fn new() -> Self {
+        let mut entries = BTreeMap::new();
+        entries.insert("/".to_owned(), Entry::Dir);
+        Self {
+            entries,
+            cwd: "/".to_owned(),
+        }
+    }
+
+    fn normalize(&self, path: &str) -> Result<String, Error> {
+        if let Some(i) = path.as_bytes().iter().position(|&b| b == 0) {
+            return Err(Error::InvalidPath(i));
+        }
+        if path.is_empty() {
+            return Err(Error::InvalidPath(0));
+        }
+
+        let mut components: Vec<&str> = Vec::new();
+        if !path.starts_with('/') {
+            components.extend(self.cwd.split('/').filter(|part| !part.is_empty()));
+        }
+
+        for part in path.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    components.pop();
+                }
+                _ => components.push(part),
+            }
+        }
+
+        if components.is_empty() {
+            Ok("/".to_owned())
+        } else {
+            Ok(format!("/{}", components.join("/")))
+        }
+    }
+
+    fn parent(path: &str) -> Option<String> {
+        if path == "/" {
+            None
+        } else {
+            match path.rfind('/') {
+                Some(0) => Some("/".to_owned()),
+                Some(i) => Some(path[..i].to_owned()),
+                None => Some("/".to_owned()),
+            }
+        }
+    }
+
+    fn lookup(&self, path: &str) -> Result<&Entry, Error> {
+        if path == "/" {
+            return self
+                .entries
+                .get("/")
+                .ok_or_else(|| Error::Missing("/".to_owned()));
+        }
+
+        let mut prefix = String::new();
+        for component in path.split('/').filter(|part| !part.is_empty()) {
+            prefix.push('/');
+            prefix.push_str(component);
+            match self.entries.get(&prefix) {
+                Some(Entry::Dir) => {}
+                Some(Entry::File(_)) => {
+                    if prefix != path {
+                        return Err(Error::NotDir(prefix));
+                    }
+                }
+                None => return Err(Error::Missing(prefix)),
+            }
+        }
+
+        self.entries
+            .get(path)
+            .ok_or_else(|| Error::Missing(path.to_owned()))
+    }
+
+    pub fn mkdir(&mut self, path: &str) -> Result<(), Error> {
+        let path = self.normalize(path)?;
+        if path == "/" {
+            return Err(Error::Exists(path));
+        }
+
+        let parent = Self::parent(&path).expect("non-root path has a parent");
+        match self.lookup(&parent)? {
+            Entry::Dir => {}
+            Entry::File(_) => return Err(Error::NotDir(parent)),
+        }
+
+        if self.entries.contains_key(&path) {
+            return Err(Error::Exists(path));
+        }
+
+        self.entries.insert(path, Entry::Dir);
+        Ok(())
+    }
+
+    pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Error> {
+        let path = self.normalize(path)?;
+        if path == "/" {
+            return Err(Error::IsDir(path));
+        }
+
+        let parent = Self::parent(&path).expect("non-root path has a parent");
+        match self.lookup(&parent)? {
+            Entry::Dir => {}
+            Entry::File(_) => return Err(Error::NotDir(parent)),
+        }
+
+        match self.entries.get_mut(&path) {
+            Some(Entry::Dir) => Err(Error::IsDir(path)),
+            Some(Entry::File(existing)) => {
+                existing.clear();
+                existing.extend_from_slice(data);
+                Ok(())
+            }
+            None => {
+                self.entries.insert(path, Entry::File(data.to_vec()));
+                Ok(())
+            }
+        }
+    }
+
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let path = self.normalize(path)?;
+        match self.lookup(&path)? {
+            Entry::Dir => Err(Error::IsDir(path)),
+            Entry::File(data) => Ok(data.clone()),
+        }
+    }
+
+    pub fn ls(&self, path: &str) -> Result<Vec<(String, Kind)>, Error> {
+        let path = self.normalize(path)?;
+        match self.lookup(&path)? {
+            Entry::File(_) => return Err(Error::NotDir(path)),
+            Entry::Dir => {}
+        }
+
+        let mut children = Vec::new();
+        for (entry_path, entry) in &self.entries {
+            let Some(parent) = Self::parent(entry_path) else {
+                continue;
+            };
+            if parent == path {
+                let name = entry_path.rsplit('/').next().unwrap_or("").to_owned();
+                let kind = match entry {
+                    Entry::Dir => Kind::Dir,
+                    Entry::File(_) => Kind::File,
+                };
+                children.push((name, kind));
+            }
+        }
+        children.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(children)
+    }
+
+    pub fn cwd(&self) -> String {
+        self.cwd.clone()
+    }
+
+    pub fn chdir(&mut self, path: &str) -> Result<(), Error> {
+        let path = self.normalize(path)?;
+        match self.lookup(&path)? {
+            Entry::Dir => {
+                self.cwd = path;
+                Ok(())
+            }
+            Entry::File(_) => Err(Error::NotDir(path)),
+        }
+    }
+}
+
+fn main() {}

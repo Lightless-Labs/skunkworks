@@ -1,0 +1,140 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Point {
+    pub x: i64,
+    pub y: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Clockwise,
+    Degenerate,
+    CounterClockwise,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Measures {
+    pub signed_area2: i128,
+    pub area2: u128,
+    pub orientation: Orientation,
+    pub edge_milli: Vec<u64>,
+    pub perimeter_milli: u64,
+    pub longest_edge: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeomError {
+    TooManyVertices { len: usize },
+    OutOfRange { index: usize },
+    TooFewVertices { len: usize },
+}
+
+const MAX_VERTICES: usize = 4096;
+const COORD_LIMIT: i64 = 1_000_000_000;
+
+/// Computes floor(sqrt(n)) for the bounded values used by this module.
+fn integer_sqrt(n: u128) -> u128 {
+    let (mut low, mut high) = (0_u128, 1_u128 << 64);
+    while low + 1 < high {
+        let mid = low + (high - low) / 2;
+        if mid <= n / mid {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    low
+}
+
+fn rounded_edge_milli(a: Point, b: Point) -> u64 {
+    let dx = (b.x as i128 - a.x as i128).unsigned_abs();
+    let dy = (b.y as i128 - a.y as i128).unsigned_abs();
+    let scaled_squared = (dx * dx + dy * dy) * 1_000_000;
+
+    let floor = integer_sqrt(scaled_squared);
+    // Compare sqrt(scaled_squared) with floor + 1/2 without squaring
+    // the midpoint, which could overflow for unrestricted coordinates.
+    let remainder = scaled_squared - floor * floor;
+    if remainder >= floor + 1 {
+        (floor + 1) as u64
+    } else {
+        floor as u64
+    }
+}
+
+pub fn measure(points: &[Point]) -> Result<Measures, GeomError> {
+    if points.len() > MAX_VERTICES {
+        return Err(GeomError::TooManyVertices { len: points.len() });
+    }
+
+    for (index, point) in points.iter().enumerate() {
+        if point.x < -COORD_LIMIT
+            || point.x > COORD_LIMIT
+            || point.y < -COORD_LIMIT
+            || point.y > COORD_LIMIT
+        {
+            return Err(GeomError::OutOfRange { index });
+        }
+    }
+
+    let effective_len = if points.len() >= 2 && points.last() == points.first() {
+        points.len() - 1
+    } else {
+        points.len()
+    };
+
+    if effective_len < 3 {
+        return Err(GeomError::TooFewVertices { len: effective_len });
+    }
+
+    let polygon = &points[..effective_len];
+    let mut signed_area2 = 0_i128;
+    let mut edge_milli = Vec::with_capacity(effective_len);
+    let mut perimeter_milli = 0_u64;
+    let mut longest_edge: Option<usize> = None;
+
+    for i in 0..effective_len {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % effective_len];
+
+        signed_area2 += a.x as i128 * b.y as i128 - a.y as i128 * b.x as i128;
+
+        let length = rounded_edge_milli(a, b);
+        edge_milli.push(length);
+        perimeter_milli += length;
+
+        let is_better = match longest_edge {
+            None => true,
+            Some(current) => {
+                if length != edge_milli[current] {
+                    length > edge_milli[current]
+                } else {
+                    let current_a = polygon[current];
+                    let current_b = polygon[(current + 1) % effective_len];
+                    let current_pair = (current_a.min(current_b), current_a.max(current_b));
+                    let candidate_pair = (a.min(b), a.max(b));
+                    candidate_pair < current_pair || (candidate_pair == current_pair && i < current)
+                }
+            }
+        };
+        if is_better {
+            longest_edge = Some(i);
+        }
+    }
+
+    let orientation = match signed_area2.cmp(&0) {
+        std::cmp::Ordering::Less => Orientation::Clockwise,
+        std::cmp::Ordering::Equal => Orientation::Degenerate,
+        std::cmp::Ordering::Greater => Orientation::CounterClockwise,
+    };
+
+    Ok(Measures {
+        signed_area2,
+        area2: signed_area2.unsigned_abs(),
+        orientation,
+        edge_milli,
+        perimeter_milli,
+        longest_edge,
+    })
+}
+
+fn main() {}

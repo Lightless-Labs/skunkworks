@@ -1,0 +1,99 @@
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: u32,
+    pub ticks: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub id: u32,
+    pub start: u64,
+    pub end: u64,
+    pub finished: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub completion: Vec<(u32, u64)>,
+    pub end: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Quantum,
+    SwitchCost,
+    TooManyJobs,
+    DuplicateId { index: usize },
+    Ticks { index: usize },
+}
+
+pub fn schedule(jobs: &[Job], quantum: u32, switch_cost: u32) -> Result<Schedule, Error> {
+    if !(1..=1000).contains(&quantum) {
+        return Err(Error::Quantum);
+    }
+    if switch_cost > 1000 {
+        return Err(Error::SwitchCost);
+    }
+    if jobs.len() > 64 {
+        return Err(Error::TooManyJobs);
+    }
+
+    for (index, job) in jobs.iter().enumerate() {
+        if jobs[..index].iter().any(|previous| previous.id == job.id) {
+            return Err(Error::DuplicateId { index });
+        }
+        if job.ticks > 1000 {
+            return Err(Error::Ticks { index });
+        }
+    }
+
+    let mut remaining: Vec<u32> = jobs.iter().map(|job| job.ticks).collect();
+    let mut completion = vec![(0, 0); jobs.len()];
+    let mut queue: std::collections::VecDeque<usize> = (0..jobs.len()).collect();
+    let mut runs = Vec::new();
+    let mut time = 0u64;
+    let mut last_id: Option<u32> = None;
+
+    while let Some(index) = queue.pop_front() {
+        let job = &jobs[index];
+
+        if remaining[index] == 0 {
+            completion[index] = (job.id, time);
+            continue;
+        }
+
+        if last_id.is_some_and(|id| id != job.id) {
+            time += u64::from(switch_cost);
+        }
+
+        let consumed = quantum.min(remaining[index]);
+        let start = time;
+        time += u64::from(consumed);
+        remaining[index] -= consumed;
+        let finished = remaining[index] == 0;
+
+        runs.push(Run {
+            id: job.id,
+            start,
+            end: time,
+            finished,
+        });
+
+        last_id = Some(job.id);
+
+        if finished {
+            completion[index] = (job.id, time);
+        } else {
+            queue.push_back(index);
+        }
+    }
+
+    Ok(Schedule {
+        runs,
+        completion,
+        end: time,
+    })
+}
+
+fn main() {}

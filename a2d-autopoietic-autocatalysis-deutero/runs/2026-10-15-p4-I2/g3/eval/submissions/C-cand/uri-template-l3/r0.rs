@@ -1,0 +1,244 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    UnexpectedClose { pos: usize },
+    Unclosed { pos: usize },
+    NestedOpen { pos: usize },
+    EmptyExpression { pos: usize },
+    UnsupportedOperator { pos: usize },
+    EmptyVariable { pos: usize },
+    InvalidName { pos: usize },
+    DuplicateVariable { pos: usize },
+}
+
+#[derive(Clone, Copy)]
+enum Operator {
+    Simple,
+    Reserved,
+    Fragment,
+    Dot,
+    Slash,
+    Semicolon,
+    Query,
+    Continue,
+}
+
+struct Spec<'a> {
+    name: &'a str,
+    start: usize,
+}
+
+struct Expression<'a> {
+    operator: Operator,
+    specs: Vec<Spec<'a>>,
+}
+
+fn parse_expression(template: &str, open: usize, close: usize) -> Result<Expression<'_>, Error> {
+    let mut content_start = open + 1;
+
+    if let Some(&byte) = template.as_bytes().get(content_start) {
+        let operator = match byte {
+            b'+' => Some(Operator::Reserved),
+            b'#' => Some(Operator::Fragment),
+            b'.' => Some(Operator::Dot),
+            b'/' => Some(Operator::Slash),
+            b';' => Some(Operator::Semicolon),
+            b'?' => Some(Operator::Query),
+            b'&' => Some(Operator::Continue),
+            b'=' | b'!' | b'@' | b'|' => {
+                return Err(Error::UnsupportedOperator { pos: content_start });
+            }
+            _ => None,
+        };
+        if let Some(operator) = operator {
+            content_start += 1;
+            if content_start == close {
+                return Err(Error::EmptyExpression { pos: close });
+            }
+            return parse_specs(template, content_start, close, operator);
+        }
+    }
+
+    if content_start == close {
+        return Err(Error::EmptyExpression { pos: close });
+    }
+    parse_specs(template, content_start, close, Operator::Simple)
+}
+
+fn parse_specs(
+    template: &str,
+    start: usize,
+    end: usize,
+    operator: Operator,
+) -> Result<Expression<'_>, Error> {
+    let bytes = template.as_bytes();
+    let mut specs = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
+    let mut item_start = start;
+
+    loop {
+        let item_end = bytes[item_start..end]
+            .iter()
+            .position(|&b| b == b',')
+            .map_or(end, |offset| item_start + offset);
+
+        if item_start == item_end {
+            return Err(Error::EmptyVariable { pos: item_start });
+        }
+
+        let name_bytes = &bytes[item_start..item_end];
+        for (offset, &byte) in name_bytes.iter().enumerate() {
+            let valid = if offset == 0 {
+                byte.is_ascii_alphabetic() || byte == b'_'
+            } else {
+                byte.is_ascii_alphanumeric() || byte == b'_'
+            };
+            if !valid {
+                return Err(Error::InvalidName {
+                    pos: item_start + offset,
+                });
+            }
+        }
+
+        let name = &template[item_start..item_end];
+        if seen.contains(&name) {
+            return Err(Error::DuplicateVariable { pos: item_start });
+        }
+        seen.push(name);
+        specs.push(Spec {
+            name,
+            start: item_start,
+        });
+
+        if item_end == end {
+            break;
+        }
+        item_start = item_end + 1;
+    }
+
+    Ok(Expression { operator, specs })
+}
+
+fn encode(value: &str, reserved: bool) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let bytes = value.as_bytes();
+    let mut output = String::with_capacity(bytes.len());
+
+    let is_reserved = |b: u8| {
+        matches!(
+            b,
+            b':' | b'/' | b'?' | b'#' | b'[' | b']' | b'@' | b'!' | b'$' | b'&'
+                | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
+        )
+    };
+    let is_hex = |b: u8| b.is_ascii_hexdigit();
+
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if byte == b'%' && i + 2 < bytes.len() && is_hex(bytes[i + 1]) && is_hex(bytes[i + 2]) {
+            output.push('%');
+            output.push((bytes[i + 1] as char).to_ascii_uppercase());
+            output.push((bytes[i + 2] as char).to_ascii_uppercase());
+            i += 3;
+            continue;
+        }
+
+        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~');
+        if unreserved || (reserved && is_reserved(byte)) {
+            output.push(byte as char);
+        } else {
+            output.push('%');
+            output.push(HEX[(byte >> 4) as usize] as char);
+            output.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        i += 1;
+    }
+    output
+}
+
+fn lookup<'a>(name: &str, vars: &'a [(&str, &str)]) -> Option<&'a str> {
+    vars.iter()
+        .rev()
+        .find_map(|(key, value)| (*key == name).then_some(*value))
+}
+
+fn expand_expression(expression: &Expression<'_>, vars: &[(&str, &str)]) -> String {
+    let mut fields = Vec::new();
+    for spec in &expression.specs {
+        if let Some(value) = lookup(spec.name, vars) {
+            let encoded = encode(
+                value,
+                matches!(expression.operator, Operator::Reserved | Operator::Fragment),
+            );
+            let field = match expression.operator {
+                Operator::Semicolon if encoded.is_empty() => spec.name.to_owned(),
+                Operator::Semicolon | Operator::Query | Operator::Continue => {
+                    format!("{}={}", spec.name, encoded)
+                }
+                _ => encoded,
+            };
+            fields.push(field);
+        }
+    }
+
+    if fields.is_empty() {
+        return String::new();
+    }
+
+    let (prefix, separator) = match expression.operator {
+        Operator::Simple | Operator::Reserved => ("", ","),
+        Operator::Fragment => ("#", ","),
+        Operator::Dot => (".", "."),
+        Operator::Slash => ("/", "/"),
+        Operator::Semicolon => (";", ";"),
+        Operator::Query => ("?", "&"),
+        Operator::Continue => ("&", "&"),
+    };
+
+    let mut output = String::new();
+    output.push_str(prefix);
+    output.push_str(&fields.join(separator));
+    output
+}
+
+pub fn expand(template: &str, vars: &[(&str, &str)]) -> Result<String, Error> {
+    let bytes = template.as_bytes();
+    let mut expressions = Vec::new();
+    let mut cursor = 0;
+
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'}' => return Err(Error::UnexpectedClose { pos: cursor }),
+            b'{' => {
+                let open = cursor;
+                let close = match bytes[open + 1..].iter().position(|&b| b == b'}') {
+                    Some(offset) => open + 1 + offset,
+                    None => return Err(Error::Unclosed { pos: open }),
+                };
+
+                if let Some(offset) = bytes[open + 1..close].iter().position(|&b| b == b'{') {
+                    return Err(Error::NestedOpen {
+                        pos: open + 1 + offset,
+                    });
+                }
+
+                let expression = parse_expression(template, open, close)?;
+                expressions.push((open, close + 1, expression));
+                cursor = close + 1;
+            }
+            _ => cursor += 1,
+        }
+    }
+
+    let mut output = String::with_capacity(template.len());
+    let mut literal_start = 0;
+    for (open, end, expression) in &expressions {
+        output.push_str(&template[literal_start..*open]);
+        output.push_str(&expand_expression(expression, vars));
+        literal_start = *end;
+    }
+    output.push_str(&template[literal_start..]);
+    Ok(output)
+}
+
+fn main() {}

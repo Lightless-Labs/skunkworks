@@ -1,0 +1,164 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RomanCase {
+    Upper,
+    Lower,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RomanError {
+    Empty,
+    InvalidByte { index: usize },
+    MixedCase { index: usize },
+    NonCanonical { index: usize },
+    Range,
+}
+
+const TOKENS: [(u32, &str); 13] = [
+    (1000, "M"),
+    (900, "CM"),
+    (500, "D"),
+    (400, "CD"),
+    (100, "C"),
+    (90, "XC"),
+    (50, "L"),
+    (40, "XL"),
+    (10, "X"),
+    (9, "IX"),
+    (5, "V"),
+    (4, "IV"),
+    (1, "I"),
+];
+
+pub fn roman_encode(value: u32, case: RomanCase) -> Result<String, RomanError> {
+    if value > 3999 {
+        return Err(RomanError::Range);
+    }
+
+    if value == 0 {
+        return Ok(match case {
+            RomanCase::Upper => "N",
+            RomanCase::Lower => "n",
+        }
+        .to_owned());
+    }
+
+    let mut remaining = value;
+    let mut result = String::new();
+
+    for &(token_value, token) in &TOKENS {
+        while remaining >= token_value {
+            for byte in token.bytes() {
+                result.push(match case {
+                    RomanCase::Upper => byte as char,
+                    RomanCase::Lower => (byte as char).to_ascii_lowercase(),
+                });
+            }
+            remaining -= token_value;
+        }
+    }
+
+    Ok(result)
+}
+
+pub fn roman_decode(input: &str) -> Result<u32, RomanError> {
+    if input.is_empty() {
+        return Err(RomanError::Empty);
+    }
+
+    let bytes = input.as_bytes();
+
+    for (index, &byte) in bytes.iter().enumerate() {
+        if !matches!(
+            byte,
+            b'I' | b'V' | b'X' | b'L' | b'C' | b'D' | b'M' | b'N'
+                | b'i' | b'v' | b'x' | b'l' | b'c' | b'd' | b'm' | b'n'
+        ) {
+            return Err(RomanError::InvalidByte { index });
+        }
+    }
+
+    let mut case = None;
+    for (index, &byte) in bytes.iter().enumerate() {
+        let current = if byte.is_ascii_uppercase() {
+            Some(true)
+        } else if byte.is_ascii_lowercase() {
+            Some(false)
+        } else {
+            None
+        };
+
+        if let Some(current) = current {
+            match case {
+                None => case = Some(current),
+                Some(first) if first != current => {
+                    return Err(RomanError::MixedCase { index });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if bytes == b"N" || bytes == b"n" {
+        return Ok(0);
+    }
+
+    if let Some(index) = bytes.iter().position(|&byte| byte == b'N' || byte == b'n') {
+        let _ = index;
+        return Err(RomanError::NonCanonical { index: 0 });
+    }
+
+    let mut value = 0u32;
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let current = symbol_value(bytes[cursor]);
+        if cursor + 1 < bytes.len() {
+            let next = symbol_value(bytes[cursor + 1]);
+            if next > current {
+                value = value.saturating_add(next - current).min(4000);
+                cursor += 2;
+                continue;
+            }
+        }
+        value = value.saturating_add(current).min(4000);
+        cursor += 1;
+    }
+
+    if value > 3999 {
+        return Err(RomanError::Range);
+    }
+
+    let roman_case = if case.unwrap_or(true) {
+        RomanCase::Upper
+    } else {
+        RomanCase::Lower
+    };
+    let canonical = roman_encode(value, roman_case)?;
+
+    let canonical_bytes = canonical.as_bytes();
+    let mismatch = bytes
+        .iter()
+        .zip(canonical_bytes.iter())
+        .position(|(left, right)| left != right)
+        .unwrap_or_else(|| bytes.len().min(canonical_bytes.len()));
+
+    if bytes != canonical_bytes {
+        return Err(RomanError::NonCanonical { index: mismatch });
+    }
+
+    Ok(value)
+}
+
+fn symbol_value(byte: u8) -> u32 {
+    match byte.to_ascii_uppercase() {
+        b'I' => 1,
+        b'V' => 5,
+        b'X' => 10,
+        b'L' => 50,
+        b'C' => 100,
+        b'D' => 500,
+        b'M' => 1000,
+        _ => 0,
+    }
+}
+
+fn main() {}

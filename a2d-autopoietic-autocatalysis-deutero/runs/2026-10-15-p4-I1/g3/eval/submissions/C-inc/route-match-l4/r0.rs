@@ -1,0 +1,489 @@
+use std::collections::HashSet;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidPattern { at: usize },
+    InvalidPath { at: usize },
+    NotFound,
+    InvalidMethod,
+    MethodNotAllowed { allowed: Vec<String> },
+    InvalidName,
+    DuplicateName,
+    Conflict { with: usize },
+    UnknownName,
+    DuplicateParam { name: String },
+    MissingParam { name: String },
+    ExtraParam { name: String },
+    InvalidValue { name: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Match {
+    pub route: usize,
+    pub params: Vec<(String, String)>,
+    pub redirect: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlashPolicy {
+    Strict,
+    Ignore,
+    Redirect,
+}
+
+#[derive(Clone)]
+enum Segment {
+    Static(String),
+    Param(String),
+    Wildcard(String),
+}
+
+#[derive(Clone)]
+struct Route {
+    id: usize,
+    name: String,
+    method: String,
+    segments: Vec<Segment>,
+    trailing: bool,
+    rank: Vec<u8>,
+}
+
+pub struct Router {
+    policy: SlashPolicy,
+    routes: Vec<Route>,
+}
+
+fn valid_method(method: &str) -> bool {
+    !method.is_empty() && method.bytes().all(|b| b.is_ascii_uppercase())
+}
+
+fn valid_route_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    !b.is_empty()
+        && b[0].is_ascii_lowercase()
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_' || *c == b'-')
+}
+
+fn valid_capture_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    !b.is_empty()
+        && b[0].is_ascii_lowercase()
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_')
+}
+
+fn unreserved(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b'-')
+}
+
+fn hex_upper(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_segment(s: &str) -> Result<String, usize> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'%' {
+            if i + 2 >= bytes.len() {
+                return Err(i);
+            }
+            let hi = hex_upper(bytes[i + 1]).ok_or(i)?;
+            let lo = hex_upper(bytes[i + 2]).ok_or(i)?;
+            let decoded = (hi << 4) | lo;
+            if !(0x20..=0x7e).contains(&decoded) || decoded == b'/' || unreserved(decoded) {
+                return Err(i);
+            }
+            out.push(decoded);
+            i += 3;
+        } else if unreserved(b) {
+            out.push(b);
+            i += 1;
+        } else {
+            return Err(i);
+        }
+    }
+    Ok(String::from_utf8(out).expect("decoded bytes are ASCII"))
+}
+
+fn parse_pattern(pattern: &str) -> Result<(Vec<Segment>, bool, Vec<u8>), Error> {
+    if !pattern.starts_with('/') {
+        return Err(Error::InvalidPattern { at: 0 });
+    }
+    if pattern == "/" {
+        return Ok((Vec::new(), false, vec![3]));
+    }
+
+    let trailing = pattern.ends_with('/');
+    let body_end = if trailing { pattern.len() - 1 } else { pattern.len() };
+    let body = &pattern[1..body_end];
+    let mut segments = Vec::new();
+    let mut seen = HashSet::new();
+    let mut rank = Vec::new();
+    let mut offset = 1usize;
+    let parts: Vec<&str> = body.split('/').collect();
+
+    for (idx, part) in parts.iter().enumerate() {
+        let start = offset;
+        if part.is_empty() {
+            return Err(Error::InvalidPattern { at: start });
+        }
+        if let Some(name) = part.strip_prefix(':') {
+            if !valid_capture_name(name) || !seen.insert(name.to_string()) {
+                return Err(Error::InvalidPattern { at: start });
+            }
+            segments.push(Segment::Param(name.to_string()));
+            rank.push(1);
+        } else if let Some(name) = part.strip_prefix('*') {
+            if !valid_capture_name(name) || !seen.insert(name.to_string()) {
+                return Err(Error::InvalidPattern { at: start });
+            }
+            if idx + 1 != parts.len() {
+                return Err(Error::InvalidPattern { at: start });
+            }
+            segments.push(Segment::Wildcard(name.to_string()));
+            rank.push(0);
+        } else {
+            let decoded = decode_segment(part).map_err(|at| Error::InvalidPattern { at: start + at })?;
+            segments.push(Segment::Static(decoded));
+            rank.push(2);
+        }
+        offset += part.len() + 1;
+    }
+
+    if !matches!(segments.last(), Some(Segment::Wildcard(_))) {
+        rank.push(3);
+    }
+    Ok((segments, trailing, rank))
+}
+
+fn parse_path_head(path: &str) -> Result<(Vec<String>, bool), Error> {
+    if !path.starts_with('/') {
+        return Err(Error::InvalidPath { at: 0 });
+    }
+    if path == "/" {
+        return Ok((Vec::new(), false));
+    }
+
+    let trailing = path.ends_with('/');
+    let body_end = if trailing { path.len() - 1 } else { path.len() };
+    let body = &path[1..body_end];
+    let mut segments = Vec::new();
+    let mut offset = 1usize;
+
+    for part in body.split('/') {
+        if part.is_empty() {
+            return Err(Error::InvalidPath { at: offset });
+        }
+        let decoded = decode_segment(part).map_err(|at| Error::InvalidPath { at: offset + at })?;
+        segments.push(decoded);
+        offset += part.len() + 1;
+    }
+    Ok((segments, trailing))
+}
+
+impl Router {
+    pub fn new(policy: SlashPolicy) -> Self {
+        Self {
+            policy,
+            routes: Vec::new(),
+        }
+    }
+
+    pub fn add(&mut self, name: &str, method: &str, pattern: &str) -> Result<usize, Error> {
+        if !valid_method(method) {
+            return Err(Error::InvalidMethod);
+        }
+        if !valid_route_name(name) {
+            return Err(Error::InvalidName);
+        }
+        let (segments, trailing, rank) = parse_pattern(pattern)?;
+        if self.routes.iter().any(|r| r.name == name) {
+            return Err(Error::DuplicateName);
+        }
+
+        for route in &self.routes {
+            if route.method != method || route.segments.len() != segments.len() {
+                continue;
+            }
+            if self.policy == SlashPolicy::Strict && route.trailing != trailing {
+                continue;
+            }
+            let same_shape = route.segments.iter().zip(&segments).all(|(a, b)| match (a, b) {
+                (Segment::Static(x), Segment::Static(y)) => x == y,
+                (Segment::Param(_), Segment::Param(_)) => true,
+                (Segment::Wildcard(_), Segment::Wildcard(_)) => true,
+                _ => false,
+            });
+            if same_shape {
+                return Err(Error::Conflict { with: route.id });
+            }
+        }
+
+        let id = self.routes.len();
+        self.routes.push(Route {
+            id,
+            name: name.to_string(),
+            method: method.to_string(),
+            segments,
+            trailing,
+            rank,
+        });
+        Ok(id)
+    }
+
+    pub fn resolve(&self, method: &str, path: &str) -> Result<Match, Error> {
+        if !valid_method(method) {
+            return Err(Error::InvalidMethod);
+        }
+
+        let head_end = path
+            .char_indices()
+            .find(|(_, c)| *c == '?' || *c == '#')
+            .map(|(i, _)| i)
+            .unwrap_or(path.len());
+        let head = &path[..head_end];
+        let (path_segments, path_trailing) = parse_path_head(head)?;
+
+        let mut candidates: Vec<(&Route, Vec<(String, String)>)> = Vec::new();
+        for route in &self.routes {
+            if self.policy == SlashPolicy::Strict && route.trailing != path_trailing {
+                continue;
+            }
+
+            let has_wildcard = matches!(route.segments.last(), Some(Segment::Wildcard(_)));
+            let fixed_len = if has_wildcard {
+                route.segments.len() - 1
+            } else {
+                route.segments.len()
+            };
+            if (!has_wildcard && path_segments.len() != fixed_len)
+                || (has_wildcard && path_segments.len() < fixed_len)
+            {
+                continue;
+            }
+
+            let mut params = Vec::new();
+            let mut matched = true;
+            for i in 0..fixed_len {
+                match &route.segments[i] {
+                    Segment::Static(value) => {
+                        if value != &path_segments[i] {
+                            matched = false;
+                            break;
+                        }
+                    }
+                    Segment::Param(name) => params.push((name.clone(), path_segments[i].clone())),
+                    Segment::Wildcard(_) => unreachable!(),
+                }
+            }
+
+            if matched && has_wildcard {
+                if let Segment::Wildcard(name) = &route.segments[fixed_len] {
+                    let value = path_segments[fixed_len..].join("/");
+                    params.push((name.clone(), value));
+                }
+            }
+            if matched {
+                candidates.push((route, params));
+            }
+        }
+
+        if candidates.is_empty() {
+            return Err(Error::NotFound);
+        }
+
+        let eligible_method = if method == "HEAD" {
+            if candidates.iter().any(|(r, _)| r.method == "HEAD") {
+                "HEAD"
+            } else {
+                "GET"
+            }
+        } else {
+            method
+        };
+        let mut eligible: Vec<_> = candidates
+            .into_iter()
+            .filter(|(r, _)| r.method == eligible_method)
+            .collect();
+
+        if eligible.is_empty() {
+            let mut allowed: Vec<String> = self
+                .routes
+                .iter()
+                .filter(|r| {
+                    self.path_candidate(r, &path_segments, path_trailing)
+                })
+                .map(|r| r.method.clone())
+                .collect();
+            if allowed.iter().any(|m| m == "GET") && !allowed.iter().any(|m| m == "HEAD") {
+                allowed.push("HEAD".to_string());
+            }
+            allowed.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            allowed.dedup();
+            return Err(Error::MethodNotAllowed { allowed });
+        }
+
+        eligible.sort_by(|(a, _), (b, _)| {
+            b.rank
+                .cmp(&a.rank)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let (winner, params) = eligible.remove(0);
+        let redirect = if self.policy == SlashPolicy::Redirect
+            && !head.is_empty()
+            && head != "/"
+            && winner.trailing != path_trailing
+        {
+            if winner.trailing {
+                Some(format!("{head}/"))
+            } else {
+                Some(head.to_string())
+            }
+        } else {
+            None
+        };
+
+        Ok(Match {
+            route: winner.id,
+            params,
+            redirect,
+        })
+    }
+
+    fn path_candidate(&self, route: &Route, path: &[String], trailing: bool) -> bool {
+        if self.policy == SlashPolicy::Strict && route.trailing != trailing {
+            return false;
+        }
+        let wildcard = matches!(route.segments.last(), Some(Segment::Wildcard(_)));
+        let fixed = if wildcard { route.segments.len() - 1 } else { route.segments.len() };
+        if (!wildcard && path.len() != fixed) || (wildcard && path.len() < fixed) {
+            return false;
+        }
+        for i in 0..fixed {
+            if let Segment::Static(value) = &route.segments[i] {
+                if value != &path[i] {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    pub fn build(&self, name: &str, params: &[(&str, &str)]) -> Result<String, Error> {
+        let route = self.routes.iter().find(|r| r.name == name).ok_or(Error::UnknownName)?;
+
+        let mut supplied = HashSet::new();
+        for (key, _) in params {
+            if !supplied.insert(*key) {
+                return Err(Error::DuplicateParam { name: (*key).to_string() });
+            }
+        }
+
+        let captures: Vec<&str> = route
+            .segments
+            .iter()
+            .filter_map(|s| match s {
+                Segment::Param(n) | Segment::Wildcard(n) => Some(n.as_str()),
+                Segment::Static(_) => None,
+            })
+            .collect();
+
+        for key in &captures {
+            if !supplied.contains(key) {
+                return Err(Error::MissingParam { name: (*key).to_string() });
+            }
+        }
+
+        let mut extra: Vec<&str> = params
+            .iter()
+            .map(|(k, _)| *k)
+            .filter(|k| !captures.contains(k))
+            .collect();
+        extra.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        if let Some(key) = extra.first() {
+            return Err(Error::ExtraParam { name: (*key).to_string() });
+        }
+
+        for segment in &route.segments {
+            match segment {
+                Segment::Param(key) => {
+                    let value = params.iter().find(|(k, _)| *k == key).unwrap().1;
+                    if !value.is_ascii() || value.is_empty() || value.bytes().any(|b| b == b'/') || value.bytes().any(|b| !(0x20..=0x7e).contains(&b)) {
+                        return Err(Error::InvalidValue { name: key.clone() });
+                    }
+                }
+                Segment::Wildcard(key) => {
+                    let value = params.iter().find(|(k, _)| *k == key).unwrap().1;
+                    if !value.is_ascii()
+                        || value.bytes().any(|b| !(0x20..=0x7e).contains(&b))
+                        || (!value.is_empty()
+                            && value
+                                .split('/')
+                                .any(|part| part.is_empty()))
+                    {
+                        return Err(Error::InvalidValue { name: key.clone() });
+                    }
+                }
+                Segment::Static(_) => {}
+            }
+        }
+
+        let mut output = String::new();
+        for segment in &route.segments {
+            match segment {
+                Segment::Static(value) => {
+                    output.push('/');
+                    output.push_str(&encode_component(value));
+                }
+                Segment::Param(key) => {
+                    output.push('/');
+                    let value = params.iter().find(|(k, _)| *k == key).unwrap().1;
+                    output.push_str(&encode_component(value));
+                }
+                Segment::Wildcard(key) => {
+                    let value = params.iter().find(|(k, _)| *k == key).unwrap().1;
+                    if !value.is_empty() {
+                        output.push('/');
+                        for (i, part) in value.split('/').enumerate() {
+                            if i > 0 {
+                                output.push('/');
+                            }
+                            output.push_str(&encode_component(part));
+                        }
+                    }
+                }
+            }
+        }
+        if output.is_empty() {
+            output.push('/');
+        } else if route.trailing {
+            output.push('/');
+        }
+        Ok(output)
+    }
+}
+
+fn encode_component(value: &str) -> String {
+    let mut out = String::new();
+    for b in value.bytes() {
+        if unreserved(b) {
+            out.push(b as char);
+        } else {
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            out.push('%');
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0x0f) as usize] as char);
+        }
+    }
+    out
+}
+
+fn main() {}

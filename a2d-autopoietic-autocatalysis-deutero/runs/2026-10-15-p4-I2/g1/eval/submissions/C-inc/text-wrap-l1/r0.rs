@@ -1,0 +1,85 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WrapError {
+    WidthZero,
+    WidthTooLarge { width: usize },
+    InvalidByte { index: usize, byte: u8 },
+}
+
+pub fn wrap(input: &str, width: usize) -> Result<Vec<String>, WrapError> {
+    if width == 0 {
+        return Err(WrapError::WidthZero);
+    }
+    if width > 256 {
+        return Err(WrapError::WidthTooLarge { width });
+    }
+
+    let bytes = input.as_bytes();
+    for (index, &byte) in bytes.iter().enumerate() {
+        if !(32..=126).contains(&byte) && byte != b'\t' && byte != b'\n' && byte != b'\r' {
+            return Err(WrapError::InvalidByte { index, byte });
+        }
+    }
+
+    let is_separator = |byte: u8| byte == b' ' || byte == b'\t' || byte == b'\n' || byte == b'\r';
+    let mut lines = Vec::new();
+    let mut line = String::new();
+
+    let mut start = 0;
+    while start < bytes.len() {
+        while start < bytes.len() && is_separator(bytes[start]) {
+            start += 1;
+        }
+        if start == bytes.len() {
+            break;
+        }
+
+        let mut end = start;
+        while end < bytes.len() && !is_separator(bytes[end]) {
+            end += 1;
+        }
+
+        let mut offset = start;
+        while offset < end {
+            if line.len() == width {
+                lines.push(std::mem::take(&mut line));
+            }
+
+            let remaining = end - offset;
+            if remaining <= width {
+                let separator_len = usize::from(!line.is_empty());
+                if line.len() + separator_len + remaining <= width {
+                    if separator_len != 0 {
+                        line.push(' ');
+                    }
+                    line.push_str(&input[offset..end]);
+                    offset = end;
+                } else {
+                    lines.push(std::mem::take(&mut line));
+                }
+            } else if line.is_empty() {
+                line.push_str(&input[offset..offset + width]);
+                offset += width;
+                lines.push(std::mem::take(&mut line));
+            } else {
+                let available = width - line.len() - 1;
+                if available >= 2 {
+                    line.push(' ');
+                    line.push_str(&input[offset..offset + available]);
+                    offset += available;
+                    lines.push(std::mem::take(&mut line));
+                } else {
+                    lines.push(std::mem::take(&mut line));
+                }
+            }
+        }
+
+        start = end;
+    }
+
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    Ok(lines)
+}
+
+fn main() {}

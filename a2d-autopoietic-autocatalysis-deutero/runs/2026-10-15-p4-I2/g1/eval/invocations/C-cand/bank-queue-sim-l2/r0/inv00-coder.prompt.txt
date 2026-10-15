@@ -1,0 +1,166 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else. Include an empty `fn main() {}` (the file is compiled as a program).
+
+PROMPT:
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences.
+
+R2. Use exactly this public API; all listed items, variants and fields are public. All types derive Debug, Clone, PartialEq, Eq. Extra private helpers are allowed.
+```rust
+pub struct Customer { pub id: u32, pub arrival: u64, pub service: u64 }
+pub struct Server { pub id: u32, pub opens: u64, pub overhead: u64 }
+pub enum Event {
+    Open { time: u64, server: u32 }, Arrive { time: u64, customer: u32 },
+    Start { time: u64, customer: u32, server: u32, finish: u64 },
+    Finish { time: u64, customer: u32, server: u32 }
+}
+pub enum Error {
+    NoServers, TooManyServers { count: usize }, ZeroServerId { index: usize },
+    DuplicateServerId { index: usize, id: u32 }, ZeroCustomerId { index: usize },
+    DuplicateCustomerId { index: usize, id: u32 }, TimeOverflow { customer: u32, server: u32, time: u64 }
+}
+pub fn simulate(customers: &[Customer], servers: &[Server]) -> Result<Vec<Event>, Error>;
+```
+
+R3. All times are u64 ticks. Customer and server IDs are separate u32 namespaces; equal IDs across the two namespaces are allowed. Inputs may be unsorted and customers may be empty.
+
+R4. Validate before simulation: first reject zero servers with NoServers, then more than 32 with TooManyServers { count }. These errors take precedence over row validation.
+
+R5. Then validate servers in original slice order: id == 0 gives ZeroServerId, else a repeated earlier server ID gives DuplicateServerId. Stop at the first failing row.
+
+R6. After all server rows pass, validate customers in original slice order: zero ID before duplicate ID. Report ZeroCustomerId or DuplicateCustomerId with the original index. All these checks precede any runtime time overflow.
+
+R7. Do not prevalidate arithmetic. All u64 values for opens, arrival, overhead and service are legal; detect overflow only at a dispatch. There is no limit on the number of customers.
+
+R8. Initially every server is closed. At its opens time it becomes idle and emits Open, exactly once. All servers must emit Open even when there are no customers or all customers have already finished.
+
+R9. At each tick: first emit all scheduled Finish events in ascending SERVER ID order, freeing those servers; next emit all Open events in descending SERVER ID order; next emit all Arrive events in descending CUSTOMER ID order; finally dispatch. These phases also apply at time 0.
+
+R10. Customers enter one shared FIFO sorted by arrival time ascending and, within a simultaneous cohort, ID descending. Complete the entire arrival phase before dispatch; never skip an older waiter.
+
+R11. An idle server has idle_since = opens initially, and idle_since = the latest Finish time after any occupation. A closed or occupied server is ineligible for dispatch.
+
+R12. To dispatch, take the oldest waiting customer and select the eligible server with smallest idle_since; ties choose the smallest overhead; remaining ties choose the greatest server ID. Input order is never a server tie-break.
+
+R13. Append Start at the dispatch tick. The server is occupied for service + overhead on EVERY start, including contiguous starts and zero service. Compute finish by checked (time + service) followed by checked + overhead.
+
+R14. Either checked-add failure returns TimeOverflow { customer, server, time } for the selected dispatch. No partial trace is returned. Never retry a different idle server to avoid overflow.
+
+R15. If finish == time, append Finish immediately after Start and set that server idle_since to time. This inline completion does not return to the earlier completion phase or interleave arrivals/opens.
+
+R16. After every Start (and any inline Finish), recompute the eligible-server ranking, then dispatch the next FIFO customer if possible. A zero-duration server may serve multiple customers at a single tick.
+
+R17. Once dispatch is exhausted, advance directly to the least next arrival, server opening or occupied-server finish. Do not emit idle records. All customers eventually finish.
+
+R18. An arrival during occupation or before all servers open still emits Arrive at its specified time. Occupation is nonpreemptive and never changes its scheduled finish.
+
+R19. Return an event vector in nondecreasing time with the exact phase and inline ordering above. Every customer has exactly one Arrive, Start and Finish; every server exactly one Open.
+
+R20. u64::MAX is legal for any event/finish time and adding zero there succeeds. A server opening at that boundary can serve a zero-duration customer if overhead is zero.
+
+R21. Repeated calls are independent and both input slices remain unchanged.
+
+R22. Runtime errors follow chronological dispatch order, regardless of input order. A same-tick later FIFO customer can overflow after earlier successful dispatches, but the result is still only Err.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+fn c(id: u32, arrival: u64, service: u64) -> Customer {
+    Customer {
+        id,
+        arrival,
+        service,
+    }
+}
+fn s(id: u32, opens: u64, overhead: u64) -> Server {
+    Server {
+        id,
+        opens,
+        overhead,
+    }
+}
+#[test]
+fn public_two_servers() {
+    assert_eq!(
+        simulate(&[c(1, 0, 3), c(2, 1, 2)], &[s(1, 0, 0), s(2, 0, 0)]).unwrap(),
+        vec![
+            Event::Open { time: 0, server: 2 },
+            Event::Open { time: 0, server: 1 },
+            Event::Arrive {
+                time: 0,
+                customer: 1
+            },
+            Event::Start {
+                time: 0,
+                customer: 1,
+                server: 2,
+                finish: 3
+            },
+            Event::Arrive {
+                time: 1,
+                customer: 2
+            },
+            Event::Start {
+                time: 1,
+                customer: 2,
+                server: 1,
+                finish: 3
+            },
+            Event::Finish {
+                time: 3,
+                customer: 2,
+                server: 1
+            },
+            Event::Finish {
+                time: 3,
+                customer: 1,
+                server: 2
+            }
+        ]
+    );
+}
+#[test]
+fn public_wait_for_open() {
+    let v = simulate(&[c(8, 2, 4)], &[s(5, 7, 1)]).unwrap();
+    assert_eq!(
+        v,
+        vec![
+            Event::Arrive {
+                time: 2,
+                customer: 8
+            },
+            Event::Open { time: 7, server: 5 },
+            Event::Start {
+                time: 7,
+                customer: 8,
+                server: 5,
+                finish: 12
+            },
+            Event::Finish {
+                time: 12,
+                customer: 8,
+                server: 5
+            }
+        ]
+    );
+}
+#[test]
+fn public_empty_and_no_servers() {
+    assert_eq!(
+        simulate(&[], &[s(3, 4, 0)]),
+        Ok(vec![Event::Open { time: 4, server: 3 }])
+    );
+    assert_eq!(simulate(&[], &[]), Err(Error::NoServers));
+}
+```
+
+
+Lessons from earlier tasks (task-agnostic; apply each one that is relevant):
+1. Follow specified validation order and error precedence: finish higher-priority scans before semantic checks or dependent processing.
+2. Validate the complete input structure, including empty fields and bounds, before parsing or mutating state.
+3. Prove progress and termination for every iterative step; each step must advance, complete, or reach a valid terminal state.
+4. Track source positions and full spans during traversal so errors and boundaries refer to the exact triggering input.
+5. Preserve invariants throughout an operation; check capacity, allocation sizes, arithmetic, and conversions before mutation or reservation.
+6. Match serialized tokens and punctuation exactly to the specified grammar.
+7. Use interval boundaries, adjacency, and destination-aware distance data to prove existence and reconstruct shortest routes; finite samples are insufficient.

@@ -1,0 +1,595 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else. Include an empty `fn main() {}` (the file is compiled as a program).
+
+PROMPT:
+R1. Implement in Rust as a SINGLE source file that compiles with `rustc --edition 2024`, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes (`#![...]`) or inner documentation (`//!`).
+
+R2. The exact public API is given below. Every listed type, variant, field and function must be public; derive Debug, Clone, PartialEq and Eq on every listed type. Private helpers are allowed. All positions are zero-based; error byte offsets are UTF-8 byte offsets within the original cell.
+
+R3. An empty outer rows slice returns Ok(String::new()) immediately, ignoring all options and validation. Otherwise every row must contain at least one cell.
+
+R4. First inspect ALL rows for zero cells; return EmptyRow for the earliest such row, even if an earlier row is ragged. Only after this, take the first row length n and return Ragged for the earliest row whose length differs from n.
+
+R5. Options.alignments may be empty, meaning Left for every column. Otherwise its length must equal n; return AlignmentCount { expected: n, actual: len } if not. This check follows shape validation and precedes all cell validation.
+
+R6. Options.overflow may be empty, meaning Wrap for every column. Otherwise its length must equal n; return OverflowCount with expected n and actual length. This check follows alignment-count validation.
+
+R7. Options.mode is Grid, Compact or Markdown. Markdown requires options.header == true; otherwise return MarkdownNeedsHeader after option-count checks and before budget or character checks. Empty tables still short-circuit as described above.
+
+R8. Options.max_width is a budget measured in emitted Unicode scalar values per physical output line, excluding its LF. Zero means unlimited. It controls column widths; it never removes columns or rows.
+
+R9. Grid and Markdown fixed overhead is 3*n + 1; Compact overhead is 2*(n-1). Minimum column width is 3 in Markdown, 1 in Grid and Compact.
+
+R10. Let minimum = fixed overhead + n * minimum column width. For a nonzero budget smaller than minimum return TooNarrow { minimum, provided: options.max_width }. This check follows option validation and precedes ALL character validation, even if natural content would be empty.
+
+R11. LF is a valid input line break. CR is valid ONLY when immediately followed by LF; that CRLF pair becomes one LF. A lone CR is invalid. Reject all other char::is_control() characters and U+2028/U+2029.
+
+R12. Scan original cells in row-major order and scalars by original UTF-8 byte offset. Return InvalidChar for the first invalid scalar; a rejected CR points at the CR. CRLF consumes both scalars for validation, but does not alter subsequent error offsets.
+
+R13. Normalize CRLF, then split each cell on LF, preserving leading, trailing and consecutive empty lines. An empty cell has one empty logical line. Remove trailing ASCII spaces from EACH logical line before any escaping or layout. Preserve leading/internal spaces and every other accepted scalar.
+
+R14. For Markdown only, turn each original pipe into backslash+pipe and each original backslash into two backslashes. Each such two-scalar escape is ONE indivisible token; every other scalar is its own one-scalar token. Generated backslashes are not escaped again. Grid and Compact use one-scalar tokens and do not escape.
+
+R15. Width is emitted Unicode scalar count, including both characters of an escape. It is not byte width, display width or grapheme count. All accepted combining marks, emoji and zero-width scalars count as one each.
+
+R16. Natural column width is the maximum total token width of any single logical input line in that column, floored at the mode-specific minimum. Do not add lengths of different input lines. There is no 32-character limit.
+
+R17. If natural widths plus overhead exceed a nonzero budget, repeatedly decrement by ONE the currently widest column that exceeds its minimum. On a tie select the RIGHTMOST eligible column. Repeat until the sum plus overhead fits; never distribute spare width, expand to fill a budget, or shrink a column below its minimum.
+
+R18. After widths are allocated, process each logical input line independently with its column overflow rule; concatenate its fragments in input-line order. Never combine lines and never insert a blank fragment at a boundary.
+
+R19. Clip: if token width fits, keep the whole line. Otherwise reserve one scalar for U+2026 and take the longest INITIAL sequence of WHOLE tokens fitting width-1, then append that ellipsis. Stop at the first token that does not fit, even if a later token would fit. Unused capacity becomes alignment padding.
+
+R20. Wrap: take the longest initial sequence of whole tokens fitting the width as one fragment; repeat on the remaining tokens until consumed. Do not split tokens, add ellipses, prefer word boundaries, trim fragment spaces or append an empty fragment for an exact multiple. All tokens can fit because Markdown minimum is 3.
+
+R21. An empty logical line creates exactly one empty fragment for either overflow mode. Even lines of only spaces create one empty fragment after trimming.
+
+R22. A logical table row has height equal to the largest fragment count among its cells. Emit physical lines in fragment-index order. A cell with fewer fragments contributes empty content for each missing fragment. This is vertical top alignment; content never carries into the next logical row.
+
+R23. Use the same final column widths for every physical line, including header lines and missing fragments. Width allocation is completed before any clipping or wrapping.
+
+R24. Alignment.Left places all extra width spaces on the right; Right puts them on the left; Center uses floor(extra/2) on the left and ceil(extra/2) on the right. Apply this after truncation/wrapping if present, using scalar widths for Unicode levels. Do not strip source leading or internal spaces.
+
+R25. Grid: a border is "+" followed for every column by (width+2) hyphens and "+", then LF. Emit exactly one top and bottom border. Each physical data line starts with "|" and appends for each column one space, its aligned width-sized fragment, one space and "|", then LF.
+
+R26. Compact: emit no borders or header separator. Each physical line joins its aligned columns with EXACTLY TWO ASCII spaces. In the last column ONLY, omit its right ALIGNMENT padding, retaining its left padding and all source spaces of a fragment. Do not trim the resulting line; it may end in source spaces or spaces belonging to earlier columns/joiners. An entirely empty one-column Compact row emits LF.
+
+R27. Markdown: emit no top/bottom border. Each physical data line uses the same pipe and one-space padding as Grid. Emit one alignment marker line immediately after ALL physical lines of the first logical row, even if there are no body rows.
+
+R28. In a Markdown marker line, each column marker has exactly its final width: Left is colon then (width-1) hyphens; Right is (width-1) hyphens then colon; Center is colon then (width-2) hyphens then colon. Surround markers with the same pipes and spaces as data lines; end with LF.
+
+R29. Markdown multiline rows intentionally emit successive pipe-delimited physical lines, with no <br> conversion, merging or repeated header marker. Escaping applies only to original input tokens; border/marker pipes are literal.
+
+R30. options.header identifies the FIRST logical input row as the header. In Grid, insert a border after its complete output ONLY if a later input row exists. A lone header has no extra middle border. There are no separators between body rows.
+
+R31. Header cells participate in width computation and use the same alignments and content transformation as body cells. A header cell containing empty content is still a header.
+
+R32. Preserve input order of logical rows, physical fragments and columns. Every emitted physical line ends in exactly one LF; output has no leading/trailing blank lines except physical lines required by empty content. A nonempty table always ends in LF.
+
+R33. All result/error behavior is pure: do not mutate input rows or Options, do not retain state between calls, and do not print to stdout/stderr. Return Result values without panicking for any specified valid input.
+
+R34. The complete error precedence is: empty-table success, earliest empty row, earliest ragged row, alignment count, overflow count, Markdown header requirement, too-small budget, earliest invalid character. Later layout cannot produce another error.
+
+R35. Budget is a maximum rather than a requested output length: sufficiently large and zero budgets give identical output. Compact may emit lines shorter than the allocated total because last-column right padding is omitted.
+
+R36. Literal U+2026 in input is ordinary content. Clip may retain it in a prefix and add another ellipsis. Internal ASCII spaces remain tokens; a wrapped fragment can start or end with spaces that were internal to its logical input line.
+
+Exact public API:
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableError {
+    EmptyRow { row: usize },
+    Ragged { row: usize, expected: usize, actual: usize },
+    InvalidChar { row: usize, column: usize, byte: usize },
+    AlignmentCount { expected: usize, actual: usize },
+    TooNarrow { minimum: usize, provided: usize },
+    OverflowCount { expected: usize, actual: usize },
+    MarkdownNeedsHeader,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Alignment { Left, Right, Center }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Overflow { Clip, Wrap }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mode { Grid, Compact, Markdown }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Options {
+    pub alignments: Vec<Alignment>,
+    pub header: bool,
+    pub max_width: usize,
+    pub overflow: Vec<Overflow>,
+    pub mode: Mode,
+}
+pub fn render(rows: &[Vec<String>], options: &Options) -> Result<String, TableError>;
+```
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+fn r(rows: &[&[&str]]) -> Vec<Vec<String>> {
+    rows.iter().map(|row| row.iter().map(|s| (*s).to_owned()).collect()).collect()
+}
+
+#[test]
+fn public_multiline() {
+    // R1, R2, R3, R4, R5, R11, R12, R13, R14, R15, R16, R18, R20, R21, R22, R23, R24, R30, R31, R32
+    assert_eq!(render(&r(&[&["a\nb", "cat"], &["z", "dog"]]), &Options { alignments: vec![], header: true, max_width: 0, mode: Mode::Grid, overflow: vec![] }).unwrap(), "+---+-----+\n| a | cat |\n| b |     |\n+---+-----+\n| z | dog |\n+---+-----+\n");
+}
+
+#[test]
+fn public_wrapping() {
+    // R8, R9, R10, R17, R18, R19, R20, R21, R22, R23, R24
+    assert_eq!(render(&r(&[&["abcdef", "x"]]), &Options { alignments: vec![], header: false, max_width: 12, mode: Mode::Grid, overflow: vec![] }).unwrap(), "+------+---+\n| abcd | x |\n| ef   |   |\n+------+---+\n");
+}
+
+#[test]
+fn public_compact() {
+    // R23, R24, R26, R35
+    assert_eq!(render(&r(&[&["a", "bb"], &["long", "c"]]), &Options { alignments: vec![Alignment::Right, Alignment::Left], header: false, max_width: 0, mode: Mode::Compact, overflow: vec![] }).unwrap(), "   a  bb\nlong  c\n");
+}
+
+#[test]
+fn public_markdown() {
+    // R7, R14, R15, R16, R23, R24, R27, R28, R29, R31
+    assert_eq!(render(&r(&[&["name", "a|b"], &["x", "\\"]]), &Options { alignments: vec![Alignment::Left, Alignment::Center], header: true, max_width: 0, mode: Mode::Markdown, overflow: vec![] }).unwrap(), "| name | a\\|b |\n| :--- | :--: |\n| x    |  \\\\  |\n");
+}
+```
+
+## Previous attempt
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableError {
+    EmptyRow { row: usize },
+    Ragged { row: usize, expected: usize, actual: usize },
+    InvalidChar { row: usize, column: usize, byte: usize },
+    AlignmentCount { expected: usize, actual: usize },
+    TooNarrow { minimum: usize, provided: usize },
+    OverflowCount { expected: usize, actual: usize },
+    MarkdownNeedsHeader,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Alignment {
+    Left,
+    Right,
+    Center,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Overflow {
+    Clip,
+    Wrap,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mode {
+    Grid,
+    Compact,
+    Markdown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Options {
+    pub alignments: Vec<Alignment>,
+    pub header: bool,
+    pub max_width: usize,
+    pub overflow: Vec<Overflow>,
+    pub mode: Mode,
+}
+
+#[derive(Clone)]
+struct Token {
+    text: String,
+    width: usize,
+}
+
+fn render_tokens(tokens: &[Token]) -> String {
+    let mut s = String::new();
+    for token in tokens {
+        s.push_str(&token.text);
+    }
+    s
+}
+
+fn trim_trailing_ascii_spaces(s: &str) -> &str {
+    s.trim_end_matches(' ')
+}
+
+fn invalid_char(c: char) -> bool {
+    (c.is_control() && c != '\n' && c != '\r') || c == '\u{2028}' || c == '\u{2029}'
+}
+
+fn validate_cell(
+    cell: &str,
+    row: usize,
+    column: usize,
+) -> Result<(), TableError> {
+    let mut iter = cell.char_indices().peekable();
+    while let Some((byte, c)) = iter.next() {
+        if c == '\r' {
+            if matches!(iter.peek(), Some((_, '\n'))) {
+                iter.next();
+            } else {
+                return Err(TableError::InvalidChar { row, column, byte });
+            }
+        } else if invalid_char(c) {
+            return Err(TableError::InvalidChar { row, column, byte });
+        }
+    }
+    Ok(())
+}
+
+fn tokenize_line(line: &str, markdown: bool) -> Vec<Token> {
+    let mut out = Vec::new();
+    for c in line.chars() {
+        if markdown && c == '|' {
+            out.push(Token { text: "\\|".to_owned(), width: 2 });
+        } else if markdown && c == '\\' {
+            out.push(Token { text: "\\\\".to_owned(), width: 2 });
+        } else {
+            out.push(Token { text: c.to_string(), width: 1 });
+        }
+    }
+    out
+}
+
+fn split_cell(cell: &str, markdown: bool) -> Vec<Vec<Token>> {
+    let normalized = cell.replace("\r\n", "\n");
+    normalized
+        .split('\n')
+        .map(|line| tokenize_line(trim_trailing_ascii_spaces(line), markdown))
+        .collect()
+}
+
+fn total_width(widths: &[usize], overhead: usize) -> usize {
+    widths.iter().sum::<usize>().saturating_add(overhead)
+}
+
+fn fragments(tokens: &[Token], width: usize, overflow: &Overflow) -> Vec<String> {
+    if tokens.is_empty() {
+        return vec![String::new()];
+    }
+
+    let total = tokens.iter().map(|t| t.width).sum::<usize>();
+    match overflow {
+        Overflow::Clip if total <= width => vec![render_tokens(tokens)],
+        Overflow::Clip => {
+            let limit = width.saturating_sub(1);
+            let mut used = 0;
+            let mut end = 0;
+            for token in tokens {
+                if used + token.width > limit {
+                    break;
+                }
+                used += token.width;
+                end += 1;
+            }
+            let mut s = render_tokens(&tokens[..end]);
+            s.push('\u{2026}');
+            vec![s]
+        }
+        Overflow::Wrap => {
+            let mut out = Vec::new();
+            let mut start = 0;
+            while start < tokens.len() {
+                let mut end = start;
+                let mut used = 0;
+                while end < tokens.len() && used + tokens[end].width <= width {
+                    used += tokens[end].width;
+                    end += 1;
+                }
+                out.push(render_tokens(&tokens[start..end]));
+                start = end;
+            }
+            out
+        }
+    }
+}
+
+fn align_fragment(
+    content: &str,
+    content_width: usize,
+    width: usize,
+    alignment: &Alignment,
+) -> String {
+    let extra = width.saturating_sub(content_width);
+    let (left, right) = match alignment {
+        Alignment::Left => (0, extra),
+        Alignment::Right => (extra, 0),
+        Alignment::Center => (extra / 2, extra - extra / 2),
+    };
+    let mut out = String::new();
+    out.extend(std::iter::repeat_n(' ', left));
+    out.push_str(content);
+    out.extend(std::iter::repeat_n(' ', right));
+    out
+}
+
+fn emit_grid_or_markdown_line(
+    row: &[Vec<String>],
+    widths: &[usize],
+    alignments: &[Alignment],
+    compact: bool,
+) -> String {
+    let mut out = String::new();
+    if !compact {
+        out.push('|');
+    }
+
+    for col in 0..widths.len() {
+        if compact {
+            if col > 0 {
+                out.push_str("  ");
+            }
+        } else {
+            out.push(' ');
+        }
+
+        let content = row.get(col).map(String::as_str).unwrap_or("");
+        let content_width = content.chars().count();
+        let mut aligned = align_fragment(content, content_width, widths[col], &alignments[col]);
+        if compact && col + 1 == widths.len() {
+            let right_padding = match alignments[col] {
+                Alignment::Left => widths[col].saturating_sub(content_width),
+                Alignment::Right => 0,
+                Alignment::Center => (widths[col].saturating_sub(content_width) + 1) / 2,
+            };
+            for _ in 0..right_padding {
+                aligned.pop();
+            }
+        }
+        out.push_str(&aligned);
+
+        if !compact {
+            out.push_str(" |");
+        }
+    }
+    out.push('\n');
+    out
+}
+
+fn grid_border(widths: &[usize]) -> String {
+    let mut out = String::from("+");
+    for &width in widths {
+        out.extend(std::iter::repeat_n('-', width + 2));
+        out.push('+');
+    }
+    out.push('\n');
+    out
+}
+
+fn markdown_marker(widths: &[usize], alignments: &[Alignment]) -> String {
+    let mut out = String::from("|");
+    for (i, &width) in widths.iter().enumerate() {
+        out.push(' ');
+        match alignments[i] {
+            Alignment::Left => {
+                out.push(':');
+                out.extend(std::iter::repeat_n('-', width - 1));
+            }
+            Alignment::Right => {
+                out.extend(std::iter::repeat_n('-', width - 1));
+                out.push(':');
+            }
+            Alignment::Center => {
+                out.push(':');
+                out.extend(std::iter::repeat_n('-', width - 2));
+                out.push(':');
+            }
+        }
+        out.push_str(" |");
+    }
+    out.push('\n');
+    out
+}
+
+pub fn render(rows: &[Vec<String>], options: &Options) -> Result<String, TableError> {
+    if rows.is_empty() {
+        return Ok(String::new());
+    }
+
+    for (row, cells) in rows.iter().enumerate() {
+        if cells.is_empty() {
+            return Err(TableError::EmptyRow { row });
+        }
+    }
+
+    let n = rows[0].len();
+    for (row, cells) in rows.iter().enumerate() {
+        if cells.len() != n {
+            return Err(TableError::Ragged {
+                row,
+                expected: n,
+                actual: cells.len(),
+            });
+        }
+    }
+
+    if !options.alignments.is_empty() && options.alignments.len() != n {
+        return Err(TableError::AlignmentCount {
+            expected: n,
+            actual: options.alignments.len(),
+        });
+    }
+    if !options.overflow.is_empty() && options.overflow.len() != n {
+        return Err(TableError::OverflowCount {
+            expected: n,
+            actual: options.overflow.len(),
+        });
+    }
+    if matches!(options.mode, Mode::Markdown) && !options.header {
+        return Err(TableError::MarkdownNeedsHeader);
+    }
+
+    let (overhead, minimum_width) = match options.mode {
+        Mode::Grid | Mode::Markdown => (3 * n + 1, if matches!(options.mode, Mode::Markdown) { 3 } else { 1 }),
+        Mode::Compact => (2 * (n - 1), 1),
+    };
+    let minimum = overhead + n * minimum_width;
+    if options.max_width != 0 && options.max_width < minimum {
+        return Err(TableError::TooNarrow {
+            minimum,
+            provided: options.max_width,
+        });
+    }
+
+    for (row, cells) in rows.iter().enumerate() {
+        for (column, cell) in cells.iter().enumerate() {
+            validate_cell(cell, row, column)?;
+        }
+    }
+
+    let alignments = if options.alignments.is_empty() {
+        vec![Alignment::Left; n]
+    } else {
+        options.alignments.clone()
+    };
+    let overflows = if options.overflow.is_empty() {
+        vec![Overflow::Wrap; n]
+    } else {
+        options.overflow.clone()
+    };
+    let markdown = matches!(options.mode, Mode::Markdown);
+
+    let tokenized: Vec<Vec<Vec<Vec<Token>>>> = rows
+        .iter()
+        .map(|row| row.iter().map(|cell| split_cell(cell, markdown)).collect())
+        .collect();
+
+    let mut widths = vec![minimum_width; n];
+    for row in &tokenized {
+        for (column, lines) in row.iter().enumerate() {
+            for line in lines {
+                let line_width = line.iter().map(|t| t.width).sum::<usize>();
+                widths[column] = widths[column].max(line_width);
+            }
+        }
+    }
+
+    if options.max_width != 0 {
+        while total_width(&widths, overhead) > options.max_width {
+            let candidate = (0..n)
+                .rev()
+                .find(|&i| widths[i] > minimum_width)
+                .unwrap();
+            let widest = (0..n)
+                .filter(|&i| widths[i] > minimum_width)
+                .map(|i| widths[i])
+                .max()
+                .unwrap();
+            let candidate = (0..n)
+                .rev()
+                .find(|&i| widths[i] == widest && widths[i] > minimum_width)
+                .unwrap_or(candidate);
+            widths[candidate] -= 1;
+        }
+    }
+
+    let mut out = String::new();
+    if matches!(options.mode, Mode::Grid) {
+        out.push_str(&grid_border(&widths));
+    }
+
+    for row_index in 0..rows.len() {
+        let mut cell_fragments: Vec<Vec<String>> = Vec::with_capacity(n);
+        for column in 0..n {
+            let mut combined = Vec::new();
+            for line in &tokenized[row_index][column] {
+                combined.extend(fragments(line, widths[column], &overflows[column]));
+            }
+            cell_fragments.push(combined);
+        }
+
+        let height = cell_fragments.iter().map(Vec::len).max().unwrap_or(1);
+        for fragment_index in 0..height {
+            let physical: Vec<String> = (0..n)
+                .map(|column| {
+                    cell_fragments[column]
+                        .get(fragment_index)
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .collect();
+            out.push_str(&emit_grid_or_markdown_line(
+                &physical,
+                &widths,
+                &alignments,
+                matches!(options.mode, Mode::Compact),
+            ));
+        }
+
+        match options.mode {
+            Mode::Grid if options.header && row_index == 0 && row_index + 1 < rows.len() => {
+                out.push_str(&grid_border(&widths));
+            }
+            Mode::Markdown if row_index == 0 => {
+                out.push_str(&markdown_marker(&widths, &alignments));
+            }
+            Mode::Grid if row_index + 1 == rows.len() => {
+                out.push_str(&grid_border(&widths));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(out)
+}
+
+fn main() {}
+```
+
+## Public test results
+
+COMPILATION FAILED:
+error[E0631]: type mismatch in function arguments
+    --> /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpBQIEE2/main.rs:189:40
+     |
+ 189 |         let content = row.get(col).map(String::as_str).unwrap_or("");
+     |                                    --- ^^^^^^^^^^^^^^
+     |                                    |   |
+     |                                    |   expected due to this
+     |                                    |   found signature defined here
+     |                                    required by a bound introduced by this call
+     |
+     = note: expected function signature `fn(&Vec<String>) -> _`
+                found function signature `fn(&String) -> _`
+note: required by a bound in `Option::<T>::map`
+    --> /Users/thomas/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/option.rs:1159:12
+     |
+1157 |     pub const fn map<U, F>(self, f: F) -> Option<U>
+     |                  --- required by a bound in this associated function
+1158 |     where
+1159 |         F: [const] FnOnce(T) -> U + [const] Destruct,
+     |            ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Option::<T>::map`
+help: consider wrapping the function in a closure
+     |
+ 189 |         let content = row.get(col).map(|arg0: &Vec<String>| String::as_str(/* &String */)).unwrap_or("");
+     |                                        ++++++++++++++++++++               +++++++++++++++
+
+error[E0308]: mismatched types
+   --> /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpBQIEE2/main.rs:375:17
+    |
+374 |             out.push_str(&emit_grid_or_markdown_line(
+    |                           -------------------------- arguments to this function are incorrect
+375 |                 &physical,
+    |                 ^^^^^^^^^ expected `&[Vec<String>]`, found `&Vec<String>`
+    |
+    = note: expected reference `&[Vec<String>]`
+               found reference `&Vec<String>`
+note: function defined here
+   --> /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpBQIEE2/main.rs:169:4
+    |
+169 | fn emit_grid_or_markdown_line(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+170 |     row: &[Vec<String>],
+    |     -------------------
+
+error: aborting due to 2 previous errors
+
+Some errors have detailed explanations: E0308, E0631.
+For more information about an error, try `rustc --explain E0308`.
+
+Fix the file. Respond with the whole corrected file in a single ```rust block.

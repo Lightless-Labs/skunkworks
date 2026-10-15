@@ -1,0 +1,434 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else. Include an empty `fn main() {}` (the file is compiled as a program).
+
+PROMPT:
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner doc comments.
+R2. Expose this public API. The Encoder and Decoder declarations describe opaque types whose private fields you choose. Implement the listed derives on enums and Config: #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Alphabet { Standard, Hex } #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Padding { Required, Omitted } #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub struct Config { pub alphabet: Alphabet, pub padding: Padding, pub canonical: bool } #[derive(Debug, Clone, PartialEq, Eq)] pub enum StreamError { InvalidByte { offset: usize, byte: u8 }, NonCanonical { offset: usize, expected: u8 }, Padding { offset: usize }, InvalidLength { offset: usize }, TrailingBits { offset: usize }, Closed } pub struct Encoder; impl Encoder { pub fn new(config: Config) -> Self; pub fn push(&mut self, input: &[u8]) -> Result<String, StreamError>; pub fn finish(&mut self) -> Result<String, StreamError>; } pub struct Decoder; impl Decoder { pub fn new(config: Config) -> Self; pub fn push(&mut self, input: &str) -> Result<Vec<u8>, StreamError>; pub fn finish(&mut self) -> Result<Vec<u8>, StreamError>; }
+R3. Alphabet::Standard values 0..31 are ABCDEFGHIJKLMNOPQRSTUVWXYZ234567.
+R4. Alphabet::Hex values 0..31 are 0123456789ABCDEFGHIJKLMNOPQRSTUV. No autodetection or mixed alphabets.
+R5. Each new(config) constructs a fresh open stream with empty buffered state and position zero; configurations apply independently per instance.
+R6. Encoder reads input bytes most significant bit first into five-bit symbols and uses the selected uppercase alphabet.
+R7. Encoder::push emits only complete groups of five input bytes (eight symbols each), including groups completed by buffered bytes from earlier pushes; buffer the remaining zero to four bytes.
+R8. Encoder::push on an open stream with empty input returns Ok("") and keeps state.
+R9. Encoder::finish emits all buffered bytes using five-bit symbols, zero-filling the right of a final partial symbol without an extra empty symbol.
+R10. In Padding::Required, Encoder::finish appends = to make its final fragment a multiple of eight symbols. Complete groups already emitted by push receive no padding.
+R11. In Padding::Omitted, no encoder call emits =; final fragments may be shorter than eight symbols.
+R12. Config.canonical affects only decoding. Encoding is always uppercase and identical for canonical true and false.
+R13. Finishing an empty or exactly block-aligned encoder returns Ok(""). A successful finish closes that stream.
+R14. Any push or finish on a closed Encoder or Decoder, including empty push, returns StreamError::Closed without changing any state.
+R15. Decoder::push returns each full byte that becomes available during that call, most significant bit first, retaining fewer than eight unresolved bits for subsequent calls. Padding emits no bytes.
+R16. Decoder::finish returns Ok(vec![]) if validation succeeds, because all complete bytes have already been emitted, and then closes the stream.
+R17. Decoder validation is incremental: push scans input UTF-8 bytes left to right and stops at the first error for that call. It does not defer lexical, canonical-case, or padding-placement errors to finish.
+R18. Decoder offsets are zero-based absolute UTF-8 byte positions across successful pushes, including padding and original lowercase bytes. finish uses the total consumed byte count for end offsets.
+R19. Every unsuccessful push or finish is transactional: preserve the complete state from before the call, including consumed position, pending bits, counts, padding state and open/closed status. No partial output is returned from a failed call.
+R20. A caller may retry after an error using replacement input. The rejected call contributes zero consumed bytes, even when its prefix was valid. Successful output from earlier calls remains valid provisional output.
+R21. While scanning each byte, classify it as =, a selected-alphabet letter/digit after ASCII uppercase conversion, or invalid. InvalidByte { offset, byte } carries the actual original byte.
+R22. Whitespace, separators, non-ASCII, and symbols outside the selected alphabet are invalid. Standard does not accept 0 or 1; Hex does not accept W..Z; there are no aliases.
+R23. Invalid characters are classified before any data-after-padding check at the same byte. Non-ASCII fails at its first UTF-8 byte, not its character count.
+R24. For a recognized lowercase data symbol, canonical=true returns NonCanonical { offset, expected } where expected is its canonical uppercase ASCII byte.
+R25. canonical=false accepts lowercase data symbols with their uppercase values. Digits are equally valid in either mode.
+R26. Per byte, order checks as follows: lexical recognition, canonical lowercase check, padding placement. Thus lowercase after padding produces NonCanonical in strict mode and Padding in relaxed mode; an invalid byte after padding produces InvalidByte.
+R27. Padding::Omitted rejects any = immediately with Padding at that byte, including when the data length is illegal or unused bits are nonzero.
+R28. For Required mode, let d be the number of data symbols consumed before the first =. Legal residues d modulo 8 are 0,2,4,5,7, with exact expected pad counts respectively 0,6,4,3,1.
+R29. On the first = in Required mode, a residue outside that set, or residue 0 (including zero data), immediately gives Padding at that =. This is a placement error, never InvalidLength.
+R30. Once a = has been accepted, every later alphabet symbol gives Padding at its position, after lexical and canonical-case checks.
+R31. Additional = are accepted up to the expected count. The first excess = returns Padding at its own absolute position (not at the first =).
+R32. Missing data-length or padding-completeness errors are deferred until finish. A push ending at an illegal data residue or with too few = is allowed if no immediate error occurred.
+R33. At finish, validate in order: data length, padding completeness, unused bits. Return the first error in this order.
+R34. At finish, a data count whose residue is outside {0,2,4,5,7} gives InvalidLength { offset: total_consumed_bytes }, in either padding mode.
+R35. At finish in Required mode, the number of accepted = must equal the expected count. If not, return Padding at the first accepted = offset, or at total_consumed_bytes when no = was accepted.
+R36. At finish in Omitted mode, there is no total-length divisibility or padding-completeness check. All legal data-count residues are permitted.
+R37. Unused low bits must be zero: residue 2 requires 2 zero bits, residue 4 requires 4, residue 5 requires 1, residue 7 requires 3; residue 0 has none.
+R38. Nonzero unused bits give TrailingBits at the absolute offset of the last data symbol. This is checked only by finish, even if some padding has already arrived.
+R39. Data length and missing padding errors at finish therefore take precedence over bad tail bits. A failed finish remains open and may be repaired by pushing more data, or more padding if padding has begun.
+R40. Empty decoder push on an open stream returns Ok(vec![]) and keeps state. Finishing a never-fed decoder succeeds with an empty vector in both padding modes.
+R41. Calls may divide data or padding at any boundary allowed by the input type. Chunking cannot change the concatenated encoded output, successful decoded bytes, or absolute position of an immediate error for a fixed valid prefix.
+R42. Within a push, the first failing byte wins even when a later byte has a different error class. There is no whole-string lexical prepass as in a batch codec.
+R43. Support arbitrary binary inputs and long streams; pending encoder bytes, decoder bits and absolute indices must survive many calls without truncation.
+R44. Decoder push output is provisional: a later finish may reject length, padding, or unused bits despite previously returning decoded bytes; do not retroactively change earlier returned vectors.
+R45. No finish emits partial bits as an extra byte. Starting a new stream is the only way to reuse an instance after successful finish.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+#[test] fn public_standard_stream() { let c=Config{alphabet:Alphabet::Standard,padding:Padding::Required,canonical:true}; let mut e=Encoder::new(c); assert_eq!(e.push(b"fo").unwrap(),""); assert_eq!(e.push(b"oba").unwrap(),"MZXW6YTB"); assert_eq!(e.push(b"r").unwrap(),""); assert_eq!(e.finish().unwrap(),"OI======"); let mut d=Decoder::new(c); assert_eq!(d.push("MZXW6YTB").unwrap(),b"fooba"); assert_eq!(d.push("OI======").unwrap(),b"r"); assert_eq!(d.finish(),Ok(vec![])); }
+#[test] fn public_hex_stream() { let c=Config{alphabet:Alphabet::Hex,padding:Padding::Omitted,canonical:true}; let mut e=Encoder::new(c); assert_eq!(e.push(b"foo").unwrap(),""); assert_eq!(e.finish().unwrap(),"CPNMU"); let mut d=Decoder::new(c); assert_eq!(d.push("CPNMU").unwrap(),b"foo"); assert_eq!(d.finish(),Ok(vec![])); }
+#[test] fn public_complete_block() { let c=Config{alphabet:Alphabet::Standard,padding:Padding::Omitted,canonical:false}; let mut e=Encoder::new(c); assert_eq!(e.push(b"rust!"),Ok("OJ2XG5BB".into())); assert_eq!(e.finish(),Ok(String::new())); let mut d=Decoder::new(c); assert_eq!(d.push("OJ2XG5BB"),Ok(b"rust!".to_vec())); assert_eq!(d.finish(),Ok(vec![])); }
+#[test] fn public_closed_streams() { let c=Config{alphabet:Alphabet::Hex,padding:Padding::Required,canonical:true}; let mut e=Encoder::new(c); e.finish().unwrap(); assert_eq!(e.push(b"x"),Err(StreamError::Closed)); let mut d=Decoder::new(c); d.finish().unwrap(); assert_eq!(d.finish(),Err(StreamError::Closed)); }
+```
+
+
+Lessons from earlier tasks (task-agnostic; apply each one that is relevant):
+1. Translate requirements into explicit ordered validation, parsing, and state-transition phases; define error precedence, invariants, and boundary cases before choosing an algorithm.
+2. Validate all required input before mutation or output; preserve original indices, offsets, metadata, and distinctions that affect equality or errors.
+3. Track positions and state explicitly across transformations, chunks, and boundaries; preserve source offsets, token boundaries, and UTF-8 scalar boundaries.
+4. Model operations as ordered phases, applying admission, expiry, validation, and mutation exactly when specified; commit only completed work and preserve failed items.
+5. Use checked arithmetic at each required operation or prefix; define bounds, rounding stages, and overflow precedence explicitly.
+6. Use complete comparators and explicit tie-breaks; never rely on incidental container order.
+7. Separate scanning and parsing from output construction; track source and transformed positions independently, and emit only after required validation succeeds.
+8. Verify every observable result, including logs and counters, and test shared behavior, error precedence, and boundary cases across public operations.
+
+## Previous attempt
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alphabet {
+    Standard,
+    Hex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Padding {
+    Required,
+    Omitted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Config {
+    pub alphabet: Alphabet,
+    pub padding: Padding,
+    pub canonical: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamError {
+    InvalidByte { offset: usize, byte: u8 },
+    NonCanonical { offset: usize, expected: u8 },
+    Padding { offset: usize },
+    InvalidLength { offset: usize },
+    TrailingBits { offset: usize },
+    Closed,
+}
+
+pub struct Encoder {
+    config: Config,
+    pending: Vec<u8>,
+    closed: bool,
+}
+
+impl Encoder {
+    pub fn new(config: Config) -> Self {
+        Self {
+            config,
+            pending: Vec::new(),
+            closed: false,
+        }
+    }
+
+    pub fn push(&mut self, input: &[u8]) -> Result<String, StreamError> {
+        if self.closed {
+            return Err(StreamError::Closed);
+        }
+
+        let mut combined = Vec::with_capacity(self.pending.len() + input.len());
+        combined.extend_from_slice(&self.pending);
+        combined.extend_from_slice(input);
+
+        let complete_len = combined.len() / 5 * 5;
+        let output = encode_bytes(&combined[..complete_len], self.config.alphabet);
+        self.pending = combined[complete_len..].to_vec();
+        Ok(output)
+    }
+
+    pub fn finish(&mut self) -> Result<String, StreamError> {
+        if self.closed {
+            return Err(StreamError::Closed);
+        }
+
+        let output = encode_final(&self.pending, self.config);
+        self.pending.clear();
+        self.closed = true;
+        Ok(output)
+    }
+}
+
+fn alphabet_byte(alphabet: Alphabet, value: u8) -> u8 {
+    match alphabet {
+        Alphabet::Standard => b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"[value as usize],
+        Alphabet::Hex => b"0123456789ABCDEFGHIJKLMNOPQRSTUV"[value as usize],
+    }
+}
+
+fn encode_bytes(input: &[u8], alphabet: Alphabet) -> String {
+    let mut output = String::with_capacity(input.len() / 5 * 8);
+    for chunk in input.chunks_exact(5) {
+        let bits = ((chunk[0] as u64) << 32)
+            | ((chunk[1] as u64) << 24)
+            | ((chunk[2] as u64) << 16)
+            | ((chunk[3] as u64) << 8)
+            | chunk[4] as u64;
+
+        for shift in (0..8).rev() {
+            output.push(alphabet_byte(alphabet, ((bits >> (shift * 5)) & 31) as u8) as char);
+        }
+    }
+    output
+}
+
+fn encode_final(input: &[u8], config: Config) -> String {
+    if input.is_empty() {
+        return String::new();
+    }
+
+    let total_bits = input.len() * 8;
+    let symbol_count = (total_bits + 4) / 5;
+    let mut output = String::with_capacity(8);
+    for symbol_index in 0..symbol_count {
+        let bit_start = symbol_index * 5;
+        let mut value = 0u8;
+        for bit_offset in 0..5 {
+            value <<= 1;
+            let bit_index = bit_start + bit_offset;
+            if bit_index < total_bits {
+                let byte = input[bit_index / 8];
+                let bit = (byte >> (7 - (bit_index % 8))) & 1;
+                value |= bit;
+            }
+        }
+        output.push(alphabet_byte(config.alphabet, value) as char);
+    }
+
+    if config.padding == Padding::Required {
+        while output.len() % 8 != 0 {
+            output.push('=');
+        }
+    }
+    output
+}
+
+pub struct Decoder {
+    config: Config,
+    bit_buffer: u8,
+    bit_count: u8,
+    data_count: usize,
+    consumed: usize,
+    last_data_offset: Option<usize>,
+    last_data_value: u8,
+    first_padding_offset: Option<usize>,
+    padding_count: usize,
+    expected_padding: usize,
+    closed: bool,
+}
+
+impl Decoder {
+    pub fn new(config: Config) -> Self {
+        Self {
+            config,
+            bit_buffer: 0,
+            bit_count: 0,
+            data_count: 0,
+            consumed: 0,
+            last_data_offset: None,
+            last_data_value: 0,
+            first_padding_offset: None,
+            padding_count: 0,
+            expected_padding: 0,
+            closed: false,
+        }
+    }
+
+    pub fn push(&mut self, input: &str) -> Result<Vec<u8>, StreamError> {
+        if self.closed {
+            return Err(StreamError::Closed);
+        }
+
+        let mut next = self.clone_state();
+        let mut output = Vec::new();
+
+        for &byte in input.as_bytes() {
+            let offset = next.consumed;
+            let recognized = recognize(next.config.alphabet, byte);
+
+            match recognized {
+                Recognized::Invalid => {
+                    return Err(StreamError::InvalidByte { offset, byte });
+                }
+                Recognized::Data(value, uppercase) => {
+                    if next.config.canonical && byte != uppercase {
+                        return Err(StreamError::NonCanonical {
+                            offset,
+                            expected: uppercase,
+                        });
+                    }
+                    if next.first_padding_offset.is_some() {
+                        return Err(StreamError::Padding { offset });
+                    }
+
+                    next.data_count += 1;
+                    next.last_data_offset = Some(offset);
+                    next.last_data_value = value;
+                    next.bit_buffer = (next.bit_buffer << 5) | value;
+                    next.bit_count += 5;
+                    while next.bit_count >= 8 {
+                        next.bit_count -= 8;
+                        output.push((next.bit_buffer >> next.bit_count) as u8);
+                        if next.bit_count == 0 {
+                            next.bit_buffer = 0;
+                        } else {
+                            next.bit_buffer &= (1u8 << next.bit_count) - 1;
+                        }
+                    }
+                }
+                Recognized::Padding => {
+                    if next.config.padding == Padding::Omitted {
+                        return Err(StreamError::Padding { offset });
+                    }
+
+                    if next.first_padding_offset.is_none() {
+                        let residue = next.data_count % 8;
+                        let expected = match residue {
+                            2 => 6,
+                            4 => 4,
+                            5 => 3,
+                            7 => 1,
+                            _ => return Err(StreamError::Padding { offset }),
+                        };
+                        next.first_padding_offset = Some(offset);
+                        next.expected_padding = expected;
+                    }
+
+                    if next.padding_count >= next.expected_padding {
+                        return Err(StreamError::Padding { offset });
+                    }
+                    next.padding_count += 1;
+                }
+            }
+
+            next.consumed += 1;
+        }
+
+        *self = next;
+        Ok(output)
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<u8>, StreamError> {
+        if self.closed {
+            return Err(StreamError::Closed);
+        }
+
+        let residue = self.data_count % 8;
+        let expected_padding = match residue {
+            0 => 0,
+            2 => 6,
+            4 => 4,
+            5 => 3,
+            7 => 1,
+            _ => return Err(StreamError::InvalidLength { offset: self.consumed }),
+        };
+
+        if self.config.padding == Padding::Required && self.padding_count != expected_padding {
+            return Err(StreamError::Padding {
+                offset: self.first_padding_offset.unwrap_or(self.consumed),
+            });
+        }
+
+        let unused_bits = match residue {
+            0 => 0,
+            2 => 2,
+            4 => 4,
+            5 => 1,
+            7 => 3,
+            _ => 0,
+        };
+        if unused_bits != 0 {
+            let mask = (1u8 << unused_bits) - 1;
+            if self.last_data_value & mask != 0 {
+                return Err(StreamError::TrailingBits {
+                    offset: self.last_data_offset.unwrap_or(self.consumed),
+                });
+            }
+        }
+
+        self.closed = true;
+        Ok(Vec::new())
+    }
+
+    fn clone_state(&self) -> Self {
+        Self {
+            config: self.config,
+            bit_buffer: self.bit_buffer,
+            bit_count: self.bit_count,
+            data_count: self.data_count,
+            consumed: self.consumed,
+            last_data_offset: self.last_data_offset,
+            last_data_value: self.last_data_value,
+            first_padding_offset: self.first_padding_offset,
+            padding_count: self.padding_count,
+            expected_padding: self.expected_padding,
+            closed: self.closed,
+        }
+    }
+}
+
+enum Recognized {
+    Data(u8, u8),
+    Padding,
+    Invalid,
+}
+
+fn recognize(alphabet: Alphabet, byte: u8) -> Recognized {
+    if byte == b'=' {
+        return Recognized::Padding;
+    }
+
+    let upper = byte.to_ascii_uppercase();
+    let table = match alphabet {
+        Alphabet::Standard => b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".as_slice(),
+        Alphabet::Hex => b"0123456789ABCDEFGHIJKLMNOPQRSTUV".as_slice(),
+    };
+
+    match table.iter().position(|&candidate| candidate == upper) {
+        Some(value) => Recognized::Data(value as u8, upper),
+        None => Recognized::Invalid,
+    }
+}
+
+fn main() {}
+```
+
+## Public test results
+
+TESTS: 1 passed, 3 failed
+TEST OUTPUT:
+
+running 4 tests
+test a2d_acceptance::public_closed_streams ... ok
+test a2d_acceptance::public_hex_stream ... FAILED
+test a2d_acceptance::public_standard_stream ... FAILED
+test a2d_acceptance::public_complete_block ... FAILED
+
+failures:
+
+---- a2d_acceptance::public_hex_stream stdout ----
+
+thread 'a2d_acceptance::public_hex_stream' (85093461) panicked at /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpaSxC2V/main.rs:321:247:
+assertion `left == right` failed
+  left: [38, 15, 111]
+ right: [102, 111, 111]
+
+---- a2d_acceptance::public_standard_stream stdout ----
+
+thread 'a2d_acceptance::public_standard_stream' (85093462) panicked at /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpaSxC2V/main.rs:320:346:
+assertion `left == right` failed
+  left: [38, 15, 111, 2, 97]
+ right: [102, 111, 111, 98, 97]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- a2d_acceptance::public_complete_block stdout ----
+
+thread 'a2d_acceptance::public_complete_block' (85093460) panicked at /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpaSxC2V/main.rs:322:270:
+assertion `left == right` failed
+  left: Ok([50, 5, 115, 20, 33])
+ right: Ok([114, 117, 115, 116, 33])
+
+
+failures:
+    a2d_acceptance::public_complete_block
+    a2d_acceptance::public_hex_stream
+    a2d_acceptance::public_standard_stream
+
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+Fix the file. Respond with the whole corrected file in a single ```rust block.

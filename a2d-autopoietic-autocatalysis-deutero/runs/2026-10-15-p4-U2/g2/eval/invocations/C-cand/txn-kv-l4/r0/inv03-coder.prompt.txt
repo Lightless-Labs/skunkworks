@@ -1,0 +1,862 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else. Include an empty `fn main() {}` (the file is compiled as a program).
+
+PROMPT:
+R1. Implement in Rust as a SINGLE source file that compiles with `rustc --edition 2024`, std only. Output ONLY the Rust source code inside ```rust fences. All listed API items, fields and enum variants must be public; private implementation helpers are allowed. Do not add inner attributes or inner documentation comments.
+R2. Use the exact public API below. Store::new() creates an empty store. Error and the result structs must derive Debug, Clone, PartialEq, Eq; Store need not implement those traits. Strings are compared by Rust String ordering, without normalization. Values may be empty; keys may contain any characters except that the empty string is invalid for key-based operations.
+Exact API (Rust signatures):
+```rust
+pub enum Error {
+ KeyEmpty, NameEmpty, NameInvalid { at: usize }, SnapshotLimit, TimeBackwards { previous: u64, now: u64 }, DeadlineOverflow,
+ UnknownTransaction(u64), TransactionExists(u64), ReadOnly(u64), SnapshotMissing(String),
+ ActiveTransactions, Conflict { tx: u64, key: String }, InvalidRange, CursorMismatch,
+ InvalidNumber { key: String, value: String }, SumOverflow { key: String }
+}
+pub struct Stats {
+ pub clock: u64, pub revision: u64, pub keys: usize, pub live_keys: usize,
+ pub versions: usize, pub tombstones: usize, pub active_transactions: usize,
+ pub read_only_transactions: usize, pub staged_writes: usize, pub snapshots: usize
+}
+pub struct Store { /* private fields */ }
+impl Store {
+ pub fn new() -> Self;
+ pub fn begin(&mut self, now: u64, id: u64, read_only: bool) -> Result<(), Error>;
+ pub fn commit(&mut self, now: u64, id: u64) -> Result<u64, Error>;
+ pub fn rollback(&mut self, now: u64, id: u64) -> Result<(), Error>;
+ pub fn set(&mut self, now: u64, tx: Option<u64>, key: &str, value: &str, ttl: Option<u64>) -> Result<(), Error>;
+ pub fn delete(&mut self, now: u64, tx: Option<u64>, key: &str) -> Result<bool, Error>;
+ pub fn get(&mut self, now: u64, tx: Option<u64>, key: &str) -> Result<Option<String>, Error>;
+ pub fn count(&mut self, now: u64, tx: Option<u64>, value: &str) -> Result<usize, Error>;
+ pub fn scan(&mut self, now: u64, tx: Option<u64>, start: &str, end: Option<&str>, prefix: Option<&str>, offset: usize, limit: usize, cursor: Option<&Cursor>) -> Result<Page, Error>;
+ pub fn aggregate(&mut self, now: u64, tx: Option<u64>, start: &str, end: Option<&str>, prefix: Option<&str>) -> Result<Aggregate, Error>;
+ pub fn snapshot(&mut self, now: u64, name: &str) -> Result<(), Error>;
+ pub fn restore(&mut self, now: u64, name: &str) -> Result<u64, Error>;
+ pub fn forget(&mut self, now: u64, name: &str) -> Result<(), Error>;
+ pub fn gc(&mut self, now: u64) -> Result<usize, Error>;
+ pub fn stats(&mut self, now: u64) -> Result<Stats, Error>;
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cursor { pub start: String, pub end: Option<String>, pub prefix: Option<String>, pub offset: usize, pub last: String }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Page { pub items: Vec<(String, String)>, pub next: Option<Cursor> }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Aggregate { pub count: usize, pub sum: i64 }
+```
+R3. This level uses multiple concurrent transactions, not nested scopes. The logical clock and committed revision both start at zero. Every method except new checks time first: now < clock returns TimeBackwards { previous: clock, now } with no changes; otherwise clock becomes now, even if later validation fails. Equal times are allowed. No method reads wall-clock time.
+R4. begin creates transaction id (all u64 ids, including zero, are valid), recording the current committed revision and read_only flag, with an empty private write map. Existing active ids return TransactionExists(id) without replacing the transaction. Ended ids may be reused and then capture a fresh revision. No limit is imposed on active transactions.
+R5. A tx parameter None means committed current data; Some(id) means that active transaction. All tx-taking calls validate existence after time admission and before key/range/cursor/readonly/deadline validation. UnknownTransaction(id) is the error, also for commit/rollback of an ended or never-active id.
+R6. Every committed key has zero or more versions with a revision and either a value plus optional absolute expiry deadline, or a tombstone. For a transaction choose the newest version with revision <= its begin revision; for None choose the newest version overall. If there is no selected version, the key is absent.
+R7. A transaction's private write for a key replaces the selected version, even when that write is a tombstone or expired. A selected tombstone or expired value means absence: never fall back to an older live version. Transactions do not see other transactions' private writes or commits after their begin revision. Their own writes are immediately visible.
+R8. Expiry depends on the call's now, even in an old transaction. A value is live exactly if its deadline is None or > now. Merely advancing time never physically removes versions or private writes, changes revision, or creates tombstones. Stats and gc also admit time.
+R9. get returns an owned live value or None for an absent valid key. count counts live keys whose entire value exactly equals the supplied string, including empty values; it counts entries, not distinct values. Empty selections have count zero. Different Store instances are independent.
+R10. set/delete/get reject the empty key with KeyEmpty, after time and tx validation. Values and nonempty keys can contain any characters, without normalization. delete of a live key returns true; absent/expired returns false, but a successful delete ALWAYS writes a tombstone, even for a key that never existed.
+R11. set/delete with Some(read_only_id) return ReadOnly(id) after time/tx/key validation and before TTL calculation or mutation. Read-only transactions may read, scan, aggregate, commit, or roll back. Snapshot operations have no tx parameter and do not modify their views.
+R12. set ttl None creates a permanent value, replacing any old deadline. Some(d) sets deadline now+d using checked addition; overflow returns DeadlineOverflow without creating a write. Some(0) writes a tombstone immediately and succeeds. Empty-key and ReadOnly errors precede deadline overflow.
+R13. Successful set/delete with None immediately append one new committed version and increment the committed revision by one, including identical overwrites, deleting absent keys, and Some(0). Failed writes never increment revision. With Some(id), they only replace the private write for that key; repeated writes to the same key occupy one staged slot and do not increment revision.
+R14. A nonempty transaction commit checks EVERY staged key in ascending String order. If the newest committed version for a staged key has revision greater than the transaction's begin revision, return Conflict { tx: id, key } for the lexicographically first such key. Include expired values and tombstones in this check, even if gc ran. Do not compare value equality. Reads of changed keys alone are not conflicts.
+R15. On conflict, the transaction and every staged write remain active and unchanged, no versions are appended, and revision does not advance. The admitted clock still advances. Retrying a conflicting transaction cannot change its begin revision; rollback is needed to discard it.
+R16. A successful nonempty commit increments revision once and appends all staged writes at that SAME revision, then removes the transaction and returns that revision. Deadlines are preserved from set time, even if already expired at commit. There is no partial commit. Tests never exhaust the u64 revision space.
+R17. A successful empty commit, including a read-only commit, removes the transaction, returns the CURRENT committed revision, and does not create a revision. rollback discards one transaction's entire private map without touching committed versions, other transactions, or snapshots and returns Ok(()).
+R18. snapshot(name) stores an owned copy of CURRENT COMMITTED LIVE data at now, with original absolute deadlines; it ignores all private writes. It may run while any transactions are active. Names start with an ASCII lowercase letter and continue only with ASCII lowercase letters, digits, or underscores. Return NameInvalid { at } at the UTF-8 byte offset of the first offending character, before lookup/capacity validation. At most three names may exist: a fourth distinct valid name returns SnapshotLimit, but replacing an existing name at capacity succeeds. forget frees a slot. Snapshots survive transaction end. snapshot/restore/forget reject empty name with NameEmpty after time admission and before lookup.
+R19. restore/forget of an unknown valid name return SnapshotMissing(name.to_string()). For restore, lookup precedes the active-transaction check: known snapshot plus ANY active transaction (even read-only) returns ActiveTransactions. These errors never change versions, registry, or revision.
+R20. restore is allowed only with no active transactions. Purge expired entries from a COPY of the saved snapshot using their original deadlines, leaving the saved snapshot unchanged. Let U be the union of currently committed live keys and copied live snapshot keys. If U is empty, return the current revision unchanged. Otherwise increment revision once and append one version for every key in U: the copied entry if present, otherwise a tombstone. Identical restored entries still create versions. Old expired/tombstone-only keys outside U get no version. Return the resulting revision.
+R21. forget removes one snapshot but no versions, data or transactions. Named snapshots are materialized copies, so they never pin historical versions during gc and their saved entries are not counted as versions or staged writes.
+R22. scan/aggregate select live visible keys using k >= start, k < end if end is Some, and k.starts_with(prefix) if prefix is Some. Empty start/prefix are valid. Keys sort by ascending Rust String ordering. None end is unbounded; Some(end) <= start returns InvalidRange after time and tx validation, before cursor validation or numeric parsing.
+R23. scan without cursor discards offset matching keys and takes at most limit. Huge offset/limit values must not overflow or panic. limit zero returns an empty page with no next, after range/cursor validation. Empty or disjoint selections also return an empty page with no next.
+R24. A nonempty page returns next Some iff another matching key remains after its last returned key. Its Cursor copies start/end/prefix/offset and last is the last returned key. If no further key remains, next is None. Page values and cursor strings are owned.
+R25. Cursor start/end/prefix/offset must exactly equal the supplied arguments; None differs from Some(""). last must be nonempty and satisfy all requested filters. Otherwise return CursorMismatch. Callers may construct cursors. No last-existence, store, transaction, or revision binding is checked; limit may change.
+R26. With a valid cursor, use only keys strictly greater than last, WITHOUT applying offset again. Resumption uses the present view of the supplied tx parameter: its own later writes and clock expiry can change pages; None also sees subsequent commits. Deleting/expiring last is allowed. Cursors can cross stores/transactions if their fields validate.
+R27. aggregate counts all matching entries and sums canonical signed i64 values using checked i64 addition, in key order, without pagination. Empty selection is Aggregate { count: 0, sum: 0 }, and zero-valued entries are counted.
+R28. Canonical numeric syntax is "0" or a nonzero ASCII digit followed by ASCII digits, with an optional leading minus. Reject empty values, "+1", leading zeros, "-0", whitespace, non-ASCII digits, nondecimal characters, and values outside i64 range with InvalidNumber { key, value } preserving both original strings.
+R29. Parse then add each entry before visiting the next key. Overflow returns SumOverflow { key } for the triggering key. The first parse/add error in ascending key order wins. No partial result or data mutation occurs.
+R30. gc explicitly removes obsolete committed versions. For EACH key retain its newest committed version AND, for each active transaction, the newest version whose revision <= that transaction's begin revision, if any. Retain the union of these selected version identities, in original revision order. All other versions are removed, regardless of liveness, tombstone status, or whether a transaction privately overwrote that key. gc returns the exact number removed.
+R31. No operation performs automatic gc. gc never drops a key's newest version, including expired heads and tombstones; thus no version-bearing key record disappears. gc never modifies private writes, snapshots, transaction begin revisions, or the committed revision. Repeated gc with no relevant state changes returns zero. Active read-only transactions pin versions exactly like writable ones.
+R32. stats.clock is the admitted now and stats.revision is the latest committed revision. stats.keys counts distinct keys with at least one retained committed version, INCLUDING keys whose newest version is tombstoned or expired. stats.live_keys counts only current committed live keys, ignoring private writes and snapshots.
+R33. stats.versions counts all retained committed versions. stats.tombstones counts all retained versions with no value; an expired stored value is NOT a tombstone. These counts exclude private writes and snapshot copies, and can decrease only on gc (tombstone count can also increase on writes).
+R34. stats.active_transactions counts all active transactions; stats.read_only_transactions counts active read-only transactions. stats.staged_writes sums the number of distinct staged keys over ALL active transactions (including staged deletions and expired values). stats.snapshots counts registry entries. Empty-store stats has zero in every field except clock when called at nonzero now.
+R35. Errors other than TimeBackwards preserve all state except the admitted clock. Every validation uses the order specified above. In particular UnknownTransaction precedes KeyEmpty/InvalidRange; KeyEmpty precedes ReadOnly; ReadOnly precedes DeadlineOverflow; InvalidRange precedes CursorMismatch/InvalidNumber; SnapshotMissing precedes ActiveTransactions.
+R36. Conflict detection concerns writes only: no read conflict, phantom conflict, serializable predicate locking, or renewal of transaction snapshots occurs. Concurrent disjoint writes may all commit. An expired/staged-deleted value still contributes one write for conflict checking.
+R37. Retained versions let active transactions keep their begin-time key membership through gc, subject only to their own writes and now-dependent expiry. New keys committed after begin remain absent in that transaction, and post-begin deletions do not hide a live begin-time value. A transaction begun before a key's first version pins no version for that key.
+R38. All specified operations are deterministic, without wall-clock, I/O, threading, or global state. There is no begin stack or depth API at this level. Rust methods return the specified Result values and must not panic on valid input, including empty stores and very large pagination arguments.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R1, R4–R7, R9, R13, R16
+#[test]
+fn public_isolation() {
+    let mut s = Store::new();
+    s.set(1, None, "key", "base", None).unwrap();
+    s.begin(1, 7, false).unwrap();
+    s.set(2, None, "key", "later", None).unwrap();
+    assert_eq!(s.get(2, Some(7), "key"), Ok(Some("base".into())));
+    s.set(2, Some(7), "other", "own", None).unwrap();
+    assert_eq!(s.count(2, Some(7), "own"), Ok(1));
+    assert_eq!(s.commit(2, 7), Ok(3));
+}
+
+// R11, R14–R17
+#[test]
+fn public_conflict_and_readonly() {
+    let mut s = Store::new();
+    s.begin(0, 1, false).unwrap();
+    s.begin(0, 2, false).unwrap();
+    s.set(0, Some(1), "x", "a", None).unwrap();
+    s.set(0, Some(2), "x", "b", None).unwrap();
+    assert_eq!(s.commit(0, 1), Ok(1));
+    assert_eq!(
+        s.commit(0, 2),
+        Err(Error::Conflict {
+            tx: 2,
+            key: "x".into()
+        })
+    );
+    s.rollback(0, 2).unwrap();
+    s.begin(0, 3, true).unwrap();
+    assert_eq!(s.set(0, Some(3), "x", "c", None), Err(Error::ReadOnly(3)));
+    assert_eq!(s.commit(0, 3), Ok(1));
+}
+
+// R22–R29
+#[test]
+fn public_scan_aggregate() {
+    let mut s = Store::new();
+    for (k, v) in [("a", "2"), ("b", "-1"), ("c", "4")] {
+        s.set(0, None, k, v, None).unwrap();
+    }
+    let p = s.scan(0, None, "", None, None, 0, 2, None).unwrap();
+    assert_eq!(p.items.len(), 2);
+    assert_eq!(
+        s.scan(0, None, "", None, None, 0, 2, p.next.as_ref())
+            .unwrap()
+            .items,
+        vec![("c".into(), "4".into())]
+    );
+    assert_eq!(
+        s.aggregate(0, None, "", None, None),
+        Ok(Aggregate { count: 3, sum: 5 })
+    );
+}
+
+// R8, R10, R18–R21, R30–R34
+#[test]
+fn public_snapshots_gc_stats() {
+    let mut s = Store::new();
+    s.set(1, None, "x", "old", Some(20)).unwrap();
+    s.snapshot(1, "saved").unwrap();
+    s.set(2, None, "x", "new", None).unwrap();
+    assert_eq!(s.restore(2, "saved"), Ok(3));
+    assert_eq!(s.get(2, None, "x"), Ok(Some("old".into())));
+    assert_eq!(s.delete(2, None, "x"), Ok(true));
+    assert_eq!(s.gc(2), Ok(3));
+    let st = s.stats(2).unwrap();
+    assert_eq!(
+        (st.revision, st.versions, st.tombstones, st.live_keys),
+        (4, 1, 1, 0)
+    );
+    s.forget(2, "saved").unwrap();
+}
+```
+
+
+Lessons from earlier tasks (task-agnostic; apply each one that is relevant):
+1. Translate specifications into explicit, ordered validation and operation steps; preserve error precedence, deterministic tie-breaks, and observable intermediate failures.
+2. Validate inputs completely before processing or mutating state; make each fallible operation atomic and commit changes only after success.
+3. Model streaming input as a state machine; preserve absolute source offsets and defer only checks that depend on end-of-input.
+4. Preserve source indices, boundaries, and provenance through transformations; apply canonical ordering only when required.
+5. Separate parsing, validation, filtering, ranking, computation, and formatting into clear phases.
+6. Define arithmetic and geometry invariants explicitly; use checked operations and test boundaries, ties, and algebraic identities.
+7. Normalize and validate paths before lookup; traverse prefixes in order and verify the final entry’s type.
+8. Resolve output rules first; distinguish semantic content from presentation separators when validating and formatting.
+
+## Previous attempt
+
+```rust
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    KeyEmpty,
+    NameEmpty,
+    NameInvalid { at: usize },
+    SnapshotLimit,
+    TimeBackwards { previous: u64, now: u64 },
+    DeadlineOverflow,
+    UnknownTransaction(u64),
+    TransactionExists(u64),
+    ReadOnly(u64),
+    SnapshotMissing(String),
+    ActiveTransactions,
+    Conflict { tx: u64, key: String },
+    InvalidRange,
+    CursorMismatch,
+    InvalidNumber { key: String, value: String },
+    SumOverflow { key: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stats {
+    pub clock: u64,
+    pub revision: u64,
+    pub keys: usize,
+    pub live_keys: usize,
+    pub versions: usize,
+    pub tombstones: usize,
+    pub active_transactions: usize,
+    pub read_only_transactions: usize,
+    pub staged_writes: usize,
+    pub snapshots: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cursor {
+    pub start: String,
+    pub end: Option<String>,
+    pub prefix: Option<String>,
+    pub offset: usize,
+    pub last: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Page {
+    pub items: Vec<(String, String)>,
+    pub next: Option<Cursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Aggregate {
+    pub count: usize,
+    pub sum: i64,
+}
+
+#[derive(Clone)]
+struct Version {
+    revision: u64,
+    value: Option<String>,
+    deadline: Option<u64>,
+}
+
+#[derive(Clone)]
+struct Write {
+    value: Option<String>,
+    deadline: Option<u64>,
+}
+
+struct Transaction {
+    begin_revision: u64,
+    read_only: bool,
+    writes: BTreeMap<String, Write>,
+}
+
+pub struct Store {
+    clock: u64,
+    revision: u64,
+    versions: BTreeMap<String, Vec<Version>>,
+    transactions: HashMap<u64, Transaction>,
+    snapshots: BTreeMap<String, BTreeMap<String, (String, Option<u64>)>>,
+}
+
+impl Store {
+    pub fn new() -> Self {
+        Self {
+            clock: 0,
+            revision: 0,
+            versions: BTreeMap::new(),
+            transactions: HashMap::new(),
+            snapshots: BTreeMap::new(),
+        }
+    }
+
+    fn admit(&mut self, now: u64) -> Result<(), Error> {
+        if now < self.clock {
+            return Err(Error::TimeBackwards {
+                previous: self.clock,
+                now,
+            });
+        }
+        self.clock = now;
+        Ok(())
+    }
+
+    fn transaction(&self, id: u64) -> Result<&Transaction, Error> {
+        self.transactions
+            .get(&id)
+            .ok_or(Error::UnknownTransaction(id))
+    }
+
+    fn transaction_mut(&mut self, id: u64) -> Result<&mut Transaction, Error> {
+        self.transactions
+            .get_mut(&id)
+            .ok_or(Error::UnknownTransaction(id))
+    }
+
+    fn selected_version(&self, key: &str, tx: Option<u64>) -> Option<&Version> {
+        let versions = self.versions.get(key)?;
+        match tx {
+            Some(id) => {
+                let begin_revision = self.transactions.get(&id)?.begin_revision;
+                versions
+                    .iter()
+                    .rev()
+                    .find(|version| version.revision <= begin_revision)
+            }
+            None => versions.last(),
+        }
+    }
+
+    fn live_value(&self, key: &str, tx: Option<u64>, now: u64) -> Option<&str> {
+        if let Some(write) = tx
+            .and_then(|id| self.transactions.get(&id))
+            .and_then(|transaction| transaction.writes.get(key))
+        {
+            return match (&write.value, write.deadline) {
+                (Some(value), deadline) if deadline.is_none_or(|d| d > now) => {
+                    Some(value.as_str())
+                }
+                _ => None,
+            };
+        }
+
+        let version = self.selected_version(key, tx)?;
+        match (&version.value, version.deadline) {
+            (Some(value), deadline) if deadline.is_none_or(|d| d > now) => {
+                Some(value.as_str())
+            }
+            _ => None,
+        }
+    }
+
+    fn append_version(&mut self, key: String, write: Write, revision: u64) {
+        self.versions.entry(key).or_default().push(Version {
+            revision,
+            value: write.value,
+            deadline: write.deadline,
+        });
+    }
+
+    fn validate_key(key: &str) -> Result<(), Error> {
+        if key.is_empty() {
+            Err(Error::KeyEmpty)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_range(start: &str, end: Option<&str>) -> Result<(), Error> {
+        if end.is_some_and(|end| end <= start) {
+            Err(Error::InvalidRange)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn matching_keys(
+        &self,
+        tx: Option<u64>,
+        now: u64,
+        start: &str,
+        end: Option<&str>,
+        prefix: Option<&str>,
+        after: Option<&str>,
+    ) -> Vec<(String, String)> {
+        self.versions
+            .keys()
+            .filter(|key| {
+                key.as_str() >= start
+                    && end.is_none_or(|end| key.as_str() < end)
+                    && prefix.is_none_or(|prefix| key.starts_with(prefix))
+                    && after.is_none_or(|last| key.as_str() > last)
+            })
+            .filter_map(|key| {
+                self.live_value(key, tx, now)
+                    .map(|value| (key.clone(), value.to_owned()))
+            })
+            .collect()
+    }
+
+    fn validate_name(name: &str) -> Result<(), Error> {
+        if name.is_empty() {
+            return Err(Error::NameEmpty);
+        }
+        for (at, ch) in name.char_indices() {
+            let valid = if at == 0 {
+                ch.is_ascii_lowercase()
+            } else {
+                ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'
+            };
+            if !valid {
+                return Err(Error::NameInvalid { at });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn begin(&mut self, now: u64, id: u64, read_only: bool) -> Result<(), Error> {
+        self.admit(now)?;
+        if self.transactions.contains_key(&id) {
+            return Err(Error::TransactionExists(id));
+        }
+        self.transactions.insert(
+            id,
+            Transaction {
+                begin_revision: self.revision,
+                read_only,
+                writes: BTreeMap::new(),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn commit(&mut self, now: u64, id: u64) -> Result<u64, Error> {
+        self.admit(now)?;
+        let transaction = self.transaction(id)?;
+
+        for key in transaction.writes.keys() {
+            if self
+                .versions
+                .get(key)
+                .and_then(|versions| versions.last())
+                .is_some_and(|version| version.revision > transaction.begin_revision)
+            {
+                return Err(Error::Conflict {
+                    tx: id,
+                    key: key.clone(),
+                });
+            }
+        }
+
+        let transaction = self.transactions.remove(&id).unwrap();
+        if transaction.writes.is_empty() {
+            return Ok(self.revision);
+        }
+
+        self.revision += 1;
+        let revision = self.revision;
+        for (key, write) in transaction.writes {
+            self.append_version(key, write, revision);
+        }
+        Ok(revision)
+    }
+
+    pub fn rollback(&mut self, now: u64, id: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        self.transaction(id)?;
+        self.transactions.remove(&id);
+        Ok(())
+    }
+
+    pub fn set(
+        &mut self,
+        now: u64,
+        tx: Option<u64>,
+        key: &str,
+        value: &str,
+        ttl: Option<u64>,
+    ) -> Result<(), Error> {
+        self.admit(now)?;
+
+        if let Some(id) = tx {
+            let transaction = self.transaction(id)?;
+            Self::validate_key(key)?;
+            if transaction.read_only {
+                return Err(Error::ReadOnly(id));
+            }
+        } else {
+            Self::validate_key(key)?;
+        }
+
+        let write = match ttl {
+            Some(0) => Write {
+                value: None,
+                deadline: None,
+            },
+            Some(duration) => Write {
+                value: Some(value.to_owned()),
+                deadline: Some(now.checked_add(duration).ok_or(Error::DeadlineOverflow)?),
+            },
+            None => Write {
+                value: Some(value.to_owned()),
+                deadline: None,
+            },
+        };
+
+        match tx {
+            Some(id) => {
+                self.transaction_mut(id)?
+                    .writes
+                    .insert(key.to_owned(), write);
+            }
+            None => {
+                self.revision += 1;
+                self.append_version(key.to_owned(), write, self.revision);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn delete(&mut self, now: u64, tx: Option<u64>, key: &str) -> Result<bool, Error> {
+        self.admit(now)?;
+
+        if let Some(id) = tx {
+            let transaction = self.transaction(id)?;
+            Self::validate_key(key)?;
+            if transaction.read_only {
+                return Err(Error::ReadOnly(id));
+            }
+        } else {
+            Self::validate_key(key)?;
+        }
+
+        let existed = self.live_value(key, tx, now).is_some();
+        let write = Write {
+            value: None,
+            deadline: None,
+        };
+
+        match tx {
+            Some(id) => {
+                self.transaction_mut(id)?
+                    .writes
+                    .insert(key.to_owned(), write);
+            }
+            None => {
+                self.revision += 1;
+                self.append_version(key.to_owned(), write, self.revision);
+            }
+        }
+        Ok(existed)
+    }
+
+    pub fn get(
+        &mut self,
+        now: u64,
+        tx: Option<u64>,
+        key: &str,
+    ) -> Result<Option<String>, Error> {
+        self.admit(now)?;
+        if let Some(id) = tx {
+            self.transaction(id)?;
+        }
+        Self::validate_key(key)?;
+        Ok(self.live_value(key, tx, now).map(str::to_owned))
+    }
+
+    pub fn count(&mut self, now: u64, tx: Option<u64>, value: &str) -> Result<usize, Error> {
+        self.admit(now)?;
+        if let Some(id) = tx {
+            self.transaction(id)?;
+        }
+        Ok(self
+            .matching_keys(tx, now, "", None, None, None)
+            .iter()
+            .filter(|(_, found)| found == value)
+            .count())
+    }
+
+    pub fn scan(
+        &mut self,
+        now: u64,
+        tx: Option<u64>,
+        start: &str,
+        end: Option<&str>,
+        prefix: Option<&str>,
+        offset: usize,
+        limit: usize,
+        cursor: Option<&Cursor>,
+    ) -> Result<Page, Error> {
+        self.admit(now)?;
+        if let Some(id) = tx {
+            self.transaction(id)?;
+        }
+        Self::validate_range(start, end)?;
+
+        if let Some(cursor) = cursor {
+            if cursor.start != start
+                || cursor.end.as_deref() != end
+                || cursor.prefix.as_deref() != prefix
+                || cursor.offset != offset
+                || cursor.last.is_empty()
+                || cursor.last.as_str() < start
+                || end.is_some_and(|end| cursor.last.as_str() >= end)
+                || prefix.is_some_and(|prefix| !cursor.last.starts_with(prefix))
+            {
+                return Err(Error::CursorMismatch);
+            }
+        }
+
+        if limit == 0 {
+            return Ok(Page {
+                items: Vec::new(),
+                next: None,
+            });
+        }
+
+        let all = self.matching_keys(
+            tx,
+            now,
+            start,
+            end,
+            prefix,
+            cursor.map(|cursor| cursor.last.as_str()),
+        );
+        let skip = if cursor.is_some() { 0 } else { offset };
+        let items: Vec<_> = all.iter().skip(skip).take(limit).cloned().collect();
+        let has_more = all.len().saturating_sub(skip) > items.len();
+
+        let next = if has_more {
+            items.last().map(|(last, _)| Cursor {
+                start: start.to_owned(),
+                end: end.map(str::to_owned),
+                prefix: prefix.map(str::to_owned),
+                offset,
+                last: last.clone(),
+            })
+        } else {
+            None
+        };
+
+        Ok(Page { items, next })
+    }
+
+    pub fn aggregate(
+        &mut self,
+        now: u64,
+        tx: Option<u64>,
+        start: &str,
+        end: Option<&str>,
+        prefix: Option<&str>,
+    ) -> Result<Aggregate, Error> {
+        self.admit(now)?;
+        if let Some(id) = tx {
+            self.transaction(id)?;
+        }
+        Self::validate_range(start, end)?;
+
+        let mut count = 0usize;
+        let mut sum = 0i64;
+        for (key, value) in self.matching_keys(tx, now, start, end, prefix, None) {
+            let parsed = Self::parse_number(&value).ok_or_else(|| Error::InvalidNumber {
+                key: key.clone(),
+                value: value.clone(),
+            })?;
+            sum = sum
+                .checked_add(parsed)
+                .ok_or_else(|| Error::SumOverflow { key: key.clone() })?;
+            count += 1;
+        }
+        Ok(Aggregate { count, sum })
+    }
+
+    fn parse_number(value: &str) -> Option<i64> {
+        let bytes = value.as_bytes();
+        if bytes.is_empty() {
+            return None;
+        }
+
+        let digits = if bytes[0] == b'-' {
+            &bytes[1..]
+        } else {
+            bytes
+        };
+
+        if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        if (digits.len() > 1 && digits[0] == b'0')
+            || (bytes[0] == b'-' && digits == b"0")
+        {
+            return None;
+        }
+
+        value.parse::<i64>().ok()
+    }
+
+    pub fn snapshot(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+
+        let mut saved = BTreeMap::new();
+        for key in self.versions.keys() {
+            if let Some(value) = self.live_value(key, None, now) {
+                let deadline = self.versions[key].last().and_then(|version| version.deadline);
+                saved.insert(key.clone(), (value.to_owned(), deadline));
+            }
+        }
+
+        if !self.snapshots.contains_key(name) && self.snapshots.len() >= 3 {
+            return Err(Error::SnapshotLimit);
+        }
+        self.snapshots.insert(name.to_owned(), saved);
+        Ok(())
+    }
+
+    pub fn restore(&mut self, now: u64, name: &str) -> Result<u64, Error> {
+        self.admit(now)?;
+        if name.is_empty() {
+            return Err(Error::NameEmpty);
+        }
+        Self::validate_name(name)?;
+
+        let saved = self
+            .snapshots
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::SnapshotMissing(name.to_owned()))?;
+
+        if !self.transactions.is_empty() {
+            return Err(Error::ActiveTransactions);
+        }
+
+        let copied: BTreeMap<_, _> = saved
+            .into_iter()
+            .filter(|(_, (_, deadline))| deadline.is_none_or(|deadline| deadline > now))
+            .collect();
+
+        let mut union = BTreeSet::new();
+        for key in self.versions.keys() {
+            if self.live_value(key, None, now).is_some() {
+                union.insert(key.clone());
+            }
+        }
+        union.extend(copied.keys().cloned());
+
+        if union.is_empty() {
+            return Ok(self.revision);
+        }
+
+        self.revision += 1;
+        let revision = self.revision;
+        for key in union {
+            let write = match copied.get(&key) {
+                Some((value, deadline)) => Write {
+                    value: Some(value.clone()),
+                    deadline: *deadline,
+                },
+                None => Write {
+                    value: None,
+                    deadline: None,
+                },
+            };
+            self.append_version(key, write, revision);
+        }
+        Ok(revision)
+    }
+
+    pub fn forget(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        if name.is_empty() {
+            return Err(Error::NameEmpty);
+        }
+        Self::validate_name(name)?;
+
+        if self.snapshots.remove(name).is_none() {
+            return Err(Error::SnapshotMissing(name.to_owned()));
+        }
+        Ok(())
+    }
+
+    pub fn gc(&mut self, now: u64) -> Result<usize, Error> {
+        self.admit(now)?;
+        let mut removed = 0usize;
+
+        for versions in self.versions.values_mut() {
+            if versions.len() <= 1 {
+                continue;
+            }
+
+            let mut keep = BTreeSet::new();
+            keep.insert(versions.len() - 1);
+            for transaction in self.transactions.values() {
+                if let Some(index) = versions
+                    .iter()
+                    .rposition(|version| version.revision <= transaction.begin_revision)
+                {
+                    keep.insert(index);
+                }
+            }
+
+            let mut index = 0usize;
+            versions.retain(|_| {
+                let retain = keep.contains(&index);
+                index += 1;
+                if !retain {
+                    removed += 1;
+                }
+                retain
+            });
+        }
+        Ok(removed)
+    }
+
+    pub fn stats(&mut self, now: u64) -> Result<Stats, Error> {
+        self.admit(now)?;
+
+        let versions = self.versions.values().map(Vec::len).sum();
+        let tombstones = self
+            .versions
+            .values()
+            .flat_map(|versions| versions.iter())
+            .filter(|version| version.value.is_none())
+            .count();
+        let live_keys = self
+            .versions
+            .keys()
+            .filter(|key| self.live_value(key, None, now).is_some())
+            .count();
+
+        Ok(Stats {
+            clock: self.clock,
+            revision: self.revision,
+            keys: self.versions.len(),
+            live_keys,
+            versions,
+            tombstones,
+            active_transactions: self.transactions.len(),
+            read_only_transactions: self
+                .transactions
+                .values()
+                .filter(|transaction| transaction.read_only)
+                .count(),
+            staged_writes: self
+                .transactions
+                .values()
+                .map(|transaction| transaction.writes.len())
+                .sum(),
+            snapshots: self.snapshots.len(),
+        })
+    }
+}
+
+fn main() {}
+```
+
+## Public test results
+
+TESTS: 3 passed, 1 failed
+TEST OUTPUT:
+
+running 4 tests
+test a2d_acceptance::public_conflict_and_readonly ... ok
+test a2d_acceptance::public_snapshots_gc_stats ... ok
+test a2d_acceptance::public_scan_aggregate ... ok
+test a2d_acceptance::public_isolation ... FAILED
+
+failures:
+
+---- a2d_acceptance::public_isolation stdout ----
+
+thread 'a2d_acceptance::public_isolation' (84926983) panicked at /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/.tmpdvBDVJ/main.rs:672:5:
+assertion `left == right` failed
+  left: Ok(0)
+ right: Ok(1)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a2d_acceptance::public_isolation
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+Fix the file. Respond with the whole corrected file in a single ```rust block.

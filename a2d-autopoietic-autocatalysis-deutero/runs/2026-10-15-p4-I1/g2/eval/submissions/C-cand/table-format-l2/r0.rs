@@ -1,0 +1,132 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableError {
+    EmptyRow { row: usize },
+    Ragged { row: usize, expected: usize, actual: usize },
+    InvalidChar { row: usize, column: usize, byte: usize },
+    TooWide { column: usize, width: usize },
+    AlignmentCount { expected: usize, actual: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Alignment {
+    Left,
+    Right,
+    Center,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Options {
+    pub alignments: Vec<Alignment>,
+    pub header: bool,
+}
+
+pub fn render(rows: &[Vec<String>], options: &Options) -> Result<String, TableError> {
+    if rows.is_empty() {
+        return Ok(String::new());
+    }
+
+    for (row_index, row) in rows.iter().enumerate() {
+        if row.is_empty() {
+            return Err(TableError::EmptyRow { row: row_index });
+        }
+    }
+
+    let columns = rows[0].len();
+
+    for (row_index, row) in rows.iter().enumerate() {
+        if row.len() != columns {
+            return Err(TableError::Ragged {
+                row: row_index,
+                expected: columns,
+                actual: row.len(),
+            });
+        }
+    }
+
+    if !options.alignments.is_empty() && options.alignments.len() != columns {
+        return Err(TableError::AlignmentCount {
+            expected: columns,
+            actual: options.alignments.len(),
+        });
+    }
+
+    for (row_index, row) in rows.iter().enumerate() {
+        for (column_index, cell) in row.iter().enumerate() {
+            for (byte_index, byte) in cell.bytes().enumerate() {
+                if !(0x20..=0x7e).contains(&byte) {
+                    return Err(TableError::InvalidChar {
+                        row: row_index,
+                        column: column_index,
+                        byte: byte_index,
+                    });
+                }
+            }
+        }
+    }
+
+    let trimmed: Vec<Vec<&str>> = rows
+        .iter()
+        .map(|row| row.iter().map(|cell| cell.trim_end_matches(' ')).collect())
+        .collect();
+
+    let mut widths = vec![1usize; columns];
+    for row in &trimmed {
+        for (column, cell) in row.iter().enumerate() {
+            widths[column] = widths[column].max(cell.len());
+        }
+    }
+
+    for (column, &width) in widths.iter().enumerate() {
+        if width > 32 {
+            return Err(TableError::TooWide { column, width });
+        }
+    }
+
+    let border = || {
+        let mut line = String::from("+");
+        for &width in &widths {
+            line.push_str(&"-".repeat(width + 2));
+            line.push('+');
+        }
+        line.push('\n');
+        line
+    };
+
+    let mut output = border();
+
+    for (row_index, row) in trimmed.iter().enumerate() {
+        output.push('|');
+
+        for (column, cell) in row.iter().enumerate() {
+            let padding = widths[column] - cell.len();
+            let alignment = options
+                .alignments
+                .get(column)
+                .unwrap_or(&Alignment::Left);
+
+            let (left_padding, right_padding) = match alignment {
+                Alignment::Left => (0, padding),
+                Alignment::Right => (padding, 0),
+                Alignment::Center => (padding / 2, padding - padding / 2),
+            };
+
+            output.push(' ');
+            output.push_str(&" ".repeat(left_padding));
+            output.push_str(cell);
+            output.push_str(&" ".repeat(right_padding));
+            output.push(' ');
+            output.push('|');
+        }
+
+        output.push('\n');
+
+        if options.header && row_index == 0 && trimmed.len() > 1 {
+            output.push_str(&border());
+        }
+    }
+
+    output.push_str(&border());
+    Ok(output)
+}
+
+fn main() {}

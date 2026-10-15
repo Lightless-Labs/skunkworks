@@ -1,0 +1,295 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+    pub priority: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Arrive,
+    Start {
+        remaining: u64,
+        work_at: u64,
+        finish: u64,
+    },
+    Resume {
+        remaining: u64,
+        work_at: u64,
+        finish: u64,
+    },
+    Preempt {
+        remaining: u64,
+        by: u32,
+    },
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub time: u64,
+    pub customer: u32,
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroId { index: usize },
+    DuplicateId { index: usize, id: u32 },
+    BadPriority { index: usize, value: u8 },
+    TimeOverflow { customer: u32, time: u64 },
+}
+
+#[derive(Clone)]
+struct Job {
+    customer: Customer,
+    started: bool,
+    pause_time: Option<u64>,
+    remaining: u64,
+}
+
+#[derive(Clone)]
+struct Running {
+    job: usize,
+    work_at: u64,
+    finish: u64,
+}
+
+fn better_waiter(a: &Job, b: &Job) -> bool {
+    if a.customer.priority != b.customer.priority {
+        return a.customer.priority < b.customer.priority;
+    }
+    match (a.pause_time, b.pause_time) {
+        (Some(pa), Some(pb)) => {
+            if pa != pb {
+                pa < pb
+            } else {
+                a.customer.id < b.customer.id
+            }
+        }
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => {
+            if a.customer.arrival != b.customer.arrival {
+                a.customer.arrival < b.customer.arrival
+            } else {
+                a.customer.id > b.customer.id
+            }
+        }
+    }
+}
+
+fn best_waiting(waiting: &[usize], jobs: &[Job]) -> Option<usize> {
+    waiting.iter().copied().min_by(|&a, &b| {
+        if better_waiter(&jobs[a], &jobs[b]) {
+            std::cmp::Ordering::Less
+        } else if better_waiter(&jobs[b], &jobs[a]) {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    })
+}
+
+pub fn simulate(customers: &[Customer], switch_cost: u64) -> Result<Vec<Event>, Error> {
+    // Validate the entire input before performing any simulation arithmetic.
+    for (index, customer) in customers.iter().enumerate() {
+        if customer.id == 0 {
+            return Err(Error::ZeroId { index });
+        }
+        if customers[..index].iter().any(|prior| prior.id == customer.id) {
+            return Err(Error::DuplicateId {
+                index,
+                id: customer.id,
+            });
+        }
+        if customer.priority > 3 {
+            return Err(Error::BadPriority {
+                index,
+                value: customer.priority,
+            });
+        }
+    }
+
+    if customers.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut arrivals: Vec<usize> = (0..customers.len()).collect();
+    arrivals.sort_by(|&a, &b| {
+        customers[a]
+            .arrival
+            .cmp(&customers[b].arrival)
+            .then_with(|| customers[a].priority.cmp(&customers[b].priority))
+            .then_with(|| customers[b].id.cmp(&customers[a].id))
+    });
+
+    let mut jobs: Vec<Job> = customers
+        .iter()
+        .cloned()
+        .map(|customer| Job {
+            remaining: customer.service,
+            customer,
+            started: false,
+            pause_time: None,
+        })
+        .collect();
+
+    let mut trace = Vec::new();
+    let mut waiting: Vec<usize> = Vec::new();
+    let mut next_arrival = 0usize;
+    let mut running: Option<Running> = None;
+    let mut last_dispatched: Option<u32> = None;
+    let mut finished_count = 0usize;
+    let mut now = customers
+        .iter()
+        .map(|c| c.arrival)
+        .min()
+        .unwrap_or(0);
+
+    while finished_count < customers.len() {
+        // Scheduled finish has precedence over arrivals at the same time.
+        if let Some(active) = running.as_ref() {
+            if active.finish == now {
+                let customer_id = jobs[active.job].customer.id;
+                trace.push(Event {
+                    time: now,
+                    customer: customer_id,
+                    kind: Kind::Finish,
+                });
+                running = None;
+                finished_count += 1;
+            }
+        }
+
+        // Process the complete arrival cohort before considering dispatch.
+        while next_arrival < arrivals.len()
+            && customers[arrivals[next_arrival]].arrival == now
+        {
+            let job_index = arrivals[next_arrival];
+            trace.push(Event {
+                time: now,
+                customer: jobs[job_index].customer.id,
+                kind: Kind::Arrive,
+            });
+            waiting.push(job_index);
+            next_arrival += 1;
+        }
+
+        // Reconsider preemption only once arrivals at this tick are enqueued.
+        if let Some(active) = running.as_ref() {
+            if now >= active.work_at {
+                if let Some(best) = best_waiting(&waiting, &jobs) {
+                    if jobs[best].customer.priority < jobs[active.job].customer.priority {
+                        let active = running.take().unwrap();
+                        let paused_id = jobs[active.job].customer.id;
+                        let by = jobs[best].customer.id;
+                        let remaining = active.finish - now;
+                        trace.push(Event {
+                            time: now,
+                            customer: paused_id,
+                            kind: Kind::Preempt { remaining, by },
+                        });
+                        jobs[active.job].remaining = remaining;
+                        jobs[active.job].pause_time = Some(now);
+                        waiting.push(active.job);
+                    }
+                }
+            }
+        }
+
+        // Dispatch repeatedly at this tick, including inline zero-time finishes.
+        loop {
+            if running.is_some() {
+                break;
+            }
+            let Some(job_index) = best_waiting(&waiting, &jobs) else {
+                break;
+            };
+            waiting.retain(|&idx| idx != job_index);
+
+            let job = &jobs[job_index];
+            let customer_id = job.customer.id;
+            let remaining = job.remaining;
+            let switching = match last_dispatched {
+                Some(previous) if previous != customer_id => switch_cost,
+                _ => 0,
+            };
+            let work_at = now.checked_add(switching).ok_or(Error::TimeOverflow {
+                customer: customer_id,
+                time: now,
+            })?;
+            let finish = work_at.checked_add(remaining).ok_or(Error::TimeOverflow {
+                customer: customer_id,
+                time: now,
+            })?;
+
+            let kind = if jobs[job_index].started {
+                Kind::Resume {
+                    remaining,
+                    work_at,
+                    finish,
+                }
+            } else {
+                Kind::Start {
+                    remaining,
+                    work_at,
+                    finish,
+                }
+            };
+            trace.push(Event {
+                time: now,
+                customer: customer_id,
+                kind,
+            });
+
+            jobs[job_index].started = true;
+            last_dispatched = Some(customer_id);
+
+            if finish == now {
+                trace.push(Event {
+                    time: now,
+                    customer: customer_id,
+                    kind: Kind::Finish,
+                });
+                finished_count += 1;
+                continue;
+            }
+
+            running = Some(Running {
+                job: job_index,
+                work_at,
+                finish,
+            });
+        }
+
+        if finished_count == customers.len() {
+            break;
+        }
+
+        let mut next_time: Option<u64> = None;
+        if next_arrival < arrivals.len() {
+            next_time = Some(customers[arrivals[next_arrival]].arrival);
+        }
+        if let Some(active) = running.as_ref() {
+            for candidate in [active.work_at, active.finish] {
+                if candidate > now {
+                    next_time = Some(next_time.map_or(candidate, |t| t.min(candidate)));
+                }
+            }
+        }
+
+        // If idle, the next event can only be a future arrival.
+        let Some(t) = next_time else {
+            break;
+        };
+        now = t;
+    }
+
+    Ok(trace)
+}
+
+fn main() {}
+```

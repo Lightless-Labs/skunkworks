@@ -1,0 +1,475 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else. Include an empty `fn main() {}` (the file is compiled as a program).
+
+PROMPT:
+Repair this weighted write-back cache. Correct failure handling commits completed work while preserving failed victims and deferred replacements. Its implementation has exactly six semantic defects.
+
+Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Repair the implementation below and return the corrected complete file. All listed API items must be public; additional private helpers are allowed. No main function is required.
+
+Exact public API (Error, Event (when present), and Entry derive Debug, Clone, PartialEq, Eq; Cache derives Debug and Clone):
+```rust
+pub enum Error { ZeroWeight, TooHeavy { weight: u64, capacity: u64 }, Missing { key: u64 }, Dirty { key: u64 }, FlushFailed { key: u64 } }
+pub enum Event { Hit { key: u64 }, Miss { key: u64 }, Store { key: u64, dirty: bool }, Dirty { key: u64 }, FlushStart { key: u64, value: i64 }, FlushOk { key: u64 }, FlushErr { key: u64 }, Evict { key: u64 }, Remove { key: u64 }, Resize { capacity: u64 } }
+pub struct Entry { pub key: u64, pub value: i64, pub weight: u64, pub dirty: bool }
+pub struct Cache { /* private fields */ }
+impl Cache {
+    pub fn new(capacity: u64) -> Self;
+    pub fn capacity(&self) -> u64;
+    pub fn used(&self) -> u64;
+    pub fn snapshot(&self) -> Vec<Entry>;
+    pub fn events(&self) -> Vec<Event>;
+    pub fn drain_events(&mut self) -> Vec<Event>;
+    pub fn get(&mut self, key: u64) -> Option<i64>;
+    pub fn mark_dirty(&mut self, key: u64) -> Result<(), Error>;
+    pub fn remove(&mut self, key: u64) -> Result<i64, Error>;
+    pub fn put<F>(&mut self, key: u64, value: i64, weight: u64, dirty: bool, flush: &mut F) -> Result<Vec<u64>, Error> where F: FnMut(u64, i64) -> bool;
+    pub fn flush<F>(&mut self, limit: usize, flush: &mut F) -> Result<Vec<u64>, Error> where F: FnMut(u64, i64) -> bool;
+    pub fn evict_to<F>(&mut self, target: u64, flush: &mut F) -> Result<Vec<u64>, Error> where F: FnMut(u64, i64) -> bool;
+    pub fn resize<F>(&mut self, capacity: u64, flush: &mut F) -> Result<Vec<u64>, Error> where F: FnMut(u64, i64) -> bool;
+}
+```
+
+R1. new creates an empty weighted cache with the given capacity, used = 0, and an empty event log. Capacity zero is valid.
+R2. All u64 keys, i64 values, positive u64 weights and u64 capacities are supported. Capacity accounting must not overflow, even if used + proposed weight would overflow.
+R3. capacity and used return stored values; used is the sum of resident weights and must never exceed the stored capacity.
+R4. snapshot returns cloned Entries in LRU order, oldest first, including their current dirty bits. It has no side effects.
+R5. There are TWO independent strict key orders: LRU recency for eviction, and dirty-write order for explicit flush. No time or randomness is involved.
+R6. Successful get and successful put touch the key to newest LRU recency. get returns Some(value) on a hit and None on a miss.
+R7. get appends exactly Hit { key } on a hit or Miss { key } on a miss; misses do not reorder anything.
+R8. events returns a fresh copy of the complete event log without mutation. drain_events returns that log and clears it, without changing any entries, capacities or either key order.
+R9. put validates ZeroWeight before TooHeavy { weight, capacity }. These validation errors cause no state changes, events or callbacks, including when replacing a dirty entry.
+R10. put with dirty = true stores dirty data. Each successful dirty put moves the key to the newest end of dirty-write order, even for an already-dirty same-key replacement.
+R11. put with dirty = false stores clean data and removes the key from dirty-write order on success.
+R12. mark_dirty on a resident key sets dirty = true and moves it to newest dirty-write order even if already dirty. It never touches LRU recency. Append exactly Dirty { key }.
+R13. mark_dirty on a missing key returns Missing { key } with no mutation or event.
+R14. remove checks existence first: absent returns Missing { key }; a dirty entry returns Dirty { key }. Both errors have no side effects or events.
+R15. remove of a clean entry deletes it, frees its full weight, and appends exactly Remove { key }. Return its stored value and preserve survivor order.
+R16. Flush callbacks are synchronous FnMut(key, value) -> bool, receiving the resident key and current resident value. true means success, false means failure. Callback panics are outside the contract.
+R17. For each dirty flush attempt, append FlushStart { key, value } BEFORE invoking the callback exactly once.
+R18. On true, mark that resident entry clean, remove it from dirty-write order, and append FlushOk { key }. Flushing never changes LRU recency or value/weight.
+R19. On false, append FlushErr { key }, return FlushFailed { key }, and leave that entry dirty at the SAME positions in both orders with the same value and weight.
+R20. Never call the callback for a clean entry and never append any flush events for it.
+R21. flush(limit) selects up to limit dirty keys, oldest dirty-write first. It leaves all entries resident, returns successfully flushed keys in that order, and stops immediately on the first failure.
+R22. flush(0) is a complete no-op. If fewer than limit dirty keys exist, flush all of them. limit = usize::MAX is valid.
+R23. On flush failure, earlier successful flushes remain clean and all their events remain logged. The failing key remains the next dirty candidate for a retry; no later key is attempted.
+R24. Capacity eviction selects the oldest LRU key regardless of cleanliness; dirty-write order does not affect eviction.
+R25. Before evicting a dirty victim, flush it under R16–R19. Delete the victim only if its flush succeeds. For a clean victim, delete directly.
+R26. After each completed capacity eviction append exactly Evict { key }, after any flush events for that key. Evict is used by put, evict_to and resize, never by remove or same-key replacement.
+R27. On eviction flush failure, do not delete or touch that victim, do not log Evict for it, and do not attempt later victims. Earlier completed evictions remain committed.
+R28. put of a clean replacement (dirty = false) MUST first flush the old same-key entry if it is dirty, using its OLD value. This happens after R9 validation but BEFORE capacity victim selection.
+R29. put of a dirty replacement coalesces the old same-key dirty data: do not flush it; only the final new dirty value needs future write-back.
+R30. During replacement room-making, the old same-key entry remains resident and is excluded from victim selection. Credit its old weight: evict until (used - old same-key weight) <= capacity - new weight. This prevents evicting the entry being replaced.
+R31. For a missing-key put, old weight is zero. Evict LRU victims until used <= capacity - new weight; equality fits exactly.
+R32. Only after all required flushes and capacity evictions succeed does put remove the old same-key entry, store the new Entry, update both orders, and append Store { key, dirty }. Return capacity victim keys in removal order.
+R33. A failed put never installs the new Entry or logs Store. On failure, the old same-key value, weight and LRU position among survivors remain. If its preliminary clean-replacement flush succeeded, that old entry stays clean; otherwise its original dirty bit/order remain. Earlier victim evictions/flushes and their events remain committed.
+R34. evict_to(target) removes LRU victims until used <= target, respecting R24–R27. It returns completed victim keys on success and does not change capacity.
+R35. evict_to when target >= used is a complete no-op; target zero removes all entries unless a dirty flush fails. Stop at equality, without an extra eviction.
+R36. resize(capacity) first evicts to the requested capacity under R34, and ONLY on complete success installs the new capacity and appends Resize { capacity }.
+R37. If resize fails, retain the OLD capacity, retain all earlier flush/eviction progress and events, and append no Resize event.
+R38. Growing capacity or resizing to the same capacity performs no callbacks/evictions but still installs capacity and appends Resize { capacity }.
+R39. All returned victim lists omit the overwritten same-key entry. Internal deletion removes a key from both orders and updates used exactly once.
+R40. Reading a dirty key affects only LRU order, never dirty-write order. A successful flush affects only cleanliness/dirty-write order, never LRU order.
+R41. The log is append-only except for drain_events; operation boundaries add no implicit events. Every event name and payload is exactly as specified, and callbacks cannot add cache events themselves.
+R42. Errors other than FlushFailed are fully atomic. FlushFailed follows the partial-commit rules R19, R23, R27, R33 and R37; there is no rollback of completed callbacks, evictions or log entries.
+R43. An entry that is flushed clean and later marked dirty or stored dirty rejoins at newest dirty-write order. No duplicate key may exist in either order or snapshot.
+R44. Cloning creates independently owned entries, orders and events; changes to a clone or returned vectors cannot affect the original.
+R45. Operations must be deterministic, synchronous, std-only, and must not panic on any documented input, aside from the explicitly excluded callback panics.
+
+Compiling implementation to repair:
+```rust
+use std::collections::{BTreeMap, VecDeque};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroWeight,
+    TooHeavy { weight: u64, capacity: u64 },
+    Missing { key: u64 },
+    Dirty { key: u64 },
+    FlushFailed { key: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Hit { key: u64 },
+    Miss { key: u64 },
+    Store { key: u64, dirty: bool },
+    Dirty { key: u64 },
+    FlushStart { key: u64, value: i64 },
+    FlushOk { key: u64 },
+    FlushErr { key: u64 },
+    Evict { key: u64 },
+    Remove { key: u64 },
+    Resize { capacity: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub key: u64,
+    pub value: i64,
+    pub weight: u64,
+    pub dirty: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Cache {
+    capacity: u64,
+    used: u64,
+    entries: BTreeMap<u64, Entry>,
+    recency: VecDeque<u64>,
+    dirty_order: VecDeque<u64>,
+    events: Vec<Event>,
+}
+impl Cache {
+    /// Creates a weighted write-back cache.
+    /// The caller supplies the initial storage budget.
+    /// The cache owns entries, metadata and event history.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn new(capacity: u64) -> Self {
+        Self {
+            capacity,
+            used: 0,
+            entries: BTreeMap::new(),
+            recency: VecDeque::new(),
+            dirty_order: VecDeque::new(),
+            events: Vec::new(),
+        }
+    }
+
+    /// Reads the stored capacity setting.
+    /// The result is expressed in entry-weight units.
+    /// Use resize to change this setting.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn capacity(&self) -> u64 {
+        self.capacity
+    }
+
+    /// Reads total resident weight.
+    /// Clean and dirty entries both contribute to this total.
+    /// Individual weights can be inspected through snapshot.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn used(&self) -> u64 {
+        self.used
+    }
+
+    /// Copies resident entries in cache order.
+    /// Each copy includes its cleanliness metadata.
+    /// The returned vector is independently owned.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn snapshot(&self) -> Vec<Entry> {
+        self.recency
+            .iter()
+            .map(|k| self.entries[k].clone())
+            .collect()
+    }
+
+    /// Copies the accumulated operation events.
+    /// The returned event vector is independently owned.
+    /// Use drain_events to consume the stored history.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn events(&self) -> Vec<Event> {
+        self.events.clone()
+    }
+
+    /// Consumes the accumulated event history.
+    /// The returned vector contains the removed events.
+    /// Subsequent operations can append a new history.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn drain_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.events)
+    }
+
+    // Records a key in the cache recency structure.
+    fn touch(&mut self, key: u64) {
+        self.recency.retain(|k| *k != key);
+        self.recency.push_back(key);
+    }
+
+    // Records a key in the write-back scheduling structure.
+    fn dirty_touch(&mut self, key: u64) {
+        if !self.dirty_order.contains(&key) {
+            self.dirty_order.push_back(key);
+        }
+    }
+
+    // Removes the stored entry and its accounting metadata.
+    fn erase(&mut self, key: u64) -> Option<Entry> {
+        let e = self.entries.remove(&key)?;
+        self.used -= e.weight;
+        self.recency.retain(|k| *k != key);
+        self.dirty_order.retain(|k| *k != key);
+        Some(e)
+    }
+
+    // Performs write-back bookkeeping for one resident key.
+    fn flush_key<F>(&mut self, key: u64, flush: &mut F) -> Result<(), Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        let entry = &self.entries[&key];
+        if !entry.dirty {
+            return Ok(());
+        }
+        let value = entry.value;
+        self.events.push(Event::FlushStart { key, value });
+        if !flush(key, value) {
+            self.entries.get_mut(&key).unwrap().dirty = false;
+            self.dirty_order.retain(|k| *k != key);
+            self.events.push(Event::FlushErr { key });
+            return Err(Error::FlushFailed { key });
+        }
+        self.entries.get_mut(&key).unwrap().dirty = false;
+        self.dirty_order.retain(|k| *k != key);
+        self.events.push(Event::FlushOk { key });
+        Ok(())
+    }
+
+    // Performs the steps needed to remove one cache victim.
+    fn evict_key<F>(&mut self, key: u64, flush: &mut F) -> Result<(), Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        self.events.push(Event::Evict { key });
+        self.flush_key(key, flush)?;
+        self.erase(key);
+        Ok(())
+    }
+
+    /// Looks up the value associated with a key.
+    /// The returned option distinguishes a hit from a miss.
+    /// The lookup is included in the event history.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn get(&mut self, key: u64) -> Option<i64> {
+        let value = self.entries.get(&key).map(|e| e.value);
+        if value.is_some() {
+            self.touch(key);
+            self.events.push(Event::Hit { key });
+        } else {
+            self.events.push(Event::Miss { key });
+        }
+        value
+    }
+
+    /// Records a write requirement for an existing key.
+    /// This operation changes entry metadata.
+    /// The result reports whether the key exists.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn mark_dirty(&mut self, key: u64) -> Result<(), Error> {
+        let entry = self.entries.get_mut(&key).ok_or(Error::Missing { key })?;
+        entry.dirty = true;
+        self.dirty_touch(key);
+        self.events.push(Event::Dirty { key });
+        Ok(())
+    }
+
+    /// Requests explicit deletion of a clean key.
+    /// Successful deletion returns the stored value.
+    /// The result reports keys that cannot be removed this way.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn remove(&mut self, key: u64) -> Result<i64, Error> {
+        let entry = self.entries.get(&key).ok_or(Error::Missing { key })?;
+        if entry.dirty {
+            return Err(Error::Dirty { key });
+        }
+        let value = self.erase(key).unwrap().value;
+        self.events.push(Event::Remove { key });
+        Ok(value)
+    }
+
+    /// Stores a value with weight and cleanliness metadata.
+    /// The callback performs any write-back required by storage.
+    /// The result reports keys evicted during the operation.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn put<F>(
+        &mut self,
+        key: u64,
+        value: i64,
+        weight: u64,
+        dirty: bool,
+        flush: &mut F,
+    ) -> Result<Vec<u64>, Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        if weight == 0 {
+            return Err(Error::ZeroWeight);
+        }
+        if weight > self.capacity {
+            return Err(Error::TooHeavy {
+                weight,
+                capacity: self.capacity,
+            });
+        }
+        if self.entries.get(&key).is_some_and(|e| e.dirty) {
+            self.flush_key(key, flush)?;
+        }
+        let old_weight = self.entries.get(&key).map_or(0, |e| e.weight);
+        let mut removed = Vec::new();
+        while self.used - old_weight > self.capacity - weight {
+            let victim = *self.recency.iter().find(|k| **k != key).unwrap();
+            self.evict_key(victim, flush)?;
+            removed.push(victim);
+        }
+        self.erase(key);
+        self.used += weight;
+        self.entries.insert(
+            key,
+            Entry {
+                key,
+                value,
+                weight,
+                dirty,
+            },
+        );
+        self.touch(key);
+        if dirty {
+            self.dirty_touch(key);
+        }
+        self.events.push(Event::Store { key, dirty });
+        Ok(removed)
+    }
+
+    /// Requests write-back of resident dirty data.
+    /// The limit bounds the amount of requested work.
+    /// The callback performs the individual writes.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn flush<F>(&mut self, limit: usize, flush: &mut F) -> Result<Vec<u64>, Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        let mut completed = Vec::new();
+        while completed.len() < limit {
+            let Some(key) = self.recency.iter().find(|k| self.entries[k].dirty).copied() else {
+                break;
+            };
+            self.flush_key(key, flush)?;
+            completed.push(key);
+        }
+        Ok(completed)
+    }
+
+    /// Requests removal down to a resident-weight target.
+    /// The callback performs any required write-back.
+    /// The result reports completed removals on success.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn evict_to<F>(&mut self, target: u64, flush: &mut F) -> Result<Vec<u64>, Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        let mut removed = Vec::new();
+        while self.used > target {
+            let key = *self.recency.front().unwrap();
+            self.evict_key(key, flush)?;
+            removed.push(key);
+        }
+        Ok(removed)
+    }
+
+    /// Requests a new storage budget.
+    /// The callback performs any required write-back.
+    /// The result reports completed removals on success.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn resize<F>(&mut self, capacity: u64, flush: &mut F) -> Result<Vec<u64>, Error>
+    where
+        F: FnMut(u64, i64) -> bool,
+    {
+        self.capacity = capacity;
+        let removed = self.evict_to(capacity, flush)?;
+        self.events.push(Event::Resize { capacity });
+        Ok(removed)
+    }
+}
+```
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R1–R8, R26, R31–R32
+#[test]
+fn clean_lru_and_log() {
+    let mut c = Cache::new(5);
+    let mut f = |_, _| true;
+    c.put(1, 10, 2, false, &mut f).unwrap();
+    c.put(2, 20, 2, false, &mut f).unwrap();
+    assert_eq!(c.get(1), Some(10));
+    assert_eq!(c.get(9), None);
+    assert_eq!(c.put(3, 30, 2, false, &mut f), Ok(vec![2]));
+    assert_eq!(c.capacity(), 5);
+    assert_eq!(c.used(), 4);
+    assert_eq!(
+        c.snapshot().iter().map(|e| e.key).collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    assert!(c.events().contains(&Event::Evict { key: 2 }));
+    assert!(!c.drain_events().is_empty());
+    assert!(c.events().is_empty());
+}
+
+// R10, R12, R16–R22
+#[test]
+fn dirty_flush_and_mark() {
+    let mut c = Cache::new(8);
+    let mut calls = vec![];
+    let mut f = |k, v| {
+        calls.push((k, v));
+        true
+    };
+    c.put(4, 40, 3, true, &mut f).unwrap();
+    assert_eq!(c.flush(1, &mut f), Ok(vec![4]));
+    c.mark_dirty(4).unwrap();
+    assert_eq!(c.flush(5, &mut f), Ok(vec![4]));
+    assert_eq!(calls, vec![(4, 40), (4, 40)]);
+    assert!(!c.snapshot()[0].dirty);
+}
+
+// R14–R15, R24–R26, R34–R38
+#[test]
+fn resize_evict_remove() {
+    let mut c = Cache::new(10);
+    let mut f = |_, _| true;
+    c.put(8, 80, 3, true, &mut f).unwrap();
+    c.put(9, 90, 3, false, &mut f).unwrap();
+    assert_eq!(c.resize(4, &mut f), Ok(vec![8]));
+    assert_eq!(c.remove(9), Ok(90));
+    c.put(10, 100, 2, false, &mut f).unwrap();
+    assert_eq!(c.evict_to(0, &mut f), Ok(vec![10]));
+    assert_eq!(c.capacity(), 4);
+}
+
+// R9, R29–R32
+#[test]
+fn replacement_and_validation() {
+    let mut c = Cache::new(5);
+    let mut f = |_, _| true;
+    assert_eq!(c.put(1, 0, 0, false, &mut f), Err(Error::ZeroWeight));
+    c.put(1, 1, 2, false, &mut f).unwrap();
+    assert_eq!(c.put(1, 2, 3, true, &mut f), Ok(vec![]));
+    assert_eq!(c.get(1), Some(2));
+    assert_eq!(c.remove(1), Err(Error::Dirty { key: 1 }));
+}
+```
+
+
+Lessons from earlier tasks (task-agnostic; apply each one that is relevant):
+1. Translate requirements into explicit validation order, output invariants, stable ordering, and edge cases before choosing an algorithm.
+2. Validate inputs and preflight failure conditions before mutation; preserve original indices, offsets, metadata, and optional-value distinctions explicitly.
+3. Model operations as ordered phases, applying admission, expiry, validation, and mutation exactly when specified.
+4. Use checked arithmetic at each required operation or prefix, and define bounds, rounding stages, and overflow precedence explicitly.
+5. Separate scanning and parsing phases from output construction; track source positions and transformed output positions independently.
+6. Track streaming state and physical input offsets across chunks; emit results only after the required validation succeeds.
+7. Keep each ordering structure aligned with its contract, using complete comparators instead of incidental container order.
+8. Preserve failed items and commit only completed work; represent scoped data, snapshots, and deadlines independently.

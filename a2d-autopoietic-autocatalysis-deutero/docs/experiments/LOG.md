@@ -672,7 +672,31 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - `hstar.json` per search, plus the full `trajectory.json`, whether or not any candidate is accepted;
   - all four go to the single validation look (§ Validation), together with C(H0 v5) and D.
 - Budget: ≤ 4 × 3 × 700 hard cap (expected about 4 × 3 × 240 ≈ 2.9k). Plus distill: ≤ 41 calls per generation.
-- Result: pending
+- Result (`runs/2026-10-15-p4-{I1,U1,I2,U2}/trajectory.json`; every evaluation had 0 voids):
+  - An operational fault and its fix. Generation 2 first failed in I1, U1 and I2: `distill` read variant-arm submissions under `C:inc` instead of `C-inc` on disk. It was fixed with a test, and the searches resumed after generation 1 with no generation re-run. U2 reached generation 2 after the fix.
+  - Net gain of the candidate over the incumbent on the evaluation half (≥ 4 accepts):
+
+    | search | g1 (B, 72) | g2 (A, 68) | g3 (B, 72) | final |
+    |---|---|---|---|---|
+    | I1 informed | +2 | +3 | **+4 accepted** | g3, 8 lessons |
+    | U1 uninformed | +3 | **+6 accepted** | −4 | g2, 8 lessons |
+    | I2 informed | −1 | −1 | **+5 accepted** | g3, 8 lessons |
+    | U2 uninformed | −3 | 0 | **+5 accepted** | g3, 6 lessons |
+
+  - **4 of 12 comparisons accepted: 2/6 informed, 2/6 control.** That is about the rate expected from noise alone, given D's retest flip rate of 0.229 on train-all.
+  - Two runs of the identical incumbent (H0 v6) on the same half (I1 vs U1, generation 2) scored 45 vs 40 of 68: a 5-task swing from resampling.
+  - Mean net per comparison: informed +2.0, control +1.2.
+  - Tripwires:
+    - no candidate changed anything other than `lessons`;
+    - E0601 prompts 0–1 per arm;
+    - hidden compile failures 0–1 per arm.
+  - Spend: evaluations 2181 invocations / 17.2M tokens; distill 224 calls / 1.5M tokens. P4 spend so far is about 3134.
+  - **Frozen for E12, committed before launch:**
+    - `harnesses/p4-i1.json` (`9348eac705fe1f6b…`);
+    - `p4-i2.json` (`fd4ea4f8e3d1f91f…`);
+    - `p4-u1.json` (`f6a3805c98f3c010…`);
+    - `p4-u2.json` (`5652f0b23065932d…`).
+  - Both informed searches accepted a candidate, so E12 runs as registered (the amendment's no-look clause does not apply).
 
 ### E12 — P4 validation look: frozen search outputs on c1-validation  [phase P4, metric-only]
 - Registered: 2026-10-15, before any E11 search finished. This is P4's single validation look.

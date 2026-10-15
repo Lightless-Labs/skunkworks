@@ -1,0 +1,393 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else. Include an empty `fn main() {}` (the file is compiled as a program).
+
+PROMPT:
+Repair this weighted sharded cache with global recency and pins. Its implementation has exactly five semantic defects.
+
+Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Repair the implementation below and return the corrected complete file. All listed API items must be public; additional private helpers are allowed. No main function is required.
+
+Exact public API (Error, Event (when present), and Entry derive Debug, Clone, PartialEq, Eq; Cache derives Debug and Clone):
+```rust
+pub enum Error { EmptyShards, ZeroWeight, TooHeavy { weight: u64, capacity: u64 }, Blocked { shard: usize }, Missing { key: u64 }, Pinned { key: u64 }, BadShard { shard: usize }, PinnedCapacity { minimum: u128, target: u128 } }
+pub struct Entry { pub key: u64, pub value: i64, pub weight: u64, pub pinned: bool, pub shard: usize }
+pub struct Cache { /* private fields */ }
+impl Cache {
+    pub fn new(capacities: Vec<u64>) -> Result<Self, Error>;
+    pub fn capacities(&self) -> Vec<u64>;
+    pub fn usage(&self) -> Vec<u64>;
+    pub fn used(&self) -> u128;
+    pub fn snapshot(&self) -> Vec<Entry>;
+    pub fn get(&mut self, key: u64) -> Option<i64>;
+    pub fn set_pin(&mut self, key: u64, pinned: bool) -> Result<(), Error>;
+    pub fn remove(&mut self, key: u64) -> Result<i64, Error>;
+    pub fn insert(&mut self, key: u64, value: i64, weight: u64, pinned: bool) -> Result<Vec<u64>, Error>;
+    pub fn resize(&mut self, shard: usize, capacity: u64) -> Result<Vec<u64>, Error>;
+    pub fn trim(&mut self, target: u128) -> Result<Vec<u64>, Error>;
+}
+```
+
+R1. new requires at least one shard; [] returns EmptyShards. A nonempty capacity vector creates empty shards, allowing zero capacities.
+R2. Shard IDs are vector indices, in 0..number_of_shards. Route each key to (key % number_of_shards) without truncating key before the modulo.
+R3. All keys and values in u64 and i64 are supported. Positive weights and capacities may span the full u64 range.
+R4. capacities returns a fresh vector of capacities in shard-ID order. usage returns current resident weight per shard in that same order.
+R5. used returns the exact sum of all shard usage as u128, even if the total exceeds u64::MAX.
+R6. snapshot returns cloned Entries in one GLOBAL oldest-to-newest recency order, including pinned entries and each entry’s computed shard.
+R7. The getters and snapshot have no side effects. Altering a returned vector or a cloned Entry cannot alter the cache.
+R8. An insertion or successful get moves its key to the newest end of global recency; equal values still count as touches.
+R9. get returns Some(value) on a hit, including pinned hits, or None on a miss. A miss changes no state.
+R10. set_pin changes only the pin bit of an existing key; missing keys return Missing { key }. Pinning, unpinning and redundant pin calls NEVER change recency.
+R11. remove returns Missing { key } if absent, Pinned { key } if pinned, otherwise deletes the entry and returns its value. It does not touch survivors.
+R12. All errors are atomic: all values, pins, recency, capacities and usage remain exactly unchanged.
+R13. insert computes the destination shard and validates in this order: ZeroWeight for weight == 0; TooHeavy { weight, capacity } for weight > that shard’s capacity; Blocked { shard } if existing pinned entries other than the same key would prevent fitting the new weight even after evicting every other unpinned entry.
+R14. A same-key pinned entry may be replaced, including changing its weight or unpinning it. Exclude the old same-key weight from BOTH pinned feasibility and resident usage before any eviction.
+R15. The insertion feasibility condition is other pinned weight <= capacity - proposed weight; equality is allowed. No arithmetic may overflow.
+R16. After successful validation, remove the old same-key entry, if any. This replacement is not an eviction and is never returned as a victim.
+R17. If room is needed, repeatedly evict the globally oldest UNPINNED entry belonging to the destination shard until destination usage + weight <= capacity.
+R18. insert never evicts from another shard, even if it contains older entries or unused capacity; spare capacity cannot be borrowed across shards.
+R19. insert stores the new value, weight and supplied pin bit at newest global recency. Return only actual eviction victims in their removal order.
+R20. Pinned entries are immune to capacity eviction, global trim and remove, but not same-key replacement.
+R21. resize first validates shard ID; invalid IDs return BadShard { shard }, regardless of requested capacity.
+R22. For a valid shard, resize calculates its pinned resident weight. If pinned weight exceeds requested capacity, return PinnedCapacity { minimum: that pinned weight as u128, target: requested capacity as u128 } with no changes.
+R23. Otherwise resize installs the new local capacity and removes oldest unpinned entries in that shard until usage <= capacity, returning those keys in removal order.
+R24. resize never affects other shard capacities or entries, and never changes the relative order of survivors.
+R25. resize to the exact pinned weight is allowed. Resize to zero removes all unpinned entries and succeeds only if no pinned entry is in that shard.
+R26. trim first calculates GLOBAL pinned weight. If it exceeds target, return PinnedCapacity { minimum: global pinned weight, target }, without removing anything.
+R27. Otherwise trim repeatedly removes the globally oldest unpinned key, irrespective of shard, until total used <= target. Return victims in global removal order.
+R28. Trim does not change ANY shard capacity. Overshooting below target by evicting an indivisible weighted entry is allowed.
+R29. Trim when total used <= target is a complete no-op, returning []; targets up to u128::MAX are valid.
+R30. Insertion, resizing and trimming stop when the relevant usage equals its limit; they must not evict an additional key at equality.
+R31. Failed replacement must preserve the old value, weight and pin bit as well as old recency.
+R32. Removing or evicting one key frees precisely its stored weight; snapshots contain each resident key once, and usage agrees with snapshot weights.
+R33. Pinned entries remain in global recency, can be touched by get, and resume ordinary eviction priority at that exact position when unpinned.
+R34. Cloning a Cache makes independent copies of all its state. Later actions on a clone cannot alter the original.
+R35. All operations are synchronous and deterministic; no background tasks, wall time, random tie-breaks, external dependencies or panic on documented inputs.
+
+Compiling implementation to repair:
+```rust
+use std::collections::{BTreeMap, VecDeque};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyShards,
+    ZeroWeight,
+    TooHeavy { weight: u64, capacity: u64 },
+    Blocked { shard: usize },
+    Missing { key: u64 },
+    Pinned { key: u64 },
+    BadShard { shard: usize },
+    PinnedCapacity { minimum: u128, target: u128 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub key: u64,
+    pub value: i64,
+    pub weight: u64,
+    pub pinned: bool,
+    pub shard: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct Cache {
+    capacities: Vec<u64>,
+    usage: Vec<u64>,
+    entries: BTreeMap<u64, Entry>,
+    order: VecDeque<u64>,
+}
+impl Cache {
+    /// Creates a cache with caller-supplied shard budgets.
+    /// The capacity vector also defines the shard count.
+    /// The resulting cache owns all shard storage.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn new(capacities: Vec<u64>) -> Result<Self, Error> {
+        if capacities.is_empty() {
+            return Err(Error::EmptyShards);
+        }
+        Ok(Self {
+            usage: vec![0; capacities.len()],
+            capacities,
+            entries: BTreeMap::new(),
+            order: VecDeque::new(),
+        })
+    }
+
+    /// Copies the shard capacity settings.
+    /// The vector is ordered by shard index.
+    /// The caller owns the returned copy.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn capacities(&self) -> Vec<u64> {
+        self.capacities.clone()
+    }
+
+    /// Copies the resident weight of each shard.
+    /// The vector is ordered by shard index.
+    /// The caller owns the returned copy.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn usage(&self) -> Vec<u64> {
+        self.usage.clone()
+    }
+
+    /// Reads total resident weight across all shards.
+    /// The return type accommodates aggregate weights.
+    /// Individual shard accounting is available through usage.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn used(&self) -> u128 {
+        self.usage.iter().map(|n| *n as u128).sum()
+    }
+
+    /// Copies resident entries in global cache order.
+    /// Entries include their shard and pin metadata.
+    /// The caller owns the returned vector.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn snapshot(&self) -> Vec<Entry> {
+        self.order.iter().map(|k| self.entries[k].clone()).collect()
+    }
+
+    // Maps a key into the configured shard collection.
+    fn shard(&self, key: u64) -> usize {
+        (key % self.capacities.len() as u64) as usize
+    }
+
+    // Records a key in the cache recency structure.
+    fn touch(&mut self, key: u64) {
+        self.order.retain(|k| *k != key);
+        self.order.push_back(key);
+    }
+
+    // Removes the stored entry and its accounting metadata.
+    fn erase(&mut self, key: u64) -> Option<Entry> {
+        let entry = self.entries.remove(&key)?;
+        self.usage[entry.shard] -= entry.weight;
+        self.order.retain(|k| *k != key);
+        Some(entry)
+    }
+
+    // Selects an eligible victim inside a specified shard.
+    fn local_victim(&self, shard: usize) -> Option<u64> {
+        self.order
+            .iter()
+            .rev()
+            .find(|k| self.entries[k].shard == shard && !self.entries[k].pinned)
+            .copied()
+    }
+
+    // Selects an eligible victim across the shard collection.
+    fn global_victim(&self) -> Option<u64> {
+        self.order.iter().find(|k| !self.entries[k].pinned).copied()
+    }
+
+    // Collects protected resident weight for a shard selection.
+    fn pinned_weight(&self, shard: Option<usize>) -> u128 {
+        self.entries
+            .values()
+            .filter(|e| e.pinned && shard.is_none_or(|s| e.shard == s))
+            .map(|e| e.weight as u128)
+            .sum()
+    }
+
+    /// Looks up the value associated with a key.
+    /// Routing follows the cache shard configuration.
+    /// An absent key returns an empty option.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn get(&mut self, key: u64) -> Option<i64> {
+        let value = self.entries.get(&key).map(|e| e.value);
+        if value.is_some() && !self.entries[&key].pinned {
+            self.touch(key);
+        }
+        value
+    }
+
+    /// Changes residency protection for a key.
+    /// The supplied boolean becomes its pin setting.
+    /// The result reports whether the key exists.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn set_pin(&mut self, key: u64, pinned: bool) -> Result<(), Error> {
+        let e = self.entries.get_mut(&key).ok_or(Error::Missing { key })?;
+        e.pinned = pinned;
+        self.touch(key);
+        Ok(())
+    }
+
+    /// Requests explicit deletion of a key.
+    /// On success the stored value is returned.
+    /// The result can report residency protection errors.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn remove(&mut self, key: u64) -> Result<i64, Error> {
+        let e = self.entries.get(&key).ok_or(Error::Missing { key })?;
+        if e.pinned {
+            return Err(Error::Pinned { key });
+        }
+        Ok(self.erase(key).unwrap().value)
+    }
+
+    /// Stores a value with weight and pin metadata.
+    /// The key selects the destination shard.
+    /// The returned list reports removals performed for storage.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn insert(
+        &mut self,
+        key: u64,
+        value: i64,
+        weight: u64,
+        pinned: bool,
+    ) -> Result<Vec<u64>, Error> {
+        let shard = self.shard(key);
+        let capacity = self.capacities[shard];
+        if weight == 0 {
+            return Err(Error::ZeroWeight);
+        }
+        if weight > capacity {
+            return Err(Error::TooHeavy { weight, capacity });
+        }
+        let fixed: u64 = self
+            .entries
+            .values()
+            .filter(|e| e.shard == shard && e.pinned)
+            .map(|e| e.weight)
+            .sum();
+        if fixed > capacity - weight {
+            return Err(Error::Blocked { shard });
+        }
+        self.erase(key);
+        let mut removed = Vec::new();
+        while self.usage[shard] > capacity - weight {
+            let victim = self.local_victim(shard).unwrap();
+            self.erase(victim);
+            removed.push(victim);
+        }
+        self.usage[shard] += weight;
+        self.entries.insert(
+            key,
+            Entry {
+                key,
+                value,
+                weight,
+                pinned,
+                shard,
+            },
+        );
+        self.touch(key);
+        Ok(removed)
+    }
+
+    /// Changes the capacity of a specified shard.
+    /// The result reports removals performed for that change.
+    /// The shard is identified by its vector index.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn resize(&mut self, shard: usize, capacity: u64) -> Result<Vec<u64>, Error> {
+        if shard >= self.capacities.len() {
+            return Err(Error::BadShard { shard });
+        }
+        let minimum = self.pinned_weight(Some(shard));
+        if minimum > capacity as u128 {
+            return Err(Error::PinnedCapacity {
+                minimum,
+                target: capacity as u128,
+            });
+        }
+        self.capacities[shard] = capacity;
+        let mut removed = Vec::new();
+        while self.usage[shard] > capacity {
+            let victim = self.local_victim(shard).unwrap();
+            self.erase(victim);
+            removed.push(victim);
+        }
+        Ok(removed)
+    }
+
+    /// Reduces aggregate resident weight.
+    /// The target applies across the shard collection.
+    /// The result reports removals performed for that target.
+    ///
+    /// The complete contract is defined by the task requirements.
+    pub fn trim(&mut self, target: u128) -> Result<Vec<u64>, Error> {
+        let minimum = self.pinned_weight(None);
+        if minimum > target {
+            return Err(Error::PinnedCapacity { minimum, target });
+        }
+        let mut removed = Vec::new();
+        while self.used() >= target && self.used() > 0 {
+            let victim = self.global_victim().unwrap();
+            self.erase(victim);
+            removed.push(victim);
+        }
+        Ok(removed)
+    }
+}
+```
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R1–R6, R17–R19
+#[test]
+fn shards_local_eviction() {
+    let mut c = Cache::new(vec![3, 4]).unwrap();
+    c.insert(2, 20, 2, false).unwrap();
+    c.insert(1, 10, 2, false).unwrap();
+    assert_eq!(c.insert(4, 40, 2, false), Ok(vec![2]));
+    assert_eq!(c.usage(), vec![2, 2]);
+    assert_eq!(c.used(), 4);
+    assert_eq!(c.capacities(), vec![3, 4]);
+    assert_eq!(
+        c.snapshot().iter().map(|e| e.key).collect::<Vec<_>>(),
+        vec![1, 4]
+    );
+}
+
+// R9–R11, R20
+#[test]
+fn pins_and_removal() {
+    let mut c = Cache::new(vec![5]).unwrap();
+    c.insert(8, 80, 2, true).unwrap();
+    assert_eq!(c.get(8), Some(80));
+    assert_eq!(c.remove(8), Err(Error::Pinned { key: 8 }));
+    c.set_pin(8, false).unwrap();
+    assert_eq!(c.remove(8), Ok(80));
+}
+
+// R21–R29
+#[test]
+fn resize_and_trim() {
+    let mut c = Cache::new(vec![9, 9]).unwrap();
+    c.insert(2, 0, 2, false).unwrap();
+    c.insert(1, 0, 3, false).unwrap();
+    assert_eq!(c.trim(4), Ok(vec![2]));
+    assert_eq!(c.resize(1, 2), Ok(vec![1]));
+    assert_eq!(c.used(), 0);
+}
+
+// R1, R13–R16, R19
+#[test]
+fn validation_and_replacement() {
+    assert!(matches!(Cache::new(vec![]), Err(Error::EmptyShards)));
+    let mut c = Cache::new(vec![5]).unwrap();
+    assert_eq!(c.insert(1, 0, 0, false), Err(Error::ZeroWeight));
+    c.insert(1, 1, 2, false).unwrap();
+    assert_eq!(c.insert(1, 2, 3, false), Ok(vec![]));
+    assert_eq!(c.get(1), Some(2));
+}
+```
+
+
+Lessons from earlier tasks (task-agnostic; apply each one that is relevant):
+1. Validate complete syntax and grammar before parsing values or applying semantic checks, so malformed input takes precedence according to specified error positions.
+2. Derive bounds and explicit structure before applying transformations or expansion; distinguish source coordinates, field counts, and empty values from rendered text.
+3. Check arithmetic and allocation boundaries before mutation or allocation; use checked operations and preserve atomicity when limits are exceeded.
+4. Recompute derived data from the final converged state instead of retaining intermediate results.
+5. Apply validation and traversal rules uniformly to initial and later inputs, including bytes inside quoted or escaped regions.
+6. Track recursive work with explicit completion state, and unwind each resource only after its own work finishes.
+7. Ensure each underlying item contributes exactly once to aggregates, and emit propagated events at the specified granularity.
+8. Translate policies and ordering requirements into explicit predicates; account for all valid interval witnesses and prevent counter overflow from violating guarantees.

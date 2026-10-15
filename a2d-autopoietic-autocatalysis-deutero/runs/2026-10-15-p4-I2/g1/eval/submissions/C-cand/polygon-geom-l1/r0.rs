@@ -1,0 +1,157 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Point {
+    pub x: i64,
+    pub y: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Clockwise,
+    Degenerate,
+    CounterClockwise,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Measures {
+    pub signed_area2: i128,
+    pub area2: u128,
+    pub orientation: Orientation,
+    pub edge_milli: Vec<u64>,
+    pub perimeter_milli: u64,
+    pub longest_edge: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeomError {
+    TooManyVertices { len: usize },
+    OutOfRange { index: usize },
+    TooFewVertices { len: usize },
+}
+
+const MAX_VERTICES: usize = 4096;
+const COORD_LIMIT: i64 = 1_000_000_000;
+
+fn rounded_sqrt(n: u128) -> u64 {
+    let mut lo = 0u128;
+    let mut hi = 1u128 << 64;
+
+    while lo + 1 < hi {
+        let mid = lo + (hi - lo) / 2;
+        if mid <= n / mid {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+
+    let lower_square = lo * lo;
+    let upper = lo + 1;
+    let upper_square = upper * upper;
+
+    let rounded = if n - lower_square >= upper_square - n {
+        upper
+    } else {
+        lo
+    };
+    rounded as u64
+}
+
+fn edge_length_milli(a: Point, b: Point) -> u64 {
+    let dx = (a.x as i128 - b.x as i128).unsigned_abs();
+    let dy = (a.y as i128 - b.y as i128).unsigned_abs();
+    let d2 = dx * dx + dy * dy;
+    rounded_sqrt(d2 * 1_000_000)
+}
+
+pub fn measure(points: &[Point]) -> Result<Measures, GeomError> {
+    if points.len() > MAX_VERTICES {
+        return Err(GeomError::TooManyVertices { len: points.len() });
+    }
+
+    for (index, point) in points.iter().enumerate() {
+        if point.x < -COORD_LIMIT
+            || point.x > COORD_LIMIT
+            || point.y < -COORD_LIMIT
+            || point.y > COORD_LIMIT
+        {
+            return Err(GeomError::OutOfRange { index });
+        }
+    }
+
+    let effective_len = if points.len() >= 2 && points.first() == points.last() {
+        points.len() - 1
+    } else {
+        points.len()
+    };
+
+    if effective_len < 3 {
+        return Err(GeomError::TooFewVertices { len: effective_len });
+    }
+
+    let polygon = &points[..effective_len];
+    let mut signed_area2 = 0i128;
+
+    for i in 0..effective_len {
+        let current = polygon[i];
+        let next = polygon[(i + 1) % effective_len];
+        signed_area2 += current.x as i128 * next.y as i128
+            - current.y as i128 * next.x as i128;
+    }
+
+    let orientation = if signed_area2 > 0 {
+        Orientation::CounterClockwise
+    } else if signed_area2 < 0 {
+        Orientation::Clockwise
+    } else {
+        Orientation::Degenerate
+    };
+
+    let mut edge_milli = Vec::with_capacity(effective_len);
+    let mut perimeter_milli = 0u64;
+    let mut longest_edge: Option<usize> = None;
+
+    for i in 0..effective_len {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % effective_len];
+        let length = edge_length_milli(a, b);
+        edge_milli.push(length);
+        perimeter_milli += length;
+
+        let replace = match longest_edge {
+            None => true,
+            Some(previous_index) => {
+                let previous_length = edge_milli[previous_index];
+                if length > previous_length {
+                    true
+                } else if length < previous_length {
+                    false
+                } else {
+                    let (low, high) = if a <= b { (a, b) } else { (b, a) };
+                    let previous_a = polygon[previous_index];
+                    let previous_b = polygon[(previous_index + 1) % effective_len];
+                    let (previous_low, previous_high) = if previous_a <= previous_b {
+                        (previous_a, previous_b)
+                    } else {
+                        (previous_b, previous_a)
+                    };
+                    (low, high, i) < (previous_low, previous_high, previous_index)
+                }
+            }
+        };
+
+        if replace {
+            longest_edge = Some(i);
+        }
+    }
+
+    Ok(Measures {
+        signed_area2,
+        area2: signed_area2.unsigned_abs(),
+        orientation,
+        edge_milli,
+        perimeter_milli,
+        longest_edge,
+    })
+}
+
+fn main() {}

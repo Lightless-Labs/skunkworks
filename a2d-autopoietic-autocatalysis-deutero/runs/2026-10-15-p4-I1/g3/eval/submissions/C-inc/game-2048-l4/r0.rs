@@ -1,0 +1,395 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    Up,
+    Left,
+    Down,
+    Right,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Shape,
+    InvalidTile { index: usize, value: u32 },
+    MergeOverflow { first: usize, second: usize },
+    ScoreOverflow,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Board {
+    pub width: usize,
+    pub height: usize,
+    pub cells: Vec<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Merge {
+    pub from: [usize; 2],
+    pub to: usize,
+    pub value: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MoveResult {
+    pub board: Board,
+    pub score: u64,
+    pub changed: bool,
+    pub merges: Vec<Merge>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Spawn {
+    pub index: usize,
+    pub value: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpawnResult {
+    pub board: Board,
+    pub rng: u64,
+    pub spawn: Option<Spawn>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Turn {
+    pub board: Board,
+    pub rng: u64,
+    pub score: u64,
+    pub changed: bool,
+    pub merges: Vec<Merge>,
+    pub spawn: Option<Spawn>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct State {
+    pub board: Board,
+    pub score: u64,
+    pub rng: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Game {
+    state: State,
+    undo_state: Option<State>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Command {
+    Move(Direction),
+    Undo,
+    Check,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Event {
+    Moved(Turn),
+    Undone(bool),
+    Checked(bool),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Replay {
+    pub state: State,
+    pub can_undo: bool,
+    pub events: Vec<Event>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayError {
+    pub index: Option<usize>,
+    pub error: Error,
+    pub state: State,
+    pub can_undo: bool,
+    pub events: Vec<Event>,
+}
+
+fn validate(board: &Board) -> Result<(), Error> {
+    if !(1..=8).contains(&board.width) || !(1..=8).contains(&board.height) {
+        return Err(Error::Shape);
+    }
+    if board.cells.len() != board.width * board.height {
+        return Err(Error::Shape);
+    }
+    for (index, &value) in board.cells.iter().enumerate() {
+        if value != 0 && (value < 2 || value > 2_147_483_648 || !value.is_power_of_two()) {
+            return Err(Error::InvalidTile { index, value });
+        }
+    }
+    Ok(())
+}
+
+fn line_indices(board: &Board, direction: Direction, line: usize) -> Vec<usize> {
+    match direction {
+        Direction::Left => (0..board.width).map(|x| line * board.width + x).collect(),
+        Direction::Right => (0..board.width)
+            .rev()
+            .map(|x| line * board.width + x)
+            .collect(),
+        Direction::Up => (0..board.height).map(|y| y * board.width + line).collect(),
+        Direction::Down => (0..board.height)
+            .rev()
+            .map(|y| y * board.width + line)
+            .collect(),
+    }
+}
+
+fn move_validated(board: &Board, direction: Direction) -> Result<MoveResult, Error> {
+    let mut cells = vec![0; board.cells.len()];
+    let mut merges = Vec::new();
+    let mut score = 0u64;
+    let line_count = match direction {
+        Direction::Left | Direction::Right => board.height,
+        Direction::Up | Direction::Down => board.width,
+    };
+
+    for line in 0..line_count {
+        let indices = line_indices(board, direction, line);
+        let tiles: Vec<(usize, u32)> = indices
+            .iter()
+            .filter_map(|&index| {
+                let value = board.cells[index];
+                (value != 0).then_some((index, value))
+            })
+            .collect();
+
+        let mut outputs: Vec<(u32, Option<([usize; 2], u32)>)> = Vec::new();
+        let mut i = 0;
+        while i < tiles.len() {
+            let (first_index, first_value) = tiles[i];
+            if i + 1 < tiles.len() && tiles[i + 1].1 == first_value {
+                let second_index = tiles[i + 1].0;
+                if first_value == 2_147_483_648 {
+                    return Err(Error::MergeOverflow {
+                        first: first_index,
+                        second: second_index,
+                    });
+                }
+                let value = first_value * 2;
+                outputs.push((value, Some(([first_index, second_index], value))));
+                score += u64::from(value);
+                i += 2;
+            } else {
+                outputs.push((first_value, None));
+                i += 1;
+            }
+        }
+
+        for (slot, (value, provenance)) in outputs.into_iter().enumerate() {
+            let to = indices[slot];
+            cells[to] = value;
+            if let Some((from, merged_value)) = provenance {
+                merges.push(Merge {
+                    from,
+                    to,
+                    value: merged_value,
+                });
+            }
+        }
+    }
+
+    let changed = cells != board.cells;
+    Ok(MoveResult {
+        board: Board {
+            width: board.width,
+            height: board.height,
+            cells,
+        },
+        score,
+        changed,
+        merges,
+    })
+}
+
+pub fn move_board(board: &Board, direction: Direction) -> Result<MoveResult, Error> {
+    validate(board)?;
+    move_validated(board, direction)
+}
+
+pub fn legal_moves(board: &Board) -> Result<Vec<Direction>, Error> {
+    validate(board)?;
+    let mut result = Vec::new();
+    for direction in [
+        Direction::Up,
+        Direction::Left,
+        Direction::Down,
+        Direction::Right,
+    ] {
+        if let Ok(moved) = move_validated(board, direction) {
+            if moved.changed {
+                result.push(direction);
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn next_rng(rng: u64) -> u64 {
+    rng.wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407)
+}
+
+pub fn spawn_tile(board: &Board, rng: u64) -> Result<SpawnResult, Error> {
+    validate(board)?;
+    let empty: Vec<usize> = board
+        .cells
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &value)| (value == 0).then_some(index))
+        .collect();
+
+    if empty.is_empty() {
+        return Ok(SpawnResult {
+            board: board.clone(),
+            rng,
+            spawn: None,
+        });
+    }
+
+    let a = next_rng(rng);
+    let rank = (a % empty.len() as u64) as usize;
+    let index = empty[rank];
+    let b = next_rng(a);
+    let value = if b % 10 == 0 { 4 } else { 2 };
+
+    let mut new_board = board.clone();
+    new_board.cells[index] = value;
+    Ok(SpawnResult {
+        board: new_board,
+        rng: b,
+        spawn: Some(Spawn { index, value }),
+    })
+}
+
+pub fn play_turn(board: &Board, rng: u64, direction: Direction) -> Result<Turn, Error> {
+    let moved = move_board(board, direction)?;
+    if !moved.changed {
+        return Ok(Turn {
+            board: moved.board,
+            rng,
+            score: 0,
+            changed: false,
+            merges: Vec::new(),
+            spawn: None,
+        });
+    }
+
+    let spawned = spawn_tile(&moved.board, rng)?;
+    Ok(Turn {
+        board: spawned.board,
+        rng: spawned.rng,
+        score: moved.score,
+        changed: true,
+        merges: moved.merges,
+        spawn: spawned.spawn,
+    })
+}
+
+pub fn new_game(initial: State) -> Result<Game, Error> {
+    validate(&initial.board)?;
+    Ok(Game {
+        state: initial,
+        undo_state: None,
+    })
+}
+
+pub fn snapshot(game: &Game) -> State {
+    game.state.clone()
+}
+
+pub fn step(game: &mut Game, direction: Direction) -> Result<Turn, Error> {
+    let moved = move_board(&game.state.board, direction)?;
+    if !moved.changed {
+        return Ok(Turn {
+            board: moved.board,
+            rng: game.state.rng,
+            score: 0,
+            changed: false,
+            merges: Vec::new(),
+            spawn: None,
+        });
+    }
+
+    let score = game
+        .state
+        .score
+        .checked_add(moved.score)
+        .ok_or(Error::ScoreOverflow)?;
+    let spawned = spawn_tile(&moved.board, game.state.rng)?;
+    let previous = game.state.clone();
+    game.state = State {
+        board: spawned.board.clone(),
+        score,
+        rng: spawned.rng,
+    };
+    game.undo_state = Some(previous);
+
+    Ok(Turn {
+        board: spawned.board,
+        rng: spawned.rng,
+        score: moved.score,
+        changed: true,
+        merges: moved.merges,
+        spawn: spawned.spawn,
+    })
+}
+
+pub fn undo(game: &mut Game) -> bool {
+    if let Some(previous) = game.undo_state.take() {
+        game.state = previous;
+        true
+    } else {
+        false
+    }
+}
+
+pub fn can_undo(game: &Game) -> bool {
+    game.undo_state.is_some()
+}
+
+pub fn game_over(game: &Game) -> bool {
+    legal_moves(&game.state.board)
+        .map(|moves| moves.is_empty())
+        .unwrap_or(true)
+}
+
+pub fn replay(initial: State, commands: &[Command]) -> Result<Replay, ReplayError> {
+    let mut game = match new_game(initial.clone()) {
+        Ok(game) => game,
+        Err(error) => {
+            return Err(ReplayError {
+                index: None,
+                error,
+                state: initial,
+                can_undo: false,
+                events: Vec::new(),
+            });
+        }
+    };
+
+    let mut events = Vec::new();
+    for (index, command) in commands.iter().enumerate() {
+        match command {
+            Command::Move(direction) => match step(&mut game, *direction) {
+                Ok(turn) => events.push(Event::Moved(turn)),
+                Err(error) => {
+                    return Err(ReplayError {
+                        index: Some(index),
+                        error,
+                        state: snapshot(&game),
+                        can_undo: can_undo(&game),
+                        events,
+                    });
+                }
+            },
+            Command::Undo => events.push(Event::Undone(undo(&mut game))),
+            Command::Check => events.push(Event::Checked(game_over(&game))),
+        }
+    }
+
+    Ok(Replay {
+        state: snapshot(&game),
+        can_undo: can_undo(&game),
+        events,
+    })
+}
+
+fn main() {}
