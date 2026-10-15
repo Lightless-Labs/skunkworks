@@ -484,4 +484,13 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - hit rate ≥ 0.5 and ≥ chance + 0.2: single-shot distillation from labels is viable;
   - otherwise the P4 distiller also gets **contrast pairs** (a hidden-passing and a hidden-failing candidate of the same task, from train labels) wherever they exist.
 - Budget: 32 Luna calls.
-- Result: pending
+- Result (`runs/2026-10-15-p4-0-probe/probe.json`; 32 Luna calls, 0 errors):
+  - **Clause hit rate 0.562 (18/32) vs chance 0.252.** The rule is met: single-shot distillation from labels is viable.
+  - Luna's label-only lessons cover the same themes as T0's hindsight lessons:
+    - validation order and precedence;
+    - overflow detected during accumulation;
+    - no allocation from untrusted sizes;
+    - offsets in original-input coordinates;
+    - finishing ready work before advancing time.
+  - Most misses still yield a sensible general lesson (typically validation precedence).
+  - Contrast pairs remain an optional upgrade, not a requirement.
