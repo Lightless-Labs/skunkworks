@@ -438,4 +438,17 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Output per case: violated clauses, a category from a fixed list, whether the spec was clear, whether a careful clause-by-clause check would have caught it, and a **task-agnostic lesson** (≤ 25 words) or null.
 - Decision use (fixed now): if ≥ 50% of cases share ≤ 3 categories **and** ≥ 50% have a task-agnostic lesson, P4's first lever is a cross-task `lessons` slot fed from train failures. Otherwise lessons are deprioritised, and P4 targets selection and schedule.
 - Budget: ≤ 40 Sol calls.
-- Result: pending
+- Result (32 Sol calls; `runs/2026-10-15-t0-taxonomy/t0-results.json`):
+  - Categories: boundary/edge case 9, unit or offset counting 6, error precedence 5, other 4, numeric overflow 3, state/sequencing 2, and 1 each for format, timeout and missing requirement. **The top 3 cover 20/32 = 0.62.**
+  - **Task-agnostic lesson for 32/32.** The rule is met, so P4's first lever is a cross-task `lessons` slot.
+  - The lessons recur across families:
+    1. validate in the specified order, splitting structure before validating fields (cron, url);
+    2. compute error offsets in the original input's coordinates (cron, email, fs, text);
+    3. never allocate or loop from an unchecked input count or dimension, and short-circuit empty work first (varint, rational-matrix);
+    4. detect overflow while accumulating, not after (rational-matrix, scc);
+    5. bound worst-case search when proving no result exists (cron).
+  - **Caveats.**
+    - Sol rated every spec clear and every failure catchable by a careful clause check (32/32). That is hindsight from seeing the failing test: S2 measured that the coder's own clause review converts 0.19.
+    - The lesson criterion was weak (any lesson counts).
+    - The lessons partly encode the authoring style of the hidden tests (extreme counts, precedence, absolute offsets). Confirmation-2 shares the author (Sol), so any transfer holds within one author's task distribution, and is reported as such.
+  - So lessons must earn promotion **empirically, on families they were not distilled from**.
