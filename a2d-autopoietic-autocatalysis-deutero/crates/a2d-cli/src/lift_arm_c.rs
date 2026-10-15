@@ -254,6 +254,77 @@ mod tests {
         }
     }
 
+    /// Coders get a correct file; architect and tester outputs carry unique
+    /// markers; every request is recorded with its enzyme id.
+    struct MarkerMock {
+        seen: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl Provider for MarkerMock {
+        fn name(&self) -> &str {
+            "mock/markers"
+        }
+
+        fn invoke(&self, request: &InvocationRequest) -> Result<InvocationResponse, ProviderError> {
+            self.seen.lock().unwrap().push((
+                request.enzyme_id.0.clone(),
+                format!("{}\n{}", request.system, request.prompt),
+            ));
+            let text = match request.enzyme_id.0.as_str() {
+                "coder" => {
+                    "```rust\nfn double(x: i32) -> i32 { x * 2 }\nfn main() {}\n```".to_string()
+                }
+                "architect" => "ARCHITECT_OUTPUT_MARKER_7f3a".to_string(),
+                "tester" => "TESTER_OUTPUT_MARKER_91c2".to_string(),
+                _ => "No changes.".to_string(),
+            };
+            Ok(InvocationResponse {
+                text,
+                raw_output: None,
+                tool_events: Vec::new(),
+                transcript: None,
+                thinking: None,
+                usage: TokenUsage::default(),
+            })
+        }
+    }
+
+    #[test]
+    fn architect_and_tester_outputs_never_reach_a_coder_prompt() {
+        let task = PublicTask {
+            id: "t".into(),
+            family: "f".into(),
+            requirements: "Implement `fn double(x: i32) -> i32`.".into(),
+            public_tests: "#[test]\nfn doubles_two() { assert_eq!(double(2), 4); }\n".into(),
+            test_timeout_secs: 10,
+        };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let provider = Box::new(MarkerMock { seen: seen.clone() });
+        MetabolismArm.run(provider, &task, 9, &serde_json::json!({}));
+        let seen = seen.lock().unwrap();
+        let enzymes: Vec<&str> = seen.iter().map(|(e, _)| e.as_str()).collect();
+        assert!(
+            enzymes.contains(&"architect") && enzymes.contains(&"tester"),
+            "{enzymes:?}"
+        );
+        assert!(
+            enzymes.iter().filter(|e| **e == "coder").count() >= 2,
+            "{enzymes:?}"
+        );
+        for (enzyme, prompt) in seen.iter() {
+            if enzyme == "coder" {
+                assert!(
+                    !prompt.contains("ARCHITECT_OUTPUT_MARKER_7f3a"),
+                    "architect output reached the coder"
+                );
+                assert!(
+                    !prompt.contains("TESTER_OUTPUT_MARKER_91c2"),
+                    "tester output reached the coder"
+                );
+            }
+        }
+    }
+
     #[test]
     fn harness_drops_inert_enzymes_and_rejects_unknown_keys() {
         let minimal =
