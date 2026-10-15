@@ -24,6 +24,11 @@
 //!   catalyst). The seed coder never sees its own code (LOG S0).
 //! - `lessons`: task-agnostic lessons (at most 12), rendered as a numbered
 //!   list after the task input; `a2d distill` writes them from train labels;
+//! - `plain_inputs`: render the coder's inputs as plain sections (previous
+//!   file fenced, real newlines, failure report once) instead of one JSON
+//!   line, as arm D sees them;
+//! - `drop_coder_catalysts`: remove catalysts from the coder (applied before
+//!   `drop_enzymes`; e.g. `enzyme_defs`, which lets the evolver be dropped);
 //! - `dedupe_input`: keep the task input in `requirements` only; the seed
 //!   copies it into `design` and `plan` as well (three copies per prompt);
 //! - `stop_at_public_green`: end the task once a cycle's code passes every
@@ -89,6 +94,8 @@ const HARNESS_KEYS: &[&str] = &[
     "stop_at_public_green",
     "lessons",
     "dedupe_input",
+    "plain_inputs",
+    "drop_coder_catalysts",
 ];
 
 /// Header of the rendered `lessons` list in every enzyme's task input.
@@ -133,13 +140,43 @@ fn harness_germline(harness: &Value) -> Result<Germline, String> {
         return Err("harness must be a JSON object".to_string());
     }
     let mut germline = seed_germline();
+    // Catalysts are removed first, so that a producer whose product no
+    // longer has a consumer (the evolver, once the coder stops requiring
+    // `enzyme_defs`) can be dropped without breaking RAF closure.
+    let drop_catalysts: Vec<&str> = match harness.get("drop_coder_catalysts") {
+        None => Vec::new(),
+        Some(value) => value
+            .as_array()
+            .ok_or("drop_coder_catalysts must be a list of strings")?
+            .iter()
+            .map(|v| v.as_str().ok_or("drop_coder_catalysts must be a list of strings"))
+            .collect::<Result<_, _>>()?,
+    };
+    if !drop_catalysts.is_empty() {
+        let mut enzymes: Vec<_> = germline.enzymes().into_iter().cloned().collect();
+        let coder = enzymes
+            .iter_mut()
+            .find(|e| e.id.0 == "coder")
+            .ok_or("harness needs a coder enzyme")?;
+        for catalyst in drop_catalysts {
+            if !coder.catalysts.remove(&ArtifactType::from(catalyst)) {
+                return Err(format!("the coder has no catalyst {catalyst:?}"));
+            }
+        }
+        germline = Germline::new(enzymes, germline.food().clone());
+    }
     for id in harness["drop_enzymes"].as_array().into_iter().flatten() {
         let id = id.as_str().ok_or("drop_enzymes must be strings")?;
         germline
             .propose_remove(&EnzymeId::from(id))
             .map_err(|e| format!("cannot drop {id}: {e}"))?;
     }
-    for flag in ["route_previous_code", "stop_at_public_green", "dedupe_input"] {
+    for flag in [
+        "route_previous_code",
+        "stop_at_public_green",
+        "dedupe_input",
+        "plain_inputs",
+    ] {
         if harness.get(flag).is_some_and(|v| !v.is_boolean()) {
             return Err(format!("{flag} must be a boolean"));
         }
@@ -224,7 +261,8 @@ impl ArmC for MetabolismArm {
             .with_benchmark(public_benchmark(task))
             .with_max_invocations_per_cycle(budget)
             .with_provider_failure_cooldown(Duration::ZERO)
-            .without_max_cycle_wall_clock();
+            .without_max_cycle_wall_clock()
+            .with_plain_prompt_inputs(harness["plain_inputs"].as_bool().unwrap_or(false));
         seed_initial_runtime_artifacts(&mut metabolism, &harness_input(task, harness));
         if harness["dedupe_input"].as_bool().unwrap_or(false) {
             // The seed writes the whole task input into requirements, design
@@ -566,6 +604,40 @@ mod tests {
         assert_eq!(prompt.matches("UNIQUE_SPEC_MARKER_7").count(), 1);
         assert_eq!(prompt.matches(LESSONS_HEADER).count(), 1);
         assert!(harness_germline(&serde_json::json!({"dedupe_input": 1})).is_err());
+    }
+
+    #[test]
+    fn evolver_free_plain_harness_spends_every_call_on_the_coder() {
+        let task = PublicTask {
+            id: "t".into(),
+            family: "f".into(),
+            requirements: "Implement `fn double(x: i32) -> i32`.".into(),
+            public_tests: "#[test]\nfn doubles_two() { assert_eq!(double(2), 4); }\n".into(),
+            test_timeout_secs: 10,
+        };
+        let harness = serde_json::json!({
+            "drop_coder_catalysts": ["enzyme_defs"],
+            "drop_enzymes": ["architect", "tester", "evolver"],
+            "plain_inputs": true, "route_previous_code": true, "dedupe_input": true
+        });
+        let germline = harness_germline(&harness).unwrap();
+        assert_eq!(germline.enzymes().len(), 1);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        MetabolismArm.run(Box::new(EnzymeMock { seen: seen.clone() }), &task, 5, &harness);
+        let seen = seen.lock().unwrap();
+        // The unmetered mock repeats itself, so loop escalation may add
+        // consultation calls; the controller's meter caps those in a real run.
+        assert!(!seen.iter().any(|p| p.contains("You are the Evolver enzyme")));
+        let coder_cycles = seen.iter().filter(|p| p.starts_with("You are a programmer")).count();
+        assert!(coder_cycles >= 5, "the coder gets every cycle: {coder_cycles}");
+        assert!(seen[0].contains("## requirements\n\nImplement"));
+        assert!(!seen[0].contains("{\"design\""));
+        assert!(seen[1].contains("## previous_attempt\n\n```rust\n"));
+        // Without removing the catalyst, dropping the evolver breaks closure.
+        let broken = serde_json::json!({"drop_enzymes": ["architect", "tester", "evolver"]});
+        assert!(harness_germline(&broken).is_err());
+        assert!(harness_germline(&serde_json::json!({"drop_coder_catalysts": "x"})).is_err());
+        assert!(harness_germline(&serde_json::json!({"plain_inputs": 1})).is_err());
     }
 
     #[test]

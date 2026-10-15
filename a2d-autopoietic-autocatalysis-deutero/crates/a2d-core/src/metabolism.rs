@@ -259,6 +259,8 @@ pub struct Metabolism {
     next_cycle: usize,
     max_invocations_per_cycle: usize,
     max_cycle_wall_clock: Option<Duration>,
+    /// Render task-enzyme inputs as plain sections instead of one JSON line.
+    plain_prompt_inputs: bool,
     provider_failure_cooldown: Duration,
     provider_failure_max_cooldown: Duration,
     provider_health: BTreeMap<String, ProviderHealth>,
@@ -315,6 +317,7 @@ impl Metabolism {
             next_cycle: 0,
             max_invocations_per_cycle: 20,
             max_cycle_wall_clock: Some(Duration::from_secs(600)),
+            plain_prompt_inputs: false,
             provider_failure_cooldown: Duration::from_secs(600),
             provider_failure_max_cooldown: Duration::from_secs(3600),
             provider_health: BTreeMap::new(),
@@ -363,6 +366,13 @@ impl Metabolism {
     /// Disable the wall-clock cycle budget. Intended for explicit experiments.
     pub fn without_max_cycle_wall_clock(mut self) -> Self {
         self.max_cycle_wall_clock = None;
+        self
+    }
+
+    /// Render task-enzyme inputs as plain markdown sections (code fenced, real
+    /// newlines) instead of one JSON line; see `render_plain_inputs`.
+    pub fn with_plain_prompt_inputs(mut self, plain: bool) -> Self {
+        self.plain_prompt_inputs = plain;
         self
     }
 
@@ -1026,11 +1036,12 @@ impl Metabolism {
             None
         };
 
-        let request = build_request(
+        let request = build_request_with(
             &scheduled.enzyme,
             &invocation_inputs,
             loop_rung,
             consultation.as_deref(),
+            self.plain_prompt_inputs,
         );
         let consensus_portfolio = loop_rung >= 6;
         let mut candidate_evaluations = Vec::new();
@@ -1855,6 +1866,55 @@ fn build_request(
     loop_rung: usize,
     consultation: Option<&str>,
 ) -> InvocationRequest {
+    build_request_with(enzyme, inputs, loop_rung, consultation, false)
+}
+
+/// Plain rendering of a task enzyme's inputs: one markdown section per
+/// artifact (requirements first), the previous file fenced as Rust and the
+/// failure report fenced as text, with real newlines. The germline
+/// (`enzyme_defs`) is not a task input and is left out.
+fn render_plain_inputs(inputs: &ArtifactStore) -> String {
+    const FIRST: [&str; 5] = [
+        "requirements",
+        "design",
+        "plan",
+        "previous_attempt",
+        "failure_report",
+    ];
+    let rank = |name: &str| FIRST.iter().position(|f| *f == name).unwrap_or(FIRST.len());
+    let mut entries: Vec<(&ArtifactType, &Vec<u8>)> = inputs
+        .iter()
+        .filter(|(t, b)| t.0 != "enzyme_defs" && !b.is_empty())
+        .collect();
+    entries.sort_by(|a, b| rank(&a.0.0).cmp(&rank(&b.0.0)).then(a.0.cmp(b.0)));
+    entries
+        .into_iter()
+        .map(|(t, bytes)| {
+            let text = String::from_utf8_lossy(bytes);
+            let text = text.trim_end();
+            match t.0.as_str() {
+                "previous_attempt" => format!("## previous_attempt\n\n```rust\n{text}\n```\n"),
+                "failure_report" => format!("## failure_report\n\n```text\n{text}\n```\n"),
+                name => format!("## {name}\n\n{text}\n"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `plain`: task enzymes (not the architect or evolver) get
+/// `render_plain_inputs` as the prompt, and the failure report is not also
+/// injected into the system prompt.
+fn build_request_with(
+    enzyme: &EnzymeDef,
+    inputs: &ArtifactStore,
+    loop_rung: usize,
+    consultation: Option<&str>,
+    plain: bool,
+) -> InvocationRequest {
+    let system_enzyme =
+        enzyme.id == EnzymeId::from("architect") || enzyme.id == EnzymeId::from("evolver");
+    let plain = plain && !system_enzyme;
     let prompt_inputs: BTreeMap<String, String> = inputs
         .iter()
         .map(|(artifact_type, payload)| {
@@ -1939,7 +1999,7 @@ fn build_request(
             .map(|b| String::from_utf8_lossy(b).to_string())
             .filter(|s| !s.is_empty());
 
-        match failure_report {
+        match failure_report.filter(|_| !plain) {
             Some(report) => format!(
                 "{base_template}\n\n\
                  PREVIOUS ATTEMPT FAILED — fix these errors:\n\
@@ -1955,7 +2015,11 @@ fn build_request(
     InvocationRequest {
         enzyme_id: enzyme.id.clone(),
         system,
-        prompt: serde_json::to_string(&prompt_inputs).expect("inputs must serialize"),
+        prompt: if plain {
+            render_plain_inputs(inputs)
+        } else {
+            serde_json::to_string(&prompt_inputs).expect("inputs must serialize")
+        },
         max_tokens: 4096,
     }
 }
@@ -3253,6 +3317,33 @@ mod tests {
             request.system.contains("undefined variable"),
             "prompt should include the actual error"
         );
+    }
+
+    #[test]
+    fn plain_inputs_render_sections_with_fenced_code_and_one_failure_report() {
+        let coder = EnzymeDef {
+            id: EnzymeId::from("coder"),
+            reactants: [art("requirements")].into(),
+            products: [art("code")].into(),
+            catalysts: [art("failure_report"), art("previous_attempt")].into(),
+            prompt_template: Some("Write code.".to_string()),
+        };
+        let mut inputs = ArtifactStore::new();
+        inputs.insert(art("requirements"), b"R1. Build it.".to_vec());
+        inputs.insert(art("previous_attempt"), b"fn a() {\n    1\n}".to_vec());
+        inputs.insert(art("failure_report"), b"COMPILATION FAILED: E0308".to_vec());
+        inputs.insert(art("enzyme_defs"), b"[{\"id\":\"coder\"}]".to_vec());
+
+        let plain = build_request_with(&coder, &inputs, 0, None, true);
+        assert_eq!(plain.system, "Write code.");
+        assert!(plain.prompt.starts_with("## requirements\n\nR1. Build it."));
+        assert!(plain.prompt.contains("## previous_attempt\n\n```rust\nfn a() {\n    1\n}\n```"));
+        let both = format!("{}{}", plain.system, plain.prompt);
+        assert_eq!(both.matches("E0308").count(), 1);
+        assert!(!plain.prompt.contains("enzyme_defs"));
+
+        let json = build_request(&coder, &inputs, 0, None);
+        assert!(json.prompt.starts_with('{') && json.system.contains("PREVIOUS ATTEMPT FAILED"));
     }
 
     #[test]
