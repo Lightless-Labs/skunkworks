@@ -735,3 +735,13 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Every lessons arm beat C:h0 on validation (+3.8 to +11.2 pp). None beat D.
   - **P4 is therefore "not supported at the development screen".** Self-written lessons did not move A²D above its coder used directly, and failure-informed lessons did no better than generic ones.
   - Spend: 652 invocations / 6.0M tokens. P4 total: about 3.8k invocations.
+
+### E13 — does the `main()` clause cost hidden passes? D vs D + main clause  [closing diagnostic, development lane, reserve budget]
+- Registered: 2026-10-15, after E12's no-go, as a diagnostic for the closing report. It does not affect the completion outcome.
+- Question: H0 v6 differs from D only by the `main()` clause (and by the metabolism carrier: the sandbox's program compile and the `TESTS:` wrapper). On validation, C:h0 was −12.5 pp and 4 vs 0 never-green against D, whereas on train it was +2.9 pp and 1 vs 1. Is the clause the cause?
+- Arms D and `D:main` (`--d-note main=harnesses/notes/main-clause.txt`, the same sentence H0 v6 appends to the system prompt). `tasks/train-all`; k = 5; seed 41; jobs 4; `--unregistered`. Out: `runs/2026-10-15-e13-main-clause`.
+- **Reading (fixed now):**
+  - **D:main − D ≤ −5 pp:** the clause costs hidden passes. It would explain part of the carrier gap, and the sandbox should accept library files.
+  - **Within ±5 pp:** the clause is not the cause. Any carrier gap is attributed to the metabolism path (sandbox or wrapper), or to noise.
+- Budget: ≤ 400 invocations from the reserve, 10,800 s.
+- Result: pending
