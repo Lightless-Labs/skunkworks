@@ -101,7 +101,7 @@ class EpisodeTests(unittest.TestCase):
         if fake_git:
             extra = [mock.patch.object(episode, "_new_workspace", side_effect=lambda _base, dest: self.base),
                      mock.patch.object(episode, "_git", return_value=subprocess.CompletedProcess([], 0, "root\n", "")),
-                     mock.patch.object(episode, "_apply_patch"),
+                     mock.patch.object(episode, "_commit_base"),
                      mock.patch.object(episode, "_candidate_diff", side_effect=lambda _w, _root, patch: patch)]
         with mock.patch.object(episode, "run_policy", side_effect=policy), \
              mock.patch.object(episode, "_run_agent_call", side_effect=a2ctl), \
@@ -176,6 +176,20 @@ class EpisodeTests(unittest.TestCase):
         self.assertFalse(episode.e1run._marker_in("opaque-secret", serialized))
         self.assertFalse(episode.e1run._marker_in("hidden::test_secret", serialized))
         self.assertNotIn(str(self.root / "private"), serialized)
+
+
+
+class DenyReadTests(unittest.TestCase):
+    def test_agents_are_denied_secrets_sealed_projects_and_ssh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sealed = Path(tmp) / "sealed"; sealed.mkdir()
+            args = episode.deny_read_args(sealed)
+        denied = args[1::2]
+        self.assertEqual(args[0::2], ["--deny-read"] * len(denied))
+        self.assertIn(str(sealed), denied)
+        for path in (episode.tasks.private_dir(), Path.home() / "Projects", Path.home() / ".ssh"):
+            if path.exists():
+                self.assertIn(str(path), denied)
 
 
 if __name__ == "__main__":

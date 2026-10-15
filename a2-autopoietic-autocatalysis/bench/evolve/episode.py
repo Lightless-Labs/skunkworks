@@ -134,29 +134,49 @@ def _new_workspace(base: Path, dest: Path) -> Path:
     return dest
 
 
-def _git(cwd: Path, *args: str, check: bool = True):
+def _git(cwd: Path, *args: str, check: bool = True, index: Path | None = None, stdin: str | None = None):
     env = {**os.environ, **grading.FIXED_GIT_ENV}
-    return subprocess.run(["git", "-c", "commit.gpgsign=false", *args], cwd=cwd, env=env,
-                          capture_output=True, text=True, check=check, timeout=30)
+    if index is not None:
+        env["GIT_INDEX_FILE"] = str(index)
+    return subprocess.run(["git", "-c", "commit.gpgsign=false", *args], cwd=cwd, env=env, input=stdin,
+                          capture_output=True, text=True, check=check, timeout=600)
 
 
-def _apply_patch(workspace: Path, patch: str) -> None:
-    if not patch.strip():
-        return
-    applied = subprocess.run(["git", "apply", "--whitespace=nowarn"], cwd=workspace,
-                             input=patch, text=True, capture_output=True)
-    if applied.returncode:
-        # a2ctl may have already materialized its emitted diff in the workspace.
-        reverse = subprocess.run(["git", "apply", "--reverse", "--check"], cwd=workspace,
-                                 input=patch, text=True, capture_output=True)
-        if reverse.returncode:
-            raise RuntimeError("a2ctl patch_diff could not be applied")
+def _index_with(workspace: Path, patch: str) -> Path:
+    """A throwaway index holding HEAD plus `patch`, built without scanning the working tree
+    (APFS clones invalidate git's stat cache; `git add -A` re-hashes the whole repository)."""
+    index = workspace / ".git" / "evolve-index"
+    index.unlink(missing_ok=True)
+    _git(workspace, "read-tree", "HEAD", index=index)
+    if patch.strip():
+        applied = _git(workspace, "apply", "--cached", "--whitespace=nowarn", check=False, index=index,
+                       stdin=patch if patch.endswith("\n") else patch + "\n")
+        if applied.returncode:
+            raise RuntimeError("patch could not be applied: " + applied.stderr[:500])
+    return index
+
+
+def _commit_base(workspace: Path, patch: str) -> None:
+    """Make `patch` the workspace's HEAD (and its files), so a2ctl's diff is relative to it."""
+    index = _index_with(workspace, patch)
+    tree = _git(workspace, "write-tree", index=index).stdout.strip()
+    parent = _git(workspace, "rev-parse", "HEAD").stdout.strip()
+    commit = _git(workspace, "commit-tree", tree, "-p", parent, "-m", "candidate base").stdout.strip()
+    _git(workspace, "update-ref", "HEAD", commit)
+    _git(workspace, "checkout-index", "-a", "-f", index=index)
+    index.unlink(missing_ok=True)
 
 
 def _candidate_diff(workspace: Path, root_commit: str, patch_diff: str) -> str:
-    _apply_patch(workspace, patch_diff)
-    _git(workspace, "add", "-A")
-    return _git(workspace, "diff", "--cached", root_commit).stdout
+    """Cumulative diff from the root commit: the workspace HEAD (base candidate) plus a2ctl's diff."""
+    try:
+        index = _index_with(workspace, patch_diff)
+    except RuntimeError:
+        index = _index_with(workspace, "")  # unappliable agent diff: the candidate is its base
+    try:
+        return _git(workspace, "diff", "--cached", "--binary", root_commit, index=index).stdout
+    finally:
+        index.unlink(missing_ok=True)
 
 
 def _diff_files(diff: str) -> list[str]:
@@ -214,6 +234,13 @@ def _parse_action(stdout: str) -> dict:
     raise ValueError("unknown action")
 
 
+def deny_read_args(sealed_root: Path) -> list[str]:
+    """Paths every evolution-loop Codex process is denied: evaluator secrets, the sealed pool, all
+    project checkouts (sibling projects are off limits), and SSH material."""
+    paths = [tasks.private_dir(), sealed_root, Path.home() / "Projects", Path.home() / ".ssh"]
+    return [arg for path in paths if path.exists() for arg in ("--deny-read", str(path))]
+
+
 def _run_agent_call(cfg, opaque: str, workspace: Path, payload: dict, emit: Path, log: Path,
                     sealed_root: Path) -> int:
     argv = [str(cfg.a2ctl), "run", "--provider", cfg.provider, "--attempts", "1",
@@ -221,8 +248,7 @@ def _run_agent_call(cfg, opaque: str, workspace: Path, payload: dict, emit: Path
             "--network-policy", "allowlist:" + ",".join(cfg.endpoint),
             "--egress-proxy", f"127.0.0.1:{cfg.proxy_port}", "--workspace", str(workspace),
             "--lineage-db", "none", "--verifier-feedback", "raw", "--prompt-profile", "external",
-            "--emit-jsonl", str(emit), "--deny-read", str(tasks.private_dir()),
-            "--deny-read", str(sealed_root)]
+            "--emit-jsonl", str(emit), *deny_read_args(sealed_root)]
     with log.open("a") as handle:
         handle.write(json.dumps({"argv": argv[1:], "task_id": payload["task_id"]}) + "\n")
         handle.flush()
@@ -283,9 +309,7 @@ def run_episode(cfg: argparse.Namespace, opaque: str, genome_dir: str | Path,
         workspace = _new_workspace(base, episode_work / "work" / str(calls) / "repo")
         root_commit = _git(workspace, "rev-list", "--max-parents=0", "HEAD").stdout.strip()
         if base_index != "fresh":
-            _apply_patch(workspace, candidates[base_index]["diff"])
-            _git(workspace, "add", "-A")
-            _git(workspace, "commit", "-q", "--no-verify", "-m", "candidate base")
+            _commit_base(workspace, candidates[base_index]["diff"])
         payload = e1run.task_payload(opaque, action["prompt"], f"{opaque}:evolve:{nonce}:{calls}:{uuid.uuid4()}", cfg.endpoint)
         payload["verification_commands"] = []
         e1run.assert_no_private_leak(json.dumps(payload), markers)
@@ -301,11 +325,7 @@ def run_episode(cfg: argparse.Namespace, opaque: str, genome_dir: str | Path,
         attempts.extend(rows)
         a2row = rows[-1] if rows else {}
         patch_diff = a2row.get("patch_diff") or ""
-        try:
-            cumulative = _candidate_diff(workspace, root_commit, patch_diff)
-        except RuntimeError:
-            _git(workspace, "add", "-A")
-            cumulative = _git(workspace, "diff", "--cached", root_commit).stdout
+        cumulative = _candidate_diff(workspace, root_commit, patch_diff)
         verification = hardened.verify_structured(opaque, cumulative)
         candidates.append({"base": base_index, "effort": action["effort"], "diff": cumulative,
                            "verify": verification, "row": a2row})
@@ -329,7 +349,11 @@ def run_episode(cfg: argparse.Namespace, opaque: str, genome_dir: str | Path,
             "wall_secs": round(time.time() - started, 1), "submitted_candidate": submitted if submitted >= 0 else None,
             "final_diff_sha256": hashlib.sha256(final_diff.encode()).hexdigest(),
             "final_diff_empty": not final_diff.strip(), "policy_error": policy_error,
-            "infra_failure": e1run.classify_infra(attempts, returncodes), "grade": grade}
+            "infra_failure": e1run.classify_infra(attempts, returncodes), "grade": grade,
+            "verify_summaries": [{"passed": bool(c["verify"].get("passed")),
+                                  "failing": [t.get("name", t.get("index")) for t in c["verify"].get("tests", []) if t.get("outcome") != "pass"],
+                                  "rejected": bool(c["verify"].get("rejected"))} for c in candidates],
+            "diff_stat": _diff_files(final_diff)}
 
 
 def _genome_sha(genome: Path) -> str:
