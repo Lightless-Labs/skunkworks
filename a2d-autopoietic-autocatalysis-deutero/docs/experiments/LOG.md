@@ -885,3 +885,12 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **E002b** (from E002), **E004b** (from E004), and **E003b** (from E003 once its screen completes).
   - The screens were observed before the rule changed; E002's +11.8 pp is why it changed.
   - **The confirmation replicate (fresh, 140 tasks) is the actual test.**
+
+### E002b — full stage (eval v2.2)  [cycle 2, 2026-10-16]
+- The screen (reused from E002) passed the all-pass screen: +11.8 pp ≥ threshold / 2 = 3.57 pp.
+- **Full (140 tasks, screen + fresh rest): Δall-pass = +10.7 pp (cluster SE 2.9), Δfrac = +0.0014 (SE 0.010). Provisional keep** (+10.7 > max(7.1, 4.8); fraction not negative).
+- The fresh 140-task confirmation replicate is running. Promotion needs its Δall-pass > 3.57 pp.
+- Spend so far: 879 invocations (cand: Luna 564 and Sol 128; inc: Luna 187) and 6.69M tokens.
+  - That is about 4.03 Luna + 0.91 Sol calls per task for the candidate, against about 1.34 for the incumbent.
+  - At an equal invocation cap, the candidate is about 3.7× the incumbent's realised calls, so this is not a cost-matched claim.
+- Budget: cycle-2 Luna spend is 275 calls (10-15) and 1,784 (10-16 so far), plus 186 Sol on 10-16. Today's cap of 3k is respected; E003b and E004b's later stages are scheduled for 10-17 (UTC).
