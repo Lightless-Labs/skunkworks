@@ -77,3 +77,16 @@ The noise-floor rows carry three `evaluator_sha256` values, because the evaluato
 - qutebrowser and openlibrary profile fixes, which do not apply to ansible.
 
 From here on, every loop row is checked against `bench/evolve/evaluator.lock`.
+
+## Addendum, 2026-10-16: what is fixed and what floats (from the evaluator audit)
+
+What is pre-registered is the **rule**, not the numbers 2.0 and 4.0. The rule is plan §5 as implemented in `stats.py`:
+- stage A passes at the 70th percentile of the one-run null;
+- stage B keeps at null p ≤ 0.05, plus the full-pool floor at the 10th percentile;
+- the null is drawn by Monte Carlo from Jeffreys posteriors on the **current champion's fresh runs**.
+
+The thresholds quoted above are what that rule gives on G0's noise-floor rates. Before the next experiment that comes after a nightly control run or a keep, the loop recomputes them from the current champion's rates, as plan §5 specifies.
+
+Two corrections from the same audit apply from the next experiment on:
+- A task the champion never ran cleanly is left out of both the null and the observed Δ. Previously such a task crashed the decision.
+- A candidate's infrastructure-failed task is imputed at the champion's p̂, which makes it neutral. Previously it was scored 0, which biased decisions against the candidate.
