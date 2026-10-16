@@ -1084,3 +1084,18 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Then the provisional keep with the largest full-stage Δ is confirmed. If it is discarded, the next one is confirmed.
   - **After a promotion,** the other provisional keeps are not confirmed against the old incumbent. They are rebuilt as compositions on the new incumbent and registered as new experiments, starting from the screen.
 - **`luna_today()`** now also counts three-level ledgers (`runs/c2-pc/round<r>/run/`), so phase-B rounds are capped too.
+
+### C2-E2 — does a Claude judge match Sol on E002's decisive tuples? / C2-FA2 — failure taxonomy  [cycle 2, offline, Claude quota, registered 2026-10-16 before any result]
+- **Why now:** the owner made a fresh Claude quota available (weekly reset Sunday 12:00).
+  - The live Claude lane is not available: the Claude CLI returns nothing inside the session sandbox, and running it outside the sandbox was refused by the permission classifier.
+  - So Claude works offline here, through subagents. The cases are staged copies-only by `docs/experiments/analysis/c2_claude_stage.py`, outside the repo, with no hidden content. Subagents are instructed to read only that directory and to run nothing. Their tool use is not machine-audited, which is disclosed.
+- **C2-E2: the Claude judge.**
+  - Cases: the 68 decisive tuples in E002's three runs (≥ 2 distinct public-green files that split on hidden tests; 38 with 4 files, 21 with 3, 9 with 2). Sol, live, picked a passing file in **68/68**.
+  - Claude (Opus 5.5 subagents, 8 batches) gets **E002's exact judge prompt**, with candidates in a fresh seeded shuffle. The answer key is `runs/2026-10-16-c2-claude/key.json`, outside the staged dir.
+  - Expected hits under a random pick: 36.8 of 68.
+  - Readout: hits out of 68 with a Wilson 95% CI.
+  - **Use:** cross-family evidence on whether the selection lever is vendor-specific. If hits are ≥ 64/68, a Claude-lane judge (cross-family, and not the task author) is a ready candidate once a Claude lane exists. Descriptive only, with no keep decision.
+- **C2-FA2: the failure taxonomy** (train-label rule).
+  - Cases: the 34 task-runs where E002's submission failed and at least one public-green file existed (28 distinct tasks, 16 families). Each case holds the task as the coder saw it and every distinct public-green file from that run, all labelled "fails at least one hidden test".
+  - Claude subagents (6 batches) record, per case: the violated requirements, the misreading, whether it is shared by all files, a category, why the visible tests miss it, a task-agnostic prevention (≤ 25 words), and a confidence.
+  - **Use:** to design generation-side candidates. It is aggregated by category; no per-task content enters any harness.
