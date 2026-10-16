@@ -47,9 +47,10 @@ def _task_list(value: str) -> list[str]:
 
 
 def _read_done(path: Path) -> set[tuple[str, int, str]]:
+    """(task, rep, label) already recorded in ANY shard file of the run, whatever the shard layout."""
     done = set()
-    if path.exists():
-        for line in path.read_text().splitlines():
+    for shard_file in sorted(path.parent.glob("rows.shard*.jsonl")):
+        for line in shard_file.read_text().splitlines():
             if line.strip():
                 row = json.loads(line)
                 done.add((row["opaque_id"], int(row["rep"]), row["label"]))

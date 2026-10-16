@@ -89,6 +89,12 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn("leak guard", rows["a"]["error"])
         self.assertTrue(rows["b"]["grade"]["resolved"])
 
+    def test_resume_sees_rows_from_a_different_shard_layout(self):
+        evaluate.evaluate_tasks(self.cfg, ["task"])          # written by shard 0of1
+        self.cfg.shard, self.cfg.repeat = "0/3", 2
+        evaluate.evaluate_tasks(self.cfg, ["task"])          # same run, new layout: only rep 1 is new
+        self.assertEqual(sum(call[0] == "episode" for call in self.calls), 2)
+
     def test_lock_mismatch_refuses_to_start(self):
         with patch.object(evaluate.lock, "verify", return_value=(False, ["bench/evolve/episode.py"])):
             with self.assertRaises(SystemExit):
