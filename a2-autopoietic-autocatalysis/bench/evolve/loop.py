@@ -215,6 +215,14 @@ def _record_failure(current: dict, exc: Exception) -> dict:
             "wall_secs": round(time.time() - current.get("started", time.time()), 1)}
 
 
+WINDOW_SECS = 24 * 3600
+
+
+def window_tokens(state: dict, now: float) -> int:
+    """Tokens spent by experiments that finished in the last 24 h (the cap is per rolling day)."""
+    return sum(tokens for at, tokens in state.get("token_events", []) if now - at < WINDOW_SECS)
+
+
 def _finish_experiment(state: dict, current: dict, row: dict, diff: str, repo: Path,
                        dry_run: bool = False) -> None:
     archive_rel = "docs/benchmark-results/evolve/archive/{}.patch".format(current["exp_id"])
@@ -260,6 +268,7 @@ def _finish_experiment(state: dict, current: dict, row: dict, diff: str, repo: P
     state["completed"] = int(state.get("completed", 0)) + 1
     state["next_exp"] = int(state.get("next_exp", 1)) + 1
     state["tokens"] = int(state.get("tokens", 0)) + int(row.get("tokens") or 0)
+    state.setdefault("token_events", []).append([time.time(), int(row.get("tokens") or 0)])
     state["current"] = None
 
 
@@ -303,9 +312,14 @@ def run_loop(cfg) -> dict:
     run_root.mkdir(parents=True, exist_ok=True)
     stop_reason = None
     while state.get("completed", 0) < cfg.max_experiments:
-        if int(state.get("tokens", 0)) >= cfg.nightly_token_cap:
-            stop_reason = "nightly token cap exceeded"
-            break
+        if window_tokens(state, time.time()) >= cfg.nightly_token_cap:
+            if getattr(cfg, "dry_run", False):
+                stop_reason = "nightly token cap exceeded"
+                break
+            # Unattended: wait for the rolling 24 h window to free up rather than stopping.
+            print(json.dumps({"waiting": "token window", "window_tokens": window_tokens(state, time.time())}), flush=True)
+            time.sleep(1800)
+            continue
         if not getattr(cfg, "dry_run", False):
             ok, mismatches = lock.verify()
             if not ok:

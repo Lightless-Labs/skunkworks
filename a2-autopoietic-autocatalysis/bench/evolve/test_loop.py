@@ -79,6 +79,11 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(result["rows"], [])
         self.assertEqual(result["stop_reason"], "nightly token cap exceeded")
 
+    def test_token_window_counts_only_the_last_day(self):
+        state = {"token_events": [[1000.0, 90], [1000.0 + 23 * 3600, 5], [1000.0 + 26 * 3600, 7]]}
+        self.assertEqual(loop.window_tokens(state, 1000.0 + 26 * 3600), 12)
+        self.assertEqual(loop.window_tokens({}, 0.0), 0)
+
     def test_commit_helper_passes_exact_paths(self):
         paths = ["docs/benchmark-results/evolve/log.jsonl", "docs/benchmark-results/evolve/archive/e.patch"]
         commands = []

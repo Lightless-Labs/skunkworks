@@ -124,14 +124,23 @@ def _remove_tree(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
-def _new_workspace(base: Path, dest: Path) -> Path:
-    shutil.rmtree(dest.parent, ignore_errors=True)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if sys.platform == "darwin":
-        subprocess.run(["cp", "-cR", str(base), str(dest)], check=True)
-    else:
-        shutil.copytree(base, dest, symlinks=True)
-    return dest
+def _new_workspace(base: Path, dest: Path, attempts: int = 3) -> Path:
+    """A clone of the base repo, verified to have a readable HEAD (an incomplete APFS clone has been
+    seen twice under disk pressure); retried before giving up."""
+    for attempt in range(attempts):
+        shutil.rmtree(dest.parent, ignore_errors=True)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "darwin":
+            copied = subprocess.run(["cp", "-cR", str(base), str(dest)], capture_output=True, text=True)
+        else:
+            shutil.copytree(base, dest, symlinks=True)
+            copied = subprocess.CompletedProcess([], 0)
+        head = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=dest, capture_output=True, text=True) \
+            if dest.is_dir() else subprocess.CompletedProcess([], 1)
+        if copied.returncode == 0 and head.returncode == 0:
+            return dest
+        time.sleep(5 * (attempt + 1))
+    raise RuntimeError(f"workspace clone failed after {attempts} attempts")
 
 
 def _git(cwd: Path, *args: str, check: bool = True, index: Path | None = None, stdin: str | None = None):
