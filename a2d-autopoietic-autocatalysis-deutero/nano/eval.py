@@ -250,11 +250,14 @@ def cmd_aa(args):
 
 
 def cmd_run(args):
-    aa = json.loads((NANO / "aa.json").read_text())
     inc_src = NANO / "harness.py"
-    if aa["incumbent_sha"] != sha(inc_src):
+    aa_path = NANO / "aa.json"
+    aa = json.loads(aa_path.read_text()) if aa_path.exists() else None
+    if aa is not None and aa["incumbent_sha"] != sha(inc_src):
         sys.exit("nano/aa.json does not match the current incumbent; re-run `eval.py aa` first")
-    thr = aa["threshold_frac"]
+    # Without a threshold yet, only the screen stage is generated (and cached);
+    # the decision is made on a later invocation once nano/aa.json exists.
+    thr = aa["threshold_frac"] if aa is not None else None
     exp_dir = ROOT / "runs" / f"c2-{args.id}"
     exp_dir.mkdir(parents=True, exist_ok=True)
     inc, cand = exp_dir / "incumbent.py", exp_dir / "candidate.py"
@@ -266,9 +269,9 @@ def cmd_run(args):
     guard(cand)
     lanes = lanes_of(inc, cand)
     manifest(exp_dir, {"protocol": PROTOCOL, "id": args.id, "incumbent_sha": sha(inc), "candidate_sha": sha(cand),
-                       "aa_threshold": thr, "suite_hash": suite_hash(DEV), "lanes": lanes,
+                       "suite_hash": suite_hash(DEV), "lanes": lanes,
                        "hypothesis": (exp_dir / "hypothesis.txt").read_text().strip()})
-    if sha(inc) != aa["incumbent_sha"]:
+    if aa is not None and sha(inc) != aa["incumbent_sha"]:
         sys.exit("the snapshot incumbent differs from the A/A incumbent")
     fams = sorted(families(DEV))
     rng = random.Random(f"A2D-C2-SCREEN-{args.id}")
@@ -279,7 +282,8 @@ def cmd_run(args):
     ext = {"inc": inc, "cand": cand}
     arms = ["X:inc", "X:cand"]
     common = {"id": args.id, "date": datetime.date.today().isoformat(), "proposer": args.proposer,
-              "hypothesis": (exp_dir / "hypothesis.txt").read_text().strip(), "threshold": f"{thr:.4f}",
+              "hypothesis": (exp_dir / "hypothesis.txt").read_text().strip(),
+              "threshold": f"{thr:.4f}" if thr is not None else "",
               "candidate_sha": sha(cand)[:12]}
 
     def stage(name, runs_suites, decision, note=""):
@@ -302,6 +306,9 @@ def cmd_run(args):
     if not (screen / "summary.json").exists():
         lift(f"C2-{args.id}-S", s_suite, arms, ext, lanes, screen, seed, args.jobs)
     rows, rec = stage("screen", [(screen, s_suite)], "")
+    if thr is None:
+        print(json.dumps({**rec, "decision": "pending (no A/A threshold yet)"}, indent=1))
+        return
     if mean(rows, 1) < thr / 2:
         rec["decision"] = "discard (screen)"
         log_result(rec)
