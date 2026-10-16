@@ -348,8 +348,13 @@ def cmd_run(args):
         print(json.dumps(rec, indent=1))
         return
     rec["decision"] = "provisional keep"
-    log_result(rec)
     confirm = exp_dir / "confirm"
+    if not (confirm / "summary.json").exists():
+        log_result(rec)
+    if args.stop_after == "full" and not (confirm / "summary.json").exists():
+        # Budget pacing: the confirmation replicate runs on a later invocation.
+        print(json.dumps({**rec, "decision": "provisional keep (confirmation deferred)"}, indent=1))
+        return
     if not (confirm / "summary.json").exists():
         lift(f"C2-{args.id}-C", DEV, arms, ext, lanes, confirm, seed + 2, args.jobs)
     rows_c, rec_c = stage("confirm", [(confirm, DEV)], "")
@@ -374,6 +379,7 @@ def main():
     r.add_argument("--proposer", default="claude")
     r.add_argument("--jobs", type=int, default=4)
     r.add_argument("--reuse-screen-from", default=None)
+    r.add_argument("--stop-after", choices=["full"], default=None)
     a = sub.add_parser("aa")
     sub.add_parser("aa-allpass")
     a.add_argument("--jobs", type=int, default=4)
