@@ -1112,3 +1112,32 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - The pre-registered bar (≥ 64/68) is met.
   - **Reading:** the selection lever is not specific to Sol. A judge from a different vendor, which did not author the tasks, recovers nearly all of the selection headroom (C2-E1 on the S0 pool: Sonnet 37/39). This weakens the authorship confound for the judge mechanism: Sol's advantage on its own tasks is at most about 3 pp of pick rate on decisive tuples.
   - A Claude-lane judge stays a candidate (a cross-family claim, saving Sol load) for when a Claude lane exists. The CLI is not usable from the session sandbox.
+- **C2-FA2 result** (`runs/2026-10-16-c2-claude/tax-batch*.json`, aggregate `taxonomy-aggregate.json`):
+  - 34 diagnoses over 26 distinct tasks; confidence high 30, medium 3, low 1.
+  - **The misreading is shared by every file in 29/34 cases**, which confirms C2-FA1's "shared misreading" reading.
+  - Categories:
+
+    | Category | Cases |
+    |---|---|
+    | Boundary / edge case | 9 |
+    | Semantics / state model | 9 |
+    | Performance / complexity | 8 (the 8 timeouts) |
+    | Order of checks / precedence | 3 |
+    | Exact format | 3 |
+    | API contract | 1 |
+    | Overflow | 1 |
+
+  - **Recurring task-agnostic patterns:**
+
+    | Pattern | Cases |
+    |---|---|
+    | Loops over a huge declared dimension when another is zero, or work not bounded by actual element count | 5 |
+    | Brute-force searches that find nothing | 2 |
+    | Preallocation from caller-supplied counts | 3 |
+    | Literal spec examples not checked against the code | 3 |
+    | Precedence chains not implemented exactly as listed | 3 |
+    | Sentinels that are also legal values | 2 |
+    | Streaming state not equal to one-shot | 2 |
+    | Template literals vs placeholders | 2 |
+
+  - **Use:** generation-side candidates aimed at these classes. Only the aggregate and the task-agnostic patterns go to proposers. Several preventions are close to cycle 1's researcher lessons (unchecked sizes, precedence), which were +5.6 pp vs D in S4b. Performance (worst-case cost and empty dimensions) is new, and no queued candidate targets it.
