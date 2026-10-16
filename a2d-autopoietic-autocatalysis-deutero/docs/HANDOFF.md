@@ -1,33 +1,43 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-15 (session 144: **cycle 2 under way**. C2-E1: a stronger judge picks correct files where Luna's own signals fail. Nanoharness and eval v2.1 built; the A/A + parity run and dev-holdout validation are in flight.)
+**Last updated:** 2026-10-16 (session 145: **first cycle-2 keep**. E002b, 4 Luna samples + a Sol judge, beat the plain repair loop: +7.1 pp all-pass on the confirmation replicate and +10.7 at the full stage. The random-pick control gives −1.4, so the judge is the active ingredient. `nano/harness.py` is now the E002 judge harness.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
 
 - **Owner's framing:** A²D is *autoresearch on agentic coding harnesses*, and you have the reins. Never pause or ask for direction. A failed variant is a data point, not a verdict.
 - **Active goal: cycle 2,** the session `/goal` of 2026-10-15. Working plan: `docs/plans/2026-10-15-cycle2-nanoharness.md` (its addendum holds the design-review dispositions and definitions).
-- **Cycle 1 is closed:** the lift-first roadmap is Completed (falsified); report `docs/reports/2026-10-15-lift-first-outcome.md`. It closed one plan, not the project.
-- **C2-E1 (offline, train): the information source exists.**
-  - On the 39 tasks where Luna's public-green candidates disagree on hidden tests, a judge reading only the spec picked a passing file 37/39 times (Claude, Sonnet) and 39/39 times (Sol; audited, no leakage).
-  - Equal-budget pick rate: 0.83–0.85 vs D 0.74.
-  - Rule met, so cross-model review is the first lever. The live judge is Sol ("Luna generation plus Sol selection"), because the Claude CLI is unauthenticated from subprocesses.
-- **Instrument for cycle 2:**
-  - `--external name=path` runs a Python harness as arm `X:<name>` (JSON lines; metered model calls; public tests through D's oracle; hidden tests unreachable);
-  - `--lane name=codex/<model>[:effort]` adds judge lanes on the shared budget;
-  - `nano/harness.py` v0 equals D (fixture parity test);
-  - `nano/eval.py` v2.1 provides immutable experiments, completeness checks, an A/A threshold, screen → full → confirmation replicate, and a static isolation guard.
+  - Done when a frozen harness is SUPPORTED vs both D and B on confirmation-2, or when the budget (≤ 3k Luna/day, ≤ 25k total) or the deadline (2026-11-30) is reached.
+- **Cycle 1 is closed** (falsified roadmap). Report: `docs/reports/2026-10-15-lift-first-outcome.md`.
+- **Incumbent = E002** ("Luna generation plus Sol selection", `nano/harness.py`; v0 = D is at `nano/history/before-E002b.py`).
+  - 4 Luna samples, then one Sol judge call that picks among the distinct public-green files from the spec alone.
+  - Exploratory dev-set result vs v0 (= D): screen +11.8, full +10.7 (SE 2.9), confirm +7.1 (SE 3.5).
+  - **Not cost-matched:** about 4.0 Luna + 0.9 Sol calls and 6.4M tokens per 140 tasks, vs about 1.3 Luna and 1.4M for D.
+  - Sol is from the same vendor as Luna, so this is not a cross-family claim.
+- **Keep rule (eval v2.2, `nano/eval.py`):** all-pass is primary and fraction is a guard.
+  - Screen (half): Δ ≥ thr/2.
+  - Full: Δ > max(thr, 1.645·SE), with Δfrac not significantly negative.
+  - Fresh confirmation replicate: Δ > thr/2, then promote.
+  - **`nano/aa.json` is stale** (calibrated on v0); `eval.py run` refuses until the A/A is re-run for the new incumbent.
+- **Results log:** `nano/results.tsv` (every experiment and stage, including discards). Narrative and pre-registrations: `docs/experiments/LOG.md`, Cycle 2.
 
-## In flight
-1. **C2-AA** (`python3 -I nano/eval.py aa`): a 3-arm run D, X:a, X:b on `tasks/train-all`, out `runs/c2-aa-200daaa763c4/`, stdout `$SCRATCH/c2-aa.out`. It writes `nano/aa.json` with the threshold and parity results. Parity rule: X − D within ±5 pp all-pass, and byte-identical first prompts.
-2. **Dev-holdout:** 25 new blind families (100 tasks) are authored and assembled in `~/.a2d-holdout/dev-holdout`. Validation is running (`$SCRATCH/devholdout-validate.txt`; read verdicts only). Next come an independent-solve audit (Sol, D, k = 3), adjudication if needed, and a hash in the LOG.
-
-## Next
-- After C2-AA, run E002 (sample 4 + Sol judge), E003 (random-green control) and E004 (repair to green, then judge), all pre-registered in the LOG:
-  - `python3 -I nano/eval.py run --id E002 --candidate nano/candidates/E002_judge.py --hypothesis "..." --jobs 8`.
-  - Avoid overlapping CPU-heavy validation with evaluations.
-- Seed list for proposers: `nano/seeds.md`. Results: `nano/results.tsv`.
-- Budget: ≤ 3k Luna invocations a day and ≤ 25k in total; deadline 2026-11-30. Spend is tracked in `results.tsv` and the LOG.
+## In flight / next
+1. **Offline failure analysis of E002** (no Luna). Pool: `runs/2026-10-16-c2-e002-pool/`, which scores every coder sample of the E002 and E003 runs on public and hidden tests. Question: where does E002 still lose tasks (judge mistakes, every sample wrong, no green file)? That decides the next lever.
+2. **2026-10-17 (UTC), after the daily reset:**
+   - (a) the A/A for the new incumbent: 2 arms (X:a, X:b), about 1.1k Luna + 0.25k Sol;
+   - (b) the first dev-holdout look: incumbent vs D, r = 2, gate = all-pass ≥ +10 pp with cluster CI low > 0, about 1.1k Luna. Read aggregates only (`summary.json`).
+   - Both are pre-registered in the LOG.
+3. **Next candidates against E002** (seeds 3–5 and 8 in `nano/seeds.md`, plus Codex Sol proposals):
+   - a judge with a clause checklist;
+   - judge-guided repair;
+   - a clause-check first-attempt prompt;
+   - diverse sampling.
+   - Choose by the failure analysis.
+4. **Proposer comparison** (A²D architect vs an uninformed proposer) after ≥ 3 keeps.
+- **Budget:**
+  - Cycle-2 Luna so far is about 3.2k: 275 on 10-15 and 2,903 on 10-16, so **10-16 is at the cap**.
+  - Sol: 306 on 10-16.
+  - The A² session shares the Codex account.
 
 ## The instrument (`a2d lift`, `crates/a2d-lift/`)
 
@@ -57,7 +67,10 @@ cargo build -p a2d
 ## Data
 - Visible: `tasks/calibration-v2` (24), `tasks/dev-v2` (48), `tasks/c1-train` (68), and the combined `tasks/train-all` (140) and `tasks/train-clean` (72), both made of symlinks.
 - Metric-only: `~/.a2d-holdout/c1-validation` (80). 2 of 4 looks used (S4, E12). Read only `summary.json` aggregates.
-- Claim set: `~/.a2d-holdout/confirmation-2` (144). Never opened; unspent.
+- Dev-holdout: `~/.a2d-holdout/dev-holdout`, 100 tasks in 25 new families, hash `9114bae3…`. Validated and audited 100/100.
+  - Metric-only (aggregates only).
+  - Looks: after each confirmed keep (at most 4) plus a final one. Gate to confirmation: incumbent vs D all-pass ≥ +10 pp, with CI low > 0.
+- Claim set: `~/.a2d-holdout/confirmation-2` (144). Never opened; unspent. Valid only in the current regime.
 
 ## Provider state
 - Working lanes: Codex (`gpt-6-luna` coder, `gpt-6.1-sol` reviewer and author) and Claude subagents. The other subscriptions were stopped on purpose. The A² session shares the Codex account.
