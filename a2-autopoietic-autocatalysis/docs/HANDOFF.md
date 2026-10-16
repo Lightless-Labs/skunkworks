@@ -12,8 +12,8 @@ The audit remediation roadmap is [`docs/plans/2026-07-10-a2-remediation-roadmap.
 **Status (2026-10-15):** maturity `PreStage0`; `--apply` locked; remediation roadmap (Phases 1–8) frozen.
 - **E1 decided: NO GO** for the lineage loop ([`decision.md`](benchmark-results/external-value/e1/decision.md); a2-full 12/36 vs stateless retry 10/36). Post-mortem: [`2026-10-15-a2-first-cycle.md`](post-mortems/2026-10-15-a2-first-cycle.md).
 - **Active plan:** [`2026-10-15-harness-evolution-loop.md`](plans/2026-10-15-harness-evolution-loop.md): a researcher evolves `genome/` against the frozen evaluator `bench/evolve/` (hardened sandboxed grader, `evaluator.lock`); first promoted variant due 2026-12-15 under [`protocol-v2.toml`](../bench/external-value/protocol-v2.toml).
-- **Done:** steps 1–4 and 6 built and tested; hardened gate 44/44 dev; live G0 smoke resolved. **Running:** noise floor `nf-1` (G0 × 44 × 2), sealed gate (125 openlibrary/qutebrowser tasks, `A2_E1_HOME=~/.a2-e1/sealed`).
-- **Next:** `python3 bench/evolve/stats.py noise-floor --run-dir ~/.a2-e1/private/evolve-runs/nf-1 --label G0 --out …` → commit `noise-floor.md` + S → `python3 bench/evolve/loop.py` (attended ×2, then overnight).
+- **Done (2026-10-16):** evaluator, genome G0, loop and researcher built and live-tested; [noise floor + fixed S + thresholds](benchmark-results/evolve/noise-floor.md); sealed pool = openlibrary only ([blocker](blockers/2026-10-16-qutebrowser-native-gate.md)). Attended: exp-0001 discard (A), exp-0002 discard (B, p = 0.10).
+- **Running:** unattended loop to 22 experiments (`python3 bench/evolve/loop.py --dev-tasks ~/.a2-e1/private/evolve-dev-tasks.json --screen ~/.a2-e1/private/evolve-screen.json --champion-runs nf-1 --shards 4 --max-experiments 22 --nightly-token-cap 250000000`; resumable). Log: [`log.jsonl`](benchmark-results/evolve/log.jsonl). Next: confirmation per protocol-v2 (2026-12-01..10).
 
 ## Current Numbers (test counts refreshed 2026-07-10; benchmark rows are historical unless dated below)
 
