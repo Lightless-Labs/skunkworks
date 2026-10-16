@@ -4,6 +4,8 @@ The objective is to raise the resolved rate on held-out coding tasks graded by h
 
 The noise floor is substantial: a change must plausibly gain several tasks out of about 20 to be detectable. Prompt polish is below that noise floor. Make one structural hypothesis per experiment. Possible structures include verifier-selected best-of-n, plan-then-execute, continuing from a candidate for repair versus restarting, reproduce-then-fix, review-and-repair, effort allocation across calls, or a different way to summarize verifier failures.
 
+Start from `digests/SUMMARY.md`: it splits the champion's failures into tasks where no candidate ever passed the visible tests and tasks where a candidate passed them but the hidden tests still failed. A hypothesis should name which failure mode it targets and why it should move it.
+
 Read the experiment log before proposing a change, including discarded hypotheses and their measured deltas. Do not repeat a discarded idea unless you can state a concrete reason the new experiment differs.
 
 Hard constraints:

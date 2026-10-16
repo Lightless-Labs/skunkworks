@@ -45,6 +45,7 @@ def build_workspace(exp_id: str, champion_genome: Path, log_rows: list[dict],
         if not re.fullmatch(r"[0-9a-f]{10}", key):
             raise ValueError("digest key must be a 10-character lowercase hex string")
         (digest_dir / (key + ".json")).write_text(json.dumps(digest, sort_keys=True) + "\n")
+    (digest_dir / "SUMMARY.md").write_text(summarize_digests(digests))
     (dest / "README.md").write_text("Research workspace. Read program.md and follow its instructions exactly.\n")
     grading.init_history_free_repo(dest)
     return dest
@@ -91,6 +92,33 @@ def make_digests(rows: list[dict], manifests: dict[str, dict], night_salt: str) 
                 digest["diff_stat"] = stat
         results.append(digest)
     return results
+
+
+def summarize_digests(digests: list[dict]) -> str:
+    """Champion failure modes, from the same fields the per-task digests expose."""
+    counts = {"resolved": 0, "visible-pass, hidden-fail": 0, "never visible-pass": 0}
+    failing = []
+    for digest in digests:
+        summaries = digest.get("verify_summaries") or []
+        if digest.get("resolved"):
+            counts["resolved"] += 1
+        elif any(item.get("passed") for item in summaries):
+            counts["visible-pass, hidden-fail"] += 1
+        else:
+            counts["never visible-pass"] += 1
+            if summaries:
+                failing.append(len(summaries[-1].get("failing") or []))
+    failing.sort()
+    median = failing[len(failing) // 2] if failing else 0
+    total = len(digests)
+    lines = ["# Champion failure modes (latest episode per dev task)", "",
+             f"Tasks: {total}.", ""]
+    for name, count in counts.items():
+        lines.append(f"- {name}: {count} ({(100 * count // total) if total else 0}%)")
+    lines += ["", f"Among never-visible-pass tasks, the last candidate still failed a median of {median} visible tests.",
+              "", "visible-pass, hidden-fail means a candidate passed every visible test but the hidden tests"
+              " still failed: the fix did not generalise beyond the visible tests.", ""]
+    return "\n".join(lines)
 
 
 def _word_ngrams(text: str, n: int) -> set[str]:

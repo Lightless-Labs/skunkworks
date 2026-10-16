@@ -100,5 +100,20 @@ class ResearcherTests(unittest.TestCase):
         self.assertEqual(reasons, [])
 
 
+
+class SummaryTests(unittest.TestCase):
+    def test_failure_modes_are_counted_from_digest_fields(self):
+        digests = [
+            {"key": "a" * 10, "resolved": True, "verify_summaries": [{"passed": True, "failing": []}]},
+            {"key": "b" * 10, "resolved": False, "verify_summaries": [{"passed": True, "failing": []}]},
+            {"key": "c" * 10, "resolved": False, "verify_summaries": [{"passed": False, "failing": ["t1", "t2"]}]},
+        ]
+        text = researcher.summarize_digests(digests)
+        self.assertIn("- resolved: 1 (33%)", text)
+        self.assertIn("- visible-pass, hidden-fail: 1 (33%)", text)
+        self.assertIn("- never visible-pass: 1 (33%)", text)
+        self.assertIn("median of 2 visible tests", text)
+
+
 if __name__ == "__main__":
     unittest.main()
