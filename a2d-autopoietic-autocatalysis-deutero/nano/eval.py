@@ -2,6 +2,8 @@
 """Eval v2.2 for the nanoharness (A²D cycle 2): one keep/discard experiment.
 
     python3 -I nano/eval.py aa                  # 3-arm A/A + parity run; writes nano/aa.json
+    python3 -I nano/eval.py aa-from-replicates --id E002b   # A/A of a promoted keep from its own two full replicates
+    python3 -I nano/eval.py look --n 1 --registered-at <sha>  # dev-holdout look: incumbent vs D, r = 2, aggregates only
     python3 -I nano/eval.py run --id E002 --candidate <file.py> --hypothesis "..." [--proposer claude]
 
 Protocol (docs/plans/2026-10-15-cycle2-nanoharness.md, Addendum after the design review):
@@ -32,6 +34,14 @@ Protocol (docs/plans/2026-10-15-cycle2-nanoharness.md, Addendum after the design
   (centred per-task differences, one draw per task as in candidate runs).
   The A/A run is a 3-arm run (D, X:a, X:b) so it also checks parity with
   native D. It must match the current incumbent's hash.
+- v2.3 (LOG "A/A for a promoted keep", 2026-10-16): a promoted candidate has
+  two independent full runs on the dev set (screen + rest, then confirm).
+  Pairing them by task is an incumbent-vs-itself run on the same protocol at
+  no cost; its 95th percentile is the new incumbent's threshold.
+- Dev-holdout looks (`look`): incumbent vs D on ~/.a2d-holdout/dev-holdout,
+  r = 2, registered at a commit. Only the controller's aggregate
+  summary.json is read; gate = all-pass lift >= +10 pp with CI low > 0.
+  Only the gate outcome (pass/fail) and spend are printed during the cycle.
 """
 import argparse, datetime, hashlib, json, os, pathlib, random, re, shutil, subprocess, sys
 
@@ -39,7 +49,10 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 NANO = ROOT / "nano"
 DEV = ROOT / "tasks/train-all"
 A2D = str(ROOT / "target/debug/a2d")
-PROTOCOL = "eval-v2.2"
+PROTOCOL = "eval-v2.3"
+HOLDOUT = pathlib.Path.home() / ".a2d-holdout"
+DEV_HOLDOUT_HASH = "9114bae3b071c52b2e9e257bee26eb7bc0df4bec05b479f390f973f9db2072cb"
+GATE_LIFT = 0.10
 FIELDS = ("id", "date", "proposer", "stage", "hypothesis", "delta_frac", "se", "delta_allpass",
           "se_allpass", "threshold", "n_tasks", "n_families", "decision", "invocations", "calls_by_lane",
           "tokens", "candidate_sha", "note")
@@ -369,6 +382,92 @@ def cmd_run(args):
     print(json.dumps(rec_c, indent=1))
 
 
+def cmd_aa_from_replicates(args):
+    exp_dir = ROOT / "runs" / f"c2-{args.id}"
+    cand = exp_dir / "candidate.py"
+    if sha(cand) != sha(NANO / "harness.py"):
+        sys.exit(f"{cand} is not the current incumbent")
+    by_run = []
+    for runs_suites in ([(exp_dir / "screen", exp_dir / "suites/S"), (exp_dir / "rest", exp_dir / "suites/R")],
+                        [(exp_dir / "confirm", DEV)]):
+        got = {}
+        for run, suite in runs_suites:
+            got.update({t: v for (a, t), v in scores(run, suite).items() if a == "X:cand"})
+        by_run.append(got)
+    first, second = by_run
+    if set(first) != set(second) or set(first) != {t for f in families(DEV).values() for t in f}:
+        sys.exit("the two replicates do not cover the same dev tasks")
+    rows = [(second[t][2], second[t][0] - first[t][0], second[t][1] - first[t][1]) for t in sorted(first)]
+    old_path = NANO / "aa.json"
+    if old_path.exists():
+        old = json.loads(old_path.read_text())
+        hist = NANO / "history"
+        hist.mkdir(exist_ok=True)
+        shutil.copy(old_path, hist / f"aa-{old['incumbent_sha'][:12]}.json")
+    result = {"protocol": PROTOCOL, "method": "replicates of the promoted keep (full stage vs confirm), paired by task",
+              "incumbent_sha": sha(cand), "source": str(exp_dir.relative_to(ROOT)), "n": len(rows),
+              "aa_mean_delta_frac": mean(rows, 1), "aa_mean_delta_allpass": mean(rows, 2),
+              "discordant_allpass": sum(1 for r in rows if r[2] != 0),
+              "threshold_frac": aa_threshold(rows), "threshold_allpass": aa_threshold(rows, idx=2)}
+    result["threshold_allpass_net_tasks"] = result["threshold_allpass"] * len(rows)
+    old_path.write_text(json.dumps(result, indent=1) + "\n")
+    print(json.dumps(result, indent=1))
+
+
+def look_report(summary, treatment, comparator="D"):
+    """Aggregate-only view of a dev-holdout look: rates, lift, CI, counts.
+    No per-task or per-family field is read or printed."""
+    comps = [c for c in summary["comparisons"] if c["treatment"] == treatment and c["comparator"] == comparator]
+    if len(comps) != 1:
+        sys.exit(f"expected one {treatment} vs {comparator} comparison, found {len(comps)}")
+    c = comps[0]
+    arms = {a["arm"]: {k: a[k] for k in ("n", "passed", "rate", "invocations", "tokens")} for a in summary["arms"]}
+    valid = bool(summary["complete"]) and summary["tuples_void"] == 0 and bool(summary["integrity_ok"]) \
+        and not summary["aborted"]
+    gate = valid and c["lift"] >= GATE_LIFT - 1e-9 and c["ci95"][0] > 0
+    return {"valid": valid, "complete": summary["complete"], "tuples_void": summary["tuples_void"],
+            "integrity_ok": summary["integrity_ok"], "n": c["n"], "families": c["families"],
+            "treatment_rate": c["treatment_rate"], "comparator_rate": c["comparator_rate"],
+            "lift_allpass": c["lift"], "ci95": c["ci95"], "hidden_fraction_lift": c["hidden_fraction_lift"],
+            "arms": arms, "gate": "PASS" if gate else "FAIL"}
+
+
+def cmd_look(args):
+    out = HOLDOUT / "runs" / f"c2-look{args.n}"
+    snap_dir = ROOT / "runs" / f"c2-look{args.n}"
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    snap = snap_dir / "harness.py"
+    if not snap.exists():
+        shutil.copy(NANO / "harness.py", snap)
+    guard(snap)
+    manifest(snap_dir, {"protocol": PROTOCOL, "look": args.n, "incumbent_sha": sha(snap),
+                        "registered_at": args.registered_at, "suite_hash": DEV_HOLDOUT_HASH,
+                        "seed": args.seed, "replicates": 2, "arms": ["D", "X:inc"]})
+    if not (out / "summary.json").exists():
+        cmd = [A2D, "lift", "run", "--experiment", f"C2-LOOK{args.n}", "--registered-at", args.registered_at,
+               "--expect-suite-hash", DEV_HOLDOUT_HASH, "--suite", str(HOLDOUT / "dev-holdout"),
+               "--model", "codex/gpt-6-luna", "--effort", "low", "--arms", "D,X:inc", "--k", "5",
+               "--replicates", "2", "--primary", "D", "--seed", str(args.seed), "--jobs", str(args.jobs),
+               "--min-families", "1", "--max-invocations", "3000", "--max-wall-clock-secs", "36000",
+               "--out", str(out), "--external", f"inc={snap}"]
+        for name, spec in lanes_of(snap).items():
+            cmd += ["--lane", f"{name}={spec}"]
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with open(str(out) + ".log", "w") as log:
+            code = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT).returncode
+        if code or not (out / "summary.json").exists():
+            sys.exit(f"look run failed ({code}); see the exit line of {out}.log")
+    # Proposers learn only pass or fail: the full aggregate report stays next
+    # to the holdout run until the cycle's final report; the repo and stdout
+    # get the gate outcome and spend only.
+    report = look_report(json.loads((out / "summary.json").read_text()), "X:inc")
+    (out / "report.json").write_text(json.dumps(report, indent=1) + "\n")
+    public = {"look": args.n, "valid": report["valid"], "gate": report["gate"], "n": report["n"],
+              "invocations": {a: v["invocations"] for a, v in report["arms"].items()}}
+    (snap_dir / "gate.json").write_text(json.dumps(public, indent=1) + "\n")
+    print(json.dumps(public, indent=1))
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -383,6 +482,13 @@ def main():
     a = sub.add_parser("aa")
     sub.add_parser("aa-allpass")
     a.add_argument("--jobs", type=int, default=4)
+    ar = sub.add_parser("aa-from-replicates")
+    ar.add_argument("--id", required=True)
+    lk = sub.add_parser("look")
+    lk.add_argument("--n", type=int, required=True)
+    lk.add_argument("--registered-at", required=True)
+    lk.add_argument("--seed", type=int, default=6161)
+    lk.add_argument("--jobs", type=int, default=8)
     args = ap.parse_args()
     if args.cmd == "aa-allpass":
         # v2.2: add the all-pass threshold from the existing A/A run (no new calls).
@@ -395,6 +501,10 @@ def main():
         print(json.dumps({k: aa[k] for k in ("threshold_frac", "threshold_allpass", "threshold_allpass_net_tasks")}, indent=1))
     elif args.cmd == "aa":
         cmd_aa(args)
+    elif args.cmd == "aa-from-replicates":
+        cmd_aa_from_replicates(args)
+    elif args.cmd == "look":
+        cmd_look(args)
     else:
         cmd_run(args)
 

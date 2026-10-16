@@ -914,3 +914,42 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - (1) A/A re-run for the new incumbent: 2 arms (X:a, X:b), no D, because D parity was only required for v0.
   - (2) The first dev-holdout look: incumbent vs D, r = 2, gate metric = all-pass, point estimate ≥ +10 pp with cluster CI low > 0. Proposers learn only pass or fail.
   - Both are scheduled for 2026-10-17 (UTC), because 10-16 used 2,903 Luna calls (cap 3k).
+
+### Eval v2.3 — the A/A for a promoted keep comes from its own replicates  [cycle 2, amendment, 2026-10-16; before any experiment against E002]
+- **Problem.** `nano/aa.json` was calibrated on v0. A live A/A for the E002 incumbent would cost about 1.1k Luna + 0.25k Sol (2 arms × 140 tasks × about 4.9 calls), which is a third of a day's cap on every keep.
+- **Method.**
+  - A promoted candidate already has two independent full runs of itself on the dev set: the screen + rest stages, and the confirm stage (different seeds).
+  - Pairing them by task (`X:cand`, run 2 − run 1) is an incumbent-vs-itself run on the same protocol.
+  - Its family-bootstrap 95th percentile (centred, as before) is the new threshold.
+  - Code: `python3 -I nano/eval.py aa-from-replicates --id E002b`. The old file is archived as `nano/history/aa-200daaa763c4.json`.
+- **Result for E002** (incumbent sha `e772bd6e99f6…`):
+  - thr_allpass = **0.0357 (5 net of 140)**, thr_frac = 0.0174;
+  - 16 discordant tasks; mean Δall-pass −4.3 pp. The first replicate's screen half was selected for passing the screen (winner's curse). Centring removes the shift.
+- **Calibration check of the method on v0** (both estimates available):
+  - in-run A/A: 10 net (34 discordant);
+  - cross-run pairing of E002b's `X:inc` arms: 7 net (25 discordant).
+  - So one A/A estimate varies by about ±30%. The judge harness is genuinely less noisy, with 16 discordant tasks against 25–34.
+- **Why this is acceptable:**
+  - The full stage still requires Δ > max(thr, 1.645·SE), and that SE comes from the experiment's own paired data.
+  - For E002-class comparisons, 1.645·SE ≈ 0.05 (about 7 net), so the SE guard, not the threshold, will usually bind.
+  - The fresh confirmation replicate (Δ > thr/2) is unchanged.
+- **Consequences:**
+  - Screen: Δall ≥ +1.8 pp (≥ 2 net of about 70).
+  - Full: Δall > max(0.036, 1.645·SE), with Δfrac not significantly negative.
+  - Confirm: Δall > +1.8 pp.
+  - The live A/A is no longer run per keep.
+
+### C2-LOOK1 — dev-holdout look 1 (after the first confirmed keep)  [registered 2026-10-16]
+- **Frozen harness:** `nano/harness.py` = E002, sha `e772bd6e99f6…`, snapshot at `runs/c2-look1/harness.py`. Lane: judge = `codex/gpt-6.1-sol:medium`.
+- **Command:** `python3 -I nano/eval.py look --n 1 --registered-at <this commit> --seed 6161 --jobs 8`. It runs:
+  - `a2d lift run --experiment C2-LOOK1 --registered-at <sha> --expect-suite-hash 9114bae3… --suite ~/.a2d-holdout/dev-holdout`;
+  - `--arms D,X:inc --k 5 --replicates 2 --primary D --max-invocations 3000 --max-wall-clock-secs 36000`;
+  - out: `~/.a2d-holdout/runs/c2-look1`.
+- **Read discipline:**
+  - Only the controller's `summary.json`, through `look_report` (rates, lift, CI, n, families, validity, spend by arm). It is written to `~/.a2d-holdout/runs/c2-look1/report.json`.
+  - **The repo and stdout get only valid, gate (PASS/FAIL), n and spend** (`runs/c2-look1/gate.json`). Proposers, including me, learn only pass or fail until the cycle's final report.
+  - Never open the look run's `invocations/`, `submissions/` or ledger. No process command lines while it runs.
+- **Rule** (gate metric, plan addendum): PASS ⇔ the run is valid (complete, 0 void, integrity OK, not aborted), and the X:inc − D all-pass lift is ≥ +10 pp with family-bootstrap CI low > 0 (over 100 tasks × 2 replicates).
+  - **PASS:** E002 is frozen as the confirmation candidate. Next come one Codex Sol review and one fresh-Claude review, then a separate pre-registration spending confirmation-2 with D and B as comparators.
+  - **FAIL:** the search continues from the E002 incumbent.
+- **Budget:** about 1.25k Luna + 0.2k Sol. It launches after 00:00 UTC 2026-10-17 (the 10-16 cap is spent) from a background timer.
