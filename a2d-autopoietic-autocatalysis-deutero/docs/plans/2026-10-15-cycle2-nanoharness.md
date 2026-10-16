@@ -3,7 +3,7 @@
 **Created:** 2026-10-15
 **Status:** Active
 **Goal:** the session `/goal` of 2026-10-15 ("A²D cycle 2"). This plan is its working form.
-**Reviewed:** 2026-10-15, design review before the first live run (Codex `gpt-6.1-sol` high, fresh Claude subagent; copies-only dirs). Dispositions in the Addendum.
+**Reviewed:** 2026-10-16, proposer-comparison protocol (Codex `gpt-6.1-sol` high + fresh Claude subagent; dispositions in the 2026-10-16 Addendum). 2026-10-15, design review before the first live run (Codex `gpt-6.1-sol` high, fresh Claude subagent; copies-only dirs). Dispositions in the Addendum.
 **Addendum:** 2026-10-15 — **design review dispositions and definitions** (all accepted unless noted):
 - **Evaluator integrity** (`nano/eval.py` v2.1):
   - experiments are immutable, with a manifest of code, controller and suite hashes, and the frozen snapshot is what gets promoted;
@@ -33,7 +33,7 @@
 
 **Lineage:** the lift-first roadmap (`docs/plans/2026-10-14-lift-first-roadmap.md`, Completed (falsified)), report `docs/reports/2026-10-15-lift-first-outcome.md`. That closed one plan, not the project.
 
-**Addendum:** 2026-10-16 — **after the first keep: A/A method, budget envelope, and the proposer-comparison protocol (draft for review)**
+**Addendum:** 2026-10-16 — **after the first keep: A/A method, budget envelope, and the proposer-comparison protocol (v2, after review)**
 - **A/A (eval v2.3; LOG "Eval v2.3").** "The A/A is re-run after every keep" is replaced.
   - A promoted keep's two independent full runs (full stage and confirm) are paired by task and give its threshold at no cost.
   - Calibration of the method on v0: in-run 10 net tasks vs cross-run 7 net. The full-stage 1.645·SE guard binds at about 7 net.
@@ -42,34 +42,74 @@
 
   | Use | Luna | Notes |
   |---|---|---|
-  | Search | ≤ 12.5k | — |
-  | Proposer comparison | ≈ 4.3k | reserved |
+  | Search | ≈ 10.8k | until the phase-B trigger (11k left) |
+  | Proposer comparison | ≈ 6.5k | reserved (phase B, protocol v2) |
   | Confirmation-2 | ≈ 3.2k | reserved; r = 2, one replicate per day |
   | Dev-holdout looks | ≈ 1.3k | final look |
 
   - With E002-class arms, a screen costs about 0.6k, the full stage about 1.25k and the confirm stage about 1.25k.
-- **Proposer comparison: draft protocol** (frozen after review, before any round runs).
-  - **Question:** does A²D's architect propose harness changes that help more than an uninformed proposer? Equal budget means the same model and effort, the same number of proposals, and the same evaluation per proposal.
-  - **The two proposers:**
-    - **Informed** (A²D's architect) sees the observations A²D's metabolism produces:
-      - the results log with every prior proposal and its outcome;
-      - the incumbent's aggregate failure analysis (C2-FA-style branches, any-pass curve, failure kinds);
-      - up to 8 failure dossiers from the incumbent's dev runs. A dossier holds what the coder saw (requirements and public tests), the submitted file, and the label "fails at least one hidden test". It never contains hidden content or counts, the same rule as `a2d distill`.
-    - **Uninformed** sees only the incumbent, v0 (= D), the protocol, the guard and the rules, plus the titles of its own earlier proposals (to avoid repeats), without outcomes.
-    - Neither sees the seed list (a separate human-insight proposer) or any holdout metadata.
-    - Both are `gpt-6.1-sol` at high effort with no tools, through `c2_propose.py`. Each submits one candidate per round, its top-ranked one.
-  - **Rounds:** R = 5 interleaved rounds.
-    - Each round is ONE `a2d lift` run with arms X:inc, X:inf and X:uninf, on a family half drawn per round. The incumbent arm is shared, so pairing is exact.
-    - Cost: about 70 tasks × 12 calls ≈ 0.85k per round.
-    - A round uses the incumbent current at its start.
-  - **Primary metric:** the mean over rounds of (Δall-pass(inf − inc) − Δall-pass(uninf − inc)), with a t-interval over the 5 round-level differences (rounds are blocks).
-    - **Informed better:** the 90% CI is above 0.
-    - **Informed worse:** the 90% CI is below 0.
-    - **Otherwise inconclusive**, reported as such, with the detectable effect stated (about ±6 pp at this budget).
-  - **Secondary:** the keep-screen rate (proposals with a round Δ ≥ thr/2) per proposer. Any proposal that clears it can enter the normal keep pipeline (rest, then confirm) under its own experiment id, reusing the round run as its screen.
-  - **Trigger:** after ≥ 3 keeps (the goal's condition), or when the remaining total budget falls to 9k Luna, whichever comes first.
-    - The budget trigger is a deviation from the goal's wording. It exists so that the self-improvement question is measured at all under a 25k cap where each keep costs about 2.5k. It is disclosed in the report.
-  - **Authorship disclosure:** the same model (Sol) authored the tasks, judges live, and proposes for both arms. The comparison isolates information, not model.
+- **Proposer comparison, protocol v2** (frozen 2026-10-16, after the design review below; the tooling is built before the trigger and smoke-tested on dev only).
+  - **Claim, narrowed:** "A²D's architect role, fed A²D's own mechanical observations, vs the same model and role without them". Information is the only designed difference.
+    - Both arms use `gpt-6.1-sol` at high effort, one call per round, the same `ARCHITECT_SYSTEM` role (`crates/a2d-cli/src/lift_distill.rs`), the same output limit, and one retry on API failure.
+    - Prompts are built from two pre-registered templates that differ only in the information sections. Token usage is recorded per call.
+    - **Tool audit:** Codex runs with `--json`. Any event other than reasoning or agent messages voids the call, and it is re-asked once.
+  - **Informed context (mechanical only; no operator prose and no LOG text):**
+    - the incumbent;
+    - v0 (= D);
+    - the protocol, guard and rules;
+    - `results.tsv` rows: everything before phase B, plus the informed arm's own earlier rounds, never the other arm's;
+    - the incumbent's failure aggregates from a frozen stats script (C2-FA-style: branches, any-pass curve, failure kinds);
+    - up to 8 failure dossiers (train-label rule, as in `a2d distill`): what the coder saw (requirements and public tests), the submitted file, and the label "fails at least one hidden test". Never hidden content or counts.
+      - Dossiers come only from families **outside** that round's evaluation set, drawn from the incumbent's two full dev runs by a seeded rule (sha256 of the round id), not by the operator.
+  - **Uninformed context:** the incumbent, v0, the protocol, guard and rules, and the titles of its own earlier proposals (to avoid repeats), without outcomes.
+  - **Neither arm sees** `seeds.md` (a separate human-insight proposer), any holdout metadata, look results, or this protocol's existence.
+  - **Phase B rounds:**
+    - The incumbent is **frozen for all of phase B**, and promotions are deferred to its end.
+    - R = 6 rounds. Each round is ONE `a2d lift` run with arms X:inc, X:inf and X:uninf on a seeded quarter of the dev families (about 35 tasks). The quarters are drawn with seed `A2D-C2-PC-<r>`.
+    - Both proposals are generated, guarded, lane-checked, smoke-tested on 1 dev task and hash-registered (committed) before either is evaluated.
+    - Feedback is released only between rounds.
+    - Cost: about 0.43k Luna per round, about 2.6k in total.
+  - **Mechanical validity rules** (symmetric across arms):
+    - it passes the guard;
+    - lanes may only name `codex/gpt-6.1-sol`, so the coder stays `gpt-6-luna` at low effort;
+    - the 1-task smoke must complete;
+    - post-run, every submitted file must equal the extract of a default-lane (Luna) reply in that tuple, so Sol writes no submitted code.
+    - On failure, one re-ask with the error message.
+    - A proposal that is still invalid scores Δ = 0 (no change) and is not a keep. It stays in every denominator.
+    - A harness crash or timeout on a task counts as a fail for that arm, never as a void.
+  - **Endpoints:**
+    - **(1) The goal's keep comparison.** In each arm, the proposal with the best round Δall-pass vs the incumbent continues if it is ≥ +2 net tasks. Continuation runs the remaining families, then the fresh confirmation replicate, under eval v2.3 rules; at most 1 continuation per arm, about 2k each.
+      - Reported: confirmed keeps per arm out of 6 proposals, and the **screen-pass rate** (round Δ ≥ +2 net). Descriptive only: at this budget the keep comparison cannot discriminate (a null proposal clears +2 net about 35% of the time), and that is disclosed as the main limitation.
+    - **(2) Precision metric:** pooled over rounds, the paired all-pass difference X:inf − X:uninf on the round tasks. The incumbent arm cancels here; it is kept for (1).
+      - It gets a (round, family)-cluster bootstrap 90% CI.
+      - Sensitivity checks: a sign test over the 6 round-level differences, and Δfrac.
+      - Upside secondary: the maximum Δ vs incumbent and the count of proposals with Δ > thr, per arm.
+    - **Expected precision:** sampling alone over about 210 paired tasks gives a 90% half-width of about 4 pp, before between-proposal heterogeneity. **"Inconclusive" is the expected outcome unless the arms differ by more than about 5 pp**, and is reported as such.
+  - **Descriptive analysis:** a blinded idea-category label per proposal (a fresh Claude subagent sees proposals without arm labels), so same-idea rounds are visible.
+  - **Trigger:** after ≥ 3 keeps (the goal's condition), or when the remaining total budget falls to 11k Luna, whichever comes first.
+    - The reserve (about 4.5k for confirmation-2 and the final look, plus about 6.5k for phase B) is why the budget trigger exists.
+    - Running before 3 keeps tests an earlier system. It is a disclosed deviation, and the achieved keep count is reported prominently.
+  - **Budget:** phase B ≤ 6.6k Luna, plus about 0.1k Sol for proposals and the rest for judge lanes. If the budget ends early, rounds already run are analysed as is; the minimum is R = 4 for the precision metric. An invalid round (run failure) is re-run once with the same proposals and a new seed.
+- **Design review of the draft** (Codex `gpt-6.1-sol` high, no tools, everything inline; fresh Claude subagent, copies only). Dispositions:
+  - **Accepted:**
+    - the claim is narrowed;
+    - mechanical informed context, with no LOG or operator prose;
+    - one candidate per call, arm-specific prompts, no seeds;
+    - frozen incumbent, deferred promotions;
+    - feedback only between rounds, submissions frozen before evaluation;
+    - equal budget and usage recording, with the tool audit;
+    - mechanical validity rules, invalid scored as Δ = 0, crashes as fails;
+    - dossiers family-disjoint from the round's tasks, with seeded selection;
+    - "screen-pass rate" naming;
+    - the keep comparison is descriptive and underpowered, disclosed;
+    - more and smaller rounds (6 × quarter-sets instead of 5 × halves);
+    - upside secondary, sign-test and Δfrac sensitivity, idea categories;
+    - the early-trigger disclosure.
+  - **Isolation finding (both reviewers): fixed before any further run.** Harnesses now run under an OS sandbox (LOG C2-ISO).
+  - **Partly accepted:**
+    - "Omit the incumbent arm" (the incumbent cancels in the precision metric). It is kept for the goal's keep endpoint; the shared arm makes it cheap.
+    - "Use A²D's actual architect entrypoint". The metabolism's architect edits Rust system code, and the nanoharness is outside it. The role prompt and the dossier rule are reused, and the claim is narrowed accordingly.
+  - **Accepted as reporting** (Sol #14, the A/A was calibrated on a selected keep): every keep decision is also reported under the v0 in-run threshold (0.0714) as a sensitivity check.
 
 ## Outcome sought
 
