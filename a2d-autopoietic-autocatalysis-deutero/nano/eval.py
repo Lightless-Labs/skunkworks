@@ -62,6 +62,15 @@ ALLOWED_IMPORTS = {"json", "re", "sys", "random", "math", "itertools", "collecti
                    "hashlib", "difflib", "textwrap", "string", "heapq", "dataclasses", "typing"}
 FORBIDDEN_CALLS = {"open", "exec", "eval", "compile", "__import__", "globals", "locals", "vars",
                    "getattr", "setattr", "delattr", "input", "breakpoint"}
+# Attribute routes from allowlisted modules to the filesystem or other modules
+# (sys.modules["os"], random._os, json.codecs.open, dataclasses.inspect.os...).
+# Defence in depth only: the boundary is the controller's OS sandbox.
+FORBIDDEN_ATTRS = {"modules", "os", "io", "open", "system", "popen", "codecs", "inspect", "importlib",
+                   "builtins", "sys", "subprocess", "socket", "shutil", "pathlib", "environ", "listdir",
+                   "scandir", "walk", "remove", "unlink", "rmdir", "fdopen", "read_text", "read_bytes",
+                   "write_text", "write_bytes", "f_globals", "f_locals", "f_back", "f_code", "gi_frame",
+                   "cr_frame", "tb_frame", "co_code", "loader", "spec"}
+SYS_ATTRS = {"stdin", "stdout", "stderr", "exit"}
 
 
 def guard(path):
@@ -77,10 +86,17 @@ def guard(path):
         elif isinstance(node, ast.ImportFrom):
             if (node.module or "").split(".")[0] not in ALLOWED_IMPORTS or node.level:
                 problems.append(f"from {node.module}")
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_CALLS:
-            problems.append(f"call {node.func.id}()")
-        elif isinstance(node, ast.Attribute) and node.attr.startswith("__") and node.attr not in ("__name__",):
-            problems.append(f"dunder attribute {node.attr}")
+        elif isinstance(node, ast.Name) and node.id in FORBIDDEN_CALLS:
+            problems.append(f"name {node.id}")
+        elif isinstance(node, ast.Name) and node.id.startswith("__") and node.id != "__name__":
+            problems.append(f"dunder name {node.id}")
+        elif isinstance(node, ast.Attribute) and node.attr.startswith("_") and node.attr != "__name__":
+            problems.append(f"private attribute {node.attr}")
+        elif isinstance(node, ast.Attribute) and node.attr in FORBIDDEN_ATTRS:
+            problems.append(f"attribute {node.attr}")
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "sys" \
+                and node.attr not in SYS_ATTRS:
+            problems.append(f"sys.{node.attr}")
     if problems:
         sys.exit(f"{path}: harness isolation guard failed: {sorted(set(problems))}")
 

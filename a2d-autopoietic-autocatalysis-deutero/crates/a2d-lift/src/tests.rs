@@ -1456,14 +1456,15 @@ print(json.dumps({'op': 'done', 'codes': []}), flush=True)
 
 #[test]
 fn nano_harness_v0_matches_native_d_prompts_and_submission() {
-    // Cycle-2 parity gate: the external nanoharness v0 must send exactly the
+    // Cycle-2 parity gate: the external nanoharness v0 (archived at
+    // nano/history/before-E002b.py once E002 was promoted) must send exactly the
     // prompts native D sends, through both repair branches, and submit the
     // same file. Temp paths in public-test output are normalised.
     let dir = tempfile::tempdir().unwrap();
     let mut args = variant_args(dir.path(), "D,X:v0");
     let k = args.iter().position(|a| a == "--k").unwrap();
     args[k + 1] = "3".to_string();
-    let nano = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nano/harness.py");
+    let nano = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nano/history/before-E002b.py");
     add_variant(&mut args, "--external", "v0", &nano);
     let (provider, _) = mock(|request, _| {
         if request.prompt.contains("contained no ```rust code block") {
@@ -1640,6 +1641,46 @@ fn external_hang_is_killed_at_wall_clock_and_voids_tuple() {
     let records = ledger_records(dir.path());
     let submission = records.iter().find(|r| r["kind"] == "submission").unwrap();
     assert_eq!(submission["void_reason"], "wall-clock cap reached");
+}
+
+#[test]
+fn external_harness_cannot_read_files_outside_its_working_directory() {
+    // A static guard on harness source can be bypassed (sys.modules reaches
+    // io and os); the OS sandbox must stop reads of hidden tests, holdouts
+    // and the oracle's temp dirs, while the harness itself still runs.
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("hidden_tests.rs");
+    fs::write(&secret, "SECRET-HIDDEN-CONTENT").unwrap();
+    let home = std::env::var("HOME").unwrap();
+    let harness = external_fixture(
+        dir.path(),
+        &format!(
+            "def probe(f):\n    try:\n        return 'read ' + str(f())[:40]\n    except Exception as e:\n        return 'blocked ' + type(e).__name__\n\
+             notes = [probe(lambda: sys.modules['io'].open({secret}).read()),\n\
+             \x20        probe(lambda: os.listdir({home})),\n\
+             \x20        probe(lambda: sys.modules['socket'].create_connection(('127.0.0.1', 9)) if 'socket' in sys.modules else 'no socket')]\n\
+             print(json.dumps({{'op': 'done', 'codes': ['// ' + ' | '.join(notes) + '\\nfn double(x: i32) -> i32 {{ x * 2 }}']}}), flush=True)",
+            secret = json!(secret.to_str().unwrap()),
+            home = json!(home),
+        ),
+    );
+    let mut plan = claim_plan();
+    plan.arms = vec![Arm::parse("X:nano").unwrap()];
+    plan.externals.insert("nano".into(), harness);
+    let meter = Meter::new(
+        Ledger::create(&dir.path().join("ledger.jsonl")).unwrap(),
+        100,
+        Duration::from_secs(60),
+        dir.path().join("invocations"),
+    );
+    let mut suite = suite();
+    suite.tasks.truncate(1);
+    let (provider, _) = mock(|_, _| panic!("no model call requested"));
+    let result = run_arms(&plan, &suite, provider, &meter, dir.path(), None).unwrap();
+    assert_eq!(result.outcomes[0].void_reason, None);
+    let submitted = fs::read_to_string(dir.path().join("submissions/X-nano/t1/r0.rs")).unwrap();
+    assert!(!submitted.contains("SECRET"), "hidden content reached the harness: {submitted}");
+    assert!(submitted.contains("blocked PermissionError | blocked PermissionError"), "{submitted}");
 }
 
 #[test]

@@ -140,21 +140,72 @@ pub(crate) fn score_codes(task: &PublicTask, codes: Vec<String>) -> Vec<Attempt>
 /// environment. Apple's `/usr/bin/python3` is an `xcrun` shim; with a cleared
 /// environment it can spend tens of seconds re-resolving the toolchain before
 /// the harness starts, so children are launched with the resolved path.
-fn python_interpreter() -> std::path::PathBuf {
-    static PYTHON: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+/// Also returns the interpreter's installation prefix, which the harness
+/// sandbox must keep readable.
+fn python_interpreter() -> (std::path::PathBuf, Option<std::path::PathBuf>) {
+    static PYTHON: std::sync::OnceLock<(std::path::PathBuf, Option<std::path::PathBuf>)> =
+        std::sync::OnceLock::new();
     PYTHON
         .get_or_init(|| {
-            Command::new("python3")
-                .args(["-I", "-c", "import sys; print(sys.executable)"])
+            let found = Command::new("python3")
+                .args(["-I", "-c", "import sys; print(sys.executable); print(sys.base_prefix)"])
                 .output()
                 .ok()
                 .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| "python3".into())
+                .unwrap_or_default();
+            let mut lines = found.lines().map(str::trim).filter(|s| !s.is_empty());
+            let executable = lines.next().map(std::path::PathBuf::from);
+            let prefix = lines.next().map(std::path::PathBuf::from);
+            (executable.unwrap_or_else(|| "python3".into()), prefix)
         })
         .clone()
+}
+
+const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+
+fn seatbelt_path(path: &Path) -> String {
+    let real = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = real.to_string_lossy();
+    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// macOS seatbelt profile for an external harness. The static source guard in
+/// `nano/eval.py` is not a boundary (`sys.modules` reaches `io` and `os`), and
+/// hidden tests, holdouts and the oracle's build dirs live on this machine.
+/// So the harness gets no network and no file access under the user's home
+/// or the temporary roots, except its own script (read) and its own empty
+/// working directory; the interpreter's installation stays readable. The
+/// stderr log is opened by the controller, but seatbelt also checks I/O
+/// through inherited descriptors (Python's startup stats them too), so that
+/// one file stays readable and writable.
+fn harness_sandbox_profile(
+    script: &Path,
+    cwd: &Path,
+    stderr: &Path,
+    python_prefix: Option<&Path>,
+) -> String {
+    let mut denied: Vec<std::path::PathBuf> =
+        vec!["/private/tmp".into(), "/private/var/folders".into()];
+    for name in ["HOME", "TMPDIR"] {
+        if let Some(value) = std::env::var_os(name).filter(|v| !v.is_empty()) {
+            denied.push(value.into());
+        }
+    }
+    let denied: Vec<String> = denied.iter().map(|p| format!("(subpath {})", seatbelt_path(p))).collect();
+    let mut profile = format!(
+        "(version 1)(allow default)(deny network*)(deny file-read* file-write* {})",
+        denied.join(" ")
+    );
+    if let Some(prefix) = python_prefix {
+        profile += &format!("(allow file-read* (subpath {}))", seatbelt_path(prefix));
+    }
+    profile += &format!(
+        "(allow file-read* (literal {}))(allow file-read* file-write* (subpath {}))(allow file-read* file-write* (literal {}))",
+        seatbelt_path(script),
+        seatbelt_path(cwd),
+        seatbelt_path(stderr)
+    );
+    profile
 }
 
 /// Run a Python harness with only public data and metered controller operations.
@@ -178,11 +229,19 @@ pub(crate) fn external_harness(
             .map_err(|e| format!("external cwd: {e}"))?;
         let dir = lock(meter).invocation_dir(scope);
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let stderr = fs::File::create(dir.join("harness.stderr.txt")).map_err(|e| e.to_string())?;
-        let mut command = Command::new(python_interpreter());
+        let stderr_path = dir.join("harness.stderr.txt");
+        let stderr = fs::File::create(&stderr_path).map_err(|e| e.to_string())?;
+        if !Path::new(SANDBOX_EXEC).exists() {
+            return Err(format!("{SANDBOX_EXEC} not found: external harnesses run only sandboxed"));
+        }
+        let (python, prefix) = python_interpreter();
+        let mut command = Command::new(SANDBOX_EXEC);
         command
+            .arg("-p")
+            .arg(harness_sandbox_profile(&path, cwd.path(), &stderr_path, prefix.as_deref()))
+            .arg(python)
             .arg("-I")
-            .arg(path)
+            .arg(&path)
             .current_dir(cwd.path())
             .env_clear();
         for name in ["PATH", "HOME", "LANG", "TMPDIR"] {

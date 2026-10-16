@@ -1023,3 +1023,25 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - E008 used 4 calls; its synthesis was green and distinct, on the one-green branch.
   - The E005 and E006 smokes also passed: 5 calls each, and the angles and notes appear in the prompts as designed.
 - **Run order:** look 1, then E005 (claude), E007 (sol), E006 (claude), E008 (sol), interleaved by proposer. Each stage self-defers at the 3k daily cap.
+
+### C2-ISO — harness isolation: the static guard was porous; harnesses now run under an OS sandbox  [cycle 2, instrument fix, 2026-10-16]
+- **Found by** both design reviewers of the proposer-comparison draft (Codex Sol and a fresh Claude), independently.
+  - `nano/eval.py`'s static guard blocked imports and named calls, but not attribute routes to the filesystem: `sys.modules['io'].open`, `random._os`, `json.codecs.open`.
+  - Hidden tests, holdouts and the oracle's build dirs are on this machine.
+- **Live-confirmed** with a new controller test (`external_harness_cannot_read_files_outside_its_working_directory`). Before the fix, a harness read a planted `hidden_tests.rs` and listed `$HOME`.
+- **Past results are unaffected.**
+  - All 9 distinct harness files that ever ran or were registered (21 paths: `runs/c2-*/candidate.py`, `incumbent.py`, the A/A snapshot, `nano/candidates`, `nano/history`) were scanned mechanically for module, attribute and file-access patterns: all clean.
+  - Each was also read in full when written or reviewed.
+- **Fix 1, the boundary** (controller, `crates/a2d-lift/src/arms.rs`): external harnesses run under `/usr/bin/sandbox-exec` with a seatbelt profile.
+  - No network.
+  - No file read or write under `$HOME`, `$TMPDIR`, `/private/tmp` or `/private/var/folders`.
+  - Exceptions: the interpreter's own prefix, the harness script (read), its own empty working directory, and its stderr log (seatbelt also checks I/O on inherited descriptors).
+  - The controller fails closed if `sandbox-exec` is missing.
+  - The new test asserts the planted secret is unreadable and `$HOME` is unlistable, while the harness still runs and submits. All 66 `a2d-lift` tests pass, and the workspace has 24 result lines with 0 failures.
+- **Fix 2, defence in depth** (`nano/eval.py` guard):
+  - rejects private attributes, `sys.*` beyond stdin, stdout, stderr and exit, and a denylist of module and filesystem attributes;
+  - rejects any use of a forbidden builtin name (not only calls) and dunder names.
+  - 7 canaries are rejected; all real harnesses pass.
+- **Also fixed:** the v0 parity test read `nano/harness.py`, which has been E002 since the promotion. It now reads the archived v0 (`nano/history/before-E002b.py`).
+- **Live smoke under the sandbox** (1 dev task, about 7 Luna calls): E002 and E006 both ran normally (5 and 4 calls, DIAG intact).
+- **Consequence:** the controller's frozen paths changed after C2-LOOK1's registration commit (`f5b71409`). So look 1 is **re-registered at the commit that records this entry**, before any look data exists. Nothing else about look 1 changes.
