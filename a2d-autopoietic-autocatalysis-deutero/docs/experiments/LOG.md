@@ -953,3 +953,49 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **PASS:** E002 is frozen as the confirmation candidate. Next come one Codex Sol review and one fresh-Claude review, then a separate pre-registration spending confirmation-2 with D and B as comparators.
   - **FAIL:** the search continues from the E002 incumbent.
 - **Budget:** about 1.25k Luna + 0.2k Sol. It launches after 00:00 UTC 2026-10-17 (the 10-16 cap is spent) from a background timer.
+
+### C2-FA1 — where does the E002 incumbent still fail?  [cycle 2, offline analysis, 2026-10-16; no model calls]
+- **Method:**
+  - `docs/experiments/analysis/candidate_pool.py` re-scored every coder sample of E002's three runs (screen, rest, confirm: 280 task-runs, each dev task twice) on public and hidden tests. Pool: `runs/2026-10-16-c2-e002-pool/`.
+  - Joined with the harness DIAG lines (branch, picks) and the ledger submissions.
+- **The judge is at its ceiling:**
+  - In all 249 judge-branch task-runs, it never picked a hidden-failing file when a hidden-passing green existed (**0 misses**).
+  - E002's all-pass (0.857) **equals the any-pass ceiling of its own samples**. In the same runs, v0 (= D) scored 0.768.
+- **The 40 failures (of 280):**
+
+  | Failure | Count |
+  |---|---|
+  | Judge branch, every green fails hidden | 21 |
+  | One-green branch, that green fails hidden | 13 |
+  | No green after 4 samples (repair attempted) | 6 |
+
+  - By kind: some hidden tests fail 30, timeouts 8, hidden compile failure 2.
+- **Any-pass curve** (green and hidden-pass among k samples, exact over subsets): k=1 0.643, k=2 0.764, k=3 0.819, **k=4 0.850**. The 4th sample is worth about +3 pp.
+- **Consequence:** the bottleneck has moved from selection to generation. A misreading shared by every sample defeats any selector, so the levers now are (a) decorrelating the samples' readings, or (b) adding information before generation.
+  - Spending a sample (about −3 pp) is only worth it if the replacement raises per-sample pass rates by more than that.
+  - Judge-quality variants (seed 3) have nothing left to gain at this regime, so they are deprioritised.
+- Only aggregates from this analysis go to proposers (`runs/c2-propose-r1/stats.json`).
+
+### E005 — diverse sampling angles  [cycle 2, proposer: claude (seed 8), registered 2026-10-16]
+- **Candidate:** `nano/candidates/E005_diverse_angles.py`. One change vs E002: samples 2–4 each get one appended "Approach" paragraph, all different:
+  - requirement-by-requirement reading (order of checks, precedence, boundaries, ties);
+  - adversarial edge cases plus checked arithmetic;
+  - literal precedence, with no extra behaviour.
+  - Sample 1, the judge, the branches and the repair are unchanged.
+- **Hypothesis:** different reading angles decorrelate the shared misreadings (C2-FA1), raising any-pass@4 and so all-pass vs E002.
+  - Risk: the angles lower per-sample pass rates.
+  - Diagnostics: the any-pass curve and per-angle hidden pass rates from a post-hoc pool.
+- **Protocol:** eval v2.3, incumbent E002 (thr_allpass 0.0357). `python3 -I nano/eval.py run --id E005 --candidate nano/candidates/E005_diverse_angles.py --hypothesis "..." --jobs 6`.
+
+### E006 — Sol reads the spec first (notes, no code), then 3 samples + judge  [cycle 2, proposer: claude (seeds 4/6 family), registered 2026-10-16]
+- **Candidate:** `nano/candidates/E006_sol_spec_notes.py`. One change vs E002: the 4th Luna sample is replaced by a single Sol call **before** sampling.
+  - Lane `analyst` = `codex/gpt-6.1-sol:medium`, no tools. It writes at most 12 numbered notes on where the requirements could be misread, citing requirement numbers, with no code.
+  - The notes (≤ 5,000 bytes) are appended to the task for the 3 samples and the no-green repair.
+  - Budget: 1 analyst + 3 samples + 1 judge or repair = 5.
+- **Hypothesis:** a stronger reader flags the shared misreadings before any code is written. That raises the per-sample hidden pass rate (0.64) enough that any-pass@3 with notes beats E002's any-pass@4 (0.850).
+- **Risks:**
+  - wrong notes correlate all three samples;
+  - one fewer sample costs about 3 pp.
+- **Confound (disclosed):** Sol authored the tasks.
+- **Coder-model rule:** Sol writes no code, and every submitted file is Luna's.
+- **Protocol:** eval v2.3, incumbent E002. `--id E006`.

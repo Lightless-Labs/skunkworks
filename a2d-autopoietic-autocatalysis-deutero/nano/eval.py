@@ -217,6 +217,41 @@ def aa_threshold(rows, reps=4000, seed=11, idx=1):
     return means[int(0.95 * (reps - 1))]
 
 
+LUNA = "codex/gpt-6-luna"
+DAILY_CAP = 3000
+
+
+def luna_today():
+    """Luna invocations since 00:00 UTC today across this cycle's runs (dev and
+    holdout ledgers; invocation records only, no content is read)."""
+    lo = datetime.datetime.now(datetime.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    lo_ms = lo.timestamp() * 1000
+    seen, total = set(), 0
+    ledgers = list((ROOT / "runs").glob("c2-*/*/ledger.jsonl")) + list((ROOT / "runs").glob("c2-*/ledger.jsonl")) \
+        + list((HOLDOUT / "runs").glob("c2-*/ledger.jsonl")) + list((HOLDOUT / "audit").glob("*/*/ledger.jsonl"))
+    for led in ledgers:
+        real = led.resolve()
+        if real in seen or real.stat().st_mtime * 1000 < lo_ms:
+            continue
+        seen.add(real)
+        with open(real) as f:
+            for line in f:
+                if '"invocation"' in line and LUNA in line:
+                    r = json.loads(line)
+                    if r.get("kind") == "invocation" and r.get("provider") == LUNA and r.get("ts_ms", 0) >= lo_ms:
+                        total += 1
+    return total
+
+
+def within_cap(stage, n_calls_worst, cap):
+    spent = luna_today()
+    if spent + n_calls_worst > cap:
+        print(json.dumps({"stage": stage, "decision": "deferred (daily Luna cap)", "luna_today": spent,
+                          "stage_worst_case": n_calls_worst, "cap": cap}, indent=1))
+        return False
+    return True
+
+
 def mean(rows, idx):
     return sum(r[idx] for r in rows) / len(rows)
 
@@ -336,8 +371,11 @@ def cmd_run(args):
 
     s_suite = make_suite(exp_dir / "suites/S", halves["S"])
     r_suite = make_suite(exp_dir / "suites/R", halves["R"])
+    worst = 5 + 5  # Luna calls per task, both arms, if no call went to a lane
     screen = exp_dir / "screen"
     if not (screen / "summary.json").exists():
+        if not within_cap("screen", worst * len(list(s_suite.iterdir())), args.daily_cap):
+            return
         lift(f"C2-{args.id}-S", s_suite, arms, ext, lanes, screen, seed, args.jobs)
     rows, rec = stage("screen", [(screen, s_suite)], "")
     if thr is None:
@@ -350,6 +388,8 @@ def cmd_run(args):
         return
     rest = exp_dir / "rest"
     if not (rest / "summary.json").exists():
+        if not within_cap("rest", worst * len(list(r_suite.iterdir())), args.daily_cap):
+            return
         lift(f"C2-{args.id}-R", r_suite, arms, ext, lanes, rest, seed + 1, args.jobs)
     rows, rec = stage("full", [(screen, s_suite), (rest, r_suite)], "")
     se, se_all = cluster_se(rows, 1), cluster_se(rows, 2)
@@ -369,6 +409,8 @@ def cmd_run(args):
         print(json.dumps({**rec, "decision": "provisional keep (confirmation deferred)"}, indent=1))
         return
     if not (confirm / "summary.json").exists():
+        if not within_cap("confirm", worst * len(list(DEV.iterdir())), args.daily_cap):
+            return
         lift(f"C2-{args.id}-C", DEV, arms, ext, lanes, confirm, seed + 2, args.jobs)
     rows_c, rec_c = stage("confirm", [(confirm, DEV)], "")
     keep = mean(rows_c, 2) > thr / 2
@@ -444,6 +486,8 @@ def cmd_look(args):
                         "registered_at": args.registered_at, "suite_hash": DEV_HOLDOUT_HASH,
                         "seed": args.seed, "replicates": 2, "arms": ["D", "X:inc"]})
     if not (out / "summary.json").exists():
+        if not within_cap("look", 100 * 2 * (5 + 5), args.daily_cap):
+            return
         cmd = [A2D, "lift", "run", "--experiment", f"C2-LOOK{args.n}", "--registered-at", args.registered_at,
                "--expect-suite-hash", DEV_HOLDOUT_HASH, "--suite", str(HOLDOUT / "dev-holdout"),
                "--model", "codex/gpt-6-luna", "--effort", "low", "--arms", "D,X:inc", "--k", "5",
@@ -479,6 +523,7 @@ def main():
     r.add_argument("--jobs", type=int, default=4)
     r.add_argument("--reuse-screen-from", default=None)
     r.add_argument("--stop-after", choices=["full"], default=None)
+    r.add_argument("--daily-cap", type=int, default=DAILY_CAP)
     a = sub.add_parser("aa")
     sub.add_parser("aa-allpass")
     a.add_argument("--jobs", type=int, default=4)
@@ -489,6 +534,8 @@ def main():
     lk.add_argument("--registered-at", required=True)
     lk.add_argument("--seed", type=int, default=6161)
     lk.add_argument("--jobs", type=int, default=8)
+    lk.add_argument("--daily-cap", type=int, default=DAILY_CAP)
+    sub.add_parser("budget")
     args = ap.parse_args()
     if args.cmd == "aa-allpass":
         # v2.2: add the all-pass threshold from the existing A/A run (no new calls).
@@ -505,6 +552,8 @@ def main():
         cmd_aa_from_replicates(args)
     elif args.cmd == "look":
         cmd_look(args)
+    elif args.cmd == "budget":
+        print(json.dumps({"luna_today_utc": luna_today(), "cap": DAILY_CAP}))
     else:
         cmd_run(args)
 
