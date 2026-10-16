@@ -242,7 +242,8 @@ def _read_sample(path: Path) -> dict:
 
 def run_confirmation(cfg: Config) -> int:
     home = assert_sealed_home()
-    validate_genomes(cfg.champion_genome, cfg.g0_genome)
+    if not cfg.calibration:  # the raw calibration uses no genome; only the confirmation needs champion != G0
+        validate_genomes(cfg.champion_genome, cfg.g0_genome)
     ok, mismatches = lock.verify()
     if not ok:
         print("evaluator lock mismatch: " + ", ".join(mismatches), file=sys.stderr)
@@ -376,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--sample-json", type=Path, default=DEFAULT_SAMPLE)
     run.add_argument("--run-id", default=None)
     run.add_argument("--shard", default="0/1")
-    run.add_argument("--a2ctl", type=Path, default=e1run.A2CTL)
+    run.add_argument("--a2ctl", type=Path, default=e1run.REPO_ROOT / "target" / "debug" / "a2ctl")
     analysis = sub.add_parser("decide")
     analysis.add_argument("--run-dir", type=Path, required=True)
     analysis.add_argument("--sample-json", type=Path, default=DEFAULT_SAMPLE)

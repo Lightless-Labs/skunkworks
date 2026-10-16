@@ -142,6 +142,16 @@ class ConfirmHelpersTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             confirm.validate_genomes(Path("/same"), Path("/same"))
 
+    def test_calibration_does_not_require_a_distinct_champion(self):
+        cfg = confirm.Config(calibration=True, champion_genome=Path("/same"), g0_genome=Path("/same"),
+                             sample_json=Path("unused"), run_id="calib", shard="0/1", arms="champion")
+        with mock.patch.object(confirm, "assert_sealed_home", return_value=Path("/x/.a2-e1/sealed")), \
+             mock.patch.object(confirm, "validate_genomes") as validate, \
+             mock.patch.object(confirm.lock, "verify", return_value=(False, ["stop here"])):
+            with self.assertRaises(SystemExit):
+                confirm.run_confirmation(cfg)
+        validate.assert_not_called()
+
     def test_refuses_distinct_paths_with_identical_genome_content(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
