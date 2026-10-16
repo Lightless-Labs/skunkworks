@@ -244,6 +244,7 @@ def luna_today():
     lo_ms = lo.timestamp() * 1000
     seen, total = set(), 0
     ledgers = list((ROOT / "runs").glob("c2-*/*/ledger.jsonl")) + list((ROOT / "runs").glob("c2-*/ledger.jsonl")) \
+        + list((ROOT / "runs").glob("c2-*/*/*/ledger.jsonl")) \
         + list((HOLDOUT / "runs").glob("c2-*/ledger.jsonl")) + list((HOLDOUT / "audit").glob("*/*/ledger.jsonl"))
     for led in ledgers:
         real = led.resolve()

@@ -1061,3 +1061,26 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Round-1 dossiers: 8, family-disjoint from that round's quarter.
   - Briefs: informed 199 KB, uninformed 12 KB. They differ only in the information sections, and holdout, seeds, look and confirmation mentions are all 0.
 - A brief this large passes as one command-line argument. macOS has no per-argument limit and `ARG_MAX` is 1 MB.
+
+### Notes before the 10-17 queue  [cycle 2, 2026-10-16; zero Luna]
+- **Dev-holdout hash re-checked** with `a2d lift hash`: it matches `9114bae3…`, so look 1 will not refuse at start.
+- **E002 vs arm B, simulated on dev** from E002's own 280 task-runs (B = best public rank of the 4 samples, ties to the later one, the controller's rule):
+
+  | Arm | All-pass |
+  |---|---|
+  | E002 | 0.857 |
+  | B4 | 0.732 |
+  | v0 (= D, same runs) | 0.768 |
+
+  - E002 − B4 = **+12.5 pp** (family-bootstrap 95% CI +7.5 to +18.2).
+  - E002 − D = **+8.9 pp** (CI +4.3 to +14.3).
+  - **D, not B, is the binding comparator for confirmation-2** (SUPPORTED needs lift ≥ +10 pp vs both), so the dev-holdout gate's D comparison is the right filter.
+  - B with 5 samples may score slightly above B4. Its ties-to-later rule makes it close to a random-green pick, which is what E003 measured.
+- **On eval v2.3's confirm rule** (Δ > thr/2 ≈ 2.5 net of 140): under E002-class noise (about 16–20 discordant tasks), a null candidate clears it about 1 time in 4.
+  - Joint with the full-stage test (Δ > max(thr, 1.645·SE)), the false-keep rate per candidate is about 1%.
+  - So the full stage does most of the work and confirm is a light replicate check. Decisions are also reported under the v0 threshold (0.0714).
+- **Promotion sequencing rule:** `eval.py run` refuses an experiment whose incumbent differs from `aa.json`.
+  - Pending experiments registered against the same incumbent all run through `--stop-after full` first.
+  - Then the provisional keep with the largest full-stage Δ is confirmed. If it is discarded, the next one is confirmed.
+  - **After a promotion,** the other provisional keeps are not confirmed against the old incumbent. They are rebuilt as compositions on the new incumbent and registered as new experiments, starting from the screen.
+- **`luna_today()`** now also counts three-level ledgers (`runs/c2-pc/round<r>/run/`), so phase-B rounds are capped too.
