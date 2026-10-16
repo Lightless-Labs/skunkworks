@@ -1099,3 +1099,16 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Cases: the 34 task-runs where E002's submission failed and at least one public-green file existed (28 distinct tasks, 16 families). Each case holds the task as the coder saw it and every distinct public-green file from that run, all labelled "fails at least one hidden test".
   - Claude subagents (6 batches) record, per case: the violated requirements, the misreading, whether it is shared by all files, a category, why the visible tests miss it, a task-agnostic prevention (≤ 25 words), and a confidence.
   - **Use:** to design generation-side candidates. It is aggregated by category; no per-task content enters any harness.
+- **C2-E2 result** (`runs/2026-10-16-c2-claude/judge-score.json`; per-batch picks beside it): **Claude Opus 5.5 picked a hidden-passing file in 66/68 decisive tuples (0.971, Wilson 95% CI 0.899–0.992).**
+
+  | Judge | Hits / 68 |
+  |---|---|
+  | Sol, live | 68 |
+  | Random pick (expected) | 36.3 |
+  | Claude Opus 5.5 | 66 |
+
+  - By number of candidate files: 2 files 8/9, 3 files 21/21, 4 files 37/38.
+  - The two misses: `scc-graph-l3` (4 files) and `cron-next-l1` (2 files).
+  - The pre-registered bar (≥ 64/68) is met.
+  - **Reading:** the selection lever is not specific to Sol. A judge from a different vendor, which did not author the tasks, recovers nearly all of the selection headroom (C2-E1 on the S0 pool: Sonnet 37/39). This weakens the authorship confound for the judge mechanism: Sol's advantage on its own tasks is at most about 3 pp of pick rate on decisive tuples.
+  - A Claude-lane judge stays a candidate (a cross-family claim, saving Sol load) for when a Claude lane exists. The CLI is not usable from the session sandbox.
