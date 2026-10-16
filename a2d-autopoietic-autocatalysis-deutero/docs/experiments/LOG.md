@@ -831,6 +831,8 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - calls and tokens by lane per arm.
 - **Claim wording if kept:** "Luna generation plus Sol selection beats Luna's repair loop at an equal call cap" (exploratory; dev set). Not a different-family claim.
 - Budget: ≤ 1,500 Luna and ≤ 300 Sol invocations for both.
+- **Launched 2026-10-16:** E002 and E004 screens, alongside C2-AA (eval generates the screen before the threshold exists and decides later).
+- **Early check passed:** coder samples use D's base prompt; the judge prompt has the TASK and CANDIDATES structure, with 2–4 candidates in a seeded shuffled order; picks parse strictly; the judge's reasons are clause-level; DIAG lines record the branch for each task.
 - Result: pending
 
 ### E004 — repair to green, then sample and judge  [cycle 2, seed 2]
