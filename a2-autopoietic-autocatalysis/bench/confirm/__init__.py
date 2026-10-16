@@ -1,0 +1,1 @@
+"""Sealed confirmation benchmark harness."""

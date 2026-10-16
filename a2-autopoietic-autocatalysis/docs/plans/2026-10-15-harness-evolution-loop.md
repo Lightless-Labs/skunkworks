@@ -278,3 +278,11 @@ The first loop experiment is G0 at effort medium vs high, moved here from the no
 G0 is close to deterministic: 25 tasks were never solved, 14 always solved and only 4 were contested. With the plan's 4 hard tasks, simulated power was 0.26 at a logit shift of +1.0. With 12 it is 0.45, at the same false-keep rate of about 2% and |S| = 19. S and the thresholds are fixed in `docs/benchmark-results/evolve/noise-floor.md`: stage A Δ ≥ 2.0; stage B Δ ≥ 4.0 (p ≤ 0.05) plus full-pool Δ ≥ −1.0.
 
 The sealed pool is openlibrary only (`docs/blockers/2026-10-16-qutebrowser-native-gate.md`). With about 41 tasks, power is 0.29 at +10 pp and 0.53 at +15 pp.
+
+**Addendum:** 2026-10-16 — confirmation runner (`bench/confirm/`) and pre-confirmation checklist.
+
+The confirmation code lives outside `bench/evolve/` so that the running loop's lock does not change. Before the first sealed agent run, all of the following must be done:
+1. `bench/evolve/episode.py` honours a `cfg.deny_read` override in `_run_agent_call`, so that confirmation agents are also denied `~/.a2-e1/private`.
+2. `bench/confirm/` joins `lock.FROZEN`; re-lock.
+3. Record the champion's commit and genome sha256 in the protocol-v2 addendum.
+4. Run the raw calibration (`--calibration`), then the run itself.
