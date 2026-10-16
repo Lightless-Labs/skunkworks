@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-16 (session 145: **first cycle-2 keep**. E002b, 4 Luna samples + a Sol judge, beat the plain repair loop: +7.1 pp all-pass on the confirmation replicate and +10.7 at the full stage. The random-pick control gives −1.4, so the judge is the active ingredient. `nano/harness.py` is now the E002 judge harness.)
+**Last updated:** 2026-10-16 (session 145: **first cycle-2 keep**; C2-FA1 failure analysis; 4 candidates registered; look 1 queued. E002b, 4 Luna samples + a Sol judge, beat the plain repair loop: +7.1 pp all-pass on the confirmation replicate and +10.7 at the full stage. The random-pick control gives −1.4, so the judge is the active ingredient. `nano/harness.py` is now the E002 judge harness.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -22,22 +22,26 @@
 - **Results log:** `nano/results.tsv` (every experiment and stage, including discards). Narrative and pre-registrations: `docs/experiments/LOG.md`, Cycle 2.
 
 ## In flight / next
-1. **Offline failure analysis of E002** (no Luna). Pool: `runs/2026-10-16-c2-e002-pool/`, which scores every coder sample of the E002 and E003 runs on public and hidden tests. Question: where does E002 still lose tasks (judge mistakes, every sample wrong, no green file)? That decides the next lever.
-2. **2026-10-17 (UTC), after the daily reset:**
-   - (a) the A/A for the new incumbent: 2 arms (X:a, X:b), about 1.1k Luna + 0.25k Sol;
-   - (b) the first dev-holdout look: incumbent vs D, r = 2, gate = all-pass ≥ +10 pp with cluster CI low > 0, about 1.1k Luna. Read aggregates only (`summary.json`).
-   - Both are pre-registered in the LOG.
-3. **Next candidates against E002** (seeds 3–5 and 8 in `nano/seeds.md`, plus Codex Sol proposals):
-   - a judge with a clause checklist;
-   - judge-guided repair;
-   - a clause-check first-attempt prompt;
-   - diverse sampling.
-   - Choose by the failure analysis.
-4. **Proposer comparison** (A²D architect vs an uninformed proposer) after ≥ 3 keeps.
+1. **The queue for 2026-10-17 (UTC)** is a background runner (`$SCRATCH/queue-runner.sh $SCRATCH/queue-2026-10-17.txt 202610170005`). It runs these lines in order:
+   - (a) **dev-holdout look 1**: `python3 -I nano/eval.py look --n 1 --registered-at f5b71409352bf998437bcaff2492368e77a9d26a --seed 6161 --jobs 8`. It prints only gate PASS/FAIL; the full report stays in `~/.a2d-holdout/runs/c2-look1/report.json`.
+   - (b) E005, E007, E006, E008, each via `python3 -I nano/eval.py run --id <id> --candidate nano/candidates/<file> --proposer <claude|sol> --jobs 6 --stop-after full --hypothesis "<as in LOG>"`.
+   - Every stage self-defers when today's Luna count plus its worst case would exceed 3k (`python3 -I nano/eval.py budget` shows the count).
+   - **If the runner died:** re-run the same lines by hand. Cached stages are reused, and the experiment manifests keep them immutable.
+2. **If look 1 PASSES:**
+   - freeze E002;
+   - get one Codex Sol review and one fresh-Claude review;
+   - pre-register confirmation-2: arms D, B and X:frozen at r = 2 (one replicate per day, pooled with `a2d lift pool`), `--claim` vs D and B.
+   - **If it FAILS:** continue the search.
+3. **Proposer comparison** (A²D architect = informed, with failure dossiers carrying labels only, vs uninformed, at equal budget): draft the protocol, freeze it, and get a review. The goal triggers it after ≥ 3 keeps; a budget-reserve trigger is to be added as an addendum.
+- **State of the search:**
+  - Incumbent E002; thr_allpass 0.0357 (eval v2.3; A/A from its own replicates).
+  - C2-FA1: the judge is at its ceiling (0 misses in 249), and the failures are misreadings shared across samples. So the levers are generation-side.
+  - Registered: E005 (diverse angles, claude), E006 (Sol spec notes, claude), E007 (Sol-directed repair, sol), E008 (4th-sample synthesis, sol).
+  - Sol's r1-1 (Luna at high effort) was declined as out of scope.
 - **Budget:**
-  - Cycle-2 Luna so far is about 3.2k: 275 on 10-15 and 2,903 on 10-16, so **10-16 is at the cap**.
-  - Sol: 306 on 10-16.
-  - The A² session shares the Codex account.
+  - Cycle-2 Luna: about 3.2k (275 on 10-15; 2,903 + about 15 smoke calls on 10-16).
+  - Sol: 407 on 10-16.
+  - About 21.8k Luna left of 25k; deadline 2026-11-30.
 
 ## The instrument (`a2d lift`, `crates/a2d-lift/`)
 
