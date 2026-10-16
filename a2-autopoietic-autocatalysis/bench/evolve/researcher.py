@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import argparse
+
 import hashlib
 import json
 import os
@@ -112,12 +114,18 @@ def ngram_violations(genome_dir: Path, texts: list[str], n: int = 8) -> list[str
     return sorted(shared)
 
 
+RESEARCHER_PROMPT = "Read program.md and README.md in the repository root, then follow program.md exactly."
+
+
 def run_researcher(cfg, workspace: Path, exp_id: str, run_dir: Path) -> dict:
+    """One sandboxed a2ctl agent call on the researcher workspace; `cfg` (the loop's) is not modified."""
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    cfg.endpoint = getattr(cfg, "endpoint", ["https://chatgpt.com", "https://auth.openai.com"])
+    cfg = argparse.Namespace(**vars(cfg))
+    cfg.endpoint = getattr(cfg, "endpoint", None) or ["https://chatgpt.com", "https://auth.openai.com"]
     cfg.provider = getattr(cfg, "provider", "codex/gpt-6-luna")
     cfg.max_tokens = getattr(cfg, "max_tokens", 2000000)
+    cfg.a2ctl = getattr(cfg, "a2ctl", None) or e1run.REPO_ROOT / "target" / "debug" / "a2ctl"
     cfg.timeout = 1500
     cfg.reasoning_effort = "xhigh"
     cfg.codex_home = codex_homes.ensure_role_home("researcher")
@@ -125,9 +133,8 @@ def run_researcher(cfg, workspace: Path, exp_id: str, run_dir: Path) -> dict:
     proxy = None
     emit, log = run_dir / "researcher.jsonl", run_dir / "researcher.log"
     emit.unlink(missing_ok=True)
-    payload = {"task_id": "researcher-" + exp_id,
-               "problem_statement": "Read program.md and README.md in the repository root, then follow program.md exactly.",
-               "verification_commands": []}
+    payload = e1run.task_payload("researcher", RESEARCHER_PROMPT, "researcher-" + exp_id, cfg.endpoint)
+    payload["verification_commands"] = []
     sealed_root = tasks.e1_home() / "sealed"
     try:
         proxy = e1run.start_proxy(cfg, run_dir, "researcher-" + exp_id)

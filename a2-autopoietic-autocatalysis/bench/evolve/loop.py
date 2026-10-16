@@ -200,7 +200,9 @@ def _begin_experiment(state: dict, cfg, screen: list[str], full_tasks: list[str]
     if getattr(cfg, "dry_run", False):
         scenarios = getattr(cfg, "dry_run_scenarios", [])
         current["dry_scenario"] = scenarios[index - 1] if index - 1 < len(scenarios) else "keep"
-    current["workspace"] = str(run_root / exp_id / "workspace")
+    # Outside the private dir: the researcher's Codex is denied ~/.a2-e1/private, and the workspace
+    # holds only researcher-visible material (genome copy, program.md, log, digests).
+    current["workspace"] = str(tasks.e1_home() / "evolve-workspaces" / exp_id / "workspace")
     current["researcher_run_dir"] = str(run_root / exp_id / "researcher")
     return current
 

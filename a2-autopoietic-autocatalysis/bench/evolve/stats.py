@@ -172,7 +172,7 @@ def simulate_rule(champion_rates, S, effect_logit, trials, seed) -> float:
 def _noise_floor(args) -> int:
     rows = load_rows(args.run_dir, args.label)
     rates = per_task_rates(rows, args.label)
-    selected = select_screen_set(rates, seed=args.seed)
+    selected = select_screen_set(rates, sentinels=args.sentinels, hard=args.hard, seed=args.seed)
     screen = selected["S"]
     null_a = null_delta_samples(rates, screen, 1, seed=args.seed)
     null_b = null_delta_samples(rates, screen, 2, seed=args.seed)
@@ -197,6 +197,8 @@ def main(argv: list[str]) -> int:
     noise.add_argument("--out", type=Path, required=True)
     noise.add_argument("--seed", type=int, default=0)
     noise.add_argument("--trials", type=int, default=2000)
+    noise.add_argument("--sentinels", type=int, default=3)
+    noise.add_argument("--hard", type=int, default=4)
     args = parser.parse_args(argv)
     return _noise_floor(args)
 
