@@ -49,6 +49,8 @@ REPO_PROFILES = {
         "extra": ["pytest", "pytest-mock"],
         "pythonpath": ["."],
         "submodules": ["vendor/infogami"],
+        # The repo pins its interpreter in its Docker base image (3.11 in 2024, 3.12 by 2025).
+        "python_from": "docker",
     },
     "qutebrowser/qutebrowser": {
         "requirements": ["requirements.txt"],
@@ -61,6 +63,9 @@ REPO_PROFILES = {
         "pythonpath": ["."],
         "env": {"QT_QPA_PLATFORM": "offscreen"},
         "fallback_constraints": ["PyQt5<5.16", "PyQtWebEngine<5.16"],
+        # Lockfiles pin x86-only wheels; the fallback stages use the unpinned *-raw sources instead.
+        "raw_requirements": {"requirements.txt": "misc/requirements/requirements-qutebrowser.txt-raw"},
+        "raw_suffix": "-raw",
     },
 }
 
@@ -173,6 +178,8 @@ def install_requirements(venv: Path, repo: Path, profile: dict, base_date: str) 
     if pinned.returncode == 0:
         return "date-pinned"
     constraints = profile.get("fallback_constraints", [])
+    if profile.get("raw_suffix"):
+        return _install_raw(venv, repo, profile, files, base_date, constraints)
     if constraints:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="e1-constraints-", suffix=".txt") as stream:
             stream.write("\n".join(constraints) + "\n")
@@ -181,6 +188,43 @@ def install_requirements(venv: Path, repo: Path, profile: dict, base_date: str) 
     else:
         subprocess.run(base, check=True, capture_output=True, text=True)
     return "unpinned-fallback"
+
+
+def raw_requirement_files(profile: dict, files: list[str], exists) -> list[str]:
+    """Unpinned sources of pinned lockfiles: an explicit mapping, else `<file><raw_suffix>`."""
+    raw = []
+    for rel in files:
+        candidate = profile.get("raw_requirements", {}).get(rel, rel + profile["raw_suffix"])
+        raw.append(candidate if exists(candidate) else rel)
+    return raw
+
+
+def _install_raw(venv: Path, repo: Path, profile: dict, files: list[str], base_date: str, constraints: list[str]) -> str:
+    """Stages 2-3 for lockfile repos: raw sources date-pinned, then raw sources unpinned (both constrained)."""
+    raw = raw_requirement_files(profile, files, lambda rel: (repo / rel).is_file())
+    reqs = [arg for r in raw for arg in ("-r", str(repo / r))]
+    base = ["uv", "pip", "install", "-q", "--python", str(venv / "bin" / "python"), *reqs, *profile["extra"]]
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="e1-constraints-", suffix=".txt") as stream:
+        stream.write("\n".join(constraints) + "\n")
+        stream.flush()
+        dated = subprocess.run([*base, "-c", stream.name, "--exclude-newer", common.exclude_newer_for_base_date(base_date)],
+                               capture_output=True, text=True)
+        if dated.returncode == 0:
+            return "raw-date-pinned"
+        subprocess.run([*base, "-c", stream.name], check=True, capture_output=True, text=True)
+    return "raw-unpinned"
+
+
+def python_version(profile: dict, repo: Path, base_date: str) -> str:
+    """The base-year rule, unless the profile names a directory whose Dockerfiles pin `FROM python:X.Y`."""
+    source = profile.get("python_from")
+    if source:
+        versions = set()
+        for dockerfile in sorted((repo / source).rglob("Dockerfile*")):
+            versions.update(re.findall(r"^FROM\s+python:(\d+\.\d+)", dockerfile.read_text(errors="ignore"), re.MULTILINE))
+        if versions:
+            return max(versions, key=lambda v: tuple(int(x) for x in v.split(".")))
+    return common.python_for_base_date(base_date)
 
 
 def prepare(opaque: str) -> dict:
@@ -206,7 +250,7 @@ def prepare(opaque: str) -> dict:
         (private_dir(opaque) / "manifest.json").write_text(json.dumps(manifest, indent=1, sort_keys=True))
     venv = private_dir(opaque) / "venv"
     if not (venv / "bin" / "python").exists():
-        python = common.python_for_base_date(manifest["base_date"])
+        python = python_version(profile, repo, manifest["base_date"])
         subprocess.run(["uv", "venv", "-q", "--python", python, str(venv)], check=True)
         try:
             manifest["install_mode"] = install_requirements(venv, repo, profile, manifest["base_date"])

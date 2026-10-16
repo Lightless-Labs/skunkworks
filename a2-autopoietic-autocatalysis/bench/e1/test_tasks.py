@@ -83,7 +83,7 @@ class RequirementInstallTests(unittest.TestCase):
             with mock.patch.object(tasks.subprocess, "run", side_effect=run):
                 mode = tasks.install_requirements(Path("/venv"), repo, tasks.REPO_PROFILES["qutebrowser/qutebrowser"], "2021-01-01")
 
-            self.assertEqual(mode, "unpinned-fallback")
+            self.assertEqual(mode, "raw-date-pinned")
             first, second = [call[0] for call in captured]
             self.assertIn(str(reqdir / "requirements-pyqt5.15.txt"), first)
             self.assertNotIn(str(reqdir / "requirements-pyqt5.10.txt"), first)
@@ -92,6 +92,44 @@ class RequirementInstallTests(unittest.TestCase):
             constraints = Path(second[second.index("-c") + 1])
             self.assertEqual(constraints_text, ["PyQt5<5.16\nPyQtWebEngine<5.16\n"])
             self.assertFalse(constraints.exists())
+
+
+class LockfileFallbackTests(unittest.TestCase):
+    def test_raw_sources_replace_lockfiles_in_fallback_stages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp); req = repo / "misc/requirements"; req.mkdir(parents=True)
+            (repo / "requirements.txt").write_text("adblock==0.3.2\n")
+            (req / "requirements-qutebrowser.txt-raw").write_text("adblock\n")
+            (req / "requirements-tests.txt").write_text("pytest==7.0\n")
+            (req / "requirements-tests.txt-raw").write_text("pytest\n")
+            calls = []
+            def run(argv, **kwargs):
+                calls.append(list(argv))
+                return subprocess.CompletedProcess(argv, 1 if len(calls) < 3 else 0, "", "")
+            with mock.patch.object(tasks.subprocess, "run", side_effect=run):
+                mode = tasks.install_requirements(Path("/venv"), repo, tasks.REPO_PROFILES["qutebrowser/qutebrowser"], "2023-08-15")
+        self.assertEqual(mode, "raw-unpinned")
+        pinned, dated, unpinned = calls
+        self.assertIn(str(repo / "requirements.txt"), pinned)
+        for stage in (dated, unpinned):
+            self.assertIn(str(req / "requirements-qutebrowser.txt-raw"), stage)
+            self.assertIn(str(req / "requirements-tests.txt-raw"), stage)
+            self.assertNotIn(str(repo / "requirements.txt"), stage)
+            self.assertIn("-c", stage)
+        self.assertIn("--exclude-newer", dated)
+        self.assertNotIn("--exclude-newer", unpinned)
+
+
+class PythonVersionTests(unittest.TestCase):
+    def test_dockerfile_pin_overrides_year_rule_only_when_profiled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp); (repo / "docker").mkdir()
+            (repo / "docker" / "Dockerfile.olbase").write_text("FROM python:3.12.2-slim-bookworm\n")
+            ol = tasks.REPO_PROFILES["internetarchive/openlibrary"]
+            self.assertEqual(tasks.python_version(ol, repo, "2025-02-20"), "3.12")
+            self.assertEqual(tasks.python_version(tasks.REPO_PROFILES["ansible/ansible"], repo, "2025-02-20"), "3.11")
+            (repo / "docker" / "Dockerfile.olbase").unlink()
+            self.assertEqual(tasks.python_version(ol, repo, "2022-05-01"), "3.10")
 
 
 class ProfileTests(unittest.TestCase):
