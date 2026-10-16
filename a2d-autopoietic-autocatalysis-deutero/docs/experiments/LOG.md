@@ -860,7 +860,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Family briefs were written to avoid every existing family name and its near-siblings (95 names checked).
   - Families: auction-engine, bloom-filter, chmod-perms, color-convert, connect-four, cookie-jar, dice-notation, geohash, go-board, leaderboard, loan-amortize, merge-base, morse-codec, music-chords, poker-hands, priority-mailbox, process-tree, ranked-vote, sexpr-parse, shipping-rates, sokoban-moves, stack-vm, tiny-sat, tournament-bracket, word-ladder.
 - **Validation:** 94/100 on the first pass. The 6 rejections were all "public tests never call a `pub fn`" (connect-four l1–l4, sokoban-moves l3–l4). A blind FIX pass gave FIXED 4 + 2, and re-validation passed 6/6. **100/100 accepted. Suite hash `9114bae3b071c52b2e9e257bee26eb7bc0df4bec05b479f390f973f9db2072cb`.**
-- **Independent-solve audit:** deferred to reduce account contention, but required before the first dev-holdout look (the re-check after the first confirmed keep).
+- **Independent-solve audit (2026-10-16):** Codex `gpt-6.1-sol` (medium), arm D, k = 3, on all 100 tasks. **100/100 pass every hidden test**; 0 public-green but hidden-fail; integrity OK; 0 void. No adjudication was needed. The dev-holdout is certified for looks.
 - Use: re-checks of the incumbent vs D after each confirmed keep (at most 4 looks), plus a final frozen-candidate look; aggregates only. Its families are disjoint from train-all, c1-validation and both confirmation sets.
 
 ### E002 / E004 screen results under eval v2.1 (fraction rule), and the metric amendment  [cycle 2, 2026-10-16]
