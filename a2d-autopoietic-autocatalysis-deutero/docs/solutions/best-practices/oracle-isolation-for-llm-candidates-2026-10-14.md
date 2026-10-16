@@ -39,3 +39,5 @@ Rust's `Command::output()` and `wait_with_output()` only read stdout and stderr 
 ## Testing the oracle
 
 The tests in `crates/a2d-lift/src/oracle.rs` cover each attack: macro shadowing (textual and exported), compile-time self-reads, a forged summary followed by a failing exit, and hoisting of inner attributes and `//!` docs. One pitfall in writing them: a self-read test must build its needle at run time (`["sees", "_nothing"].concat()`). Otherwise the candidate finds the needle in its own source, and the test fails for the wrong reason.
+
+See also: `static-guards-are-not-isolation-use-os-sandbox-2026-10-16.md` (static guards are lint; enforce the boundary with an OS sandbox).

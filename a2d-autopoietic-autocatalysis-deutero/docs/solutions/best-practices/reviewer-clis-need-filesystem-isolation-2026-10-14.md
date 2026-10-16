@@ -30,3 +30,5 @@ A²D's Codex provider passes `--ignore-user-config` and runs in an empty tempora
 - If a reviewer needs to read repo files, also pass `-c approval_policy="never"`, then check `git status` afterwards.
 - Close stdin (`< /dev/null`) for background `codex exec` runs. Otherwise it blocks on "Reading additional input from stdin…" until it times out.
 - Treat any reviewer-authored change in the repo as untrusted output: revert it, then fold the substance in yourself.
+
+See also: `static-guards-are-not-isolation-use-os-sandbox-2026-10-16.md` (same lesson for LLM-written harnesses: isolate at the OS level, prove it with a planted secret).
