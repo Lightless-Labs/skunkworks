@@ -12,7 +12,7 @@ These are validity-gate results only. No agent has run on any sealed task.
 |---|---|---|---|
 | 1 | 28 / 62 | 0 / 63 | none |
 | 2 (stopped at 84/125) | 45 / 62 | 0 / 14 | lockfile `-raw` fallbacks; plugin autoload; Dockerfile Python pin |
-| 3 | 46 / 62 | 0 / 14 (first rows) | import roots restored after pytest is pinned; PyQt wheels only |
+| 3 (final) | 46 / 62 | 0 / 63 | import roots restored after pytest is pinned; PyQt wheels only |
 
 Gate 3's first 14 qutebrowser rows break down as:
 - 7 setup errors (dependency resolution or builds);
