@@ -257,6 +257,16 @@ class VenvTests(unittest.TestCase):
             result = hardened.run_pytest_hardened(tree, venv, ids, [], ini, [], 120, Path.home())
             self.assertEqual(result.passed, set(ids), result.output[-2000:])
 
+    def test_repo_root_import_root_is_kept_for_tests(self) -> None:
+        with tempfile.TemporaryDirectory(dir=TEST_TMP) as tmp:
+            tree, home, _ = self._runner_tree(Path(tmp))
+            (tree / "mypkg").mkdir()
+            (tree / "mypkg" / "__init__.py").write_text("VALUE = 7\n")
+            (tree / "tests" / "test_root.py").write_text("import mypkg\ndef test_root():\n    assert mypkg.VALUE == 7\n")
+            ini = hardened.frozen_pytest_config(tree, Path(tmp) / "out")
+            result = hardened.run_pytest_hardened(tree, self.venv, ["tests/test_root.py::test_root"], ["."], ini, [], 60, home)
+            self.assertIn("tests/test_root.py::test_root", result.passed, result.output[-2000:])
+
     def test_shadow_pytest_in_tree_is_not_imported(self) -> None:
         with tempfile.TemporaryDirectory(dir=TEST_TMP) as tmp:
             tree, home, _ = self._runner_tree(Path(tmp))

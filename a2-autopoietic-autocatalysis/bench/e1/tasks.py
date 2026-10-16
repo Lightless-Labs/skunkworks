@@ -66,6 +66,8 @@ REPO_PROFILES = {
         # Lockfiles pin x86-only wheels; the fallback stages use the unpinned *-raw sources instead.
         "raw_requirements": {"requirements.txt": "misc/requirements/requirements-qutebrowser.txt-raw"},
         "raw_suffix": "-raw",
+        # Old PyQt sdists need qmake; arm64 wheels exist from 5.15.10, so take binaries only.
+        "fallback_only_binary": ["pyqt5", "pyqt5-sip", "pyqt5-qt5", "pyqtwebengine", "pyqtwebengine-qt5"],
     },
 }
 
@@ -204,6 +206,8 @@ def _install_raw(venv: Path, repo: Path, profile: dict, files: list[str], base_d
     raw = raw_requirement_files(profile, files, lambda rel: (repo / rel).is_file())
     reqs = [arg for r in raw for arg in ("-r", str(repo / r))]
     base = ["uv", "pip", "install", "-q", "--python", str(venv / "bin" / "python"), *reqs, *profile["extra"]]
+    for name in profile.get("fallback_only_binary", []):
+        base += ["--only-binary", name]
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="e1-constraints-", suffix=".txt") as stream:
         stream.write("\n".join(constraints) + "\n")
         stream.flush()

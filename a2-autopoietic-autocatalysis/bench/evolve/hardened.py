@@ -326,16 +326,21 @@ def run_pytest_hardened(tree: str | Path, venv: str | Path, node_ids: list[str],
         for plugin in plugins:
             pytest_args.extend(["-p", plugin])
         pytest_args.extend([f"--junitxml={junit}", *(select or node_ids)])
+        # Import and pin pytest with no tree path on sys.path (no shadowing), then restore the repo's
+        # explicit import roots (PYTHONPATH, which may include the tree root itself) for the tests.
         bootstrap = (
             "import os, sys\n"
-            "sys.path[:] = [p for p in sys.path if p not in ('', '.', os.getcwd())]\n"
-            "sys.path.insert(0, %r)\n"
+            "tree = os.path.realpath(os.getcwd())\n"
+            "inside = lambda p: os.path.realpath(p or '.') == tree or os.path.realpath(p or '.').startswith(tree + os.sep)\n"
+            "explicit = [p for p in sys.path if p]\n"
+            "sys.path[:] = [%r] + [p for p in explicit if not inside(p)]\n"
             "import pytest, _pytest\n"
             "venv = os.path.realpath(os.environ['EVOLVE_VENV'])\n"
             "for m in (pytest, _pytest):\n"
             "    if not os.path.realpath(m.__file__).startswith(venv + os.sep): raise SystemExit(97)\n"
+            "sys.path[:] = [%r] + explicit\n"
             "raise SystemExit(pytest.main(%r))\n"
-        ) % (str(guard_dir), pytest_args)
+        ) % (str(guard_dir), str(guard_dir), pytest_args)
         args = [str(_venv_python(venv)), "-c", bootstrap]
         try:
             proc = run_sandboxed(args, profile, cwd=tree, env=env, capture_output=True, text=True, timeout=timeout)
