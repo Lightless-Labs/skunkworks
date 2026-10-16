@@ -76,7 +76,12 @@ def main():
     ap.add_argument("--stats", required=True)
     ap.add_argument("--model", default="gpt-6.1-sol")
     ap.add_argument("--effort", default="high")
+    ap.add_argument("--extract-only", action="store_true", help="re-parse an existing reply.md")
     args = ap.parse_args()
+    if args.extract_only:
+        out_dir = ROOT / "runs" / f"c2-propose-{args.round}"
+        extract(args.round, out_dir, (out_dir / "reply.md").read_text())
+        return
     log = (ROOT / "docs/experiments/LOG.md").read_text()
     cycle2 = log[log.index("## Cycle 2"):]
     # Holdout metadata (family names, hashes) never reaches a proposer.
@@ -114,15 +119,20 @@ def main():
             sys.exit(f"proposer failed ({r.returncode}); see {out_dir}/codex.log")
         reply = reply_path.read_text()
     (out_dir / "reply.md").write_text(reply)
+    extract(args.round, out_dir, reply)
+
+
+def extract(round_name, out_dir, reply):
     parts = re.split(r"^### CANDIDATE (\d+):\s*([a-z0-9-]+)\s*$", reply, flags=re.M)
     made = []
     for i in range(1, len(parts) - 2, 3):
         n, slug, body = parts[i], parts[i + 1], parts[i + 2]
-        code = re.search(r"```python\n(.*?)```", body, re.S)
+        # The closing fence is a line of its own; fences inside string literals are not.
+        code = re.search(r"^```python[ \t]*\n(.*?)^```[ \t]*$", body, re.S | re.M)
         hyp = re.search(r"Hypothesis:\s*(.+)", body)
         if not code:
             continue
-        path = NANO / "candidates" / f"{args.round}-{n}-{slug}.py"
+        path = NANO / "candidates" / f"{round_name}-{n}-{slug}.py"
         path.write_text(code.group(1))
         made.append({"n": int(n), "slug": slug, "path": str(path.relative_to(ROOT)),
                      "hypothesis": hyp.group(1).strip() if hyp else ""})

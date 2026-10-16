@@ -999,3 +999,27 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Confound (disclosed):** Sol authored the tasks.
 - **Coder-model rule:** Sol writes no code, and every submitted file is Luna's.
 - **Protocol:** eval v2.3, incumbent E002. `--id E006`.
+
+### Proposer round r1 (Codex Sol) — E007, E008 registered; r1-1 declined  [cycle 2, proposer: sol, 2026-10-16]
+- **Setup:** `docs/experiments/analysis/c2_propose.py --round r1`, with `gpt-6.1-sol` at high effort and **no tools**. Everything was inline:
+  - the incumbent and v0 files, the protocol and the guard;
+  - `seeds.md`, `results.tsv`, and the cycle-2 LOG with the holdout entry removed;
+  - the C2-FA1 aggregates (`runs/c2-propose-r1/stats.json`), which list E005 and E006 as already pending.
+  - Prompt, reply and parsed candidates: `runs/c2-propose-r1/`.
+- **r1-1, higher-effort Luna** (all Luna calls at `high` through a lane): **declined, out of scope.**
+  - It changes the coder's configuration (the cycle's outcome is defined for `gpt-6-luna` at low effort), not the harness.
+  - Its fair comparator would be D at high effort. It is kept as `nano/candidates/declined-r1-1-higher-effort-luna.py` for a possible effort-vs-harness question later.
+- **E007 = r1-2, Sol-directed repair:** `nano/candidates/E007_sol_directed_repair.py`, Sol's code unmodified.
+  - 3 Luna drafts, then one Sol call that selects among the distinct greens (or among all drafts if none is green) and lists concrete defects without writing code, then one Luna repair of the pick with those findings.
+  - Submission: the pick and the repair, with the controller's public-rank and later-wins tie rule, so a green repair supersedes the pick.
+  - The Sol reply must be pure JSON; otherwise it falls back (counted in DIAG).
+  - Hypothesis (Sol): "Three independent Luna drafts followed by Sol selection and concrete critique, then one Luna repair, outperform four drafts followed by selection alone." Sol's expectation: +2 to +6 pp.
+  - Bar from C2-FA1: it must beat the about −3 pp cost of the lost 4th sample.
+- **E008 = r1-3, 4th-sample synthesis:** `nano/candidates/E008_sol_fourth_sample_synthesis.py`, Sol's code unmodified.
+  - Sample 4 is a Luna call that sees drafts 1–3 with their public results and writes one solution, "using the drafts as material". The judge and branches are unchanged.
+  - Hypothesis (Sol): "Replacing only the fourth independent Luna sample with a solution synthesized from the first three drafts produces useful candidates that independent sampling misses."
+- **Smoke test** (1 dev task, 1 run each; prompts read):
+  - E007 used 5 calls; its review parsed and flagged 2 concrete Θ(n²) scalability defects, and the repair was green.
+  - E008 used 4 calls; its synthesis was green and distinct, on the one-green branch.
+  - The E005 and E006 smokes also passed: 5 calls each, and the angles and notes appear in the prompts as designed.
+- **Run order:** look 1, then E005 (claude), E007 (sol), E006 (claude), E008 (sol), interleaved by proposer. Each stage self-defers at the 3k daily cap.

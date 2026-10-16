@@ -42,3 +42,4 @@ root_cause: same_model_signals_share_the_coders_blind_spots
 - **Live, the judge needs no tools at all.** Pass the spec and the candidates inline, through a no-tools lane.
 - **Claim the right thing.** Sol is a stronger model from the same vendor. The honest claim is "Luna generation plus Sol selection", not "cross-family review". A Claude-lane replication would be needed for a family claim.
 - **Equal calls are not equal compute.** A judge call reads 3–5 files. Report tokens per lane beside any invocation-capped result.
+- **Follow-up (2026-10-16):** live, the judge reached the ceiling; see `selector-at-ceiling-moves-bottleneck-to-generation-2026-10-16.md`.
