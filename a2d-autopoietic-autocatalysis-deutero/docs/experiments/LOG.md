@@ -862,3 +862,26 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Validation:** 94/100 on the first pass. The 6 rejections were all "public tests never call a `pub fn`" (connect-four l1–l4, sokoban-moves l3–l4). A blind FIX pass gave FIXED 4 + 2, and re-validation passed 6/6. **100/100 accepted. Suite hash `9114bae3b071c52b2e9e257bee26eb7bc0df4bec05b479f390f973f9db2072cb`.**
 - **Independent-solve audit:** deferred to reduce account contention, but required before the first dev-holdout look (the re-check after the first confirmed keep).
 - Use: re-checks of the incumbent vs D after each confirmed keep (at most 4 looks), plus a final frozen-candidate look; aggregates only. Its families are disjoint from train-all, c1-validation and both confirmation sets.
+
+### E002 / E004 screen results under eval v2.1 (fraction rule), and the metric amendment  [cycle 2, 2026-10-16]
+- **E002 screen** (68 tasks; `runs/c2-E002/screen`):
+  - Δfrac = +0.0050 (SE 0.0164). **Δall-pass = +11.8 pp (SE 4.7)**: net +8 tasks (11 won, 3 lost).
+  - **Registered decision: discard (screen)**, because Δfrac < threshold / 2 = 0.0137.
+  - Diagnostics: the judge branch ran on 62 tasks, one-green on 6, no-green-repair on 0; 1 judge fallback (a timeout); 4 coder calls on every task.
+  - The fraction delta splits as follows:
+    - won tasks: +1.29 in total;
+    - lost tasks: −1.135 in total, three catastrophic failures (mean −0.38, near-zero fraction from timeouts or a compile failure);
+    - joint failures: +0.19.
+  - The divergence is real and comes from the kind of treatment. Unrepaired, judge-picked samples pass more tasks completely, but the files that fail can fail badly. A fraction mean is dominated by a few catastrophic tasks, while all-pass counts every failure the same.
+  - Spend: 431 invocations (cand: Luna 272 and Sol 62; inc: 97) and 3.46M tokens.
+- **E004 screen** (68 tasks): Δfrac = −0.0189 (SE 0.0149), Δall-pass = +4.4 pp (SE 3.8). Undecided under v2.1 (launched before the threshold existed). Spend: 421 invocations (cand: Luna 278 and Sol 57; inc: 86).
+- **Metric amendment (eval v2.2, pre-registered here before any rest or confirmation data):**
+  - **The primary keep metric becomes all-pass** (working software), with its own A/A threshold from the existing C2-AA run: **+0.0714, i.e. 10 net tasks of 140** (`threshold_allpass` in `nano/aa.json`).
+  - The rules on all-pass: screen ≥ threshold / 2; full Δall-pass > max(threshold, 1.645 · cluster SE), with Δfrac not significantly negative; confirmation Δall-pass > threshold / 2.
+  - Hidden-test fraction stays a reported secondary.
+  - **Reason:** fraction was chosen for sample efficiency (2.8× lower A/A noise relative to effect), and its correlation with all-pass (0.75) came from 51 arms that were all repair-loop variants. It disagreed with all-pass on the first selection-type candidate.
+  - **Disclosure:** the goal text names fraction as the search metric. This is a disclosed deviation from my own design choice, made after observing E002's screen.
+- **Re-registrations under v2.2.** Same candidate files, each reusing its already observed screen stage, with fresh rest and confirmation runs:
+  - **E002b** (from E002), **E004b** (from E004), and **E003b** (from E003 once its screen completes).
+  - The screens were observed before the rule changed; E002's +11.8 pp is why it changed.
+  - **The confirmation replicate (fresh, 140 tasks) is the actual test.**

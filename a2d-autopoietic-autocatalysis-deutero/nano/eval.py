@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Eval v2.1 for the nanoharness (A²D cycle 2): one keep/discard experiment.
+"""Eval v2.2 for the nanoharness (A²D cycle 2): one keep/discard experiment.
 
     python3 -I nano/eval.py aa                  # 3-arm A/A + parity run; writes nano/aa.json
     python3 -I nano/eval.py run --id E002 --candidate <file.py> --hypothesis "..." [--proposer claude]
@@ -23,6 +23,11 @@ Protocol (docs/plans/2026-10-15-cycle2-nanoharness.md, Addendum after the design
 - Every scored run must have exactly one score per expected task for each
   arm; otherwise the run is invalid (operational failures are never
   silently dropped).
+- v2.2 (LOG "metric amendment", 2026-10-16): the PRIMARY keep metric is the
+  all-pass difference (working software), with its own A/A threshold
+  (`threshold_allpass` in nano/aa.json); hidden-test fraction is reported as
+  secondary. The proxy disagreed with all-pass on the first selection-type
+  candidate (E002 screen).
 - threshold = 95th percentile of the family-bootstrap null from the A/A run
   (centred per-task differences, one draw per task as in candidate runs).
   The A/A run is a 3-arm run (D, X:a, X:b) so it also checks parity with
@@ -34,7 +39,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 NANO = ROOT / "nano"
 DEV = ROOT / "tasks/train-all"
 A2D = str(ROOT / "target/debug/a2d")
-PROTOCOL = "eval-v2.1"
+PROTOCOL = "eval-v2.2"
 FIELDS = ("id", "date", "proposer", "stage", "hypothesis", "delta_frac", "se", "delta_allpass",
           "se_allpass", "threshold", "n_tasks", "n_families", "decision", "invocations", "calls_by_lane",
           "tokens", "candidate_sha", "note")
@@ -186,11 +191,11 @@ def cluster_se(rows, idx, reps=2000, seed=7):
     return (sum((m - mu) ** 2 for m in means) / (len(means) - 1)) ** 0.5
 
 
-def aa_threshold(rows, reps=4000, seed=11):
-    mean = sum(r[1] for r in rows) / len(rows)
+def aa_threshold(rows, reps=4000, seed=11, idx=1):
+    mean = sum(r[idx] for r in rows) / len(rows)
     by = {}
-    for fam, d, _ in rows:
-        by.setdefault(fam, []).append(d - mean)
+    for r in rows:
+        by.setdefault(r[0], []).append(r[idx] - mean)
     fams = list(by)
     rng = random.Random(seed)
     means = sorted(
@@ -238,12 +243,14 @@ def cmd_aa(args):
         lift("C2-AA", DEV, ["D", "X:a", "X:b"], {"a": snap, "b": snap}, lanes, out, 4242, args.jobs)
     rows = paired([(out, DEV)], "X:b", "X:a")
     thr = aa_threshold(rows)
+    thr_all = aa_threshold(rows, idx=2)
     parity = {f"{x} - D": {"delta_frac": mean(r, 1), "delta_allpass": mean(r, 2), "se_frac": cluster_se(r, 1)}
               for x in ("X:a", "X:b") for r in [paired([(out, DEV)], x, "D")]}
     total, calls, tokens = spend(out)
     result = {"protocol": PROTOCOL, "incumbent_sha": sha(snap), "n": len(rows),
               "aa_mean_delta_frac": mean(rows, 1), "aa_mean_delta_allpass": mean(rows, 2),
-              "threshold_frac": thr, "parity_vs_D": parity, "run": str(out.relative_to(ROOT)),
+              "threshold_frac": thr, "threshold_allpass": thr_all,
+              "threshold_allpass_net_tasks": thr_all * len(rows), "parity_vs_D": parity, "run": str(out.relative_to(ROOT)),
               "invocations": total, "calls": calls, "tokens": tokens}
     (NANO / "aa.json").write_text(json.dumps(result, indent=1) + "\n")
     print(json.dumps(result, indent=1))
@@ -257,7 +264,10 @@ def cmd_run(args):
         sys.exit("nano/aa.json does not match the current incumbent; re-run `eval.py aa` first")
     # Without a threshold yet, only the screen stage is generated (and cached);
     # the decision is made on a later invocation once nano/aa.json exists.
-    thr = aa["threshold_frac"] if aa is not None else None
+    if aa is not None and "threshold_allpass" not in aa:
+        sys.exit("nano/aa.json lacks threshold_allpass; run `eval.py aa-allpass` (v2.2)")
+    thr = aa["threshold_allpass"] if aa is not None else None
+    thr_frac = aa["threshold_frac"] if aa is not None else None
     exp_dir = ROOT / "runs" / f"c2-{args.id}"
     exp_dir.mkdir(parents=True, exist_ok=True)
     inc, cand = exp_dir / "incumbent.py", exp_dir / "candidate.py"
@@ -273,17 +283,28 @@ def cmd_run(args):
                        "hypothesis": (exp_dir / "hypothesis.txt").read_text().strip()})
     if aa is not None and sha(inc) != aa["incumbent_sha"]:
         sys.exit("the snapshot incumbent differs from the A/A incumbent")
-    fams = sorted(families(DEV))
-    rng = random.Random(f"A2D-C2-SCREEN-{args.id}")
-    rng.shuffle(fams)
-    halves = {"S": sorted(fams[: len(fams) // 2]), "R": sorted(fams[len(fams) // 2:])}
+    if args.reuse_screen_from:
+        # Re-registration of the same candidate under an amended rule: reuse the
+        # already observed screen stage (same halves), run rest/confirm fresh.
+        src = ROOT / "runs" / f"c2-{args.reuse_screen_from}"
+        if sha(src / "candidate.py") != sha(cand) or sha(src / "incumbent.py") != sha(inc):
+            sys.exit("--reuse-screen-from needs the same candidate and incumbent")
+        halves = json.loads((src / "halves.json").read_text())
+        if not (exp_dir / "screen").exists():
+            shutil.copytree(src / "screen", exp_dir / "screen", symlinks=True)
+            shutil.copy(str(src / "screen") + ".log", str(exp_dir / "screen") + ".log")
+    else:
+        fams = sorted(families(DEV))
+        rng = random.Random(f"A2D-C2-SCREEN-{args.id}")
+        rng.shuffle(fams)
+        halves = {"S": sorted(fams[: len(fams) // 2]), "R": sorted(fams[len(fams) // 2:])}
     (exp_dir / "halves.json").write_text(json.dumps(halves, indent=1) + "\n")
     seed = int(hashlib.sha256(args.id.encode()).hexdigest()[:6], 16)
     ext = {"inc": inc, "cand": cand}
     arms = ["X:inc", "X:cand"]
     common = {"id": args.id, "date": datetime.date.today().isoformat(), "proposer": args.proposer,
               "hypothesis": (exp_dir / "hypothesis.txt").read_text().strip(),
-              "threshold": f"{thr:.4f}" if thr is not None else "",
+              "threshold": (f"allpass {thr:.4f} / frac {thr_frac:.4f}" if thr is not None else ""),
               "candidate_sha": sha(cand)[:12]}
 
     def stage(name, runs_suites, decision, note=""):
@@ -309,7 +330,7 @@ def cmd_run(args):
     if thr is None:
         print(json.dumps({**rec, "decision": "pending (no A/A threshold yet)"}, indent=1))
         return
-    if mean(rows, 1) < thr / 2:
+    if mean(rows, 2) < thr / 2:
         rec["decision"] = "discard (screen)"
         log_result(rec)
         print(json.dumps(rec, indent=1))
@@ -319,7 +340,8 @@ def cmd_run(args):
         lift(f"C2-{args.id}-R", r_suite, arms, ext, lanes, rest, seed + 1, args.jobs)
     rows, rec = stage("full", [(screen, s_suite), (rest, r_suite)], "")
     se, se_all = cluster_se(rows, 1), cluster_se(rows, 2)
-    provisional = mean(rows, 1) > max(thr, 1.645 * se) and mean(rows, 2) > -1.645 * se_all
+    # Primary: all-pass. Guard: the fraction delta must not be significantly negative.
+    provisional = mean(rows, 2) > max(thr, 1.645 * se_all) and mean(rows, 1) > -1.645 * se
     if not provisional:
         rec["decision"] = "discard (full)"
         log_result(rec)
@@ -331,7 +353,7 @@ def cmd_run(args):
     if not (confirm / "summary.json").exists():
         lift(f"C2-{args.id}-C", DEV, arms, ext, lanes, confirm, seed + 2, args.jobs)
     rows_c, rec_c = stage("confirm", [(confirm, DEV)], "")
-    keep = mean(rows_c, 1) > thr / 2
+    keep = mean(rows_c, 2) > thr / 2
     rec_c["decision"] = "keep" if keep else "discard (confirm)"
     log_result(rec_c)
     if keep:
@@ -351,10 +373,24 @@ def main():
     r.add_argument("--hypothesis", required=True)
     r.add_argument("--proposer", default="claude")
     r.add_argument("--jobs", type=int, default=4)
+    r.add_argument("--reuse-screen-from", default=None)
     a = sub.add_parser("aa")
+    sub.add_parser("aa-allpass")
     a.add_argument("--jobs", type=int, default=4)
     args = ap.parse_args()
-    cmd_aa(args) if args.cmd == "aa" else cmd_run(args)
+    if args.cmd == "aa-allpass":
+        # v2.2: add the all-pass threshold from the existing A/A run (no new calls).
+        aa = json.loads((NANO / "aa.json").read_text())
+        rows = paired([(ROOT / aa["run"], DEV)], "X:b", "X:a")
+        aa["threshold_allpass"] = aa_threshold(rows, idx=2)
+        aa["threshold_allpass_net_tasks"] = aa["threshold_allpass"] * len(rows)
+        aa["protocol"] = PROTOCOL
+        (NANO / "aa.json").write_text(json.dumps(aa, indent=1) + "\n")
+        print(json.dumps({k: aa[k] for k in ("threshold_frac", "threshold_allpass", "threshold_allpass_net_tasks")}, indent=1))
+    elif args.cmd == "aa":
+        cmd_aa(args)
+    else:
+        cmd_run(args)
 
 
 if __name__ == "__main__":
