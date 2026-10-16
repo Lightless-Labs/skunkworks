@@ -1048,3 +1048,16 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Disclosure (proposer round r1):** r1's brief still contained the C2-LOOK1 registration text: the holdout path, a suite-hash prefix and the gate rule.
   - It held no tasks, family names or results, and the proposer had no tools. A path cannot be used by harness code, which now runs sandboxed in any case.
   - The proposer brief now drops look entries and every holdout-mentioning line (verified: 0 mentions left).
+
+### Phase-B tooling built  [cycle 2, proposer comparison, 2026-10-16; no model calls]
+- `docs/experiments/analysis/c2_phaseb.py`, with subcommands `quarters`, `stats`, `dossiers`, `brief`, `propose`, `round` and `analyze`, and `test_c2_phaseb.py` (19 offline tests; no subprocess or provider is reachable from the tests).
+  - Implemented by Codex `gpt-6.1-sol` (high) from a written spec, in a workspace-write sandbox that forbade `crates/`. Reviewed and amended by Claude.
+- **Review amendments:**
+  - (1) The proposer's empty cwd is now the system temp dir, not inside the repo's `runs/`.
+  - (2) A dossier's "what the coder saw" now comes from arm D's first prompt in the v0 A/A run, which is exactly the controller's task prompt for every dev task (parity-tested). It no longer comes from the incumbent's first prompt, which can carry harness additions such as angles or notes.
+- **Checks on real dev runs:**
+  - The post-run authorship check gives **0 false violations over 704 real tuples** (E002 judge, v0 and E003 random-green arms; screen, rest and confirm).
+  - `stats` reproduces C2-FA1 exactly.
+  - Round-1 dossiers: 8, family-disjoint from that round's quarter.
+  - Briefs: informed 199 KB, uninformed 12 KB. They differ only in the information sections, and holdout, seeds, look and confirmation mentions are all 0.
+- A brief this large passes as one command-line argument. macOS has no per-argument limit and `ARG_MAX` is 1 MB.
