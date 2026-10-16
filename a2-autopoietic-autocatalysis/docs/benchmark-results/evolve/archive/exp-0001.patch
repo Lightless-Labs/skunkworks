@@ -1,0 +1,62 @@
+diff --git a/genome/HYPOTHESIS.txt b/genome/HYPOTHESIS.txt
+new file mode 100644
+index 0000000..0036b62
+--- /dev/null
++++ b/genome/HYPOTHESIS.txt
+@@ -0,0 +1 @@
++Selecting the strongest visible verifier result across all fresh attempts will outperform submitting the first candidate that passes visible tests.
+diff --git a/genome/README.md b/genome/README.md
+index 515be03..15fe0ce 100644
+--- a/genome/README.md
++++ b/genome/README.md
+@@ -1,6 +1,6 @@
+ # Genome G0
+ 
+-A genome is the policy the frozen evaluator runs for each task. G0 implements stateless retry: it starts each agent call from the original code, includes the previous visible verifier failures in the next prompt, and submits the first visibly passing candidate. If none passes within the call budget, it submits the candidate with the most passing visible tests, with later candidates winning ties.
++A genome is the policy the frozen evaluator runs for each task. This experiment uses the available fresh calls to sample candidates, then selects the candidate with a passing verifier result and the strongest visible test score. A failed latest attempt contributes its visible verifier failures to the next prompt. If candidates tie, the later candidate wins.
+ 
+ ## Action protocol
+ 
+diff --git a/genome/policy.py b/genome/policy.py
+index df63872..bfe1af2 100644
+--- a/genome/policy.py
++++ b/genome/policy.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""G0: stateless retries at the configured effort, selecting the first visible pass."""
++"""G0: use fresh attempts and select the strongest visible verifier result."""
+ 
+ from __future__ import annotations
+ 
+@@ -7,6 +7,7 @@ import json
+ import re
+ import sys
+ from pathlib import Path
++from typing import Optional
+ 
+ FEEDBACK_HEADER = (
+     "\n\n---\nA previous attempt at this task was rejected by the verifier. "
+@@ -35,18 +36,19 @@ def render_verify(result: dict) -> str:
+     return "\n".join(lines) or "No passing visible tests were reported."
+ 
+ 
+-def choose_action(state: dict, effort: str | None = None) -> dict:
++def choose_action(state: dict, effort: Optional[str] = None) -> dict:
+     effort = effort or configured_effort()
+     candidates = state.get("candidates", [])
+     if not candidates:
+         return {"agent": {"base": "fresh", "prompt": state["problem_statement"], "effort": effort}}
+     last = candidates[-1]
+-    if last.get("verify", {}).get("passed"):
+-        return {"submit": {"candidate": last["index"]}}
+     if state.get("budget", {}).get("agent_calls_left", 0) > 0:
+-        prompt = state["problem_statement"] + FEEDBACK_HEADER + render_verify(last.get("verify", {}))
++        prompt = state["problem_statement"]
++        if not last.get("verify", {}).get("passed"):
++            prompt += FEEDBACK_HEADER + render_verify(last.get("verify", {}))
+         return {"agent": {"base": "fresh", "prompt": prompt, "effort": effort}}
+     best = max(candidates, key=lambda candidate: (
++        bool(candidate.get("verify", {}).get("passed")),
+         sum(test.get("outcome") == "pass" for test in candidate.get("verify", {}).get("tests", [])),
+         candidate["index"],
+     ))
