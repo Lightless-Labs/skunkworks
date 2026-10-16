@@ -1163,3 +1163,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **Instrument idea, recorded:** a controller op that runs harness-supplied tests (no hidden content) would make strong-reader probes a testable lever.
 - **Held** (proposed, not yet scheduled): c1a-3 (written requirement trace), c1b-2 (size-and-cost brief: a narrower E009), c1b-3 (dissent sample), c1c-2 (a variant of E009), c1c-3 (route Sol by green count), c1b-1 (a variant of E010).
 - **Run order after E005–E008:** E009, then E010, both with `--stop-after full`.
+- **Smoke** (1 dev task under the sandboxed controller; first prompts and replies read):
+  - **E010:** 5 calls. Each Luna reply listed its doubtful readings and returned 2 files (files per call [2, 2, 2, 2]). 6 distinct greens; the judge picked `1B` (a hedge file), which passed.
+  - **E009:** 4 calls. The checklist is appended after the task; one-green branch; passed.
+  - The extra smoke calls today were about 30 Luna across 4 smokes, all outside `runs/`, so the cap counter does not see them. 10-16 stays under 3k (about 2,935).
