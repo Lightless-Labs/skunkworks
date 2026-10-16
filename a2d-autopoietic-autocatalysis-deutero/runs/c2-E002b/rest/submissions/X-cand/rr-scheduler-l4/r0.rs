@@ -1,0 +1,302 @@
+use std::collections::VecDeque;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: u32,
+    pub arrival: u32,
+    pub bursts: Vec<u32>,
+    pub level: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub id: u32,
+    pub start: u64,
+    pub end: u64,
+    pub finished: bool,
+    pub level: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub idle: Vec<(u64, u64)>,
+    pub stats: Vec<Stat>,
+    pub mean_waiting_x100: u64,
+    pub mean_turnaround_x100: u64,
+    pub end: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    LevelCount,
+    Quantum { level: usize },
+    SwitchCost,
+    TooManyJobs,
+    DuplicateId { index: usize },
+    Arrival { index: usize },
+    InitialLevel { index: usize },
+    BurstCount { index: usize },
+    Burst { index: usize, position: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stat {
+    pub id: u32,
+    pub completion: u64,
+    pub turnaround: u64,
+    pub waiting: u64,
+}
+
+#[derive(Clone, Debug)]
+struct Process {
+    id: u32,
+    arrival: u32,
+    bursts: Vec<u32>,
+    level: usize,
+    burst_index: usize,
+    remaining: u32,
+    completion: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Event {
+    time: u64,
+    kind: u8,
+    index: usize,
+    level: usize,
+}
+
+pub fn schedule(jobs: &[Job], quanta: &[u32], switch_cost: u32) -> Result<Schedule, Error> {
+    if !(1..=8).contains(&quanta.len()) {
+        return Err(Error::LevelCount);
+    }
+
+    for (level, &quantum) in quanta.iter().enumerate() {
+        if !(1..=1000).contains(&quantum) {
+            return Err(Error::Quantum { level });
+        }
+    }
+
+    if switch_cost > 1000 {
+        return Err(Error::SwitchCost);
+    }
+
+    if jobs.len() > 64 {
+        return Err(Error::TooManyJobs);
+    }
+
+    for (index, job) in jobs.iter().enumerate() {
+        if jobs[..index].iter().any(|earlier| earlier.id == job.id) {
+            return Err(Error::DuplicateId { index });
+        }
+        if job.arrival > 1000 {
+            return Err(Error::Arrival { index });
+        }
+        if job.level >= quanta.len() {
+            return Err(Error::InitialLevel { index });
+        }
+        if job.bursts.is_empty() || job.bursts.len() > 31 || job.bursts.len() % 2 == 0 {
+            return Err(Error::BurstCount { index });
+        }
+        for (position, &burst) in job.bursts.iter().enumerate() {
+            let valid = if position % 2 == 0 {
+                (1..=1000).contains(&burst)
+            } else {
+                burst <= 1000
+            };
+            if !valid {
+                return Err(Error::Burst { index, position });
+            }
+        }
+    }
+
+    let mut processes: Vec<Process> = jobs
+        .iter()
+        .map(|job| Process {
+            id: job.id,
+            arrival: job.arrival,
+            bursts: job.bursts.clone(),
+            level: job.level,
+            burst_index: 0,
+            remaining: job.bursts[0],
+            completion: None,
+        })
+        .collect();
+
+    let mut events = Vec::new();
+    for (index, job) in jobs.iter().enumerate() {
+        events.push(Event {
+            time: job.arrival as u64,
+            kind: 0,
+            index,
+            level: job.level,
+        });
+    }
+    events.sort_by_key(|event| (event.time, event.kind, event.index));
+
+    let mut queues: Vec<VecDeque<usize>> =
+        (0..quanta.len()).map(|_| VecDeque::new()).collect();
+    let mut event_cursor = 0usize;
+    let mut completed_count = 0usize;
+    let mut time = 0u64;
+    let mut last_dispatch_id: Option<u32> = None;
+    let mut runs = Vec::new();
+    let mut idle: Vec<(u64, u64)> = Vec::new();
+
+    while completed_count < jobs.len() {
+        while event_cursor < events.len() && events[event_cursor].time <= time {
+            let event = events[event_cursor];
+            queues[event.level].push_back(event.index);
+            event_cursor += 1;
+        }
+
+        let selected = queues.iter_mut().find_map(VecDeque::pop_front);
+
+        let Some(process_index) = selected else {
+            if event_cursor == events.len() {
+                break;
+            }
+
+            let next_time = events[event_cursor].time;
+            if next_time > time {
+                if let Some((_, end)) = idle.last_mut() {
+                    if *end == time {
+                        *end = next_time;
+                    } else {
+                        idle.push((time, next_time));
+                    }
+                } else {
+                    idle.push((time, next_time));
+                }
+                time = next_time;
+                last_dispatch_id = None;
+            }
+            continue;
+        };
+
+        let selected_level = processes[process_index].level;
+        let selected_id = processes[process_index].id;
+
+        if last_dispatch_id.is_some_and(|previous| previous != selected_id) {
+            time += switch_cost as u64;
+        }
+
+        while event_cursor < events.len() && events[event_cursor].time <= time {
+            let event = events[event_cursor];
+            queues[event.level].push_back(event.index);
+            event_cursor += 1;
+        }
+
+        let start = time;
+        let quantum = quanta[selected_level];
+        let consumed = processes[process_index].remaining.min(quantum);
+        time += consumed as u64;
+        let end = time;
+
+        processes[process_index].remaining -= consumed;
+        let burst_finished = processes[process_index].remaining == 0;
+        let final_burst = burst_finished
+            && processes[process_index].burst_index + 1 == processes[process_index].bursts.len();
+
+        runs.push(Run {
+            id: selected_id,
+            start,
+            end,
+            finished: final_burst,
+            level: selected_level,
+        });
+
+        let mut wake_event = None;
+        if burst_finished && !final_burst {
+            let io_delay = processes[process_index].bursts
+                [processes[process_index].burst_index + 1];
+            let next_burst_index = processes[process_index].burst_index + 2;
+            processes[process_index].burst_index = next_burst_index;
+            processes[process_index].remaining =
+                processes[process_index].bursts[next_burst_index];
+
+            wake_event = Some(Event {
+                time: end + io_delay as u64,
+                kind: 1,
+                index: process_index,
+                level: selected_level.saturating_sub(1),
+            });
+        } else if final_burst {
+            processes[process_index].completion = Some(end);
+            completed_count += 1;
+        }
+
+        if let Some(event) = wake_event {
+            events.push(event);
+            events[event_cursor..].sort_by_key(|event| (event.time, event.kind, event.index));
+        }
+
+        while event_cursor < events.len() && events[event_cursor].time <= end {
+            let event = events[event_cursor];
+            processes[event.index].level = event.level;
+            queues[event.level].push_back(event.index);
+            event_cursor += 1;
+        }
+
+        if !burst_finished {
+            processes[process_index].level = (selected_level + 1).min(quanta.len() - 1);
+            queues[processes[process_index].level].push_back(process_index);
+        }
+
+        last_dispatch_id = Some(selected_id);
+    }
+
+    let mut stats = Vec::with_capacity(jobs.len());
+    let mut total_waiting = 0u64;
+    let mut total_turnaround = 0u64;
+
+    for (index, process) in processes.iter().enumerate() {
+        let completion = process.completion.unwrap_or(time);
+        let turnaround = completion - process.arrival as u64;
+        let cpu_total: u64 = process
+            .bursts
+            .iter()
+            .step_by(2)
+            .map(|&burst| burst as u64)
+            .sum();
+        let io_total: u64 = process
+            .bursts
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .map(|&delay| delay as u64)
+            .sum();
+        let waiting = turnaround - cpu_total - io_total;
+
+        total_waiting += waiting;
+        total_turnaround += turnaround;
+        stats.push(Stat {
+            id: jobs[index].id,
+            completion,
+            turnaround,
+            waiting,
+        });
+    }
+
+    let count = jobs.len() as u64;
+    let mean_waiting_x100 = if count == 0 {
+        0
+    } else {
+        (total_waiting * 100 + count / 2) / count
+    };
+    let mean_turnaround_x100 = if count == 0 {
+        0
+    } else {
+        (total_turnaround * 100 + count / 2) / count
+    };
+
+    Ok(Schedule {
+        runs,
+        idle,
+        stats,
+        mean_waiting_x100,
+        mean_turnaround_x100,
+        end: time,
+    })
+}

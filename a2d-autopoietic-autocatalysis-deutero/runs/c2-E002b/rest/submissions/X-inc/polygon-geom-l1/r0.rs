@@ -1,0 +1,142 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Point {
+    pub x: i64,
+    pub y: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Clockwise,
+    Degenerate,
+    CounterClockwise,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Measures {
+    pub signed_area2: i128,
+    pub area2: u128,
+    pub orientation: Orientation,
+    pub edge_milli: Vec<u64>,
+    pub perimeter_milli: u64,
+    pub longest_edge: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeomError {
+    TooManyVertices { len: usize },
+    OutOfRange { index: usize },
+    TooFewVertices { len: usize },
+}
+
+const MAX_VERTICES: usize = 4096;
+const COORD_LIMIT: i64 = 1_000_000_000;
+
+fn prepare(points: &[Point]) -> Result<&[Point], GeomError> {
+    if points.len() > MAX_VERTICES {
+        return Err(GeomError::TooManyVertices { len: points.len() });
+    }
+
+    for (index, point) in points.iter().enumerate() {
+        if point.x < -COORD_LIMIT
+            || point.x > COORD_LIMIT
+            || point.y < -COORD_LIMIT
+            || point.y > COORD_LIMIT
+        {
+            return Err(GeomError::OutOfRange { index });
+        }
+    }
+
+    let effective_len = if points.len() >= 2 && points[0] == points[points.len() - 1] {
+        points.len() - 1
+    } else {
+        points.len()
+    };
+
+    if effective_len < 3 {
+        return Err(GeomError::TooFewVertices { len: effective_len });
+    }
+
+    Ok(&points[..effective_len])
+}
+
+fn rounded_sqrt(value: u128) -> u128 {
+    let mut low = 0u128;
+    let mut high = 1u128;
+
+    while high * high < value {
+        high *= 2;
+    }
+
+    while low + 1 < high {
+        let mid = low + (high - low) / 2;
+        if mid * mid <= value {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+
+    let remainder = value - low * low;
+    if remainder >= low + 1 {
+        low + 1
+    } else {
+        low
+    }
+}
+
+pub fn measure(points: &[Point]) -> Result<Measures, GeomError> {
+    let polygon = prepare(points)?;
+    let n = polygon.len();
+
+    let mut signed_area2 = 0i128;
+    let mut edge_milli = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % n];
+
+        signed_area2 += (a.x as i128) * (b.y as i128) - (a.y as i128) * (b.x as i128);
+
+        let dx = (b.x as i128) - (a.x as i128);
+        let dy = (b.y as i128) - (a.y as i128);
+        let d2 = (dx * dx + dy * dy) as u128;
+        let scaled = d2 * 1_000_000u128;
+        edge_milli.push(rounded_sqrt(scaled) as u64);
+    }
+
+    let perimeter_milli = edge_milli.iter().copied().sum();
+
+    let longest_edge = (0..n).max_by(|&i, &j| {
+        edge_milli[i]
+            .cmp(&edge_milli[j])
+            .then_with(|| {
+                let pair_i = {
+                    let a = polygon[i];
+                    let b = polygon[(i + 1) % n];
+                    if a <= b { (a, b) } else { (b, a) }
+                };
+                let pair_j = {
+                    let a = polygon[j];
+                    let b = polygon[(j + 1) % n];
+                    if a <= b { (a, b) } else { (b, a) }
+                };
+                pair_j.cmp(&pair_i)
+            })
+            .then_with(|| j.cmp(&i))
+    });
+
+    let orientation = match signed_area2.cmp(&0) {
+        std::cmp::Ordering::Less => Orientation::Clockwise,
+        std::cmp::Ordering::Equal => Orientation::Degenerate,
+        std::cmp::Ordering::Greater => Orientation::CounterClockwise,
+    };
+
+    Ok(Measures {
+        signed_area2,
+        area2: signed_area2.unsigned_abs(),
+        orientation,
+        edge_milli,
+        perimeter_milli,
+        longest_edge,
+    })
+}

@@ -1,0 +1,469 @@
+SYSTEM:
+You are reviewing candidate solutions to a programming task.
+
+The task, exactly as the programmer received it (numbered requirements and the visible tests), is under TASK. The files under CANDIDATES are independent candidate solutions, and all of them pass the visible tests. Hidden acceptance tests check every numbered requirement.
+
+Pick the single file most likely to pass all hidden tests. Read the requirements carefully and check each candidate against them, concentrating on where the candidates differ.
+
+Reply with ONE JSON object and nothing else:
+{"pick": "<letter>", "reason": "<one sentence>"}
+
+PROMPT:
+TASK:
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner documentation comments.
+
+R2. The public API is pub fn normalize(path: &str) -> Result<String, PathError>. Define pub enum PathError with variants Empty, Nul { at: usize }, Backslash { at: usize }, Control { at: usize }, Escape { at: usize }. Derive Debug, Clone, PartialEq, Eq for PathError. Later clauses, if present, add variants and APIs to this same enum.
+
+R3. Paths use POSIX slash separators. All offsets are zero-based UTF-8 byte offsets in the original string supplying the offending component or character, never character indices.
+
+R4. Validate the entire raw path before reducing any component. An empty string returns Empty.
+
+R5. After the empty check, any NUL byte returns Nul at its first occurrence, even if an earlier backslash, control, or root escape exists.
+
+R6. If no NUL exists, any backslash byte returns Backslash at its first occurrence, even if an earlier control or root escape exists.
+
+R7. If neither NUL nor backslash exists, ASCII bytes 1 through 31 and 127 are forbidden: return Control at the first such byte, even if a root escape occurs earlier.
+
+R8. All other bytes in a valid UTF-8 input are allowed literally. Do not trim whitespace, decode percent escapes, fold case, or normalize Unicode. A tilde is literal for normalize.
+
+R9. A path is absolute exactly when its first byte is slash. Collapse every run of slashes, including two or more leading slashes, to ordinary POSIX separators; there is only one root.
+
+R10. Process nonempty components left to right. Discard components equal to dot (.). Dots inside any other name are ordinary characters.
+
+R11. A parent component (..) removes the previous ordinary component, if one exists. It must never cancel a preceding retained parent component.
+
+R12. For an absolute path, a parent with no component to remove returns Escape at the first byte of that parent. The earliest such event in traversal order wins.
+
+R13. For a relative path, a parent with no ordinary component to remove is retained. Leading retained parents may grow without limit.
+
+R14. Join components with single slashes and prefix one slash only for an absolute path. An empty absolute result is /; an empty relative result is dot (.).
+
+R15. Directory intent is true when the raw path ends in slash OR its last nonempty component is dot or parent. Otherwise it is false.
+
+R16. Append a single trailing slash to a nonempty component result exactly when directory intent is true. Never append to root / or the empty-relative result dot. In particular, normalize("..") is "../", normalize("a/..") is ".", and normalize("a/.") is "a/".
+
+R17. normalize is lexical and deterministic, reads no filesystem or environment, and is idempotent on every successful output.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R1-R3, R8-R10, R14
+#[test]
+fn public_cleanup() {
+    assert_eq!(normalize("//box///leaf/./file"), Ok("/box/leaf/file".into()));
+    assert_eq!(normalize("one/../two"), Ok("two".into()));
+}
+
+// R14-R16
+#[test]
+fn public_directories() {
+    assert_eq!(normalize("docs///"), Ok("docs/".into()));
+    assert_eq!(normalize("////"), Ok("/".into()));
+}
+
+// R11, R13-R14
+#[test]
+fn public_relative() {
+    assert_eq!(normalize("../notes/file"), Ok("../notes/file".into()));
+    assert_eq!(normalize("a/.."), Ok(".".into()));
+}
+
+// R4-R6
+#[test]
+fn public_invalid() {
+    assert_eq!(normalize(""), Err(PathError::Empty));
+    assert_eq!(normalize("bad\\name"), Err(PathError::Backslash { at: 3 }));
+}
+```
+
+
+CANDIDATES:
+
+### A.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    let bytes = path.as_bytes();
+    let absolute = bytes[0] == b'/';
+    let directory_intent = bytes.last() == Some(&b'/');
+
+    let mut components: Vec<(String, usize)> = Vec::new();
+    let mut last_nonempty: Option<(&str, usize)> = None;
+    let mut index = 0;
+
+    while index < path.len() {
+        while index < path.len() && bytes[index] == b'/' {
+            index += 1;
+        }
+
+        if index == path.len() {
+            break;
+        }
+
+        let start = index;
+        while index < path.len() && bytes[index] != b'/' {
+            index += 1;
+        }
+
+        let component = &path[start..index];
+        last_nonempty = Some((component, start));
+
+        match component {
+            "." => {}
+            ".." => {
+                if components.last().is_some_and(|(name, _)| name != "..") {
+                    components.pop();
+                } else if absolute {
+                    return Err(PathError::Escape { at: start });
+                } else {
+                    components.push(("..".to_string(), start));
+                }
+            }
+            _ => components.push((component.to_string(), start)),
+        }
+    }
+
+    let directory_intent = directory_intent
+        || last_nonempty.is_some_and(|(component, _)| component == "." || component == "..");
+
+    let joined = components
+        .iter()
+        .map(|(component, _)| component.as_str())
+        .collect::<Vec<_>>()
+        .join("/");
+
+    let mut result = if absolute {
+        if joined.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{joined}")
+        }
+    } else if joined.is_empty() {
+        ".".to_string()
+    } else {
+        joined
+    };
+
+    if directory_intent && result != "/" && result != "." {
+        result.push('/');
+    }
+
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_cleanup() {
+        assert_eq!(normalize("//box///leaf/./file"), Ok("/box/leaf/file".into()));
+        assert_eq!(normalize("one/../two"), Ok("two".into()));
+    }
+
+    #[test]
+    fn public_directories() {
+        assert_eq!(normalize("docs///"), Ok("docs/".into()));
+        assert_eq!(normalize("////"), Ok("/".into()));
+    }
+
+    #[test]
+    fn public_relative() {
+        assert_eq!(normalize("../notes/file"), Ok("../notes/file".into()));
+        assert_eq!(normalize("a/.."), Ok(".".into()));
+    }
+
+    #[test]
+    fn public_invalid() {
+        assert_eq!(normalize(""), Err(PathError::Empty));
+        assert_eq!(normalize("bad\\name"), Err(PathError::Backslash { at: 3 }));
+    }
+}
+```
+
+### B.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    let absolute = path.as_bytes()[0] == b'/';
+    let directory_intent = path.ends_with('/')
+        || path
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .last()
+            .is_some_and(|component| component == "." || component == "..");
+
+    let mut components: Vec<&str> = Vec::new();
+    let mut offset = 0;
+
+    for component in path.split('/') {
+        if !component.is_empty() {
+            match component {
+                "." => {}
+                ".." => {
+                    if components.last().is_some_and(|last| *last != "..") {
+                        components.pop();
+                    } else if absolute {
+                        return Err(PathError::Escape { at: offset });
+                    } else {
+                        components.push(component);
+                    }
+                }
+                _ => components.push(component),
+            }
+        }
+        offset += component.len() + 1;
+    }
+
+    let mut result = String::new();
+    if absolute {
+        result.push('/');
+    }
+    result.push_str(&components.join("/"));
+
+    if result.is_empty() {
+        result.push('.');
+    }
+
+    if directory_intent && result != "/" && result != "." {
+        result.push('/');
+    }
+
+    Ok(result)
+}
+```
+
+### C.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    let bytes = path.as_bytes();
+
+    if bytes.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = bytes.iter().position(|&byte| byte == 0) {
+        return Err(PathError::Nul { at });
+    }
+
+    if let Some(at) = bytes.iter().position(|&byte| byte == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+
+    if let Some(at) = bytes
+        .iter()
+        .position(|&byte| (1..=31).contains(&byte) || byte == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    let absolute = bytes[0] == b'/';
+    let directory_intent = bytes.last() == Some(&b'/')
+        || path
+            .rsplit('/')
+            .find(|component| !component.is_empty())
+            .is_some_and(|component| component == "." || component == "..");
+
+    let mut components: Vec<(&str, usize)> = Vec::new();
+    let mut start = 0;
+
+    for component in path.split('/') {
+        let component_start = start;
+        start += component.len() + 1;
+
+        if component.is_empty() || component == "." {
+            continue;
+        }
+
+        if component == ".." {
+            if components
+                .last()
+                .is_some_and(|(previous, _)| *previous != "..")
+            {
+                components.pop();
+            } else if absolute {
+                return Err(PathError::Escape { at: component_start });
+            } else {
+                components.push((component, component_start));
+            }
+        } else {
+            components.push((component, component_start));
+        }
+    }
+
+    if components.is_empty() {
+        return Ok(if absolute { "/".into() } else { ".".into() });
+    }
+
+    let mut result = String::new();
+    if absolute {
+        result.push('/');
+    }
+
+    for (index, (component, _)) in components.iter().enumerate() {
+        if index > 0 {
+            result.push('/');
+        }
+        result.push_str(component);
+    }
+
+    if directory_intent {
+        result.push('/');
+    }
+
+    Ok(result)
+}
+```
+
+### D.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&byte| byte == 0) {
+        return Err(PathError::Nul { at });
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&byte| byte == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&byte| (1..=31).contains(&byte) || byte == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    let absolute = path.as_bytes()[0] == b'/';
+    let directory_intent = path.ends_with('/')
+        || path
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .last()
+            .is_some_and(|component| component == "." || component == "..");
+
+    let mut components: Vec<(&str, usize)> = Vec::new();
+    let mut offset = 0;
+
+    for component in path.split('/') {
+        if !component.is_empty() {
+            match component {
+                "." => {}
+                ".." => {
+                    if components.last().is_some_and(|(name, _)| *name != "..") {
+                        components.pop();
+                    } else if absolute {
+                        return Err(PathError::Escape { at: offset });
+                    } else {
+                        components.push((component, offset));
+                    }
+                }
+                _ => components.push((component, offset)),
+            }
+        }
+        offset += component.len() + 1;
+    }
+
+    let mut result = String::new();
+    if absolute {
+        result.push('/');
+    }
+
+    for (index, (component, _)) in components.iter().enumerate() {
+        if index > 0 {
+            result.push('/');
+        }
+        result.push_str(component);
+    }
+
+    if result.is_empty() {
+        result.push('.');
+    }
+
+    if directory_intent && result != "/" && result != "." {
+        result.push('/');
+    }
+
+    Ok(result)
+}
+```

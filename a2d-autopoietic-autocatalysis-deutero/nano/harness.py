@@ -1,24 +1,34 @@
 #!/usr/bin/env python3
-"""Nanoharness: the coder harness as one editable file (A²D cycle 2).
+# lanes: judge=codex/gpt-6.1-sol:medium
+"""Nanoharness candidate E002: sample 4, judge 1 (from C2-E1).
 
-v0 is the plain repair loop (lift arm D), byte for byte: the same system
-prompt, task prompt, repair prompt, feedback truncation and stopping rule.
-Every later change is one experiment, kept only if it beats the incumbent
-above the A/A threshold (docs/experiments/LOG.md, Cycle 2).
+Hypothesis: four independent coder samples, public-tested, plus ONE call to
+a stronger reviewer that picks among the distinct public-green files from the
+spec alone, pass hidden tests more often than the plain repair loop at the
+same 5-call budget. Offline on the frozen train pool: 0.831 (Claude judge) and
+0.846 (Sol judge) vs D 0.743 (LOG C2-E1).
 
-The controller runs this file as an external arm (`--external name=path`)
-and speaks JSON lines on stdin/stdout:
-  first line in:   {"task": {"id", "family", "task_prompt", "coder_system",
-                             "k", "max_feedback_chars"}}
-  requests out:    {"op": "model", "system", "prompt"}   -> {"ok", "text"|"error"}
-                   {"op": "extract", "text"}              -> {"code"}
-                   {"op": "public_test", "code"}          -> TestScore
-                   {"op": "done", "codes": [...]}         (ends the episode)
-Model calls are metered by the controller (budget k per task). Hidden tests
-are never reachable from here.
+Budget per task (k = 5): 4 coder samples, then either 1 judge call (two or
+more distinct green files), 1 repair call (no green file), or nothing (one
+green file). The judge is the controller lane named "judge" (Sol, medium
+effort, no tools). Candidates are shown in a seeded shuffle (seed = task id);
+the reply must name exactly one shown letter, otherwise the fallback (first
+green in generation order) is used and recorded. One DIAG line per task goes
+to stderr: branch, shown order, pick, fallback reason.
 """
 import json
+import random
+import re
 import sys
+
+JUDGE = """You are reviewing candidate solutions to a programming task.
+
+The task, exactly as the programmer received it (numbered requirements and the visible tests), is under TASK. The files under CANDIDATES are independent candidate solutions, and all of them pass the visible tests. Hidden acceptance tests check every numbered requirement.
+
+Pick the single file most likely to pass all hidden tests. Read the requirements carefully and check each candidate against them, concentrating on where the candidates differ.
+
+Reply with ONE JSON object and nothing else:
+{"pick": "<letter>", "reason": "<one sentence>"}"""
 
 
 def request(op, **fields):
@@ -30,7 +40,6 @@ def request(op, **fields):
 
 
 def truncate(text, limit):
-    """As arms.rs `truncate`: a byte limit, cut back to a char boundary."""
     data = text.encode("utf-8")
     if len(data) <= limit:
         return text
@@ -41,7 +50,6 @@ def truncate(text, limit):
 
 
 def repair_prompt(base, code, public, limit):
-    """As arms.rs `repair_prompt`."""
     prompt = base
     if code is None:
         prompt += "\n\n## Previous attempt\n\nYour previous response contained no ```rust code block.\n"
@@ -53,21 +61,69 @@ def repair_prompt(base, code, public, limit):
     return prompt
 
 
+def sample(task, prompt):
+    reply = request("model", system=task["coder_system"], prompt=prompt)
+    code = request("extract", text=reply["text"])["code"] if reply.get("ok") else None
+    public = request("public_test", code=code) if code is not None else None
+    return code, public
+
+
+def rank(entry):
+    _, public = entry
+    return (public["passed"], public["compiled"]) if public else (0, False)
+
+
+def judge(task, greens, diag):
+    letters = "ABCDEFGH"[: len(greens)]
+    order = list(range(len(greens)))
+    random.Random(task["id"]).shuffle(order)
+    shown = [greens[i] for i in order]
+    diag["shown_order"] = order
+    body = "TASK:\n" + task["task_prompt"] + "\n\nCANDIDATES:\n"
+    for letter, code in zip(letters, shown):
+        body += f"\n### {letter}.rs\n```rust\n{code.rstrip()}\n```\n"
+    reply = request("model", lane="judge", system=JUDGE, prompt=body)
+    if not reply.get("ok"):
+        diag["fallback"] = "judge call failed: " + str(reply.get("error", ""))[:120]
+        return greens[0]
+    picks = re.findall(r'"pick"\s*:\s*"([^"]*)"', reply["text"])
+    if len(picks) != 1 or picks[0].strip().upper() not in letters or len(picks[0].strip()) != 1:
+        diag["fallback"] = "unparseable pick: " + reply["text"][:120]
+        return greens[0]
+    letter = picks[0].strip().upper()
+    diag["pick"] = letter
+    return shown[letters.index(letter)]
+
+
 def main():
     task = json.loads(sys.stdin.readline())["task"]
     base = task["task_prompt"]
-    codes = []
-    last = None  # (code, public score) of the previous attempt
-    for _ in range(task["k"]):
-        prompt = base if last is None else repair_prompt(base, last[0], last[1], task["max_feedback_chars"])
-        reply = request("model", system=task["coder_system"], prompt=prompt)
-        code = request("extract", text=reply["text"])["code"] if reply.get("ok") else None
-        public = request("public_test", code=code) if code is not None else None
+    diag = {"task": task["id"]}
+    entries = [sample(task, base) for _ in range(min(4, task["k"]))]
+    greens = []
+    for code, public in entries:
+        if public and public.get("all_passed") and code not in greens:
+            greens.append(code)
+    diag["greens"] = len(greens)
+    if len(greens) >= 2 and task["k"] >= 5:
+        diag["branch"] = "judge"
+        chosen = judge(task, greens, diag)
+        print("DIAG " + json.dumps(diag), file=sys.stderr, flush=True)
+        request("done", codes=[chosen])
+        return
+    if greens:
+        diag["branch"] = "one-green"
+        print("DIAG " + json.dumps(diag), file=sys.stderr, flush=True)
+        request("done", codes=[greens[0]])
+        return
+    diag["branch"] = "no-green-repair"
+    best = max(entries, key=rank)
+    codes = [c for c, _ in entries if c is not None]
+    if task["k"] >= 5:
+        code, public = sample(task, repair_prompt(base, best[0], best[1], task["max_feedback_chars"]))
         if code is not None:
             codes.append(code)
-        last = (code, public)
-        if public is not None and public.get("all_passed"):
-            break
+    print("DIAG " + json.dumps(diag), file=sys.stderr, flush=True)
     request("done", codes=codes)
 
 

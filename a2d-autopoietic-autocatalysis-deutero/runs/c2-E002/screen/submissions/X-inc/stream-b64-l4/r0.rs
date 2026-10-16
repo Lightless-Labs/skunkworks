@@ -1,0 +1,512 @@
+use std::fmt;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alphabet {
+    Standard,
+    UrlSafe,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Padding {
+    Required,
+    Forbidden,
+    Optional,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineEnding {
+    Lf,
+    CrLf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Whitespace {
+    None,
+    IgnoreAscii,
+    Wrapped { width: usize, ending: LineEnding },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Options {
+    pub alphabet: Alphabet,
+    pub padding: Padding,
+    pub whitespace: Whitespace,
+    pub strict: bool,
+    pub max_symbols: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+    AlreadyFinished,
+    InvalidWidth { width: usize },
+    BadWrap { offset: usize },
+    NonCanonical { offset: usize },
+    MixedAlphabet { offset: usize },
+    Overlong { offset: usize, limit: usize },
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl std::error::Error for Error {}
+
+fn validate(options: Options) -> Result<(), Error> {
+    if let Whitespace::Wrapped { width, .. } = options.whitespace {
+        if !(4..=120).contains(&width) || width % 4 != 0 {
+            return Err(Error::InvalidWidth { width });
+        }
+    }
+    Ok(())
+}
+
+fn symbol(value: u8, alphabet: Alphabet) -> u8 {
+    match value {
+        0..=25 => b'A' + value,
+        26..=51 => b'a' + value - 26,
+        52..=61 => b'0' + value - 52,
+        62 => match alphabet {
+            Alphabet::Standard => b'+',
+            Alphabet::UrlSafe => b'-',
+        },
+        _ => match alphabet {
+            Alphabet::Standard => b'/',
+            Alphabet::UrlSafe => b'_',
+        },
+    }
+}
+
+fn lookup(byte: u8, alphabet: Alphabet) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' if alphabet == Alphabet::Standard => Some(62),
+        b'/' if alphabet == Alphabet::Standard => Some(63),
+        b'-' if alphabet == Alphabet::UrlSafe => Some(62),
+        b'_' if alphabet == Alphabet::UrlSafe => Some(63),
+        _ => None,
+    }
+}
+
+fn foreign(byte: u8, alphabet: Alphabet) -> bool {
+    match alphabet {
+        Alphabet::Standard => byte == b'-' || byte == b'_',
+        Alphabet::UrlSafe => byte == b'+' || byte == b'/',
+    }
+}
+
+fn wrapped_config(whitespace: Whitespace) -> Option<(usize, LineEnding)> {
+    match whitespace {
+        Whitespace::Wrapped { width, ending } => Some((width, ending)),
+        _ => None,
+    }
+}
+
+#[derive(Debug)]
+pub struct Encoder {
+    options: Options,
+    tail: Vec<u8>,
+    closed: bool,
+    symbols_in_row: usize,
+}
+
+impl Encoder {
+    pub fn new(options: Options) -> Result<Self, Error> {
+        validate(options)?;
+        Ok(Self {
+            options,
+            tail: Vec::new(),
+            closed: false,
+            symbols_in_row: 0,
+        })
+    }
+
+    pub fn push(&mut self, input: &[u8]) -> Result<String, Error> {
+        if self.closed {
+            return Err(Error::AlreadyFinished);
+        }
+
+        let mut data = std::mem::take(&mut self.tail);
+        data.extend_from_slice(input);
+        let complete = data.len() / 3 * 3;
+        self.tail.extend_from_slice(&data[complete..]);
+
+        let mut out = String::new();
+        for chunk in data[..complete].chunks_exact(3) {
+            let bits = ((chunk[0] as u32) << 16)
+                | ((chunk[1] as u32) << 8)
+                | chunk[2] as u32;
+            let digits = [
+                ((bits >> 18) & 63) as u8,
+                ((bits >> 12) & 63) as u8,
+                ((bits >> 6) & 63) as u8,
+                (bits & 63) as u8,
+            ];
+            for digit in digits {
+                self.emit_symbol(&mut out, symbol(digit, self.options.alphabet));
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn finish(&mut self) -> Result<String, Error> {
+        if self.closed {
+            return Err(Error::AlreadyFinished);
+        }
+        self.closed = true;
+        let mut out = String::new();
+        match self.tail.len() {
+            0 => {}
+            1 => {
+                let a = self.tail[0];
+                self.emit_symbol(&mut out, symbol(a >> 2, self.options.alphabet));
+                self.emit_symbol(&mut out, symbol((a & 3) << 4, self.options.alphabet));
+                if self.options.padding != Padding::Forbidden {
+                    self.emit_symbol(&mut out, b'=');
+                    self.emit_symbol(&mut out, b'=');
+                }
+            }
+            2 => {
+                let a = self.tail[0];
+                let b = self.tail[1];
+                self.emit_symbol(&mut out, symbol(a >> 2, self.options.alphabet));
+                self.emit_symbol(
+                    &mut out,
+                    symbol(((a & 3) << 4) | (b >> 4), self.options.alphabet),
+                );
+                self.emit_symbol(&mut out, symbol((b & 15) << 2, self.options.alphabet));
+                if self.options.padding != Padding::Forbidden {
+                    self.emit_symbol(&mut out, b'=');
+                }
+            }
+            _ => unreachable!(),
+        }
+        self.tail.clear();
+        Ok(out)
+    }
+
+    fn emit_symbol(&mut self, out: &mut String, byte: u8) {
+        if let Some((width, ending)) = wrapped_config(self.options.whitespace) {
+            if self.symbols_in_row == width {
+                match ending {
+                    LineEnding::Lf => out.push('\n'),
+                    LineEnding::CrLf => out.push_str("\r\n"),
+                }
+                self.symbols_in_row = 0;
+            }
+            self.symbols_in_row += 1;
+        }
+        out.push(byte as char);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum WrapState {
+    Row,
+    NeedLf { cr_offset: usize },
+    NeedSymbol { separator_offset: usize },
+}
+
+#[derive(Debug)]
+pub struct Decoder {
+    options: Options,
+    offset: usize,
+    symbol_count: usize,
+    group: Vec<(u8, usize)>,
+    pending_second_pad: Option<usize>,
+    terminal_pad: bool,
+    closed: bool,
+    sticky: Option<Error>,
+    row_symbols: usize,
+    wrap_state: WrapState,
+}
+
+impl Decoder {
+    pub fn new(options: Options) -> Result<Self, Error> {
+        validate(options)?;
+        Ok(Self {
+            options,
+            offset: 0,
+            symbol_count: 0,
+            group: Vec::with_capacity(4),
+            pending_second_pad: None,
+            terminal_pad: false,
+            closed: false,
+            sticky: None,
+            row_symbols: 0,
+            wrap_state: WrapState::Row,
+        })
+    }
+
+    pub fn push(&mut self, input: &[u8]) -> Result<Vec<u8>, Error> {
+        if let Some(err) = &self.sticky {
+            return Err(err.clone());
+        }
+        if self.closed {
+            return Err(Error::AlreadyFinished);
+        }
+
+        let mut out = Vec::new();
+        for &byte in input {
+            let here = self.offset;
+            self.offset += 1;
+            if let Err(err) = self.scan_byte(byte, here, &mut out) {
+                self.sticky = Some(err.clone());
+                return Err(err);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<u8>, Error> {
+        if let Some(err) = &self.sticky {
+            return Err(err.clone());
+        }
+        if self.closed {
+            return Err(Error::AlreadyFinished);
+        }
+
+        match self.finish_inner() {
+            Ok(out) => {
+                self.closed = true;
+                Ok(out)
+            }
+            Err(err) => {
+                self.sticky = Some(err.clone());
+                Err(err)
+            }
+        }
+    }
+
+    fn scan_byte(&mut self, byte: u8, offset: usize, out: &mut Vec<u8>) -> Result<(), Error> {
+        if let Some((width, ending)) = wrapped_config(self.options.whitespace) {
+            match self.wrap_state {
+                WrapState::NeedLf { cr_offset } => {
+                    if byte != b'\n' {
+                        return Err(Error::BadWrap { offset });
+                    }
+                    self.wrap_state = WrapState::NeedSymbol {
+                        separator_offset: cr_offset,
+                    };
+                    return Ok(());
+                }
+                WrapState::NeedSymbol { separator_offset } => {
+                    self.wrap_state = WrapState::Row;
+                    if byte == b'\r' || byte == b'\n' || byte.is_ascii_whitespace() {
+                        return Err(Error::BadWrap { offset });
+                    }
+                    if byte == b'='
+                        || lookup(byte, self.options.alphabet).is_some()
+                        || (self.options.strict && foreign(byte, self.options.alphabet))
+                    {
+                        self.row_symbols = 0;
+                        self.process_symbol(byte, offset, out)?;
+                        return Ok(());
+                    }
+                    return Err(Error::BadWrap {
+                        offset: separator_offset,
+                    });
+                }
+                WrapState::Row => {
+                    if self.row_symbols == width {
+                        match ending {
+                            LineEnding::Lf if byte == b'\n' => {
+                                self.wrap_state = WrapState::NeedSymbol {
+                                    separator_offset: offset,
+                                };
+                                return Ok(());
+                            }
+                            LineEnding::CrLf if byte == b'\r' => {
+                                self.wrap_state = WrapState::NeedLf { cr_offset: offset };
+                                return Ok(());
+                            }
+                            _ => return Err(Error::BadWrap { offset }),
+                        }
+                    }
+                    if byte == b'\r' || byte == b'\n' || byte.is_ascii_whitespace() {
+                        return Err(Error::BadWrap { offset });
+                    }
+                    self.row_symbols += 1;
+                    self.process_symbol(byte, offset, out)
+                }
+            }
+        } else {
+            if self.options.whitespace == Whitespace::IgnoreAscii
+                && matches!(byte, 9 | 10 | 11 | 12 | 13 | 32)
+            {
+                return Ok(());
+            }
+            self.process_symbol(byte, offset, out)
+        }
+    }
+
+    fn process_symbol(&mut self, byte: u8, offset: usize, out: &mut Vec<u8>) -> Result<(), Error> {
+        if let Some(limit) = self.options.max_symbols {
+            if self.symbol_count >= limit {
+                return Err(Error::Overlong { offset, limit });
+            }
+        }
+        self.symbol_count += 1;
+
+        if self.terminal_pad {
+            return Err(Error::BadPadding { offset });
+        }
+        if self.pending_second_pad.is_some() {
+            if byte != b'=' {
+                return Err(Error::BadPadding { offset });
+            }
+            self.pending_second_pad = None;
+            self.group.push((byte, offset));
+            self.complete_group(out)?;
+            self.terminal_pad = true;
+            return Ok(());
+        }
+
+        let pos = self.group.len();
+        if byte == b'=' {
+            if self.options.padding == Padding::Forbidden {
+                return Err(Error::BadPadding { offset });
+            }
+            match pos {
+                0 | 1 => return Err(Error::BadPadding { offset }),
+                2 => {
+                    self.pending_second_pad = Some(offset);
+                    self.group.push((byte, offset));
+                    return Ok(());
+                }
+                3 => {
+                    self.group.push((byte, offset));
+                    self.complete_group(out)?;
+                    self.terminal_pad = true;
+                    return Ok(());
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        let value = match lookup(byte, self.options.alphabet) {
+            Some(value) => value,
+            None if self.options.strict && foreign(byte, self.options.alphabet) => {
+                return Err(Error::MixedAlphabet { offset });
+            }
+            None => return Err(Error::InvalidByte { offset, byte }),
+        };
+        self.group.push((value, offset));
+        if self.group.len() == 4 {
+            self.complete_group(out)?;
+        }
+        Ok(())
+    }
+
+    fn complete_group(&mut self, out: &mut Vec<u8>) -> Result<(), Error> {
+        let vals: Vec<u8> = self.group.iter().map(|(v, _)| *v).collect();
+        match vals.len() {
+            4 if vals[2] == b'=' && vals[3] == b'=' => {
+                if self.options.strict && vals[1] & 15 != 0 {
+                    return Err(Error::NonCanonical {
+                        offset: self.group[1].1,
+                    });
+                }
+                out.push((vals[0] << 2) | (vals[1] >> 4));
+            }
+            4 if vals[3] == b'=' => {
+                if self.options.strict && vals[2] & 3 != 0 {
+                    return Err(Error::NonCanonical {
+                        offset: self.group[2].1,
+                    });
+                }
+                out.push((vals[0] << 2) | (vals[1] >> 4));
+                out.push((vals[1] << 4) | (vals[2] >> 2));
+            }
+            4 => {
+                out.push((vals[0] << 2) | (vals[1] >> 4));
+                out.push((vals[1] << 4) | (vals[2] >> 2));
+                out.push((vals[2] << 6) | vals[3]);
+            }
+            _ => return Err(Error::BadPadding { offset: self.offset }),
+        }
+        self.group.clear();
+        Ok(())
+    }
+
+    fn finish_inner(&mut self) -> Result<Vec<u8>, Error> {
+        if let Some((_, _)) = wrapped_config(self.options.whitespace) {
+            match self.wrap_state {
+                WrapState::NeedLf { cr_offset } => {
+                    return Err(Error::BadWrap { offset: cr_offset });
+                }
+                WrapState::NeedSymbol { separator_offset } => {
+                    return Err(Error::BadWrap {
+                        offset: separator_offset,
+                    });
+                }
+                WrapState::Row => {}
+            }
+        }
+
+        if let Some(offset) = self.pending_second_pad {
+            return Err(Error::BadPadding { offset });
+        }
+
+        if !self.group.is_empty() {
+            if self.group.iter().any(|(value, _)| *value == b'=') {
+                let offset = self
+                    .group
+                    .iter()
+                    .find(|(value, _)| *value == b'=')
+                    .unwrap()
+                    .1;
+                return Err(Error::BadPadding { offset });
+            }
+            if self.options.padding == Padding::Required {
+                return Err(Error::Truncated {
+                    offset: self.group[0].1,
+                });
+            }
+            match self.group.len() {
+                1 => return Err(Error::Truncated { offset: self.group[0].1 }),
+                2 => {
+                    if self.options.strict && self.group[1].0 & 15 != 0 {
+                        return Err(Error::NonCanonical {
+                            offset: self.group[1].1,
+                        });
+                    }
+                    return Ok(vec![(self.group[0].0 << 2) | (self.group[1].0 >> 4)]);
+                }
+                3 => {
+                    if self.options.strict && self.group[2].0 & 3 != 0 {
+                        return Err(Error::NonCanonical {
+                            offset: self.group[2].1,
+                        });
+                    }
+                    return Ok(vec![
+                        (self.group[0].0 << 2) | (self.group[1].0 >> 4),
+                        (self.group[1].0 << 4) | (self.group[2].0 >> 2),
+                    ]);
+                }
+                _ => {}
+            }
+        }
+        Ok(Vec::new())
+    }
+}
+
+pub fn encode(input: &[u8], options: Options) -> Result<String, Error> {
+    let mut encoder = Encoder::new(options)?;
+    let mut out = encoder.push(input)?;
+    out.push_str(&encoder.finish()?);
+    Ok(out)
+}
+
+pub fn decode(input: &[u8], options: Options) -> Result<Vec<u8>, Error> {
+    let mut decoder = Decoder::new(options)?;
+    let mut out = decoder.push(input)?;
+    out.extend(decoder.finish()?);
+    Ok(out)
+}

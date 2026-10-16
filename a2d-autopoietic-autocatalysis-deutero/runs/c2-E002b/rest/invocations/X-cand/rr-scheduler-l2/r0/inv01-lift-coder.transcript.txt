@@ -1,0 +1,294 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-8416-1792121051528900000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a142bd-22f7-7350-8863-d94d7f4b17db
+--------
+user
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+Implement a deterministic round-robin CPU scheduler in Rust as a SINGLE source file that compiles with rustc --edition 2024, using std only. Output ONLY the Rust source code inside ```rust fences.
+
+The entire public API is below. Every listed type, field, and function must be public; every listed type must derive Clone, Debug, PartialEq, Eq. Do not add required arguments or change field types. Time intervals are half-open [start,end). There is no textual input/output protocol.
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job { pub id: u32, pub arrival: u32, pub ticks: u32 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run { pub id: u32, pub start: u64, pub end: u64, pub finished: bool }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule { pub runs: Vec<Run>, pub idle: Vec<(u64, u64)>, pub completion: Vec<(u32, u64)>, pub end: u64 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error { Quantum, SwitchCost, TooManyJobs, DuplicateId { index: usize }, Arrival { index: usize }, Ticks { index: usize } }
+pub fn schedule(jobs: &[Job], quantum: u32, switch_cost: u32) -> Result<Schedule, Error>;
+```
+
+R1. Use exactly the public API above. Calls are independent and must not modify jobs. IDs may be any u32, including 0 and u32::MAX.
+
+R2. Validate all input before simulation, returning only the first error in the order described by the following validation clauses. Even empty jobs do not bypass parameter validation.
+
+R3. First validate quantum: it must be 1..=1000, otherwise Error::Quantum.
+
+R4. Next switch_cost must be 0..=1000, otherwise Error::SwitchCost.
+
+R5. Next jobs.len() must be at most 64, otherwise Error::TooManyJobs.
+
+R6. Next inspect job rows in input order. At each row the first check is whether id equals any earlier row id; if so return Error::DuplicateId { index }.
+
+R7. At that row next require arrival in 0..=1000; otherwise Error::Arrival { index }.
+
+R8. At that row finally require ticks in 0..=1000; otherwise Error::Ticks { index }. Zero is valid. Earlier row errors win over any later row errors.
+
+R9. Start at time 0. External arrivals are admitted by increasing (arrival, input index), regardless of input sorting or id values.
+
+R10. A zero-tick job completes at its exact arrival time, including during another job's Run or dispatch cost. It never enters a ready queue, creates a Run, or changes the last dispatched id.
+
+R11. All positive-work arrivals join the tail of a single FIFO ready queue.
+
+R12. At the start of each scheduling iteration, admit every pending event whose timestamp is at most the current time before selecting a job. Events retain their own timestamp even when processed later.
+
+R13. Remove the selected head before charging any cost. This choice is locked: events during a dispatch cost may join queues but cannot replace the selected job.
+
+R14. Before executing the selected job, add switch_cost to time exactly when a last positive-work dispatch id exists and differs from the selected id. The first dispatch is free.
+
+R15. Admit events through the time after that cost. Then execute uninterrupted for min(remaining CPU work, selected quantum). Cost does not consume quantum.
+
+R16. Advance time by consumed CPU ticks. Emit exactly one Run, with start after cost, end after execution, and finished true exactly when the entire job completes. Never merge Runs, including adjacent Runs of the same id.
+
+R17. After execution, admit all pending events through the Run.end, including events exactly at Run.end, before requeuing the running job. Arrivals during execution are never delayed until its next dispatch.
+
+R18. If unfinished, append the running job to the ready queue tail; otherwise record its completion at Run.end. Exact multiples of quantum need no extra dispatch.
+
+R19. After execution, remember its id as the last dispatched id. Consecutive dispatches of the same id incur no cost, even if zero-work arrivals occurred between them.
+
+R20. If no ready job exists but an event remains, advance to the next event timestamp. Any positive time skipped is idle: append that half-open interval and clear the last dispatched id. The next dispatch after positive idle is free.
+
+R21. Merge adjacent idle intervals into one pair when the old end equals the new start. Never include dispatch costs in idle, never emit zero-length idle, and emit no trailing idle after the last completion.
+
+R22. Schedule.end is the time all jobs have completed. Initial idle begins at 0 when needed. For no jobs, end is 0 and all vectors are empty.
+
+R23. Schedule.completion has exactly one (id, completion_time) per input job in input order, regardless of execution or completion order.
+
+R24. All time and statistics calculations are exact u64. The stated bounds guarantee no overflow; no wall-clock, randomness, threads, global state, or external services affect the result.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R9, R11-R18
+#[test]
+fn arrivals_rotate() {
+    assert_eq!(schedule(&[Job { id: 1, arrival: 0, ticks: 3 }, Job { id: 2, arrival: 1, ticks: 2 }], 2, 0), Ok(Schedule {
+        runs: vec![Run { id: 1, start: 0, end: 2, finished: false }, Run { id: 2, start: 2, end: 4, finished: true }, Run { id: 1, start: 4, end: 5, finished: true }],
+        idle: vec![],
+        completion: vec![(1, 5), (2, 4)],
+        end: 5
+    }));
+}
+
+// R20-R23
+#[test]
+fn idle_before_arrival() {
+    assert_eq!(schedule(&[Job { id: 5, arrival: 4, ticks: 1 }], 3, 0), Ok(Schedule {
+        runs: vec![Run { id: 5, start: 4, end: 5, finished: true }],
+        idle: vec![(0, 4)],
+        completion: vec![(5, 5)],
+        end: 5
+    }));
+}
+
+// R14-R16
+#[test]
+fn dispatch_gap() {
+    assert_eq!(schedule(&[Job { id: 6, arrival: 0, ticks: 1 }, Job { id: 8, arrival: 0, ticks: 1 }], 2, 2), Ok(Schedule {
+        runs: vec![Run { id: 6, start: 0, end: 1, finished: true }, Run { id: 8, start: 3, end: 4, finished: true }],
+        idle: vec![],
+        completion: vec![(6, 1), (8, 4)],
+        end: 4
+    }));
+}
+
+// R7
+#[test]
+fn reject_arrival() {
+    assert_eq!(schedule(&[Job { id: 1, arrival: 1001, ticks: 1 }], 2, 0), Err(Error::Arrival { index: 0 }));
+}
+```
+
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-16T03:24:14.686797Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: u32,
+    pub arrival: u32,
+    pub ticks: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub id: u32,
+    pub start: u64,
+    pub end: u64,
+    pub finished: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub idle: Vec<(u64, u64)>,
+    pub completion: Vec<(u32, u64)>,
+    pub end: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Quantum,
+    SwitchCost,
+    TooManyJobs,
+    DuplicateId { index: usize },
+    Arrival { index: usize },
+    Ticks { index: usize },
+}
+
+pub fn schedule(jobs: &[Job], quantum: u32, switch_cost: u32) -> Result<Schedule, Error> {
+    if !(1..=1000).contains(&quantum) {
+        return Err(Error::Quantum);
+    }
+    if switch_cost > 1000 {
+        return Err(Error::SwitchCost);
+    }
+    if jobs.len() > 64 {
+        return Err(Error::TooManyJobs);
+    }
+
+    for (index, job) in jobs.iter().enumerate() {
+        if jobs[..index].iter().any(|earlier| earlier.id == job.id) {
+            return Err(Error::DuplicateId { index });
+        }
+        if job.arrival > 1000 {
+            return Err(Error::Arrival { index });
+        }
+        if job.ticks > 1000 {
+            return Err(Error::Ticks { index });
+        }
+    }
+
+    let mut events: Vec<usize> = (0..jobs.len()).collect();
+    events.sort_by_key(|&i| (jobs[i].arrival, i));
+
+    let mut remaining: Vec<u32> = jobs.iter().map(|job| job.ticks).collect();
+    let mut completion: Vec<Option<u64>> = vec![None; jobs.len()];
+    let mut ready: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    let mut runs = Vec::new();
+    let mut idle = Vec::new();
+
+    let mut time = 0u64;
+    let mut event_index = 0usize;
+    let mut last_id: Option<u32> = None;
+
+    while completion.iter().any(Option::is_none) {
+        while event_index < events.len()
+            && u64::from(jobs[events[event_index]].arrival) <= time
+        {
+            let i = events[event_index];
+            if jobs[i].ticks == 0 {
+                completion[i] = Some(u64::from(jobs[i].arrival));
+            } else {
+                ready.push_back(i);
+            }
+            event_index += 1;
+        }
+
+        if let Some(i) = ready.pop_front() {
+            let id = jobs[i].id;
+            if last_id.is_some_and(|last| last != id) {
+                time += u64::from(switch_cost);
+            }
+
+            while event_index < events.len()
+                && u64::from(jobs[events[event_index]].arrival) <= time
+            {
+                let arriving = events[event_index];
+                if jobs[arriving].ticks == 0 {
+                    completion[arriving] = Some(u64::from(jobs[arriving].arrival));
+                } else {
+                    ready.push_back(arriving);
+                }
+                event_index += 1;
+            }
+
+            let start = time;
+            let consumed = remaining[i].min(quantum);
+            time += u64::from(consumed);
+            remaining[i] -= consumed;
+            let finished = remaining[i] == 0;
+
+            runs.push(Run {
+                id,
+                start,
+                end: time,
+                finished,
+            });
+
+            while event_index < events.len()
+                && u64::from(jobs[events[event_index]].arrival) <= time
+            {
+                let arriving = events[event_index];
+                if jobs[arriving].ticks == 0 {
+                    completion[arriving] = Some(u64::from(jobs[arriving].arrival));
+                } else {
+                    ready.push_back(arriving);
+                }
+                event_index += 1;
+            }
+
+            if finished {
+                completion[i] = Some(time);
+            } else {
+                ready.push_back(i);
+            }
+            last_id = Some(id);
+        } else if event_index < events.len() {
+            let next_time = u64::from(jobs[events[event_index]].arrival);
+            if next_time > time {
+                if let Some(last_idle) = idle.last_mut() {
+                    if last_idle.1 == time {
+                        last_idle.1 = next_time;
+                    } else {
+                        idle.push((time, next_time));
+                    }
+                } else {
+                    idle.push((time, next_time));
+                }
+                time = next_time;
+                last_id = None;
+            }
+        }
+    }
+
+    let completion = jobs
+        .iter()
+        .enumerate()
+        .map(|(i, job)| (job.id, completion[i].expect("completed job")))
+        .collect();
+
+    Ok(Schedule {
+        runs,
+        idle,
+        completion,
+        end: time,
+    })
+}
+```
+tokens used
+4,744

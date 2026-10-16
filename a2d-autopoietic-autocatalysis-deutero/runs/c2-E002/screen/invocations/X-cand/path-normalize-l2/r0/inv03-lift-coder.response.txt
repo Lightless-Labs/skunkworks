@@ -1,0 +1,164 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.bytes().position(|byte| byte == 0) {
+        return Err(PathError::Nul { at });
+    }
+    if let Some(at) = path.bytes().position(|byte| byte == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+    if let Some(at) = path
+        .bytes()
+        .position(|byte| (1..=31).contains(&byte) || byte == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    Ok(())
+}
+
+fn directory_intent(path: &str) -> bool {
+    if path.ends_with('/') {
+        return true;
+    }
+    path.rsplit('/').find(|component| !component.is_empty())
+        .is_some_and(|component| component == "." || component == "..")
+}
+
+fn reduce_components<'a, I>(
+    components: I,
+    absolute: bool,
+) -> Result<Vec<&'a str>, usize>
+where
+    I: IntoIterator<Item = (&'a str, usize)>,
+{
+    let mut result: Vec<&str> = Vec::new();
+
+    for (component, at) in components {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+        if component == ".." {
+            if result.last().is_some_and(|previous| *previous != "..") {
+                result.pop();
+            } else if absolute {
+                return Err(at);
+            } else {
+                result.push("..");
+            }
+        } else {
+            result.push(component);
+        }
+    }
+
+    Ok(result)
+}
+
+fn join_components(components: &[&str], absolute: bool, directory: bool) -> String {
+    let mut output = String::new();
+
+    if absolute {
+        output.push('/');
+    }
+    output.push_str(&components.join("/"));
+
+    if output.is_empty() {
+        output.push('.');
+    }
+
+    if directory && output != "/" && output != "." {
+        output.push('/');
+    }
+
+    output
+}
+
+fn normalize_validated(path: &str) -> Result<String, PathError> {
+    let absolute = path.as_bytes().first() == Some(&b'/');
+    let components = path
+        .split('/')
+        .scan(0usize, |offset, component| {
+            let at = *offset;
+            *offset += component.len() + 1;
+            Some((component, at))
+        });
+
+    let reduced = reduce_components(components, absolute).map_err(|at| PathError::Escape { at })?;
+    Ok(join_components(&reduced, absolute, directory_intent(path)))
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+    normalize_validated(path)
+}
+
+fn validate_context(path: &str) -> Result<String, ()> {
+    if !path.starts_with('/') || validate_raw(path).is_err() {
+        return Err(());
+    }
+    normalize_validated(path).map_err(|_| ())
+}
+
+pub fn resolve(path: &str, cwd: &str, home: Option<&str>) -> Result<String, PathError> {
+    let cwd = validate_context(cwd).map_err(|_| PathError::InvalidCwd)?;
+    let home = match home {
+        Some(path) => Some(validate_context(path).map_err(|_| PathError::InvalidHome)?),
+        None => None,
+    };
+
+    validate_raw(path)?;
+
+    let (absolute, base, remainder, remainder_offset) = if path.starts_with('~') {
+        let bytes = path.as_bytes();
+        if bytes.len() == 1 || bytes.get(1) == Some(&b'/') {
+            let home = home.as_deref().ok_or(PathError::MissingHome)?;
+            let remainder = if bytes.len() > 1 { &path[2..] } else { "" };
+            (true, home, remainder, if bytes.len() > 1 { 2 } else { 1 })
+        } else {
+            return Err(PathError::UnsupportedTilde { at: 1 });
+        }
+    } else if path.starts_with('/') {
+        (true, "/", path, 0)
+    } else {
+        (true, &cwd, path, 0)
+    };
+
+    let mut components: Vec<&str> = base.split('/').filter(|part| !part.is_empty()).collect();
+    let request_components = remainder.split('/').scan(remainder_offset, |offset, component| {
+        let at = *offset;
+        *offset += component.len() + 1;
+        Some((component, at))
+    });
+
+    for (component, at) in request_components {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+        if component == ".." {
+            if components.pop().is_none() {
+                return Err(PathError::Escape { at });
+            }
+        } else {
+            components.push(component);
+        }
+    }
+
+    Ok(join_components(&components, absolute, directory_intent(path)))
+}
+```

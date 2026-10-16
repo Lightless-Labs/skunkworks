@@ -1,0 +1,122 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+}
+
+const ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+pub fn encode(input: &[u8]) -> String {
+    let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
+
+    for chunk in input.chunks(3) {
+        let a = chunk[0];
+        let b = chunk.get(1).copied().unwrap_or(0);
+        let c = chunk.get(2).copied().unwrap_or(0);
+
+        output.push(ALPHABET[(a >> 2) as usize] as char);
+        output.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+
+        if chunk.len() > 1 {
+            output.push(ALPHABET[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char);
+        } else {
+            output.push('=');
+        }
+
+        if chunk.len() > 2 {
+            output.push(ALPHABET[(c & 0x3f) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+
+    output
+}
+
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut output = Vec::with_capacity(input.len() / 4 * 3);
+    let mut group = [0u8; 4];
+    let mut group_offsets = [0usize; 4];
+    let mut count = 0usize;
+    let mut pending_padding: Option<usize> = None;
+    let mut terminal_padding = false;
+
+    for (offset, &byte) in input.iter().enumerate() {
+        if terminal_padding {
+            return Err(Error::BadPadding { offset });
+        }
+
+        if let Some(padding_offset) = pending_padding {
+            if byte != b'=' {
+                return Err(Error::BadPadding { offset });
+            }
+            // The pending '=' is at position two; this '=' completes xx==.
+            let _ = padding_offset;
+            terminal_padding = true;
+            count = 0;
+            pending_padding = None;
+            output.push((group[0] << 2) | (group[1] >> 4));
+            continue;
+        }
+
+        if count < 2 && byte == b'=' {
+            return Err(Error::BadPadding { offset });
+        }
+
+        if byte == b'=' {
+            if count == 2 {
+                pending_padding = Some(offset);
+                continue;
+            }
+            if count == 3 {
+                terminal_padding = true;
+                output.push((group[0] << 2) | (group[1] >> 4));
+                output.push((group[1] << 4) | (group[2] >> 2));
+                count = 0;
+                continue;
+            }
+            return Err(Error::BadPadding { offset });
+        }
+
+        let value = match digit(byte) {
+            Some(value) => value,
+            None => return Err(Error::InvalidByte { offset, byte }),
+        };
+
+        group[count] = value;
+        group_offsets[count] = offset;
+        count += 1;
+
+        if count == 4 {
+            output.push((group[0] << 2) | (group[1] >> 4));
+            output.push((group[1] << 4) | (group[2] >> 2));
+            output.push((group[2] << 6) | group[3]);
+            count = 0;
+        }
+    }
+
+    if let Some(offset) = pending_padding {
+        return Err(Error::BadPadding { offset });
+    }
+
+    if count != 0 {
+        return Err(Error::Truncated {
+            offset: group_offsets[0],
+        });
+    }
+
+    Ok(output)
+}

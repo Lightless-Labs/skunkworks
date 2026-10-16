@@ -1,0 +1,156 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Point {
+    pub x: i64,
+    pub y: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Clockwise,
+    Degenerate,
+    CounterClockwise,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Measures {
+    pub signed_area2: i128,
+    pub area2: u128,
+    pub orientation: Orientation,
+    pub edge_milli: Vec<u64>,
+    pub perimeter_milli: u64,
+    pub longest_edge: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeomError {
+    TooManyVertices { len: usize },
+    OutOfRange { index: usize },
+    TooFewVertices { len: usize },
+}
+
+pub fn measure(points: &[Point]) -> Result<Measures, GeomError> {
+    const MAX_VERTICES: usize = 4096;
+    const COORD_LIMIT: i64 = 1_000_000_000;
+
+    if points.len() > MAX_VERTICES {
+        return Err(GeomError::TooManyVertices { len: points.len() });
+    }
+
+    for (index, point) in points.iter().enumerate() {
+        if point.x < -COORD_LIMIT
+            || point.x > COORD_LIMIT
+            || point.y < -COORD_LIMIT
+            || point.y > COORD_LIMIT
+        {
+            return Err(GeomError::OutOfRange { index });
+        }
+    }
+
+    let effective_len = if points.len() >= 2 && points.first() == points.last() {
+        points.len() - 1
+    } else {
+        points.len()
+    };
+
+    if effective_len < 3 {
+        return Err(GeomError::TooFewVertices { len: effective_len });
+    }
+
+    let polygon = &points[..effective_len];
+    let mut signed_area2 = 0i128;
+    let mut edge_milli = Vec::with_capacity(effective_len);
+    let mut perimeter_milli = 0u64;
+    let mut longest_edge: Option<usize> = None;
+
+    for i in 0..effective_len {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % effective_len];
+
+        signed_area2 += (a.x as i128) * (b.y as i128) - (a.y as i128) * (b.x as i128);
+
+        let dx = (b.x as i128) - (a.x as i128);
+        let dy = (b.y as i128) - (a.y as i128);
+        let squared_scaled = ((dx * dx + dy * dy) as u128) * 1_000_000;
+        let rounded_length = rounded_sqrt(squared_scaled);
+
+        edge_milli.push(rounded_length);
+        perimeter_milli += rounded_length;
+
+        let replace_longest = match longest_edge {
+            None => true,
+            Some(current) => {
+                if rounded_length > edge_milli[current] {
+                    true
+                } else if rounded_length < edge_milli[current] {
+                    false
+                } else {
+                    let current_a = polygon[current];
+                    let current_b = polygon[(current + 1) % effective_len];
+                    let current_pair = ordered_pair(current_a, current_b);
+                    let candidate_pair = ordered_pair(a, b);
+                    candidate_pair < current_pair
+                        || (candidate_pair == current_pair && i < current)
+                }
+            }
+        };
+
+        if replace_longest {
+            longest_edge = Some(i);
+        }
+    }
+
+    let orientation = if signed_area2 > 0 {
+        Orientation::CounterClockwise
+    } else if signed_area2 < 0 {
+        Orientation::Clockwise
+    } else {
+        Orientation::Degenerate
+    };
+
+    Ok(Measures {
+        signed_area2,
+        area2: signed_area2.unsigned_abs(),
+        orientation,
+        edge_milli,
+        perimeter_milli,
+        longest_edge,
+    })
+}
+
+fn ordered_pair(a: Point, b: Point) -> (Point, Point) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+fn rounded_sqrt(value: u128) -> u64 {
+    let floor = integer_sqrt(value);
+    let midpoint = floor * 2 + 1;
+    if value * 4 >= midpoint * midpoint {
+        (floor + 1) as u64
+    } else {
+        floor as u64
+    }
+}
+
+fn integer_sqrt(value: u128) -> u128 {
+    if value < 2 {
+        return value;
+    }
+
+    let mut low = 1u128;
+    let mut high = 1u128 << 64;
+
+    while low + 1 < high {
+        let mid = low + (high - low) / 2;
+        if mid <= value / mid {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+
+    low
+}

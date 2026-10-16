@@ -1,0 +1,96 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitError {
+    Nul { pos: usize },
+    TrailingEscape { pos: usize },
+    UnterminatedSingle { pos: usize },
+    UnterminatedDouble { pos: usize },
+}
+
+pub fn split(input: &str) -> Result<Vec<String>, SplitError> {
+    if let Some(pos) = input.find('\0') {
+        return Err(SplitError::Nul { pos });
+    }
+
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut active = false;
+    let mut chars = input.char_indices().peekable();
+
+    while let Some((pos, ch)) = chars.next() {
+        match ch {
+            ' ' | '\t' | '\r' | '\n' => {
+                if active {
+                    words.push(std::mem::take(&mut word));
+                    active = false;
+                }
+            }
+            '\'' => {
+                active = true;
+                let opening_pos = pos;
+                let mut closed = false;
+                for (_, inner) in chars.by_ref() {
+                    if inner == '\'' {
+                        closed = true;
+                        break;
+                    }
+                    word.push(inner);
+                }
+                if !closed {
+                    return Err(SplitError::UnterminatedSingle { pos: opening_pos });
+                }
+            }
+            '"' => {
+                active = true;
+                let opening_pos = pos;
+                let mut closed = false;
+
+                while let Some((inner_pos, inner)) = chars.next() {
+                    match inner {
+                        '"' => {
+                            closed = true;
+                            break;
+                        }
+                        '\\' => {
+                            let Some(&(_, next)) = chars.peek() else {
+                                return Err(SplitError::TrailingEscape { pos: inner_pos });
+                            };
+                            if matches!(next, '"' | '\\' | '$' | '\n') {
+                                chars.next();
+                                if next != '\n' {
+                                    word.push(next);
+                                }
+                            } else {
+                                word.push('\\');
+                            }
+                        }
+                        _ => word.push(inner),
+                    }
+                }
+
+                if !closed {
+                    return Err(SplitError::UnterminatedDouble { pos: opening_pos });
+                }
+            }
+            '\\' => {
+                let Some(&(_, next)) = chars.peek() else {
+                    return Err(SplitError::TrailingEscape { pos });
+                };
+                chars.next();
+                if next != '\n' {
+                    active = true;
+                    word.push(next);
+                }
+            }
+            _ => {
+                active = true;
+                word.push(ch);
+            }
+        }
+    }
+
+    if active {
+        words.push(word);
+    }
+
+    Ok(words)
+}

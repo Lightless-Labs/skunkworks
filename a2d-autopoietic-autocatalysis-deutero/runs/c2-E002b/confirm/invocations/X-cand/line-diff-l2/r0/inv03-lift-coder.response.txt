@@ -1,0 +1,251 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Side {
+    Old,
+    New,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    Keep {
+        old_index: usize,
+        new_index: usize,
+        line: String,
+    },
+    Delete {
+        old_index: usize,
+        line: String,
+    },
+    Insert {
+        new_index: usize,
+        line: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffError {
+    ContextTooLarge { context: usize },
+    CarriageReturn { side: Side, byte: usize },
+    MissingFinalLf { side: Side },
+    TooLarge { old_len: usize, new_len: usize },
+}
+
+fn split_lines(text: &str) -> Vec<&str> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    text.strip_suffix('\n')
+        .unwrap_or(text)
+        .split('\n')
+        .collect()
+}
+
+pub fn unified_diff(old: &str, new: &str, context: usize) -> Result<String, DiffError> {
+    if context > 8 {
+        return Err(DiffError::ContextTooLarge { context });
+    }
+
+    if let Some(byte) = old.find('\r') {
+        return Err(DiffError::CarriageReturn {
+            side: Side::Old,
+            byte,
+        });
+    }
+    if let Some(byte) = new.find('\r') {
+        return Err(DiffError::CarriageReturn {
+            side: Side::New,
+            byte,
+        });
+    }
+
+    if !old.is_empty() && !old.ends_with('\n') {
+        return Err(DiffError::MissingFinalLf { side: Side::Old });
+    }
+    if !new.is_empty() && !new.ends_with('\n') {
+        return Err(DiffError::MissingFinalLf { side: Side::New });
+    }
+
+    let old_lines = split_lines(old);
+    let new_lines = split_lines(new);
+    let old_len = old_lines.len();
+    let new_len = new_lines.len();
+
+    if old_len > 128 || new_len > 128 {
+        return Err(DiffError::TooLarge { old_len, new_len });
+    }
+
+    let width = new_len + 1;
+    let mut lcs = vec![0usize; (old_len + 1) * width];
+
+    for i in (0..old_len).rev() {
+        for j in (0..new_len).rev() {
+            let value = if old_lines[i] == new_lines[j] {
+                1 + lcs[(i + 1) * width + (j + 1)]
+            } else {
+                lcs[(i + 1) * width + j].max(lcs[i * width + (j + 1)])
+            };
+            lcs[i * width + j] = value;
+        }
+    }
+
+    let mut edits = Vec::new();
+    let (mut i, mut j) = (0, 0);
+
+    while i < old_len && j < new_len {
+        if old_lines[i] == new_lines[j] {
+            edits.push(Edit::Keep {
+                old_index: i,
+                new_index: j,
+                line: old_lines[i].to_owned(),
+            });
+            i += 1;
+            j += 1;
+        } else {
+            let delete_score = lcs[(i + 1) * width + j];
+            let insert_score = lcs[i * width + (j + 1)];
+            if delete_score > insert_score
+                || (delete_score == insert_score && (i + j) % 2 == 0)
+            {
+                edits.push(Edit::Delete {
+                    old_index: i,
+                    line: old_lines[i].to_owned(),
+                });
+                i += 1;
+            } else {
+                edits.push(Edit::Insert {
+                    new_index: j,
+                    line: new_lines[j].to_owned(),
+                });
+                j += 1;
+            }
+        }
+    }
+
+    while i < old_len {
+        edits.push(Edit::Delete {
+            old_index: i,
+            line: old_lines[i].to_owned(),
+        });
+        i += 1;
+    }
+    while j < new_len {
+        edits.push(Edit::Insert {
+            new_index: j,
+            line: new_lines[j].to_owned(),
+        });
+        j += 1;
+    }
+
+    if !edits.iter().any(|edit| !matches!(edit, Edit::Keep { .. })) {
+        return Ok(String::new());
+    }
+
+    let mut groups = Vec::<(usize, usize)>::new();
+    let mut pos = 0;
+    while pos < edits.len() {
+        if matches!(edits[pos], Edit::Keep { .. }) {
+            pos += 1;
+            continue;
+        }
+        let start = pos;
+        while pos < edits.len() && !matches!(edits[pos], Edit::Keep { .. }) {
+            pos += 1;
+        }
+        groups.push((start, pos));
+    }
+
+    let merge_gap = 2 * context;
+    let mut merged = Vec::<(usize, usize)>::new();
+    for group in groups {
+        if let Some(last) = merged.last_mut() {
+            let keep_count = edits[last.1..group.0]
+                .iter()
+                .filter(|edit| matches!(edit, Edit::Keep { .. }))
+                .count();
+            if keep_count <= merge_gap {
+                last.1 = group.1;
+                continue;
+            }
+        }
+        merged.push(group);
+    }
+
+    let mut output = String::from("--- before\n+++ after\n");
+
+    for (group_start, group_end) in merged {
+        let mut start = group_start;
+        let mut preceding = 0;
+        while start > 0 && preceding < context {
+            start -= 1;
+            if matches!(edits[start], Edit::Keep { .. }) {
+                preceding += 1;
+            }
+        }
+
+        let mut end = group_end;
+        let mut following = 0;
+        while end < edits.len() && following < context {
+            if matches!(edits[end], Edit::Keep { .. }) {
+                following += 1;
+            }
+            end += 1;
+        }
+
+        let old_before = edits[..start]
+            .iter()
+            .filter(|edit| !matches!(edit, Edit::Insert { .. }))
+            .count();
+        let new_before = edits[..start]
+            .iter()
+            .filter(|edit| !matches!(edit, Edit::Delete { .. }))
+            .count();
+
+        let old_count = edits[start..end]
+            .iter()
+            .filter(|edit| !matches!(edit, Edit::Insert { .. }))
+            .count();
+        let new_count = edits[start..end]
+            .iter()
+            .filter(|edit| !matches!(edit, Edit::Delete { .. }))
+            .count();
+
+        let old_start = if old_count > 0 {
+            old_before + 1
+        } else {
+            old_before
+        };
+        let new_start = if new_count > 0 {
+            new_before + 1
+        } else {
+            new_before
+        };
+
+        output.push_str(&format!(
+            "@@ -{old_start},{old_count} +{new_start},{new_count} @@\n"
+        ));
+
+        for edit in &edits[start..end] {
+            match edit {
+                Edit::Keep { line, .. } => {
+                    output.push(' ');
+                    output.push_str(line);
+                    output.push('\n');
+                }
+                Edit::Delete { line, .. } => {
+                    output.push('-');
+                    output.push_str(line);
+                    output.push('\n');
+                }
+                Edit::Insert { line, .. } => {
+                    output.push('+');
+                    output.push_str(line);
+                    output.push('\n');
+                }
+            }
+        }
+    }
+
+    Ok(output)
+}
+```

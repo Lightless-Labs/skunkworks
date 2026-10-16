@@ -1,0 +1,375 @@
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    KeyEmpty,
+    NameEmpty,
+    NameInvalid { at: usize },
+    SnapshotLimit,
+    NoTransaction,
+    DepthLimit,
+    SnapshotMissing(String),
+    TimeBackwards { previous: u64, now: u64 },
+    DeadlineOverflow,
+    InvalidRange,
+    CursorMismatch,
+    InvalidNumber { key: String, value: String },
+    SumOverflow { key: String },
+}
+
+type Data = BTreeMap<String, Entry>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Entry {
+    value: String,
+    deadline: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cursor {
+    pub start: String,
+    pub end: Option<String>,
+    pub prefix: Option<String>,
+    pub offset: usize,
+    pub last: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Page {
+    pub items: Vec<(String, String)>,
+    pub next: Option<Cursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Aggregate {
+    pub count: usize,
+    pub sum: i64,
+}
+
+pub struct Store {
+    committed: Data,
+    scopes: Vec<Data>,
+    snapshots: BTreeMap<String, Data>,
+    clock: u64,
+}
+
+impl Store {
+    pub fn new() -> Self {
+        Self {
+            committed: BTreeMap::new(),
+            scopes: Vec::new(),
+            snapshots: BTreeMap::new(),
+            clock: 0,
+        }
+    }
+
+    fn admit(&mut self, now: u64) -> Result<(), Error> {
+        if now < self.clock {
+            return Err(Error::TimeBackwards {
+                previous: self.clock,
+                now,
+            });
+        }
+        self.clock = now;
+        self.purge_visible(now);
+        Ok(())
+    }
+
+    fn purge(data: &mut Data, now: u64) {
+        data.retain(|_, entry| !matches!(entry.deadline, Some(d) if d <= now));
+    }
+
+    fn purge_visible(&mut self, now: u64) {
+        if let Some(map) = self.scopes.last_mut() {
+            Self::purge(map, now);
+        } else {
+            Self::purge(&mut self.committed, now);
+        }
+    }
+
+    fn visible(&self) -> &Data {
+        self.scopes.last().unwrap_or(&self.committed)
+    }
+
+    fn visible_mut(&mut self) -> &mut Data {
+        self.scopes.last_mut().unwrap_or(&mut self.committed)
+    }
+
+    pub fn begin(&mut self, now: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        if self.scopes.len() >= 4 {
+            return Err(Error::DepthLimit);
+        }
+        self.scopes.push(self.visible().clone());
+        Ok(())
+    }
+
+    pub fn commit(&mut self, now: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        let map = self.scopes.pop().ok_or(Error::NoTransaction)?;
+        if let Some(parent) = self.scopes.last_mut() {
+            *parent = map;
+        } else {
+            self.committed = map;
+        }
+        Ok(())
+    }
+
+    pub fn rollback(&mut self, now: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        if self.scopes.pop().is_none() {
+            return Err(Error::NoTransaction);
+        }
+        self.purge_visible(now);
+        Ok(())
+    }
+
+    pub fn set(
+        &mut self,
+        now: u64,
+        key: &str,
+        value: &str,
+        ttl: Option<u64>,
+    ) -> Result<(), Error> {
+        self.admit(now)?;
+        if key.is_empty() {
+            return Err(Error::KeyEmpty);
+        }
+        let deadline = match ttl {
+            Some(d) => match now.checked_add(d) {
+                Some(deadline) => Some(deadline),
+                None => return Err(Error::DeadlineOverflow),
+            },
+            None => None,
+        };
+        if matches!(deadline, Some(d) if d <= now) {
+            self.visible_mut().remove(key);
+        } else {
+            self.visible_mut().insert(
+                key.to_owned(),
+                Entry {
+                    value: value.to_owned(),
+                    deadline,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    pub fn delete(&mut self, now: u64, key: &str) -> Result<bool, Error> {
+        self.admit(now)?;
+        if key.is_empty() {
+            return Err(Error::KeyEmpty);
+        }
+        Ok(self.visible_mut().remove(key).is_some())
+    }
+
+    pub fn get(&mut self, now: u64, key: &str) -> Result<Option<String>, Error> {
+        self.admit(now)?;
+        if key.is_empty() {
+            return Err(Error::KeyEmpty);
+        }
+        Ok(self.visible().get(key).map(|entry| entry.value.clone()))
+    }
+
+    pub fn count(&mut self, now: u64, value: &str) -> Result<usize, Error> {
+        self.admit(now)?;
+        Ok(self
+            .visible()
+            .values()
+            .filter(|entry| entry.value == value)
+            .count())
+    }
+
+    pub fn depth(&mut self, now: u64) -> Result<usize, Error> {
+        self.admit(now)?;
+        Ok(self.scopes.len())
+    }
+
+    fn validate_name(name: &str) -> Result<(), Error> {
+        if name.is_empty() {
+            return Err(Error::NameEmpty);
+        }
+        for (at, ch) in name.char_indices() {
+            let valid = if at == 0 {
+                ch.is_ascii_lowercase()
+            } else {
+                ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'
+            };
+            if !valid {
+                return Err(Error::NameInvalid { at });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn snapshot(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        if !self.snapshots.contains_key(name) && self.snapshots.len() >= 3 {
+            return Err(Error::SnapshotLimit);
+        }
+        self.snapshots
+            .insert(name.to_owned(), self.visible().clone());
+        Ok(())
+    }
+
+    pub fn restore(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        let mut map = self
+            .snapshots
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::SnapshotMissing(name.to_owned()))?;
+        Self::purge(&mut map, now);
+        *self.visible_mut() = map;
+        Ok(())
+    }
+
+    pub fn forget(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        self.snapshots
+            .remove(name)
+            .map(|_| ())
+            .ok_or_else(|| Error::SnapshotMissing(name.to_owned()))
+    }
+
+    fn matches(key: &str, start: &str, end: Option<&str>, prefix: Option<&str>) -> bool {
+        key >= start
+            && end.map_or(true, |end| key < end)
+            && prefix.map_or(true, |prefix| key.starts_with(prefix))
+    }
+
+    fn validate_range(start: &str, end: Option<&str>) -> Result<(), Error> {
+        if end.is_some_and(|end| end <= start) {
+            return Err(Error::InvalidRange);
+        }
+        Ok(())
+    }
+
+    pub fn scan(
+        &mut self,
+        now: u64,
+        start: &str,
+        end: Option<&str>,
+        prefix: Option<&str>,
+        offset: usize,
+        limit: usize,
+        cursor: Option<&Cursor>,
+    ) -> Result<Page, Error> {
+        self.admit(now)?;
+        Self::validate_range(start, end)?;
+
+        if let Some(cursor) = cursor {
+            if cursor.start != start
+                || cursor.end.as_deref() != end
+                || cursor.prefix.as_deref() != prefix
+                || cursor.offset != offset
+                || cursor.last.is_empty()
+                || !Self::matches(&cursor.last, start, end, prefix)
+            {
+                return Err(Error::CursorMismatch);
+            }
+        }
+
+        if limit == 0 {
+            return Ok(Page {
+                items: Vec::new(),
+                next: None,
+            });
+        }
+
+        let mut selected = Vec::new();
+        let mut skipped = 0usize;
+        let after = cursor.map(|c| c.last.as_str());
+        for (key, entry) in self.visible() {
+            if !Self::matches(key, start, end, prefix)
+                || after.is_some_and(|last| key.as_str() <= last)
+            {
+                continue;
+            }
+            if cursor.is_none() && skipped < offset {
+                skipped += 1;
+                continue;
+            }
+            selected.push((key.clone(), entry.value.clone()));
+            if selected.len() == limit {
+                break;
+            }
+        }
+
+        let has_more = if let Some((last, _)) = selected.last() {
+            self.visible().keys().any(|key| {
+                key.as_str() > last.as_str()
+                    && Self::matches(key, start, end, prefix)
+                    && after.map_or(true, |c| key.as_str() > c)
+            })
+        } else {
+            false
+        };
+
+        let next = if has_more {
+            selected.last().map(|(last, _)| Cursor {
+                start: start.to_owned(),
+                end: end.map(str::to_owned),
+                prefix: prefix.map(str::to_owned),
+                offset,
+                last: last.clone(),
+            })
+        } else {
+            None
+        };
+
+        Ok(Page {
+            items: selected,
+            next,
+        })
+    }
+
+    pub fn aggregate(
+        &mut self,
+        now: u64,
+        start: &str,
+        end: Option<&str>,
+        prefix: Option<&str>,
+    ) -> Result<Aggregate, Error> {
+        self.admit(now)?;
+        Self::validate_range(start, end)?;
+
+        let mut count = 0usize;
+        let mut sum = 0i64;
+        for (key, entry) in self.visible() {
+            if !Self::matches(key, start, end, prefix) {
+                continue;
+            }
+            let value = parse_canonical_i64(&entry.value).ok_or_else(|| {
+                Error::InvalidNumber {
+                    key: key.clone(),
+                    value: entry.value.clone(),
+                }
+            })?;
+            sum = sum
+                .checked_add(value)
+                .ok_or_else(|| Error::SumOverflow { key: key.clone() })?;
+            count += 1;
+        }
+        Ok(Aggregate { count, sum })
+    }
+}
+
+fn parse_canonical_i64(text: &str) -> Option<i64> {
+    if text.is_empty() || !text.is_ascii() {
+        return None;
+    }
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    if digits.is_empty()
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+        || (digits.len() > 1 && digits.starts_with('0'))
+        || text == "-0"
+    {
+        return None;
+    }
+    text.parse::<i64>().ok()
+}

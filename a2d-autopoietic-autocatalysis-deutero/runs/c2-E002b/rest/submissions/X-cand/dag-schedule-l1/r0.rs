@@ -1,0 +1,146 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Task {
+    pub duration: u64,
+    pub deps: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Timing {
+    pub start: u64,
+    pub finish: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Plan {
+    pub order: Vec<usize>,
+    pub times: Vec<Timing>,
+    pub makespan: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    BadDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    SelfDependency {
+        task: usize,
+        position: usize,
+    },
+    DuplicateDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    Cycle {
+        blocked: Vec<usize>,
+    },
+    Overflow {
+        task: usize,
+    },
+}
+
+pub fn earliest(tasks: &[Task]) -> Result<Plan, Error> {
+    let task_count = tasks.len();
+
+    // Validate every dependency before doing any scheduling work.
+    for (task_id, task) in tasks.iter().enumerate() {
+        for (position, &dependency) in task.deps.iter().enumerate() {
+            if dependency >= task_count {
+                return Err(Error::BadDependency {
+                    task: task_id,
+                    position,
+                    value: dependency,
+                });
+            }
+            if dependency == task_id {
+                return Err(Error::SelfDependency {
+                    task: task_id,
+                    position,
+                });
+            }
+            if task.deps[..position].contains(&dependency) {
+                return Err(Error::DuplicateDependency {
+                    task: task_id,
+                    position,
+                    value: dependency,
+                });
+            }
+        }
+    }
+
+    // Build predecessor counts and successor lists.
+    let mut indegree = vec![0usize; task_count];
+    let mut children = vec![Vec::new(); task_count];
+    for (task_id, task) in tasks.iter().enumerate() {
+        indegree[task_id] = task.deps.len();
+        for &dependency in &task.deps {
+            children[dependency].push(task_id);
+        }
+    }
+
+    // Kahn traversal, always taking the smallest currently available ID.
+    let mut available = std::collections::BinaryHeap::new();
+    for (task_id, &degree) in indegree.iter().enumerate() {
+        if degree == 0 {
+            available.push(std::cmp::Reverse(task_id));
+        }
+    }
+
+    let mut order = Vec::with_capacity(task_count);
+    let mut remaining_indegree = indegree;
+    while let Some(std::cmp::Reverse(task_id)) = available.pop() {
+        order.push(task_id);
+        for &child in &children[task_id] {
+            remaining_indegree[child] -= 1;
+            if remaining_indegree[child] == 0 {
+                available.push(std::cmp::Reverse(child));
+            }
+        }
+    }
+
+    if order.len() != task_count {
+        let blocked = remaining_indegree
+            .iter()
+            .enumerate()
+            .filter_map(|(task_id, &degree)| (degree != 0).then_some(task_id))
+            .collect();
+        return Err(Error::Cycle { blocked });
+    }
+
+    // Compute earliest timings in Kahn order.
+    let mut starts = vec![0u64; task_count];
+    let mut finishes = vec![0u64; task_count];
+    let mut makespan = 0u64;
+
+    for &task_id in &order {
+        let start = tasks[task_id]
+            .deps
+            .iter()
+            .map(|&dependency| finishes[dependency])
+            .max()
+            .unwrap_or(0);
+
+        let finish = start
+            .checked_add(tasks[task_id].duration)
+            .ok_or(Error::Overflow { task: task_id })?;
+
+        starts[task_id] = start;
+        finishes[task_id] = finish;
+        makespan = makespan.max(finish);
+    }
+
+    let times = (0..task_count)
+        .map(|task_id| Timing {
+            start: starts[task_id],
+            finish: finishes[task_id],
+        })
+        .collect();
+
+    Ok(Plan {
+        order,
+        times,
+        makespan,
+    })
+}

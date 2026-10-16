@@ -1,0 +1,639 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-8416-1792121141471014000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a142be-979c-79a3-827e-ad2e01fd0b41
+--------
+user
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, using std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner documentation comments.
+
+R2. Provide exactly the following public data types and function signatures (function bodies are yours to implement). The shown derives are required; all listed fields and API items are public. Helper items may be private.
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+    UnclosedQuote { at: usize },
+    TrailingLocal { at: usize },
+    BadEscape { at: usize },
+    QuotedChar { at: usize },
+    BadFold { at: usize },
+    UnclosedComment { at: usize },
+    CommentDepth { at: usize },
+    CommentChar { at: usize },
+    CommentEscape { at: usize },
+    UnexpectedClose { at: usize },
+    CfwsBoundary { at: usize },
+}
+
+pub fn parse_email(input: &str) -> Result<Address, EmailError>;
+```
+
+R3. All at fields are zero-based BYTE offsets in the original input, never character counts. After any stripping, the position of a retained byte is its original position. Whenever an error refers to a position at the end of the cleaned input with no byte there, use input.len(). A removed terminal domain dot still supplies its original position for errors at that position.
+
+R4. Check raw empty input first: EmptyInput. Then reject the first byte >= 128 with NonAscii { at }, before ANY syntax checks, including comments or quotes. Do not trim or accept Unicode.
+
+R5. Next perform the CFWS cleanup defined below over the whole input. Report its first lexical error in left-to-right scanning order before checking any boundary or address syntax. Then check CFWS boundaries left-to-right, then return EmptyInput if cleanup retained no bytes. After cleanup follow the address stages below. Thus malformed comments/folds in the domain can outrank invalid local syntax.
+
+R6. If the first cleaned byte is a double quote, find its first unescaped closing double quote by scanning from the next byte: a backslash skips itself and the next byte, regardless of whether that escape will be legal. No closing quote yields UnclosedQuote at the opening quote, before checking @ separators. A trailing backslash also leaves the quote unclosed. Only this prefix protects @ signs; quotes elsewhere do not open protected regions.
+
+R7. Find @ separators outside the complete quoted prefix (ignore every byte through its closing quote). No separator yields MissingAt. Two or more yield MultipleAt at the SECOND separator, before local or domain validation. Exactly one divides local and domain. An empty local yields EmptyLocal at that separator, before any domain checks.
+
+R8. For an unquoted local, check length before its contents. More than 64 bytes yields LocalTooLong at its 65th byte. Otherwise validate left-to-right. The only permitted non-dot bytes are ASCII letters/digits and the bytes in the Rust byte string b"!#$%&'*+-/=?^_`{|}~". This includes no whitespace. Any other byte yields LocalChar at that byte.
+
+R9. For an unquoted local a dot may not be first, last, or immediately preceded by another dot. When scanning left-to-right, a dot violating any of those conditions yields LocalDot at that dot. Adjacency is detected at the SECOND dot, but an earlier invalid byte (including a leading dot) wins. Preserve the exact local spelling and case in Address.local and set Address.quoted to false.
+
+R10. For a local beginning with a quote, the closing quote must be the final local byte. Otherwise return TrailingLocal at the first byte after that closing quote, before decoding its contents. Decode the interior left-to-right; ordinary bytes must be printable ASCII 0x20..=0x7e. Any other ordinary byte, including TAB/CR/LF/DEL, yields QuotedChar at that byte. Ordinary @, spaces, dots and parentheses are allowed and retained.
+
+R11. Inside the quoted interior the ONLY permitted backslash escapes are \" (double quote), \\ (backslash), and \@ (at-sign). Decode each to its second byte; an unsupported escape yields BadEscape at its backslash. These content/escape errors precede decoded length/emptiness checks. An escaped byte is considered to originate at the BACKSLASH for all later position reporting.
+
+R12. After quoted decoding, zero decoded bytes yields EmptyLocal at the closing quote. More than 64 decoded bytes yields LocalTooLong at the origin of the 65th decoded byte, even if its source was an escape. Otherwise Address.local contains the decoded interior and Address.quoted is true; dot-atom restrictions do not apply to it.
+
+R13. Validate the domain only after the local succeeds. Remove exactly ONE final dot from the raw cleaned domain if present. This is a root marker, not an empty label. A domain empty after removal yields EmptyDomain at the domain start (position after @; input.len() if no retained byte is there). Do not remove any other dots.
+
+R14. The domain AFTER removal of that root marker must have at most 253 bytes. Otherwise return DomainTooLong at its 254th byte, before any label checks. The removed dot does not count towards length.
+
+R15. Split the domain on dots, preserving empty labels; process labels left-to-right. An empty label yields EmptyLabel at its start: the leading dot for a leading empty label, the second dot for an interior empty label, or the removed root dot for an empty last label after root removal.
+
+R16. For each nonempty label, length > 63 bytes yields LabelTooLong at its 64th byte before any character or hyphen checks. Earlier labels are validated completely before later labels.
+
+R17. For each label of valid length, check a leading hyphen first (LabelHyphen at its first byte), then a trailing hyphen (LabelHyphen at its last byte), THEN scan for character errors. Thus a label starting and ending with hyphen reports the leading one, even if another bad character exists inside.
+
+R18. Label content may contain only ASCII letters, digits, and hyphens; the first disallowed byte yields DomainChar at its byte. Underscores, brackets, spaces, quotes, domain literals, and IP literals in brackets are unsupported.
+
+R19. After all labels succeed, require at least TWO labels; otherwise DomainNeedsDot at the domain start. This precedes the final-label numeric check. There are no exceptions for localhost.
+
+R20. After the label-count check, if every byte of the last label is an ASCII digit return NumericTld at that label's start. Mixed letters/digits and hyphens in the final label are permitted. Otherwise return Address with domain ASCII-lowercased and without the root marker; local case is preserved.
+
+R21. Overall address error precedence is exactly: raw empty, non-ASCII, cleanup lexical, cleanup boundary, cleaned empty, quoted prefix closing search, separator count, empty local, local validation, empty domain, total domain length, each label in order (empty, length, leading hyphen, trailing hyphen, character), label count, numeric last label. There is no total address length limit beyond the local/domain limits. No DNS lookup, IDNA conversion or Unicode processing.
+
+R22. CFWS consists of outside-quote SPACE, TAB, valid folding whitespace, and comments. Remove it entirely; do not insert spaces. Maximal adjacent runs of these constructs are one CFWS run, even when mixing comments and whitespace. Preserve an original-byte position map for retained bytes.
+
+R23. A valid fold is exactly CR LF followed by at least one SPACE or TAB; consume CR LF and the whole following horizontal-whitespace run. At any unprotected CR or LF, if this pattern is absent return BadFold at that CR or LF. A bare LF is never a fold; CRLF without following horizontal whitespace is invalid. These fold rules apply both outside quotes and inside comments.
+
+R24. Outside the protected quoted local prefix, ( starts a comment. Comments nest, with maximum simultaneous depth THREE; an opening parenthesis increasing depth to FOUR yields CommentDepth at that parenthesis. An unescaped ) closes the current comment. EOF with any depth open yields UnclosedComment at the OUTERMOST opening parenthesis. A ) outside comments and the protected quote yields UnexpectedClose at that byte.
+
+R25. In comments a backslash must be followed by one printable ASCII byte 0x20..=0x7e. It consumes the pair as literal comment content; escaped parentheses do not change depth. A missing second byte or a second byte outside that range yields CommentEscape at the backslash, before EOF/unclosed handling. Any other comment byte must be printable ASCII, TAB, a delimiter, or part of a valid fold; otherwise CommentChar at that byte. Double quotes and @ inside comments are ordinary content.
+
+R26. Quote protection during cleanup starts ONLY at a double quote that is the first retained byte. In that prefix copy every byte unchanged through the first unescaped closing quote; a backslash copies itself and the next byte unchanged if present. Do not treat parentheses or whitespace as CFWS inside it, and do not validate quoted escapes/content during cleanup. Later quotes never open protection. If EOF arrives inside it, cleanup itself succeeds; the closing-search stage returns UnclosedQuote (unless an earlier cleanup boundary fails).
+
+R27. After the entire lexical cleanup succeeds, inspect CFWS runs in original order. Each run is legal ONLY if it is at the beginning/end of the cleaned sequence OR immediately adjacent to a retained @ on either side. Otherwise CfwsBoundary at the FIRST original byte of the run, even if removal would leave an otherwise valid address. Inside-comment whitespace belongs to its containing run; quoted whitespace is retained and creates no run.
+
+R28. Consequences: leading/trailing CFWS and CFWS on either side of the separator are allowed; CFWS between local atom characters, at a domain dot, or between a closing local quote and a non-@ trailing local byte is forbidden. CFWS-only input gives EmptyInput after successful cleanup, while malformed CFWS-only input gives its lexical error. Original offset mapping applies to ALL address errors after cleanup.
+
+R29. Comments and folds may be arbitrarily long; only nested comment depth is limited. Validation is deterministic and must handle at least 20,000 input bytes without panics or exponential work. Use ASCII rules even when comments would otherwise be discarded.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// Clauses: R9.
+#[test]
+fn public_atom_address() {
+    assert_eq!(parse_email("Ada.Lovelace@Mail.Example"), Ok(Address { local: "Ada.Lovelace".into(), domain: "mail.example".into(), quoted: false }));
+}
+// Clauses: R12.
+#[test]
+fn public_quoted_local() {
+    assert_eq!(parse_email("\"Ada Lovelace\\@home\"@Example.COM"), Ok(Address { local: "Ada Lovelace@home".into(), domain: "example.com".into(), quoted: true }));
+}
+// Clauses: R22.
+#[test]
+fn public_comments_and_fold() {
+    assert_eq!(parse_email("(name) User (note) @\r\n\tMail.Example (end)"), Ok(Address { local: "User".into(), domain: "mail.example".into(), quoted: false }));
+}
+// Clauses: R27.
+#[test]
+fn public_boundary_error() {
+    assert_eq!(parse_email("first last@mail.example"), Err(EmailError::CfwsBoundary { at: 5 }));
+}
+```
+
+2026-10-16T03:25:53.177744Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+codex
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+    UnclosedQuote { at: usize },
+    TrailingLocal { at: usize },
+    BadEscape { at: usize },
+    QuotedChar { at: usize },
+    BadFold { at: usize },
+    UnclosedComment { at: usize },
+    CommentDepth { at: usize },
+    CommentChar { at: usize },
+    CommentEscape { at: usize },
+    UnexpectedClose { at: usize },
+    CfwsBoundary { at: usize },
+}
+
+#[derive(Clone)]
+struct CfwsRun {
+    start: usize,
+    end: usize,
+}
+
+fn is_hws(b: u8) -> bool {
+    b == b' ' || b == b'\t'
+}
+
+fn is_printable(b: u8) -> bool {
+    (0x20..=0x7e).contains(&b)
+}
+
+fn fold_end(bytes: &[u8], i: usize) -> Option<usize> {
+    if i + 2 >= bytes.len()
+        || bytes[i] != b'\r'
+        || bytes[i + 1] != b'\n'
+        || !is_hws(bytes[i + 2])
+    {
+        return None;
+    }
+
+    let mut j = i + 2;
+    while j < bytes.len() && is_hws(bytes[j]) {
+        j += 1;
+    }
+    Some(j)
+}
+
+pub fn parse_email(input: &str) -> Result<Address, EmailError> {
+    let bytes = input.as_bytes();
+
+    if bytes.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+    if let Some(at) = bytes.iter().position(|&b| b >= 128) {
+        return Err(EmailError::NonAscii { at });
+    }
+
+    let n = bytes.len();
+    let mut clean = Vec::with_capacity(n);
+    let mut positions = Vec::with_capacity(n);
+    let mut runs: Vec<CfwsRun> = Vec::new();
+
+    let mut i = 0;
+    let mut protected_quote = false;
+    let mut comment_depth = 0usize;
+    let mut outer_comment_start = 0usize;
+    let mut active_run: Option<usize> = None;
+
+    while i < n {
+        if protected_quote {
+            let b = bytes[i];
+            clean.push(b);
+            positions.push(i);
+
+            if b == b'\\' {
+                if i + 1 < n {
+                    clean.push(bytes[i + 1]);
+                    positions.push(i + 1);
+                    i += 2;
+                    continue;
+                }
+            } else if b == b'"' {
+                protected_quote = false;
+            }
+
+            i += 1;
+            continue;
+        }
+
+        if comment_depth > 0 {
+            let b = bytes[i];
+
+            if b == b'\\' {
+                if i + 1 >= n || !is_printable(bytes[i + 1]) {
+                    return Err(EmailError::CommentEscape { at: i });
+                }
+
+                if let Some(run) = active_run {
+                    runs[run].end = i + 2;
+                } else {
+                    active_run = Some(runs.len());
+                    runs.push(CfwsRun {
+                        start: i,
+                        end: i + 2,
+                    });
+                }
+                i += 2;
+                continue;
+            }
+
+            if b == b'\r' || b == b'\n' {
+                if let Some(end) = fold_end(bytes, i) {
+                    if let Some(run) = active_run {
+                        runs[run].end = end;
+                    } else {
+                        active_run = Some(runs.len());
+                        runs.push(CfwsRun { start: i, end });
+                    }
+                    i = end;
+                    continue;
+                }
+                return Err(EmailError::BadFold { at: i });
+            }
+
+            if b == b'(' {
+                if comment_depth == 3 {
+                    return Err(EmailError::CommentDepth { at: i });
+                }
+                comment_depth += 1;
+                if let Some(run) = active_run {
+                    runs[run].end = i + 1;
+                } else {
+                    active_run = Some(runs.len());
+                    runs.push(CfwsRun {
+                        start: i,
+                        end: i + 1,
+                    });
+                }
+                i += 1;
+                continue;
+            }
+
+            if b == b')' {
+                comment_depth -= 1;
+                if let Some(run) = active_run {
+                    runs[run].end = i + 1;
+                } else {
+                    active_run = Some(runs.len());
+                    runs.push(CfwsRun {
+                        start: i,
+                        end: i + 1,
+                    });
+                }
+                i += 1;
+                continue;
+            }
+
+            if !is_printable(b) && !is_hws(b) {
+                return Err(EmailError::CommentChar { at: i });
+            }
+
+            if let Some(run) = active_run {
+                runs[run].end = i + 1;
+            } else {
+                active_run = Some(runs.len());
+                runs.push(CfwsRun {
+                    start: i,
+                    end: i + 1,
+                });
+            }
+            i += 1;
+            continue;
+        }
+
+        let b = bytes[i];
+
+        if is_hws(b) {
+            if let Some(run) = active_run {
+                runs[run].end = i + 1;
+            } else {
+                active_run = Some(runs.len());
+                runs.push(CfwsRun {
+                    start: i,
+                    end: i + 1,
+                });
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == b'\r' || b == b'\n' {
+            if let Some(end) = fold_end(bytes, i) {
+                if let Some(run) = active_run {
+                    runs[run].end = end;
+                } else {
+                    active_run = Some(runs.len());
+                    runs.push(CfwsRun { start: i, end });
+                }
+                i = end;
+                continue;
+            }
+            return Err(EmailError::BadFold { at: i });
+        }
+
+        if b == b'(' {
+            outer_comment_start = i;
+            comment_depth = 1;
+            if let Some(run) = active_run {
+                runs[run].end = i + 1;
+            } else {
+                active_run = Some(runs.len());
+                runs.push(CfwsRun {
+                    start: i,
+                    end: i + 1,
+                });
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == b')' {
+            return Err(EmailError::UnexpectedClose { at: i });
+        }
+
+        let starts_protected_quote = clean.is_empty() && b == b'"';
+        clean.push(b);
+        positions.push(i);
+        active_run = None;
+
+        if starts_protected_quote {
+            protected_quote = true;
+        }
+        i += 1;
+    }
+
+    if comment_depth > 0 {
+        return Err(EmailError::UnclosedComment {
+            at: outer_comment_start,
+        });
+    }
+
+    for run in &runs {
+        let before = positions
+            .iter()
+            .rposition(|&p| p < run.start)
+            .map(|k| clean[k]);
+        let after = positions
+            .iter()
+            .position(|&p| p >= run.end)
+            .map(|k| clean[k]);
+
+        let is_boundary = before.is_none()
+            || after.is_none()
+            || before == Some(b'@')
+            || after == Some(b'@');
+
+        if !is_boundary {
+            return Err(EmailError::CfwsBoundary { at: run.start });
+        }
+    }
+
+    if clean.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+
+    let offset = |index: usize| positions.get(index).copied().unwrap_or(n);
+
+    let mut quote_end = None;
+    if clean[0] == b'"' {
+        let mut j = 1;
+        while j < clean.len() {
+            if clean[j] == b'\\' {
+                if j + 1 < clean.len() {
+                    j += 2;
+                } else {
+                    j += 1;
+                }
+            } else if clean[j] == b'"' {
+                quote_end = Some(j);
+                break;
+            } else {
+                j += 1;
+            }
+        }
+
+        if quote_end.is_none() {
+            return Err(EmailError::UnclosedQuote { at: offset(0) });
+        }
+    }
+
+    let mut separators = Vec::new();
+    for (index, &b) in clean.iter().enumerate() {
+        if b == b'@' && !quote_end.is_some_and(|end| index <= end) {
+            separators.push(index);
+        }
+    }
+
+    if separators.is_empty() {
+        return Err(EmailError::MissingAt);
+    }
+    if separators.len() >= 2 {
+        return Err(EmailError::MultipleAt {
+            at: offset(separators[1]),
+        });
+    }
+
+    let at_index = separators[0];
+    if at_index == 0 {
+        return Err(EmailError::EmptyLocal {
+            at: offset(at_index),
+        });
+    }
+
+    let local_bytes = &clean[..at_index];
+    let (local, quoted) = if clean[0] == b'"' {
+        let closing_quote = quote_end.unwrap();
+
+        if closing_quote + 1 != at_index {
+            return Err(EmailError::TrailingLocal {
+                at: offset(closing_quote + 1),
+            });
+        }
+
+        let mut decoded = Vec::new();
+        let mut origins = Vec::new();
+        let mut j = 1;
+
+        while j < closing_quote {
+            let b = clean[j];
+
+            if b == b'\\' {
+                if j + 1 >= closing_quote
+                    || !matches!(clean[j + 1], b'"' | b'\\' | b'@')
+                {
+                    return Err(EmailError::BadEscape { at: offset(j) });
+                }
+
+                decoded.push(clean[j + 1]);
+                origins.push(offset(j));
+                j += 2;
+            } else {
+                if !is_printable(b) {
+                    return Err(EmailError::QuotedChar { at: offset(j) });
+                }
+
+                decoded.push(b);
+                origins.push(offset(j));
+                j += 1;
+            }
+        }
+
+        if decoded.is_empty() {
+            return Err(EmailError::EmptyLocal {
+                at: offset(closing_quote),
+            });
+        }
+        if decoded.len() > 64 {
+            return Err(EmailError::LocalTooLong { at: origins[64] });
+        }
+
+        (String::from_utf8(decoded).unwrap(), true)
+    } else {
+        if local_bytes.len() > 64 {
+            return Err(EmailError::LocalTooLong { at: offset(64) });
+        }
+
+        let allowed = b"!#$%&'*+-/=?^_`{|}~";
+        for (index, &b) in local_bytes.iter().enumerate() {
+            if b == b'.' {
+                if index == 0
+                    || index + 1 == local_bytes.len()
+                    || local_bytes[index - 1] == b'.'
+                {
+                    return Err(EmailError::LocalDot { at: offset(index) });
+                }
+            } else if !b.is_ascii_alphanumeric() && !allowed.contains(&b) {
+                return Err(EmailError::LocalChar { at: offset(index) });
+            }
+        }
+
+        (String::from_utf8(local_bytes.to_vec()).unwrap(), false)
+    };
+
+    let domain_start = at_index + 1;
+    let mut domain_end = clean.len();
+    let root_dot = if domain_end > domain_start && clean[domain_end - 1] == b'.' {
+        domain_end -= 1;
+        Some(offset(domain_end))
+    } else {
+        None
+    };
+
+    if domain_start == domain_end {
+        return Err(EmailError::EmptyDomain {
+            at: offset(domain_start),
+        });
+    }
+
+    if domain_end - domain_start > 253 {
+        return Err(EmailError::DomainTooLong {
+            at: offset(domain_start + 253),
+        });
+    }
+
+    let mut labels = Vec::new();
+    let mut label_start = domain_start;
+
+    for index in domain_start..=domain_end {
+        if index == domain_end || clean[index] == b'.' {
+            labels.push((label_start, index));
+            label_start = index + 1;
+        }
+    }
+
+    for (label_index, &(start, end)) in labels.iter().enumerate() {
+        if start == end {
+            let at = if label_index + 1 == labels.len() {
+                root_dot.unwrap_or_else(|| offset(start))
+            } else {
+                offset(start)
+            };
+            return Err(EmailError::EmptyLabel { at });
+        }
+
+        if end - start > 63 {
+            return Err(EmailError::LabelTooLong {
+                at: offset(start + 63),
+            });
+        }
+        if clean[start] == b'-' {
+            return Err(EmailError::LabelHyphen { at: offset(start) });
+        }
+        if clean[end - 1] == b'-' {
+            return Err(EmailError::LabelHyphen {
+                at: offset(end - 1),
+            });
+        }
+
+        for index in start..end {
+            if !clean[index].is_ascii_alphanumeric() && clean[index] != b'-' {
+                return Err(EmailError::DomainChar { at: offset(index) });
+            }
+        }
+    }
+
+    if labels.len() < 2 {
+        return Err(EmailError::DomainNeedsDot {
+            at: offset(domain_start),
+        });
+    }
+
+    let (last_start, last_end) = *labels.last().unwrap();
+    if clean[last_start..last_end].iter().all(u8::is_ascii_digit) {
+        return Err(EmailError::NumericTld {
+            at: offset(last_start),
+        });
+    }
+
+    let domain = clean[domain_start..domain_end]
+        .iter()
+        .map(|b| b.to_ascii_lowercase() as char)
+        .collect();
+
+    Ok(Address {
+        local,
+        domain,
+        quoted,
+    })
+}
+```
+tokens used
+21,448

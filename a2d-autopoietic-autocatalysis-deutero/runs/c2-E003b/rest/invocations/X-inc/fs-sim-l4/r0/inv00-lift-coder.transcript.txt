@@ -1,0 +1,647 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-3708-1792125465772285000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a14300-86fc-76b0-897a-ce8d62505e07
+--------
+user
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+R1. Implement an in-memory filesystem in Rust as a SINGLE source file that compiles with `rustc --edition 2024`, std only. Output ONLY the Rust source code inside ```rust fences. All API items below must be pub; do not add inner attributes or inner doc comments. Implement these exact types and signatures (semicolon method declarations here are signatures, not bodies):
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Kind { Dir, File , Link }
+#[derive(Debug, Clone, PartialEq, Eq)] pub enum Error { InvalidPath(usize), Missing(String), NotDir(String), IsDir(String), Exists(String), Root, Busy(String), Cycle(String), NotEmpty(String), InvalidTarget(usize), Loop(String), Depth(String) }
+pub struct Fs { /* private storage */ }
+impl Fs {
+    pub fn new() -> Self;
+    pub fn mkdir(&mut self, path: &str) -> Result<(), Error>;
+    pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Error>;
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, Error>;
+    pub fn ls(&self, path: &str) -> Result<Vec<(String, Kind)>, Error>;
+    pub fn cwd(&self) -> String;
+    pub fn chdir(&mut self, path: &str) -> Result<(), Error>;
+    pub fn rename(&mut self, from: &str, to: &str, overwrite: bool) -> Result<(), Error>;
+    pub fn remove(&mut self, path: &str, recursive: bool) -> Result<(), Error>;
+    pub fn symlink(&mut self, target: &str, link: &str) -> Result<(), Error>;
+    pub fn read_link(&self, path: &str) -> Result<String, Error>;
+    pub fn du(&self, path: &str) -> Result<Vec<(String, u64)>, Error>;
+}
+```
+
+R2. Fs::new() contains exactly the directory `/`. Filesystem instances are independent; there is no host filesystem access.
+
+R3. Path validation first scans for NUL: return InvalidPath(i) for the first NUL, where i is its zero-based UTF-8 byte offset, even if another format defect occurs earlier. Otherwise an empty path returns InvalidPath(0).
+
+R4. Accept absolute paths and paths relative to cwd. Normalize lexically before any lookup: split on `/`, discard empty and `.` components, and pop one accumulated component for `..` (at root, stay at root). Absolute input starts at root; relative input starts with the cwd components. Repeated/trailing slashes are accepted. The result is a canonical absolute path, with `/` for zero components.
+
+R5. Lookup walks canonical components from root. Missing(p) names the first absent canonical prefix; NotDir(p) names the first existing nondirectory prefix required to traverse further. These errors precede any final-entry type error. Follow symbolic links as specified below.
+
+R6. Creation requires an existing directory parent; never create missing ancestors. If the immediate parent exists as a file, return NotDir(parent). Only write may create a missing final entry during a following lookup. mkdir checks its parent then its final entry.
+
+R7. mkdir creates one empty directory. If the final entry already exists, regardless of kind, return Exists(canonical_path). It follows links in the parent, but does not follow the final entry.
+
+R8. write creates a file or replaces all bytes of an existing file. A directory at the final resolved path yields IsDir(path). It follows parent and final links; a dangling final link can create its target file if its target parent exists. It preserves the link itself.
+
+R9. read returns an owned copy of all file bytes, including zero bytes and arbitrary non-UTF-8 bytes. A directory at the final resolved path yields IsDir(path). It follows parent and final links.
+
+R10. ls requires a directory at the final resolved path, otherwise NotDir(path). An empty directory returns an empty vector. It follows parent and final links.
+
+R11. ls returns (child basename, Kind) pairs sorted ascending by Rust String ordering (UTF-8 bytewise, case sensitive), independent of insertion order.
+
+R12. Every failed mutating operation preserves all entries, file contents, link targets (where available), and cwd (where available). No operation panics on any valid UTF-8 input or any byte data. Read-only results are owned; changing a returned vector/string cannot change filesystem state.
+
+R13. Empty byte data is a valid zero-length file; replacing a file with shorter or empty data truncates it. Data is copied at write time and at read time.
+
+R14. mkdir(`/`) returns Exists(`/`); write(`/`, data) and read(`/`) return IsDir(`/`); ls(`/`) lists the root children. Apply these rules to any path that normalizes or resolves to root as applicable.
+
+R15. ls includes only immediate children, never the directory itself or descendants. Entry kind reflects the stored entry. A child link is Kind::Link even if its target is a directory, missing, or looping; listing children never resolves them.
+
+R16. All other nonempty components are allowed verbatim, including spaces, Unicode, backslashes, and strings containing dots. Names are case sensitive; do not trim, case-fold, or interpret a backslash as a separator.
+
+R17. mkdir does not succeed idempotently, and does not turn a file into a directory. write never turns a directory into a file. Existing unrelated entries survive successful operations.
+
+R18. For each one-path operation, validate/normalize its path before any filesystem lookup. Error path strings always use canonical absolute resolved prefixes, with no trailing slash except `/`. For ordinary entry lookups, parent traversal precedes final-entry existence/type checks.
+
+R19. cwd initially equals `/`; cwd() returns an owned canonical absolute path. Relative paths use cwd at operation entry, without changing cwd.
+
+R20. chdir normalizes and looks up its argument, then requires a directory, otherwise NotDir(final_path). On success set cwd to the resolved directory path; on failure leave it unchanged. Store the physical resolved path, not the link alias.
+
+R21. Dot and dot-dot are eliminated before lookup, even after nonexistent or file components: `/absent/../ok` addresses `/ok`. A trailing slash imposes no directory requirement; read(`/file/`) can read a file.
+
+R22. Normalization may yield root or an existing entry. mkdir then returns Exists; write at root returns IsDir. Any number of parent components above root stays at root. Relative `.` and `..` are valid.
+
+R23. Report errors using normalized paths, never raw input. Whitespace-only paths are ordinary names, while the empty string is invalid; NUL positions remain offsets in the original input.
+
+R24. read, ls, mkdir and write never alter cwd on success or failure. Failed chdir due to invalid path, missing prefix or nondirectory likewise preserves cwd.
+
+R25. rename validates/normalizes from first and to second, both before lookup. Thus a to-path validation error precedes a missing source. After both normalize, either endpoint equal to root yields Root before lookup.
+
+R26. Next resolve the source parent, require the source entry (Missing(source) if absent), then check Busy(source) if the source is a directory containing cwd, including equality. Next resolve the destination parent. If the destination is an existing directory containing cwd, return Busy(destination). Perform these checks before same-path, cycle or overwrite checks. Source and destination final entries are not followed; parent links are followed.
+
+R27. After the prior checks, equal resolved source and destination paths succeed without changes, even if overwrite is false. A missing source still fails; renaming cwd to itself is Busy.
+
+R28. Next, moving a directory into its own proper descendant yields Cycle(destination), before overwrite checks. Containment uses whole path components: `/ab` is not inside `/a`. Destination-parent lookup errors precede Cycle.
+
+R29. If the destination exists and overwrite is false, return Exists(destination), regardless of types or nonemptiness, after the checks above.
+
+R30. With overwrite true and existing destination: a directory source onto a nondirectory yields NotDir(destination); a nondirectory source onto a directory yields IsDir(destination). Files and links both count as nondirectories; they may overwrite one another.
+
+R31. With overwrite true and two directories, the destination must have no children, otherwise NotEmpty(destination). On success replace the empty destination directory with the entire source tree.
+
+R32. A successful rename moves the source and all descendants, preserving kinds and bytes. Remove the old source paths, replace the destination if allowed, and keep unrelated entries. A file move preserves its bytes. Link target text is preserved verbatim; a moved relative link may consequently address a different target.
+
+R33. remove validates/normalizes first. Removing root always yields Root, regardless of recursive or root contents. Otherwise resolve its parent and require its entry, with Missing(path) if absent. Follow parent links but not the final entry.
+
+R34. Next, removing a directory that contains cwd (including equality) yields Busy(path), before nonempty checks, even with recursive true. Boundary checking uses whole components.
+
+R35. Removing a nonempty directory with recursive false yields NotEmpty(path). With recursive true remove it and its entire subtree. Empty directories and files can be removed with either flag. Links can also be removed with either flag, without touching their targets or resolving even looping/dangling targets.
+
+R36. rename and remove never change cwd. Their Busy protections ensure cwd remains present. No successful mutation changes unrelated siblings, even siblings whose names share a prefix with the source.
+
+R37. symlink(target, link) validates/normalizes link first, then validates target, then resolves the link parent and checks final entry. Empty target yields InvalidTarget(0); otherwise first NUL in target yields InvalidTarget(original byte offset). Link path errors precede target errors; target errors precede filesystem errors.
+
+R38. symlink creates one Link storing target exactly, without normalization or existence checking. Absolute and relative targets, repeated slashes, dot components, whitespace and dangling/cyclic targets are allowed. Existing final entries, including links, yield Exists(resolved_link_path); root yields Exists(`/`).
+
+R39. Following a link interprets absolute target from root and relative target from the physical parent of the link. Lexically normalize the target, append the unconsumed input suffix, then lexically normalize again and restart lookup at root. All prefix/type/existence errors describe the expanded physical paths.
+
+R40. Each individual following lookup has one visited set of canonical link paths and one expansion counter, retained across restarts. Before expanding a link, if its path was visited, return Loop(that_path). This applies even to revisiting a link in a noncyclic-looking route. Sets/counters reset for every public operation; rename uses independent lookups for its two parents.
+
+R41. At most 8 link expansions are allowed per lookup. After the repeat check, encountering a ninth distinct link yields Depth(that_link_path). Loop takes precedence over Depth when the ninth encountered link was already visited. A chain of exactly eight links succeeds if the next entry is not a followed link.
+
+R42. mkdir and symlink follow only the parent; write/read/ls/chdir/du follow the full path; rename/remove follow only endpoint parents. read_link follows intermediate links but not its final link. Each parent resolution gets one counter/set covering all its links.
+
+R43. read_link returns the exact stored target of its final link, including repeated slashes/dots. A missing entry yields Missing, a nonlink final entry (file or directory, including root) yields InvalidTarget(0). A final looping or dangling link is readable.
+
+R44. Dangling followed links yield Missing at the expanded first absent prefix, except write may create a missing final target file. An intermediate missing directory is never created. Links to files followed with remaining path components yield NotDir(physical_file).
+
+R45. Final links used as mkdir/symlink collision entries, rename/remove endpoints, or read_link results are not expanded and consume no expansion budget. A parent that resolves to a file yields NotDir(physical_parent). Relative symlink expansion uses physical placement after moves, never cwd.
+
+R46. du resolves its argument with full following, then returns one (canonical_absolute_path, size) row for that resolved entry and each stored descendant, sorted ascending by Rust String ordering of full paths. A file argument gives one row. A link argument reports its resolved target tree, with physical paths.
+
+R47. A file size is its byte length as u64. A stored descendant link size is the UTF-8 byte length of its verbatim target text. A directory size is the sum of file and link sizes anywhere in its stored subtree; directory entries themselves cost zero. Empty directories have size zero.
+
+R48. du never follows links encountered as descendants after resolving its argument. Count each stored link once even if looping or dangling, do not add target content through that link. Include zero-size rows. Root du includes root and all entries, and component boundaries exclude sibling prefixes.
+
+R49. du reflects current bytes, link target lengths and moves/deletions on every call; no stale sizes. du errors follow normal full resolution rules, including Loop/Depth/Missing; failures leave all state unchanged.
+
+R50. An error resolving a link during write/chdir/rename/remove/creation preserves link entries, targets, data and cwd. Link tracking is local: a failed Loop/Depth lookup cannot poison a later operation. Resolution stops at the first lookup error in traversal order.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+#[test]
+fn public_file_roundtrip() {
+    let mut f=Fs::new(); f.mkdir("/docs").unwrap(); f.write("/docs/item", b"hello").unwrap(); assert_eq!(f.read("/docs/item"), Ok(b"hello".to_vec()));
+}
+
+#[test]
+fn public_follow_link() {
+    let mut f=Fs::new(); f.symlink("/docs/item","/shortcut").unwrap(); f.mkdir("/docs").unwrap(); f.write("/docs/item",b"linked").unwrap(); assert_eq!(f.read("/shortcut"),Ok(b"linked".to_vec())); assert_eq!(f.read_link("/shortcut"),Ok("/docs/item".into()));
+}
+
+#[test]
+fn public_link_directory_cwd() {
+    let mut f=Fs::new(); f.mkdir("/place").unwrap(); f.symlink("/place","/alias").unwrap(); f.chdir("/alias").unwrap(); assert_eq!(f.cwd(),"/place"); f.write("k",b"k").unwrap(); f.rename("k","j",false).unwrap(); f.remove("j",false).unwrap(); assert_eq!(f.ls("/alias"),Ok(vec![]));
+}
+
+#[test]
+fn public_size_report() {
+    let mut f=Fs::new(); f.mkdir("/pkg").unwrap(); f.write("/pkg/a",b"123").unwrap(); f.mkdir("/pkg/empty").unwrap(); assert_eq!(f.du("/pkg"),Ok(vec![("/pkg".into(),3),("/pkg/a".into(),3),("/pkg/empty".into(),0)]));
+}
+```
+
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-16T04:37:52.633498Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+use std::collections::{BTreeMap, HashSet};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    File,
+    Link,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidPath(usize),
+    Missing(String),
+    NotDir(String),
+    IsDir(String),
+    Exists(String),
+    Root,
+    Busy(String),
+    Cycle(String),
+    NotEmpty(String),
+    InvalidTarget(usize),
+    Loop(String),
+    Depth(String),
+}
+
+#[derive(Debug, Clone)]
+enum Entry {
+    Dir,
+    File(Vec<u8>),
+    Link(String),
+}
+
+pub struct Fs {
+    entries: BTreeMap<String, Entry>,
+    cwd: String,
+}
+
+impl Fs {
+    pub fn new() -> Self {
+        let mut entries = BTreeMap::new();
+        entries.insert("/".to_string(), Entry::Dir);
+        Self {
+            entries,
+            cwd: "/".to_string(),
+        }
+    }
+
+    fn validate_path(path: &str) -> Result<(), Error> {
+        if let Some(i) = path.as_bytes().iter().position(|&b| b == 0) {
+            return Err(Error::InvalidPath(i));
+        }
+        if path.is_empty() {
+            return Err(Error::InvalidPath(0));
+        }
+        Ok(())
+    }
+
+    fn normalize_from(path: &str, base: &str) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        if !path.starts_with('/') {
+            parts.extend(base.split('/').filter(|s| !s.is_empty()));
+        }
+        for part in path.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                p => parts.push(p),
+            }
+        }
+        if parts.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", parts.join("/"))
+        }
+    }
+
+    fn normalize(&self, path: &str) -> Result<String, Error> {
+        Self::validate_path(path)?;
+        Ok(Self::normalize_from(path, &self.cwd))
+    }
+
+    fn parent(path: &str) -> (String, String) {
+        if path == "/" {
+            return ("/".to_string(), String::new());
+        }
+        let i = path.rfind('/').unwrap_or(0);
+        let parent = if i == 0 {
+            "/".to_string()
+        } else {
+            path[..i].to_string()
+        };
+        (parent, path[i + 1..].to_string())
+    }
+
+    fn join(parent: &str, name: &str) -> String {
+        if parent == "/" {
+            format!("/{}", name)
+        } else {
+            format!("{}/{}", parent, name)
+        }
+    }
+
+    fn is_within(path: &str, dir: &str) -> bool {
+        dir == "/" || path == dir || path.strip_prefix(dir).is_some_and(|s| s.starts_with('/'))
+    }
+
+    fn resolve_path(
+        &self,
+        path: &str,
+        follow_final: bool,
+        allow_missing_final: bool,
+    ) -> Result<String, Error> {
+        let mut current = path.to_string();
+        let mut visited = HashSet::new();
+        let mut expansions = 0usize;
+
+        loop {
+            let components: Vec<&str> = current.split('/').filter(|s| !s.is_empty()).collect();
+            let mut physical = String::from("/");
+            let mut restarted = false;
+
+            for (idx, component) in components.iter().enumerate() {
+                let next = Self::join(&physical, component);
+                let final_component = idx + 1 == components.len();
+                let entry = match self.entries.get(&next) {
+                    Some(e) => e,
+                    None => {
+                        if final_component && allow_missing_final {
+                            return Ok(next);
+                        }
+                        return Err(Error::Missing(next));
+                    }
+                };
+
+                let should_follow = matches!(entry, Entry::Link(_))
+                    && (!final_component || follow_final);
+                if should_follow {
+                    if !visited.insert(next.clone()) {
+                        return Err(Error::Loop(next));
+                    }
+                    if expansions >= 8 {
+                        return Err(Error::Depth(next));
+                    }
+                    expansions += 1;
+
+                    let target = match entry {
+                        Entry::Link(t) => t,
+                        _ => unreachable!(),
+                    };
+                    let base = Self::parent(&next).0;
+                    let target_path = Self::normalize_from(target, &base);
+                    let suffix = &components[idx + 1..];
+                    let mut combined = target_path;
+                    for part in suffix {
+                        combined = Self::join(&combined, part);
+                    }
+                    current = Self::normalize_from(&combined, "/");
+                    restarted = true;
+                    break;
+                }
+
+                if !final_component && !matches!(entry, Entry::Dir) {
+                    return Err(Error::NotDir(next));
+                }
+                physical = next;
+            }
+
+            if !restarted {
+                return Ok(physical);
+            }
+        }
+    }
+
+    fn resolve_parent(&self, path: &str) -> Result<(String, String), Error> {
+        let (parent, name) = Self::parent(path);
+        let resolved_parent = self.resolve_path(&parent, true, false)?;
+        match self.entries.get(&resolved_parent) {
+            Some(Entry::Dir) => Ok((resolved_parent, name)),
+            Some(_) => Err(Error::NotDir(resolved_parent)),
+            None => Err(Error::Missing(resolved_parent)),
+        }
+    }
+
+    fn kind(entry: &Entry) -> Kind {
+        match entry {
+            Entry::Dir => Kind::Dir,
+            Entry::File(_) => Kind::File,
+            Entry::Link(_) => Kind::Link,
+        }
+    }
+
+    fn direct_children(&self, dir: &str) -> Vec<String> {
+        self.entries
+            .keys()
+            .filter(|p| {
+                if *p == dir || **p == "/" {
+                    return false;
+                }
+                Self::parent(p).0 == dir
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn subtree_paths(&self, root: &str) -> Vec<String> {
+        self.entries
+            .keys()
+            .filter(|p| Self::is_within(p, root))
+            .cloned()
+            .collect()
+    }
+
+    fn directory_size(&self, path: &str) -> u64 {
+        self.subtree_paths(path)
+            .iter()
+            .filter_map(|p| match self.entries.get(p) {
+                Some(Entry::File(data)) => Some(data.len() as u64),
+                Some(Entry::Link(target)) => Some(target.len() as u64),
+                _ => None,
+            })
+            .sum()
+    }
+
+    pub fn mkdir(&mut self, path: &str) -> Result<(), Error> {
+        let normalized = self.normalize(path)?;
+        let (parent, name) = self.resolve_parent(&normalized)?;
+        let destination = Self::join(&parent, &name);
+        if self.entries.contains_key(&destination) {
+            return Err(Error::Exists(destination));
+        }
+        self.entries.insert(destination, Entry::Dir);
+        Ok(())
+    }
+
+    pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Error> {
+        let normalized = self.normalize(path)?;
+        let resolved = self.resolve_path(&normalized, true, true)?;
+        if let Some(entry) = self.entries.get(&resolved) {
+            if matches!(entry, Entry::Dir) {
+                return Err(Error::IsDir(resolved));
+            }
+        }
+
+        let (parent, name) = Self::parent(&resolved);
+        let resolved_parent = self.resolve_path(&parent, true, false)?;
+        match self.entries.get(&resolved_parent) {
+            Some(Entry::Dir) => {}
+            Some(_) => return Err(Error::NotDir(resolved_parent)),
+            None => return Err(Error::Missing(resolved_parent)),
+        }
+        let final_path = Self::join(&resolved_parent, &name);
+        if let Some(entry) = self.entries.get(&final_path) {
+            if matches!(entry, Entry::Dir) {
+                return Err(Error::IsDir(final_path));
+            }
+        }
+        self.entries
+            .insert(final_path, Entry::File(data.to_vec()));
+        Ok(())
+    }
+
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let normalized = self.normalize(path)?;
+        let resolved = self.resolve_path(&normalized, true, false)?;
+        match self.entries.get(&resolved) {
+            Some(Entry::File(data)) => Ok(data.clone()),
+            Some(Entry::Dir) => Err(Error::IsDir(resolved)),
+            Some(Entry::Link(_)) => unreachable!(),
+            None => Err(Error::Missing(resolved)),
+        }
+    }
+
+    pub fn ls(&self, path: &str) -> Result<Vec<(String, Kind)>, Error> {
+        let normalized = self.normalize(path)?;
+        let resolved = self.resolve_path(&normalized, true, false)?;
+        match self.entries.get(&resolved) {
+            Some(Entry::Dir) => {}
+            Some(_) => return Err(Error::NotDir(resolved)),
+            None => return Err(Error::Missing(resolved)),
+        }
+        let mut children = self.direct_children(&resolved);
+        children.sort();
+        Ok(children
+            .into_iter()
+            .filter_map(|p| {
+                let name = Self::parent(&p).1;
+                self.entries.get(&p).map(|e| (name, Self::kind(e)))
+            })
+            .collect())
+    }
+
+    pub fn cwd(&self) -> String {
+        self.cwd.clone()
+    }
+
+    pub fn chdir(&mut self, path: &str) -> Result<(), Error> {
+        let normalized = self.normalize(path)?;
+        let resolved = self.resolve_path(&normalized, true, false)?;
+        match self.entries.get(&resolved) {
+            Some(Entry::Dir) => {
+                self.cwd = resolved;
+                Ok(())
+            }
+            Some(_) => Err(Error::NotDir(resolved)),
+            None => Err(Error::Missing(resolved)),
+        }
+    }
+
+    pub fn rename(&mut self, from: &str, to: &str, overwrite: bool) -> Result<(), Error> {
+        let source = self.normalize(from)?;
+        let destination = self.normalize(to)?;
+        if source == "/" || destination == "/" {
+            return Err(Error::Root);
+        }
+
+        let (src_parent, src_name) = Self::resolve_parent(&self, &source)?;
+        let src = Self::join(&src_parent, &src_name);
+        let src_entry = match self.entries.get(&src) {
+            Some(e) => e.clone(),
+            None => return Err(Error::Missing(src)),
+        };
+
+        if matches!(src_entry, Entry::Dir) && Self::is_within(&self.cwd, &src) {
+            return Err(Error::Busy(src));
+        }
+
+        let (dst_parent, dst_name) = self.resolve_parent(&destination)?;
+        let dst = Self::join(&dst_parent, &dst_name);
+
+        if matches!(self.entries.get(&dst), Some(Entry::Dir))
+            && Self::is_within(&self.cwd, &dst)
+        {
+            return Err(Error::Busy(dst));
+        }
+
+        if src == dst {
+            return Ok(());
+        }
+
+        if matches!(src_entry, Entry::Dir) && Self::is_within(&dst, &src) {
+            return Err(Error::Cycle(dst));
+        }
+
+        let dst_entry = self.entries.get(&dst).cloned();
+        if dst_entry.is_some() && !overwrite {
+            return Err(Error::Exists(dst));
+        }
+
+        if let Some(ref de) = dst_entry {
+            match (&src_entry, de) {
+                (Entry::Dir, Entry::Dir) => {
+                    if !self.direct_children(&dst).is_empty() {
+                        return Err(Error::NotEmpty(dst));
+                    }
+                }
+                (Entry::Dir, _) => return Err(Error::NotDir(dst)),
+                (_, Entry::Dir) => return Err(Error::IsDir(dst)),
+                _ => {}
+            }
+        }
+
+        let moving = self.subtree_paths(&src);
+        let mut moved_entries = Vec::with_capacity(moving.len());
+        for old in &moving {
+            let suffix = &old[src.len()..];
+            let new = format!("{}{}", dst, suffix);
+            if let Some(entry) = self.entries.get(old) {
+                moved_entries.push((old.clone(), new, entry.clone()));
+            }
+        }
+
+        if dst_entry.is_some() {
+            for old in self.subtree_paths(&dst) {
+                self.entries.remove(&old);
+            }
+        }
+        for old in &moving {
+            self.entries.remove(old);
+        }
+        for (_, new, entry) in moved_entries {
+            self.entries.insert(new, entry);
+        }
+        Ok(())
+    }
+
+    pub fn remove(&mut self, path: &str, recursive: bool) -> Result<(), Error> {
+        let normalized = self.normalize(path)?;
+        if normalized == "/" {
+            return Err(Error::Root);
+        }
+        let (parent, name) = self.resolve_parent(&normalized)?;
+        let resolved = Self::join(&parent, &name);
+        let entry = match self.entries.get(&resolved) {
+            Some(e) => e,
+            None => return Err(Error::Missing(resolved)),
+        };
+
+        if matches!(entry, Entry::Dir) && Self::is_within(&self.cwd, &resolved) {
+            return Err(Error::Busy(resolved));
+        }
+
+        if matches!(entry, Entry::Dir)
+            && !recursive
+            && !self.direct_children(&resolved).is_empty()
+        {
+            return Err(Error::NotEmpty(resolved));
+        }
+
+        let paths = if matches!(entry, Entry::Dir) {
+            self.subtree_paths(&resolved)
+        } else {
+            vec![resolved]
+        };
+        for p in paths {
+            self.entries.remove(&p);
+        }
+        Ok(())
+    }
+
+    pub fn symlink(&mut self, target: &str, link: &str) -> Result<(), Error> {
+        let normalized_link = self.normalize(link)?;
+        if target.is_empty() {
+            return Err(Error::InvalidTarget(0));
+        }
+        if let Some(i) = target.as_bytes().iter().position(|&b| b == 0) {
+            return Err(Error::InvalidTarget(i));
+        }
+
+        let (parent, name) = self.resolve_parent(&normalized_link)?;
+        let destination = Self::join(&parent, &name);
+        if self.entries.contains_key(&destination) {
+            return Err(Error::Exists(destination));
+        }
+        self.entries
+            .insert(destination, Entry::Link(target.to_string()));
+        Ok(())
+    }
+
+    pub fn read_link(&self, path: &str) -> Result<String, Error> {
+        let normalized = self.normalize(path)?;
+        let resolved = self.resolve_path(&normalized, false, false)?;
+        match self.entries.get(&resolved) {
+            Some(Entry::Link(target)) => Ok(target.clone()),
+            Some(_) => Err(Error::InvalidTarget(0)),
+            None => Err(Error::Missing(resolved)),
+        }
+    }
+
+    pub fn du(&self, path: &str) -> Result<Vec<(String, u64)>, Error> {
+        let normalized = self.normalize(path)?;
+        let resolved = self.resolve_path(&normalized, true, false)?;
+        if !self.entries.contains_key(&resolved) {
+            return Err(Error::Missing(resolved));
+        }
+
+        let mut paths = self.subtree_paths(&resolved);
+        paths.sort();
+        Ok(paths
+            .into_iter()
+            .map(|p| {
+                let size = match self.entries.get(&p) {
+                    Some(Entry::File(data)) => data.len() as u64,
+                    Some(Entry::Link(target)) => target.len() as u64,
+                    Some(Entry::Dir) => self.directory_size(&p),
+                    None => 0,
+                };
+                (p, size)
+            })
+            .collect())
+    }
+}
+
+impl Default for Fs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+```
+tokens used
+7,875

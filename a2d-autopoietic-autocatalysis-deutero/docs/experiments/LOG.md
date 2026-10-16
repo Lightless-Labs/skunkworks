@@ -894,3 +894,23 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - That is about 4.03 Luna + 0.91 Sol calls per task for the candidate, against about 1.34 for the incumbent.
   - At an equal invocation cap, the candidate is about 3.7× the incumbent's realised calls, so this is not a cost-matched claim.
 - Budget: cycle-2 Luna spend is 275 calls (10-15) and 1,784 (10-16 so far), plus 186 Sol on 10-16. Today's cap of 3k is respected; E003b and E004b's later stages are scheduled for 10-17 (UTC).
+
+### E002b — CONFIRMED KEEP; E003b — discard; E004 superseded  [cycle 2, 2026-10-16]
+- **E002b confirmation** (a fresh 140-task replicate): **Δall-pass = +7.1 pp (cluster SE 3.5)** > threshold / 2 = 3.57 pp, so **KEEP**. Δfrac = +0.0017 (SE 0.0059).
+  - Spend: 869 invocations (cand: Luna 564 and Sol 121; inc: Luna 184) and 6.38M tokens.
+  - Every stage is positive:
+    - screen +11.8 pp (68 tasks);
+    - full +10.7 pp (SE 2.9, 140 tasks);
+    - confirm +7.1 pp (SE 3.5, 140 fresh draws).
+  - **`nano/harness.py` is now E002** ("Luna generation plus Sol selection": 4 samples, then a Sol judge over distinct green files). v0 is archived at `nano/history/before-E002b.py`.
+- **E003b** (random-green control, full stage, 140 tasks): **Δall-pass = −1.4 pp (SE 3.4)**, Δfrac = −0.010, so **discard (full)**. Spend: 739 invocations (Luna 563 cand + 176 inc).
+  - **Attribution:** with the same 4-sample policy, the Sol judge gives about +11 pp at the full stage (E002b +10.7 vs E003b −1.4, same 140 tasks), and the random pick gives nothing. **The judge is the active ingredient, not the sampling.**
+- **E004** (repair to green, then judge): its screen was +4.4 pp all-pass and −0.019 frac against v0. It was registered against v0, which is no longer the incumbent, so it is **superseded and not run further**. A comparison against the new incumbent would be a new registration.
+- **Claim scope (exploratory, dev set):**
+  - Luna generation plus Sol selection beats Luna's plain repair loop on all-pass, at an equal 5-call cap per task.
+  - Realised calls: about 4.0 Luna + 0.9 Sol per task, against about 1.3 Luna for the repair loop. That is about 6.4M vs 1.4M tokens per 140 tasks, so the claim is **not cost-matched**.
+  - Sol is from the same vendor as Luna, so this is not a different-family claim.
+- **Protocol consequences:**
+  - (1) A/A re-run for the new incumbent: 2 arms (X:a, X:b), no D, because D parity was only required for v0.
+  - (2) The first dev-holdout look: incumbent vs D, r = 2, gate metric = all-pass, point estimate ≥ +10 pp with cluster CI low > 0. Proposers learn only pass or fail.
+  - Both are scheduled for 2026-10-17 (UTC), because 10-16 used 2,903 Luna calls (cap 3k).

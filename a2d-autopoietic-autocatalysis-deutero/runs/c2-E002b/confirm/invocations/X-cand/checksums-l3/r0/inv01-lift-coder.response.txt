@@ -1,0 +1,455 @@
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hashes {
+    pub crc32: u32,
+    pub adler32: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanError {
+    Reversed { span: usize },
+    OutOfBounds { span: usize, offset: usize },
+    Overlap { span: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotError {
+    Shape,
+    Hex { offset: usize },
+    Adler { component: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Crc16 {
+    Xmodem,
+    False,
+    X25,
+}
+
+fn validate_spans(data_len: usize, spans: &[Span]) -> Result<(), SpanError> {
+    let mut previous_end = 0;
+
+    for (index, span) in spans.iter().enumerate() {
+        if span.start > span.end {
+            return Err(SpanError::Reversed { span: index });
+        }
+        if span.start > data_len {
+            return Err(SpanError::OutOfBounds {
+                span: index,
+                offset: span.start,
+            });
+        }
+        if span.end > data_len {
+            return Err(SpanError::OutOfBounds {
+                span: index,
+                offset: span.end,
+            });
+        }
+        if index > 0 && span.start < previous_end {
+            return Err(SpanError::Overlap { span: index });
+        }
+        previous_end = span.end;
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct Crc32State(u32);
+
+impl Crc32State {
+    fn new() -> Self {
+        Self(0xffff_ffff)
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        for &byte in data {
+            self.0 ^= u32::from(byte);
+            for _ in 0..8 {
+                let low_bit = self.0 & 1;
+                self.0 >>= 1;
+                if low_bit != 0 {
+                    self.0 ^= 0xedb8_8320;
+                }
+            }
+        }
+    }
+
+    fn checksum(&self) -> u32 {
+        self.0 ^ 0xffff_ffff
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Adler32State {
+    a: u32,
+    b: u32,
+}
+
+impl Adler32State {
+    fn new() -> Self {
+        Self { a: 1, b: 0 }
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        for &byte in data {
+            self.a = (self.a + u32::from(byte)) % 65_521;
+            self.b = (self.b + self.a) % 65_521;
+        }
+    }
+
+    fn checksum(&self) -> u32 {
+        (self.b << 16) | self.a
+    }
+}
+
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut state = Crc32State::new();
+    state.update(data);
+    state.checksum()
+}
+
+pub fn adler32(data: &[u8]) -> u32 {
+    let mut state = Adler32State::new();
+    state.update(data);
+    state.checksum()
+}
+
+pub fn checksums(data: &[u8]) -> Hashes {
+    Hashes {
+        crc32: crc32(data),
+        adler32: adler32(data),
+    }
+}
+
+pub fn checksums_spans(data: &[u8], spans: &[Span]) -> Result<Hashes, SpanError> {
+    validate_spans(data.len(), spans)?;
+
+    let mut crc = Crc32State::new();
+    let mut adler = Adler32State::new();
+
+    for span in spans {
+        let selected = &data[span.start..span.end];
+        crc.update(selected);
+        adler.update(selected);
+    }
+
+    Ok(Hashes {
+        crc32: crc.checksum(),
+        adler32: adler.checksum(),
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct Stream {
+    crc: Crc32State,
+    adler: Adler32State,
+}
+
+impl Stream {
+    pub fn new() -> Self {
+        Self {
+            crc: Crc32State::new(),
+            adler: Adler32State::new(),
+        }
+    }
+
+    pub fn checksum(&self) -> Hashes {
+        Hashes {
+            crc32: self.crc.checksum(),
+            adler32: self.adler.checksum(),
+        }
+    }
+
+    pub fn from_seed(crc32: u32, adler32: u32) -> Result<Self, SnapshotError> {
+        let a = adler32 & 0xffff;
+        let b = adler32 >> 16;
+        if a >= 65_521 {
+            return Err(SnapshotError::Adler { component: 0 });
+        }
+        if b >= 65_521 {
+            return Err(SnapshotError::Adler { component: 1 });
+        }
+
+        Ok(Self {
+            crc: Crc32State(crc32 ^ 0xffff_ffff),
+            adler: Adler32State { a, b },
+        })
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        self.crc.update(data);
+        self.adler.update(data);
+    }
+
+    pub fn update_spans(&mut self, data: &[u8], spans: &[Span]) -> Result<(), SpanError> {
+        validate_spans(data.len(), spans)?;
+        for span in spans {
+            let selected = &data[span.start..span.end];
+            self.crc.update(selected);
+            self.adler.update(selected);
+        }
+        Ok(())
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    pub fn snapshot(&self) -> String {
+        let hashes = self.checksum();
+        format!("c{:08x}:a{:08x}", hashes.crc32, hashes.adler32)
+    }
+
+    pub fn restore(token: &str) -> Result<Self, SnapshotError> {
+        let bytes = token.as_bytes();
+        if bytes.len() != 19 || bytes[0] != b'c' || bytes[9] != b':' || bytes[10] != b'a' {
+            return Err(SnapshotError::Shape);
+        }
+
+        let mut crc = 0u32;
+        for (offset, &byte) in bytes[1..9].iter().enumerate() {
+            crc = (crc << 4)
+                | u32::from(hex_value(byte).ok_or(SnapshotError::Hex {
+                    offset: offset + 1,
+                })?);
+        }
+
+        let mut adler = 0u32;
+        for (index, &byte) in bytes[11..19].iter().enumerate() {
+            adler = (adler << 4)
+                | u32::from(hex_value(byte).ok_or(SnapshotError::Hex {
+                    offset: index + 11,
+                })?);
+        }
+
+        Self::from_seed(crc, adler)
+    }
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+pub fn fletcher16(data: &[u8]) -> u16 {
+    let mut a = 0u32;
+    let mut b = 0u32;
+
+    for &byte in data {
+        a = (a + u32::from(byte)) % 255;
+        b = (b + a) % 255;
+    }
+
+    ((b as u16) << 8) | a as u16
+}
+
+#[derive(Debug, Clone)]
+struct Fletcher32State {
+    a: u32,
+    b: u32,
+    pending_high: Option<u8>,
+}
+
+impl Fletcher32State {
+    fn new() -> Self {
+        Self {
+            a: 0,
+            b: 0,
+            pending_high: None,
+        }
+    }
+
+    fn word(&mut self, word: u16) {
+        self.a = (self.a + u32::from(word)) % 65_535;
+        self.b = (self.b + self.a) % 65_535;
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        let mut index = 0;
+        if let Some(high) = self.pending_high.take() {
+            if let Some(&low) = data.first() {
+                self.word(u16::from_be_bytes([high, low]));
+                index = 1;
+            } else {
+                self.pending_high = Some(high);
+                return;
+            }
+        }
+
+        while index + 1 < data.len() {
+            self.word(u16::from_be_bytes([data[index], data[index + 1]]));
+            index += 2;
+        }
+
+        if index < data.len() {
+            self.pending_high = Some(data[index]);
+        }
+    }
+
+    fn checksum(&self) -> u32 {
+        let (a, b) = match self.pending_high {
+            Some(high) => {
+                let mut final_state = self.clone();
+                final_state.pending_high = None;
+                final_state.word(u16::from(high) << 8);
+                (final_state.a, final_state.b)
+            }
+            None => (self.a, self.b),
+        };
+        (b << 16) | a
+    }
+}
+
+pub fn fletcher32(data: &[u8]) -> u32 {
+    let mut state = Fletcher32State::new();
+    state.update(data);
+    state.checksum()
+}
+
+pub fn fletcher32_spans(data: &[u8], spans: &[Span]) -> Result<u32, SpanError> {
+    validate_spans(data.len(), spans)?;
+
+    let mut state = Fletcher32State::new();
+    for span in spans {
+        state.update(&data[span.start..span.end]);
+    }
+    Ok(state.checksum())
+}
+
+#[derive(Debug, Clone)]
+struct Crc16State {
+    variant: Crc16,
+    register: u16,
+}
+
+impl Crc16State {
+    fn new(variant: Crc16) -> Self {
+        let register = match variant {
+            Crc16::Xmodem => 0,
+            Crc16::False | Crc16::X25 => 0xffff,
+        };
+        Self { variant, register }
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        match self.variant {
+            Crc16::Xmodem | Crc16::False => {
+                for &byte in data {
+                    self.register ^= u16::from(byte) << 8;
+                    for _ in 0..8 {
+                        let high_bit = self.register & 0x8000;
+                        self.register = self.register.wrapping_shl(1);
+                        if high_bit != 0 {
+                            self.register ^= 0x1021;
+                        }
+                    }
+                }
+            }
+            Crc16::X25 => {
+                for &byte in data {
+                    self.register ^= u16::from(byte);
+                    for _ in 0..8 {
+                        let low_bit = self.register & 1;
+                        self.register >>= 1;
+                        if low_bit != 0 {
+                            self.register ^= 0x8408;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn checksum(&self) -> u16 {
+        match self.variant {
+            Crc16::X25 => self.register ^ 0xffff,
+            Crc16::Xmodem | Crc16::False => self.register,
+        }
+    }
+}
+
+pub fn crc16(data: &[u8], variant: Crc16) -> u16 {
+    let mut state = Crc16State::new(variant);
+    state.update(data);
+    state.checksum()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Multi {
+    pub base: Hashes,
+    pub fletcher16: u16,
+    pub fletcher32: u32,
+    pub crc16: u16,
+}
+
+struct MultiState {
+    crc32: Crc32State,
+    adler32: Adler32State,
+    fletcher16_a: u32,
+    fletcher16_b: u32,
+    fletcher32: Fletcher32State,
+    crc16: Crc16State,
+}
+
+impl MultiState {
+    fn new(variant: Crc16) -> Self {
+        Self {
+            crc32: Crc32State::new(),
+            adler32: Adler32State::new(),
+            fletcher16_a: 0,
+            fletcher16_b: 0,
+            fletcher32: Fletcher32State::new(),
+            crc16: Crc16State::new(variant),
+        }
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        self.crc32.update(data);
+        self.adler32.update(data);
+        self.crc16.update(data);
+
+        for &byte in data {
+            self.fletcher16_a = (self.fletcher16_a + u32::from(byte)) % 255;
+            self.fletcher16_b = (self.fletcher16_b + self.fletcher16_a) % 255;
+        }
+
+        self.fletcher32.update(data);
+    }
+
+    fn finish(&self) -> Multi {
+        Multi {
+            base: Hashes {
+                crc32: self.crc32.checksum(),
+                adler32: self.adler32.checksum(),
+            },
+            fletcher16: ((self.fletcher16_b as u16) << 8) | self.fletcher16_a as u16,
+            fletcher32: self.fletcher32.checksum(),
+            crc16: self.crc16.checksum(),
+        }
+    }
+}
+
+pub fn multi_checksums(
+    data: &[u8],
+    spans: &[Span],
+    variant: Crc16,
+) -> Result<Multi, SpanError> {
+    validate_spans(data.len(), spans)?;
+
+    let mut state = MultiState::new(variant);
+    for span in spans {
+        state.update(&data[span.start..span.end]);
+    }
+    Ok(state.finish())
+}
+```

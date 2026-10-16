@@ -1,0 +1,151 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Job {
+    pub id: String,
+    pub ready_at: u64,
+    pub priority: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dispatch {
+    pub id: String,
+    pub effective_priority: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    TimeReversed,
+    BadId,
+    BadPriority,
+    Duplicate,
+    Unknown,
+    Cancelled,
+    Completed,
+}
+
+pub struct Scheduler {
+    aging_ms: u64,
+    last_time: u64,
+    next_sequence: u64,
+    jobs: Vec<Entry>,
+    id_states: std::collections::HashMap<String, JobState>,
+}
+
+struct Entry {
+    job: Job,
+    sequence: u64,
+}
+
+#[derive(Clone, Copy)]
+enum JobState {
+    Queued,
+    Cancelled,
+    Completed,
+}
+
+impl Scheduler {
+    pub fn new(aging_ms: u64) -> Self {
+        Self {
+            aging_ms,
+            last_time: 0,
+            next_sequence: 0,
+            jobs: Vec::new(),
+            id_states: std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn insert(&mut self, now: u64, job: Job) -> Result<(), Error> {
+        self.check_time(now)?;
+
+        if !valid_id(&job.id) {
+            return Err(Error::BadId);
+        }
+        if job.priority > 9 {
+            return Err(Error::BadPriority);
+        }
+        if self.id_states.contains_key(&job.id) {
+            return Err(Error::Duplicate);
+        }
+
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        self.id_states.insert(job.id.clone(), JobState::Queued);
+        self.jobs.push(Entry { job, sequence });
+        self.last_time = now;
+        Ok(())
+    }
+
+    pub fn cancel(&mut self, now: u64, id: &str) -> Result<(), Error> {
+        self.check_time(now)?;
+
+        let state = self.id_states.get(id).copied().ok_or(Error::Unknown)?;
+        match state {
+            JobState::Queued => {
+                self.id_states.insert(id.to_owned(), JobState::Cancelled);
+                self.last_time = now;
+                Ok(())
+            }
+            JobState::Cancelled => Err(Error::Cancelled),
+            JobState::Completed => Err(Error::Completed),
+        }
+    }
+
+    pub fn next_ready(&mut self, now: u64) -> Result<Option<Dispatch>, Error> {
+        self.check_time(now)?;
+
+        let selected = self
+            .jobs
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                matches!(
+                    self.id_states.get(&entry.job.id),
+                    Some(JobState::Queued)
+                ) && entry.job.ready_at <= now
+            })
+            .max_by(|(_, a), (_, b)| {
+                effective_priority(&a.job, now, self.aging_ms)
+                    .cmp(&effective_priority(&b.job, now, self.aging_ms))
+                    .then_with(|| b.sequence.cmp(&a.sequence))
+            })
+            .map(|(index, _)| index);
+
+        self.last_time = now;
+        let Some(index) = selected else {
+            return Ok(None);
+        };
+
+        let entry = self.jobs.remove(index);
+        let effective_priority = effective_priority(&entry.job, now, self.aging_ms);
+        self.id_states
+            .insert(entry.job.id.clone(), JobState::Completed);
+
+        Ok(Some(Dispatch {
+            id: entry.job.id,
+            effective_priority,
+        }))
+    }
+
+    fn check_time(&self, now: u64) -> Result<(), Error> {
+        if now < self.last_time {
+            Err(Error::TimeReversed)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn valid_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    (1..=16).contains(&bytes.len())
+        && bytes
+            .iter()
+            .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+fn effective_priority(job: &Job, now: u64, aging_ms: u64) -> u8 {
+    if aging_ms == 0 {
+        return job.priority;
+    }
+    let age_steps = (now - job.ready_at) / aging_ms;
+    (job.priority as u64 + age_steps).min(9) as u8
+}

@@ -1,0 +1,363 @@
+```rust
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub key: String,
+    pub priority: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyKey,
+    InvalidKey { at: usize },
+    Duplicate { key: String },
+    Missing { key: String },
+    WrongDirection { current: i64, requested: i64 },
+    Collision { key: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollisionPolicy {
+    KeepSelf,
+    TakeOther,
+    Reject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeReport {
+    pub moved: usize,
+    pub replaced: usize,
+    pub discarded: usize,
+    pub evicted: Vec<Item>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Admission {
+    Inserted,
+    Evicted(Item),
+    Discarded(Item),
+}
+
+#[derive(Clone)]
+struct Entry {
+    item: Item,
+    age: u128,
+}
+
+pub struct IndexedHeap {
+    entries: Vec<Entry>,
+    indices: HashMap<String, usize>,
+    capacity: Option<usize>,
+    next_age: u128,
+}
+
+fn canonical_key(input: &str) -> Result<String, Error> {
+    let bytes = input.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && bytes[start] == b' ' {
+        start += 1;
+    }
+    while end > start && bytes[end - 1] == b' ' {
+        end -= 1;
+    }
+
+    if start == end {
+        return Err(Error::EmptyKey);
+    }
+
+    for i in start..end {
+        let b = bytes[i];
+        let valid = if i == start {
+            b.is_ascii_alphabetic()
+        } else {
+            b.is_ascii_alphabetic() || b.is_ascii_digit() || b == b'-'
+        };
+        if !valid {
+            return Err(Error::InvalidKey { at: i });
+        }
+    }
+
+    Ok(input[start..end].to_ascii_lowercase())
+}
+
+impl IndexedHeap {
+    pub fn new() -> Self {
+        Self::with_capacity_internal(None)
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self::with_capacity_internal(Some(capacity))
+    }
+
+    fn with_capacity_internal(capacity: Option<usize>) -> Self {
+        Self {
+            entries: Vec::new(),
+            indices: HashMap::new(),
+            capacity,
+            next_age: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn capacity(&self) -> Option<usize> {
+        self.capacity
+    }
+
+    fn compare(a: &Entry, b: &Entry) -> std::cmp::Ordering {
+        a.item
+            .priority
+            .cmp(&b.item.priority)
+            .then_with(|| a.item.value.len().cmp(&b.item.value.len()))
+            .then_with(|| a.age.cmp(&b.age))
+    }
+
+    fn rebuild_indices(&mut self) {
+        self.indices.clear();
+        for (i, entry) in self.entries.iter().enumerate() {
+            self.indices.insert(entry.item.key.clone(), i);
+        }
+    }
+
+    fn sort_best_first(&mut self) {
+        self.entries.sort_by(Self::compare);
+        self.rebuild_indices();
+    }
+
+    fn take_sorted(&mut self) -> Vec<Entry> {
+        self.sort_best_first();
+        std::mem::take(&mut self.entries)
+    }
+
+    fn insert_entry(&mut self, entry: Entry) {
+        self.entries.push(entry);
+        self.rebuild_indices();
+    }
+
+    fn age(&mut self) -> u128 {
+        let age = self.next_age;
+        self.next_age = self.next_age.wrapping_add(1);
+        age
+    }
+
+    pub fn push(&mut self, key: &str, priority: i64, value: &str) -> Result<Admission, Error> {
+        let key = canonical_key(key)?;
+        if self.indices.contains_key(&key) {
+            return Err(Error::Duplicate { key });
+        }
+
+        let proposed = Entry {
+            item: Item {
+                key,
+                priority,
+                value: value.to_owned(),
+            },
+            age: self.next_age,
+        };
+
+        if let Some(limit) = self.capacity {
+            if limit == 0 {
+                return Ok(Admission::Discarded(proposed.item));
+            }
+            if self.entries.len() >= limit {
+                let worst_index = self
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| Self::compare(a, b))
+                    .map(|(i, _)| i)
+                    .expect("a full nonzero queue is nonempty");
+                if Self::compare(&proposed, &self.entries[worst_index])
+                    != std::cmp::Ordering::Less
+                {
+                    return Ok(Admission::Discarded(proposed.item));
+                }
+                let evicted = self.entries.swap_remove(worst_index).item;
+                self.rebuild_indices();
+                self.next_age = self.next_age.wrapping_add(1);
+                self.insert_entry(proposed);
+                return Ok(Admission::Evicted(evicted));
+            }
+        }
+
+        self.next_age = self.next_age.wrapping_add(1);
+        self.insert_entry(proposed);
+        Ok(Admission::Inserted)
+    }
+
+    pub fn peek(&self) -> Option<Item> {
+        self.entries
+            .iter()
+            .min_by(|a, b| Self::compare(a, b))
+            .map(|entry| entry.item.clone())
+    }
+
+    pub fn pop(&mut self) -> Option<Item> {
+        let index = self
+            .entries
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| Self::compare(a, b))
+            .map(|(i, _)| i)?;
+        let item = self.entries.swap_remove(index).item;
+        self.rebuild_indices();
+        Some(item)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Item>, Error> {
+        let key = canonical_key(key)?;
+        Ok(self
+            .indices
+            .get(&key)
+            .map(|&i| self.entries[i].item.clone()))
+    }
+
+    fn lookup_index(&self, key: &str) -> Result<(String, usize), Error> {
+        let key = canonical_key(key)?;
+        match self.indices.get(&key) {
+            Some(&index) => Ok((key, index)),
+            None => Err(Error::Missing { key }),
+        }
+    }
+
+    pub fn decrease_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        let (_, index) = self.lookup_index(key)?;
+        let current = self.entries[index].item.priority;
+        if priority >= current {
+            return Err(Error::WrongDirection {
+                current,
+                requested: priority,
+            });
+        }
+        self.entries[index].item.priority = priority;
+        Ok(current)
+    }
+
+    pub fn increase_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        let (_, index) = self.lookup_index(key)?;
+        let current = self.entries[index].item.priority;
+        if priority <= current {
+            return Err(Error::WrongDirection {
+                current,
+                requested: priority,
+            });
+        }
+        self.entries[index].item.priority = priority;
+        Ok(current)
+    }
+
+    pub fn replace_value(&mut self, key: &str, value: &str) -> Result<String, Error> {
+        let (_, index) = self.lookup_index(key)?;
+        Ok(std::mem::replace(
+            &mut self.entries[index].item.value,
+            value.to_owned(),
+        ))
+    }
+
+    pub fn remove(&mut self, key: &str) -> Result<Item, Error> {
+        let (_, index) = self.lookup_index(key)?;
+        let item = self.entries.swap_remove(index).item;
+        self.rebuild_indices();
+        Ok(item)
+    }
+
+    pub fn set_capacity(&mut self, capacity: Option<usize>) -> Vec<Item> {
+        self.capacity = capacity;
+        let Some(limit) = capacity else {
+            return Vec::new();
+        };
+        if self.entries.len() <= limit {
+            return Vec::new();
+        }
+
+        let mut ordered = self.take_sorted();
+        let excess = ordered.len() - limit;
+        let mut evicted = Vec::with_capacity(excess);
+        for entry in ordered.drain(limit..).rev() {
+            evicted.push(entry.item);
+        }
+        self.entries = ordered;
+        self.rebuild_indices();
+        evicted
+    }
+
+    pub fn iter(&self) -> std::vec::IntoIter<Item> {
+        let mut entries = self.entries.clone();
+        entries.sort_by(Self::compare);
+        entries
+            .into_iter()
+            .map(|entry| entry.item)
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    pub fn merge(
+        &mut self,
+        other: &mut Self,
+        policy: CollisionPolicy,
+    ) -> Result<MergeReport, Error> {
+        let mut source = other.entries.clone();
+        source.sort_by(Self::compare);
+
+        if policy == CollisionPolicy::Reject {
+            for entry in &source {
+                if self.indices.contains_key(&entry.item.key) {
+                    return Err(Error::Collision {
+                        key: entry.item.key.clone(),
+                    });
+                }
+            }
+        }
+
+        let source_count = source.len();
+        let mut moved = 0;
+        let mut replaced = 0;
+        let mut discarded = 0;
+
+        for source_entry in source {
+            match self.indices.get(&source_entry.item.key).copied() {
+                None => {
+                    moved += 1;
+                    let age = self.age();
+                    self.insert_entry(Entry {
+                        item: source_entry.item,
+                        age,
+                    });
+                }
+                Some(index) => match policy {
+                    CollisionPolicy::KeepSelf => discarded += 1,
+                    CollisionPolicy::TakeOther => {
+                        replaced += 1;
+                        self.entries[index].item.priority = source_entry.item.priority;
+                        self.entries[index].item.value = source_entry.item.value;
+                    }
+                    CollisionPolicy::Reject => unreachable!(),
+                },
+            }
+        }
+
+        other.entries.clear();
+        other.indices.clear();
+
+        let evicted = self.set_capacity(self.capacity);
+        debug_assert_eq!(moved + replaced + discarded, source_count);
+
+        Ok(MergeReport {
+            moved,
+            replaced,
+            discarded,
+            evicted,
+        })
+    }
+}
+```

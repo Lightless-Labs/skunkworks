@@ -1,0 +1,246 @@
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rational {
+    num: i64,
+    den: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParseKind {
+    Empty,
+    InvalidByte,
+    NonCanonical,
+    OutOfRange,
+    ZeroDenominator,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RationalError {
+    ZeroDenominator,
+    DivideByZero,
+    Overflow,
+    Parse { at: usize, kind: ParseKind },
+}
+
+fn gcd(mut a: u128, mut b: u128) -> u128 {
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a
+}
+
+fn rational_from_i128(num: i128, den: i128) -> Result<Rational, RationalError> {
+    if den == 0 {
+        return Err(RationalError::ZeroDenominator);
+    }
+
+    let (mut n, mut d) = (num, den);
+    if d < 0 {
+        n = -n;
+        d = -d;
+    }
+
+    if n == 0 {
+        return Ok(Rational { num: 0, den: 1 });
+    }
+
+    let divisor = gcd(n.unsigned_abs(), d as u128) as i128;
+    n /= divisor;
+    d /= divisor;
+
+    if n < i64::MIN as i128
+        || n > i64::MAX as i128
+        || d < 1
+        || d > i64::MAX as i128
+    {
+        return Err(RationalError::Overflow);
+    }
+
+    Ok(Rational {
+        num: n as i64,
+        den: d as i64,
+    })
+}
+
+impl Rational {
+    pub fn new(num: i64, den: i64) -> Result<Self, RationalError> {
+        if den == 0 {
+            return Err(RationalError::ZeroDenominator);
+        }
+        rational_from_i128(num as i128, den as i128)
+    }
+
+    pub fn numerator(&self) -> i64 {
+        self.num
+    }
+
+    pub fn denominator(&self) -> i64 {
+        self.den
+    }
+
+    pub fn add(&self, rhs: &Self) -> Result<Self, RationalError> {
+        let n = self.num as i128 * rhs.den as i128
+            + rhs.num as i128 * self.den as i128;
+        let d = self.den as i128 * rhs.den as i128;
+        rational_from_i128(n, d)
+    }
+
+    pub fn sub(&self, rhs: &Self) -> Result<Self, RationalError> {
+        let n = self.num as i128 * rhs.den as i128
+            - rhs.num as i128 * self.den as i128;
+        let d = self.den as i128 * rhs.den as i128;
+        rational_from_i128(n, d)
+    }
+
+    pub fn mul(&self, rhs: &Self) -> Result<Self, RationalError> {
+        rational_from_i128(
+            self.num as i128 * rhs.num as i128,
+            self.den as i128 * rhs.den as i128,
+        )
+    }
+
+    pub fn div(&self, rhs: &Self) -> Result<Self, RationalError> {
+        if rhs.num == 0 {
+            return Err(RationalError::DivideByZero);
+        }
+        rational_from_i128(
+            self.num as i128 * rhs.den as i128,
+            self.den as i128 * rhs.num as i128,
+        )
+    }
+
+    pub fn neg(&self) -> Result<Self, RationalError> {
+        rational_from_i128(-(self.num as i128), self.den as i128)
+    }
+
+    pub fn parse(text: &str) -> Result<Self, RationalError> {
+        let bytes = text.as_bytes();
+        let parse_err = |at, kind| RationalError::Parse { at, kind };
+
+        if bytes.is_empty() {
+            return Err(parse_err(0, ParseKind::Empty));
+        }
+
+        let mut i = 0;
+        if bytes[i] == b'-' {
+            i += 1;
+        }
+        let numerator_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == numerator_start {
+            return Err(parse_err(i, ParseKind::InvalidByte));
+        }
+        let numerator_end = i;
+
+        let mut denominator_range = None;
+        let slash_at;
+        if i < bytes.len() && bytes[i] == b'/' {
+            slash_at = i;
+            i += 1;
+            let denominator_start = i;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i == denominator_start {
+                return Err(parse_err(i, ParseKind::InvalidByte));
+            }
+            denominator_range = Some((denominator_start, i));
+        } else {
+            slash_at = 0;
+        }
+
+        if i < bytes.len() {
+            return Err(parse_err(i, ParseKind::InvalidByte));
+        }
+
+        let negative = bytes[0] == b'-';
+        let numerator_digits = &bytes[numerator_start..numerator_end];
+
+        if numerator_digits.len() >= 2 && numerator_digits[0] == b'0' {
+            return Err(parse_err(
+                if negative { 2 } else { 1 },
+                ParseKind::NonCanonical,
+            ));
+        }
+        if negative && numerator_digits == b"0" {
+            return Err(parse_err(0, ParseKind::NonCanonical));
+        }
+
+        if let Some((start, end)) = denominator_range {
+            if end - start >= 2 && bytes[start] == b'0' {
+                return Err(parse_err(start + 1, ParseKind::NonCanonical));
+            }
+        }
+
+        let numerator_limit: u128 = if negative {
+            1_u128 << 63
+        } else {
+            i64::MAX as u128
+        };
+        let numerator_magnitude = parse_magnitude(numerator_digits);
+        if numerator_magnitude > numerator_limit {
+            return Err(parse_err(0, ParseKind::OutOfRange));
+        }
+
+        let numerator = if negative {
+            if numerator_magnitude == 1_u128 << 63 {
+                i64::MIN
+            } else {
+                -(numerator_magnitude as i64)
+            }
+        } else {
+            numerator_magnitude as i64
+        };
+
+        let Some((den_start, den_end)) = denominator_range else {
+            return Ok(Rational {
+                num: numerator,
+                den: 1,
+            });
+        };
+
+        let denominator_magnitude = parse_magnitude(&bytes[den_start..den_end]);
+        if denominator_magnitude > i64::MAX as u128 {
+            return Err(parse_err(den_start, ParseKind::OutOfRange));
+        }
+
+        if denominator_magnitude == 0 {
+            return Err(parse_err(den_start, ParseKind::ZeroDenominator));
+        }
+        if denominator_magnitude == 1 {
+            return Err(parse_err(slash_at, ParseKind::NonCanonical));
+        }
+        if numerator == 0 {
+            return Err(parse_err(slash_at, ParseKind::NonCanonical));
+        }
+        if gcd(numerator_magnitude, denominator_magnitude) > 1 {
+            return Err(parse_err(slash_at, ParseKind::NonCanonical));
+        }
+
+        Ok(Rational {
+            num: numerator,
+            den: denominator_magnitude as i64,
+        })
+    }
+}
+
+fn parse_magnitude(digits: &[u8]) -> u128 {
+    digits.iter().fold(0_u128, |value, &digit| {
+        value * 10 + (digit - b'0') as u128
+    })
+}
+
+impl std::fmt::Display for Rational {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.den == 1 {
+            write!(f, "{}", self.num)
+        } else {
+            write!(f, "{}/{}", self.num, self.den)
+        }
+    }
+}
+```

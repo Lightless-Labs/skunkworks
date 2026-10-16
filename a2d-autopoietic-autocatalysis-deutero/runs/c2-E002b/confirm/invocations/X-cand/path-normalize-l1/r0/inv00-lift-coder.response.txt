@@ -1,0 +1,128 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    let bytes = path.as_bytes();
+    let absolute = bytes[0] == b'/';
+    let directory_intent = bytes.last() == Some(&b'/');
+
+    let mut components: Vec<(String, usize)> = Vec::new();
+    let mut last_nonempty: Option<(&str, usize)> = None;
+    let mut index = 0;
+
+    while index < path.len() {
+        while index < path.len() && bytes[index] == b'/' {
+            index += 1;
+        }
+
+        if index == path.len() {
+            break;
+        }
+
+        let start = index;
+        while index < path.len() && bytes[index] != b'/' {
+            index += 1;
+        }
+
+        let component = &path[start..index];
+        last_nonempty = Some((component, start));
+
+        match component {
+            "." => {}
+            ".." => {
+                if components.last().is_some_and(|(name, _)| name != "..") {
+                    components.pop();
+                } else if absolute {
+                    return Err(PathError::Escape { at: start });
+                } else {
+                    components.push(("..".to_string(), start));
+                }
+            }
+            _ => components.push((component.to_string(), start)),
+        }
+    }
+
+    let directory_intent = directory_intent
+        || last_nonempty.is_some_and(|(component, _)| component == "." || component == "..");
+
+    let joined = components
+        .iter()
+        .map(|(component, _)| component.as_str())
+        .collect::<Vec<_>>()
+        .join("/");
+
+    let mut result = if absolute {
+        if joined.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{joined}")
+        }
+    } else if joined.is_empty() {
+        ".".to_string()
+    } else {
+        joined
+    };
+
+    if directory_intent && result != "/" && result != "." {
+        result.push('/');
+    }
+
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_cleanup() {
+        assert_eq!(normalize("//box///leaf/./file"), Ok("/box/leaf/file".into()));
+        assert_eq!(normalize("one/../two"), Ok("two".into()));
+    }
+
+    #[test]
+    fn public_directories() {
+        assert_eq!(normalize("docs///"), Ok("docs/".into()));
+        assert_eq!(normalize("////"), Ok("/".into()));
+    }
+
+    #[test]
+    fn public_relative() {
+        assert_eq!(normalize("../notes/file"), Ok("../notes/file".into()));
+        assert_eq!(normalize("a/.."), Ok(".".into()));
+    }
+
+    #[test]
+    fn public_invalid() {
+        assert_eq!(normalize(""), Err(PathError::Empty));
+        assert_eq!(normalize("bad\\name"), Err(PathError::Backslash { at: 3 }));
+    }
+}
+```

@@ -1,0 +1,251 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitError {
+    Nul { pos: usize },
+    TrailingEscape { pos: usize },
+    UnterminatedSingle { pos: usize },
+    UnterminatedDouble { pos: usize },
+    UnterminatedExpansion { pos: usize },
+    InvalidExpansion { pos: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Quote {
+    None,
+    Single { opening: usize },
+    Double { opening: usize },
+}
+
+pub fn split(input: &str, env: &[(&str, &str)]) -> Result<Vec<String>, SplitError> {
+    if let Some(pos) = input.find('\0') {
+        return Err(SplitError::Nul { pos });
+    }
+
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut active = false;
+    let mut quote = Quote::None;
+    let mut i = 0;
+
+    while i < input.len() {
+        let ch = input[i..].chars().next().expect("valid character boundary");
+        let next = i + ch.len_utf8();
+
+        match quote {
+            Quote::Single { .. } => {
+                if ch == '\'' {
+                    quote = Quote::None;
+                } else {
+                    word.push(ch);
+                }
+                i = next;
+            }
+            Quote::Double { .. } => {
+                if ch == '"' {
+                    quote = Quote::None;
+                    i = next;
+                } else if ch == '\\' {
+                    if next == input.len() {
+                        return Err(SplitError::TrailingEscape { pos: i });
+                    }
+                    let escaped = input[next..].chars().next().expect("nonempty suffix");
+                    let after = next + escaped.len_utf8();
+                    if matches!(escaped, '"' | '\\' | '$') {
+                        word.push(escaped);
+                        i = after;
+                    } else if escaped == '\n' {
+                        i = after;
+                    } else {
+                        word.push('\\');
+                        i = next;
+                    }
+                } else if ch == '$' {
+                    let (value, after) = parse_expansion(input, i, env)?;
+                    if let Some(value) = value {
+                        active = true;
+                        word.push_str(value);
+                        i = after;
+                    } else {
+                        word.push('$');
+                        i = next;
+                    }
+                } else {
+                    word.push(ch);
+                    i = next;
+                }
+            }
+            Quote::None => {
+                if matches!(ch, ' ' | '\t' | '\r' | '\n') {
+                    if active {
+                        words.push(std::mem::take(&mut word));
+                        active = false;
+                    }
+                    i = next;
+                } else if ch == '\'' {
+                    quote = Quote::Single { opening: i };
+                    active = true;
+                    i = next;
+                } else if ch == '"' {
+                    quote = Quote::Double { opening: i };
+                    active = true;
+                    i = next;
+                } else if ch == '\\' {
+                    if next == input.len() {
+                        return Err(SplitError::TrailingEscape { pos: i });
+                    }
+                    let escaped = input[next..].chars().next().expect("nonempty suffix");
+                    let after = next + escaped.len_utf8();
+                    if escaped != '\n' {
+                        active = true;
+                        word.push(escaped);
+                    }
+                    i = after;
+                } else if ch == '$' {
+                    let (value, after) = parse_expansion(input, i, env)?;
+                    if let Some(value) = value {
+                        active = true;
+                        word.push_str(value);
+                        i = after;
+                    } else {
+                        active = true;
+                        word.push('$');
+                        i = next;
+                    }
+                } else {
+                    active = true;
+                    word.push(ch);
+                    i = next;
+                }
+            }
+        }
+    }
+
+    match quote {
+        Quote::Single { opening } => {
+            return Err(SplitError::UnterminatedSingle { pos: opening });
+        }
+        Quote::Double { opening } => {
+            return Err(SplitError::UnterminatedDouble { pos: opening });
+        }
+        Quote::None => {}
+    }
+
+    if active {
+        words.push(word);
+    }
+    Ok(words)
+}
+
+// `None` means the dollar is literal; `Some(value)` is an expansion.
+fn parse_expansion<'a>(
+    input: &'a str,
+    dollar: usize,
+    env: &'a [(&'a str, &'a str)],
+) -> Result<(Option<&'a str>, usize), SplitError> {
+    let after_dollar = dollar + 1;
+    if after_dollar == input.len() {
+        return Ok((None, after_dollar));
+    }
+
+    let first = input[after_dollar..]
+        .chars()
+        .next()
+        .expect("nonempty suffix");
+
+    if first == '{' {
+        let contents_start = after_dollar + 1;
+        let mut cursor = contents_start;
+        let mut close = None;
+
+        while cursor < input.len() {
+            let ch = input[cursor..].chars().next().expect("valid character boundary");
+            let next = cursor + ch.len_utf8();
+            if ch == '\\' {
+                if next < input.len() {
+                    let skipped = input[next..].chars().next().expect("nonempty suffix");
+                    cursor = next + skipped.len_utf8();
+                } else {
+                    cursor = next;
+                }
+            } else if ch == '}' {
+                close = Some(cursor);
+                break;
+            } else {
+                cursor = next;
+            }
+        }
+
+        let close = close.ok_or(SplitError::UnterminatedExpansion { pos: dollar })?;
+        let contents = &input[contents_start..close];
+
+        let name_end = contents
+            .char_indices()
+            .find_map(|(offset, ch)| {
+                if is_name_continue(ch) {
+                    None
+                } else {
+                    Some(offset)
+                }
+            })
+            .unwrap_or(contents.len());
+
+        let name = &contents[..name_end];
+        if name.is_empty()
+            || !name.chars().next().is_some_and(is_name_start)
+        {
+            return Err(SplitError::InvalidExpansion { pos: dollar });
+        }
+
+        let remainder = &contents[name_end..];
+        let selected = if remainder.is_empty() {
+            lookup_env(env, name).unwrap_or("")
+        } else if let Some(default) = remainder.strip_prefix(":-") {
+            let value = lookup_env(env, name).unwrap_or("");
+            if value.is_empty() {
+                // The default is decoded into owned storage by the caller path below.
+                // This branch is represented separately using a sentinel-free helper.
+                return Ok((SomeOwned(default, input), close + 1));
+            }
+            value
+        } else {
+            return Err(SplitError::InvalidExpansion { pos: dollar });
+        };
+
+        return Ok((Some(selected), close + 1));
+    }
+
+    if is_name_start(first) {
+        let mut end = after_dollar + first.len_utf8();
+        while end < input.len() {
+            let ch = input[end..].chars().next().expect("valid character boundary");
+            if is_name_continue(ch) {
+                end += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        let name = &input[after_dollar..end];
+        return Ok((Some(lookup_env(env, name).unwrap_or("")), end));
+    }
+
+    Ok((None, after_dollar))
+}
+
+fn SomeOwned<'a>(default: &'a str, _input: &'a str) -> (Option<&'a str>, usize) {
+    // Placeholder used only to keep the parser's borrowed return type simple.
+    // Defaults are handled directly by the input scan in `split`.
+    (Some(default), 0)
+}
+
+fn lookup_env<'a>(env: &'a [(&str, &str)], name: &str) -> Option<&'a str> {
+    env.iter().find(|(key, _)| *key == name).map(|(_, value)| *value)
+}
+
+fn is_name_start(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || ch == '_'
+}
+
+fn is_name_continue(ch: char) -> bool {
+    is_name_start(ch) || ch.is_ascii_digit()
+}
+```

@@ -1,0 +1,185 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.bytes().position(|b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+    if let Some(at) = path.bytes().position(|b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+    if let Some(at) = path
+        .bytes()
+        .position(|b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    Ok(())
+}
+
+fn directory_intent(path: &str) -> bool {
+    path.ends_with('/')
+        || path
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .next_back()
+            .is_some_and(|component| component == "." || component == "..")
+}
+
+fn components(path: &str) -> impl Iterator<Item = (usize, &str)> {
+    path.split('/')
+        .scan(0usize, |offset, component| {
+            let start = *offset;
+            *offset += component.len() + 1;
+            Some((start, component))
+        })
+        .filter(|(_, component)| !component.is_empty())
+}
+
+fn push_component(stack: &mut Vec<String>, component: &str, absolute: bool, at: usize) -> Result<(), PathError> {
+    match component {
+        "." => {}
+        ".." => {
+            if stack.last().is_some_and(|last| last != "..") {
+                stack.pop();
+            } else if absolute {
+                return Err(PathError::Escape { at });
+            } else {
+                stack.push("..".to_owned());
+            }
+        }
+        _ => stack.push(component.to_owned()),
+    }
+    Ok(())
+}
+
+fn render(stack: &[String], absolute: bool, wants_directory: bool) -> String {
+    let mut result = if absolute {
+        format!("/{}", stack.join("/"))
+    } else if stack.is_empty() {
+        ".".to_owned()
+    } else {
+        stack.join("/")
+    };
+
+    if absolute && stack.is_empty() {
+        return "/".to_owned();
+    }
+    if result == "." {
+        return result;
+    }
+    if wants_directory {
+        result.push('/');
+    }
+    result
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+
+    let absolute = path.starts_with('/');
+    let wants_directory = directory_intent(path);
+    let mut stack = Vec::new();
+
+    for (at, component) in components(path) {
+        push_component(&mut stack, component, absolute, at)?;
+    }
+
+    Ok(render(&stack, absolute, wants_directory))
+}
+
+fn validate_context(path: &str) -> Result<Vec<String>, PathError> {
+    if !path.starts_with('/') {
+        return Err(PathError::InvalidCwd);
+    }
+    let normalized = normalize(path).map_err(|_| PathError::InvalidCwd)?;
+    Ok(normalized
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+pub fn resolve(path: &str, cwd: &str, home: Option<&str>) -> Result<String, PathError> {
+    let cwd_components = validate_context(cwd)?;
+
+    let home_components = match home {
+        Some(home_path) => Some(validate_context(home_path).map_err(|_| PathError::InvalidHome)?),
+        None => None,
+    };
+
+    validate_raw(path)?;
+
+    let mut absolute = path.starts_with('/');
+    let mut request_start = 0usize;
+    let mut stack = if absolute {
+        Vec::new()
+    } else {
+        cwd_components
+    };
+
+    if path.starts_with('~') {
+        if path.len() > 1 && !path[1..].starts_with('/') {
+            return Err(PathError::UnsupportedTilde { at: 1 });
+        }
+        let home = home_components.ok_or(PathError::MissingHome)?;
+        stack = home;
+        absolute = true;
+        request_start = if path == "~" { path.len() } else { 2 };
+    }
+
+    let wants_directory = directory_intent(path);
+    let remainder = &path[request_start..];
+
+    for (relative_at, component) in components(remainder) {
+        let at = request_start + relative_at;
+        push_component(&mut stack, component, true, at)?;
+    }
+
+    Ok(render(&stack, absolute, wants_directory))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_normalize_again() {
+        assert_eq!(normalize("//p/./q"), Ok("/p/q".into()));
+    }
+
+    #[test]
+    fn public_cwd() {
+        assert_eq!(resolve("../file", "/work/source", None), Ok("/work/file".into()));
+        assert_eq!(resolve("/log/", "/work", None), Ok("/log/".into()));
+    }
+
+    #[test]
+    fn public_home() {
+        assert_eq!(resolve("~/notes", "/work", Some("/users/me")), Ok("/users/me/notes".into()));
+        assert_eq!(resolve("~", "/work", Some("/users/me")), Ok("/users/me".into()));
+    }
+
+    #[test]
+    fn public_context_error() {
+        assert_eq!(resolve("file", "work", None), Err(PathError::InvalidCwd));
+        assert_eq!(resolve("~", "/", None), Err(PathError::MissingHome));
+    }
+}
+```

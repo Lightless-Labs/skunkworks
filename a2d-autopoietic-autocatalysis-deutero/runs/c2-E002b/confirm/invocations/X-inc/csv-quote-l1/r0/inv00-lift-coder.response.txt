@@ -1,0 +1,155 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CsvError {
+    UnexpectedQuote { record: usize, byte: usize },
+    TrailingByte { record: usize, byte: usize },
+    BareCr { record: usize, byte: usize },
+    UnclosedQuote { record: usize, byte: usize },
+    Nul { record: usize, byte: usize },
+}
+
+pub fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, CsvError> {
+    let bytes = input.as_bytes();
+    let mut pos = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) { 3 } else { 0 };
+    let mut records = Vec::new();
+    let mut record = Vec::new();
+    let mut field = String::new();
+    let mut record_index = 0usize;
+    let mut record_started = false;
+
+    while pos < bytes.len() {
+        let byte = bytes[pos];
+
+        if byte == 0 {
+            return Err(CsvError::Nul {
+                record: record_index,
+                byte: pos,
+            });
+        }
+
+        if byte == b'\r' && !is_inside_quote(&bytes, pos) {
+            if bytes.get(pos + 1) != Some(&b'\n') {
+                return Err(CsvError::BareCr {
+                    record: record_index,
+                    byte: pos,
+                });
+            }
+        }
+
+        // The parser's states are represented by the current field mode.
+        // A quoted field is parsed as a unit when its opening quote is seen.
+        if byte == b'"' {
+            if record_started || !field.is_empty() {
+                return Err(CsvError::UnexpectedQuote {
+                    record: record_index,
+                    byte: pos,
+                });
+            }
+
+            let opening = pos;
+            pos += 1;
+            let mut closed = false;
+
+            while pos < bytes.len() {
+                let inner = bytes[pos];
+                if inner == 0 {
+                    return Err(CsvError::Nul {
+                        record: record_index,
+                        byte: pos,
+                    });
+                }
+                if inner == b'"' {
+                    if bytes.get(pos + 1) == Some(&b'"') {
+                        field.push('"');
+                        pos += 2;
+                    } else {
+                        pos += 1;
+                        closed = true;
+                        break;
+                    }
+                } else {
+                    let ch = input[pos..].chars().next().expect("valid UTF-8");
+                    field.push(ch);
+                    pos += ch.len_utf8();
+                }
+            }
+
+            if !closed {
+                return Err(CsvError::UnclosedQuote {
+                    record: record_index,
+                    byte: opening,
+                });
+            }
+
+            record_started = true;
+            if pos < bytes.len() {
+                let after = bytes[pos];
+                if after == b'\r' && bytes.get(pos + 1) != Some(&b'\n') {
+                    return Err(CsvError::BareCr {
+                        record: record_index,
+                        byte: pos,
+                    });
+                }
+                if after != b',' && after != b'\n' && after != b'\r' {
+                    return Err(CsvError::TrailingByte {
+                        record: record_index,
+                        byte: pos,
+                    });
+                }
+            }
+            continue;
+        }
+
+        match byte {
+            b',' => {
+                record.push(std::mem::take(&mut field));
+                record_started = true;
+                pos += 1;
+            }
+            b'\n' => {
+                record.push(std::mem::take(&mut field));
+                records.push(std::mem::take(&mut record));
+                record_index += 1;
+                record_started = false;
+                pos += 1;
+            }
+            b'\r' => {
+                record.push(std::mem::take(&mut field));
+                records.push(std::mem::take(&mut record));
+                record_index += 1;
+                record_started = false;
+                pos += 2;
+            }
+            _ => {
+                let ch = input[pos..].chars().next().expect("valid UTF-8");
+                field.push(ch);
+                record_started = true;
+                pos += ch.len_utf8();
+            }
+        }
+    }
+
+    if record_started || !field.is_empty() || !record.is_empty() {
+        record.push(field);
+        records.push(record);
+    }
+
+    Ok(records)
+}
+
+fn is_inside_quote(bytes: &[u8], target: usize) -> bool {
+    let mut quoted = false;
+    let mut i = 0usize;
+    while i < target {
+        if bytes[i] == b'"' {
+            if quoted && bytes.get(i + 1) == Some(&b'"') {
+                i += 2;
+                continue;
+            }
+            quoted = !quoted;
+        }
+        i += 1;
+    }
+    quoted
+}
+```

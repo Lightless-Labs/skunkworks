@@ -1,0 +1,201 @@
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidPath(usize),
+    Missing(String),
+    NotDir(String),
+    IsDir(String),
+    Exists(String),
+}
+
+#[derive(Debug)]
+enum Entry {
+    Dir(BTreeMap<String, Entry>),
+    File(Vec<u8>),
+}
+
+pub struct Fs {
+    root: Entry,
+}
+
+impl Fs {
+    pub fn new() -> Self {
+        Self {
+            root: Entry::Dir(BTreeMap::new()),
+        }
+    }
+
+    fn components(path: &str) -> Result<Vec<&str>, Error> {
+        if let Some(i) = path.as_bytes().iter().position(|&b| b == 0) {
+            return Err(Error::InvalidPath(i));
+        }
+        if path.is_empty() {
+            return Err(Error::InvalidPath(0));
+        }
+        if !path.starts_with('/') {
+            return Err(Error::InvalidPath(0));
+        }
+        if path == "/" {
+            return Ok(Vec::new());
+        }
+
+        let bytes = path.as_bytes();
+        let mut result = Vec::new();
+        let mut start = 1;
+
+        for i in 1..=bytes.len() {
+            if i == bytes.len() || bytes[i] == b'/' {
+                if i == start {
+                    return Err(Error::InvalidPath(i));
+                }
+                let component = &path[start..i];
+                if component == "." || component == ".." {
+                    return Err(Error::InvalidPath(start));
+                }
+                result.push(component);
+                start = i + 1;
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn prefix(components: &[&str]) -> String {
+        if components.is_empty() {
+            return "/".to_owned();
+        }
+        let mut path = String::new();
+        for component in components {
+            path.push('/');
+            path.push_str(component);
+        }
+        path
+    }
+
+    fn lookup<'a>(&'a self, components: &[&str]) -> Result<&'a Entry, Error> {
+        let mut current = &self.root;
+        let mut prefix = Vec::new();
+
+        for component in components {
+            match current {
+                Entry::Dir(children) => {
+                    prefix.push(*component);
+                    current = children
+                        .get(*component)
+                        .ok_or_else(|| Error::Missing(Self::prefix(&prefix)))?;
+                }
+                Entry::File(_) => return Err(Error::NotDir(Self::prefix(&prefix))),
+            }
+        }
+
+        Ok(current)
+    }
+
+    fn parent_mut<'a>(
+        &'a mut self,
+        components: &[&str],
+    ) -> Result<&'a mut BTreeMap<String, Entry>, Error> {
+        let (name, parents) = components.split_last().expect("non-root path");
+        let mut current = &mut self.root;
+        let mut prefix = Vec::new();
+
+        for component in parents {
+            match current {
+                Entry::Dir(children) => {
+                    prefix.push(*component);
+                    current = children
+                        .get_mut(*component)
+                        .ok_or_else(|| Error::Missing(Self::prefix(&prefix)))?;
+                }
+                Entry::File(_) => return Err(Error::NotDir(Self::prefix(&prefix))),
+            }
+        }
+
+        match current {
+            Entry::Dir(children) => Ok(children),
+            Entry::File(_) => Err(Error::NotDir(Self::prefix(parents))),
+        }
+    }
+
+    pub fn mkdir(&mut self, path: &str) -> Result<(), Error> {
+        let components = Self::components(path)?;
+        if components.is_empty() {
+            return Err(Error::Exists("/".to_owned()));
+        }
+
+        let name = *components.last().unwrap();
+        let canonical = Self::prefix(&components);
+        let parent = self.parent_mut(&components)?;
+
+        if parent.contains_key(name) {
+            return Err(Error::Exists(canonical));
+        }
+
+        parent.insert(name.to_owned(), Entry::Dir(BTreeMap::new()));
+        Ok(())
+    }
+
+    pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Error> {
+        let components = Self::components(path)?;
+        if components.is_empty() {
+            return Err(Error::IsDir("/".to_owned()));
+        }
+
+        let name = *components.last().unwrap();
+        let canonical = Self::prefix(&components);
+        let parent = self.parent_mut(&components)?;
+
+        match parent.get_mut(name) {
+            Some(Entry::Dir(_)) => Err(Error::IsDir(canonical)),
+            Some(Entry::File(contents)) => {
+                contents.clear();
+                contents.extend_from_slice(data);
+                Ok(())
+            }
+            None => {
+                parent.insert(name.to_owned(), Entry::File(data.to_vec()));
+                Ok(())
+            }
+        }
+    }
+
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let components = Self::components(path)?;
+        match self.lookup(&components)? {
+            Entry::Dir(_) => Err(Error::IsDir(Self::prefix(&components))),
+            Entry::File(contents) => Ok(contents.clone()),
+        }
+    }
+
+    pub fn ls(&self, path: &str) -> Result<Vec<(String, Kind)>, Error> {
+        let components = Self::components(path)?;
+        match self.lookup(&components)? {
+            Entry::File(_) => Err(Error::NotDir(Self::prefix(&components))),
+            Entry::Dir(children) => Ok(children
+                .iter()
+                .map(|(name, entry)| {
+                    let kind = match entry {
+                        Entry::Dir(_) => Kind::Dir,
+                        Entry::File(_) => Kind::File,
+                    };
+                    (name.clone(), kind)
+                })
+                .collect()),
+        }
+    }
+}
+
+impl Default for Fs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+```

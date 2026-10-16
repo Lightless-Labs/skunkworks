@@ -1,0 +1,161 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub key: String,
+    pub priority: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyKey,
+    InvalidKey { at: usize },
+    Duplicate { key: String },
+}
+
+pub struct IndexedHeap {
+    items: Vec<HeapEntry>,
+    next_age: u128,
+}
+
+struct HeapEntry {
+    item: Item,
+    age: u128,
+}
+
+impl IndexedHeap {
+    pub fn new() -> Self {
+        Self {
+            items: Vec::new(),
+            next_age: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    pub fn push(&mut self, key: &str, priority: i64, value: &str) -> Result<(), Error> {
+        let key = canonicalize_key(key)?;
+        if self.items.iter().any(|entry| entry.item.key == key) {
+            return Err(Error::Duplicate { key });
+        }
+
+        let entry = HeapEntry {
+            item: Item {
+                key,
+                priority,
+                value: value.to_owned(),
+            },
+            age: self.next_age,
+        };
+        self.next_age = self.next_age.wrapping_add(1);
+        self.items.push(entry);
+        self.sift_up(self.items.len() - 1);
+        Ok(())
+    }
+
+    pub fn peek(&self) -> Option<Item> {
+        self.items.first().map(|entry| entry.item.clone())
+    }
+
+    pub fn pop(&mut self) -> Option<Item> {
+        if self.items.is_empty() {
+            return None;
+        }
+        let last = self.items.len() - 1;
+        self.items.swap(0, last);
+        let entry = self.items.pop().expect("heap was non-empty");
+        if !self.items.is_empty() {
+            self.sift_down(0);
+        }
+        Some(entry.item)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Item>, Error> {
+        let key = canonicalize_key(key)?;
+        Ok(self
+            .items
+            .iter()
+            .find(|entry| entry.item.key == key)
+            .map(|entry| entry.item.clone()))
+    }
+
+    fn sift_up(&mut self, mut index: usize) {
+        while index > 0 {
+            let parent = (index - 1) / 2;
+            if !self.items[index].is_better_than(&self.items[parent]) {
+                break;
+            }
+            self.items.swap(index, parent);
+            index = parent;
+        }
+    }
+
+    fn sift_down(&mut self, mut index: usize) {
+        loop {
+            let left = index * 2 + 1;
+            if left >= self.items.len() {
+                break;
+            }
+            let right = left + 1;
+            let best_child = if right < self.items.len()
+                && self.items[right].is_better_than(&self.items[left])
+            {
+                right
+            } else {
+                left
+            };
+
+            if !self.items[best_child].is_better_than(&self.items[index]) {
+                break;
+            }
+            self.items.swap(index, best_child);
+            index = best_child;
+        }
+    }
+}
+
+impl HeapEntry {
+    fn is_better_than(&self, other: &Self) -> bool {
+        self.item
+            .priority
+            .cmp(&other.item.priority)
+            .then_with(|| self.item.value.len().cmp(&other.item.value.len()))
+            .then_with(|| self.age.cmp(&other.age))
+            .is_lt()
+    }
+}
+
+fn canonicalize_key(input: &str) -> Result<String, Error> {
+    let bytes = input.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && bytes[start] == b' ' {
+        start += 1;
+    }
+    while end > start && bytes[end - 1] == b' ' {
+        end -= 1;
+    }
+
+    if start == end {
+        return Err(Error::EmptyKey);
+    }
+
+    for (offset, &byte) in bytes[start..end].iter().enumerate() {
+        let valid = if offset == 0 {
+            byte.is_ascii_alphabetic()
+        } else {
+            byte.is_ascii_alphabetic() || byte.is_ascii_digit() || byte == b'-'
+        };
+        if !valid {
+            return Err(Error::InvalidKey { at: start + offset });
+        }
+    }
+
+    Ok(input[start..end].to_ascii_lowercase())
+}

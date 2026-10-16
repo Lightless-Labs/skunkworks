@@ -1,0 +1,194 @@
+use std::cmp::Ordering;
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub key: String,
+    pub priority: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyKey,
+    InvalidKey { at: usize },
+    Duplicate { key: String },
+}
+
+pub struct IndexedHeap {
+    heap: Vec<Entry>,
+    indices: HashMap<String, usize>,
+    next_age: u128,
+}
+
+struct Entry {
+    item: Item,
+    age: u128,
+}
+
+impl IndexedHeap {
+    pub fn new() -> Self {
+        Self {
+            heap: Vec::new(),
+            indices: HashMap::new(),
+            next_age: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.heap.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn push(&mut self, key: &str, priority: i64, value: &str) -> Result<(), Error> {
+        let canonical = canonicalize_key(key)?;
+        if self.indices.contains_key(&canonical) {
+            return Err(Error::Duplicate { key: canonical });
+        }
+
+        // Compact ages in their existing relative order before the counter can wrap.
+        if self.next_age == u128::MAX {
+            let mut order: Vec<usize> = (0..self.heap.len()).collect();
+            order.sort_by_key(|&i| self.heap[i].age);
+            for (age, i) in order.into_iter().enumerate() {
+                self.heap[i].age = age as u128;
+            }
+            self.next_age = self.heap.len() as u128;
+        }
+
+        let entry = Entry {
+            item: Item {
+                key: canonical.clone(),
+                priority,
+                value: value.to_owned(),
+            },
+            age: self.next_age,
+        };
+        self.next_age += 1;
+
+        let index = self.heap.len();
+        self.heap.push(entry);
+        self.indices.insert(canonical, index);
+        self.sift_up(index);
+        Ok(())
+    }
+
+    pub fn peek(&self) -> Option<Item> {
+        self.heap.first().map(|entry| entry.item.clone())
+    }
+
+    pub fn pop(&mut self) -> Option<Item> {
+        if self.heap.is_empty() {
+            return None;
+        }
+
+        let last = self.heap.len() - 1;
+        self.swap_slots(0, last);
+        let removed = self.heap.pop().expect("heap was nonempty");
+        self.indices.remove(&removed.item.key);
+
+        if !self.heap.is_empty() {
+            self.sift_down(0);
+        }
+
+        Some(removed.item)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Item>, Error> {
+        let canonical = canonicalize_key(key)?;
+        Ok(self
+            .indices
+            .get(&canonical)
+            .map(|&index| self.heap[index].item.clone()))
+    }
+
+    fn less(&self, a: usize, b: usize) -> bool {
+        let a = &self.heap[a];
+        let b = &self.heap[b];
+        match a.item.priority.cmp(&b.item.priority) {
+            Ordering::Less => true,
+            Ordering::Greater => false,
+            Ordering::Equal => match a.item.value.len().cmp(&b.item.value.len()) {
+                Ordering::Less => true,
+                Ordering::Greater => false,
+                Ordering::Equal => a.age < b.age,
+            },
+        }
+    }
+
+    fn swap_slots(&mut self, a: usize, b: usize) {
+        if a == b {
+            return;
+        }
+        self.heap.swap(a, b);
+        self.indices.insert(self.heap[a].item.key.clone(), a);
+        self.indices.insert(self.heap[b].item.key.clone(), b);
+    }
+
+    fn sift_up(&mut self, mut index: usize) {
+        while index > 0 {
+            let parent = (index - 1) / 2;
+            if !self.less(index, parent) {
+                break;
+            }
+            self.swap_slots(index, parent);
+            index = parent;
+        }
+    }
+
+    fn sift_down(&mut self, mut index: usize) {
+        loop {
+            let left = index * 2 + 1;
+            if left >= self.heap.len() {
+                break;
+            }
+
+            let right = left + 1;
+            let best_child = if right < self.heap.len() && self.less(right, left) {
+                right
+            } else {
+                left
+            };
+
+            if !self.less(best_child, index) {
+                break;
+            }
+            self.swap_slots(index, best_child);
+            index = best_child;
+        }
+    }
+}
+
+fn canonicalize_key(input: &str) -> Result<String, Error> {
+    let bytes = input.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && bytes[start] == b' ' {
+        start += 1;
+    }
+    while end > start && bytes[end - 1] == b' ' {
+        end -= 1;
+    }
+
+    if start == end {
+        return Err(Error::EmptyKey);
+    }
+
+    for (offset, &byte) in bytes[start..end].iter().enumerate() {
+        let valid = if offset == 0 {
+            byte.is_ascii_alphabetic()
+        } else {
+            byte.is_ascii_alphabetic() || byte.is_ascii_digit() || byte == b'-'
+        };
+        if !valid {
+            return Err(Error::InvalidKey { at: start + offset });
+        }
+    }
+
+    let trimmed = &input[start..end];
+    Ok(trimmed.to_ascii_lowercase())
+}

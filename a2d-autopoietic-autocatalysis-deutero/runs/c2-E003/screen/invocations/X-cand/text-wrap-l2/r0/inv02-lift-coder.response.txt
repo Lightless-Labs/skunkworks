@@ -1,0 +1,217 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WrapError {
+    WidthZero,
+    WidthTooLarge { width: usize },
+    FirstIndentTooWide { indent: usize },
+    RestIndentTooWide { indent: usize },
+    InvalidControl { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapOptions {
+    pub width: usize,
+    pub first_indent: usize,
+    pub rest_indent: usize,
+}
+
+pub fn wrap(input: &str, options: &WrapOptions) -> Result<Vec<String>, WrapError> {
+    if options.width == 0 {
+        return Err(WrapError::WidthZero);
+    }
+    if options.width > 256 {
+        return Err(WrapError::WidthTooLarge {
+            width: options.width,
+        });
+    }
+    if options.first_indent >= options.width {
+        return Err(WrapError::FirstIndentTooWide {
+            indent: options.first_indent,
+        });
+    }
+    if options.rest_indent >= options.width {
+        return Err(WrapError::RestIndentTooWide {
+            indent: options.rest_indent,
+        });
+    }
+
+    for (index, ch) in input.char_indices() {
+        if ch.is_control() && ch != '\t' && ch != '\r' && ch != '\n' {
+            return Err(WrapError::InvalidControl { index });
+        }
+    }
+
+    let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
+    let chars: Vec<char> = normalized.chars().collect();
+    let mut output = Vec::new();
+    let mut segment_start = 0;
+    let mut i = 0;
+
+    while i < chars.len() {
+        if chars[i] == '\n' {
+            let mut end = i + 1;
+            while end < chars.len() && chars[end] == '\n' {
+                end += 1;
+            }
+            if end - i >= 2 {
+                append_segment(&chars[segment_start..i], options, &mut output);
+                output.extend((0..end - i - 1).map(|_| String::new()));
+                segment_start = end;
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    append_segment(&chars[segment_start..], options, &mut output);
+    Ok(output)
+}
+
+fn is_separator(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{00A0}')
+}
+
+fn append_segment(segment: &[char], options: &WrapOptions, output: &mut Vec<String>) {
+    let words: Vec<Vec<char>> = segment
+        .split(|ch| is_separator(*ch))
+        .filter(|word| !word.is_empty())
+        .map(|word| word.to_vec())
+        .collect();
+
+    let mut word_index = 0;
+    let mut suffix = Vec::<char>::new();
+    let mut line = Vec::<char>::new();
+    let mut line_number = 0usize;
+
+    while word_index < words.len() || !suffix.is_empty() {
+        if suffix.is_empty() {
+            suffix = words[word_index].clone();
+            word_index += 1;
+        }
+
+        let indent = if line_number == 0 {
+            options.first_indent
+        } else {
+            options.rest_indent
+        };
+        let capacity = options.width - indent;
+
+        if suffix.len() <= capacity {
+            let required = suffix.len() + usize::from(!line.is_empty());
+            if line.len() + required <= capacity {
+                if !line.is_empty() {
+                    line.push(' ');
+                }
+                line.append(&mut suffix);
+            } else if !line.is_empty() {
+                emit_line(&mut line, indent, output);
+                line_number += 1;
+            } else {
+                // The suffix fits the capacity, so an empty line always accepts it.
+                line.append(&mut suffix);
+            }
+        } else if line.is_empty() {
+            line.extend(suffix.drain(..capacity));
+            emit_line(&mut line, indent, output);
+            line_number += 1;
+        } else {
+            let available = capacity.saturating_sub(line.len() + 1);
+            if available >= 2 {
+                line.push(' ');
+                line.extend(suffix.drain(..available));
+                emit_line(&mut line, indent, output);
+                line_number += 1;
+            } else {
+                emit_line(&mut line, indent, output);
+                line_number += 1;
+            }
+        }
+    }
+
+    if !line.is_empty() {
+        let indent = if line_number == 0 {
+            options.first_indent
+        } else {
+            options.rest_indent
+        };
+        emit_line(&mut line, indent, output);
+    }
+}
+
+fn emit_line(content: &mut Vec<char>, indent: usize, output: &mut Vec<String>) {
+    let mut line = String::with_capacity(indent + content.len());
+    line.extend(std::iter::repeat_n(' ', indent));
+    line.extend(content.drain(..));
+    output.push(line);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_unicode_words() {
+        assert_eq!(
+            wrap(
+                "猫犬 鳥魚",
+                &WrapOptions {
+                    width: 5,
+                    first_indent: 0,
+                    rest_indent: 0
+                }
+            ),
+            Ok(vec!["猫犬 鳥魚".to_string()])
+        );
+    }
+
+    #[test]
+    fn public_hanging() {
+        assert_eq!(
+            wrap(
+                "a bb ccc dd",
+                &WrapOptions {
+                    width: 7,
+                    first_indent: 1,
+                    rest_indent: 2
+                }
+            ),
+            Ok(vec![
+                " a bb".to_string(),
+                "  ccc".to_string(),
+                "  dd".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn public_paragraph() {
+        assert_eq!(
+            wrap(
+                "a\n\nb",
+                &WrapOptions {
+                    width: 4,
+                    first_indent: 0,
+                    rest_indent: 1
+                }
+            ),
+            Ok(vec!["a".to_string(), "".to_string(), "b".to_string()])
+        );
+    }
+
+    #[test]
+    fn public_bad_indent() {
+        assert_eq!(
+            wrap(
+                "x",
+                &WrapOptions {
+                    width: 3,
+                    first_indent: 3,
+                    rest_indent: 0
+                }
+            ),
+            Err(WrapError::FirstIndentTooWide { indent: 3 })
+        );
+    }
+}
+```

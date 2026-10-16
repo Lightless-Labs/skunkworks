@@ -1,0 +1,227 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WordsError {
+    Empty,
+    InvalidByte { index: usize },
+    Separator { index: usize },
+    InvalidWord { index: usize },
+    Range,
+    NonCanonical { index: usize },
+}
+
+const LIMIT: u128 = 1_000_000_000_000_000_000;
+
+const SMALL: [&str; 20] = [
+    "", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen",
+];
+
+const TENS: [&str; 10] = [
+    "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+];
+
+const SCALES: [(u128, &str); 6] = [
+    (1_000_000_000_000_000_000, "quintillion"),
+    (1_000_000_000_000_000, "quadrillion"),
+    (1_000_000_000_000, "trillion"),
+    (1_000_000_000, "billion"),
+    (1_000_000, "million"),
+    (1_000, "thousand"),
+];
+
+fn encode_under_thousand(n: u16) -> String {
+    let mut out = String::new();
+    let hundreds = n / 100;
+    let remainder = n % 100;
+
+    if hundreds != 0 {
+        out.push_str(SMALL[hundreds as usize]);
+        out.push_str(" hundred");
+        if remainder != 0 {
+            out.push_str(" and ");
+        }
+    }
+
+    if remainder >= 20 {
+        out.push_str(TENS[(remainder / 10) as usize]);
+        if remainder % 10 != 0 {
+            out.push('-');
+            out.push_str(SMALL[(remainder % 10) as usize]);
+        }
+    } else if remainder != 0 {
+        out.push_str(SMALL[remainder as usize]);
+    }
+
+    out
+}
+
+pub fn words_encode(value: i128) -> Result<String, WordsError> {
+    let magnitude = value.unsigned_abs();
+    if magnitude > LIMIT {
+        return Err(WordsError::Range);
+    }
+    if magnitude == 0 {
+        return Ok("zero".to_string());
+    }
+
+    let mut remainder = magnitude;
+    let mut groups: Vec<(u16, Option<&str>)> = Vec::new();
+
+    for &(scale, name) in &SCALES {
+        let group = (remainder / scale) as u16;
+        remainder %= scale;
+        if group != 0 {
+            groups.push((group, Some(name)));
+        }
+    }
+    if remainder != 0 {
+        groups.push((remainder as u16, None));
+    }
+
+    let units_is_small = groups
+        .last()
+        .is_some_and(|(group, scale)| scale.is_none() && *group < 100);
+    let mut out = String::new();
+    if value < 0 {
+        out.push_str("minus ");
+    }
+
+    for (i, (group, scale)) in groups.iter().enumerate() {
+        if i != 0 {
+            if units_is_small && i + 1 == groups.len() {
+                out.push_str(" and ");
+            } else {
+                out.push(' ');
+            }
+        }
+        out.push_str(&encode_under_thousand(*group));
+        if let Some(name) = scale {
+            out.push(' ');
+            out.push_str(name);
+        }
+    }
+
+    Ok(out)
+}
+
+fn word_value(word: &str) -> Option<(u128, WordKind)> {
+    for (i, spelling) in SMALL.iter().enumerate().skip(1) {
+        if word == *spelling {
+            return Some((i as u128, WordKind::Add));
+        }
+    }
+    for (i, spelling) in TENS.iter().enumerate().skip(2) {
+        if word == *spelling {
+            return Some(((i * 10) as u128, WordKind::Add));
+        }
+    }
+    match word {
+        "zero" => Some((0, WordKind::Add)),
+        "and" => Some((0, WordKind::Ignore)),
+        "hundred" => Some((100, WordKind::Hundred)),
+        "thousand" => Some((1_000, WordKind::Scale)),
+        "million" => Some((1_000_000, WordKind::Scale)),
+        "billion" => Some((1_000_000_000, WordKind::Scale)),
+        "trillion" => Some((1_000_000_000_000, WordKind::Scale)),
+        "quadrillion" => Some((1_000_000_000_000_000, WordKind::Scale)),
+        "quintillion" => Some((1_000_000_000_000_000_000, WordKind::Scale)),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum WordKind {
+    Add,
+    Ignore,
+    Hundred,
+    Scale,
+}
+
+pub fn words_decode(input: &str) -> Result<i128, WordsError> {
+    if input.is_empty() {
+        return Err(WordsError::Empty);
+    }
+
+    for (index, byte) in input.bytes().enumerate() {
+        if !(byte.is_ascii_lowercase() || byte == b' ' || byte == b'-') {
+            return Err(WordsError::InvalidByte { index });
+        }
+    }
+
+    let bytes = input.as_bytes();
+    for (index, &byte) in bytes.iter().enumerate() {
+        if byte == b' ' || byte == b'-' {
+            if index == 0
+                || index + 1 == bytes.len()
+                || !bytes[index - 1].is_ascii_lowercase()
+                || !bytes[index + 1].is_ascii_lowercase()
+            {
+                return Err(WordsError::Separator { index });
+            }
+        }
+    }
+
+    let tokens: Vec<(usize, &str)> = input
+        .split(|c| c == ' ' || c == '-')
+        .scan(0usize, |offset, token| {
+            let start = *offset;
+            *offset += token.len() + 1;
+            Some((start, token))
+        })
+        .collect();
+
+    for (position, (index, token)) in tokens.iter().enumerate() {
+        if *token == "minus" {
+            if position != 0 {
+                return Err(WordsError::InvalidWord { index: *index });
+            }
+        } else if word_value(token).is_none() {
+            return Err(WordsError::InvalidWord { index: *index });
+        }
+    }
+
+    let negative = tokens.first().is_some_and(|(_, token)| *token == "minus");
+    let arithmetic_tokens = if negative { &tokens[1..] } else { &tokens[..] };
+
+    let mut total = 0u128;
+    let mut group = 0u128;
+
+    for (_, token) in arithmetic_tokens {
+        match *token {
+            "minus" => continue,
+            _ => {}
+        }
+        let (value, kind) = word_value(token).expect("dictionary was validated");
+        match kind {
+            WordKind::Add => group += value,
+            WordKind::Ignore => {}
+            WordKind::Hundred => group *= 100,
+            WordKind::Scale => {
+                total += group * value;
+                group = 0;
+            }
+        }
+        if total + group > LIMIT {
+            return Err(WordsError::Range);
+        }
+    }
+
+    let magnitude = total + group;
+    let signed = if negative && magnitude != 0 {
+        -(magnitude as i128)
+    } else {
+        magnitude as i128
+    };
+    let canonical = words_encode(signed)?;
+    if canonical != input {
+        let mismatch = canonical
+            .bytes()
+            .zip(input.bytes())
+            .position(|(a, b)| a != b)
+            .unwrap_or_else(|| canonical.len().min(input.len()));
+        return Err(WordsError::NonCanonical { index: mismatch });
+    }
+    Ok(signed)
+}
+```

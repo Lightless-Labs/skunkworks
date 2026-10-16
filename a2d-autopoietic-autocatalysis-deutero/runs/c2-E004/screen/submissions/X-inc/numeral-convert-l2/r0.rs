@@ -1,0 +1,220 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseStyle {
+    pub upper: bool,
+    pub group: usize,
+    pub min_width: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BaseError {
+    BadBase { which: usize, value: u8 },
+    BadStyle,
+    Empty { operand: usize },
+    InvalidTag { operand: usize, index: usize },
+    InvalidDigit { operand: usize, index: usize },
+    Separator { operand: usize, index: usize },
+    LeadingZero { operand: usize, index: usize },
+}
+
+fn validate_base(value: u8, which: usize) -> Result<(), BaseError> {
+    if (2..=36).contains(&value) {
+        Ok(())
+    } else {
+        Err(BaseError::BadBase { which, value })
+    }
+}
+
+fn digit_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'A'..=b'Z' => Some(byte - b'A' + 10),
+        b'a'..=b'z' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn validate_and_parse(input: &str, radix: u8, operand: usize) -> Result<Vec<u8>, BaseError> {
+    if input.is_empty() {
+        return Err(BaseError::Empty { operand });
+    }
+
+    let bytes = input.as_bytes();
+    let payload_start = if let Some(hash) = bytes.iter().position(|&b| b == b'#') {
+        let expected = radix.to_string();
+        if &bytes[..hash] != expected.as_bytes() {
+            return Err(BaseError::InvalidTag { operand, index: 0 });
+        }
+        hash + 1
+    } else {
+        0
+    };
+
+    if payload_start == bytes.len() {
+        return Err(BaseError::Empty { operand });
+    }
+
+    let payload = &bytes[payload_start..];
+    let mut digits = Vec::new();
+
+    for (offset, &byte) in payload.iter().enumerate() {
+        if byte == b'_' {
+            continue;
+        }
+        match digit_value(byte) {
+            Some(value) if value < radix => digits.push(value),
+            _ => {
+                return Err(BaseError::InvalidDigit {
+                    operand,
+                    index: payload_start + offset,
+                });
+            }
+        }
+    }
+
+    for (offset, &byte) in payload.iter().enumerate() {
+        if byte == b'_'
+            && (offset == 0
+                || offset + 1 == payload.len()
+                || payload[offset - 1] == b'_'
+                || payload[offset + 1] == b'_')
+        {
+            return Err(BaseError::Separator {
+                operand,
+                index: payload_start + offset,
+            });
+        }
+    }
+
+    if digits.len() >= 2 && digits[0] == 0 {
+        return Err(BaseError::LeadingZero {
+            operand,
+            index: payload_start,
+        });
+    }
+
+    Ok(digits)
+}
+
+fn multiply_add(value: &mut Vec<u8>, multiplier: u8, addend: u8) {
+    let mut carry = addend as u16;
+    for digit in value.iter_mut() {
+        let current = *digit as u16 * multiplier as u16 + carry;
+        *digit = (current % 256) as u8;
+        carry = current / 256;
+    }
+    while carry != 0 {
+        value.push((carry % 256) as u8);
+        carry /= 256;
+    }
+}
+
+fn convert_digits(digits: &[u8], from: u8, to: u8) -> Vec<u8> {
+    let mut value: Vec<u8> = vec![0];
+    for &digit in digits {
+        multiply_add(&mut value, from, digit);
+    }
+
+    let mut output = Vec::new();
+    while value.iter().any(|&byte| byte != 0) {
+        let mut remainder = 0u16;
+        for byte in value.iter_mut().rev() {
+            let current = remainder * 256 + *byte as u16;
+            *byte = (current / to as u16) as u8;
+            remainder = current % to as u16;
+        }
+        output.push(remainder as u8);
+        while value.len() > 1 && value.last() == Some(&0) {
+            value.pop();
+        }
+    }
+
+    if output.is_empty() {
+        output.push(0);
+    }
+    output.reverse();
+    output
+}
+
+fn render(digits: &[u8], style: BaseStyle) -> String {
+    let padding = style.min_width.saturating_sub(digits.len());
+    let total = padding + digits.len();
+    let mut result = String::with_capacity(total + total / style.group.max(1));
+    let alphabet = if style.upper {
+        b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    } else {
+        b"0123456789abcdefghijklmnopqrstuvwxyz"
+    };
+
+    for index in 0..total {
+        if style.group != 0 && index != 0 && (total - index) % style.group == 0 {
+            result.push('_');
+        }
+        let digit = if index < padding {
+            0
+        } else {
+            digits[index - padding]
+        };
+        result.push(alphabet[digit as usize] as char);
+    }
+    result
+}
+
+pub fn convert_base(
+    input: &str,
+    from: u8,
+    to: u8,
+    style: BaseStyle,
+) -> Result<String, BaseError> {
+    validate_base(from, 0)?;
+    validate_base(to, 1)?;
+    if style.group > 8 || style.min_width > 256 {
+        return Err(BaseError::BadStyle);
+    }
+    let digits = validate_and_parse(input, from, 0)?;
+    let converted = convert_digits(&digits, from, to);
+    Ok(render(&converted, style))
+}
+
+pub fn add_base(
+    left: &str,
+    right: &str,
+    base: u8,
+    style: BaseStyle,
+) -> Result<String, BaseError> {
+    validate_base(base, 0)?;
+    if style.group > 8 || style.min_width > 256 {
+        return Err(BaseError::BadStyle);
+    }
+    let left_digits = validate_and_parse(left, base, 0)?;
+    let right_digits = validate_and_parse(right, base, 1)?;
+
+    let mut sum = Vec::new();
+    let mut carry = 0u16;
+    let mut left_index = left_digits.len();
+    let mut right_index = right_digits.len();
+
+    while left_index > 0 || right_index > 0 || carry != 0 {
+        let left_digit = if left_index > 0 {
+            left_index -= 1;
+            left_digits[left_index] as u16
+        } else {
+            0
+        };
+        let right_digit = if right_index > 0 {
+            right_index -= 1;
+            right_digits[right_index] as u16
+        } else {
+            0
+        };
+
+        let value = left_digit + right_digit + carry;
+        sum.push((value % base as u16) as u8);
+        carry = value / base as u16;
+    }
+
+    if sum.is_empty() {
+        sum.push(0);
+    }
+    sum.reverse();
+    Ok(render(&sum, style))
+}

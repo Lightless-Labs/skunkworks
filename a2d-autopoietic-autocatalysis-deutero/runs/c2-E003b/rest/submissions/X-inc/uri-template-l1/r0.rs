@@ -1,0 +1,181 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    UnexpectedClose { pos: usize },
+    Unclosed { pos: usize },
+    NestedOpen { pos: usize },
+    EmptyExpression { pos: usize },
+    UnsupportedOperator { pos: usize },
+    EmptyVariable { pos: usize },
+    InvalidName { pos: usize },
+    DuplicateVariable { pos: usize },
+}
+
+#[derive(Debug)]
+struct Expression {
+    start: usize,
+    end: usize,
+    names: Vec<(usize, String)>,
+}
+
+pub fn expand(template: &str, vars: &[(&str, &str)]) -> Result<String, Error> {
+    let mut expressions = Vec::new();
+    let mut cursor = 0;
+
+    while cursor < template.len() {
+        match template.as_bytes()[cursor] {
+            b'}' => return Err(Error::UnexpectedClose { pos: cursor }),
+            b'{' => {
+                let start = cursor;
+                let content_start = start + 1;
+                let Some(relative_end) = template[content_start..].find('}') else {
+                    return Err(Error::Unclosed { pos: start });
+                };
+                let end = content_start + relative_end;
+
+                if let Some(relative_open) = template[content_start..end].find('{') {
+                    return Err(Error::NestedOpen {
+                        pos: content_start + relative_open,
+                    });
+                }
+
+                let content = &template[content_start..end];
+                let mut body_start = content_start;
+
+                if let Some(first) = content.as_bytes().first().copied() {
+                    if matches!(first, b'+' | b'#' | b'.' | b'/' | b';' | b'?' | b'&') {
+                        return Err(Error::UnsupportedOperator { pos: body_start });
+                    }
+                }
+
+                if body_start == end {
+                    return Err(Error::EmptyExpression { pos: end });
+                }
+
+                let mut names = Vec::new();
+                let mut seen = Vec::<String>::new();
+
+                loop {
+                    let relative_comma = template[body_start..end].find(',');
+                    let spec_end = relative_comma
+                        .map(|offset| body_start + offset)
+                        .unwrap_or(end);
+
+                    if body_start == spec_end {
+                        return Err(Error::EmptyVariable { pos: body_start });
+                    }
+
+                    let specifier = &template[body_start..spec_end];
+                    let bytes = specifier.as_bytes();
+                    let valid_first = bytes[0].is_ascii_alphabetic() || bytes[0] == b'_';
+                    if !valid_first {
+                        return Err(Error::InvalidName { pos: body_start });
+                    }
+
+                    let mut invalid = None;
+                    for (offset, byte) in bytes.iter().copied().enumerate().skip(1) {
+                        if !(byte.is_ascii_alphanumeric() || byte == b'_') {
+                            invalid = Some(body_start + offset);
+                            break;
+                        }
+                    }
+                    if let Some(pos) = invalid {
+                        return Err(Error::InvalidName { pos });
+                    }
+
+                    let name = specifier.to_string();
+                    if seen.iter().any(|prior| prior == &name) {
+                        return Err(Error::DuplicateVariable { pos: body_start });
+                    }
+                    seen.push(name.clone());
+                    names.push((body_start, name));
+
+                    if spec_end == end {
+                        break;
+                    }
+                    body_start = spec_end + 1;
+                    if body_start == end {
+                        return Err(Error::EmptyVariable { pos: end });
+                    }
+                }
+
+                expressions.push(Expression { start, end, names });
+                cursor = end + 1;
+            }
+            _ => {
+                let ch = template[cursor..].chars().next().unwrap();
+                cursor += ch.len_utf8();
+            }
+        }
+    }
+
+    let mut output = String::with_capacity(template.len());
+    let mut literal_start = 0;
+
+    for expression in expressions {
+        output.push_str(&template[literal_start..expression.start]);
+
+        let mut fields = Vec::new();
+        for (_, name) in expression.names {
+            if let Some(value) = vars
+                .iter()
+                .rev()
+                .find_map(|(binding_name, value)| (*binding_name == name).then_some(*value))
+            {
+                fields.push(encode_value(value));
+            }
+        }
+        output.push_str(&fields.join(","));
+        literal_start = expression.end + 1;
+    }
+
+    output.push_str(&template[literal_start..]);
+    Ok(output)
+}
+
+fn encode_value(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut encoded = String::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+            {
+                encoded.push('%');
+                encoded.push(hex_digit(high));
+                encoded.push(hex_digit(low));
+                index += 3;
+                continue;
+            }
+        }
+
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(hex_digit(byte >> 4));
+            encoded.push(hex_digit(byte & 0x0f));
+        }
+        index += 1;
+    }
+
+    encoded
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn hex_digit(value: u8) -> char {
+    match value {
+        0..=9 => (b'0' + value) as char,
+        _ => (b'A' + value - 10) as char,
+    }
+}

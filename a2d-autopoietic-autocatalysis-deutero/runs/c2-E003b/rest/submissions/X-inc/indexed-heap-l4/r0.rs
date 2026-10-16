@@ -1,0 +1,354 @@
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub key: String,
+    pub priority: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyKey,
+    InvalidKey { at: usize },
+    Duplicate { key: String },
+    Missing { key: String },
+    WrongDirection { current: i64, requested: i64 },
+    Collision { key: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollisionPolicy {
+    KeepSelf,
+    TakeOther,
+    Reject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeReport {
+    pub moved: usize,
+    pub replaced: usize,
+    pub discarded: usize,
+    pub evicted: Vec<Item>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Admission {
+    Inserted,
+    Evicted(Item),
+    Discarded(Item),
+}
+
+#[derive(Debug, Clone)]
+struct Entry {
+    item: Item,
+    age: u128,
+}
+
+pub struct IndexedHeap {
+    entries: Vec<Entry>,
+    indices: HashMap<String, usize>,
+    capacity: Option<usize>,
+    next_age: u128,
+}
+
+impl IndexedHeap {
+    pub fn new() -> Self {
+        Self::with_optional_capacity(None)
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self::with_optional_capacity(Some(capacity))
+    }
+
+    fn with_optional_capacity(capacity: Option<usize>) -> Self {
+        Self {
+            entries: Vec::new(),
+            indices: HashMap::new(),
+            capacity,
+            next_age: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn capacity(&self) -> Option<usize> {
+        self.capacity
+    }
+
+    fn normalize_key(input: &str) -> Result<String, Error> {
+        let bytes = input.as_bytes();
+        let mut start = 0;
+        let mut end = bytes.len();
+        while start < end && bytes[start] == b' ' {
+            start += 1;
+        }
+        while end > start && bytes[end - 1] == b' ' {
+            end -= 1;
+        }
+        if start == end {
+            return Err(Error::EmptyKey);
+        }
+
+        for (offset, &byte) in bytes[start..end].iter().enumerate() {
+            let valid = if offset == 0 {
+                byte.is_ascii_alphabetic()
+            } else {
+                byte.is_ascii_alphabetic() || byte.is_ascii_digit() || byte == b'-'
+            };
+            if !valid {
+                return Err(Error::InvalidKey { at: start + offset });
+            }
+        }
+
+        Ok(input[start..end].to_ascii_lowercase())
+    }
+
+    fn compare(a: &Entry, b: &Entry) -> std::cmp::Ordering {
+        a.item
+            .priority
+            .cmp(&b.item.priority)
+            .then_with(|| a.item.value.len().cmp(&b.item.value.len()))
+            .then_with(|| a.age.cmp(&b.age))
+    }
+
+    fn sort_best_first(&mut self) {
+        self.entries.sort_by(Self::compare);
+        self.rebuild_indices();
+    }
+
+    fn rebuild_indices(&mut self) {
+        self.indices.clear();
+        for (index, entry) in self.entries.iter().enumerate() {
+            self.indices.insert(entry.item.key.clone(), index);
+        }
+    }
+
+    fn remove_at(&mut self, index: usize) -> Entry {
+        let removed = self.entries.remove(index);
+        self.rebuild_indices();
+        removed
+    }
+
+    fn fresh_age(&mut self) -> u128 {
+        if self.next_age == u128::MAX {
+            let mut order: Vec<usize> = (0..self.entries.len()).collect();
+            order.sort_by_key(|&i| self.entries[i].age);
+            for (age, index) in order.into_iter().enumerate() {
+                self.entries[index].age = age as u128;
+            }
+            self.next_age = self.entries.len() as u128;
+        }
+        let age = self.next_age;
+        self.next_age += 1;
+        age
+    }
+
+    pub fn push(
+        &mut self,
+        key: &str,
+        priority: i64,
+        value: &str,
+    ) -> Result<Admission, Error> {
+        let key = Self::normalize_key(key)?;
+        if self.indices.contains_key(&key) {
+            return Err(Error::Duplicate { key });
+        }
+
+        let proposed = Entry {
+            item: Item {
+                key,
+                priority,
+                value: value.to_owned(),
+            },
+            age: self.next_age,
+        };
+
+        if self.capacity == Some(0) {
+            return Ok(Admission::Discarded(proposed.item));
+        }
+
+        if let Some(limit) = self.capacity {
+            if self.entries.len() >= limit {
+                let worst_index = self
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| Self::compare(a, b))
+                    .map(|(i, _)| i)
+                    .expect("nonzero full capacity has an entry");
+                if Self::compare(&proposed, &self.entries[worst_index])
+                    != std::cmp::Ordering::Less
+                {
+                    return Ok(Admission::Discarded(proposed.item));
+                }
+                let evicted = self.remove_at(worst_index).item;
+                let age = self.fresh_age();
+                let mut retained = proposed;
+                retained.age = age;
+                self.entries.push(retained);
+                self.sort_best_first();
+                return Ok(Admission::Evicted(evicted));
+            }
+        }
+
+        let mut retained = proposed;
+        retained.age = self.fresh_age();
+        self.entries.push(retained);
+        self.sort_best_first();
+        Ok(Admission::Inserted)
+    }
+
+    pub fn peek(&self) -> Option<Item> {
+        self.entries.first().map(|entry| entry.item.clone())
+    }
+
+    pub fn pop(&mut self) -> Option<Item> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        Some(self.remove_at(0).item)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Item>, Error> {
+        let key = Self::normalize_key(key)?;
+        Ok(self
+            .indices
+            .get(&key)
+            .map(|&index| self.entries[index].item.clone()))
+    }
+
+    pub fn decrease_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        self.update_priority(key, priority, true)
+    }
+
+    pub fn increase_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        self.update_priority(key, priority, false)
+    }
+
+    fn update_priority(
+        &mut self,
+        key: &str,
+        requested: i64,
+        decrease: bool,
+    ) -> Result<i64, Error> {
+        let key = Self::normalize_key(key)?;
+        let Some(&index) = self.indices.get(&key) else {
+            return Err(Error::Missing { key });
+        };
+        let current = self.entries[index].item.priority;
+        if (decrease && requested >= current) || (!decrease && requested <= current) {
+            return Err(Error::WrongDirection { current, requested });
+        }
+
+        self.entries[index].item.priority = requested;
+        self.sort_best_first();
+        Ok(current)
+    }
+
+    pub fn replace_value(&mut self, key: &str, value: &str) -> Result<String, Error> {
+        let key = Self::normalize_key(key)?;
+        let Some(&index) = self.indices.get(&key) else {
+            return Err(Error::Missing { key });
+        };
+        let previous = std::mem::replace(&mut self.entries[index].item.value, value.to_owned());
+        self.sort_best_first();
+        Ok(previous)
+    }
+
+    pub fn remove(&mut self, key: &str) -> Result<Item, Error> {
+        let key = Self::normalize_key(key)?;
+        let Some(&index) = self.indices.get(&key) else {
+            return Err(Error::Missing { key });
+        };
+        Ok(self.remove_at(index).item)
+    }
+
+    pub fn set_capacity(&mut self, capacity: Option<usize>) -> Vec<Item> {
+        self.capacity = capacity;
+        let Some(limit) = capacity else {
+            return Vec::new();
+        };
+        let mut evicted = Vec::new();
+        while self.entries.len() > limit {
+            let index = self.entries.len() - 1;
+            evicted.push(self.remove_at(index).item);
+        }
+        evicted
+    }
+
+    pub fn iter(&self) -> std::vec::IntoIter<Item> {
+        self.entries
+            .iter()
+            .map(|entry| entry.item.clone())
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    pub fn merge(
+        &mut self,
+        other: &mut Self,
+        policy: CollisionPolicy,
+    ) -> Result<MergeReport, Error> {
+        let source: Vec<Entry> = other.entries.clone();
+        if policy == CollisionPolicy::Reject {
+            for entry in &source {
+                if self.indices.contains_key(&entry.item.key) {
+                    return Err(Error::Collision {
+                        key: entry.item.key.clone(),
+                    });
+                }
+            }
+        }
+
+        let mut ordered_source = source;
+        ordered_source.sort_by(Self::compare);
+
+        let mut report = MergeReport {
+            moved: 0,
+            replaced: 0,
+            discarded: 0,
+            evicted: Vec::new(),
+        };
+
+        for entry in ordered_source {
+            if let Some(&index) = self.indices.get(&entry.item.key) {
+                match policy {
+                    CollisionPolicy::KeepSelf => report.discarded += 1,
+                    CollisionPolicy::TakeOther => {
+                        self.entries[index].item.priority = entry.item.priority;
+                        self.entries[index].item.value = entry.item.value;
+                        report.replaced += 1;
+                    }
+                    CollisionPolicy::Reject => unreachable!(),
+                }
+            } else {
+                let age = self.fresh_age();
+                self.entries.push(Entry {
+                    item: entry.item,
+                    age,
+                });
+                report.moved += 1;
+            }
+        }
+
+        other.entries.clear();
+        other.indices.clear();
+        self.sort_best_first();
+
+        if let Some(limit) = self.capacity {
+            while self.entries.len() > limit {
+                let worst = self.entries.len() - 1;
+                report.evicted.push(self.remove_at(worst).item);
+            }
+        }
+
+        Ok(report)
+    }
+}

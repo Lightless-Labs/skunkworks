@@ -1,0 +1,228 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseStyle {
+    pub upper: bool,
+    pub group: usize,
+    pub min_width: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BaseError {
+    BadBase { which: usize, value: u8 },
+    BadStyle,
+    Empty { operand: usize },
+    InvalidTag { operand: usize, index: usize },
+    InvalidDigit { operand: usize, index: usize },
+    Separator { operand: usize, index: usize },
+    LeadingZero { operand: usize, index: usize },
+}
+
+fn validate_base(base: u8, which: usize) -> Result<(), BaseError> {
+    if !(2..=36).contains(&base) {
+        Err(BaseError::BadBase { which, value: base })
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_style(style: &BaseStyle) -> Result<(), BaseError> {
+    if style.group > 8 || style.min_width > 256 {
+        Err(BaseError::BadStyle)
+    } else {
+        Ok(())
+    }
+}
+
+fn digit_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'A'..=b'Z' => Some(byte - b'A' + 10),
+        b'a'..=b'z' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn parse_operand(input: &str, radix: u8, operand: usize) -> Result<Vec<u8>, BaseError> {
+    if input.is_empty() {
+        return Err(BaseError::Empty { operand });
+    }
+
+    let bytes = input.as_bytes();
+    let payload_start = if let Some(tag_end) = bytes.iter().position(|&b| b == b'#') {
+        let expected = radix.to_string();
+        if &input[..tag_end] != expected {
+            return Err(BaseError::InvalidTag { operand, index: 0 });
+        }
+        tag_end + 1
+    } else {
+        0
+    };
+
+    if payload_start == bytes.len() {
+        return Err(BaseError::Empty { operand });
+    }
+
+    let payload = &bytes[payload_start..];
+    let mut digits = Vec::new();
+
+    for (offset, &byte) in payload.iter().enumerate() {
+        if byte == b'_' {
+            continue;
+        }
+        match digit_value(byte) {
+            Some(value) if value < radix => digits.push(value),
+            _ => {
+                return Err(BaseError::InvalidDigit {
+                    operand,
+                    index: payload_start + offset,
+                });
+            }
+        }
+    }
+
+    for (offset, &byte) in payload.iter().enumerate() {
+        if byte == b'_'
+            && (offset == 0
+                || offset + 1 == payload.len()
+                || payload[offset - 1] == b'_'
+                || payload[offset + 1] == b'_')
+        {
+            return Err(BaseError::Separator {
+                operand,
+                index: payload_start + offset,
+            });
+        }
+    }
+
+    if digits.len() >= 2 && digits[0] == 0 {
+        return Err(BaseError::LeadingZero {
+            operand,
+            index: payload_start,
+        });
+    }
+
+    Ok(digits)
+}
+
+fn multiply_add(number: &mut Vec<u8>, multiplier: u8, addend: u8) {
+    let mut carry = addend as u16;
+    for digit in number.iter_mut() {
+        let value = (*digit as u16) * (multiplier as u16) + carry;
+        *digit = (value & 0xff) as u8;
+        carry = value >> 8;
+    }
+    while carry != 0 {
+        number.push((carry & 0xff) as u8);
+        carry >>= 8;
+    }
+}
+
+fn to_radix_digits(mut number: Vec<u8>, radix: u8) -> Vec<u8> {
+    while number.len() > 1 && number.last() == Some(&0) {
+        number.pop();
+    }
+    if number.is_empty() {
+        return vec![0];
+    }
+
+    let mut output = Vec::new();
+    while number.iter().any(|&byte| byte != 0) {
+        let mut remainder = 0u16;
+        for byte in number.iter_mut().rev() {
+            let value = (remainder << 8) | (*byte as u16);
+            *byte = (value / radix as u16) as u8;
+            remainder = value % radix as u16;
+        }
+        output.push(remainder as u8);
+        while number.len() > 1 && number.last() == Some(&0) {
+            number.pop();
+        }
+    }
+    output.reverse();
+    output
+}
+
+fn render(mut digits: Vec<u8>, style: BaseStyle) -> String {
+    let padding = style.min_width.saturating_sub(digits.len());
+    if padding != 0 {
+        let mut padded = vec![0; padding];
+        padded.append(&mut digits);
+        digits = padded;
+    }
+
+    let mut chars = Vec::with_capacity(digits.len() + digits.len() / 2);
+    for (index, &digit) in digits.iter().enumerate() {
+        if style.group != 0
+            && index != 0
+            && (digits.len() - index) % style.group == 0
+        {
+            chars.push('_');
+        }
+        let byte = match digit {
+            0..=9 => b'0' + digit,
+            _ if style.upper => b'A' + digit - 10,
+            _ => b'a' + digit - 10,
+        };
+        chars.push(byte);
+    }
+    String::from_utf8(chars).expect("rendered digits are ASCII")
+}
+
+pub fn convert_base(
+    input: &str,
+    from: u8,
+    to: u8,
+    style: BaseStyle,
+) -> Result<String, BaseError> {
+    validate_base(from, 0)?;
+    validate_base(to, 1)?;
+    validate_style(&style)?;
+
+    let digits = parse_operand(input, from, 0)?;
+    let mut value = vec![0u8];
+    for digit in digits {
+        multiply_add(&mut value, from, digit);
+    }
+    Ok(render(to_radix_digits(value, to), style))
+}
+
+pub fn add_base(
+    left: &str,
+    right: &str,
+    base: u8,
+    style: BaseStyle,
+) -> Result<String, BaseError> {
+    validate_base(base, 0)?;
+    validate_style(&style)?;
+
+    let left_digits = parse_operand(left, base, 0)?;
+    let right_digits = parse_operand(right, base, 1)?;
+
+    let mut left_value = vec![0u8];
+    for digit in left_digits {
+        multiply_add(&mut left_value, base, digit);
+    }
+
+    let mut right_value = vec![0u8];
+    for digit in right_digits {
+        multiply_add(&mut right_value, base, digit);
+    }
+
+    let max_len = left_value.len().max(right_value.len());
+    left_value.resize(max_len, 0);
+    right_value.resize(max_len, 0);
+
+    let mut sum = Vec::with_capacity(max_len + 1);
+    let mut carry = 0u16;
+    for index in 0..max_len {
+        let value = left_value[index] as u16 + right_value[index] as u16 + carry;
+        sum.push((value & 0xff) as u8);
+        carry = value >> 8;
+    }
+    if carry != 0 {
+        sum.push(carry as u8);
+    }
+
+    Ok(render(to_radix_digits(sum, base), style))
+}
+```

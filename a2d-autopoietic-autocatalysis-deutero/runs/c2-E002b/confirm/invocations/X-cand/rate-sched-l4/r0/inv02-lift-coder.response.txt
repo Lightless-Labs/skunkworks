@@ -1,0 +1,509 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Job {
+    pub id: String,
+    pub priority: u8,
+    pub dependencies: Vec<String>,
+    pub max_attempts: u8,
+    pub release_at: u64,
+    pub duration: u64,
+    pub tag: Option<String>,
+    pub failures: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum State {
+    Waiting { ready_at: u64, attempt: u8 },
+    Running { attempt: u8, finish_at: u64 },
+    Succeeded,
+    Failed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    Config,
+    BadId(usize),
+    BadPriority(usize),
+    BadAttempts(usize),
+    BadTime(usize),
+    BadTag(usize),
+    Duplicate(usize),
+    DuplicateDependency(usize, usize),
+    MissingDependency(usize, usize),
+    Cycle,
+    TimeReversed,
+    TimeRange,
+    Unknown,
+}
+
+#[derive(Clone)]
+struct RuntimeJob {
+    job: Job,
+    dependencies: Vec<usize>,
+    state: State,
+    remaining: Option<u64>,
+    last_ready: u64,
+    segment_order: u64,
+}
+
+pub struct Pool {
+    jobs: Vec<RuntimeJob>,
+    by_id: std::collections::HashMap<String, usize>,
+    capacity: usize,
+    aging_ms: u64,
+    retry_base: u64,
+    retry_cap: u64,
+    horizon: u64,
+    first_run: bool,
+    next_segment_order: u64,
+}
+
+impl Pool {
+    pub fn new(
+        jobs: Vec<Job>,
+        capacity: usize,
+        aging_ms: u64,
+        retry_base: u64,
+        retry_cap: u64,
+    ) -> Result<Self, Error> {
+        if !(1..=16).contains(&capacity)
+            || retry_base < 1
+            || retry_base > retry_cap
+            || retry_cap > 1_000_000_000
+        {
+            return Err(Error::Config);
+        }
+
+        let mut by_id = std::collections::HashMap::new();
+        for (i, job) in jobs.iter().enumerate() {
+            if !valid_token(&job.id, 1, 16) {
+                return Err(Error::BadId(i));
+            }
+            if job.priority > 9 {
+                return Err(Error::BadPriority(i));
+            }
+            if !(1..=32).contains(&job.max_attempts) {
+                return Err(Error::BadAttempts(i));
+            }
+            if job.release_at > 1_000_000_000
+                || job.duration == 0
+                || job.duration > 1_000_000_000
+            {
+                return Err(Error::BadTime(i));
+            }
+            if job
+                .tag
+                .as_ref()
+                .is_some_and(|tag| !valid_token(tag, 1, 8))
+            {
+                return Err(Error::BadTag(i));
+            }
+            if by_id.contains_key(&job.id) {
+                return Err(Error::Duplicate(i));
+            }
+            by_id.insert(job.id.clone(), i);
+        }
+
+        let mut dependencies = Vec::with_capacity(jobs.len());
+        for (i, job) in jobs.iter().enumerate() {
+            let mut seen = std::collections::HashSet::new();
+            let mut resolved = Vec::with_capacity(job.dependencies.len());
+            for (j, dep) in job.dependencies.iter().enumerate() {
+                if !seen.insert(dep.as_str()) {
+                    return Err(Error::DuplicateDependency(i, j));
+                }
+                match by_id.get(dep) {
+                    Some(&index) => resolved.push(index),
+                    None => return Err(Error::MissingDependency(i, j)),
+                }
+            }
+            dependencies.push(resolved);
+        }
+
+        if contains_cycle(&dependencies) {
+            return Err(Error::Cycle);
+        }
+
+        let runtime = jobs
+            .into_iter()
+            .enumerate()
+            .map(|(i, job)| RuntimeJob {
+                state: State::Waiting {
+                    ready_at: job.release_at,
+                    attempt: 0,
+                },
+                last_ready: job.release_at,
+                job,
+                dependencies: dependencies[i].clone(),
+                remaining: None,
+                segment_order: 0,
+            })
+            .collect();
+
+        Ok(Self {
+            jobs: runtime,
+            by_id,
+            capacity,
+            aging_ms,
+            retry_base,
+            retry_cap,
+            horizon: 0,
+            first_run: true,
+            next_segment_order: 0,
+        })
+    }
+
+    pub fn run(&mut self, until: u64) -> Result<Vec<String>, Error> {
+        if !self.first_run && until < self.horizon {
+            return Err(Error::TimeReversed);
+        }
+        if until > 1_000_000_000 {
+            return Err(Error::TimeRange);
+        }
+        if !self.first_run && until == self.horizon {
+            return Ok(Vec::new());
+        }
+
+        let mut lines = Vec::new();
+        let mut now = if self.first_run { 0 } else { self.horizon };
+        let mut process_current = self.first_run;
+
+        loop {
+            if process_current {
+                self.process_timestamp(now, &mut lines);
+            }
+
+            let Some(next) = self.next_event_time(now) else {
+                break;
+            };
+            if next > until {
+                break;
+            }
+            now = next;
+            process_current = true;
+        }
+
+        self.horizon = until;
+        self.first_run = false;
+        Ok(lines)
+    }
+
+    pub fn status(&self, id: &str) -> Result<State, Error> {
+        let index = *self.by_id.get(id).ok_or(Error::Unknown)?;
+        Ok(self.jobs[index].state.clone())
+    }
+
+    fn process_timestamp(&mut self, now: u64, lines: &mut Vec<String>) {
+        let mut completions: Vec<usize> = self
+            .jobs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, job)| match job.state {
+                State::Running { finish_at, .. } if finish_at == now => Some(i),
+                _ => None,
+            })
+            .collect();
+        completions.sort_by(|&a, &b| self.jobs[a].job.id.cmp(&self.jobs[b].job.id));
+
+        for index in completions {
+            let (attempt, finish_at) = match self.jobs[index].state {
+                State::Running { attempt, finish_at } => (attempt, finish_at),
+                _ => continue,
+            };
+            let _ = finish_at;
+            if attempt > self.jobs[index].job.failures {
+                self.jobs[index].state = State::Succeeded;
+                lines.push(format!(
+                    "{} finish {} {} ok",
+                    now, self.jobs[index].job.id, attempt
+                ));
+            } else {
+                lines.push(format!(
+                    "{} finish {} {} fail",
+                    now, self.jobs[index].job.id, attempt
+                ));
+                if attempt >= self.jobs[index].job.max_attempts {
+                    self.jobs[index].state = State::Failed;
+                } else {
+                    let delay = retry_delay(self.retry_base, self.retry_cap, attempt);
+                    let ready_at = now.saturating_add(delay);
+                    self.jobs[index].state = State::Waiting { ready_at, attempt };
+                    self.jobs[index].last_ready = ready_at;
+                    self.jobs[index].remaining = None;
+                    lines.push(format!(
+                        "{} retry {} {} {}",
+                        now, self.jobs[index].job.id, attempt, ready_at
+                    ));
+                }
+            }
+        }
+
+        let newly_blocked = self.propagate_failures();
+        let mut newly_blocked = newly_blocked;
+        newly_blocked.sort_by(|&a, &b| self.jobs[a].job.id.cmp(&self.jobs[b].job.id));
+        for index in newly_blocked {
+            let dependency = self.jobs[index]
+                .dependencies
+                .iter()
+                .copied()
+                .find(|&dep| {
+                    matches!(self.jobs[dep].state, State::Failed | State::Blocked)
+                })
+                .map(|dep| self.jobs[dep].job.id.clone())
+                .unwrap_or_default();
+            lines.push(format!(
+                "{} skip {} {}",
+                now, self.jobs[index].job.id, dependency
+            ));
+        }
+
+        self.schedule(now, lines);
+    }
+
+    fn propagate_failures(&mut self) -> Vec<usize> {
+        let mut newly_blocked = Vec::new();
+        loop {
+            let mut changed = false;
+            for i in 0..self.jobs.len() {
+                if !matches!(self.jobs[i].state, State::Waiting { .. }) {
+                    continue;
+                }
+                if self.jobs[i]
+                    .dependencies
+                    .iter()
+                    .any(|&dep| matches!(self.jobs[dep].state, State::Failed | State::Blocked))
+                {
+                    self.jobs[i].state = State::Blocked;
+                    newly_blocked.push(i);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        newly_blocked
+    }
+
+    fn schedule(&mut self, now: u64, lines: &mut Vec<String>) {
+        loop {
+            let mut candidates: Vec<usize> = self
+                .jobs
+                .iter()
+                .enumerate()
+                .filter_map(|(i, job)| match job.state {
+                    State::Waiting { ready_at, .. }
+                        if ready_at <= now
+                            && job.dependencies.iter().all(|&dep| {
+                                matches!(self.jobs[dep].state, State::Succeeded)
+                            }) =>
+                    {
+                        Some(i)
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            candidates.sort_by(|&a, &b| {
+                let pa = self.effective_priority(a, now);
+                let pb = self.effective_priority(b, now);
+                pb.cmp(&pa).then_with(|| a.cmp(&b))
+            });
+
+            let mut started = false;
+            for candidate in candidates {
+                let running: Vec<usize> = self
+                    .jobs
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, job)| {
+                        if matches!(job.state, State::Running { .. }) {
+                            Some(i)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let candidate_tag = self.jobs[candidate].job.tag.as_deref();
+                let slot_free = running.len() < self.capacity;
+                let tag_free = candidate_tag.is_none()
+                    || !running.iter().any(|&i| {
+                        self.jobs[i].job.tag.as_deref() == candidate_tag
+                    });
+
+                if slot_free && tag_free {
+                    self.start_job(candidate, now, lines, None);
+                    started = true;
+                    break;
+                }
+
+                let mut victims: Vec<usize> = running
+                    .into_iter()
+                    .filter(|&victim| {
+                        self.jobs[candidate].job.priority
+                            >= self.jobs[victim].job.priority.saturating_add(2)
+                    })
+                    .filter(|&victim| {
+                        let remaining_running: Vec<usize> = self
+                            .jobs
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, job)| {
+                                if i != victim && matches!(job.state, State::Running { .. }) {
+                                    Some(i)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        remaining_running.len() < self.capacity
+                            && (candidate_tag.is_none()
+                                || !remaining_running.iter().any(|&i| {
+                                    self.jobs[i].job.tag.as_deref() == candidate_tag
+                                }))
+                    })
+                    .collect();
+
+                victims.sort_by(|&a, &b| {
+                    self.jobs[a]
+                        .job
+                        .priority
+                        .cmp(&self.jobs[b].job.priority)
+                        .then_with(|| {
+                            self.jobs[b]
+                                .segment_order
+                                .cmp(&self.jobs[a].segment_order)
+                        })
+                        .then_with(|| self.jobs[b].job.id.cmp(&self.jobs[a].job.id))
+                });
+
+                if let Some(victim) = victims.first().copied() {
+                    let finish_at = match self.jobs[victim].state {
+                        State::Running { finish_at, .. } => finish_at,
+                        _ => continue,
+                    };
+                    let attempt = match self.jobs[victim].state {
+                        State::Running { attempt, .. } => attempt,
+                        _ => continue,
+                    };
+                    let remaining = finish_at.saturating_sub(now);
+                    lines.push(format!(
+                        "{} preempt {} by {}",
+                        now, self.jobs[victim].job.id, self.jobs[candidate].job.id
+                    ));
+                    self.jobs[victim].state = State::Waiting {
+                        ready_at: now,
+                        attempt,
+                    };
+                    self.jobs[victim].remaining = Some(remaining);
+                    self.jobs[victim].last_ready = now;
+                    self.start_job(candidate, now, lines, None);
+                    started = true;
+                    break;
+                }
+            }
+
+            if !started {
+                break;
+            }
+        }
+    }
+
+    fn start_job(
+        &mut self,
+        index: usize,
+        now: u64,
+        lines: &mut Vec<String>,
+        _unused: Option<()>,
+    ) {
+        let (attempt, remaining) = match self.jobs[index].state {
+            State::Waiting { attempt, .. } => {
+                if let Some(saved) = self.jobs[index].remaining.take() {
+                    (attempt, saved)
+                } else {
+                    let next_attempt = attempt.saturating_add(1);
+                    (next_attempt, self.jobs[index].job.duration)
+                }
+            }
+            _ => return,
+        };
+        let finish_at = now.saturating_add(remaining);
+        self.next_segment_order = self.next_segment_order.saturating_add(1);
+        self.jobs[index].segment_order = self.next_segment_order;
+        self.jobs[index].state = State::Running { attempt, finish_at };
+        lines.push(format!(
+            "{} start {} {} {}",
+            now, self.jobs[index].job.id, attempt, remaining
+        ));
+    }
+
+    fn effective_priority(&self, index: usize, now: u64) -> u8 {
+        if self.aging_ms == 0 {
+            return self.jobs[index].job.priority;
+        }
+        let waited = now.saturating_sub(self.jobs[index].last_ready);
+        let boost = waited / self.aging_ms;
+        (self.jobs[index].job.priority as u64)
+            .saturating_add(boost)
+            .min(9) as u8
+    }
+
+    fn next_event_time(&self, now: u64) -> Option<u64> {
+        self.jobs
+            .iter()
+            .filter_map(|job| match job.state {
+                State::Running { finish_at, .. } if finish_at > now => Some(finish_at),
+                State::Waiting { ready_at, .. } if ready_at > now => Some(ready_at),
+                _ => None,
+            })
+            .min()
+    }
+}
+
+fn valid_token(value: &str, min: usize, max: usize) -> bool {
+    let bytes = value.as_bytes();
+    (min..=max).contains(&bytes.len())
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+}
+
+fn contains_cycle(dependencies: &[Vec<usize>]) -> bool {
+    fn visit(node: usize, deps: &[Vec<usize>], marks: &mut [u8]) -> bool {
+        if marks[node] == 1 {
+            return true;
+        }
+        if marks[node] == 2 {
+            return false;
+        }
+        marks[node] = 1;
+        for &dep in &deps[node] {
+            if visit(dep, deps, marks) {
+                return true;
+            }
+        }
+        marks[node] = 2;
+        false
+    }
+
+    let mut marks = vec![0; dependencies.len()];
+    for node in 0..dependencies.len() {
+        if visit(node, dependencies, &mut marks) {
+            return true;
+        }
+    }
+    false
+}
+
+fn retry_delay(base: u64, cap: u64, attempt: u8) -> u64 {
+    let mut delay = base;
+    for _ in 1..attempt {
+        if delay >= cap {
+            return cap;
+        }
+        delay = delay.saturating_mul(2).min(cap);
+    }
+    delay.min(cap)
+}
+```

@@ -1,0 +1,181 @@
+use std::collections::VecDeque;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: u32,
+    pub arrival: u32,
+    pub ticks: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub id: u32,
+    pub start: u64,
+    pub end: u64,
+    pub finished: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule {
+    pub runs: Vec<Run>,
+    pub idle: Vec<(u64, u64)>,
+    pub completion: Vec<(u32, u64)>,
+    pub end: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Quantum,
+    SwitchCost,
+    TooManyJobs,
+    DuplicateId { index: usize },
+    Arrival { index: usize },
+    Ticks { index: usize },
+}
+
+pub fn schedule(jobs: &[Job], quantum: u32, switch_cost: u32) -> Result<Schedule, Error> {
+    if !(1..=1000).contains(&quantum) {
+        return Err(Error::Quantum);
+    }
+    if switch_cost > 1000 {
+        return Err(Error::SwitchCost);
+    }
+    if jobs.len() > 64 {
+        return Err(Error::TooManyJobs);
+    }
+
+    for (index, job) in jobs.iter().enumerate() {
+        if jobs[..index].iter().any(|earlier| earlier.id == job.id) {
+            return Err(Error::DuplicateId { index });
+        }
+        if job.arrival > 1000 {
+            return Err(Error::Arrival { index });
+        }
+        if job.ticks > 1000 {
+            return Err(Error::Ticks { index });
+        }
+    }
+
+    let mut arrival_order: Vec<usize> = (0..jobs.len()).collect();
+    arrival_order.sort_by_key(|&index| (jobs[index].arrival, index));
+
+    let mut remaining: Vec<u32> = jobs.iter().map(|job| job.ticks).collect();
+    let mut completion: Vec<Option<u64>> = vec![None; jobs.len()];
+    let mut ready: VecDeque<usize> = VecDeque::new();
+    let mut runs = Vec::new();
+    let mut idle: Vec<(u64, u64)> = Vec::new();
+    let mut time = 0_u64;
+    let mut next_arrival = 0;
+    let mut last_dispatched_id: Option<u32> = None;
+
+    fn admit_through(
+        jobs: &[Job],
+        arrival_order: &[usize],
+        next_arrival: &mut usize,
+        ready: &mut VecDeque<usize>,
+        completion: &mut [Option<u64>],
+        through: u64,
+    ) {
+        while *next_arrival < arrival_order.len() {
+            let index = arrival_order[*next_arrival];
+            if u64::from(jobs[index].arrival) > through {
+                break;
+            }
+            *next_arrival += 1;
+            if jobs[index].ticks == 0 {
+                completion[index] = Some(u64::from(jobs[index].arrival));
+            } else {
+                ready.push_back(index);
+            }
+        }
+    }
+
+    loop {
+        admit_through(
+            jobs,
+            &arrival_order,
+            &mut next_arrival,
+            &mut ready,
+            &mut completion,
+            time,
+        );
+
+        let Some(index) = ready.pop_front() else {
+            if next_arrival == arrival_order.len() {
+                break;
+            }
+
+            let next_time = u64::from(jobs[arrival_order[next_arrival]].arrival);
+            if next_time > time {
+                if let Some(last) = idle.last_mut() {
+                    if last.1 == time {
+                        last.1 = next_time;
+                    } else {
+                        idle.push((time, next_time));
+                    }
+                } else {
+                    idle.push((time, next_time));
+                }
+                time = next_time;
+                last_dispatched_id = None;
+            }
+            continue;
+        };
+
+        let id = jobs[index].id;
+        if last_dispatched_id.is_some_and(|last_id| last_id != id) {
+            time += u64::from(switch_cost);
+        }
+
+        admit_through(
+            jobs,
+            &arrival_order,
+            &mut next_arrival,
+            &mut ready,
+            &mut completion,
+            time,
+        );
+
+        let consumed = remaining[index].min(quantum);
+        let start = time;
+        time += u64::from(consumed);
+        remaining[index] -= consumed;
+        let finished = remaining[index] == 0;
+
+        runs.push(Run {
+            id,
+            start,
+            end: time,
+            finished,
+        });
+
+        admit_through(
+            jobs,
+            &arrival_order,
+            &mut next_arrival,
+            &mut ready,
+            &mut completion,
+            time,
+        );
+
+        if finished {
+            completion[index] = Some(time);
+        } else {
+            ready.push_back(index);
+        }
+        last_dispatched_id = Some(id);
+    }
+
+    let completion = jobs
+        .iter()
+        .enumerate()
+        .map(|(index, job)| (job.id, completion[index].unwrap_or(0)))
+        .collect();
+
+    Ok(Schedule {
+        runs,
+        idle,
+        completion,
+        end: time,
+    })
+}

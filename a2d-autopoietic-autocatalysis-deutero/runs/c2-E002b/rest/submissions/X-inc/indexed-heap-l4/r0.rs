@@ -1,0 +1,371 @@
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub key: String,
+    pub priority: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyKey,
+    InvalidKey { at: usize },
+    Duplicate { key: String },
+    Missing { key: String },
+    WrongDirection { current: i64, requested: i64 },
+    Collision { key: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollisionPolicy {
+    KeepSelf,
+    TakeOther,
+    Reject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeReport {
+    pub moved: usize,
+    pub replaced: usize,
+    pub discarded: usize,
+    pub evicted: Vec<Item>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Admission {
+    Inserted,
+    Evicted(Item),
+    Discarded(Item),
+}
+
+#[derive(Clone)]
+struct Entry {
+    item: Item,
+    age: u128,
+}
+
+pub struct IndexedHeap {
+    entries: Vec<Entry>,
+    indices: HashMap<String, usize>,
+    capacity: Option<usize>,
+    next_age: u128,
+}
+
+fn canonical_key(input: &str) -> Result<String, Error> {
+    let bytes = input.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && bytes[start] == b' ' {
+        start += 1;
+    }
+    while end > start && bytes[end - 1] == b' ' {
+        end -= 1;
+    }
+
+    if start == end {
+        return Err(Error::EmptyKey);
+    }
+
+    for i in start..end {
+        let byte = bytes[i];
+        let valid = if i == start {
+            byte.is_ascii_alphabetic()
+        } else {
+            byte.is_ascii_alphabetic() || byte.is_ascii_digit() || byte == b'-'
+        };
+        if !valid {
+            return Err(Error::InvalidKey { at: i });
+        }
+    }
+
+    Ok(input[start..end].to_ascii_lowercase())
+}
+
+fn rank_cmp(a: &Entry, b: &Entry) -> std::cmp::Ordering {
+    a.item
+        .priority
+        .cmp(&b.item.priority)
+        .then_with(|| a.item.value.len().cmp(&b.item.value.len()))
+        .then_with(|| a.age.cmp(&b.age))
+}
+
+impl IndexedHeap {
+    pub fn new() -> Self {
+        Self::with_capacity_internal(None)
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self::with_capacity_internal(Some(capacity))
+    }
+
+    fn with_capacity_internal(capacity: Option<usize>) -> Self {
+        Self {
+            entries: Vec::new(),
+            indices: HashMap::new(),
+            capacity,
+            next_age: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn capacity(&self) -> Option<usize> {
+        self.capacity
+    }
+
+    fn rebuild_indices(&mut self) {
+        self.indices.clear();
+        for (index, entry) in self.entries.iter().enumerate() {
+            self.indices.insert(entry.item.key.clone(), index);
+        }
+    }
+
+    fn next_age(&mut self) -> u128 {
+        if self.next_age == u128::MAX {
+            let mut order: Vec<usize> = (0..self.entries.len()).collect();
+            order.sort_by(|&a, &b| self.entries[a].age.cmp(&self.entries[b].age));
+            for (age, index) in order.into_iter().enumerate() {
+                self.entries[index].age = age as u128;
+            }
+            self.next_age = self.entries.len() as u128;
+        }
+        let age = self.next_age;
+        self.next_age += 1;
+        age
+    }
+
+    fn best_index(&self) -> Option<usize> {
+        (0..self.entries.len()).min_by(|&a, &b| rank_cmp(&self.entries[a], &self.entries[b]))
+    }
+
+    fn worst_index(&self) -> Option<usize> {
+        (0..self.entries.len()).max_by(|&a, &b| rank_cmp(&self.entries[a], &self.entries[b]))
+    }
+
+    fn remove_index(&mut self, index: usize) -> Entry {
+        let removed = self.entries.swap_remove(index);
+        self.indices.remove(&removed.item.key);
+        if index < self.entries.len() {
+            self.indices
+                .insert(self.entries[index].item.key.clone(), index);
+        }
+        removed
+    }
+
+    fn ordered_indices(&self) -> Vec<usize> {
+        let mut indices: Vec<usize> = (0..self.entries.len()).collect();
+        indices.sort_by(|&a, &b| rank_cmp(&self.entries[a], &self.entries[b]));
+        indices
+    }
+
+    pub fn push(
+        &mut self,
+        key: &str,
+        priority: i64,
+        value: &str,
+    ) -> Result<Admission, Error> {
+        let key = canonical_key(key)?;
+        if self.indices.contains_key(&key) {
+            return Err(Error::Duplicate { key });
+        }
+
+        let proposed = Item {
+            key: key.clone(),
+            priority,
+            value: value.to_owned(),
+        };
+
+        if self.capacity == Some(0) {
+            return Ok(Admission::Discarded(proposed));
+        }
+
+        if let Some(capacity) = self.capacity {
+            if self.entries.len() >= capacity {
+                if let Some(worst) = self.worst_index() {
+                    let proposal = Entry {
+                        item: proposed.clone(),
+                        age: self.next_age,
+                    };
+                    if rank_cmp(&proposal, &self.entries[worst]) != std::cmp::Ordering::Less {
+                        return Ok(Admission::Discarded(proposed));
+                    }
+                    let evicted = self.remove_index(worst).item;
+                    let age = self.next_age();
+                    self.indices.insert(key, self.entries.len());
+                    self.entries.push(Entry { item: proposed, age });
+                    return Ok(Admission::Evicted(evicted));
+                }
+            }
+        }
+
+        let age = self.next_age();
+        self.indices.insert(key, self.entries.len());
+        self.entries.push(Entry {
+            item: proposed,
+            age,
+        });
+        Ok(Admission::Inserted)
+    }
+
+    pub fn peek(&self) -> Option<Item> {
+        self.best_index()
+            .map(|index| self.entries[index].item.clone())
+    }
+
+    pub fn pop(&mut self) -> Option<Item> {
+        self.best_index()
+            .map(|index| self.remove_index(index).item)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Item>, Error> {
+        let key = canonical_key(key)?;
+        Ok(self
+            .indices
+            .get(&key)
+            .map(|&index| self.entries[index].item.clone()))
+    }
+
+    pub fn decrease_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        let key = canonical_key(key)?;
+        let Some(&index) = self.indices.get(&key) else {
+            return Err(Error::Missing { key });
+        };
+        let current = self.entries[index].item.priority;
+        if priority >= current {
+            return Err(Error::WrongDirection {
+                current,
+                requested: priority,
+            });
+        }
+        self.entries[index].item.priority = priority;
+        Ok(current)
+    }
+
+    pub fn increase_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        let key = canonical_key(key)?;
+        let Some(&index) = self.indices.get(&key) else {
+            return Err(Error::Missing { key });
+        };
+        let current = self.entries[index].item.priority;
+        if priority <= current {
+            return Err(Error::WrongDirection {
+                current,
+                requested: priority,
+            });
+        }
+        self.entries[index].item.priority = priority;
+        Ok(current)
+    }
+
+    pub fn replace_value(&mut self, key: &str, value: &str) -> Result<String, Error> {
+        let key = canonical_key(key)?;
+        let Some(&index) = self.indices.get(&key) else {
+            return Err(Error::Missing { key });
+        };
+        Ok(std::mem::replace(
+            &mut self.entries[index].item.value,
+            value.to_owned(),
+        ))
+    }
+
+    pub fn remove(&mut self, key: &str) -> Result<Item, Error> {
+        let key = canonical_key(key)?;
+        let Some(&index) = self.indices.get(&key) else {
+            return Err(Error::Missing { key });
+        };
+        Ok(self.remove_index(index).item)
+    }
+
+    pub fn set_capacity(&mut self, capacity: Option<usize>) -> Vec<Item> {
+        self.capacity = capacity;
+        let mut evicted = Vec::new();
+        while self.capacity.is_some_and(|limit| self.entries.len() > limit) {
+            if let Some(index) = self.worst_index() {
+                evicted.push(self.remove_index(index).item);
+            } else {
+                break;
+            }
+        }
+        evicted
+    }
+
+    pub fn iter(&self) -> std::vec::IntoIter<Item> {
+        self.ordered_indices()
+            .into_iter()
+            .map(|index| self.entries[index].item.clone())
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    pub fn merge(
+        &mut self,
+        other: &mut Self,
+        policy: CollisionPolicy,
+    ) -> Result<MergeReport, Error> {
+        let source_order = other.ordered_indices();
+        if policy == CollisionPolicy::Reject {
+            for &index in &source_order {
+                let key = &other.entries[index].item.key;
+                if self.indices.contains_key(key) {
+                    return Err(Error::Collision { key: key.clone() });
+                }
+            }
+        }
+
+        let source: Vec<Entry> = source_order
+            .into_iter()
+            .map(|index| other.entries[index].clone())
+            .collect();
+
+        let mut report = MergeReport {
+            moved: 0,
+            replaced: 0,
+            discarded: 0,
+            evicted: Vec::new(),
+        };
+
+        for entry in source {
+            if let Some(&index) = self.indices.get(&entry.item.key) {
+                match policy {
+                    CollisionPolicy::KeepSelf => report.discarded += 1,
+                    CollisionPolicy::TakeOther => {
+                        self.entries[index].item.priority = entry.item.priority;
+                        self.entries[index].item.value = entry.item.value;
+                        report.replaced += 1;
+                    }
+                    CollisionPolicy::Reject => unreachable!(),
+                }
+            } else {
+                let age = self.next_age();
+                self.indices
+                    .insert(entry.item.key.clone(), self.entries.len());
+                self.entries.push(Entry {
+                    item: entry.item,
+                    age,
+                });
+                report.moved += 1;
+            }
+        }
+
+        other.entries.clear();
+        other.indices.clear();
+
+        while self.capacity.is_some_and(|limit| self.entries.len() > limit) {
+            if let Some(index) = self.worst_index() {
+                report.evicted.push(self.remove_index(index).item);
+            } else {
+                break;
+            }
+        }
+
+        Ok(report)
+    }
+}

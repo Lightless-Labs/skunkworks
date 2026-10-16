@@ -1,0 +1,174 @@
+```rust
+use std::cmp::Ordering;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    Empty,
+    SignOnly,
+    InvalidDigit { index: usize },
+    Separator { index: usize },
+    LeadingZero { index: usize },
+    TooManyDigits { limit: usize, index: usize },
+    Underflow,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Big {
+    // Canonical little-endian decimal digits. Zero is represented as [0].
+    digits: Vec<u8>,
+}
+
+impl Big {
+    pub fn parse(text: &str, max_digits: usize) -> Result<Self, Error> {
+        let bytes = text.as_bytes();
+
+        if bytes.is_empty() {
+            return Err(Error::Empty);
+        }
+
+        let start = usize::from(bytes[0] == b'+');
+        if start == bytes.len() {
+            return Err(Error::SignOnly);
+        }
+
+        // Validate every magnitude byte before considering separators.
+        for (index, &byte) in bytes.iter().enumerate().skip(start) {
+            if byte != b'_' && !byte.is_ascii_digit() {
+                return Err(Error::InvalidDigit { index });
+            }
+        }
+
+        // An underscore must have a digit immediately on either side.
+        for index in start..bytes.len() {
+            if bytes[index] == b'_'
+                && (index == start
+                    || index + 1 == bytes.len()
+                    || !bytes[index - 1].is_ascii_digit()
+                    || !bytes[index + 1].is_ascii_digit())
+            {
+                return Err(Error::Separator { index });
+            }
+        }
+
+        let mut digit_count = 0usize;
+        let mut first_digit = None;
+        let mut digits = Vec::new();
+
+        for (index, &byte) in bytes.iter().enumerate().skip(start) {
+            if byte != b'_' {
+                first_digit.get_or_insert((index, byte));
+                digit_count += 1;
+                digits.push(byte - b'0');
+            }
+        }
+
+        if digit_count > 1 && first_digit.is_some_and(|(_, digit)| digit == b'0') {
+            return Err(Error::LeadingZero {
+                index: first_digit.unwrap().0,
+            });
+        }
+
+        if digit_count > max_digits {
+            let excess_number = max_digits + 1;
+            let excess_index = bytes
+                .iter()
+                .enumerate()
+                .skip(start)
+                .filter(|(_, byte)| **byte != b'_')
+                .nth(excess_number - 1)
+                .map(|(index, _)| index)
+                .expect("excess digit exists");
+            return Err(Error::TooManyDigits {
+                limit: max_digits,
+                index: excess_index,
+            });
+        }
+
+        digits.reverse();
+        while digits.len() > 1 && digits.last() == Some(&0) {
+            digits.pop();
+        }
+
+        Ok(Self { digits })
+    }
+
+    pub fn format(&self, min_digits: usize, group: usize) -> String {
+        let digit_count = self.digits.len().max(min_digits).max(1);
+        let padding = digit_count - self.digits.len();
+        let mut output = String::with_capacity(
+            digit_count + if group > 0 { (digit_count - 1) / group } else { 0 },
+        );
+
+        for position in 0..digit_count {
+            if group > 0 && position > 0 && (digit_count - position) % group == 0 {
+                output.push('_');
+            }
+
+            if position < padding {
+                output.push('0');
+            } else {
+                let from_left = position - padding;
+                let digit = self.digits[self.digits.len() - 1 - from_left];
+                output.push(char::from(b'0' + digit));
+            }
+        }
+
+        output
+    }
+
+    pub fn cmp_value(&self, rhs: &Self) -> Ordering {
+        self.digits
+            .len()
+            .cmp(&rhs.digits.len())
+            .then_with(|| self.digits.iter().rev().cmp(rhs.digits.iter().rev()))
+    }
+
+    pub fn add(&self, rhs: &Self) -> Self {
+        let max_len = self.digits.len().max(rhs.digits.len());
+        let mut result = Vec::with_capacity(max_len + 1);
+        let mut carry = 0u8;
+
+        for index in 0..max_len {
+            let left = self.digits.get(index).copied().unwrap_or(0);
+            let right = rhs.digits.get(index).copied().unwrap_or(0);
+            let sum = left + right + carry;
+            result.push(sum % 10);
+            carry = sum / 10;
+        }
+
+        if carry != 0 {
+            result.push(carry);
+        }
+
+        Self { digits: result }
+    }
+
+    pub fn sub(&self, rhs: &Self) -> Result<Self, Error> {
+        if self.cmp_value(rhs) == Ordering::Less {
+            return Err(Error::Underflow);
+        }
+
+        let mut result = Vec::with_capacity(self.digits.len());
+        let mut borrow = 0i8;
+
+        for index in 0..self.digits.len() {
+            let left = self.digits[index] as i8 - borrow;
+            let right = rhs.digits.get(index).copied().unwrap_or(0) as i8;
+
+            if left < right {
+                result.push((left + 10 - right) as u8);
+                borrow = 1;
+            } else {
+                result.push((left - right) as u8);
+                borrow = 0;
+            }
+        }
+
+        while result.len() > 1 && result.last() == Some(&0) {
+            result.pop();
+        }
+
+        Ok(Self { digits: result })
+    }
+}
+```

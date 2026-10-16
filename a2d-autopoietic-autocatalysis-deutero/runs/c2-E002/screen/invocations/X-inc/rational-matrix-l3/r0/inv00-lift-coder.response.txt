@@ -1,0 +1,571 @@
+```rust
+use std::cmp::Ordering;
+use std::fmt;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rational {
+    num: i64,
+    den: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParseKind {
+    Empty,
+    InvalidByte,
+    NonCanonical,
+    OutOfRange,
+    ZeroDenominator,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RationalError {
+    ZeroDenominator,
+    DivideByZero,
+    Overflow,
+    Parse { at: usize, kind: ParseKind },
+}
+
+fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a
+}
+
+fn rational_from_i128(num: i128, den: i128) -> Result<Rational, RationalError> {
+    if den == 0 {
+        return Err(RationalError::ZeroDenominator);
+    }
+    let mut n = num;
+    let mut d = den;
+    if d < 0 {
+        n = n.checked_neg().ok_or(RationalError::Overflow)?;
+        d = d.checked_neg().ok_or(RationalError::Overflow)?;
+    }
+    if n == 0 {
+        return Ok(Rational { num: 0, den: 1 });
+    }
+    let g = gcd_u128(n.unsigned_abs(), d as u128) as i128;
+    n /= g;
+    d /= g;
+    if n < i64::MIN as i128 || n > i64::MAX as i128 || d < 1 || d > i64::MAX as i128 {
+        return Err(RationalError::Overflow);
+    }
+    Ok(Rational {
+        num: n as i64,
+        den: d as i64,
+    })
+}
+
+fn rational_from_wide(num: i128, den: i128) -> Result<Rational, RationalError> {
+    rational_from_i128(num, den)
+}
+
+impl Rational {
+    pub fn new(num: i64, den: i64) -> Result<Self, RationalError> {
+        if den == 0 {
+            return Err(RationalError::ZeroDenominator);
+        }
+        let mut n = num as i128;
+        let mut d = den as i128;
+        if d < 0 {
+            n = -n;
+            d = -d;
+        }
+        if n == 0 {
+            return Ok(Self { num: 0, den: 1 });
+        }
+        let g = gcd_u128(n.unsigned_abs(), d as u128) as i128;
+        n /= g;
+        d /= g;
+        if n < i64::MIN as i128 || n > i64::MAX as i128 || d > i64::MAX as i128 {
+            return Err(RationalError::Overflow);
+        }
+        Ok(Self {
+            num: n as i64,
+            den: d as i64,
+        })
+    }
+
+    pub fn numerator(&self) -> i64 {
+        self.num
+    }
+
+    pub fn denominator(&self) -> i64 {
+        self.den
+    }
+
+    pub fn add(&self, rhs: &Self) -> Result<Self, RationalError> {
+        let g = gcd_u128(self.den as u128, rhs.den as u128) as i128;
+        let a = rhs.den as i128 / g;
+        let b = self.den as i128 / g;
+        let n = (self.num as i128)
+            .checked_mul(a)
+            .and_then(|x| {
+                (rhs.num as i128)
+                    .checked_mul(b)
+                    .and_then(|y| x.checked_add(y))
+            })
+            .ok_or(RationalError::Overflow)?;
+        let d = (self.den as i128)
+            .checked_mul(a)
+            .ok_or(RationalError::Overflow)?;
+        rational_from_wide(n, d)
+    }
+
+    pub fn sub(&self, rhs: &Self) -> Result<Self, RationalError> {
+        let g = gcd_u128(self.den as u128, rhs.den as u128) as i128;
+        let a = rhs.den as i128 / g;
+        let b = self.den as i128 / g;
+        let n = (self.num as i128)
+            .checked_mul(a)
+            .and_then(|x| {
+                (rhs.num as i128)
+                    .checked_mul(b)
+                    .and_then(|y| x.checked_sub(y))
+            })
+            .ok_or(RationalError::Overflow)?;
+        let d = (self.den as i128)
+            .checked_mul(a)
+            .ok_or(RationalError::Overflow)?;
+        rational_from_wide(n, d)
+    }
+
+    pub fn mul(&self, rhs: &Self) -> Result<Self, RationalError> {
+        let g1 = gcd_u128(self.num.unsigned_abs() as u128, rhs.den as u128) as i128;
+        let g2 = gcd_u128(rhs.num.unsigned_abs() as u128, self.den as u128) as i128;
+        let n = (self.num as i128 / g1)
+            .checked_mul(rhs.num as i128 / g2)
+            .ok_or(RationalError::Overflow)?;
+        let d = (self.den as i128 / g2)
+            .checked_mul(rhs.den as i128 / g1)
+            .ok_or(RationalError::Overflow)?;
+        rational_from_wide(n, d)
+    }
+
+    pub fn div(&self, rhs: &Self) -> Result<Self, RationalError> {
+        if rhs.num == 0 {
+            return Err(RationalError::DivideByZero);
+        }
+        let g1 = gcd_u128(self.num.unsigned_abs() as u128, rhs.num.unsigned_abs() as u128) as i128;
+        let g2 = gcd_u128(self.den as u128, rhs.den as u128) as i128;
+        let mut n = (self.num as i128 / g1)
+            .checked_mul(rhs.den as i128 / g2)
+            .ok_or(RationalError::Overflow)?;
+        let mut d = (self.den as i128 / g2)
+            .checked_mul(rhs.num as i128 / g1)
+            .ok_or(RationalError::Overflow)?;
+        if d < 0 {
+            n = -n;
+            d = -d;
+        }
+        rational_from_wide(n, d)
+    }
+
+    pub fn neg(&self) -> Result<Self, RationalError> {
+        let n = (self.num as i128)
+            .checked_neg()
+            .ok_or(RationalError::Overflow)?;
+        rational_from_wide(n, self.den as i128)
+    }
+
+    pub fn parse(text: &str) -> Result<Self, RationalError> {
+        let bytes = text.as_bytes();
+        let err = |at, kind| RationalError::Parse { at, kind };
+        if bytes.is_empty() {
+            return Err(err(0, ParseKind::Empty));
+        }
+
+        let mut i = 0;
+        let negative = bytes[0] == b'-';
+        if negative {
+            i = 1;
+        }
+        let numerator_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == numerator_start {
+            return Err(err(i, ParseKind::InvalidByte));
+        }
+        let numerator_end = i;
+        let mut denominator_start = None;
+        let mut denominator_end = None;
+        if i < bytes.len() {
+            if bytes[i] != b'/' {
+                return Err(err(i, ParseKind::InvalidByte));
+            }
+            i += 1;
+            let start = i;
+            denominator_start = Some(start);
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i == start {
+                return Err(err(i, ParseKind::InvalidByte));
+            }
+            denominator_end = Some(i);
+            if i < bytes.len() {
+                return Err(err(i, ParseKind::InvalidByte));
+            }
+        }
+
+        if numerator_end - numerator_start >= 2 && bytes[numerator_start] == b'0' {
+            return Err(err(numerator_start + 1, ParseKind::NonCanonical));
+        }
+        if negative && numerator_end - numerator_start == 1 && bytes[numerator_start] == b'0' {
+            return Err(err(0, ParseKind::NonCanonical));
+        }
+        if let (Some(start), Some(end)) = (denominator_start, denominator_end) {
+            if end - start >= 2 && bytes[start] == b'0' {
+                return Err(err(start + 1, ParseKind::NonCanonical));
+            }
+        }
+
+        let mut nmag: u128 = 0;
+        for &b in &bytes[numerator_start..numerator_end] {
+            nmag = nmag
+                .saturating_mul(10)
+                .saturating_add((b - b'0') as u128);
+        }
+        let nlimit = if negative { 1u128 << 63 } else { i64::MAX as u128 };
+        if nmag > nlimit {
+            return Err(err(0, ParseKind::OutOfRange));
+        }
+
+        let mut dmag = 1u128;
+        if let (Some(start), Some(end)) = (denominator_start, denominator_end) {
+            dmag = 0;
+            for &b in &bytes[start..end] {
+                dmag = dmag
+                    .saturating_mul(10)
+                    .saturating_add((b - b'0') as u128);
+            }
+            if dmag > i64::MAX as u128 {
+                return Err(err(start, ParseKind::OutOfRange));
+            }
+            if dmag == 0 {
+                return Err(err(start, ParseKind::ZeroDenominator));
+            }
+            if dmag == 1 {
+                return Err(err(start - 1, ParseKind::NonCanonical));
+            }
+            if nmag == 0 {
+                return Err(err(start - 1, ParseKind::NonCanonical));
+            }
+            if gcd_u128(nmag, dmag) > 1 {
+                return Err(err(start - 1, ParseKind::NonCanonical));
+            }
+        }
+
+        let n = if negative {
+            if nmag == 1u128 << 63 {
+                i64::MIN
+            } else {
+                -(nmag as i64)
+            }
+        } else {
+            nmag as i64
+        };
+        Ok(Self {
+            num: n,
+            den: dmag as i64,
+        })
+    }
+}
+
+impl fmt::Display for Rational {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.den == 1 {
+            write!(f, "{}", self.num)
+        } else {
+            write!(f, "{}/{}", self.num, self.den)
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Matrix {
+    rows: usize,
+    cols: usize,
+    data: Vec<Rational>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MatrixError {
+    ShapeOverflow,
+    DataLength { expected: usize, actual: usize },
+    Index { row: usize, col: usize },
+    DimensionMismatch {
+        left: (usize, usize),
+        right: (usize, usize),
+    },
+    Arithmetic {
+        row: usize,
+        col: usize,
+        step: usize,
+        source: RationalError,
+    },
+    NotSquare { rows: usize, cols: usize },
+    Singular { rank: usize },
+}
+
+fn checked_len(rows: usize, cols: usize) -> Result<usize, MatrixError> {
+    rows.checked_mul(cols).ok_or(MatrixError::ShapeOverflow)
+}
+
+impl Matrix {
+    pub fn new(rows: usize, cols: usize, data: Vec<Rational>) -> Result<Self, MatrixError> {
+        let expected = checked_len(rows, cols)?;
+        if data.len() != expected {
+            return Err(MatrixError::DataLength {
+                expected,
+                actual: data.len(),
+            });
+        }
+        Ok(Self { rows, cols, data })
+    }
+
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+
+    pub fn data(&self) -> &[Rational] {
+        &self.data
+    }
+
+    pub fn get(&self, row: usize, col: usize) -> Result<Rational, MatrixError> {
+        if row >= self.rows || col >= self.cols {
+            return Err(MatrixError::Index { row, col });
+        }
+        let index = row
+            .checked_mul(self.cols)
+            .and_then(|x| x.checked_add(col))
+            .ok_or(MatrixError::Index { row, col })?;
+        self.data
+            .get(index)
+            .copied()
+            .ok_or(MatrixError::Index { row, col })
+    }
+
+    pub fn transpose(&self) -> Self {
+        let mut data = Vec::with_capacity(self.data.len());
+        for r in 0..self.cols {
+            for c in 0..self.rows {
+                data.push(self.data[c * self.cols + r]);
+            }
+        }
+        Self {
+            rows: self.cols,
+            cols: self.rows,
+            data,
+        }
+    }
+
+    pub fn mul(&self, rhs: &Self) -> Result<Self, MatrixError> {
+        if self.cols != rhs.rows {
+            return Err(MatrixError::DimensionMismatch {
+                left: (self.rows, self.cols),
+                right: (rhs.rows, rhs.cols),
+            });
+        }
+        let out_len = checked_len(self.rows, rhs.cols)?;
+        let mut data = Vec::with_capacity(out_len);
+        let zero = Rational { num: 0, den: 1 };
+        for r in 0..self.rows {
+            for c in 0..rhs.cols {
+                let mut acc = zero;
+                for k in 0..self.cols {
+                    let left = self.data[r * self.cols + k];
+                    let right = rhs.data[k * rhs.cols + c];
+                    let term = left.mul(&right).map_err(|source| MatrixError::Arithmetic {
+                        row: r,
+                        col: c,
+                        step: k,
+                        source,
+                    })?;
+                    acc = acc.add(&term).map_err(|source| MatrixError::Arithmetic {
+                        row: r,
+                        col: c,
+                        step: k,
+                        source,
+                    })?;
+                }
+                data.push(acc);
+            }
+        }
+        Ok(Self {
+            rows: self.rows,
+            cols: rhs.cols,
+            data,
+        })
+    }
+
+    fn eliminate(&self, pivot_cols: usize) -> Result<Reduction, MatrixError> {
+        let mut work = self.clone();
+        let mut pivots = Vec::new();
+        let mut swaps = Vec::new();
+        let mut p = 0usize;
+
+        for col in 0..pivot_cols {
+            if p == work.rows {
+                break;
+            }
+            let mut selected: Option<usize> = None;
+            for row in p..work.rows {
+                let value = work.data[row * work.cols + col];
+                if value.num == 0 {
+                    continue;
+                }
+                selected = match selected {
+                    None => Some(row),
+                    Some(old) => {
+                        let old_value = work.data[old * work.cols + col];
+                        let key = (value.den, value.num.unsigned_abs(), row);
+                        let old_key = (old_value.den, old_value.num.unsigned_abs(), old);
+                        if key < old_key {
+                            Some(row)
+                        } else {
+                            Some(old)
+                        }
+                    }
+                };
+            }
+            let Some(q) = selected else {
+                continue;
+            };
+            if q != p {
+                for c in 0..work.cols {
+                    work.data.swap(p * work.cols + c, q * work.cols + c);
+                }
+                swaps.push((p, q));
+            }
+
+            let pivot = work.data[p * work.cols + col];
+            let mut normalized = Vec::with_capacity(work.cols);
+            for c in 0..work.cols {
+                let value = work.data[p * work.cols + c];
+                normalized.push(value.div(&pivot).map_err(|source| MatrixError::Arithmetic {
+                    row: p,
+                    col: c,
+                    step: p,
+                    source,
+                })?);
+            }
+            for c in 0..work.cols {
+                work.data[p * work.cols + c] = normalized[c];
+            }
+
+            for row in 0..work.rows {
+                if row == p {
+                    continue;
+                }
+                let factor = work.data[row * work.cols + col];
+                if factor.num == 0 {
+                    continue;
+                }
+                for c in 0..work.cols {
+                    let product = factor
+                        .mul(&work.data[p * work.cols + c])
+                        .map_err(|source| MatrixError::Arithmetic {
+                            row,
+                            col: c,
+                            step: p,
+                            source,
+                        })?;
+                    let index = row * work.cols + c;
+                    work.data[index] = work.data[index]
+                        .sub(&product)
+                        .map_err(|source| MatrixError::Arithmetic {
+                            row,
+                            col: c,
+                            step: p,
+                            source,
+                        })?;
+                }
+            }
+            pivots.push(col);
+            p += 1;
+        }
+        Ok(Reduction {
+            matrix: work,
+            pivots,
+            swaps,
+        })
+    }
+
+    pub fn rref(&self) -> Result<Reduction, MatrixError> {
+        self.eliminate(self.cols)
+    }
+
+    pub fn rank(&self) -> Result<usize, MatrixError> {
+        Ok(self.rref()?.rank())
+    }
+
+    pub fn inverse(&self) -> Result<Self, MatrixError> {
+        if self.rows != self.cols {
+            return Err(MatrixError::NotSquare {
+                rows: self.rows,
+                cols: self.cols,
+            });
+        }
+        let width = self
+            .cols
+            .checked_mul(2)
+            .ok_or(MatrixError::ShapeOverflow)?;
+        let total = checked_len(self.rows, width)?;
+        let mut data = Vec::with_capacity(total);
+        let zero = Rational { num: 0, den: 1 };
+        let one = Rational { num: 1, den: 1 };
+        for r in 0..self.rows {
+            for c in 0..self.cols {
+                data.push(self.data[r * self.cols + c]);
+            }
+            for c in 0..self.cols {
+                data.push(if r == c { one } else { zero });
+            }
+        }
+        let augmented = Self {
+            rows: self.rows,
+            cols: width,
+            data,
+        };
+        let reduction = augmented.eliminate(self.cols)?;
+        if reduction.pivots.len() < self.rows {
+            return Err(MatrixError::Singular {
+                rank: reduction.pivots.len(),
+            });
+        }
+        let mut inverse_data = Vec::with_capacity(self.rows * self.cols);
+        for r in 0..self.rows {
+            for c in 0..self.cols {
+                inverse_data.push(reduction.matrix.data[r * width + self.cols + c]);
+            }
+        }
+        Ok(Self {
+            rows: self.rows,
+            cols: self.cols,
+            data: inverse_data,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reduction {
+    pub matrix: Matrix,
+    pub pivots: Vec<usize>,
+    pub swaps: Vec<(usize, usize)>,
+}
+
+impl Reduction {
+    pub fn rank(&self) -> usize {
+        self.pivots.len()
+    }
+}
+```

@@ -1,0 +1,376 @@
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Version {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Constraint {
+    Exact(Version),
+    AtLeast(Version),
+    Before(Version),
+    Caret(Version),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Selection {
+    pub package: String,
+    pub version: Version,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Package {
+    pub name: String,
+    pub releases: Vec<Release>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Requirement {
+    pub package: String,
+    pub constraint: Constraint,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Release {
+    pub version: Version,
+    pub deps: Vec<Requirement>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResolveError {
+    InvalidName {
+        site: String,
+        name: String,
+    },
+    DuplicatePackage {
+        package: String,
+    },
+    DuplicateVersion {
+        package: String,
+        version: Version,
+    },
+    Missing {
+        package: String,
+    },
+    NoMatch {
+        package: String,
+        requirements: Vec<Constraint>,
+    },
+    Conflict {
+        package: String,
+        selected: Version,
+        requirements: Vec<Constraint>,
+    },
+}
+
+use std::collections::{BTreeMap, BTreeSet};
+
+fn valid_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 24
+        && bytes[0].is_ascii_lowercase()
+        && bytes[bytes.len() - 1] != b'-'
+        && bytes
+            .iter()
+            .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+fn version_text(version: Version) -> String {
+    format!("{}.{}.{}", version.major, version.minor, version.patch)
+}
+
+fn constraint_rank(constraint: Constraint) -> u8 {
+    match constraint {
+        Constraint::Exact(_) => 0,
+        Constraint::AtLeast(_) => 1,
+        Constraint::Before(_) => 2,
+        Constraint::Caret(_) => 3,
+    }
+}
+
+fn constraint_version(constraint: Constraint) -> Version {
+    match constraint {
+        Constraint::Exact(v)
+        | Constraint::AtLeast(v)
+        | Constraint::Before(v)
+        | Constraint::Caret(v) => v,
+    }
+}
+
+fn canonicalize(constraints: &[Constraint]) -> Vec<Constraint> {
+    let mut result = constraints.to_vec();
+    result.sort_by(|a, b| {
+        constraint_rank(*a)
+            .cmp(&constraint_rank(*b))
+            .then_with(|| constraint_version(*a).cmp(&constraint_version(*b)))
+    });
+    result.dedup();
+    result
+}
+
+fn constraint_text(constraint: Constraint) -> String {
+    let prefix = match constraint {
+        Constraint::Exact(_) => "=",
+        Constraint::AtLeast(_) => ">=",
+        Constraint::Before(_) => "<",
+        Constraint::Caret(_) => "^",
+    };
+    format!("{prefix}{}", version_text(constraint_version(constraint)))
+}
+
+fn constraints_text(constraints: &[Constraint]) -> String {
+    canonicalize(constraints)
+        .iter()
+        .map(|&constraint| constraint_text(constraint))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn encode_text(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut result = String::new();
+    for &byte in value.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-') {
+            result.push(byte as char);
+        } else {
+            result.push('%');
+            result.push(HEX[(byte >> 4) as usize] as char);
+            result.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    result
+}
+
+pub fn error_text(error: &ResolveError) -> String {
+    match error {
+        ResolveError::InvalidName { site, name } => format!(
+            "invalid-name|site={}|name={}",
+            encode_text(site),
+            encode_text(name)
+        ),
+        ResolveError::DuplicatePackage { package } => {
+            format!("duplicate-package|package={}", encode_text(package))
+        }
+        ResolveError::DuplicateVersion { package, version } => format!(
+            "duplicate-version|package={}|version={}",
+            encode_text(package),
+            version_text(*version)
+        ),
+        ResolveError::Missing { package } => {
+            format!("missing|package={}", encode_text(package))
+        }
+        ResolveError::NoMatch {
+            package,
+            requirements,
+        } => format!(
+            "no-match|package={}|constraints={}",
+            encode_text(package),
+            constraints_text(requirements)
+        ),
+        ResolveError::Conflict {
+            package,
+            selected,
+            requirements,
+        } => format!(
+            "conflict|package={}|selected={}|constraints={}",
+            encode_text(package),
+            version_text(*selected),
+            constraints_text(requirements)
+        ),
+    }
+}
+
+fn matches_constraint(version: Version, constraint: Constraint) -> bool {
+    match constraint {
+        Constraint::Exact(expected) => version == expected,
+        Constraint::AtLeast(minimum) => version >= minimum,
+        Constraint::Before(bound) => version < bound,
+        Constraint::Caret(base) => {
+            version >= base
+                && if base.major > 0 {
+                    version.major == base.major
+                } else if base.minor > 0 {
+                    version.major == 0 && version.minor == base.minor
+                } else {
+                    version == base
+                }
+        }
+    }
+}
+
+fn validate(catalog: &[Package], roots: &[Requirement]) -> Result<(), ResolveError> {
+    for (i, root) in roots.iter().enumerate() {
+        if !valid_name(&root.package) {
+            return Err(ResolveError::InvalidName {
+                site: format!("root[{i}]"),
+                name: root.package.clone(),
+            });
+        }
+    }
+
+    for (i, package) in catalog.iter().enumerate() {
+        if !valid_name(&package.name) {
+            return Err(ResolveError::InvalidName {
+                site: format!("catalog[{i}]"),
+                name: package.name.clone(),
+            });
+        }
+        for (j, release) in package.releases.iter().enumerate() {
+            for (k, dependency) in release.deps.iter().enumerate() {
+                if !valid_name(&dependency.package) {
+                    return Err(ResolveError::InvalidName {
+                        site: format!("catalog[{i}].release[{j}].dep[{k}]"),
+                        name: dependency.package.clone(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolve_node(
+    catalog: &BTreeMap<String, &Package>,
+    active: &mut BTreeMap<String, Vec<Constraint>>,
+    selected: &mut BTreeMap<String, Version>,
+) -> Result<(), ResolveError> {
+    if let Some(package) = active.keys().find(|name| !catalog.contains_key(*name)) {
+        return Err(ResolveError::Missing {
+            package: package.clone(),
+        });
+    }
+
+    for (package, version) in selected.iter() {
+        if let Some(constraints) = active.get(package) {
+            if !constraints
+                .iter()
+                .all(|&constraint| matches_constraint(*version, constraint))
+            {
+                return Err(ResolveError::Conflict {
+                    package: package.clone(),
+                    selected: *version,
+                    requirements: canonicalize(constraints),
+                });
+            }
+        }
+    }
+
+    for (package, constraints) in active.iter() {
+        if selected.contains_key(package) {
+            continue;
+        }
+        let entry = catalog[package];
+        if !entry.releases.iter().any(|release| {
+            constraints
+                .iter()
+                .all(|&constraint| matches_constraint(release.version, constraint))
+        }) {
+            return Err(ResolveError::NoMatch {
+                package: package.clone(),
+                requirements: canonicalize(constraints),
+            });
+        }
+    }
+
+    let Some(package) = active
+        .keys()
+        .find(|name| !selected.contains_key(*name))
+        .cloned()
+    else {
+        return Ok(());
+    };
+
+    let constraints = &active[&package];
+    let release = catalog[&package]
+        .releases
+        .iter()
+        .filter(|release| {
+            constraints
+                .iter()
+                .all(|&constraint| matches_constraint(release.version, constraint))
+        })
+        .max_by_key(|release| release.version)
+        .expect("candidate existence checked above");
+
+    let version = release.version;
+    let deps = release.deps.clone();
+    selected.insert(package.clone(), version);
+
+    for dependency in &deps {
+        active
+            .entry(dependency.package.clone())
+            .or_default()
+            .push(dependency.constraint);
+    }
+
+    let result = resolve_node(catalog, active, selected);
+
+    for dependency in &deps {
+        if let Some(constraints) = active.get_mut(&dependency.package) {
+            if let Some(index) = constraints
+                .iter()
+                .rposition(|&constraint| constraint == dependency.constraint)
+            {
+                constraints.remove(index);
+            }
+            if constraints.is_empty() {
+                active.remove(&dependency.package);
+            }
+        }
+    }
+    selected.remove(&package);
+    result
+}
+
+pub fn resolve(
+    catalog: &[Package],
+    roots: &[Requirement],
+) -> Result<Vec<Selection>, ResolveError> {
+    validate(catalog, roots)?;
+
+    let mut seen_packages = BTreeSet::new();
+    for package in catalog {
+        if !seen_packages.insert(package.name.as_str()) {
+            return Err(ResolveError::DuplicatePackage {
+                package: package.name.clone(),
+            });
+        }
+    }
+
+    for package in catalog {
+        let mut seen_versions = BTreeSet::new();
+        for release in &package.releases {
+            if !seen_versions.insert(release.version) {
+                return Err(ResolveError::DuplicateVersion {
+                    package: package.name.clone(),
+                    version: release.version,
+                });
+            }
+        }
+    }
+
+    let catalog_map: BTreeMap<String, &Package> = catalog
+        .iter()
+        .map(|package| (package.name.clone(), package))
+        .collect();
+
+    let mut active: BTreeMap<String, Vec<Constraint>> = BTreeMap::new();
+    for root in roots {
+        active
+            .entry(root.package.clone())
+            .or_default()
+            .push(root.constraint);
+    }
+
+    let mut selected = BTreeMap::new();
+    resolve_node(&catalog_map, &mut active, &mut selected)?;
+
+    Ok(selected
+        .into_iter()
+        .map(|(package, version)| Selection { package, version })
+        .collect())
+}
+```
