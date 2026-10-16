@@ -1045,3 +1045,6 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Also fixed:** the v0 parity test read `nano/harness.py`, which has been E002 since the promotion. It now reads the archived v0 (`nano/history/before-E002b.py`).
 - **Live smoke under the sandbox** (1 dev task, about 7 Luna calls): E002 and E006 both ran normally (5 and 4 calls, DIAG intact).
 - **Consequence:** the controller's frozen paths changed after C2-LOOK1's registration commit (`f5b71409`). So look 1 is **re-registered at the commit that records this entry**, before any look data exists. Nothing else about look 1 changes.
+- **Disclosure (proposer round r1):** r1's brief still contained the C2-LOOK1 registration text: the holdout path, a suite-hash prefix and the gate rule.
+  - It held no tasks, family names or results, and the proposer had no tools. A path cannot be used by harness code, which now runs sandboxed in any case.
+  - The proposer brief now drops look entries and every holdout-mentioning line (verified: 0 mentions left).
