@@ -84,8 +84,13 @@ def main():
         return
     log = (ROOT / "docs/experiments/LOG.md").read_text()
     cycle2 = log[log.index("## Cycle 2"):]
-    # Holdout metadata (family names, hashes) never reaches a proposer.
-    cycle2 = "".join(e for e in re.split(r"(?m)^(?=### )", cycle2) if not e.startswith("### Holdouts"))
+    # Holdout metadata (family names, paths, hashes, look rules and outcomes)
+    # never reaches a proposer: holdout and look entries are dropped whole,
+    # and any other line that mentions a holdout is dropped.
+    entries = re.split(r"(?m)^(?=### )", cycle2)
+    entries = [e for e in entries if not re.match(r"### (Holdouts|C2-LOOK)", e)]
+    cycle2 = "".join("".join(l for l in e.splitlines(keepends=True)
+                             if not re.search(r"holdout|look \d|C2-LOOK", l, re.I)) for e in entries)
     stats = json.loads(pathlib.Path(args.stats).read_text())
     prompt = "\n".join([
         "You are one of several proposers in an autoresearch loop on a minimal coding harness (A²D cycle 2).",
