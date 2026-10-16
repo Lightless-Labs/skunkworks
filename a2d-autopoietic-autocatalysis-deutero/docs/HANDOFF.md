@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-16 (session 145: **first cycle-2 keep**; C2-FA1 failure analysis; 4 candidates registered; look 1 queued. E002b, 4 Luna samples + a Sol judge, beat the plain repair loop: +7.1 pp all-pass on the confirmation replicate and +10.7 at the full stage. The random-pick control gives −1.4, so the judge is the active ingredient. `nano/harness.py` is now the E002 judge harness.)
+**Last updated:** 2026-10-16 23:25 UTC (session 145: **first cycle-2 keep**; C2-FA1/FA2 failure analyses; C2-E2 cross-vendor judge 66/68; 6 candidates registered (E005–E010); look 1 queued for 00:05 UTC. E002b, 4 Luna samples + a Sol judge, beat the plain repair loop: +7.1 pp all-pass on the confirmation replicate and +10.7 at the full stage. The random-pick control gives −1.4, so the judge is the active ingredient. `nano/harness.py` is now the E002 judge harness.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -24,7 +24,7 @@
 ## In flight / next
 1. **The queue for 2026-10-17 (UTC)** is a background runner (`$SCRATCH/queue-runner.sh $SCRATCH/queue-2026-10-17.txt 202610170005`). It runs these lines in order:
    - (a) **dev-holdout look 1**: `python3 -I nano/eval.py look --n 1 --registered-at 8e07801e588e8d48334fa267dd2dd7109ad86f57 --seed 6161 --jobs 8`. It prints only gate PASS/FAIL; the full report stays in `~/.a2d-holdout/runs/c2-look1/report.json`.
-   - (b) E005, E007, E006, E008, each via `python3 -I nano/eval.py run --id <id> --candidate nano/candidates/<file> --proposer <claude|sol> --jobs 6 --stop-after full --hypothesis "<as in LOG>"`.
+   - (b) E005, E007, E006, E008, E009, E010, each via `python3 -I nano/eval.py run --id <id> --candidate nano/candidates/<file> --proposer <claude|sol> --jobs 6 --stop-after full --hypothesis "<as in LOG>"`.
    - Every stage self-defers when today's Luna count plus its worst case would exceed 3k (`python3 -I nano/eval.py budget` shows the count).
    - **If the runner died:** re-run the same lines by hand. Cached stages are reused, and the experiment manifests keep them immutable.
    - **Do not touch `crates/`, `Cargo.toml` or `Cargo.lock` (not even uncommitted edits) until look 1 has finished.** They are frozen against its registration (`8e07801e`), and any change voids it. Since C2-ISO, harnesses run under a seatbelt sandbox.
@@ -34,6 +34,11 @@
    - pre-register confirmation-2: arms D, B and X:frozen at r = 2 (one replicate per day, pooled with `a2d lift pool`), `--claim` vs D and B.
    - **If it FAILS:** continue the search.
 3. **Proposer comparison** (A²D architect = informed, with failure dossiers carrying labels only, vs uninformed, at equal budget): draft the protocol, freeze it, and get a review. The goal triggers it after ≥ 3 keeps; a budget-reserve trigger is to be added as an addendum.
+- **Claude-quota work, 2026-10-16 evening** (the owner reset the weekly Claude quota; it resets Sunday 12:00). All offline, through subagents:
+  - **C2-E2:** a Claude Opus judge matches Sol on E002's decisive tuples, 66/68 vs 68/68 (random 36.3). The selection lever is not vendor-specific.
+  - **C2-FA2:** failure taxonomy. 29/34 misreadings are shared; boundary 9, semantics 9, performance 8 (the timeouts).
+  - **Proposer round c1:** 3 independent Opus proposers. E009 (failure checklist) and E010 (two readings per call) are registered and smoked, and c1a-1 was declined because its probes cannot run under `public_test`.
+  - **No live Claude lane:** the `claude` CLI returns nothing inside the session sandbox, and running it outside the sandbox was refused by the permission classifier. The owner was told what it would take to enable it.
 - **State of the search:**
   - Incumbent E002; thr_allpass 0.0357 (eval v2.3; A/A from its own replicates).
   - C2-FA1: the judge is at its ceiling (0 misses in 249), and the failures are misreadings shared across samples. So the levers are generation-side.
