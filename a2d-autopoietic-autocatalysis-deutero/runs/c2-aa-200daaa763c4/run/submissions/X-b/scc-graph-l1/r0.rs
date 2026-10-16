@@ -1,0 +1,144 @@
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges {
+            limit: MAX_EDGES,
+        });
+    }
+
+    for (edge_index, &(source, target)) in edges.iter().enumerate() {
+        if source >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: edge_index,
+                side: 0,
+                vertex: source,
+            });
+        }
+        if target >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: edge_index,
+                side: 1,
+                vertex: target,
+            });
+        }
+    }
+
+    let mut adjacency = vec![Vec::new(); n];
+    let mut reverse_adjacency = vec![Vec::new(); n];
+    for &(source, target) in edges {
+        adjacency[source].push(target);
+        reverse_adjacency[target].push(source);
+    }
+
+    // Iterative DFS computes vertices in finishing order without risking
+    // call-stack overflow on long paths.
+    let mut visited = vec![false; n];
+    let mut finish_order = Vec::with_capacity(n);
+
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+
+        visited[start] = true;
+        let mut stack = vec![(start, 0usize)];
+
+        while let Some((vertex, next_edge)) = stack.last_mut() {
+            if *next_edge < adjacency[*vertex].len() {
+                let neighbor = adjacency[*vertex][*next_edge];
+                *next_edge += 1;
+                if !visited[neighbor] {
+                    visited[neighbor] = true;
+                    stack.push((neighbor, 0));
+                }
+            } else {
+                let (finished, _) = stack.pop().unwrap();
+                finish_order.push(finished);
+            }
+        }
+    }
+
+    let mut assigned = vec![false; n];
+    let mut components = Vec::new();
+
+    for &start in finish_order.iter().rev() {
+        if assigned[start] {
+            continue;
+        }
+
+        assigned[start] = true;
+        let mut stack = vec![start];
+        let mut component = Vec::new();
+
+        while let Some(vertex) = stack.pop() {
+            component.push(vertex);
+            for &neighbor in &reverse_adjacency[vertex] {
+                if !assigned[neighbor] {
+                    assigned[neighbor] = true;
+                    stack.push(neighbor);
+                }
+            }
+        }
+
+        component.sort_unstable();
+        components.push(component);
+    }
+
+    components.sort_by(|a, b| {
+        b.len()
+            .cmp(&a.len())
+            .then_with(|| a[0].cmp(&b[0]))
+    });
+
+    let mut component_of = vec![0usize; n];
+    let mut cyclic = Vec::with_capacity(components.len());
+
+    for (component_id, component) in components.iter().enumerate() {
+        for &vertex in component {
+            component_of[vertex] = component_id;
+        }
+        cyclic.push(
+            component.len() > 1
+                || edges
+                    .iter()
+                    .any(|&(source, target)| source == component[0] && target == component[0]),
+        );
+    }
+
+    // A singleton may not be the first member of a multi-vertex component;
+    // self-loop flags are computed per vertex's canonical component.
+    for &(source, target) in edges {
+        if source == target {
+            cyclic[component_of[source]] = true;
+        }
+    }
+
+    Ok(Graph {
+        components,
+        component_of,
+        cyclic,
+    })
+}

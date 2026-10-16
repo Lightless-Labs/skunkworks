@@ -1,0 +1,161 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+}
+
+pub fn parse_email(input: &str) -> Result<Address, EmailError> {
+    let bytes = input.as_bytes();
+
+    if bytes.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+
+    if let Some(at) = bytes.iter().position(|&b| b >= 128) {
+        return Err(EmailError::NonAscii { at });
+    }
+
+    let separators: Vec<usize> = bytes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &b)| (b == b'@').then_some(i))
+        .collect();
+
+    if separators.is_empty() {
+        return Err(EmailError::MissingAt);
+    }
+    if separators.len() >= 2 {
+        return Err(EmailError::MultipleAt { at: separators[1] });
+    }
+
+    let separator = separators[0];
+    let local = &bytes[..separator];
+    let domain_start = separator + 1;
+    let raw_domain = &bytes[domain_start..];
+
+    if local.is_empty() {
+        return Err(EmailError::EmptyLocal { at: separator });
+    }
+
+    if local.len() > 64 {
+        return Err(EmailError::LocalTooLong { at: 64 });
+    }
+
+    for (i, &b) in local.iter().enumerate() {
+        let original_at = i;
+        if b == b'.' {
+            if i == 0 || i + 1 == local.len() || local[i - 1] == b'.' {
+                return Err(EmailError::LocalDot { at: original_at });
+            }
+        } else if !b.is_ascii_alphanumeric()
+            && !b"!#$%&'*+-/=?^_`{|}~".contains(&b)
+        {
+            return Err(EmailError::LocalChar { at: original_at });
+        }
+    }
+
+    let has_root_dot = raw_domain.last() == Some(&b'.');
+    let domain = if has_root_dot {
+        &raw_domain[..raw_domain.len() - 1]
+    } else {
+        raw_domain
+    };
+
+    if domain.is_empty() {
+        return Err(EmailError::EmptyDomain { at: domain_start });
+    }
+
+    if domain.len() > 253 {
+        return Err(EmailError::DomainTooLong {
+            at: domain_start + 253,
+        });
+    }
+
+    let mut label_starts = Vec::new();
+    let mut start = 0usize;
+
+    for i in 0..=domain.len() {
+        if i == domain.len() || domain[i] == b'.' {
+            label_starts.push(start);
+            let label = &domain[start..i];
+
+            if label.is_empty() {
+                let at = if i == domain.len() && has_root_dot {
+                    input.len() - 1
+                } else {
+                    domain_start + start
+                };
+                return Err(EmailError::EmptyLabel { at });
+            }
+
+            if label.len() > 63 {
+                return Err(EmailError::LabelTooLong {
+                    at: domain_start + start + 63,
+                });
+            }
+
+            if label[0] == b'-' {
+                return Err(EmailError::LabelHyphen {
+                    at: domain_start + start,
+                });
+            }
+            if label[label.len() - 1] == b'-' {
+                return Err(EmailError::LabelHyphen {
+                    at: domain_start + i - 1,
+                });
+            }
+
+            for (offset, &b) in label.iter().enumerate() {
+                if !b.is_ascii_alphanumeric() && b != b'-' {
+                    return Err(EmailError::DomainChar {
+                        at: domain_start + start + offset,
+                    });
+                }
+            }
+
+            start = i + 1;
+        }
+    }
+
+    if label_starts.len() < 2 {
+        return Err(EmailError::DomainNeedsDot { at: domain_start });
+    }
+
+    let last_start = *label_starts.last().unwrap();
+    let last_label = &domain[last_start..];
+    if last_label.iter().all(u8::is_ascii_digit) {
+        return Err(EmailError::NumericTld {
+            at: domain_start + last_start,
+        });
+    }
+
+    let local_string = String::from_utf8(local.to_vec()).unwrap();
+    let domain_string = String::from_utf8(domain.to_ascii_lowercase()).unwrap();
+
+    Ok(Address {
+        local: local_string,
+        domain: domain_string,
+        quoted: false,
+    })
+}

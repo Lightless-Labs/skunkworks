@@ -1,0 +1,266 @@
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub key: String,
+    pub priority: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyKey,
+    InvalidKey { at: usize },
+    Duplicate { key: String },
+    Missing { key: String },
+    WrongDirection { current: i64, requested: i64 },
+    Collision { key: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollisionPolicy {
+    KeepSelf,
+    TakeOther,
+    Reject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeReport {
+    pub moved: usize,
+    pub replaced: usize,
+    pub discarded: usize,
+}
+
+#[derive(Clone)]
+struct Entry {
+    item: Item,
+    age: u128,
+}
+
+pub struct IndexedHeap {
+    entries: HashMap<String, Entry>,
+    next_age: u128,
+}
+
+impl IndexedHeap {
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            next_age: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn canonical_key(input: &str) -> Result<String, Error> {
+        let bytes = input.as_bytes();
+        let mut start = 0;
+        let mut end = bytes.len();
+
+        while start < end && bytes[start] == b' ' {
+            start += 1;
+        }
+        while end > start && bytes[end - 1] == b' ' {
+            end -= 1;
+        }
+
+        if start == end {
+            return Err(Error::EmptyKey);
+        }
+
+        for (offset, &byte) in bytes[start..end].iter().enumerate() {
+            let valid = if offset == 0 {
+                byte.is_ascii_alphabetic()
+            } else {
+                byte.is_ascii_alphabetic() || byte.is_ascii_digit() || byte == b'-'
+            };
+            if !valid {
+                return Err(Error::InvalidKey { at: start + offset });
+            }
+        }
+
+        Ok(input[start..end].to_ascii_lowercase())
+    }
+
+    fn rank_cmp(a: &Entry, b: &Entry) -> std::cmp::Ordering {
+        a.item
+            .priority
+            .cmp(&b.item.priority)
+            .then_with(|| a.item.value.len().cmp(&b.item.value.len()))
+            .then_with(|| a.age.cmp(&b.age))
+    }
+
+    fn best_key(&self) -> Option<String> {
+        self.entries
+            .iter()
+            .min_by(|(_, a), (_, b)| Self::rank_cmp(a, b))
+            .map(|(key, _)| key.clone())
+    }
+
+    fn take(&mut self, key: &str) -> Option<Entry> {
+        self.entries.remove(key)
+    }
+
+    fn assign_age(&mut self, entry: &mut Entry) {
+        if self.next_age == u128::MAX {
+            let mut ordered: Vec<(String, u128)> = self
+                .entries
+                .iter()
+                .map(|(key, entry)| (key.clone(), entry.age))
+                .collect();
+            ordered.sort_by_key(|(_, age)| *age);
+            for (age, (key, _)) in ordered.into_iter().enumerate() {
+                if let Some(entry) = self.entries.get_mut(&key) {
+                    entry.age = age as u128;
+                }
+            }
+            self.next_age = self.entries.len() as u128;
+        }
+        entry.age = self.next_age;
+        self.next_age += 1;
+    }
+
+    pub fn push(&mut self, key: &str, priority: i64, value: &str) -> Result<(), Error> {
+        let canonical = Self::canonical_key(key)?;
+        if self.entries.contains_key(&canonical) {
+            return Err(Error::Duplicate { key: canonical });
+        }
+
+        let mut entry = Entry {
+            item: Item {
+                key: canonical.clone(),
+                priority,
+                value: value.to_owned(),
+            },
+            age: 0,
+        };
+        self.assign_age(&mut entry);
+        self.entries.insert(canonical, entry);
+        Ok(())
+    }
+
+    pub fn peek(&self) -> Option<Item> {
+        let key = self.best_key()?;
+        self.entries.get(&key).map(|entry| entry.item.clone())
+    }
+
+    pub fn pop(&mut self) -> Option<Item> {
+        let key = self.best_key()?;
+        self.take(&key).map(|entry| entry.item)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Item>, Error> {
+        let canonical = Self::canonical_key(key)?;
+        Ok(self.entries.get(&canonical).map(|entry| entry.item.clone()))
+    }
+
+    pub fn decrease_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        let canonical = Self::canonical_key(key)?;
+        let entry = self
+            .entries
+            .get_mut(&canonical)
+            .ok_or_else(|| Error::Missing {
+                key: canonical.clone(),
+            })?;
+        let current = entry.item.priority;
+        if priority >= current {
+            return Err(Error::WrongDirection {
+                current,
+                requested: priority,
+            });
+        }
+        entry.item.priority = priority;
+        Ok(current)
+    }
+
+    pub fn increase_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        let canonical = Self::canonical_key(key)?;
+        let entry = self
+            .entries
+            .get_mut(&canonical)
+            .ok_or_else(|| Error::Missing {
+                key: canonical.clone(),
+            })?;
+        let current = entry.item.priority;
+        if priority <= current {
+            return Err(Error::WrongDirection {
+                current,
+                requested: priority,
+            });
+        }
+        entry.item.priority = priority;
+        Ok(current)
+    }
+
+    pub fn replace_value(&mut self, key: &str, value: &str) -> Result<String, Error> {
+        let canonical = Self::canonical_key(key)?;
+        let entry = self
+            .entries
+            .get_mut(&canonical)
+            .ok_or_else(|| Error::Missing {
+                key: canonical.clone(),
+            })?;
+        Ok(std::mem::replace(&mut entry.item.value, value.to_owned()))
+    }
+
+    pub fn remove(&mut self, key: &str) -> Result<Item, Error> {
+        let canonical = Self::canonical_key(key)?;
+        self.take(&canonical)
+            .map(|entry| entry.item)
+            .ok_or(Error::Missing { key: canonical })
+    }
+
+    pub fn merge(
+        &mut self,
+        other: &mut Self,
+        policy: CollisionPolicy,
+    ) -> Result<MergeReport, Error> {
+        let mut source_order: Vec<String> = other.entries.keys().cloned().collect();
+        source_order.sort_by(|a, b| {
+            Self::rank_cmp(&other.entries[a], &other.entries[b])
+        });
+
+        if policy == CollisionPolicy::Reject {
+            for key in &source_order {
+                if self.entries.contains_key(key) {
+                    return Err(Error::Collision { key: key.clone() });
+                }
+            }
+        }
+
+        let mut report = MergeReport {
+            moved: 0,
+            replaced: 0,
+            discarded: 0,
+        };
+
+        for key in source_order {
+            let source = other.entries.remove(&key).expect("source key collected");
+            if let Some(receiver) = self.entries.get_mut(&key) {
+                match policy {
+                    CollisionPolicy::KeepSelf => report.discarded += 1,
+                    CollisionPolicy::TakeOther => {
+                        receiver.item.priority = source.item.priority;
+                        receiver.item.value = source.item.value;
+                        report.replaced += 1;
+                    }
+                    CollisionPolicy::Reject => unreachable!(),
+                }
+            } else {
+                let mut moved = source;
+                self.assign_age(&mut moved);
+                self.entries.insert(key, moved);
+                report.moved += 1;
+            }
+        }
+
+        other.next_age = 0;
+        Ok(report)
+    }
+}

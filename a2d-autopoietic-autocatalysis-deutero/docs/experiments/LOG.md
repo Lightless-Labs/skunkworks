@@ -816,7 +816,15 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **An operational fix found on the way:** Apple's `/usr/bin/python3` is an `xcrun` shim, which with a cleared environment spent about 12 s per task before Python started. The controller now resolves the real interpreter once, and keeps `TMPDIR`.
   - **Isolation guard:** `eval.py` statically rejects any harness importing outside a stdlib allowlist or calling `open`, `exec`, `eval`, `__import__`, `getattr` and similar. Hidden tests are on this machine, so a proposed harness must not be able to read them.
 - Launched 2026-10-15, out `runs/c2-aa-200daaa763c4/` (incumbent sha `200daaa763c4…`).
-- Result: pending
+- Result (`nano/aa.json`, `runs/c2-aa-200daaa763c4/`; 140 tasks, one draw per task):
+  - **Threshold = +0.0275 in hidden-test fraction** (95th percentile of the family-bootstrap null of X:b − X:a, centred). A keep therefore needs Δfrac > max(0.0275, 1.645 · SE).
+  - The A/A raw difference is +0.0067 frac and 0.0 pp all-pass.
+  - **Parity with native D: PASS.**
+    - X:a − D = −0.0091 frac (SE 0.0137) and −1.4 pp all-pass;
+    - X:b − D = −0.0024 frac (SE 0.0149) and −1.4 pp all-pass.
+    - Both are within ±5 pp, and **first prompts are byte-identical on 280/280 task-arm pairs**.
+  - Spend: 576 Luna invocations (D 195, X:a 190, X:b 191) and 4.51M tokens.
+  - Luna call latency was about 50–100 s under account contention, against 25–30 s in cycle 1.
 
 ### E002 — sample 4, judge 1 (Luna generation plus Sol selection) / E003 — sample 4, random green (control)  [cycle 2]
 - Registered: 2026-10-15, before any live run. Both go through `nano/eval.py run` (eval v2.1: screen, full, confirmation replicate), each against the A/A-calibrated incumbent v0.

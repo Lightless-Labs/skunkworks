@@ -1,0 +1,643 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-23729-1792117238529299000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a14282-f052-7482-a6f8-aad156bea257
+--------
+user
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, std only. All API items below must be pub. Output ONLY the Rust source code inside ```rust fences.
+
+R2. Expose exactly the following callable API (derives Debug, Clone, PartialEq, Eq are required on every public API struct and enum):
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WrapError {
+    WidthZero,
+    WidthTooLarge { width: usize },
+    FirstIndentTooWide { indent: usize },
+    RestIndentTooWide { indent: usize },
+    HyphenCostTooLarge { cost: usize },
+    InputTooLong { chars: usize },
+    InvalidControl { index: usize },
+    InvalidMarker { index: usize },
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapOptions {
+    pub width: usize,
+    pub first_indent: usize,
+    pub rest_indent: usize,
+    pub hyphen_cost: usize,
+    pub justify: bool,
+}
+pub fn wrap(input: &str, options: &WrapOptions) -> Result<Vec<String>, WrapError>;
+
+R3. Validate configuration before examining input: width == 0 yields WidthZero; otherwise width > 256 yields WidthTooLarge { width }. Width counts output columns including indentation and visible hyphens.
+
+R4. Next validate first_indent >= width as FirstIndentTooWide { indent: first_indent }, then rest_indent >= width as RestIndentTooWide { indent: rest_indent }. Indents may be zero; each line must have at least one content column.
+
+R5. Next validate hyphen_cost > 1000000 as HyphenCostTooLarge { cost: hyphen_cost }. It may be zero.
+
+R6. Next count all original input Unicode scalar values, including separators and markers. More than 512 yields InputTooLong { chars: count }. This error precedes input-character and marker errors.
+
+R7. Next scan original input Unicode scalar values in order. Any char for which char::is_control() is true, except tab, CR and LF, yields InvalidControl { index }, with its original zero-based UTF-8 byte index. Return the first such control. No other Unicode characters are invalid at this stage.
+
+R8. Only ASCII '~' is a break marker. Before layout, validate markers in original input after all control checks. Each marker must have a nonmarker, nonseparator scalar immediately on both sides within the same word; leading, trailing or consecutive markers are invalid. Return InvalidMarker { index } for the earliest offending marker's original UTF-8 byte index. Thus in 'ab~~cd' the first '~' is the error. Any control error anywhere takes precedence over every marker error.
+
+R9. For paragraph parsing normalize CRLF to one LF, then each remaining CR to LF. Indexes in errors always refer to the original input, before normalization.
+
+R10. Separators are exactly ASCII space, tab, LF, CR, and U+00A0 NO-BREAK SPACE. Other scalars, including combining marks, emoji, U+2003 and U+00AD, are ordinary word characters and each occupies exactly one column.
+
+R11. In normalized input a maximal run of n adjacent LF scalars with n >= 2 is a paragraph boundary and contributes exactly n-1 empty output strings. A single LF is a soft word separator. Space/tab/NBSP between LFs prevents adjacency; such LFs do not form a boundary.
+
+R12. Layout each segment between boundary runs independently, in order, inserting the boundary empty strings even at start/end or when segments contain only separators. Empty/all-separator segments produce no content lines. Empty input returns an empty vector. Boundary empty strings never contain indentation.
+
+R13. Within a segment collapse separator runs into word boundaries, discard leading/trailing separators, and preserve every nonseparator scalar literally except remove all markers from displayed text.
+
+R14. Each paragraph starts its line numbering at zero: its first content line has first_indent ASCII spaces and later content lines have rest_indent spaces. Content capacity is width minus that line's indent. A boundary resets first-line status even if the prior segment is empty.
+
+R15. For each paragraph independently choose a globally minimum-cost legal layout, not a greedy layout. A state is a word index and a scalar offset into its marker-free spelling, plus whether this is the first line. The next line starts at that offset; completing a word advances to the next word.
+
+R16. A legal line consists of one or more consecutive word suffixes/prefixes in order with one space between distinct words, and the required indentation. You may end a line after ANY completed word, even when another word fits.
+
+R17. You may instead end at ANY marker strictly after the current offset and before its word end, displaying that word prefix plus one ASCII hyphen. Its prefix and hyphen must fit. This is permitted even if that entire suffix would fit. The next line continues the same word; an already consumed marker is ignored.
+
+R18. A raw split is legal ONLY on an otherwise empty line, when the starting suffix has more than C scalars and NONE of its remaining marker prefixes plus hyphen fits in C. It consumes exactly C scalars without an added hyphen. Markers passed by it are discarded. No shorter raw split is legal; raw splits into occupied lines are illegal.
+
+R19. Every line has nonempty content and uses at most width columns including indent. Paragraph separators do not participate in optimization. Every word scalar must be consumed exactly once; marker hyphens add one displayed scalar but consume none of the spelling.
+
+R20. For each line define gap = width - displayed_scalar_count INCLUDING its indent, single separating spaces and any added hyphen. Justification is applied later and must not reduce this cost gap.
+
+R21. A nonfinal line contributes gap*gap; the paragraph's final line contributes floor(gap*gap / 4). All costs are mathematical nonnegative integers and totals fit u64 under the input limits.
+
+R22. Add hyphen_cost for each line ended at a marker, including when its gap is zero. Add 2*width + 1 for every raw-split line. Literal input hyphens carry no penalty.
+
+R23. Also add 3 for each NONFINAL line containing exactly one word piece. An unsplit word, a continued suffix, a raw prefix and a marker prefix each count as one piece. Indentation is not a piece; two different words on one line count as two pieces.
+
+R24. Compare complete paragraph layouts by: (1) smallest total cost; (2) fewest marker-ended lines; (3) fewest lines; (4) lexicographically GREATEST vector of consumed spelling-scalar counts per line (exclude indentation, spaces, markers and added hyphens). Compare the complete vectors from first line forward, not just the first break.
+
+R25. If all those ties persist, choose the lexicographically SMALLEST vector of pre-justification full line strings (including indentation), using Rust str ordering. If these also agree the output is identical. Tie rules do not involve already rendered justification.
+
+R26. The raw-split condition guarantees some legal continuation even for capacity one. Apply optimization independently after each paragraph boundary and reset indentation and tie vectors.
+
+R27. After selecting all lines of a paragraph, if justify is false, retain one space per interword gap. If true, justify every NONFINAL line with at least two word pieces to exactly width columns. Never justify the final line or a one-piece line; never pad their right edge.
+
+R28. For a justified line let E = width - its pre-justification scalar width and G = number of interword gaps. Add floor(E/G) spaces to every gap. The remaining E%G spaces go one each, cyclically, beginning at zero-based gap (paragraph_line_index % G). Gap numbering is left to right; paragraph_line_index includes all its content lines, including raw/hyphen splits.
+
+R29. Indentation spaces are not interword gaps. A hyphen prefix added after a prior word creates the usual one interword gap. A continued word on a new line never has a leading gap beyond its indent.
+
+R30. Return content lines and boundary empty strings in order, with no embedded CR/LF and no trailing spaces. All widths and offsets used in layout count Unicode scalar values, not graphemes, display cells or bytes; only error indexes are UTF-8 byte offsets.
+
+R31. Validate configuration even for empty input and separator-only input; no early empty-input success may bypass an error.
+
+R32. Do not apply Unicode normalization or case folding. In particular precomposed accented scalars and base-plus-combining sequences retain their distinct spelling lengths and are returned unchanged.
+
+R33. Paragraph adjacency is determined after CRLF normalization: CRLF-CRLF is a two-LF boundary, whereas LF-space-LF is not. A run of three normalized LFs contributes two boundary strings.
+
+R34. A visible literal hyphen at the end of an unsplit word does not increment the marker-ended line count used in cost or tie-breaking. Only a chosen marker does so.
+
+R35. With content capacity one no marker prefix plus its added hyphen fits; an overlong suffix must raw-split one scalar per line until its last scalar. Its final scalar is a completed word, not a raw split.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R1, R2, R15, R16
+#[test]
+fn public_ordinary() {
+    assert_eq!(wrap("red blue", &WrapOptions { width: 12, first_indent: 0, rest_indent: 0, hyphen_cost: 0, justify: false }), Ok(vec!["red blue".to_string()]));
+}
+
+// R14, R15
+#[test]
+fn public_hanging() {
+    assert_eq!(wrap("aa bb cc", &WrapOptions { width: 5, first_indent: 1, rest_indent: 1, hyphen_cost: 0, justify: false }), Ok(vec![" aa".to_string(), " bb".to_string(), " cc".to_string()]));
+}
+
+// R17, R27, R28
+#[test]
+fn public_hyphen_and_justify() {
+    assert_eq!(wrap("ab~cdef", &WrapOptions { width: 4, first_indent: 0, rest_indent: 0, hyphen_cost: 0, justify: false }), Ok(vec!["ab-".to_string(), "cdef".to_string()]));
+    assert_eq!(wrap("a bb ccc d", &WrapOptions { width: 7, first_indent: 0, rest_indent: 0, hyphen_cost: 0, justify: true }), Ok(vec!["a    bb".to_string(), "ccc d".to_string()]));
+}
+
+// R3
+#[test]
+fn public_validation() {
+    assert_eq!(wrap("x", &WrapOptions { width: 0, first_indent: 0, rest_indent: 0, hyphen_cost: 0, justify: false }), Err(WrapError::WidthZero));
+}
+```
+
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-16T02:20:40.199417Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WrapError {
+    WidthZero,
+    WidthTooLarge { width: usize },
+    FirstIndentTooWide { indent: usize },
+    RestIndentTooWide { indent: usize },
+    HyphenCostTooLarge { cost: usize },
+    InputTooLong { chars: usize },
+    InvalidControl { index: usize },
+    InvalidMarker { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapOptions {
+    pub width: usize,
+    pub first_indent: usize,
+    pub rest_indent: usize,
+    pub hyphen_cost: usize,
+    pub justify: bool,
+}
+
+#[derive(Clone)]
+struct Word {
+    chars: Vec<char>,
+    markers: Vec<usize>,
+}
+
+#[derive(Clone)]
+struct Line {
+    indent: usize,
+    pieces: Vec<String>,
+    spelling_count: usize,
+    marker_ended: bool,
+    raw_split: bool,
+}
+
+#[derive(Clone)]
+struct Solution {
+    cost: u64,
+    marker_count: usize,
+    lines: Vec<Line>,
+}
+
+#[derive(Clone)]
+struct Candidate {
+    next_word: usize,
+    next_offset: usize,
+    line: Line,
+    line_cost: u64,
+}
+
+fn is_separator(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{00a0}')
+}
+
+fn checked_indexed_chars(input: &str) -> Vec<(usize, char)> {
+    input.char_indices().collect()
+}
+
+fn square(n: usize) -> u64 {
+    (n as u64) * (n as u64)
+}
+
+fn compare_solutions(a: &Solution, b: &Solution) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    match a.cost.cmp(&b.cost) {
+        Ordering::Equal => {}
+        other => return other,
+    }
+    match a.marker_count.cmp(&b.marker_count) {
+        Ordering::Equal => {}
+        other => return other,
+    }
+    match a.lines.len().cmp(&b.lines.len()) {
+        Ordering::Equal => {}
+        other => return other,
+    }
+
+    let av: Vec<usize> = a.lines.iter().map(|line| line.spelling_count).collect();
+    let bv: Vec<usize> = b.lines.iter().map(|line| line.spelling_count).collect();
+    match bv.cmp(&av) {
+        Ordering::Equal => {}
+        other => return other,
+    }
+
+    let astr: Vec<String> = a.lines.iter().map(render_prejustify).collect();
+    let bstr: Vec<String> = b.lines.iter().map(render_prejustify).collect();
+    astr.cmp(&bstr)
+}
+
+fn render_prejustify(line: &Line) -> String {
+    let mut out = " ".repeat(line.indent);
+    for (i, piece) in line.pieces.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(piece);
+    }
+    out
+}
+
+fn line_gap(width: usize, indent: usize, pieces: &[String]) -> usize {
+    let content: usize = pieces.iter().map(|piece| piece.chars().count()).sum();
+    let gaps = pieces.len().saturating_sub(1);
+    width - indent - content - gaps
+}
+
+fn solve_paragraph(words: &[Word], options: &WrapOptions) -> Vec<Line> {
+    use std::collections::HashMap;
+
+    fn recurse(
+        wi: usize,
+        offset: usize,
+        first: bool,
+        words: &[Word],
+        options: &WrapOptions,
+        memo: &mut HashMap<(usize, usize, bool), Solution>,
+    ) -> Solution {
+        if wi >= words.len() {
+            return Solution {
+                cost: 0,
+                marker_count: 0,
+                lines: Vec::new(),
+            };
+        }
+        if let Some(found) = memo.get(&(wi, offset, first)) {
+            return found.clone();
+        }
+
+        let indent = if first {
+            options.first_indent
+        } else {
+            options.rest_indent
+        };
+        let capacity = options.width - indent;
+        let mut candidates = Vec::new();
+        let mut pieces = Vec::new();
+        let mut total_spelling = 0usize;
+        let mut used = 0usize;
+        let mut current_word = wi;
+        let mut current_offset = offset;
+        let mut at_line_start = true;
+
+        loop {
+            if current_word >= words.len() {
+                if !pieces.is_empty() {
+                    let gap = options.width - (indent + used);
+                    let line = Line {
+                        indent,
+                        pieces: pieces.clone(),
+                        spelling_count: total_spelling,
+                        marker_ended: false,
+                        raw_split: false,
+                    };
+                    candidates.push(Candidate {
+                        next_word: words.len(),
+                        next_offset: 0,
+                        line,
+                        line_cost: (gap as u64) * (gap as u64) / 4
+                            + if pieces.len() == 1 { 0 } else { 0 },
+                    });
+                }
+                break;
+            }
+
+            let word = &words[current_word];
+            let start = current_offset;
+            let remaining = word.chars.len() - start;
+            let leading_gap = if pieces.is_empty() { 0 } else { 1 };
+            let available = capacity.saturating_sub(used + leading_gap);
+
+            // Add the whole remaining suffix if it fits, then continue to later words.
+            if remaining <= available {
+                let suffix: String = word.chars[start..].iter().collect();
+                pieces.push(suffix);
+                used += leading_gap + remaining;
+                total_spelling += remaining;
+                current_word += 1;
+                current_offset = 0;
+                at_line_start = false;
+
+                let gap = options.width - (indent + used);
+                let line = Line {
+                    indent,
+                    pieces: pieces.clone(),
+                    spelling_count: total_spelling,
+                    marker_ended: false,
+                    raw_split: false,
+                };
+                candidates.push(Candidate {
+                    next_word: current_word,
+                    next_offset: 0,
+                    line,
+                    line_cost: (gap as u64) * (gap as u64),
+                });
+                continue;
+            }
+
+            // Marker breaks in this word.
+            let mut marker_fit = false;
+            for &mark in word.markers.iter().filter(|&&m| m > start && m < word.chars.len()) {
+                let prefix_len = mark - start;
+                if prefix_len == 0 || prefix_len + 1 > available {
+                    continue;
+                }
+                marker_fit = true;
+                let mut prefix: String = word.chars[start..mark].iter().collect();
+                prefix.push('-');
+                let mut marker_pieces = pieces.clone();
+                marker_pieces.push(prefix);
+                let marker_used = used + leading_gap + prefix_len + 1;
+                let gap = options.width - (indent + marker_used);
+                let line = Line {
+                    indent,
+                    pieces: marker_pieces,
+                    spelling_count: total_spelling + prefix_len,
+                    marker_ended: true,
+                    raw_split: false,
+                };
+                candidates.push(Candidate {
+                    next_word: current_word,
+                    next_offset: mark,
+                    line,
+                    line_cost: (gap as u64) * (gap as u64) + options.hyphen_cost as u64,
+                });
+            }
+
+            // Raw split is allowed only on an otherwise empty line, and only if
+            // no marker prefix plus hyphen fits in the entire capacity.
+            if pieces.is_empty() && remaining > capacity {
+                let any_marker_fits = word
+                    .markers
+                    .iter()
+                    .filter(|&&m| m > start && m < word.chars.len())
+                    .any(|&m| {
+                        let prefix_len = m - start;
+                        prefix_len > 0 && prefix_len + 1 <= capacity
+                    });
+                if !any_marker_fits {
+                    let take = capacity;
+                    let prefix: String = word.chars[start..start + take].iter().collect();
+                    let raw_pieces = vec![prefix];
+                    let gap = options.width - (indent + take);
+                    let line = Line {
+                        indent,
+                        pieces: raw_pieces,
+                        spelling_count: take,
+                        marker_ended: false,
+                        raw_split: true,
+                    };
+                    candidates.push(Candidate {
+                        next_word: current_word,
+                        next_offset: start + take,
+                        line,
+                        line_cost: (gap as u64) * (gap as u64) + (2 * options.width + 1) as u64,
+                    });
+                }
+            }
+
+            break;
+        }
+
+        let mut best: Option<Solution> = None;
+        for candidate in candidates {
+            let final_line = candidate.next_word >= words.len();
+            let mut own_cost = candidate.line_cost;
+            if !final_line && candidate.line.pieces.len() == 1 {
+                own_cost += 3;
+            }
+            // A paragraph's final line uses quarter-gap cost, including lines
+            // that complete the final word.
+            if final_line {
+                let gap = line_gap(options.width, indent, &candidate.line.pieces);
+                own_cost = (gap as u64) * (gap as u64) / 4;
+                if candidate.line.marker_ended {
+                    own_cost += options.hyphen_cost as u64;
+                }
+                if candidate.line.raw_split {
+                    own_cost += (2 * options.width + 1) as u64;
+                }
+            }
+
+            let tail = if final_line {
+                Solution {
+                    cost: 0,
+                    marker_count: 0,
+                    lines: Vec::new(),
+                }
+            } else {
+                recurse(
+                    candidate.next_word,
+                    candidate.next_offset,
+                    false,
+                    words,
+                    options,
+                    memo,
+                )
+            };
+
+            let mut lines = vec![candidate.line.clone()];
+            lines.extend(tail.lines.clone());
+            let proposal = Solution {
+                cost: own_cost + tail.cost,
+                marker_count: usize::from(candidate.line.marker_ended) + tail.marker_count,
+                lines,
+            };
+            if best
+                .as_ref()
+                .map_or(true, |current| compare_solutions(&proposal, current).is_lt())
+            {
+                best = Some(proposal);
+            }
+        }
+
+        let result = best.unwrap_or_else(|| Solution {
+            cost: u64::MAX / 4,
+            marker_count: usize::MAX / 4,
+            lines: Vec::new(),
+        });
+        memo.insert((wi, offset, first), result.clone());
+        result
+    }
+
+    let mut memo = HashMap::new();
+    recurse(0, 0, true, words, options, &mut memo).lines
+}
+
+fn parse_segment(chars: &[char]) -> Vec<Word> {
+    let mut words = Vec::new();
+    let mut spelling = Vec::new();
+    let mut markers = Vec::new();
+
+    let flush = |words: &mut Vec<Word>, spelling: &mut Vec<char>, markers: &mut Vec<usize>| {
+        if !spelling.is_empty() {
+            words.push(Word {
+                chars: std::mem::take(spelling),
+                markers: std::mem::take(markers),
+            });
+        } else {
+            markers.clear();
+        }
+    };
+
+    for &c in chars {
+        if is_separator(c) {
+            flush(&mut words, &mut spelling, &mut markers);
+        } else if c == '~' {
+            markers.push(spelling.len());
+        } else {
+            spelling.push(c);
+        }
+    }
+    flush(&mut words, &mut spelling, &mut markers);
+    words
+}
+
+fn render_lines(lines: &[Line], options: &WrapOptions) -> Vec<String> {
+    let mut result = Vec::with_capacity(lines.len());
+    for (line_index, line) in lines.iter().enumerate() {
+        let mut out = " ".repeat(line.indent);
+        let gap_count = line.pieces.len().saturating_sub(1);
+        let extra = if options.justify
+            && line_index + 1 < lines.len()
+            && gap_count > 0
+        {
+            line_gap(options.width, line.indent, &line.pieces)
+        } else {
+            0
+        };
+
+        let base_extra = if gap_count > 0 { extra / gap_count } else { 0 };
+        let remainder = if gap_count > 0 { extra % gap_count } else { 0 };
+
+        for (i, piece) in line.pieces.iter().enumerate() {
+            if i > 0 {
+                out.push(' ');
+                if options.justify && line_index + 1 < lines.len() {
+                    let gap = i - 1;
+                    let start = line_index % gap_count;
+                    let gets_one = (gap + gap_count - start) % gap_count < remainder;
+                    out.push_str(&" ".repeat(base_extra + usize::from(gets_one)));
+                }
+            }
+            out.push_str(piece);
+        }
+        result.push(out);
+    }
+    result
+}
+
+pub fn wrap(input: &str, options: &WrapOptions) -> Result<Vec<String>, WrapError> {
+    if options.width == 0 {
+        return Err(WrapError::WidthZero);
+    }
+    if options.width > 256 {
+        return Err(WrapError::WidthTooLarge {
+            width: options.width,
+        });
+    }
+    if options.first_indent >= options.width {
+        return Err(WrapError::FirstIndentTooWide {
+            indent: options.first_indent,
+        });
+    }
+    if options.rest_indent >= options.width {
+        return Err(WrapError::RestIndentTooWide {
+            indent: options.rest_indent,
+        });
+    }
+    if options.hyphen_cost > 1_000_000 {
+        return Err(WrapError::HyphenCostTooLarge {
+            cost: options.hyphen_cost,
+        });
+    }
+
+    let indexed = checked_indexed_chars(input);
+    if indexed.len() > 512 {
+        return Err(WrapError::InputTooLong {
+            chars: indexed.len(),
+        });
+    }
+
+    for &(index, c) in &indexed {
+        if c.is_control() && !matches!(c, '\t' | '\r' | '\n') {
+            return Err(WrapError::InvalidControl { index });
+        }
+    }
+
+    for i in 0..indexed.len() {
+        if indexed[i].1 != '~' {
+            continue;
+        }
+        let valid_neighbor = |j: isize| -> bool {
+            if j < 0 || j as usize >= indexed.len() {
+                return false;
+            }
+            let c = indexed[j as usize].1;
+            c != '~' && !is_separator(c)
+        };
+        if !valid_neighbor(i as isize - 1) || !valid_neighbor(i as isize + 1) {
+            return Err(WrapError::InvalidMarker {
+                index: indexed[i].0,
+            });
+        }
+    }
+
+    let mut normalized = Vec::new();
+    let mut i = 0;
+    while i < indexed.len() {
+        let c = indexed[i].1;
+        if c == '\r' {
+            if i + 1 < indexed.len() && indexed[i + 1].1 == '\n' {
+                normalized.push('\n');
+                i += 2;
+            } else {
+                normalized.push('\n');
+                i += 1;
+            }
+        } else {
+            normalized.push(c);
+            i += 1;
+        }
+    }
+
+    if normalized.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut output = Vec::new();
+    let mut segment = Vec::new();
+    let mut cursor = 0;
+    while cursor < normalized.len() {
+        if normalized[cursor] == '\n' {
+            let start = cursor;
+            while cursor < normalized.len() && normalized[cursor] == '\n' {
+                cursor += 1;
+            }
+            let run = cursor - start;
+            if run >= 2 {
+                let words = parse_segment(&segment);
+                let lines = solve_paragraph(&words, options);
+                output.extend(render_lines(&lines, options));
+                segment.clear();
+                output.extend(std::iter::repeat(String::new()).take(run - 1));
+            } else {
+                segment.push('\n');
+            }
+        } else {
+            segment.push(normalized[cursor]);
+            cursor += 1;
+        }
+    }
+    let words = parse_segment(&segment);
+    let lines = solve_paragraph(&words, options);
+    output.extend(render_lines(&lines, options));
+
+    Ok(output)
+}
+```
+tokens used
+7,857

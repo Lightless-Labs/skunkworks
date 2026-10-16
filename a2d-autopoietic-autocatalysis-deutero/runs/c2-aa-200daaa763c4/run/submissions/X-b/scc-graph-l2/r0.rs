@@ -1,0 +1,175 @@
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arc {
+    pub from: usize,
+    pub to: usize,
+    pub multiplicity: usize,
+    pub first_edge: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+    pub internal_edges: Vec<usize>,
+    pub arcs: Vec<Arc>,
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges {
+            limit: MAX_EDGES,
+        });
+    }
+
+    for (edge, &(from, to)) in edges.iter().enumerate() {
+        if from >= n {
+            return Err(GraphError::BadEndpoint {
+                edge,
+                side: 0,
+                vertex: from,
+            });
+        }
+        if to >= n {
+            return Err(GraphError::BadEndpoint {
+                edge,
+                side: 1,
+                vertex: to,
+            });
+        }
+    }
+
+    let mut forward = vec![Vec::new(); n];
+    let mut reverse = vec![Vec::new(); n];
+    for &(from, to) in edges {
+        forward[from].push(to);
+        reverse[to].push(from);
+    }
+
+    // Iterative Kosaraju pass one: record vertices by finishing time.
+    let mut visited = vec![false; n];
+    let mut order = Vec::with_capacity(n);
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+        visited[start] = true;
+        let mut stack = vec![(start, 0usize)];
+        while let Some((vertex, next_index)) = stack.last_mut() {
+            if *next_index < forward[*vertex].len() {
+                let next = forward[*vertex][*next_index];
+                *next_index += 1;
+                if !visited[next] {
+                    visited[next] = true;
+                    stack.push((next, 0));
+                }
+            } else {
+                let (finished, _) = stack.pop().unwrap();
+                order.push(finished);
+            }
+        }
+    }
+
+    // Iterative Kosaraju pass two: collect SCCs on the reversed graph.
+    let mut assigned = vec![false; n];
+    let mut raw_components = Vec::new();
+    for &start in order.iter().rev() {
+        if assigned[start] {
+            continue;
+        }
+        assigned[start] = true;
+        let mut component = Vec::new();
+        let mut stack = vec![start];
+        while let Some(vertex) = stack.pop() {
+            component.push(vertex);
+            for &next in &reverse[vertex] {
+                if !assigned[next] {
+                    assigned[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+        component.sort_unstable();
+        raw_components.push(component);
+    }
+
+    raw_components.sort_by(|a, b| {
+        b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0]))
+    });
+
+    let mut component_of = vec![0usize; n];
+    for (component_id, component) in raw_components.iter().enumerate() {
+        for &vertex in component {
+            component_of[vertex] = component_id;
+        }
+    }
+
+    let mut cyclic: Vec<bool> = raw_components
+        .iter()
+        .map(|component| component.len() > 1)
+        .collect();
+    let mut internal_edges = vec![0usize; raw_components.len()];
+    let mut arc_records: Vec<(usize, usize, usize, usize)> = Vec::new();
+
+    for (edge_index, &(from, to)) in edges.iter().enumerate() {
+        let from_component = component_of[from];
+        let to_component = component_of[to];
+        if from_component == to_component {
+            internal_edges[from_component] += 1;
+            if from == to {
+                cyclic[from_component] = true;
+            }
+        } else {
+            arc_records.push((from_component, to_component, edge_index, 1));
+        }
+    }
+
+    arc_records.sort_unstable_by(|a, b| {
+        a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2))
+    });
+
+    let mut arcs = Vec::new();
+    let mut i = 0;
+    while i < arc_records.len() {
+        let (from, to, first_edge, _) = arc_records[i];
+        let mut multiplicity = 0usize;
+        while i < arc_records.len()
+            && arc_records[i].0 == from
+            && arc_records[i].1 == to
+        {
+            multiplicity += arc_records[i].3;
+            i += 1;
+        }
+        arcs.push(Arc {
+            from,
+            to,
+            multiplicity,
+            first_edge,
+        });
+    }
+
+    Ok(Graph {
+        components: raw_components,
+        component_of,
+        cyclic,
+        internal_edges,
+        arcs,
+    })
+}

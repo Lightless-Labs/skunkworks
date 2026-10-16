@@ -1,0 +1,367 @@
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub key: String,
+    pub priority: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyKey,
+    InvalidKey { at: usize },
+    Duplicate { key: String },
+    Missing { key: String },
+    WrongDirection { current: i64, requested: i64 },
+    Collision { key: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollisionPolicy {
+    KeepSelf,
+    TakeOther,
+    Reject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeReport {
+    pub moved: usize,
+    pub replaced: usize,
+    pub discarded: usize,
+    pub evicted: Vec<Item>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Admission {
+    Inserted,
+    Evicted(Item),
+    Discarded(Item),
+}
+
+#[derive(Clone)]
+struct Entry {
+    item: Item,
+    age: u128,
+}
+
+pub struct IndexedHeap {
+    entries: Vec<Entry>,
+    indices: HashMap<String, usize>,
+    capacity: Option<usize>,
+    next_age: u128,
+}
+
+impl IndexedHeap {
+    pub fn new() -> Self {
+        Self::with_capacity_option(None)
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self::with_capacity_option(Some(capacity))
+    }
+
+    fn with_capacity_option(capacity: Option<usize>) -> Self {
+        Self {
+            entries: Vec::new(),
+            indices: HashMap::new(),
+            capacity,
+            next_age: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn capacity(&self) -> Option<usize> {
+        self.capacity
+    }
+
+    pub fn push(
+        &mut self,
+        key: &str,
+        priority: i64,
+        value: &str,
+    ) -> Result<Admission, Error> {
+        let key = canonicalize_key(key)?;
+        if self.indices.contains_key(&key) {
+            return Err(Error::Duplicate { key });
+        }
+
+        let item = Item {
+            key,
+            priority,
+            value: value.to_owned(),
+        };
+
+        if self.capacity == Some(0) {
+            return Ok(Admission::Discarded(item));
+        }
+
+        if let Some(limit) = self.capacity {
+            if self.len() >= limit {
+                let worst = self.worst_index();
+                let proposed = Entry {
+                    item: item.clone(),
+                    age: self.next_age,
+                };
+                if !entry_better(&proposed, &self.entries[worst]) {
+                    return Ok(Admission::Discarded(item));
+                }
+                let evicted = self.remove_index(worst).item;
+                self.insert_entry(proposed);
+                return Ok(Admission::Evicted(evicted));
+            }
+        }
+
+        self.insert_entry(Entry {
+            item,
+            age: self.next_age,
+        });
+        Ok(Admission::Inserted)
+    }
+
+    pub fn peek(&self) -> Option<Item> {
+        self.best_index().map(|i| self.entries[i].item.clone())
+    }
+
+    pub fn pop(&mut self) -> Option<Item> {
+        self.best_index().map(|i| self.remove_index(i).item)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Item>, Error> {
+        let key = canonicalize_key(key)?;
+        Ok(self
+            .indices
+            .get(&key)
+            .map(|&i| self.entries[i].item.clone()))
+    }
+
+    pub fn decrease_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        let key = canonicalize_key(key)?;
+        let index = *self
+            .indices
+            .get(&key)
+            .ok_or_else(|| Error::Missing { key: key.clone() })?;
+        let current = self.entries[index].item.priority;
+        if priority >= current {
+            return Err(Error::WrongDirection {
+                current,
+                requested: priority,
+            });
+        }
+        self.entries[index].item.priority = priority;
+        Ok(current)
+    }
+
+    pub fn increase_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        let key = canonicalize_key(key)?;
+        let index = *self
+            .indices
+            .get(&key)
+            .ok_or_else(|| Error::Missing { key: key.clone() })?;
+        let current = self.entries[index].item.priority;
+        if priority <= current {
+            return Err(Error::WrongDirection {
+                current,
+                requested: priority,
+            });
+        }
+        self.entries[index].item.priority = priority;
+        Ok(current)
+    }
+
+    pub fn replace_value(&mut self, key: &str, value: &str) -> Result<String, Error> {
+        let key = canonicalize_key(key)?;
+        let index = *self
+            .indices
+            .get(&key)
+            .ok_or_else(|| Error::Missing { key: key.clone() })?;
+        Ok(std::mem::replace(
+            &mut self.entries[index].item.value,
+            value.to_owned(),
+        ))
+    }
+
+    pub fn remove(&mut self, key: &str) -> Result<Item, Error> {
+        let key = canonicalize_key(key)?;
+        let index = *self
+            .indices
+            .get(&key)
+            .ok_or_else(|| Error::Missing { key: key.clone() })?;
+        Ok(self.remove_index(index).item)
+    }
+
+    pub fn merge(
+        &mut self,
+        other: &mut Self,
+        policy: CollisionPolicy,
+    ) -> Result<MergeReport, Error> {
+        let mut source_indices: Vec<usize> = (0..other.len()).collect();
+        source_indices.sort_by(|&a, &b| entry_order(&other.entries[a], &other.entries[b]));
+
+        if policy == CollisionPolicy::Reject {
+            for &i in &source_indices {
+                let key = &other.entries[i].item.key;
+                if self.indices.contains_key(key) {
+                    return Err(Error::Collision { key: key.clone() });
+                }
+            }
+        }
+
+        let mut moved = 0;
+        let mut replaced = 0;
+        let mut discarded = 0;
+
+        for i in source_indices {
+            let source = other.entries[i].clone();
+            if let Some(&receiver_index) = self.indices.get(&source.item.key) {
+                match policy {
+                    CollisionPolicy::KeepSelf => discarded += 1,
+                    CollisionPolicy::TakeOther => {
+                        self.entries[receiver_index].item.priority = source.item.priority;
+                        self.entries[receiver_index].item.value = source.item.value;
+                        replaced += 1;
+                    }
+                    CollisionPolicy::Reject => unreachable!(),
+                }
+            } else {
+                self.insert_entry(Entry {
+                    item: source.item,
+                    age: self.next_age,
+                });
+                moved += 1;
+            }
+        }
+
+        other.entries.clear();
+        other.indices.clear();
+
+        let evicted = if let Some(limit) = self.capacity {
+            self.trim_to(limit)
+        } else {
+            Vec::new()
+        };
+
+        Ok(MergeReport {
+            moved,
+            replaced,
+            discarded,
+            evicted,
+        })
+    }
+
+    pub fn set_capacity(&mut self, capacity: Option<usize>) -> Vec<Item> {
+        self.capacity = capacity;
+        match capacity {
+            Some(limit) => self.trim_to(limit),
+            None => Vec::new(),
+        }
+    }
+
+    pub fn iter(&self) -> std::vec::IntoIter<Item> {
+        let mut entries: Vec<&Entry> = self.entries.iter().collect();
+        entries.sort_by(|a, b| entry_order(a, b));
+        entries
+            .into_iter()
+            .map(|entry| entry.item.clone())
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    fn insert_entry(&mut self, entry: Entry) {
+        self.next_age = self.next_age.wrapping_add(1);
+        let index = self.entries.len();
+        self.indices.insert(entry.item.key.clone(), index);
+        self.entries.push(entry);
+    }
+
+    fn remove_index(&mut self, index: usize) -> Entry {
+        let removed = self.entries.swap_remove(index);
+        self.indices.remove(&removed.item.key);
+        if index < self.entries.len() {
+            self.indices
+                .insert(self.entries[index].item.key.clone(), index);
+        }
+        removed
+    }
+
+    fn best_index(&self) -> Option<usize> {
+        self.entries
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| entry_order(a, b))
+            .map(|(i, _)| i)
+    }
+
+    fn worst_index(&self) -> usize {
+        self.entries
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| entry_order(a, b))
+            .map(|(i, _)| i)
+            .expect("worst_index called on a nonempty queue")
+    }
+
+    fn trim_to(&mut self, limit: usize) -> Vec<Item> {
+        let mut evicted = Vec::new();
+        while self.len() > limit {
+            let index = self.worst_index();
+            evicted.push(self.remove_index(index).item);
+        }
+        evicted
+    }
+}
+
+impl Default for IndexedHeap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn entry_order(a: &Entry, b: &Entry) -> std::cmp::Ordering {
+    a.item
+        .priority
+        .cmp(&b.item.priority)
+        .then_with(|| a.item.value.len().cmp(&b.item.value.len()))
+        .then_with(|| a.age.cmp(&b.age))
+}
+
+fn entry_better(a: &Entry, b: &Entry) -> bool {
+    entry_order(a, b).is_lt()
+}
+
+fn canonicalize_key(input: &str) -> Result<String, Error> {
+    let bytes = input.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && bytes[start] == b' ' {
+        start += 1;
+    }
+    while end > start && bytes[end - 1] == b' ' {
+        end -= 1;
+    }
+
+    if start == end {
+        return Err(Error::EmptyKey);
+    }
+
+    for (offset, &byte) in bytes[start..end].iter().enumerate() {
+        let valid = if offset == 0 {
+            byte.is_ascii_alphabetic()
+        } else {
+            byte.is_ascii_alphanumeric() || byte == b'-'
+        };
+        if !valid {
+            return Err(Error::InvalidKey { at: start + offset });
+        }
+    }
+
+    Ok(input[start..end].to_ascii_lowercase())
+}

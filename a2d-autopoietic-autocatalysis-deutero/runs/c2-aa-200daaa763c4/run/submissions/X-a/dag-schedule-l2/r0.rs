@@ -1,0 +1,195 @@
+use std::collections::BTreeSet;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Task {
+    pub duration: u64,
+    pub deps: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Timing {
+    pub start: u64,
+    pub finish: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Analysis {
+    pub order: Vec<usize>,
+    pub earliest: Vec<Timing>,
+    pub latest: Vec<Timing>,
+    pub slack: Vec<u64>,
+    pub critical: Vec<usize>,
+    pub path: Vec<usize>,
+    pub makespan: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    BadDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    SelfDependency {
+        task: usize,
+        position: usize,
+    },
+    DuplicateDependency {
+        task: usize,
+        position: usize,
+        value: usize,
+    },
+    Cycle {
+        blocked: Vec<usize>,
+    },
+    Overflow {
+        task: usize,
+    },
+    TargetTooSmall {
+        minimum: u64,
+    },
+}
+
+pub fn analyze(tasks: &[Task], target: u64) -> Result<Analysis, Error> {
+    let count = tasks.len();
+
+    // Validate every dependency entry before performing other work.
+    for (task_id, task) in tasks.iter().enumerate() {
+        let mut seen = BTreeSet::new();
+        for (position, &value) in task.deps.iter().enumerate() {
+            if value >= count {
+                return Err(Error::BadDependency {
+                    task: task_id,
+                    position,
+                    value,
+                });
+            }
+            if value == task_id {
+                return Err(Error::SelfDependency {
+                    task: task_id,
+                    position,
+                });
+            }
+            if !seen.insert(value) {
+                return Err(Error::DuplicateDependency {
+                    task: task_id,
+                    position,
+                    value,
+                });
+            }
+        }
+    }
+
+    let mut indegree: Vec<usize> = tasks.iter().map(|task| task.deps.len()).collect();
+    let mut children = vec![Vec::new(); count];
+    for (task_id, task) in tasks.iter().enumerate() {
+        for &dependency in &task.deps {
+            children[dependency].push(task_id);
+        }
+    }
+
+    let mut available = BTreeSet::new();
+    for (id, &degree) in indegree.iter().enumerate() {
+        if degree == 0 {
+            available.insert(id);
+        }
+    }
+
+    let mut order = Vec::with_capacity(count);
+    while let Some(&id) = available.iter().next() {
+        available.remove(&id);
+        order.push(id);
+
+        for &child in &children[id] {
+            indegree[child] -= 1;
+            if indegree[child] == 0 {
+                available.insert(child);
+            }
+        }
+    }
+
+    if order.len() != count {
+        let removed: BTreeSet<usize> = order.iter().copied().collect();
+        let blocked = (0..count).filter(|id| !removed.contains(id)).collect();
+        return Err(Error::Cycle { blocked });
+    }
+
+    let mut earliest = vec![Timing { start: 0, finish: 0 }; count];
+    let mut makespan = 0;
+
+    for &id in &order {
+        let start = tasks[id]
+            .deps
+            .iter()
+            .map(|&dependency| earliest[dependency].finish)
+            .max()
+            .unwrap_or(0);
+
+        let finish = start
+            .checked_add(tasks[id].duration)
+            .ok_or(Error::Overflow { task: id })?;
+
+        earliest[id] = Timing { start, finish };
+        makespan = makespan.max(finish);
+    }
+
+    if target < makespan {
+        return Err(Error::TargetTooSmall { minimum: makespan });
+    }
+
+    let mut latest = vec![Timing { start: 0, finish: 0 }; count];
+    for &id in order.iter().rev() {
+        let finish = if children[id].is_empty() {
+            target
+        } else {
+            children[id]
+                .iter()
+                .map(|&child| latest[child].start)
+                .min()
+                .unwrap_or(target)
+        };
+        let start = finish - tasks[id].duration;
+        latest[id] = Timing { start, finish };
+    }
+
+    let slack: Vec<u64> = (0..count)
+        .map(|id| latest[id].start - earliest[id].start)
+        .collect();
+    let baseline = target - makespan;
+    let critical = (0..count)
+        .filter(|&id| slack[id] == baseline)
+        .collect();
+
+    let path = if count == 0 {
+        Vec::new()
+    } else {
+        let mut current = (0..count)
+            .filter(|&id| children[id].is_empty() && earliest[id].finish == makespan)
+            .max()
+            .unwrap_or(0);
+        let mut reversed_path = vec![current];
+
+        while !tasks[current].deps.is_empty() {
+            current = tasks[current]
+                .deps
+                .iter()
+                .copied()
+                .max_by_key(|&predecessor| (earliest[predecessor].finish, predecessor))
+                .unwrap();
+            reversed_path.push(current);
+        }
+
+        reversed_path.reverse();
+        reversed_path
+    };
+
+    Ok(Analysis {
+        order,
+        earliest,
+        latest,
+        slack,
+        critical,
+        path,
+        makespan,
+    })
+}

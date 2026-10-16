@@ -1,0 +1,193 @@
+use std::collections::HashMap;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Product {
+    pub id: String,
+    pub price: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct State {
+    pub credit: u16,
+    pub selected: Option<String>,
+    pub escrow: Vec<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Receipt {
+    pub id: String,
+    pub price: u16,
+    pub change: Vec<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    EmptyCatalog,
+    BadId { id: String },
+    DuplicateId { id: String },
+    BadPrice { id: String },
+    BadCoin { coin: u16 },
+    CreditLimit,
+    UnknownProduct { id: String },
+    SameSelection,
+    NoSelection,
+    Underpaid { price: u16, credit: u16 },
+    ExactPayment { price: u16, credit: u16 },
+    TenderMismatch {
+        index: usize,
+        expected: u16,
+        found: u16,
+    },
+}
+
+pub struct Machine {
+    products: HashMap<String, u16>,
+    credit: u16,
+    selected: Option<String>,
+    escrow: Vec<u16>,
+}
+
+impl Machine {
+    pub fn new(products: Vec<Product>) -> Result<Self, Error> {
+        if products.is_empty() {
+            return Err(Error::EmptyCatalog);
+        }
+
+        let mut catalog = HashMap::new();
+        for product in products {
+            if !valid_id(&product.id) {
+                return Err(Error::BadId { id: product.id });
+            }
+            if catalog.contains_key(&product.id) {
+                return Err(Error::DuplicateId { id: product.id });
+            }
+            if !(1..=100).contains(&product.price) {
+                return Err(Error::BadPrice { id: product.id });
+            }
+            catalog.insert(product.id, product.price);
+        }
+
+        Ok(Self {
+            products: catalog,
+            credit: 0,
+            selected: None,
+            escrow: Vec::new(),
+        })
+    }
+
+    pub fn state(&self) -> State {
+        State {
+            credit: self.credit,
+            selected: self.selected.clone(),
+            escrow: self.escrow.clone(),
+        }
+    }
+
+    pub fn insert(&mut self, coin: u16) -> Result<(), Error> {
+        if !matches!(coin, 1 | 3 | 4 | 10) {
+            return Err(Error::BadCoin { coin });
+        }
+        if self.credit + coin > 100 {
+            return Err(Error::CreditLimit);
+        }
+
+        self.credit += coin;
+        self.escrow.push(coin);
+        Ok(())
+    }
+
+    pub fn select(&mut self, id: &str) -> Result<(), Error> {
+        if !self.products.contains_key(id) {
+            return Err(Error::UnknownProduct { id: id.to_owned() });
+        }
+        if self.selected.as_deref() == Some(id) {
+            return Err(Error::SameSelection);
+        }
+        self.selected = Some(id.to_owned());
+        Ok(())
+    }
+
+    pub fn vend(&mut self) -> Result<Receipt, Error> {
+        let id = self.selected.as_ref().ok_or(Error::NoSelection)?;
+        let price = *self.products.get(id).expect("selected product is in catalog");
+
+        if self.credit < price {
+            return Err(Error::Underpaid {
+                price,
+                credit: self.credit,
+            });
+        }
+        if self.credit > price {
+            return Err(Error::ExactPayment {
+                price,
+                credit: self.credit,
+            });
+        }
+
+        let mut expected = canonical_tender(price);
+        let mut found = self.escrow.clone();
+        found.sort_unstable_by(|a, b| b.cmp(a));
+
+        for index in 0..expected.len().max(found.len()) {
+            match (expected.get(index), found.get(index)) {
+                (Some(&expected_coin), Some(&found_coin))
+                    if expected_coin != found_coin =>
+                {
+                    return Err(Error::TenderMismatch {
+                        index,
+                        expected: expected_coin,
+                        found: found_coin,
+                    });
+                }
+                (Some(&expected_coin), None) => {
+                    return Err(Error::TenderMismatch {
+                        index,
+                        expected: expected_coin,
+                        found: 0,
+                    });
+                }
+                (None, Some(&found_coin)) => {
+                    return Err(Error::TenderMismatch {
+                        index,
+                        expected: 0,
+                        found: found_coin,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        let receipt = Receipt {
+            id: id.clone(),
+            price,
+            change: Vec::new(),
+        };
+        self.credit = 0;
+        self.selected = None;
+        self.escrow.clear();
+        Ok(receipt)
+    }
+
+    pub fn refund(&mut self) -> Result<Vec<u16>, Error> {
+        let refunded = self.escrow.iter().rev().copied().collect();
+        self.credit = 0;
+        self.selected = None;
+        self.escrow.clear();
+        Ok(refunded)
+    }
+}
+
+fn valid_id(id: &str) -> bool {
+    (1..=8).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_lowercase())
+}
+
+fn canonical_tender(mut amount: u16) -> Vec<u16> {
+    let mut coins = Vec::new();
+    for denomination in [10, 4, 3, 1] {
+        while amount >= denomination {
+            coins.push(denomination);
+            amount -= denomination;
+        }
+    }
+    coins
+}

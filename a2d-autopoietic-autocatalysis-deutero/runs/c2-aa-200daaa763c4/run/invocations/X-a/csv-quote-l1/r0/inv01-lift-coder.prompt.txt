@@ -1,0 +1,286 @@
+SYSTEM:
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+PROMPT:
+R1. Implement in Rust as a SINGLE source file that compiles with `rustc --edition 2024`, using std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes (`#![...]`) or inner documentation (`//!`). All specified API items and listed fields are public; private helpers and private StreamReader fields are allowed. Implement exactly the public API below, with the listed derives (additional derives are allowed). API prototypes denote functions to implement, not declarations to copy verbatim.
+
+R2. parse_csv parses comma-delimited fields, using ASCII double quote as quote byte, and returns records in input order and fields in column order. Field contents are strings; retain all Unicode, whitespace and case without trimming or normalization.
+
+R3. Every CsvError record index is zero-based: it counts record terminators outside quotes consumed before the error. Every byte is a zero-based absolute UTF-8 byte offset in the original input, including an ignored initial BOM. Count bytes, not Unicode scalar values.
+
+R4. If the input begins with U+FEFF, ignore that one initial character before parsing. An input consisting only of this BOM is empty. All other U+FEFF characters are ordinary field data, including one at the start of a later record or inside a quoted field.
+
+R5. Empty input yields no records. A nonempty unfinished record at EOF is returned. A record terminator at EOF does not create an additional record. One LF represents one record containing one empty field; consecutive terminators each represent a record.
+
+R6. A delimiter ends a field, including an empty field. Preserve all leading, consecutive and trailing empty fields: a lone comma is one record with two empty fields. Even an empty quoted field counts as a field and therefore a record.
+
+R7. Outside quotes, LF and CRLF terminate a record. CRLF is one terminator, not two. An outside CR not immediately followed by LF is BareCr at that CR byte; this includes a CR at EOF.
+
+R8. A quote can open a quoted field only as its first byte (after the initial BOM was removed). A quote appearing in an unquoted field is UnexpectedQuote at that quote byte; leading spaces do not make a subsequent quote legal.
+
+R9. In a quoted field, a pair of consecutive quote bytes represents one literal quote. A single quote closes the field. A pair at EOF is still an escape and leaves the field unclosed.
+
+R10. Inside a quoted field, delimiters, LF, CRLF and bare CR are literal data and must be preserved exactly. Embedded newlines do not increase the error record index.
+
+R11. After a closing quote, only a delimiter, LF, CRLF or EOF is legal. Any other byte yields TrailingByte at that byte, except for the NUL and bare CR rules below. No spaces or tabs are allowed after a closing quote.
+
+R12. EOF while inside a quoted field yields UnclosedQuote at its opening quote, not at EOF. A closing quote at EOF is valid.
+
+R13. The NUL byte is forbidden everywhere, including quoted fields. Return Nul at the NUL byte. U+0000 is the only forbidden field character.
+
+R14. Scan left to right and return the first encountered lexical error, never a partial result. At any byte, check NUL first. Outside quotes, check CR validity before state-specific checks, so a bare CR after a closing quote is BareCr, not TrailingByte. An UnclosedQuote is checked only after all input bytes have been scanned.
+
+R15. Do not strip a final delimiter, normalize newlines inside quotes, interpret backslash escapes, recognize comments, or skip blank records. A backslash is ordinary data.
+
+R16. Quoted and unquoted empty strings have equal field values. Quote syntax is discarded, and escaped quotes are decoded exactly once.
+
+R17. All functions must work for arbitrarily many records and UTF-8 field bytes (within available memory) without imposing undocumented field or record limits.
+
+R18. Calling parse_csv repeatedly is independent; it retains no state between calls.
+
+Exact public API (all prototypes must have bodies):
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CsvError {
+    UnexpectedQuote { record: usize, byte: usize },
+    TrailingByte { record: usize, byte: usize },
+    BareCr { record: usize, byte: usize },
+    UnclosedQuote { record: usize, byte: usize },
+    Nul { record: usize, byte: usize },
+}
+pub fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, CsvError>;
+```
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+
+// R2, R5, R6
+#[test]
+fn public_basic_fields() {
+assert_eq!(parse_csv("name,age\nAda,36\n"),Ok(vec![vec!["name".to_string(),"age".to_string()],vec!["Ada".to_string(),"36".to_string()]]));
+}
+
+// R9, R10, R16
+#[test]
+fn public_escaped_and_quoted() {
+assert_eq!(parse_csv("\"red,blue\",\"say \"\"hi\"\"\""),Ok(vec![vec!["red,blue".to_string(),"say \"hi\"".to_string()]]));
+}
+
+// R5, R7, R10
+#[test]
+fn public_record_endings() {
+assert_eq!(parse_csv("u,v\r\n\"two\nlines\",w"),Ok(vec![vec!["u".to_string(),"v".to_string()],vec!["two\nlines".to_string(),"w".to_string()]]));
+}
+
+// R2, R6, R16
+#[test]
+fn public_unicode_empty() {
+assert_eq!(parse_csv("雪,,\"\""),Ok(vec![vec!["雪".to_string(),"".to_string(),"".to_string()]]));
+}
+```
+
+
+## Previous attempt
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CsvError {
+    UnexpectedQuote { record: usize, byte: usize },
+    TrailingByte { record: usize, byte: usize },
+    BareCr { record: usize, byte: usize },
+    UnclosedQuote { record: usize, byte: usize },
+    Nul { record: usize, byte: usize },
+}
+
+pub fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, CsvError> {
+    let bytes = input.as_bytes();
+    let start = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        3
+    } else {
+        0
+    };
+
+    if start == bytes.len() {
+        return Ok(Vec::new());
+    }
+
+    let mut records = Vec::new();
+    let mut record = Vec::new();
+    let mut field = String::new();
+
+    #[derive(Clone, Copy)]
+    enum State {
+        FieldStart,
+        Unquoted,
+        Quoted { opening_quote: usize },
+        AfterQuote,
+    }
+
+    let mut state = State::FieldStart;
+    let mut i = start;
+    let mut record_index = 0usize;
+
+    while i < bytes.len() {
+        let byte = bytes[i];
+
+        if byte == 0 {
+            return Err(CsvError::Nul {
+                record: record_index,
+                byte: i,
+            });
+        }
+
+        if !matches!(state, State::Quoted { .. }) && byte == b'\r' {
+            if bytes.get(i + 1) != Some(&b'\n') {
+                return Err(CsvError::BareCr {
+                    record: record_index,
+                    byte: i,
+                });
+            }
+            record.push(std::mem::take(&mut field));
+            records.push(std::mem::take(&mut record));
+            record_index += 1;
+            i += 2;
+            state = State::FieldStart;
+            continue;
+        }
+
+        match state {
+            State::FieldStart => match byte {
+                b',' => {
+                    record.push(std::mem::take(&mut field));
+                    i += 1;
+                }
+                b'\n' => {
+                    record.push(std::mem::take(&mut field));
+                    records.push(std::mem::take(&mut record));
+                    record_index += 1;
+                    i += 1;
+                }
+                b'"' => {
+                    state = State::Quoted { opening_quote: i };
+                    i += 1;
+                }
+                _ => {
+                    field.push(byte as char);
+                    state = State::Unquoted;
+                    i += 1;
+                }
+            },
+            State::Unquoted => match byte {
+                b',' => {
+                    record.push(std::mem::take(&mut field));
+                    state = State::FieldStart;
+                    i += 1;
+                }
+                b'\n' => {
+                    record.push(std::mem::take(&mut field));
+                    records.push(std::mem::take(&mut record));
+                    record_index += 1;
+                    state = State::FieldStart;
+                    i += 1;
+                }
+                b'"' => {
+                    return Err(CsvError::UnexpectedQuote {
+                        record: record_index,
+                        byte: i,
+                    });
+                }
+                _ if byte.is_ascii() => {
+                    field.push(byte as char);
+                    i += 1;
+                }
+                _ => {
+                    let ch = input[i..].chars().next().expect("valid UTF-8");
+                    field.push(ch);
+                    i += ch.len_utf8();
+                }
+            },
+            State::Quoted { opening_quote } => {
+                if byte == b'"' {
+                    if bytes.get(i + 1) == Some(&b'"') {
+                        field.push('"');
+                        i += 2;
+                    } else {
+                        state = State::AfterQuote;
+                        i += 1;
+                    }
+                } else if byte.is_ascii() {
+                    field.push(byte as char);
+                    i += 1;
+                } else {
+                    let ch = input[i..].chars().next().expect("valid UTF-8");
+                    field.push(ch);
+                    i += ch.len_utf8();
+                }
+                let _ = opening_quote;
+            }
+            State::AfterQuote => match byte {
+                b',' => {
+                    record.push(std::mem::take(&mut field));
+                    state = State::FieldStart;
+                    i += 1;
+                }
+                b'\n' => {
+                    record.push(std::mem::take(&mut field));
+                    records.push(std::mem::take(&mut record));
+                    record_index += 1;
+                    state = State::FieldStart;
+                    i += 1;
+                }
+                _ => {
+                    return Err(CsvError::TrailingByte {
+                        record: record_index,
+                        byte: i,
+                    });
+                }
+            },
+        }
+    }
+
+    if let State::Quoted { opening_quote } = state {
+        return Err(CsvError::UnclosedQuote {
+            record: record_index,
+            byte: opening_quote,
+        });
+    }
+
+    if !matches!(state, State::FieldStart) || !record.is_empty() {
+        record.push(field);
+        records.push(record);
+    }
+
+    Ok(records)
+}
+```
+
+## Public test results
+
+
+running 4 tests
+test a2d_public_f362b7696fd64850::public_escaped_and_quoted ... ok
+test a2d_public_f362b7696fd64850::public_basic_fields ... ok
+test a2d_public_f362b7696fd64850::public_record_endings ... ok
+test a2d_public_f362b7696fd64850::public_unicode_empty ... FAILED
+
+failures:
+
+---- a2d_public_f362b7696fd64850::public_unicode_empty stdout ----
+
+thread 'a2d_public_f362b7696fd64850::public_unicode_empty' (86444081) panicked at /var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-oracle-TPnS9P/c_f362b7696fd64850.rs:114:35:
+start byte index 1 is not a char boundary; it is inside '雪' (bytes 0..3 of string)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a2d_public_f362b7696fd64850::public_unicode_empty
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+
+
+Fix the file. Respond with the whole corrected file in a single ```rust block.
