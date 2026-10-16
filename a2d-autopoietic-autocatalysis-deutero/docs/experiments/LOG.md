@@ -1092,7 +1092,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **C2-E2: the Claude judge.**
   - Cases: the 68 decisive tuples in E002's three runs (≥ 2 distinct public-green files that split on hidden tests; 38 with 4 files, 21 with 3, 9 with 2). Sol, live, picked a passing file in **68/68**.
   - Claude (Opus 5.5 subagents, 8 batches) gets **E002's exact judge prompt**, with candidates in a fresh seeded shuffle. The answer key is `runs/2026-10-16-c2-claude/key.json`, outside the staged dir.
-  - Expected hits under a random pick: 36.8 of 68.
+  - Expected hits under a random pick: 36.3 of 68.
   - Readout: hits out of 68 with a Wilson 95% CI.
   - **Use:** cross-family evidence on whether the selection lever is vendor-specific. If hits are ≥ 64/68, a Claude-lane judge (cross-family, and not the task author) is a ready candidate once a Claude lane exists. Descriptive only, with no keep decision.
 - **C2-FA2: the failure taxonomy** (train-label rule).
