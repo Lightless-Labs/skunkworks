@@ -50,6 +50,16 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(hardened.audit_diff(diff, ["lib"], {"yaml"}))
         self.assertEqual(hardened.audit_diff(diff, ["src"], {"yaml"}), [])
 
+    def test_scrub_removes_task_ids_and_evaluator_paths(self) -> None:
+        home = str(hardened.tasks.e1_home())
+        text = (f"{home}/private/e1-0123456789ab/venv/lib/x.py:1: in f\n"
+                "../../../e1-0123456789ab/venv/lib/python3.11/site-packages/_pytest/runner.py:341\n"
+                "/tmp/tree/lib/mod.py:3: AssertionError")
+        out = hardened.scrub(text, Path("/tmp/tree"))
+        self.assertNotIn("e1-0123456789ab", out)
+        self.assertNotIn(home, out)
+        self.assertIn("<tree>/lib/mod.py", out)
+
     def test_legitimate_lib_edit_has_no_flags(self) -> None:
         diff = "diff --git a/lib/fix.py b/lib/fix.py\n--- a/lib/fix.py\n+++ b/lib/fix.py\n+VALUE = 1\n"
         self.assertEqual(hardened.audit_diff(diff, ["." , "lib"], {"pytest"}), [])

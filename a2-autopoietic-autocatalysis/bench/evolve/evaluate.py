@@ -66,6 +66,18 @@ def _preserve_genome(source: Path, run_dir: Path, digest: str) -> Path:
     return dest
 
 
+def _safe_episode(cfg: argparse.Namespace, opaque: str, run_dir: Path) -> dict:
+    """An episode that raises is an evaluator failure: recorded as infra (retried once, excluded from
+    statistics) instead of stopping the shard."""
+    nonce = uuid.uuid4().hex
+    try:
+        return episode.run_episode(cfg, opaque, cfg.genome, run_dir, nonce)
+    except Exception as exc:  # noqa: BLE001 - every failure mode becomes a recorded row
+        return {"opaque_id": opaque, "nonce": nonce, "genome_sha256": episode._genome_sha(Path(cfg.genome)),
+                "infra_failure": "evaluator_error", "error": f"{type(exc).__name__}: {exc}"[:500],
+                "grade": None, "agent_calls": None, "tokens_in": 0, "tokens_out": 0, "wall_secs": None}
+
+
 def evaluate_tasks(cfg: argparse.Namespace, full_tasks: list[str]) -> int:
     ok, mismatches = lock.verify()
     if not ok:
@@ -96,12 +108,12 @@ def evaluate_tasks(cfg: argparse.Namespace, full_tasks: list[str]) -> int:
             tasks.prepare(opaque)
             try:
                 for rep in pending_reps:
-                    row = episode.run_episode(cfg, opaque, cfg.genome, run_dir, uuid.uuid4().hex)
+                    row = _safe_episode(cfg, opaque, run_dir)
                     if row.get("infra_failure"):
                         first = row["infra_failure"]
-                        row = episode.run_episode(cfg, opaque, cfg.genome, run_dir, uuid.uuid4().hex)
+                        row = _safe_episode(cfg, opaque, run_dir)
                         row["infra_retry_of"] = first
-                    digest = row.get("genome_sha256")
+                    digest = row.get("genome_sha256") or episode._genome_sha(Path(cfg.genome))
                     if not digest:
                         raise RuntimeError("episode row is missing genome_sha256")
                     preserved = _preserve_genome(cfg.genome, run_dir, digest)

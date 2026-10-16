@@ -76,6 +76,19 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(saved["infra_retry_of"], "temporary")
         self.assertEqual(episode_mock.call_count, 2)
 
+    def test_episode_exception_is_an_infra_row_and_the_shard_continues(self):
+        def boom(cfg, task, genome, run_dir, nonce):
+            if task == "a":
+                raise RuntimeError("leak guard")
+            return self.fake_episode(cfg, task, genome, run_dir, nonce)
+        with patch.object(evaluate.episode, "run_episode", side_effect=boom):
+            evaluate.evaluate_tasks(self.cfg, ["a", "b"])
+        rows = {r["opaque_id"]: r for r in self.rows()}
+        self.assertEqual(rows["a"]["infra_failure"], "evaluator_error")
+        self.assertEqual(rows["a"]["infra_retry_of"], "evaluator_error")
+        self.assertIn("leak guard", rows["a"]["error"])
+        self.assertTrue(rows["b"]["grade"]["resolved"])
+
     def test_lock_mismatch_refuses_to_start(self):
         with patch.object(evaluate.lock, "verify", return_value=(False, ["bench/evolve/episode.py"])):
             with self.assertRaises(SystemExit):

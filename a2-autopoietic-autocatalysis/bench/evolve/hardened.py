@@ -359,6 +359,17 @@ def run_pytest_hardened(tree: str | Path, venv: str | Path, node_ids: list[str],
         return result
 
 
+OPAQUE_ID = re.compile(r"e1-[0-9a-f]{12}")
+
+
+def scrub(text: str, tree: Path) -> str:
+    """Remove evaluator paths and task ids from text the policy will see (tracebacks name the venv)."""
+    text = text.replace(str(tree), "<tree>").replace(os.path.realpath(tree), "<tree>")
+    for home in {str(tasks.e1_home()), os.path.realpath(tasks.e1_home())}:
+        text = text.replace(home, "<private>")
+    return OPAQUE_ID.sub("<task>", text)
+
+
 def verify_structured(opaque: str, diff: str) -> dict:
     manifest = tasks.load_manifest(opaque)
     profile = tasks.REPO_PROFILES[manifest["repo"]]
@@ -379,7 +390,7 @@ def verify_structured(opaque: str, diff: str) -> dict:
             result = run_pytest_hardened(tree, priv / "venv", node_ids, profile["pythonpath"], ini,
                                          venv_pytest_plugins(priv / "venv"), 1200, Path.home(), extra_env=tasks.profile_env(manifest))
         except grading.CandidateError as exc:
-            return {"passed": False, "rejected": [], "tests": [], "error": str(exc)[:1500]}
+            return {"passed": False, "rejected": [], "tests": [], "error": scrub(str(exc), tree)[:1500]}
         except OSError:
             return {"passed": False, "rejected": [], "tests": [], "error": "evaluator setup failed"}
         tests = []
@@ -395,8 +406,7 @@ def verify_structured(opaque: str, diff: str) -> dict:
                 outcome, message = "pass", ""
             else:
                 outcome, message = "fail", result.messages.get(node, "test did not pass")[:1500]
-            message = message.replace(str(tree), "<tree>")
-            message = message.replace(str(tasks.e1_home()), "<private>")
+            message = scrub(message, tree)
             tests.append({"index": index, "name": node, "outcome": outcome, "message": message[:1500]})
     return {"passed": bool(tests) and all(t["outcome"] == "pass" for t in tests), "rejected": [], "tests": tests}
 
