@@ -33,6 +33,44 @@
 
 **Lineage:** the lift-first roadmap (`docs/plans/2026-10-14-lift-first-roadmap.md`, Completed (falsified)), report `docs/reports/2026-10-15-lift-first-outcome.md`. That closed one plan, not the project.
 
+**Addendum:** 2026-10-16 — **after the first keep: A/A method, budget envelope, and the proposer-comparison protocol (draft for review)**
+- **A/A (eval v2.3; LOG "Eval v2.3").** "The A/A is re-run after every keep" is replaced.
+  - A promoted keep's two independent full runs (full stage and confirm) are paired by task and give its threshold at no cost.
+  - Calibration of the method on v0: in-run 10 net tasks vs cross-run 7 net. The full-stage 1.645·SE guard binds at about 7 net.
+- **Daily cap enforced in code:** every eval stage and look counts today's Luna calls and defers itself rather than exceed 3k.
+- **Budget envelope** (about 21.8k Luna left on 2026-10-16):
+
+  | Use | Luna | Notes |
+  |---|---|---|
+  | Search | ≤ 12.5k | — |
+  | Proposer comparison | ≈ 4.3k | reserved |
+  | Confirmation-2 | ≈ 3.2k | reserved; r = 2, one replicate per day |
+  | Dev-holdout looks | ≈ 1.3k | final look |
+
+  - With E002-class arms, a screen costs about 0.6k, the full stage about 1.25k and the confirm stage about 1.25k.
+- **Proposer comparison: draft protocol** (frozen after review, before any round runs).
+  - **Question:** does A²D's architect propose harness changes that help more than an uninformed proposer? Equal budget means the same model and effort, the same number of proposals, and the same evaluation per proposal.
+  - **The two proposers:**
+    - **Informed** (A²D's architect) sees the observations A²D's metabolism produces:
+      - the results log with every prior proposal and its outcome;
+      - the incumbent's aggregate failure analysis (C2-FA-style branches, any-pass curve, failure kinds);
+      - up to 8 failure dossiers from the incumbent's dev runs. A dossier holds what the coder saw (requirements and public tests), the submitted file, and the label "fails at least one hidden test". It never contains hidden content or counts, the same rule as `a2d distill`.
+    - **Uninformed** sees only the incumbent, v0 (= D), the protocol, the guard and the rules, plus the titles of its own earlier proposals (to avoid repeats), without outcomes.
+    - Neither sees the seed list (a separate human-insight proposer) or any holdout metadata.
+    - Both are `gpt-6.1-sol` at high effort with no tools, through `c2_propose.py`. Each submits one candidate per round, its top-ranked one.
+  - **Rounds:** R = 5 interleaved rounds.
+    - Each round is ONE `a2d lift` run with arms X:inc, X:inf and X:uninf, on a family half drawn per round. The incumbent arm is shared, so pairing is exact.
+    - Cost: about 70 tasks × 12 calls ≈ 0.85k per round.
+    - A round uses the incumbent current at its start.
+  - **Primary metric:** the mean over rounds of (Δall-pass(inf − inc) − Δall-pass(uninf − inc)), with a t-interval over the 5 round-level differences (rounds are blocks).
+    - **Informed better:** the 90% CI is above 0.
+    - **Informed worse:** the 90% CI is below 0.
+    - **Otherwise inconclusive**, reported as such, with the detectable effect stated (about ±6 pp at this budget).
+  - **Secondary:** the keep-screen rate (proposals with a round Δ ≥ thr/2) per proposer. Any proposal that clears it can enter the normal keep pipeline (rest, then confirm) under its own experiment id, reusing the round run as its screen.
+  - **Trigger:** after ≥ 3 keeps (the goal's condition), or when the remaining total budget falls to 9k Luna, whichever comes first.
+    - The budget trigger is a deviation from the goal's wording. It exists so that the self-improvement question is measured at all under a 25k cap where each keep costs about 2.5k. It is disclosed in the report.
+  - **Authorship disclosure:** the same model (Sol) authored the tasks, judges live, and proposes for both arms. The comparison isolates information, not model.
+
 ## Outcome sought
 
 Harness changes that make our coder (`codex/gpt-6-luna`, low effort) produce working software more reliably than its plain repair loop D, at the same per-task invocation budget. Then: does A²D's own proposer find such changes better than an uninformed proposer?
