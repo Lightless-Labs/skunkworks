@@ -392,8 +392,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg.run_id = cfg.run_id or uuid.uuid4().hex
     cfg.champion_genome = cfg.champion_genome.resolve()
     cfg.g0_genome = cfg.g0_genome.resolve()
-    validate_genomes(cfg.champion_genome, cfg.g0_genome)
-    return run_confirmation(cfg)
+    return run_confirmation(cfg)  # run_confirmation enforces champion != G0 for confirmation runs
 
 
 if __name__ == "__main__":
