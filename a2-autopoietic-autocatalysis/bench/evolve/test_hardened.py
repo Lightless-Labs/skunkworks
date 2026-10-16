@@ -60,6 +60,11 @@ class AuditTests(unittest.TestCase):
         self.assertNotIn(home, out)
         self.assertIn("<tree>/lib/mod.py", out)
 
+    def test_package_metadata_that_could_register_plugins_is_rejected(self) -> None:
+        for path in ("lib/evil-1.0.dist-info/entry_points.txt", "lib/evil.egg-info/PKG-INFO", "entry_points.txt"):
+            with self.subTest(path=path):
+                self.assertTrue(hardened.audit_diff(f"diff --git a/{path} b/{path}\n+[pytest11]\n", ["lib"], set()))
+
     def test_legitimate_lib_edit_has_no_flags(self) -> None:
         diff = "diff --git a/lib/fix.py b/lib/fix.py\n--- a/lib/fix.py\n+++ b/lib/fix.py\n+VALUE = 1\n"
         self.assertEqual(hardened.audit_diff(diff, ["." , "lib"], {"pytest"}), [])

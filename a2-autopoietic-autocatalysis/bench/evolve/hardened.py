@@ -29,9 +29,12 @@ except ImportError:  # direct `python bench/evolve/hardened.py`
 
 
 def venv_pytest_plugins(venv: str | Path) -> list[str]:
-    """Modules of the venv's installed pytest11 entry points, passed explicitly with -p.
+    """Modules of the venv's installed pytest11 entry points (diagnostic).
 
-    Autoload stays disabled; the venv is read-only to code under test, so this list is trusted.
+    Grading lets pytest autoload them, as E1 did: the venv is read-only to code under test, and the
+    audit rejects package metadata in candidate diffs, so a candidate cannot add an entry point.
+    Passing them explicitly with -p broke repos that import a plugin package twice (xdist) under
+    `filterwarnings = error`.
     """
     plugins = []
     for entry_points in sorted(Path(venv).glob("lib/python*/site-packages/*.dist-info/entry_points.txt")):
@@ -108,6 +111,9 @@ def audit_diff(diff_text: str, sys_path_roots: list[str | Path], protected_names
         basename = Path(path).name
         if basename.endswith(".pth"):
             reasons.append(f"forbidden .pth file: {path}")
+        if re.search(r"\.(dist|egg)-info(/|$)", path) or basename in ("entry_points.txt", "top_level.txt"):
+            # Package metadata on an import root could register a pytest11 plugin that autoloads.
+            reasons.append(f"forbidden package metadata: {path}")
         if basename == "conftest.py":
             reasons.append(f"forbidden conftest edit: {path}")
         top = _top_level_name(path, ".")
@@ -313,7 +319,7 @@ def run_pytest_hardened(tree: str | Path, venv: str | Path, node_ids: list[str],
         py_path = [guard_dir, *(tree / item for item in pythonpath)]
         env = {"PATH": f"{venv / 'bin'}:/usr/bin:/bin", "HOME": str(tmp), "TMPDIR": str(tmp),
                "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": os.pathsep.join(map(str, py_path)),
-               "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "EVOLVE_VENV": str(venv), "LANG": "C.UTF-8"}
+               "EVOLVE_VENV": str(venv), "LANG": "C.UTF-8"}
         env = {**(extra_env or {}), **env}  # repo profile env (e.g. QT_QPA_PLATFORM) never overrides ours
         pytest_args = ["-q", "-rfE", "--tb=short", "-c", str(frozen_ini),
                        "--rootdir", str(tree), "-p", "no:cacheprovider", "-p", "evolve_guard"]
@@ -388,7 +394,7 @@ def verify_structured(opaque: str, diff: str) -> dict:
             node_ids = sorted(set(visible_ids) | set(keep_ids))
             ini = frozen_pytest_config(base, _frozen_dir(tree))
             result = run_pytest_hardened(tree, priv / "venv", node_ids, profile["pythonpath"], ini,
-                                         venv_pytest_plugins(priv / "venv"), 1200, Path.home(), extra_env=tasks.profile_env(manifest))
+                                         [], 1200, Path.home(), extra_env=tasks.profile_env(manifest))
         except grading.CandidateError as exc:
             return {"passed": False, "rejected": [], "tests": [], "error": scrub(str(exc), tree)[:1500]}
         except OSError:
@@ -434,7 +440,7 @@ def grade_hardened(opaque: str, diff: str | None) -> dict:
             # Official selection (whole selected files), as E1's grader ran it: node-id subsets can
             # change test order and expose order-dependent tests.
             result = run_pytest_hardened(tree, priv / "venv", node_ids, profile["pythonpath"], ini,
-                                         venv_pytest_plugins(priv / "venv"), 1200, Path.home(), extra_env=tasks.profile_env(manifest),
+                                         [], 1200, Path.home(), extra_env=tasks.profile_env(manifest),
                                          select=manifest["selected_test_files"])
         except grading.CandidateError as exc:
             return {"applied": False, "rejected": [], "resolved": False, "hidden_resolved": False, "error": str(exc)}
