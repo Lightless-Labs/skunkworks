@@ -1141,3 +1141,25 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
     | Template literals vs placeholders | 2 |
 
   - **Use:** generation-side candidates aimed at these classes. Only the aggregate and the task-agnostic patterns go to proposers. Several preventions are close to cycle 1's researcher lessons (unchecked sizes, precedence), which were +5.6 pp vs D in S4b. Performance (worst-case cost and empty dimensions) is new, and no queued candidate targets it.
+
+### Proposer round c1 (three independent Claude Opus proposers) — E009, E010 registered; c1a-1 declined  [cycle 2, proposer: claude-c1, 2026-10-16]
+- **Setup:**
+  - The brief is `c2_propose.py --prompt-only`: the same template Sol got in r1, with holdout and look lines filtered. Its stats add the C2-FA2 taxonomy aggregate (categories and recurring task-agnostic patterns), the C2-E2 result, and E005–E008 as pending.
+  - Three Opus subagents each read only their copy of the brief and wrote `reply.md`. Each proposed 3 candidates (`runs/c2-propose-c1{a,b,c}/`).
+  - All 9 compile and pass the hardened guard.
+- **Convergence** (independent proposers):
+  - **all three** proposed a task-agnostic failure-class checklist appended to every coder prompt (c1a-2, c1b-2 size and cost only, c1c-2);
+  - **two** proposed "two readings per call": each Luna call returns its best reading plus a hedge file taking the other reading of its least certain points (c1b-1, c1c-1).
+- **E009 = c1a-2, failure checklist:** `nano/candidates/E009_failure_checklist.py`, proposer code unmodified.
+  - One change vs E002: an 8-point checklist is appended to every coder prompt (samples and the no-green repair). The judge sees the plain task.
+  - The 8 points: worst-case cost and coarse skipping; work bounded by the data present, and an early return on empty dimensions; no preallocation from caller sizes; literal examples traced exactly; precedence as listed; no sentinels; incremental equal to one-shot; boundaries and overflow. Requirements win over the checklist.
+  - Hypothesis: it raises the per-sample hidden pass rate (0.643) on the recurring classes (C2-FA2), and so all-pass vs E002.
+  - **Disclosure:** the classes were mined from E002's dev failures, so the dev estimate is optimistic and the dev-holdout is the check.
+- **E010 = c1c-1, two readings per call:** `nano/candidates/E010_two_readings_per_call.py`, proposer code unmodified.
+  - One change vs E002: each of the 4 Luna calls lists up to 6 ambiguous points with its chosen reading, then returns Solution A (most likely readings) and Solution B (the other reading on its 1–3 least certain points, or a different algorithm).
+  - Every file is public-tested, and the unchanged Sol judge picks among up to 8 distinct greens.
+  - Hypothesis: a hedge written in the same reply differs by construction on the shared misreading. Selection is at its ceiling (C2-FA1, C2-E2), so getting the right reading into the pool is what moves all-pass.
+- **Declined: c1a-1, Sol probe tests.** Its probes are appended to a copy of each file and run through `public_test`, but the oracle runs only the public test module (filter `a2d_public_<nonce>::`). The probes could never execute, so the harness would silently degrade to E002 with 3 samples.
+  - **Instrument idea, recorded:** a controller op that runs harness-supplied tests (no hidden content) would make strong-reader probes a testable lever.
+- **Held** (proposed, not yet scheduled): c1a-3 (written requirement trace), c1b-2 (size-and-cost brief: a narrower E009), c1b-3 (dissent sample), c1c-2 (a variant of E009), c1c-3 (route Sol by green count), c1b-1 (a variant of E010).
+- **Run order after E005–E008:** E009, then E010, both with `--stop-after full`.
