@@ -23,10 +23,11 @@
 
 ## In flight / next
 1. **The queue for 2026-10-17 (UTC)** is a background runner (`$SCRATCH/queue-runner.sh $SCRATCH/queue-2026-10-17.txt 202610170005`). It runs these lines in order:
-   - (a) **dev-holdout look 1**: `python3 -I nano/eval.py look --n 1 --registered-at f5b71409352bf998437bcaff2492368e77a9d26a --seed 6161 --jobs 8`. It prints only gate PASS/FAIL; the full report stays in `~/.a2d-holdout/runs/c2-look1/report.json`.
+   - (a) **dev-holdout look 1**: `python3 -I nano/eval.py look --n 1 --registered-at 8e07801e588e8d48334fa267dd2dd7109ad86f57 --seed 6161 --jobs 8`. It prints only gate PASS/FAIL; the full report stays in `~/.a2d-holdout/runs/c2-look1/report.json`.
    - (b) E005, E007, E006, E008, each via `python3 -I nano/eval.py run --id <id> --candidate nano/candidates/<file> --proposer <claude|sol> --jobs 6 --stop-after full --hypothesis "<as in LOG>"`.
    - Every stage self-defers when today's Luna count plus its worst case would exceed 3k (`python3 -I nano/eval.py budget` shows the count).
    - **If the runner died:** re-run the same lines by hand. Cached stages are reused, and the experiment manifests keep them immutable.
+   - **Do not touch `crates/`, `Cargo.toml` or `Cargo.lock` (not even uncommitted edits) until look 1 has finished.** They are frozen against its registration (`8e07801e`), and any change voids it. Since C2-ISO, harnesses run under a seatbelt sandbox.
 2. **If look 1 PASSES:**
    - freeze E002;
    - get one Codex Sol review and one fresh-Claude review;
