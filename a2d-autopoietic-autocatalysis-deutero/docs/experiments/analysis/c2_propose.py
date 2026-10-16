@@ -77,6 +77,7 @@ def main():
     ap.add_argument("--model", default="gpt-6.1-sol")
     ap.add_argument("--effort", default="high")
     ap.add_argument("--extract-only", action="store_true", help="re-parse an existing reply.md")
+    ap.add_argument("--prompt-only", action="store_true", help="write PROMPT.md for another proposer; no model call")
     args = ap.parse_args()
     if args.extract_only:
         out_dir = ROOT / "runs" / f"c2-propose-{args.round}"
@@ -111,6 +112,11 @@ def main():
     out_dir = ROOT / "runs" / f"c2-propose-{args.round}"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "PROMPT.md").write_text(prompt)
+    if args.prompt_only:
+        # Another proposer (e.g. a Claude subagent) answers PROMPT.md into
+        # reply.md; then `--extract-only` parses the candidates.
+        print(out_dir / "PROMPT.md")
+        return
     with tempfile.TemporaryDirectory() as empty:
         cmd = ["codex", "exec", prompt, "-m", args.model, "-c", f'model_reasoning_effort="{args.effort}"',
                "-c", 'approval_policy="never"', "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral",
