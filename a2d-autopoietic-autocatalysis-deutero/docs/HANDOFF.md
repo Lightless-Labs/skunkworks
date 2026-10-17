@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-16 23:25 UTC (session 145: **first cycle-2 keep**; C2-FA1/FA2 failure analyses; C2-E2 cross-vendor judge 66/68; 6 candidates registered (E005–E010); look 1 queued for 00:05 UTC. E002b, 4 Luna samples + a Sol judge, beat the plain repair loop: +7.1 pp all-pass on the confirmation replicate and +10.7 at the full stage. The random-pick control gives −1.4, so the judge is the active ingredient. `nano/harness.py` is now the E002 judge harness.)
+**Last updated:** 2026-10-17 02:50 UTC (session 145: **look 1 PASSED; confirmation-2 registered** at `78727f29`. E002, 4 Luna samples plus a Sol judge, is frozen as `runs/c2-confirm2/frozen.py`. Replicate 1 runs at 00:05 UTC 10-18 and replicate 2 at 00:05 UTC 10-19; then manifests, scoring and pooling. The oracle is now OS-sandboxed (C2-ISO2), with parity 420/420.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -22,32 +22,38 @@
 - **Results log:** `nano/results.tsv` (every experiment and stage, including discards). Narrative and pre-registrations: `docs/experiments/LOG.md`, Cycle 2.
 
 ## In flight / next
-1. **The queue for 2026-10-17 (UTC)** is a background runner (`$SCRATCH/queue-runner.sh $SCRATCH/queue-2026-10-17.txt 202610170005`). It runs these lines in order:
-   - (a) **dev-holdout look 1**: `python3 -I nano/eval.py look --n 1 --registered-at 8e07801e588e8d48334fa267dd2dd7109ad86f57 --seed 6161 --jobs 8`. It prints only gate PASS/FAIL; the full report stays in `~/.a2d-holdout/runs/c2-look1/report.json`.
-   - (b) E005, E007, E006, E008, E009, E010, each via `python3 -I nano/eval.py run --id <id> --candidate nano/candidates/<file> --proposer <claude|sol> --jobs 6 --stop-after full --hypothesis "<as in LOG>"`.
-   - Every stage self-defers when today's Luna count plus its worst case would exceed 3k (`python3 -I nano/eval.py budget` shows the count).
-   - **If the runner died:** re-run the same lines by hand. Cached stages are reused, and the experiment manifests keep them immutable.
-   - **Do not touch `crates/`, `Cargo.toml` or `Cargo.lock` (not even uncommitted edits) until look 1 has finished.** They are frozen against its registration (`8e07801e`), and any change voids it. Since C2-ISO, harnesses run under a seatbelt sandbox.
-2. **If look 1 PASSES:**
-   - freeze E002;
-   - get one Codex Sol review and one fresh-Claude review;
-   - pre-register confirmation-2: arms D, B and X:frozen at r = 2 (one replicate per day, pooled with `a2d lift pool`), `--claim` vs D and B.
-   - **If it FAILS:** continue the search.
-3. **Proposer comparison** (A²D architect = informed, with failure dossiers carrying labels only, vs uninformed, at equal budget): draft the protocol, freeze it, and get a review. The goal triggers it after ≥ 3 keeps; a budget-reserve trigger is to be added as an addendum.
-- **Claude-quota work, 2026-10-16 evening** (the owner reset the weekly Claude quota; it resets Sunday 12:00). All offline, through subagents:
-  - **C2-E2:** a Claude Opus judge matches Sol on E002's decisive tuples, 66/68 vs 68/68 (random 36.3). The selection lever is not vendor-specific.
-  - **C2-FA2:** failure taxonomy. 29/34 misreadings are shared; boundary 9, semantics 9, performance 8 (the timeouts).
-  - **Proposer round c1:** 3 independent Opus proposers. E009 (failure checklist) and E010 (two readings per call) are registered and smoked, and c1a-1 was declined because its probes cannot run under `public_test`.
-  - **No live Claude lane:** the `claude` CLI returns nothing inside the session sandbox, and running it outside the sandbox was refused by the permission classifier. The owner was told what it would take to enable it.
-- **State of the search:**
-  - Incumbent E002; thr_allpass 0.0357 (eval v2.3; A/A from its own replicates).
-  - C2-FA1: the judge is at its ceiling (0 misses in 249), and the failures are misreadings shared across samples. So the levers are generation-side.
-  - Registered: E005 (diverse angles, claude), E006 (Sol spec notes, claude), E007 (Sol-directed repair, sol), E008 (4th-sample synthesis, sol).
-  - Sol's r1-1 (Luna at high effort) was declined as out of scope.
+1. **Confirmation-2 (C2-CONFIRM2):** registered at `78727f29e53743dc5d989c62e1de23ab1a81e6c6`. The spec is `runs/c2-confirm2/registration.json`; the LOG entry holds the review dispositions and the power exception.
+   - **Queue** (background runner `$SCRATCH/queue-runner.sh $SCRATCH/queue-2026-10-17.txt`, re-read line by line):
+     - E005 (running since 02:44), then E007;
+     - at ≥ 00:05 UTC 10-18, `python3 -I nano/eval.py confirm --rep 1 --registered-at 78727f29… --jobs 8`, then E006;
+     - at ≥ 00:05 UTC 10-19, `confirm --rep 2 …` the same way, then E008, E009 and E010.
+     - A cap-deferred experiment prints "deferred" and the queue moves on, so re-queue it by hand.
+   - **After both replicates have generated:**
+     1. `python3 -I nano/eval.py confirm-manifest`;
+     2. commit and push `runs/c2-confirm2/manifest-r*.json`;
+     3. `python3 -I nano/eval.py confirm-score` (jobs 6). It writes `pooled-summary.json` and `decision.json`. Only the pooled claim decides.
+   - **Freeze window, through `decision.json`:** do not touch `crates/`, `Cargo.toml`, `Cargo.lock` or the `CONFIRM2…main()` section of `nano/eval.py`. The controller and the runner both refuse to run if they change.
+     - Rebuilding the binary from the same source is fine: the binary sha is logged, not enforced, because debug builds are not byte-reproducible.
+     - The harness-supplied-tests op idea waits until this window closes.
+   - **If a replicate's generation fails or aborts:** the runner refuses to rerun it by design. The registered policy allows one relaunch with the same seed:
+     1. move `~/.a2d-holdout/runs/c2-confirm2-r<n>` (and its `.log`) to `…-failed1`;
+     2. move `runs/c2-confirm2/attempt-r<n>.json` to `attempt-r<n>-failed1.json`;
+     3. log it in the LOG, then re-run the queue line.
+     - A second failure means confirmation-2 is "not run": no claim, and the set is spent.
+   - **While holdout or confirmation jobs run:** never print process command lines (`pgrep -f` pids only).
+2. **Search continues on dev** from incumbent E002 (thr_allpass 0.0357). Look 1's numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until the final report; proposers learn only PASS.
+   - For each new run, read its first prompts and DIAG lines, then log it in the LOG and `results.tsv`.
+   - For E005, do the per-angle analysis (`$SCRATCH/per_sample.py`; E002 baseline per sample position: 0.654, 0.593, 0.646, 0.679).
+3. **Proposer comparison (phase B)** triggers at ≥ 3 keeps or 11k Luna left. The protocol is frozen (plan addendum 2026-10-16) and the tooling is ready (`docs/experiments/analysis/c2_phaseb.py`).
+- **C2-ISO2 (merged 32e72a53):** the oracle's compile and test run now execute under sandbox-exec.
+  - Both steps: no network and no file access under `$HOME` or the temp roots.
+  - Run step: no process spawning, Mach lookups or Apple Events.
+  - The environment is cleared, and the harness sandbox gets the same broker closure.
+  - Parity: 420/420 identical against the old binary. References: 140/140, 100/100 and 144/144.
+- **Claude-quota work** (the quota resets Sunday 12:00): C2-E2 (Claude judge 66/68 vs Sol 68/68), C2-FA2 failure taxonomy, proposer round c1 (E009, E010), and the reviews for C2-ISO2 and C2-CONFIRM2. There is no live Claude lane: the CLI is blocked inside the session sandbox.
 - **Budget:**
-  - Cycle-2 Luna: about 3.2k (275 on 10-15; 2,903 + about 15 smoke calls on 10-16).
-  - Sol: 407 on 10-16.
-  - About 21.8k Luna left of 25k; deadline 2026-11-30.
+  - Cycle-2 Luna: 275 (10-15), about 2.9k (10-16), and 1,060 (10-17 so far) plus about 22 dry-run calls outside `runs/`.
+  - About 20.7k Luna left of 25k. Confirmation-2 costs about 1.6k Luna and 125 Sol per replicate.
 
 ## The instrument (`a2d lift`, `crates/a2d-lift/`)
 
