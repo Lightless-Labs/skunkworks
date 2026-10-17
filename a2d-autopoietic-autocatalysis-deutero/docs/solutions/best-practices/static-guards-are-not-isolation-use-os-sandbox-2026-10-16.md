@@ -40,3 +40,4 @@ Cycle-2 harnesses are LLM-written Python files that the controller runs once per
 - After closing a hole, scan past artifacts to say whether earlier results were exposed.
 
 See also: `oracle-isolation-for-llm-candidates-2026-10-14.md`, `reviewer-clis-need-filesystem-isolation-2026-10-14.md`.
+See also: `seatbelt-sandbox-for-compilers-and-test-binaries-2026-10-17.md` (the same OS boundary extended to the oracle's rustc and test binary), `registering-a-one-shot-confirmation-run-2026-10-17.md`.
