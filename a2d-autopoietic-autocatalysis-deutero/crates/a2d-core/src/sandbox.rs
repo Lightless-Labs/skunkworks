@@ -181,6 +181,89 @@ pub struct IsolatedTestRun {
     pub output: String,
 }
 
+const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+
+fn seatbelt_path(path: &Path) -> String {
+    let real = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = real.to_string_lossy();
+    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// The toolchain's own `rustc`, resolved once through the `rustup` proxy
+/// from an empty directory (the toolchain the oracle has always used), so
+/// the sandbox can keep that sysroot readable and the proxy's home closed.
+fn toolchain_rustc() -> Option<(PathBuf, PathBuf)> {
+    static RUSTC: std::sync::OnceLock<Option<(PathBuf, PathBuf)>> = std::sync::OnceLock::new();
+    RUSTC
+        .get_or_init(|| {
+            let dir = tempfile::tempdir().ok()?;
+            let mut command = Command::new("rustc");
+            command.args(["--print", "sysroot"]).current_dir(dir.path());
+            harden_sandbox_child_command(&mut command);
+            let output = command.output().ok().filter(|o| o.status.success())?;
+            let sysroot = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
+            let rustc = sysroot.join("bin").join("rustc");
+            rustc.exists().then_some((rustc, sysroot))
+        })
+        .clone()
+}
+
+/// macOS seatbelt profile for code under test, at compile time
+/// (`include_str!` takes any literal path) and at run time (`std::fs`).
+/// Hidden tests, holdouts, ledgers and other runs' build dirs live under the
+/// user's home and the temporary roots, so those are closed and the network
+/// is off, except `readable` (the toolchain, the test binary) and
+/// `writable` (this run's own directory).
+fn oracle_sandbox_profile(writable: &Path, readable: &[&Path]) -> String {
+    let mut denied: Vec<PathBuf> = vec!["/private/tmp".into()];
+    for name in ["HOME", "TMPDIR"] {
+        if let Some(value) = std::env::var_os(name).filter(|v| !v.is_empty()) {
+            denied.push(value.into());
+        }
+    }
+    let denied: Vec<String> =
+        denied.iter().map(|p| format!("(subpath {})", seatbelt_path(p))).collect();
+    let mut profile = format!(
+        "(version 1)(allow default)(deny network*)(deny file-read* file-write* {})",
+        denied.join(" ")
+    );
+    for path in readable {
+        profile += &format!("(allow file-read* (subpath {}))", seatbelt_path(path));
+    }
+    profile += &format!("(allow file-read* file-write* (subpath {}))", seatbelt_path(writable));
+    profile
+}
+
+/// The linker runs through the `xcrun` shim, whose toolchain cache lives at
+/// `$TMPDIR/xcrun_db*`; without it every link re-resolves the toolchain
+/// (5-10 s instead of 0.2 s). Only the compile step gets this rule, and no
+/// candidate code executes at compile time.
+fn xcrun_cache_rule() -> String {
+    let Some(tmp) = std::env::var_os("TMPDIR").filter(|v| !v.is_empty()) else {
+        return String::new();
+    };
+    let real = fs::canonicalize(&tmp).unwrap_or_else(|_| PathBuf::from(&tmp));
+    let escaped: String = real
+        .to_string_lossy()
+        .trim_end_matches('/')
+        .chars()
+        .flat_map(|c| {
+            let special = "\\.^$|?*+()[]{}\"".contains(c);
+            special.then_some('\\').into_iter().chain(std::iter::once(c))
+        })
+        .collect();
+    format!("(allow file-read* file-write* (regex #\"^{escaped}/xcrun_db\"))")
+}
+
+fn sandboxed(program: &Path, writable: &Path, readable: &[&Path], extra_rules: &str) -> Command {
+    let mut command = Command::new(SANDBOX_EXEC);
+    command
+        .arg("-p")
+        .arg(oracle_sandbox_profile(writable, readable) + extra_rules)
+        .arg(program);
+    command
+}
+
 /// Compile a crate from two files and run only the tests whose names
 /// contain `filter`.
 ///
@@ -189,7 +272,9 @@ pub struct IsolatedTestRun {
 /// `#[path]` module holding trusted tests). After compilation both sources
 /// are deleted and the binary runs from a separate empty directory, so code
 /// under test cannot read the sources at run time. Compilation and execution
-/// each have a timeout.
+/// each have a timeout, and both run under an OS sandbox that closes every
+/// other file under the home and temporary roots (see
+/// [`oracle_sandbox_profile`]); without `sandbox-exec` nothing runs.
 pub fn run_isolated_tests(
     root: &str,
     module: &str,
@@ -219,8 +304,15 @@ pub fn run_isolated_tests(
         return failed("Failed to write sources".to_string(), false);
     }
 
+    if !Path::new(SANDBOX_EXEC).exists() {
+        return failed(format!("{SANDBOX_EXEC} not found: the oracle runs only sandboxed"), false);
+    }
+    let Some((rustc, sysroot)) = toolchain_rustc() else {
+        return failed("rustc sysroot not found".to_string(), false);
+    };
+
     let binary = build_dir.path().join("oracle_bin");
-    let mut compile = Command::new("rustc");
+    let mut compile = sandboxed(&rustc, build_dir.path(), &[&sysroot], &xcrun_cache_rule());
     compile
         .args(["--test", "--edition", "2024"])
         .arg(&harness_path)
@@ -239,7 +331,7 @@ pub fn run_isolated_tests(
     let _ = fs::remove_file(&harness_path);
     let _ = fs::remove_file(&candidate_path);
 
-    let mut run = Command::new(&binary);
+    let mut run = sandboxed(&binary, run_dir.path(), &[&binary], "");
     run.arg(filter).current_dir(run_dir.path());
     harden_sandbox_child_command(&mut run);
     match run_with_timeout(run, test_timeout) {
@@ -756,5 +848,36 @@ mod tests {{
         let candidate = "fn probe() -> bool { std::path::Path::new(\"h_test.rs\").exists() || std::fs::read_dir(\".\").map(|d| d.count() > 0).unwrap_or(false) }\n";
         let result = isolated(harness, candidate, "oracle_r1::");
         assert_eq!((result.passed, result.failed), (1, 0), "{}", result.output);
+    }
+
+    #[test]
+    fn code_under_test_cannot_read_files_by_absolute_path() {
+        // Hidden tests, holdouts and other runs' build dirs sit under the
+        // temp root and the user's home (this crate's manifest stands in for
+        // the latter). Neither the compiler (`include_str!` of a literal
+        // path) nor the test binary (`std::fs`) may read them.
+        let planted = tempfile::Builder::new()
+            .prefix("a2d-planted-")
+            .tempdir()
+            .unwrap();
+        let needle = ["planted", "_secret"].concat();
+        let secret = planted.path().join("hidden_tests.rs");
+        fs::write(&secret, &needle).unwrap();
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let reader = "#[cfg(test)]\nmod oracle_r2 {\n    use super::*;\n    #[test]\n    fn unreadable() { assert!(probe().is_err()); }\n}\ninclude!(\"c_test.rs\");\n";
+        for path in [secret.as_path(), manifest.as_path()] {
+            let literal = format!("{:?}", path.to_str().unwrap());
+            let compile_time = format!(
+                "const LEAK: &str = include_str!({literal});\nfn add(a: i32, b: i32) -> i32 {{ a + b + 0 * LEAK.len() as i32 }}\n"
+            );
+            let result = isolated(HARNESS, &compile_time, "oracle_x1::");
+            assert!(!result.compiled, "include_str!({literal}) compiled:\n{}", result.output);
+            assert!(!result.output.contains(&needle), "{}", result.output);
+
+            let run_time =
+                format!("fn probe() -> std::io::Result<String> {{ std::fs::read_to_string({literal}) }}\n");
+            let result = isolated(reader, &run_time, "oracle_r2::");
+            assert_eq!((result.passed, result.failed), (1, 0), "{literal}: {}", result.output);
+        }
     }
 }
