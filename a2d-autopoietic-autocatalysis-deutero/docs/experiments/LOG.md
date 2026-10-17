@@ -1395,3 +1395,24 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - `-c web_search="disabled"` replaces the ignored flag, and `codex_tool_calls` counts `web search:` lines (tests: providers 20/20, a2d-lift 66/66).
   - Live 1-task smoke with that binary, outside `runs/`, 1 Luna call: completed and passed, with no deprecation notice.
   - It is merged after `decision.json`. The confirmation-2 replicates run on the registered source (32e72a53 crates).
+
+### Review of the unattended queue automation (Codex Sol + fresh Claude, copies only)  [cycle 2, 2026-10-17 ~07:10 UTC; before any batch confirmation]
+- **Scope:** queue.txt, queue-runner.sh, confirm_best.py and its tests, the eval.py excerpt (cap, `log_result`, stages, web audit), and the pre-registration texts.
+- **Fixed** (d364129c, 54e5b358, and the queue rewrite):
+  - `confirm_best` enforced no maximum, while the queue offered three chances. It now enforces **at most 2 confirmations** (test).
+  - After a promotion, an earlier experiment's manifest mismatch could mask a later keep. Keeps are now found first (test).
+  - A crashing `confirm_best` printed nothing, and `eval` of empty output is a silent no-op. It now prints `confirm-best: error: …` (test). It uses `printf`, not `echo`.
+  - **Failures were invisible:** the runner's filter drops `sys.exit` messages and the audit JSON, and prints no exit status. Every line from 6 on now runs through `qrun.sh`: full per-line logs, plus a visible `rc=` line.
+  - **No slack after 10-21:** a 10-22 block was added (resumes, plus `confirm_best` twice, still capped at 2).
+  - `log_result` crashed on a short row; it now tolerates one (test).
+  - **Provider-merge timing:** merging `c2-web-provider` right after `decision.json` would change the instrument between an experiment's stages. It is now merged after the batch's confirmation step and before phase B.
+- **Checked, no change:**
+  - `head -20` cannot cut a run: the controller writes to log files, and Python prints at most about 5 matching lines per stage record.
+  - zsh quoting via `shlex.quote` is sound.
+  - The tie-break order matches the pre-registration.
+  - Replicate 2 cannot run on replicate 1's UTC day: the wait line is ≥ 10-19, and `cmd_confirm` checks it again.
+  - E005 already has its full-stage decision, so it needs no resume lines.
+- **Declined (proportionality):**
+  - transactional promotion: `log_result` and the copy are adjacent;
+  - an atomic cross-process budget: one sequential writer;
+  - auto-relaunch of a failed confirmation replicate: the registered policy is a by-hand relaunch after moving dirs. Instead, watchers wake the session on milestones and failures.

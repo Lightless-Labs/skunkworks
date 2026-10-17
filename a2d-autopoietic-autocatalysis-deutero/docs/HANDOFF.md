@@ -28,7 +28,9 @@
      - E005 (done: provisional keep), then E007 (screen on 10-17; its rest defers at the cap);
      - at ≥ 00:05 UTC 10-18, `python3 -I nano/eval.py confirm --rep 1 --registered-at 78727f29… --jobs 8`, then E007 resume, then E006;
      - at ≥ 00:05 UTC 10-19, `confirm --rep 2 …` the same way, then E006 resume, then E008, E009 and E010;
-     - at ≥ 00:05 UTC 10-20 and again 10-21: resumes for E006–E010, then `eval "$(python3 -I nano/confirm_best.py E005 … E010)"` (twice on 10-21).
+     - at ≥ 00:05 UTC 10-20, 10-21 and 10-22: resumes for E006–E010, then `eval "$(python3 -I nano/confirm_best.py E005 … E010)"` (once on 10-20, twice on the later days). `confirm_best` enforces the pre-registered maximum of 2 confirmations.
+     - **From line 6 on, every line is `$SCRATCH/qrun.sh <tag> $SCRATCH/qcmds/L<nn>-<tag>.zsh`.** The full output goes to `$SCRATCH/qlogs/<UTC>-<tag>.log`, and the runner output shows one `"decision": "qrun <tag> rc=<n> … last=<line>"` per line. Any `rc≠0` is a failure to investigate.
+     - The runner itself (`queue-runner.sh`) must not be edited while it runs, and lines ≤ the current one must never change. Two copies-only reviews (Sol and a fresh Claude, 10-17) checked this automation; their dispositions are in the LOG.
      - A cap-deferred stage prints "deferred". Re-running a command is free and safe: completed stages are cached, and `log_result` logs each (id, stage, decision) once. So over-provision resume lines rather than re-queue by hand. Append lines to the end only.
    - **End of the batch (pre-registered in the LOG, 10-17):** `confirm_best` mechanically confirms the largest full-stage provisional keep, at most 2 confirmations. This happens even if the 11k phase-B trigger has fired.
      - If one is promoted: `python3 -I nano/eval.py aa-from-replicates --id <id>`, then phase B starts from that incumbent. Otherwise phase B starts from E002.
@@ -42,7 +44,8 @@
      - Rebuilding the binary from the same source is fine: the binary sha is logged, not enforced, because debug builds are not byte-reproducible.
      - The harness-supplied-tests op idea waits until this window closes. So does the **provider web-search fix (C2-WEB):** add `-c web_search="disabled"` and count `web search:` lines in `codex_tool_calls`, with a test.
      - codex-cli 0.162 ignores `--disable web_search_request`, so web search is ON in every `a2d lift` call until then. There were 0 uses in about 15k recorded transcripts. `eval.py` stops a dev experiment on any search, and phase B invalidates the round.
-     - **The fix is ready** on branch `c2-web-provider` (4b80fe67, pushed): provider tests 20/20, a2d-lift 66/66, and a live 1-task smoke with no deprecation notice and a pass. Merge it to main right after `decision.json`, rebuild, and log it.
+     - **The fix is ready** on branch `c2-web-provider` (4b80fe67, pushed): provider tests 20/20, a2d-lift 66/66, and a live 1-task smoke with no deprecation notice and a pass.
+     - **Merge it after the batch's confirmation step and before phase B round 1,** not right after `decision.json`. Merging mid-batch would change the provider between an experiment's stages (Claude review). Then rebuild and log it.
    - **If a replicate's generation fails or aborts:** the runner refuses to rerun it by design. The registered policy allows one relaunch with the same seed:
      1. move `~/.a2d-holdout/runs/c2-confirm2-r<n>` (and its `.log`) to `…-failed1`;
      2. move `runs/c2-confirm2/attempt-r<n>.json` to `attempt-r<n>-failed1.json`;
