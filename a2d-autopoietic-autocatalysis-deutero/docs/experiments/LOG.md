@@ -953,6 +953,12 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **PASS:** E002 is frozen as the confirmation candidate. Next come one Codex Sol review and one fresh-Claude review, then a separate pre-registration spending confirmation-2 with D and B as comparators.
   - **FAIL:** the search continues from the E002 incumbent.
 - **Budget:** about 1.25k Luna + 0.2k Sol. It launches after 00:00 UTC 2026-10-17 (the 10-16 cap is spent) from a background timer.
+- **Result (2026-10-17 01:18 UTC): PASS, valid.**
+  - n = 200 task-runs (100 tasks × 2 replicates). Spend: D 251 invocations; X:inc 989 (Luna and Sol).
+  - Today's Luna counter was at 1,060 after the look.
+  - Run at registration 8e07801e: the controller paths were unchanged until the gate file was written, and C2-ISO2 merged after it.
+  - The numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until the final report.
+  - **Next, as registered:** freeze E002 (`runs/c2-confirm2/frozen.py`, same sha), get the two reviews, then pre-register confirmation-2.
 
 ### C2-FA1 — where does the E002 incumbent still fail?  [cycle 2, offline analysis, 2026-10-16; no model calls]
 - **Method:**
