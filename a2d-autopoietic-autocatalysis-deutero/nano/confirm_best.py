@@ -24,20 +24,24 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+MAX_CONFIRMATIONS = 2  # pre-registered (LOG, 10-17): at most 2 before phase B
+
+
 def say(msg):
     # The queue runner only passes through lines carrying a "decision" key.
-    return "echo " + shlex.quote(json.dumps({"decision": "confirm-best: " + msg}))
+    return "printf '%s\\n' " + shlex.quote(json.dumps({"decision": "confirm-best: " + msg}))
 
 
 def plan(batch, results_text, incumbent_sha, runs):
     rows = [dict(zip(results_text.splitlines()[0].split("\t"), line.split("\t")))
             for line in results_text.splitlines()[1:] if line.strip()]
+    for exp in batch:
+        if any(r["id"] == exp and r["stage"] == "confirm" and r["decision"] == "keep" for r in rows):
+            return say(f"{exp} was already promoted")
     pending, provisional = [], []
     for exp in batch:
         manifest = runs / f"c2-{exp}" / "manifest.json"
         mine = [r for r in rows if r["id"] == exp]
-        if any(r["stage"] == "confirm" and r["decision"] == "keep" for r in mine):
-            return say(f"{exp} was already promoted")
         if not manifest.exists() or not mine:
             pending.append(exp)
             continue
@@ -58,6 +62,9 @@ def plan(batch, results_text, incumbent_sha, runs):
     if not provisional:
         return say("no provisional keep left")
     _, _, exp, proposer = min(provisional)
+    used = len({r["id"] for r in rows if r["id"] in batch and r["stage"] == "confirm"})
+    if used >= MAX_CONFIRMATIONS:
+        return say(f"confirmation limit reached ({used} of {MAX_CONFIRMATIONS}); {exp} waits until after phase B")
     d = runs / f"c2-{exp}"
     hyp = (d / "hypothesis.txt").read_text().strip()
     return " ".join(["python3 -I nano/eval.py run --id", shlex.quote(exp),
@@ -65,5 +72,14 @@ def plan(batch, results_text, incumbent_sha, runs):
                      "--proposer", shlex.quote(proposer), "--jobs 6 --hypothesis", shlex.quote(hyp)])
 
 
+def main(batch, results_text=None):
+    """Never fails silently: an `eval "$(...)"` of empty output would be a no-op."""
+    try:
+        text = results_text if results_text is not None else (NANO / "results.tsv").read_text()
+        return plan(batch, text, sha(NANO / "harness.py"), ROOT / "runs")
+    except Exception as error:  # noqa: BLE001
+        return say(f"error: {type(error).__name__}: {error}")
+
+
 if __name__ == "__main__":
-    print(plan(sys.argv[1:], (NANO / "results.tsv").read_text(), sha(NANO / "harness.py"), ROOT / "runs"))
+    print(main(sys.argv[1:]))
