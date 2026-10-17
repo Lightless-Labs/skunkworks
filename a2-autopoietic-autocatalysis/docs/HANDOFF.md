@@ -13,7 +13,7 @@ The audit remediation roadmap is [`docs/plans/2026-07-10-a2-remediation-roadmap.
 - **Active plan:** [harness-evolution loop](plans/2026-10-15-harness-evolution-loop.md). A researcher (Codex gpt-6-luna) evolves `genome/` against the frozen evaluator `bench/evolve/` (`evaluator.lock`). The keep/discard rule and thresholds are in the [noise floor](benchmark-results/evolve/noise-floor.md). The sealed pool is openlibrary only ([blocker](blockers/2026-10-16-qutebrowser-native-gate.md)).
 - **Log:** [`log.jsonl`](benchmark-results/evolve/log.jsonl). Three discards so far: exp-0001 failed stage A; exp-0002 failed stage B (p = 0.10); exp-0003 failed stage B (p = 0.80, full pool +3).
 - **Running:** the unattended loop to 22 experiments, on evaluator `6ab0fe7e`, which has stream-confirmed passes and gates the dev pool 44/44. It resumes with `python3 bench/evolve/loop.py --dev-tasks ~/.a2-e1/private/evolve-dev-tasks.json --screen ~/.a2-e1/private/evolve-screen.json --champion-runs nf-1 --shards 6 --max-experiments 22 --nightly-token-cap 600000000`.
-- **Next:** finish the sealed strict re-gate (paused at 12/12 passing) and record it in a protocol-v2 addendum. Then work through the pre-confirmation checklist (plan §7 addendum) and run the confirmation, 2026-12-01..10.
+- **Next:** sealed pool re-gated 46/46 under the strict grader (protocol-v2 addendum 2026-10-17). Remaining: the pre-confirmation checklist (plan §7 addendum), then the confirmation, 2026-12-01..10.
 
 ## Current Numbers (test counts refreshed 2026-07-10; benchmark rows are historical unless dated below)
 
