@@ -1,6 +1,6 @@
 # A² Handoff — Read This First
 
-**Last updated:** 2026-10-15
+**Last updated:** 2026-10-17
 **Update this file:** before context compaction, at session end, or when significant state changes.
 
 ## What Is This
@@ -9,11 +9,11 @@ A² (Autopoietic Autocatalysis) is intended to become an autonomous software fac
 
 The audit remediation roadmap is [`docs/plans/2026-07-10-a2-remediation-roadmap.md`](plans/2026-07-10-a2-remediation-roadmap.md). Follow its phase order and stop/go gates before making further maturity, autonomy, or external-value claims.
 
-**Status (2026-10-15):** maturity `PreStage0`; `--apply` locked; remediation roadmap (Phases 1–8) frozen.
-- **E1 decided: NO GO** for the lineage loop ([`decision.md`](benchmark-results/external-value/e1/decision.md); a2-full 12/36 vs stateless retry 10/36). Post-mortem: [`2026-10-15-a2-first-cycle.md`](post-mortems/2026-10-15-a2-first-cycle.md).
-- **Active plan:** [`2026-10-15-harness-evolution-loop.md`](plans/2026-10-15-harness-evolution-loop.md): a researcher evolves `genome/` against the frozen evaluator `bench/evolve/` (hardened sandboxed grader, `evaluator.lock`); first promoted variant due 2026-12-15 under [`protocol-v2.toml`](../bench/external-value/protocol-v2.toml).
-- **Done (2026-10-16):** evaluator, genome G0, loop and researcher built and live-tested; [noise floor + fixed S + thresholds](benchmark-results/evolve/noise-floor.md); sealed pool = openlibrary only ([blocker](blockers/2026-10-16-qutebrowser-native-gate.md)). Attended: exp-0001 discard (A), exp-0002 discard (B, p = 0.10).
-- **Running:** unattended loop to 22 experiments (`python3 bench/evolve/loop.py --dev-tasks ~/.a2-e1/private/evolve-dev-tasks.json --screen ~/.a2-e1/private/evolve-screen.json --champion-runs nf-1 --shards 4 --max-experiments 22 --nightly-token-cap 250000000`; resumable). Log: [`log.jsonl`](benchmark-results/evolve/log.jsonl). Next: confirmation per protocol-v2 (2026-12-01..10).
+**Status (2026-10-17):** maturity `PreStage0`; `--apply` locked. E1: **NO GO** for the lineage loop ([decision](benchmark-results/external-value/e1/decision.md), [post-mortem](post-mortems/2026-10-15-a2-first-cycle.md)).
+- **Active plan:** [harness-evolution loop](plans/2026-10-15-harness-evolution-loop.md). A researcher (Codex gpt-6-luna) evolves `genome/` against the frozen evaluator `bench/evolve/` (`evaluator.lock`). The keep/discard rule and thresholds are in the [noise floor](benchmark-results/evolve/noise-floor.md). The sealed pool is openlibrary only ([blocker](blockers/2026-10-16-qutebrowser-native-gate.md)).
+- **Log:** [`log.jsonl`](benchmark-results/evolve/log.jsonl). Three discards so far: exp-0001 failed stage A; exp-0002 failed stage B (p = 0.10); exp-0003 failed stage B (p = 0.80, full pool +3).
+- **Running:** the unattended loop to 22 experiments, on evaluator `6ab0fe7e`, which has stream-confirmed passes and gates the dev pool 44/44. It resumes with `python3 bench/evolve/loop.py --dev-tasks ~/.a2-e1/private/evolve-dev-tasks.json --screen ~/.a2-e1/private/evolve-screen.json --champion-runs nf-1 --shards 6 --max-experiments 22 --nightly-token-cap 600000000`.
+- **Next:** finish the sealed strict re-gate (paused at 12/12 passing) and record it in a protocol-v2 addendum. Then work through the pre-confirmation checklist (plan §7 addendum) and run the confirmation, 2026-12-01..10.
 
 ## Current Numbers (test counts refreshed 2026-07-10; benchmark rows are historical unless dated below)
 
