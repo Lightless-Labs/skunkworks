@@ -31,6 +31,15 @@
      - at ≥ 00:05 UTC 10-20, 10-21 and 10-22: resumes for E006–E010, then `eval "$(python3 -I nano/confirm_best.py E005 … E010)"` (once on 10-20, twice on the later days). `confirm_best` enforces the pre-registered maximum of 2 confirmations.
      - **From line 6 on, every line is `$SCRATCH/qrun.sh <tag> $SCRATCH/qcmds/L<nn>-<tag>.zsh`.** The full output goes to `$SCRATCH/qlogs/<UTC>-<tag>.log`, and the runner output shows one `"decision": "qrun <tag> rc=<n> … last=<line>"` per line. Any `rc≠0` is a failure to investigate.
      - The runner itself (`queue-runner.sh`) must not be edited while it runs, and lines ≤ the current one must never change. Two copies-only reviews (Sol and a fresh Claude, 10-17) checked this automation; their dispositions are in the LOG.
+     - **Expected noise after a promotion:** once `confirm_best` promotes, every later E-resume line ends `rc=1 last=nano/aa.json does not match…`. That is by design: nothing runs against the new incumbent until `aa-from-replicates`.
+     - **Safe runner restart** (if the runner dies or the session ends):
+       1. Find the last `=== … [N] …` marker in the runner output, and check whether `[N] done` was printed.
+       2. Create a new queue file from line N+1 on, or from line N if it never finished, copying the `qrun.sh …` lines.
+       3. Start `$SCRATCH/queue-runner.sh <new file> <yyyymmddHHMM now>` in the background.
+       - **Never replay lines 1–5:** they are look 1, E005, E007 and confirmation replicate 1, and a replayed replicate is refused as "attempted".
+       - A replicate that died mid-run follows the registered relaunch policy above, never a replay.
+     - **Watchers** (wake this session): `caffeinate -i -w <runner pid>` (runner pid 62749, the `queue-runner.sh` zsh about 25 h old at 10-17 07:00).
+       - Milestone watchers use `kill -0 <pid>` and `grep "[N] done"`, never `pgrep -f`: the watcher's own argv would match.
      - A cap-deferred stage prints "deferred". Re-running a command is free and safe: completed stages are cached, and `log_result` logs each (id, stage, decision) once. So over-provision resume lines rather than re-queue by hand. Append lines to the end only.
    - **End of the batch (pre-registered in the LOG, 10-17):** `confirm_best` mechanically confirms the largest full-stage provisional keep, at most 2 confirmations. This happens even if the 11k phase-B trigger has fired.
      - If one is promoted: `python3 -I nano/eval.py aa-from-replicates --id <id>`, then phase B starts from that incumbent. Otherwise phase B starts from E002.
