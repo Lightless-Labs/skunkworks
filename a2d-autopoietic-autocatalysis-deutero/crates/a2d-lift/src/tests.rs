@@ -1658,7 +1658,8 @@ fn external_harness_cannot_read_files_outside_its_working_directory() {
             "def probe(f):\n    try:\n        return 'read ' + str(f())[:40]\n    except Exception as e:\n        return 'blocked ' + type(e).__name__\n\
              notes = [probe(lambda: sys.modules['io'].open({secret}).read()),\n\
              \x20        probe(lambda: os.listdir({home})),\n\
-             \x20        probe(lambda: sys.modules['socket'].create_connection(('127.0.0.1', 9)) if 'socket' in sys.modules else 'no socket')]\n\
+             \x20        probe(lambda: sys.modules['socket'].create_connection(('127.0.0.1', 9)) if 'socket' in sys.modules else 'no socket'),\n\
+             \x20        'spawn ' + str(sys.modules['os'].system('/bin/echo x'))]\n\
              print(json.dumps({{'op': 'done', 'codes': ['// ' + ' | '.join(notes) + '\\nfn double(x: i32) -> i32 {{ x * 2 }}']}}), flush=True)",
             secret = json!(secret.to_str().unwrap()),
             home = json!(home),
@@ -1681,6 +1682,10 @@ fn external_harness_cannot_read_files_outside_its_working_directory() {
     let submitted = fs::read_to_string(dir.path().join("submissions/X-nano/t1/r0.rs")).unwrap();
     assert!(!submitted.contains("SECRET"), "hidden content reached the harness: {submitted}");
     assert!(submitted.contains("blocked PermissionError | blocked PermissionError"), "{submitted}");
+    assert!(
+        submitted.contains("| spawn ") && !submitted.contains("spawn 0"),
+        "the harness spawned a process: {submitted}"
+    );
 }
 
 #[test]
