@@ -22,7 +22,6 @@ pub const CODEX_DISABLED_FEATURES: &[&str] = &[
     "shell_tool",
     "unified_exec",
     "js_repl",
-    "web_search_request",
     "standalone_web_search",
     "browser_use",
     "computer_use",
@@ -76,6 +75,11 @@ impl CliProvider {
                     args.push("--disable".to_string());
                     args.push(feature.to_string());
                 }
+                // codex-cli 0.162 turns web search on by default and ignores the
+                // deprecated `--disable web_search_request` (verified live
+                // 2026-10-17, A²D LOG C2-WEB); the config key turns it off.
+                args.push("-c".to_string());
+                args.push("web_search=\"disabled\"".to_string());
                 args
             }),
             output_parser: Box::new(|output: &str| (output.to_string(), None)),
@@ -343,11 +347,12 @@ fn codex_usage(stderr: &str) -> TokenUsage {
     }
 }
 
-/// Tool calls in a Codex CLI stderr log: each is announced by a line `exec`.
+/// Tool calls in a Codex CLI stderr log: a command is announced by a line
+/// `exec`, a web search by a line starting `web search:` (codex-cli 0.162).
 pub fn codex_tool_calls(transcript: &str) -> usize {
     transcript
         .lines()
-        .filter(|line| line.trim() == "exec")
+        .filter(|line| line.trim() == "exec" || line.starts_with("web search:"))
         .count()
 }
 
@@ -512,6 +517,14 @@ mod tests {
     }
 
     #[test]
+    fn codex_tool_calls_counts_web_searches_but_not_the_deprecation_notice() {
+        // codex-cli 0.162 prints a search as `web search: <query>`, never as `exec`.
+        let stderr = "deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.\n\
+                      web search: \nweb search: site:blog.rust-lang.org release\ncodex\nanswer\nexec\nls\n";
+        assert_eq!(codex_tool_calls(stderr), 3);
+    }
+
+    #[test]
     fn large_stderr_output_does_not_block_the_provider() {
         let provider = CliProvider {
             name: "test/noisy".to_string(),
@@ -577,12 +590,21 @@ mod tests {
             max_tokens: 10,
         };
         let args = (provider.args_builder)(&request);
-        for feature in ["shell_tool", "unified_exec", "web_search_request"] {
+        for feature in ["shell_tool", "unified_exec"] {
             assert!(
-                args.windows(2).any(|w| w[0] == "--disable" && w[1] == feature),
+                args.windows(2)
+                    .any(|w| w[0] == "--disable" && w[1] == feature),
                 "{feature} not disabled: {args:?}"
             );
         }
+        // codex-cli 0.162 turns web search on by default and ignores the deprecated
+        // `--disable web_search_request`; only the config key turns it off (C2-WEB).
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-c" && w[1] == "web_search=\"disabled\""),
+            "web search not disabled: {args:?}"
+        );
+        assert!(!args.iter().any(|a| a == "web_search_request"), "{args:?}");
     }
 
     #[test]
