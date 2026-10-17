@@ -1167,3 +1167,23 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **E010:** 5 calls. Each Luna reply listed its doubtful readings and returned 2 files (files per call [2, 2, 2, 2]). 6 distinct greens; the judge picked `1B` (a hedge file), which passed.
   - **E009:** 4 calls. The checklist is appended after the task; one-green branch; passed.
   - The extra smoke calls today were about 30 Luna across 4 smokes, all outside `runs/`, so the cap counter does not see them. 10-16 stays under 3k (about 2,935).
+
+### C2-ISO2 — oracle isolation: code under test now runs under an OS sandbox  [cycle 2, instrument fix, registered 2026-10-17 before the parity run]
+- **Gap:** `run_isolated_tests` (the public and hidden oracle) ran `rustc` and the test binary as the user, with no OS sandbox.
+  - A harness controls the Rust it sends through `public_test`. That code could read any file by absolute path: at compile time with `include_str!("<literal path>")`, or at run time with `std::fs`. Examples are `tasks/*/hidden_tests.rs` and `~/.a2d-holdout`, and the public output goes back to the harness.
+  - The submission flags (`include_str!`, `std::fs`, …) are lint, and they cover only final submissions, not `public_test` traffic.
+  - Same lesson as C2-ISO: a static guard is not a boundary.
+- **Audit, no exploitation found:**
+  - No harness file under `nano/` or `runs/c2-*` contains `include_str`, `include!`, `std::fs`, `/Users`, `a2d-holdout` or `hidden_tests`.
+  - No cycle-2 submission was flagged suspicious.
+  - The model-response scan is below.
+- **Fix:** branch `c2-oracle-iso`, merged only after look 1's gate, because `crates/` is frozen by its registration.
+  - The compiler and the test binary each run under `sandbox-exec` with: no network; no file access under `$HOME`, `$TMPDIR` or `/private/tmp`; the toolchain sysroot and the binary readable; their own build or run dir read/write.
+  - `rustc` is the toolchain's own binary, resolved once through the rustup proxy from an empty directory: the same toolchain as before.
+  - The oracle fails closed without `sandbox-exec`.
+  - New test: a file planted in the temp root and this crate's manifest are unreadable at compile time (`include_str!` fails, and the needle never appears in the output) and at run time (`read_to_string` errs).
+- **Pre-registered parity check (zero Luna):**
+  - Re-score the 420 submissions of `runs/c2-aa-200daaa763c4/run` with the new binary, via `a2d lift score` on a copy of the ledger cut at `generation_complete`.
+  - Compare `compiled`, `passed`, `failed`, `expected`, `timed_out` and `all_passed` against the recorded scores.
+  - **Pass:** all 420 identical. Look 1's result and E002's A/A threshold (both measured on the old oracle) then carry forward.
+  - **Any difference:** investigate before E005 runs; the queue waits on the merge.
