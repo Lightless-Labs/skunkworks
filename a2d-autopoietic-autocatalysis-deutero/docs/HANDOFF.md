@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-17 02:50 UTC (session 145: **look 1 PASSED; confirmation-2 registered** at `78727f29`. E002, 4 Luna samples plus a Sol judge, is frozen as `runs/c2-confirm2/frozen.py`. Replicate 1 runs at 00:05 UTC 10-18 and replicate 2 at 00:05 UTC 10-19; then manifests, scoring and pooling. The oracle is now OS-sandboxed (C2-ISO2), with parity 420/420.)
+**Last updated:** 2026-10-17 04:45 UTC (session 145: E005 provisional keep (+5.0 pp, confirmation deferred); **look 1 PASSED; confirmation-2 registered** at `78727f29`. E002, 4 Luna samples plus a Sol judge, is frozen as `runs/c2-confirm2/frozen.py`. Replicate 1 runs at 00:05 UTC 10-18 and replicate 2 at 00:05 UTC 10-19; then manifests, scoring and pooling. The oracle is now OS-sandboxed (C2-ISO2), with parity 420/420.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -43,7 +43,10 @@
    - **While holdout or confirmation jobs run:** never print process command lines (`pgrep -f` pids only).
 2. **Search continues on dev** from incumbent E002 (thr_allpass 0.0357). Look 1's numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until the final report; proposers learn only PASS.
    - For each new run, read its first prompts and DIAG lines, then log it in the LOG and `results.tsv`.
-   - For E005, do the per-angle analysis (`$SCRATCH/per_sample.py`; E002 baseline per sample position: 0.654, 0.593, 0.646, 0.679).
+   - **E005 (diverse angles): provisional keep at full, +5.0 pp (SE 2.8), 123 vs 116/140.** Its confirmation waits for the sequencing rule: once E006–E010 have reached full, the largest Δ is confirmed first.
+     - Per-angle: no per-sample cost, small decorrelation, +5 tasks from generation.
+     - The in-run E002 arm drew low (116 vs 123 and 117 on 10-16), so expect a close confirmation. See the LOG.
+   - E007 (Sol-directed repair) has been running since 04:11 UTC 10-17. Its first prompts were read and are as designed.
 3. **Proposer comparison (phase B)** triggers at ≥ 3 keeps or 11k Luna left. The protocol is frozen (plan addendum 2026-10-16) and the tooling is ready (`docs/experiments/analysis/c2_phaseb.py`).
 - **C2-ISO2 (merged 32e72a53):** the oracle's compile and test run now execute under sandbox-exec.
   - Both steps: no network and no file access under `$HOME` or the temp roots.
