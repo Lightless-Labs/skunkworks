@@ -1,0 +1,157 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CsvError {
+    UnexpectedQuote { record: usize, byte: usize },
+    TrailingByte { record: usize, byte: usize },
+    BareCr { record: usize, byte: usize },
+    UnclosedQuote { record: usize, byte: usize },
+    Nul { record: usize, byte: usize },
+}
+
+pub fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, CsvError> {
+    let bytes = input.as_bytes();
+    let start = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) { 3 } else { 0 };
+
+    if start == bytes.len() {
+        return Ok(Vec::new());
+    }
+
+    let mut records = Vec::new();
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut index = start;
+    let mut record = 0usize;
+
+    #[derive(Clone, Copy)]
+    enum State {
+        FieldStart,
+        Unquoted,
+        Quoted { opening: usize },
+        AfterQuote,
+    }
+
+    let mut state = State::FieldStart;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+
+        if byte == 0 {
+            return Err(CsvError::Nul { record, byte: index });
+        }
+
+        let outside_quotes = !matches!(state, State::Quoted { .. });
+        if outside_quotes && byte == b'\r' && bytes.get(index + 1) != Some(&b'\n') {
+            return Err(CsvError::BareCr { record, byte: index });
+        }
+
+        match state {
+            State::FieldStart => match byte {
+                b'"' => {
+                    state = State::Quoted { opening: index };
+                    index += 1;
+                }
+                b',' => {
+                    fields.push(String::new());
+                    index += 1;
+                }
+                b'\n' => {
+                    fields.push(String::new());
+                    records.push(std::mem::take(&mut fields));
+                    record += 1;
+                    index += 1;
+                }
+                b'\r' => {
+                    fields.push(String::new());
+                    records.push(std::mem::take(&mut fields));
+                    record += 1;
+                    index += 2;
+                }
+                _ => {
+                    let next = input[index..].chars().next().unwrap();
+                    field.push(next);
+                    state = State::Unquoted;
+                    index += next.len_utf8();
+                }
+            },
+            State::Unquoted => match byte {
+                b'"' => {
+                    return Err(CsvError::UnexpectedQuote { record, byte: index });
+                }
+                b',' => {
+                    fields.push(std::mem::take(&mut field));
+                    state = State::FieldStart;
+                    index += 1;
+                }
+                b'\n' => {
+                    fields.push(std::mem::take(&mut field));
+                    records.push(std::mem::take(&mut fields));
+                    record += 1;
+                    state = State::FieldStart;
+                    index += 1;
+                }
+                b'\r' => {
+                    fields.push(std::mem::take(&mut field));
+                    records.push(std::mem::take(&mut fields));
+                    record += 1;
+                    state = State::FieldStart;
+                    index += 2;
+                }
+                _ => {
+                    let next = input[index..].chars().next().unwrap();
+                    field.push(next);
+                    index += next.len_utf8();
+                }
+            },
+            State::Quoted { opening } => {
+                if byte == b'"' {
+                    if bytes.get(index + 1) == Some(&b'"') {
+                        field.push('"');
+                        index += 2;
+                    } else {
+                        state = State::AfterQuote;
+                        index += 1;
+                    }
+                } else {
+                    let next = input[index..].chars().next().unwrap();
+                    field.push(next);
+                    index += next.len_utf8();
+                    let _ = opening;
+                }
+            }
+            State::AfterQuote => match byte {
+                b',' => {
+                    fields.push(std::mem::take(&mut field));
+                    state = State::FieldStart;
+                    index += 1;
+                }
+                b'\n' => {
+                    fields.push(std::mem::take(&mut field));
+                    records.push(std::mem::take(&mut fields));
+                    record += 1;
+                    state = State::FieldStart;
+                    index += 1;
+                }
+                b'\r' => {
+                    fields.push(std::mem::take(&mut field));
+                    records.push(std::mem::take(&mut fields));
+                    record += 1;
+                    state = State::FieldStart;
+                    index += 2;
+                }
+                _ => {
+                    return Err(CsvError::TrailingByte { record, byte: index });
+                }
+            },
+        }
+    }
+
+    if let State::Quoted { opening } = state {
+        return Err(CsvError::UnclosedQuote { record, byte: opening });
+    }
+
+    if !matches!(state, State::FieldStart) || !fields.is_empty() {
+        fields.push(field);
+        records.push(fields);
+    }
+
+    Ok(records)
+}
