@@ -1334,3 +1334,24 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Reading:** the mechanism points in the hypothesised direction (more tasks with a right reading in the pool), but the generation gain (+5 tasks, +3.6 pp any-pass) is about one SE.
   - **Caveat:** E002's own dev replicates scored 123/140 (10-16 full) and 117/140 (10-16 confirm). Its in-run arm here, 116/140, is the lowest of the three, and E005's 123/140 only equals E002's best replicate.
   - Part of the +5.0 pp is likely a low draw of the incumbent arm (winner's-curse direction). **The confirmation replicate decides**, and with this effect size it will be close.
+
+### Pre-registration: closing the E005–E010 batch, and its order relative to phase B  [cycle 2, 2026-10-17 ~05:15 UTC; before any E006–E010 result]
+- **Queue walk** (cap gates: worst case 10 Luna per task, so 680 per screen and 720 per rest stage; realised ≈ 8 per task, from E005):
+  - **10-17:** E007's rest stage defers.
+  - **10-18:** confirmation-2 r1 (≈1.6k), E007 rest, E006 screen. E006 rest defers.
+  - **10-19:** r2, E006 rest, E008 screen. E008 rest defers, and so do E009 and E010.
+  - **10-20 and 10-21:** resume lines for E006–E010 have been appended, so redundant re-runs cost nothing (no calls; `log_result` now logs each (id, stage, decision) once, f00da25a). Its call sites do not include the CONFIRM2 runner section, which is unchanged.
+- **The promotion sequencing rule is now mechanical:** `nano/confirm_best.py E005 E006 E007 E008 E009 E010` (66d4db9d, 5 offline tests).
+  - It waits until every batch experiment has a decision.
+  - Then it runs the confirmation replicate of the provisional keep with the largest full-stage Δall-pass (ties: smaller SE, then lower id).
+  - After a discarded confirmation, the next call picks the next one. Once one is promoted, it stops.
+  - Nobody chooses which experiment is confirmed after seeing E006–E010.
+- **Order relative to phase B (fixed now).**
+  - Projected cumulative spend reaches about 13.9k by the end of 10-20, about 11.1k left, so the phase-B budget trigger (11k left) fires as the batch ends.
+  - Rule: **the batch's confirmation step runs first, even if the trigger has fired:** at most 2 confirmation replicates (≤ 1.4k worst case each).
+  - If one is promoted, its A/A comes from its own replicates (`eval.py aa-from-replicates`), and **phase B starts from that incumbent** and freezes it. Otherwise phase B starts from E002.
+  - Provisional keeps not confirmed before phase B follow the sequencing rule after phase B, budget permitting. After a promotion they are rebuilt as compositions on the new incumbent.
+  - **Why:**
+    - phase B compares proposers against the incumbent, so a pending provisional keep should not wait three days or more;
+    - the order is fixed before knowing which experiment is best, and confirm_best removes the remaining choice.
+  - **Budget check:** 11.1k − ≤ 2.5k (two confirmations) − 6.6k (phase B) − 1.3k (final look) ≥ 0.7k.
