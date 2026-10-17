@@ -1379,3 +1379,15 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Transcripts from a codex version other than 0.162.0 are disclosed, because the `web search:` marker is version-specific.
   - This can only turn a would-be SUPPORTED into no claim, never the reverse. So the existing Sol and fresh-Claude reviews stand, and no re-review is needed.
 - **After `decision.json` (freeze lifted):** fix the provider (`-c web_search="disabled"`, and count `web search:` lines in `codex_tool_calls`, with a test). Then extend the count to the 10-14 runs to complete the record.
+
+### Phase-B tooling: live end-to-end smoke passes after the C2-WEB fix  [cycle 2, 2026-10-17; dev only, throwaway phase dirs]
+- **Driver:** `phase_dir` was redirected to `runs/c2-pc-smoke2`, round 1's evaluation quarter shrunk to one family (csv-quote, 4 tasks), and `log_result` redirected, so the real `runs/c2-pc` is untouched and unfrozen and `nano/results.tsv` is unchanged (asserted).
+- **Result:**
+  - stats reproduced C2-FA1, and 8 dossiers were built;
+  - **both live Sol proposals are valid** on the first attempt (guard, lanes, 1-task smoke);
+  - the 3-arm round ran: integrity OK, 0 voids, 0 authorship violations, 0 web-search events, scores and decisions written.
+- **Two observations for phase B, not results** (4 tasks, n too small to mean anything):
+  - **Both arms proposed the same idea:** a Sol review of the picked file, then a Luna fix. That is the idea of E007, which is pending in the search. The protocol's blinded idea-category labels will show same-idea rounds.
+  - The proposals already know E002's design from the incumbent source, so convergence on "review then repair" is expected from both arms.
+- **First smoke** (`runs/c2-pc-smoke`, before the fix): both proposals voided, which is the C2-WEB finding. It is kept as evidence.
+- **Spend:** about 120 Luna and 8 Sol across both smokes. Luna today: 2,8xx of 3k.
