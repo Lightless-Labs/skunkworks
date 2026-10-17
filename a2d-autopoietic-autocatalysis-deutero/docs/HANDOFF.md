@@ -24,10 +24,14 @@
 ## In flight / next
 1. **Confirmation-2 (C2-CONFIRM2):** registered at `78727f29e53743dc5d989c62e1de23ab1a81e6c6`. The spec is `runs/c2-confirm2/registration.json`; the LOG entry holds the review dispositions and the power exception.
    - **Queue** (background runner `$SCRATCH/queue-runner.sh $SCRATCH/queue-2026-10-17.txt`, re-read line by line):
-     - E005 (running since 02:44), then E007;
-     - at ≥ 00:05 UTC 10-18, `python3 -I nano/eval.py confirm --rep 1 --registered-at 78727f29… --jobs 8`, then E006;
-     - at ≥ 00:05 UTC 10-19, `confirm --rep 2 …` the same way, then E008, E009 and E010.
-     - A cap-deferred experiment prints "deferred" and the queue moves on, so re-queue it by hand.
+     - E005 (done: provisional keep), then E007 (screen on 10-17; its rest defers at the cap);
+     - at ≥ 00:05 UTC 10-18, `python3 -I nano/eval.py confirm --rep 1 --registered-at 78727f29… --jobs 8`, then E007 resume, then E006;
+     - at ≥ 00:05 UTC 10-19, `confirm --rep 2 …` the same way, then E006 resume, then E008, E009 and E010;
+     - at ≥ 00:05 UTC 10-20 and again 10-21: resumes for E006–E010, then `eval "$(python3 -I nano/confirm_best.py E005 … E010)"` (twice on 10-21).
+     - A cap-deferred stage prints "deferred". Re-running a command is free and safe: completed stages are cached, and `log_result` logs each (id, stage, decision) once. So over-provision resume lines rather than re-queue by hand. Append lines to the end only.
+   - **End of the batch (pre-registered in the LOG, 10-17):** `confirm_best` mechanically confirms the largest full-stage provisional keep, at most 2 confirmations. This happens even if the 11k phase-B trigger has fired.
+     - If one is promoted: `python3 -I nano/eval.py aa-from-replicates --id <id>`, then phase B starts from that incumbent. Otherwise phase B starts from E002.
+     - Phase B is started by hand (`docs/experiments/analysis/c2_phaseb.py`).
    - **After both replicates have generated:**
      1. `python3 -I nano/eval.py confirm-manifest`;
      2. commit and push `runs/c2-confirm2/manifest-r*.json`;
