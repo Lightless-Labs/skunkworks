@@ -96,7 +96,7 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
 - **C2-ISO2** (10-17): the oracle's compile and test steps now also run sandboxed. The run step gets no processes, no Mach lookups and a cleared environment.
   - Parity: 420/420 identical against the old binary.
 - **C2-WEB** (10-17): codex-cli 0.162.0 ignores `--disable web_search_request`, so web search was available to every call, and the controller's tool count (exec only) could not see it.
-  - **0 searches in about 15k recorded transcripts** (dev and holdout), so no recorded result is affected.
+  - **0 searches in about 15.8k recorded transcripts** (every dev run since 10-14, and every holdout run, counts only), so no recorded result is affected.
   - Fixed for proposers. Dev runs stop on any search, and confirmation-2 is audited. The provider itself is fixed after the confirmation-2 freeze.
 
 ## Claims and scope

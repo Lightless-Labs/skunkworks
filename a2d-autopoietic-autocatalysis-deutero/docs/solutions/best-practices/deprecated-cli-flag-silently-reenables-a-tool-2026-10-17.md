@@ -23,7 +23,7 @@ root_cause: cli_upgrade_deprecated_the_disable_flag_and_turned_the_tool_on_by_de
 - **Silent half:** the controller's tool count (`codex_tool_calls`) counts `exec` lines, while a search prints `web search: <query>`. So `integrity_ok` could not see a search.
   - The dev tasks' hidden tests live in this public repo, so a search was a potential leak channel.
 - **Loud half:** the phase-B proposer audit fails closed on any unknown item. It voided every proposal, which a live smoke in a throwaway directory caught before the real rounds.
-- **Exposure:** every recorded transcript stores full stderr, so a scan bounded it. There were **0 searches in about 15k calls** (dev and holdout, counts only for holdouts). No result was affected.
+- **Exposure:** every recorded transcript stores full stderr, so a scan bounded it. There were **0 searches in about 15.8k calls** (every run since 10-14, dev and holdout, counts only for holdouts). No result was affected.
 
 ## Lessons
 - **Verify each denial with a probe that asks for that exact capability.** "Run `ls /`" proves nothing about web search.
