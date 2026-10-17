@@ -32,3 +32,5 @@ A²D's Codex provider passes `--ignore-user-config` and runs in an empty tempora
 - Treat any reviewer-authored change in the repo as untrusted output: revert it, then fold the substance in yourself.
 
 See also: `static-guards-are-not-isolation-use-os-sandbox-2026-10-16.md` (same lesson for LLM-written harnesses: isolate at the OS level, prove it with a planted secret).
+
+See also: `deprecated-cli-flag-silently-reenables-a-tool-2026-10-17.md` (codex-cli 0.162 ignores `--disable web_search_request`; use `-c web_search="disabled"` and probe each denial).
