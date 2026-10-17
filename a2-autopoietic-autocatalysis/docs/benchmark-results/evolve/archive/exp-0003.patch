@@ -1,0 +1,86 @@
+diff --git a/genome/HYPOTHESIS.txt b/genome/HYPOTHESIS.txt
+new file mode 100644
+index 0000000..1ce2d3a
+--- /dev/null
++++ b/genome/HYPOTHESIS.txt
+@@ -0,0 +1 @@
++One candidate-based repair followed by a fresh, failure-informed restart will improve resolved rate by combining targeted repair with a final chance to escape a failing patch.
+diff --git a/genome/README.md b/genome/README.md
+index 515be03..eef5a76 100644
+--- a/genome/README.md
++++ b/genome/README.md
+@@ -1,6 +1,6 @@
+-# Genome G0
++# Genome G1
+ 
+-A genome is the policy the frozen evaluator runs for each task. G0 implements stateless retry: it starts each agent call from the original code, includes the previous visible verifier failures in the next prompt, and submits the first visibly passing candidate. If none passes within the call budget, it submits the candidate with the most passing visible tests, with later candidates winning ties.
++A genome is the policy the frozen evaluator runs for each task. G1 starts with a fresh agent call, makes one repair call from the rejected candidate using its visible verifier failures, and, if that repair also fails, makes a final fresh call with the visible failures from both attempts. It submits the first visibly passing candidate. If none passes within the call budget, it submits the candidate with the most passing visible tests, with later candidates winning ties.
+ 
+ ## Action protocol
+ 
+diff --git a/genome/policy.py b/genome/policy.py
+index df63872..6dbf822 100644
+--- a/genome/policy.py
++++ b/genome/policy.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""G0: stateless retries at the configured effort, selecting the first visible pass."""
++"""G1: repair once from a candidate, then restart if verifier failures remain."""
+ 
+ from __future__ import annotations
+ 
+@@ -7,11 +7,19 @@ import json
+ import re
+ import sys
+ from pathlib import Path
++from typing import Optional
+ 
+-FEEDBACK_HEADER = (
++FRESH_FEEDBACK_HEADER = (
+     "\n\n---\nA previous attempt at this task was rejected by the verifier. "
+     "Start again from the original code. Verifier output from that attempt:\n"
+ )
++REPAIR_HEADER = (
++    "\n\n---\nThe current code is based on the previous candidate, which the verifier rejected. "
++    "Inspect this implementation, diagnose the reported failures, and make a targeted repair. "
++    "Preserve correct work and check related edge cases implied by the task. "
++    "Verifier output from that attempt:\n"
++)
++FEEDBACK_HEADER = REPAIR_HEADER
+ 
+ 
+ def configured_effort() -> str:
+@@ -35,7 +43,17 @@ def render_verify(result: dict) -> str:
+     return "\n".join(lines) or "No passing visible tests were reported."
+ 
+ 
+-def choose_action(state: dict, effort: str | None = None) -> dict:
++def render_history(candidates: list) -> str:
++    sections = []
++    for candidate in candidates:
++        sections.append(
++            f"Attempt {candidate['index']}:\n"
++            f"{render_verify(candidate.get('verify', {}))}"
++        )
++    return "\n\n".join(sections)
++
++
++def choose_action(state: dict, effort: Optional[str] = None) -> dict:
+     effort = effort or configured_effort()
+     candidates = state.get("candidates", [])
+     if not candidates:
+@@ -44,8 +62,12 @@ def choose_action(state: dict, effort: str | None = None) -> dict:
+     if last.get("verify", {}).get("passed"):
+         return {"submit": {"candidate": last["index"]}}
+     if state.get("budget", {}).get("agent_calls_left", 0) > 0:
+-        prompt = state["problem_statement"] + FEEDBACK_HEADER + render_verify(last.get("verify", {}))
+-        return {"agent": {"base": "fresh", "prompt": prompt, "effort": effort}}
++        if len(candidates) == 1:
++            prompt = state["problem_statement"] + REPAIR_HEADER + render_verify(last.get("verify", {}))
++            return {"agent": {"base": last["index"], "prompt": prompt, "effort": effort}}
++        if len(candidates) == 2:
++            prompt = state["problem_statement"] + FRESH_FEEDBACK_HEADER + render_history(candidates)
++            return {"agent": {"base": "fresh", "prompt": prompt, "effort": effort}}
+     best = max(candidates, key=lambda candidate: (
+         sum(test.get("outcome") == "pass" for test in candidate.get("verify", {}).get("tests", [])),
+         candidate["index"],
