@@ -275,6 +275,56 @@ def mean(rows, idx):
     return sum(r[idx] for r in rows) / len(rows)
 
 
+def web_search_events(run_dir):
+    """Web searches announced in a run's Codex transcripts (a count; no content is returned).
+
+    codex-cli 0.162 turns web search on by default and ignores the deprecated
+    `--disable web_search_request` that the frozen provider passes, while the
+    controller's tool-call count sees only `exec` lines. Until the provider is
+    fixed (after the C2-CONFIRM2 freeze), a search is caught here."""
+    n = 0
+    for transcript in pathlib.Path(run_dir).rglob("*transcript.txt"):
+        with open(transcript, errors="replace") as f:
+            n += sum(1 for line in f if line.startswith("web search:"))
+    return n
+
+
+def web_audit(out):
+    """Count-only audit of one run's Codex transcripts, per arm: web-search events,
+    transcripts, invocations without a transcript (failed calls), and transcripts
+    not written by codex-cli 0.162.0 (the `web search:` marker is version-specific)."""
+    arms = {}
+    for arm_dir in sorted(p for p in (pathlib.Path(out) / "invocations").iterdir() if p.is_dir()):
+        prompts = list(arm_dir.rglob("*.prompt.txt"))
+        transcripts = list(arm_dir.rglob("*.transcript.txt"))
+        other_version = 0
+        for t in transcripts:
+            with open(t, errors="replace") as f:
+                # Log noise (skills, MCP, model-cache errors) can precede the banner.
+                banner = next((line for line in (next(f, "") for _ in range(20)) if line.startswith("OpenAI Codex v")), "")
+            other_version += not banner.startswith("OpenAI Codex v0.162.0")
+        arms[arm_dir.name] = {"web_search_events": web_search_events(arm_dir), "transcripts": len(transcripts),
+                              "invocations_without_transcript": len(prompts) - len(transcripts),
+                              "transcripts_not_codex_0_162_0": other_version}
+    return arms
+
+
+def cmd_confirm_web_audit(args):
+    """C2-CONFIRM2 amendment of 2026-10-17 (LOG), registered before any confirmation call:
+    a web search in either replicate, any arm, makes the outcome IntegrityReview."""
+    out = confirm_out(args.rep)
+    if not generated(out):
+        sys.exit(f"replicate {args.rep} has not completed generation")
+    path = CONFIRM2_DIR / f"web-audit-r{args.rep}.json"
+    data = {"rep": args.rep, "arms": web_audit(out)}
+    data["web_search_events"] = sum(a["web_search_events"] for a in data["arms"].values())
+    data["integrity_review"] = data["web_search_events"] > 0
+    if path.exists() and json.loads(path.read_text()) != data:
+        sys.exit(f"{path} exists with different counts")
+    path.write_text(json.dumps(data, indent=1) + "\n")
+    print(json.dumps(data, indent=1))
+
+
 def log_result(fields):
     path = NANO / "results.tsv"
     if not path.exists() or not path.read_text().startswith("id\t"):
@@ -390,6 +440,12 @@ def cmd_run(args):
                "n_tasks": len(rows), "n_families": len({r[0] for r in rows}), "decision": decision,
                "invocations": sum(t for t, _, _ in spent), "calls_by_lane": json.dumps(calls, sort_keys=True),
                "tokens": sum(k for _, _, k in spent), "note": note}
+        searches = sum(web_search_events(r) for r, _ in runs_suites)
+        if searches:
+            # A tool call the controller does not count: no keep, no further stage.
+            rec["decision"] = f"integrity review ({searches} web-search events)"
+            log_result(rec)
+            sys.exit(json.dumps(rec, indent=1))
         return rows, rec
 
     s_suite = make_suite(exp_dir / "suites/S", halves["S"])
@@ -755,6 +811,8 @@ def main():
     sub.add_parser("confirm-manifest")
     cs = sub.add_parser("confirm-score")
     cs.add_argument("--jobs", type=int, default=6, choices=[6])  # registered: the parity check's value
+    wa = sub.add_parser("confirm-web-audit")
+    wa.add_argument("--rep", type=int, choices=sorted(CONFIRM2_SEEDS), required=True)
     sub.add_parser("budget")
     args = ap.parse_args()
     if args.cmd == "aa-allpass":
@@ -778,6 +836,8 @@ def main():
         cmd_confirm_manifest(args)
     elif args.cmd == "confirm-score":
         cmd_confirm_score(args)
+    elif args.cmd == "confirm-web-audit":
+        cmd_confirm_web_audit(args)
     elif args.cmd == "budget":
         print(json.dumps({"luna_today_utc": luna_today(), "cap": DAILY_CAP}))
     else:
