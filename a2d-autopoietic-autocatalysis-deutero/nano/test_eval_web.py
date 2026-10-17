@@ -46,5 +46,24 @@ class WebSearchEvents(unittest.TestCase):
                              "transcripts_not_codex_0_162_0": 1}})
 
 
+
+class LogResult(unittest.TestCase):
+    def test_logs_each_id_stage_decision_once_and_tolerates_short_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            nano, saved = pathlib.Path(d), ev.NANO
+            ev.NANO = nano
+            try:
+                (nano / "results.tsv").write_text("\t".join(ev.FIELDS) + "\nE1\tshort row\n\n")
+                rec = {"id": "E5", "stage": "full", "decision": "provisional keep"}
+                ev.log_result(rec)
+                ev.log_result(rec)
+                ev.log_result({**rec, "decision": "discard (full)"})
+                lines = (nano / "results.tsv").read_text().splitlines()
+                self.assertEqual([line.split("\t")[12] for line in lines if line.startswith("E5")],
+                                 ["provisional keep", "discard (full)"])
+            finally:
+                ev.NANO = saved
+
+
 if __name__ == "__main__":
     unittest.main()
