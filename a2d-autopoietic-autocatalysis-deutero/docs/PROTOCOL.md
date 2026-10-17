@@ -9,6 +9,7 @@ This file gathers the rules **currently in force**. History and rationale live i
   - D: repair loop on public-test output, stopping at public-green.
   - C: the A²D harness under test.
   - All arms use one coder lane: `codex/gpt-6-luna`, effort low, no tools.
+    - Amended 2026-10-17 (cycle 2): an X arm may also call lanes it declares (e.g. a Sol judge, `codex/gpt-6.1-sol:medium`) within the same k cap. Every submitted file is still written by the coder lane, every lane runs without tools, and claims report calls and tokens by lane.
 - **Budget:** an equal invocation cap per task, **k = 5**. Realised invocations, tokens and provider time are reported beside every claim, and claims say "at an equal invocation cap".
 - **Submission rule:** most public tests passed, then compiled, then the **latest** attempt.
 - **Classes**, on the paired whole-family cluster bootstrap:

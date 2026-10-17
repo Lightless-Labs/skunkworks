@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Eval v2.2 for the nanoharness (A²D cycle 2): one keep/discard experiment.
+"""Eval v2.3 for the nanoharness (A²D cycle 2): one keep/discard experiment.
 
     python3 -I nano/eval.py aa                  # 3-arm A/A + parity run; writes nano/aa.json
     python3 -I nano/eval.py aa-from-replicates --id E002b   # A/A of a promoted keep from its own two full replicates
     python3 -I nano/eval.py look --n 1 --registered-at <sha>  # dev-holdout look: incumbent vs D, r = 2, aggregates only
     python3 -I nano/eval.py run --id E002 --candidate <file.py> --hypothesis "..." [--proposer claude]
+    python3 -I nano/eval.py confirm --rep 1 --registered-at <sha>   # Confirmation-2, once: D, B, X:frozen; r = 2 over two days
+    python3 -I nano/eval.py confirm-manifest && git commit ... && python3 -I nano/eval.py confirm-score
 
 Protocol (docs/plans/2026-10-15-cycle2-nanoharness.md, Addendum after the design review):
 - incumbent = nano/harness.py. Candidate and incumbent run in ONE `a2d lift`
@@ -529,6 +531,195 @@ def cmd_look(args):
     print(json.dumps(public, indent=1))
 
 
+CONFIRM2 = HOLDOUT / "confirmation-2"
+CONFIRM2_HASH = "cb7cb49655654169505811a5503b165a3d80c308fcbc2362e2108729c3d907a4"
+CONFIRM2_SEEDS = {1: 8181, 2: 8282}
+CONFIRM2_DIR = ROOT / "runs" / "c2-confirm2"
+
+
+def confirm_out(rep):
+    return HOLDOUT / "runs" / f"c2-confirm2-r{rep}"
+
+
+def ledger_records(out):
+    led = out / "ledger.jsonl"
+    return [json.loads(l) for l in led.read_text().splitlines()] if led.exists() else []
+
+
+def generated(out):
+    return any(r.get("kind") == "generation_complete" for r in ledger_records(out))
+
+
+def git(*a):
+    r = subprocess.run(["git", "-C", str(ROOT), *a], capture_output=True, text=True)
+    return r.returncode, r.stdout
+
+
+def confirm_section(text):
+    return text[text.index("CONFIRM2 = HOLDOUT"):text.index("def main():")]
+
+
+def confirm_registration(registered_at):
+    """The registration commit binds the frozen file, registration.json and
+    this runner section; the controller binds crates/ itself."""
+    if git("merge-base", "--is-ancestor", registered_at, "HEAD")[0]:
+        sys.exit(f"{registered_at} is not a commit on HEAD's history")
+    for rel in ("runs/c2-confirm2/registration.json", "runs/c2-confirm2/frozen.py"):
+        code, then = git("show", f"{registered_at}:{rel}")
+        if code or then != (ROOT / rel).read_text():
+            sys.exit(f"{rel} differs from the registration commit {registered_at}")
+    code, then = git("show", f"{registered_at}:nano/eval.py")
+    if code or confirm_section(then) != confirm_section((NANO / "eval.py").read_text()):
+        sys.exit("the confirmation runner differs from the registration commit")
+    reg = json.loads((CONFIRM2_DIR / "registration.json").read_text())
+    snap = CONFIRM2_DIR / "frozen.py"
+    guard(snap)
+    if sha(snap) != reg["frozen_sha"] or lanes_of(snap) != reg["lanes"]:
+        sys.exit("frozen snapshot or its lanes do not match registration.json")
+    if git("merge-base", "--is-ancestor", registered_at, "origin/main")[0]:
+        sys.exit(f"push the registration commit {registered_at} first")
+    for rep in CONFIRM2_SEEDS:
+        attempt = CONFIRM2_DIR / f"attempt-r{rep}.json"
+        if attempt.exists() and json.loads(attempt.read_text())["registered_at"] != registered_at:
+            sys.exit(f"replicate {rep} ran under another registration commit")
+    return reg, snap
+
+
+def check_generated(out, rep, reg):
+    """A completed generation must be this registration's replicate, not aborted."""
+    recs = ledger_records(out)
+    r0 = next((r for r in recs if r.get("kind") == "registration"), {})
+    done = next((r for r in recs if r.get("kind") == "generation_complete"), {})
+    if r0.get("experiment") != f"C2-CONFIRM2-R{rep}" or r0.get("seed") != reg["seeds"][str(rep)] \
+            or r0.get("suite_hash") != reg["suite_hash"]:
+        sys.exit(f"{out}: ledger registration does not match replicate {rep}")
+    if done.get("aborted") is not False:
+        sys.exit(f"{out}: generation aborted; reported as failed, never rerun")
+    return done
+
+
+def cmd_confirm(args):
+    """Confirmation-2, spent once: one registered run (replicate 1) plus the
+    pre-registered replicate extension (replicate 2) on a later UTC day,
+    generation only (deferred scoring). Settings come from registration.json."""
+    reg, snap = confirm_registration(args.registered_at)
+    out, attempt = confirm_out(args.rep), CONFIRM2_DIR / f"attempt-r{args.rep}.json"
+    if generated(out):
+        check_generated(out, args.rep, reg)
+        print(json.dumps({"stage": f"confirm2-r{args.rep}", "decision": "already generated"}))
+        return
+    if attempt.exists() or out.exists():
+        sys.exit(f"replicate {args.rep} was attempted without completing; it is reported as failed, never rerun")
+    if args.rep == 2:
+        if not generated(confirm_out(1)):
+            sys.exit("replicate 1 has not generated")
+        day1 = check_generated(confirm_out(1), 1, reg)["ts_ms"] // 86_400_000
+        if day1 >= datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000 // 86_400_000:
+            print(json.dumps({"stage": "confirm2-r2", "decision": "deferred (replicate 2 runs on a later UTC day)"}))
+            return
+    worst = reg["tasks"] * len(reg["arms"]) * reg["k"]
+    if not within_cap(f"confirm2-r{args.rep}", worst, args.daily_cap):
+        return
+    # Durable attempt record before any model call: a launch that fails
+    # before or during generation can never be retried silently.
+    codex = subprocess.run(["codex", "--version"], capture_output=True, text=True).stdout.strip()
+    attempt.write_text(json.dumps({"rep": args.rep, "registered_at": args.registered_at, "codex": codex,
+                                   "controller_binary_sha256": sha(A2D),
+                                   "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()}) + "\n")
+    cmd = [A2D, "lift", "run", "--experiment", f"C2-CONFIRM2-R{args.rep}", "--registered-at", args.registered_at,
+           "--expect-suite-hash", reg["suite_hash"], "--suite", str(CONFIRM2), "--model", reg["model"],
+           "--effort", reg["effort"], "--arms", ",".join(reg["arms"]), "--k", str(reg["k"]), "--replicates", "1",
+           "--primary", "D", "--seed", str(reg["seeds"][str(args.rep)]), "--jobs", str(args.jobs),
+           "--defer-scoring", "--claim", reg["claim"], "--max-invocations", str(worst + 40),
+           "--max-wall-clock-secs", "43200", "--out", str(out), "--external", f"frozen={snap}"]
+    for name, spec in reg["lanes"].items():
+        cmd += ["--lane", f"{name}={spec}"]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(out) + ".log", "a") as log:
+        code = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT).returncode
+    if code or not generated(out):
+        sys.exit(f"confirmation generation failed ({code}); see the exit line of {out}.log")
+    check_generated(out, args.rep, reg)
+    print(json.dumps({"stage": f"confirm2-r{args.rep}", "decision": "generated (scoring deferred)"}))
+
+
+def cmd_confirm_manifest(args):
+    """Content-free anchors of both generated replicates, to commit before scoring."""
+    reg = json.loads((CONFIRM2_DIR / "registration.json").read_text())
+    for rep in CONFIRM2_SEEDS:
+        if not generated(confirm_out(rep)):
+            sys.exit(f"replicate {rep} has not generated")
+        check_generated(confirm_out(rep), rep, reg)
+    for rep in CONFIRM2_SEEDS:
+        path = CONFIRM2_DIR / f"manifest-r{rep}.json"
+        if path.exists():
+            sys.exit(f"{path} exists; anchors are written once")
+        r = subprocess.run([A2D, "lift", "manifest", str(confirm_out(rep))], capture_output=True, text=True)
+        if r.returncode:
+            sys.exit(r.stderr)
+        path.write_text(r.stdout)
+    print(f"wrote {CONFIRM2_DIR}/manifest-r*.json; commit them, then run confirm-score")
+
+
+def cmd_confirm_score(args):
+    """Score each replicate once against its committed anchor, then pool.
+    The controller refuses to score a ledger that already has scores, so an
+    interrupted scoring is reported as failed rather than repeated."""
+    pooled = CONFIRM2_DIR / "pooled-summary.json"
+    if pooled.exists():
+        sys.exit(f"{pooled} exists; the set is scored and pooled once")
+    for rep in CONFIRM2_SEEDS:
+        rel = f"runs/c2-confirm2/manifest-r{rep}.json"
+        if git("ls-files", "--error-unmatch", rel)[0] or git("diff", "--quiet", "HEAD", "--", rel)[0] \
+                or git("merge-base", "--is-ancestor", "HEAD", "origin/main")[0]:
+            sys.exit(f"commit and push {rel} before scoring")
+    for rep in CONFIRM2_SEEDS:
+        out = confirm_out(rep)
+        if (out / "summary.json").exists():
+            continue
+        head = json.loads((CONFIRM2_DIR / f"manifest-r{rep}.json").read_text())["ledger_head"]
+        with open(str(out) + ".score.log", "w") as log:
+            code = subprocess.run([A2D, "lift", "score", "--out", str(out), "--suite", str(CONFIRM2),
+                                   "--expect-head", head, "--jobs", str(args.jobs)],
+                                  stdout=log, stderr=subprocess.STDOUT).returncode
+        if code:
+            sys.exit(f"scoring replicate {rep} failed ({code}); see {out}.score.log")
+    r = subprocess.run([A2D, "lift", "pool", "--out", str(pooled)]
+                       + [str(confirm_out(rep) / "ledger.jsonl") for rep in CONFIRM2_SEEDS],
+                       capture_output=True, text=True)
+    if r.returncode:
+        sys.exit(r.stderr)
+    s = json.loads(pooled.read_text())
+    decision = {"controller_claim": s["claim"], "claim_comparisons": s.get("claim_comparisons"),
+                "worst_case_void_lifts": worst_case_void_lifts(), "overall": s["claim"]}
+    if s["claim"] == "SUPPORTED" and min(decision["worst_case_void_lifts"].values()) < 0.10 - 1e-9:
+        decision["overall"] = "INCONCLUSIVE (worst-case void imputation)"
+    (CONFIRM2_DIR / "decision.json").write_text(json.dumps(decision, indent=1) + "\n")
+    print(json.dumps({**decision, **{k: s.get(k) for k in ("complete", "tuples_void", "excluded_share",
+                                                            "integrity_ok", "aborted", "comparisons", "arms")}},
+                     indent=1))
+
+
+def worst_case_void_lifts():
+    """Point all-pass lift of X:frozen over each comparator with X's voids
+    counted as fails and the comparator's as passes (registered guard)."""
+    passed, void = {}, set()
+    for rep in CONFIRM2_SEEDS:
+        for r in ledger_records(confirm_out(rep)):
+            key = (rep, r.get("arm"), r.get("task"))
+            if r.get("kind") == "submission" and r.get("void_reason"):
+                void.add(key)
+            elif r.get("kind") == "score":
+                passed[key] = bool(r["result"]["all_passed"])
+    keys = {(rep, task) for rep, arm, task in list(passed) + list(void) if arm == "X:frozen"}
+    out = {}
+    for comp in ("D", "B"):
+        x = sum(passed.get((rep, "X:frozen", t), False) and (rep, "X:frozen", t) not in void for rep, t in keys)
+        y = sum(True if (rep, comp, t) in void else passed.get((rep, comp, t), True) for rep, t in keys)
+        out[comp] = round((x - y) / len(keys), 4) if keys else 0.0
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -552,6 +743,14 @@ def main():
     lk.add_argument("--seed", type=int, default=6161)
     lk.add_argument("--jobs", type=int, default=8)
     lk.add_argument("--daily-cap", type=int, default=DAILY_CAP)
+    cf = sub.add_parser("confirm")
+    cf.add_argument("--rep", type=int, choices=sorted(CONFIRM2_SEEDS), required=True)
+    cf.add_argument("--registered-at", required=True)
+    cf.add_argument("--jobs", type=int, default=8, choices=[8])  # registered: look 1's value
+    cf.add_argument("--daily-cap", type=int, default=DAILY_CAP)
+    sub.add_parser("confirm-manifest")
+    cs = sub.add_parser("confirm-score")
+    cs.add_argument("--jobs", type=int, default=6, choices=[6])  # registered: the parity check's value
     sub.add_parser("budget")
     args = ap.parse_args()
     if args.cmd == "aa-allpass":
@@ -569,6 +768,12 @@ def main():
         cmd_aa_from_replicates(args)
     elif args.cmd == "look":
         cmd_look(args)
+    elif args.cmd == "confirm":
+        cmd_confirm(args)
+    elif args.cmd == "confirm-manifest":
+        cmd_confirm_manifest(args)
+    elif args.cmd == "confirm-score":
+        cmd_confirm_score(args)
     elif args.cmd == "budget":
         print(json.dumps({"luna_today_utc": luna_today(), "cap": DAILY_CAP}))
     else:

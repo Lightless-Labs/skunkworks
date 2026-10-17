@@ -1223,3 +1223,79 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Compare `compiled`, `passed`, `failed`, `expected`, `timed_out` and `all_passed` against the recorded scores.
   - **Pass:** all 420 identical. Look 1's result and E002's A/A threshold (both measured on the old oracle) then carry forward.
   - **Any difference:** investigate before E005 runs; the queue waits on the merge.
+
+### C2-CONFIRM2 — confirmation-2 pre-registration: frozen E002 vs D and B  [cycle 2, registered 2026-10-17 before any confirmation call]
+- **Trigger:** C2-LOOK1 PASS. The owner's rule spends confirmation-2 on a frozen harness whose dev-holdout lift vs D is ≥ +10 pp, with D and B as comparators, after one Codex Sol review and one fresh-Claude review.
+- **Frozen harness:** `runs/c2-confirm2/frozen.py`, sha `e772bd6e99f6…` (= E002b = look 1's snapshot). Lane: judge `codex/gpt-6.1-sol:medium`.
+- **The registration is `runs/c2-confirm2/registration.json`.** Everything below is a summary of it.
+  - **Set and design:** confirmation-2 (144 tasks, 36 families, `cb7cb496…`); arms D, B and X:frozen; k = 5.
+  - **Schedule:** r = 2, split by UTC day because of the daily cap. Replicate 1 (seed 8181) is the registered run; replicate 2 (seed 8282) is its pre-registered extension, run on a later UTC day. There is no further extension.
+  - **Scoring:** generation runs with `--defer-scoring`. Manifests are committed and pushed, each replicate is scored once (jobs 6), and the two are pooled with `a2d lift pool`.
+  - **Decision:** the controller's pooled `--claim X:frozen>D,X:frozen>B`.
+    - SUPPORTED needs both comparisons Supported (lift ≥ 0.10, CI95 low > 0, whole-family bootstrap). RULED OUT is decided by X vs D alone. Invalid and IntegrityReview dominate.
+    - SUPPORTED is downgraded to INCONCLUSIVE if the worst-case void imputation (X voids as fails, comparator voids as passes) puts either point lift below 0.10.
+    - `confirm-score` writes `decision.json`. Per-replicate summaries are descriptive only.
+  - **Failure policy:**
+    - Each replicate is attempted once (a durable `attempt-r<n>.json` is written before any call).
+    - An aborted generation, with no outcome known, may be relaunched once with the same seed, recorded here. A second failure means not run: no claim, and the set is spent.
+    - Scoring is never repeated.
+  - **Claim wording:** "at an equal invocation cap of 5 calls per task (X ≤ 4 Luna + 1 Sol; D and B ≤ 5 Luna)". It is not cost- or token-matched (X used about 4.6× D's tokens on dev), and no cost-matched control is run.
+  - **Disclosures:**
+    - Sol authored confirmation-2 and is also the judge. C2-E2 bounds this confound on dev: a Claude judge scored 66/68 against Sol's 68/68.
+    - The judge's shuffle is seeded by task id.
+    - `spreadsheet-eval` is excluded.
+    - Winner's curse: the fresh confirm stage alone was +7.1 pp vs D.
+    - INCONCLUSIVE never licenses another attempt on this set.
+- **Instrument (C2-ISO2, merged after look 1's gate):**
+  - The controller is commit 32e72a53, pinned by source: the controller refuses to run or score if `crates/`, `Cargo.toml` or `Cargo.lock` differ from the registration commit.
+  - Debug builds are not byte-reproducible: an identical rebuild changed the sha from `9265ddc1…` to `9aad768a…`. So each replicate's binary sha is logged in its attempt record, not enforced.
+  - **Parity:** the 420 A/A submissions were re-scored by the new and the old binary on this machine at the same load. All 420 are identical on every field, so the pre-registered parity check passes.
+    - Against the original ledger, both binaries differ on one record: a timeout under the original run's load (X:a cron-next-l3; 31/32 now). All-pass is false in both, and all-pass totals are 311/311.
+    - Scoring wall time is +22%, about 30 ms per sandboxed process.
+  - **Reference check** under the new oracle, counts only: dev 140/140, dev-holdout 100/100 and confirmation-2 144/144 accepted.
+- **Power** (`docs/experiments/analysis/c2_joint_power2.py`, the registered rule, 400 simulations):
+
+  | True lift (X−D, B−D) | SUPPORTED | INCONCLUSIVE | RULED OUT |
+  |---|---|---|---|
+  | +7.1, −3.6 (fresh confirm stage) | 0.20 | 0.68 | 0.12 |
+  | +8.9, −3.6 (dev estimates) | 0.37 | 0.59 | 0.04 |
+  | +10, −3 | 0.47 | 0.51 | 0.02 |
+  | +15, −3 | 0.92 | 0.09 | 0.00 |
+  | 0, 0 | 0.00 | 0.27 | 0.73 |
+
+  - **Dated exception (2026-10-17), recorded before any confirmation call.** The PROTOCOL target P(RULED OUT | 0) ≥ 0.8 is not met (0.73) at r = 2, while P(SUPPORTED | +15) = 0.92 is met. r is bounded by the daily cap and the budget, and the rule spends the set now, so the shortfall is accepted and disclosed.
+  - INCONCLUSIVE is the most likely outcome at the dev estimates.
+- **Reviews:** Codex Sol (no tools, everything inline) and a fresh Claude Opus agent (copies only).
+  - **Fixed before this commit:**
+    - **Binding.** The runner binds to its registration commit: `git show` of the registration, the frozen file and the runner section must match, and the commit must be on origin/main. It reads every setting from `registration.json`, and both replicates must use the same registration commit.
+    - **Pins.** The controller source is pinned through the registration, and generation and scoring jobs are fixed.
+    - **One-shot safety:**
+      - an attempt record is written before any call;
+      - the run log is append-only;
+      - the identity of a completed ledger is checked (experiment, seed, suite hash, not aborted);
+      - replicate 2 needs a later UTC day;
+      - manifests are written once;
+      - scoring needs the manifests tracked, committed and pushed;
+      - a pooled summary is never recomputed.
+    - **Decision and failure policy.** The full decision mapping, the worst-case void guard and the failure policy are written down.
+    - **Power.** Power now covers every outcome class, and the exception above is recorded.
+    - **Disclosures.** Claim wording, authorship, winner's curse and the per-replicate Sol spend (about 125) are corrected.
+    - **PROTOCOL.md.** The lane wording is amended so that declared judge lanes are allowed.
+    - **Reference check.** The confirmation-2 references were checked under the new oracle.
+  - **Checked, no change needed:**
+    - Pooling offsets replicate indices per ledger (`pool_ledgers`), requires identical suite, arms, k, model, effort, externals and claim, and clusters by family across both replicates.
+    - The bootstrap seed is fixed in the controller.
+    - Judge lanes come from the same tool-less `model_provider`, and any tool call on any lane sets `integrity_ok` false.
+    - Wall clock: 12 h against about 80 min expected per replicate.
+  - **Declined (proportionality):**
+    - Sol asked for an exclusive OS lock and replay checks of public-test traffic. The queue runs a single sequential process. Public and hidden scoring share `run_isolated_tests`, and parity plus the reference check cover it.
+    - Claude estimated P(RULED OUT | 0) ≈ 0.88. The simulation of the implemented rule gives 0.73, and the exception above is recorded.
+- **Dry run of the exact chain before this commit** (advisor; 1-task dev smoke suite, unregistered, 22 model calls outside `runs/`):
+  - two deferred replicates with D, B and X:frozen, then `manifest`, then `score --expect-head`, then `pool` with the claim;
+  - pooled n = 2 per comparison (no replicate collision), claim rule all-supported, class INCONCLUSIVE (1 family);
+  - `worst_case_void_lifts` equals the pooled lifts when there are no voids.
+- **Schedule:**
+  - replicate 1 at 00:05 UTC 2026-10-18;
+  - replicate 2 at 00:05 UTC 2026-10-19;
+  - then manifests, then scoring.
+  - Dev-set search experiments fill the rest of each day's cap.
