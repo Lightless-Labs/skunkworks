@@ -1,0 +1,195 @@
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidPath(usize),
+    Missing(String),
+    NotDir(String),
+    IsDir(String),
+    Exists(String),
+}
+
+#[derive(Debug)]
+enum Entry {
+    Dir(BTreeMap<String, Entry>),
+    File(Vec<u8>),
+}
+
+pub struct Fs {
+    root: Entry,
+}
+
+impl Fs {
+    pub fn new() -> Self {
+        Self {
+            root: Entry::Dir(BTreeMap::new()),
+        }
+    }
+
+    fn components(path: &str) -> Result<Vec<&str>, Error> {
+        if let Some(i) = path.as_bytes().iter().position(|&b| b == 0) {
+            return Err(Error::InvalidPath(i));
+        }
+        if path.is_empty() || !path.starts_with('/') {
+            return Err(Error::InvalidPath(0));
+        }
+        if path == "/" {
+            return Ok(Vec::new());
+        }
+
+        let bytes = path.as_bytes();
+        let mut result = Vec::new();
+        let mut start = 1;
+
+        for i in 1..=bytes.len() {
+            if i == bytes.len() || bytes[i] == b'/' {
+                let component = &path[start..i];
+                if component.is_empty() {
+                    return Err(Error::InvalidPath(i - 1));
+                }
+                if component == "." || component == ".." {
+                    return Err(Error::InvalidPath(start));
+                }
+                result.push(component);
+                start = i + 1;
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn prefix(components: &[&str], end: usize) -> String {
+        if end == 0 {
+            "/".to_string()
+        } else {
+            format!("/{}", components[..end].join("/"))
+        }
+    }
+
+    fn lookup<'a>(&'a self, components: &[&str]) -> Result<&'a Entry, Error> {
+        let mut current = &self.root;
+        for (i, component) in components.iter().enumerate() {
+            match current {
+                Entry::Dir(children) => {
+                    current = children
+                        .get(*component)
+                        .ok_or_else(|| Error::Missing(Self::prefix(components, i + 1)))?;
+                }
+                Entry::File(_) => {
+                    return Err(Error::NotDir(Self::prefix(components, i)));
+                }
+            }
+        }
+        Ok(current)
+    }
+
+    pub fn mkdir(&mut self, path: &str) -> Result<(), Error> {
+        let components = Self::components(path)?;
+        if components.is_empty() {
+            return Err(Error::Exists("/".to_string()));
+        }
+
+        let parent_components = &components[..components.len() - 1];
+        let parent_path = Self::prefix(&components, components.len() - 1);
+        let name = components[components.len() - 1];
+
+        let parent = self.lookup(parent_components)?;
+        match parent {
+            Entry::Dir(children) => {
+                if children.contains_key(name) {
+                    return Err(Error::Exists(Self::prefix(&components, components.len())));
+                }
+            }
+            Entry::File(_) => return Err(Error::NotDir(parent_path)),
+        }
+
+        let mut parent = &mut self.root;
+        for component in parent_components {
+            match parent {
+                Entry::Dir(children) => parent = children.get_mut(*component).unwrap(),
+                Entry::File(_) => unreachable!(),
+            }
+        }
+        match parent {
+            Entry::Dir(children) => {
+                children.insert(name.to_string(), Entry::Dir(BTreeMap::new()));
+                Ok(())
+            }
+            Entry::File(_) => unreachable!(),
+        }
+    }
+
+    pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), Error> {
+        let components = Self::components(path)?;
+        if components.is_empty() {
+            return Err(Error::IsDir("/".to_string()));
+        }
+
+        let parent_components = &components[..components.len() - 1];
+        let parent_path = Self::prefix(&components, components.len() - 1);
+        let full_path = Self::prefix(&components, components.len());
+        let name = components[components.len() - 1];
+
+        let parent = self.lookup(parent_components)?;
+        match parent {
+            Entry::Dir(children) => {
+                if let Some(entry) = children.get(name) {
+                    if matches!(entry, Entry::Dir(_)) {
+                        return Err(Error::IsDir(full_path));
+                    }
+                }
+            }
+            Entry::File(_) => return Err(Error::NotDir(parent_path)),
+        }
+
+        let mut parent = &mut self.root;
+        for component in parent_components {
+            match parent {
+                Entry::Dir(children) => parent = children.get_mut(*component).unwrap(),
+                Entry::File(_) => unreachable!(),
+            }
+        }
+        match parent {
+            Entry::Dir(children) => {
+                children.insert(name.to_string(), Entry::File(data.to_vec()));
+                Ok(())
+            }
+            Entry::File(_) => unreachable!(),
+        }
+    }
+
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let components = Self::components(path)?;
+        let entry = self.lookup(&components)?;
+        match entry {
+            Entry::File(data) => Ok(data.clone()),
+            Entry::Dir(_) => Err(Error::IsDir(Self::prefix(&components, components.len()))),
+        }
+    }
+
+    pub fn ls(&self, path: &str) -> Result<Vec<(String, Kind)>, Error> {
+        let components = Self::components(path)?;
+        let entry = self.lookup(&components)?;
+        match entry {
+            Entry::File(_) => Err(Error::NotDir(Self::prefix(&components, components.len()))),
+            Entry::Dir(children) => Ok(children
+                .iter()
+                .map(|(name, entry)| {
+                    let kind = match entry {
+                        Entry::Dir(_) => Kind::Dir,
+                        Entry::File(_) => Kind::File,
+                    };
+                    (name.clone(), kind)
+                })
+                .collect()),
+        }
+    }
+}
+```

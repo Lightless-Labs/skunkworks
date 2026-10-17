@@ -1,0 +1,136 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Point {
+    pub x: i64,
+    pub y: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Clockwise,
+    Degenerate,
+    CounterClockwise,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Measures {
+    pub signed_area2: i128,
+    pub area2: u128,
+    pub orientation: Orientation,
+    pub edge_milli: Vec<u64>,
+    pub perimeter_milli: u64,
+    pub longest_edge: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeomError {
+    TooManyVertices { len: usize },
+    OutOfRange { index: usize },
+    TooFewVertices { len: usize },
+}
+
+pub fn measure(points: &[Point]) -> Result<Measures, GeomError> {
+    if points.len() > 4096 {
+        return Err(GeomError::TooManyVertices { len: points.len() });
+    }
+
+    for (index, point) in points.iter().enumerate() {
+        if !(-1_000_000_000..=1_000_000_000).contains(&point.x)
+            || !(-1_000_000_000..=1_000_000_000).contains(&point.y)
+        {
+            return Err(GeomError::OutOfRange { index });
+        }
+    }
+
+    let effective_len = points.len()
+        - usize::from(points.len() >= 2 && points.last() == points.first());
+    if effective_len < 3 {
+        return Err(GeomError::TooFewVertices { len: effective_len });
+    }
+    let polygon = &points[..effective_len];
+
+    let mut signed_area2 = 0_i128;
+    for i in 0..effective_len {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % effective_len];
+        signed_area2 += i128::from(a.x) * i128::from(b.y)
+            - i128::from(a.y) * i128::from(b.x);
+    }
+
+    let orientation = match signed_area2.cmp(&0) {
+        std::cmp::Ordering::Less => Orientation::Clockwise,
+        std::cmp::Ordering::Equal => Orientation::Degenerate,
+        std::cmp::Ordering::Greater => Orientation::CounterClockwise,
+    };
+    let area2 = signed_area2.unsigned_abs();
+
+    let mut edge_milli = Vec::with_capacity(effective_len);
+    let mut perimeter_milli = 0_u64;
+    let mut longest_edge: Option<usize> = None;
+
+    for i in 0..effective_len {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % effective_len];
+
+        let dx = i128::from(a.x) - i128::from(b.x);
+        let dy = i128::from(a.y) - i128::from(b.y);
+        let squared_scaled = ((dx * dx + dy * dy) as u128) * 1_000_000;
+
+        let mut root = integer_sqrt(squared_scaled);
+        let lower_square = root * root;
+        let upper = root + 1;
+        let upper_square = upper * upper;
+        if squared_scaled - lower_square >= upper_square - squared_scaled {
+            root += 1;
+        }
+
+        let rounded = root as u64;
+        edge_milli.push(rounded);
+        perimeter_milli += rounded;
+
+        let replace = match longest_edge {
+            None => true,
+            Some(current) => {
+                if rounded != edge_milli[current] {
+                    rounded > edge_milli[current]
+                } else {
+                    let pair = ordered_endpoints(a, b);
+                    let current_pair = ordered_endpoints(
+                        polygon[current],
+                        polygon[(current + 1) % effective_len],
+                    );
+                    pair < current_pair || (pair == current_pair && i < current)
+                }
+            }
+        };
+        if replace {
+            longest_edge = Some(i);
+        }
+    }
+
+    Ok(Measures {
+        signed_area2,
+        area2,
+        orientation,
+        edge_milli,
+        perimeter_milli,
+        longest_edge,
+    })
+}
+
+fn ordered_endpoints(a: Point, b: Point) -> (Point, Point) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+fn integer_sqrt(n: u128) -> u128 {
+    if n < 2 {
+        return n;
+    }
+
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
+}

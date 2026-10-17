@@ -1,0 +1,308 @@
+```rust
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+    BadQuery { side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arc {
+    pub from: usize,
+    pub to: usize,
+    pub multiplicity: usize,
+    pub first_edge: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Relation {
+    Cycle,
+    Trivial,
+    Forward,
+    Backward,
+    Separate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Query {
+    pub kind: Relation,
+    pub route: Vec<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+    pub internal_edges: Vec<usize>,
+    pub arcs: Vec<Arc>,
+    pub topo: Vec<usize>,
+    pub depth: Vec<usize>,
+}
+
+fn reachable_route(
+    start: usize,
+    goal: usize,
+    adjacency: &[Vec<usize>],
+) -> Option<Vec<usize>> {
+    let mut queue = std::collections::VecDeque::new();
+    let mut parent = vec![usize::MAX; adjacency.len()];
+    parent[start] = start;
+    queue.push_back(start);
+
+    while let Some(v) = queue.pop_front() {
+        if v == goal {
+            let mut route = vec![goal];
+            let mut cur = goal;
+            while cur != start {
+                cur = parent[cur];
+                route.push(cur);
+            }
+            route.reverse();
+            return Some(route);
+        }
+        for &next in &adjacency[v] {
+            if parent[next] == usize::MAX {
+                parent[next] = v;
+                queue.push_back(next);
+            }
+        }
+    }
+    None
+}
+
+impl Graph {
+    pub fn query(&self, from: usize, to: usize) -> Result<Query, GraphError> {
+        let n = self.component_of.len();
+        if from >= n {
+            return Err(GraphError::BadQuery {
+                side: 0,
+                vertex: from,
+            });
+        }
+        if to >= n {
+            return Err(GraphError::BadQuery {
+                side: 1,
+                vertex: to,
+            });
+        }
+
+        let a = self.component_of[from];
+        let b = self.component_of[to];
+
+        if a == b {
+            if self.cyclic[a] {
+                return Ok(Query {
+                    kind: Relation::Cycle,
+                    route: vec![a, a],
+                });
+            }
+            return Ok(Query {
+                kind: Relation::Trivial,
+                route: vec![a],
+            });
+        }
+
+        let mut adjacency = vec![Vec::new(); self.components.len()];
+        for arc in &self.arcs {
+            adjacency[arc.from].push(arc.to);
+        }
+        for neighbors in &mut adjacency {
+            neighbors.sort_unstable();
+        }
+
+        if let Some(route) = reachable_route(a, b, &adjacency) {
+            return Ok(Query {
+                kind: Relation::Forward,
+                route,
+            });
+        }
+
+        if let Some(mut route) = reachable_route(b, a, &adjacency) {
+            route.reverse();
+            return Ok(Query {
+                kind: Relation::Backward,
+                route,
+            });
+        }
+
+        Ok(Query {
+            kind: Relation::Separate,
+            route: Vec::new(),
+        })
+    }
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges {
+            limit: MAX_EDGES,
+        });
+    }
+    for (i, &(from, to)) in edges.iter().enumerate() {
+        if from >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 0,
+                vertex: from,
+            });
+        }
+        if to >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 1,
+                vertex: to,
+            });
+        }
+    }
+
+    let mut adjacency = vec![Vec::new(); n];
+    let mut reverse = vec![Vec::new(); n];
+    for &(from, to) in edges {
+        adjacency[from].push(to);
+        reverse[to].push(from);
+    }
+
+    // Iterative Kosaraju pass avoids recursion on long paths.
+    let mut seen = vec![false; n];
+    let mut order = Vec::with_capacity(n);
+    for root in 0..n {
+        if seen[root] {
+            continue;
+        }
+        seen[root] = true;
+        let mut stack = vec![(root, 0usize)];
+        while let Some((v, next_index)) = stack.pop() {
+            if next_index < adjacency[v].len() {
+                stack.push((v, next_index + 1));
+                let next = adjacency[v][next_index];
+                if !seen[next] {
+                    seen[next] = true;
+                    stack.push((next, 0));
+                }
+            } else {
+                order.push(v);
+            }
+        }
+    }
+
+    seen.fill(false);
+    let mut raw_components = Vec::new();
+    for &root in order.iter().rev() {
+        if seen[root] {
+            continue;
+        }
+        let mut component = Vec::new();
+        let mut stack = vec![root];
+        seen[root] = true;
+        while let Some(v) = stack.pop() {
+            component.push(v);
+            for &next in &reverse[v] {
+                if !seen[next] {
+                    seen[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+        component.sort_unstable();
+        raw_components.push(component);
+    }
+
+    raw_components.sort_by(|a, b| {
+        b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0]))
+    });
+
+    let mut component_of = vec![0usize; n];
+    for (id, component) in raw_components.iter().enumerate() {
+        for &v in component {
+            component_of[v] = id;
+        }
+    }
+
+    let count = raw_components.len();
+    let mut cyclic: Vec<bool> = raw_components
+        .iter()
+        .map(|component| component.len() > 1)
+        .collect();
+    let mut internal_edges = vec![0usize; count];
+    let mut arc_map: std::collections::BTreeMap<(usize, usize), (usize, usize)> =
+        std::collections::BTreeMap::new();
+
+    for (edge_index, &(from, to)) in edges.iter().enumerate() {
+        let a = component_of[from];
+        let b = component_of[to];
+        if a == b {
+            internal_edges[a] += 1;
+            if from == to {
+                cyclic[a] = true;
+            }
+        } else {
+            let entry = arc_map.entry((a, b)).or_insert((0, edge_index));
+            entry.0 += 1;
+            entry.1 = entry.1.min(edge_index);
+        }
+    }
+
+    let mut arcs: Vec<Arc> = arc_map
+        .into_iter()
+        .map(|((from, to), (multiplicity, first_edge))| Arc {
+            from,
+            to,
+            multiplicity,
+            first_edge,
+        })
+        .collect();
+    arcs.sort_by(|a, b| a.from.cmp(&b.from).then_with(|| b.to.cmp(&a.to)));
+
+    let mut outgoing = vec![Vec::new(); count];
+    let mut indegree = vec![0usize; count];
+    for arc in &arcs {
+        outgoing[arc.from].push(arc.to);
+        indegree[arc.to] += 1;
+    }
+
+    let mut ready = std::collections::BinaryHeap::new();
+    for id in 0..count {
+        if indegree[id] == 0 {
+            ready.push((internal_edges[id], raw_components[id][0], id));
+        }
+    }
+
+    let mut topo = Vec::with_capacity(count);
+    let mut depth = vec![0usize; count];
+    while let Some((_, _, v)) = ready.pop() {
+        topo.push(v);
+        for &next in &outgoing[v] {
+            depth[next] = depth[next].max(depth[v] + 1);
+            indegree[next] -= 1;
+            if indegree[next] == 0 {
+                ready.push((
+                    internal_edges[next],
+                    raw_components[next][0],
+                    next,
+                ));
+            }
+        }
+    }
+
+    Ok(Graph {
+        components: raw_components,
+        component_of,
+        cyclic,
+        internal_edges,
+        arcs,
+        topo,
+        depth,
+    })
+}
+```

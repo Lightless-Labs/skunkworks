@@ -1,0 +1,255 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Customer {
+    pub id: u32,
+    pub arrival: u64,
+    pub service: u64,
+    pub priority: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Arrive,
+    Start { remaining: u64, work_at: u64, finish: u64 },
+    Resume { remaining: u64, work_at: u64, finish: u64 },
+    Preempt { remaining: u64, by: u32 },
+    Finish,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub time: u64,
+    pub customer: u32,
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    ZeroId { index: usize },
+    DuplicateId { index: usize, id: u32 },
+    BadPriority { index: usize, value: u8 },
+    TimeOverflow { customer: u32, time: u64 },
+}
+
+#[derive(Clone)]
+struct Waiting {
+    customer: Customer,
+    remaining: u64,
+    paused_at: Option<u64>,
+    started: bool,
+}
+
+#[derive(Clone)]
+struct Running {
+    customer: Customer,
+    remaining: u64,
+    work_at: u64,
+    finish: u64,
+}
+
+fn waiter_before(a: &Waiting, b: &Waiting) -> bool {
+    if a.customer.priority != b.customer.priority {
+        return a.customer.priority < b.customer.priority;
+    }
+    match (a.paused_at, b.paused_at) {
+        (Some(at_a), Some(at_b)) => {
+            if at_a != at_b {
+                at_a < at_b
+            } else {
+                a.customer.id < b.customer.id
+            }
+        }
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => {
+            if a.customer.arrival != b.customer.arrival {
+                a.customer.arrival < b.customer.arrival
+            } else {
+                a.customer.id > b.customer.id
+            }
+        }
+    }
+}
+
+fn insert_waiter(waiting: &mut Vec<Waiting>, item: Waiting) {
+    let pos = waiting
+        .iter()
+        .position(|existing| waiter_before(&item, existing))
+        .unwrap_or(waiting.len());
+    waiting.insert(pos, item);
+}
+
+pub fn simulate(customers: &[Customer], switch_cost: u64) -> Result<Vec<Event>, Error> {
+    for (index, customer) in customers.iter().enumerate() {
+        if customer.id == 0 {
+            return Err(Error::ZeroId { index });
+        }
+        if customers[..index].iter().any(|prior| prior.id == customer.id) {
+            return Err(Error::DuplicateId {
+                index,
+                id: customer.id,
+            });
+        }
+        if customer.priority > 3 {
+            return Err(Error::BadPriority {
+                index,
+                value: customer.priority,
+            });
+        }
+    }
+
+    let mut arrivals = customers.to_vec();
+    arrivals.sort_by(|a, b| {
+        a.arrival
+            .cmp(&b.arrival)
+            .then_with(|| a.priority.cmp(&b.priority))
+            .then_with(|| b.id.cmp(&a.id))
+    });
+
+    let mut events = Vec::new();
+    let mut waiting: Vec<Waiting> = Vec::new();
+    let mut running: Option<Running> = None;
+    let mut next_arrival = 0usize;
+    let mut finished_count = 0usize;
+    let mut last_dispatched: Option<u32> = None;
+    let mut now = arrivals.first().map(|c| c.arrival).unwrap_or(0);
+
+    while finished_count < customers.len() {
+        if let Some(active) = running.as_ref() {
+            if active.finish == now {
+                let active = running.take().unwrap();
+                events.push(Event {
+                    time: now,
+                    customer: active.customer.id,
+                    kind: Kind::Finish,
+                });
+                finished_count += 1;
+            }
+        }
+
+        while next_arrival < arrivals.len() && arrivals[next_arrival].arrival == now {
+            let customer = arrivals[next_arrival].clone();
+            events.push(Event {
+                time: now,
+                customer: customer.id,
+                kind: Kind::Arrive,
+            });
+            insert_waiter(
+                &mut waiting,
+                Waiting {
+                    remaining: customer.service,
+                    customer,
+                    paused_at: None,
+                    started: false,
+                },
+            );
+            next_arrival += 1;
+        }
+
+        if let Some(active) = running.as_ref() {
+            if now >= active.work_at {
+                if let Some(best) = waiting.first() {
+                    if best.customer.priority < active.customer.priority {
+                        let by = best.customer.id;
+                        let active = running.take().unwrap();
+                        let remaining = active.finish - now;
+                        events.push(Event {
+                            time: now,
+                            customer: active.customer.id,
+                            kind: Kind::Preempt { remaining, by },
+                        });
+                        insert_waiter(
+                            &mut waiting,
+                            Waiting {
+                                customer: active.customer,
+                                remaining,
+                                paused_at: Some(now),
+                                started: true,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        while running.is_none() && !waiting.is_empty() {
+            let selected = waiting.remove(0);
+            let customer_id = selected.customer.id;
+            let switch = if last_dispatched == Some(customer_id) {
+                0
+            } else if last_dispatched.is_none() {
+                0
+            } else {
+                switch_cost
+            };
+            let work_at = now.checked_add(switch).ok_or(Error::TimeOverflow {
+                customer: customer_id,
+                time: now,
+            })?;
+            let finish = work_at
+                .checked_add(selected.remaining)
+                .ok_or(Error::TimeOverflow {
+                    customer: customer_id,
+                    time: now,
+                })?;
+            let kind = if selected.started {
+                Kind::Resume {
+                    remaining: selected.remaining,
+                    work_at,
+                    finish,
+                }
+            } else {
+                Kind::Start {
+                    remaining: selected.remaining,
+                    work_at,
+                    finish,
+                }
+            };
+            events.push(Event {
+                time: now,
+                customer: customer_id,
+                kind,
+            });
+            last_dispatched = Some(customer_id);
+            running = Some(Running {
+                customer: selected.customer,
+                remaining: selected.remaining,
+                work_at,
+                finish,
+            });
+
+            if finish == now {
+                let active = running.take().unwrap();
+                events.push(Event {
+                    time: now,
+                    customer: active.customer.id,
+                    kind: Kind::Finish,
+                });
+                finished_count += 1;
+            }
+        }
+
+        if finished_count == customers.len() {
+            break;
+        }
+
+        let mut next_time: Option<u64> = None;
+        if next_arrival < arrivals.len() {
+            next_time = Some(arrivals[next_arrival].arrival);
+        }
+        if let Some(active) = running.as_ref() {
+            for candidate in [Some(active.finish), Some(active.work_at)].into_iter().flatten() {
+                if candidate > now && next_time.map_or(true, |current| candidate < current) {
+                    next_time = Some(candidate);
+                }
+            }
+        }
+        match next_time {
+            Some(time) => now = time,
+            None => break,
+        }
+    }
+
+    Ok(events)
+}
+```

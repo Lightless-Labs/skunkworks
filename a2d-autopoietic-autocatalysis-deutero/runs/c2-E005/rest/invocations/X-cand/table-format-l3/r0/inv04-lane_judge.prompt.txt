@@ -1,0 +1,814 @@
+SYSTEM:
+You are reviewing candidate solutions to a programming task.
+
+The task, exactly as the programmer received it (numbered requirements and the visible tests), is under TASK. The files under CANDIDATES are independent candidate solutions, and all of them pass the visible tests. Hidden acceptance tests check every numbered requirement.
+
+Pick the single file most likely to pass all hidden tests. Read the requirements carefully and check each candidate against them, concentrating on where the candidates differ.
+
+Reply with ONE JSON object and nothing else:
+{"pick": "<letter>", "reason": "<one sentence>"}
+
+PROMPT:
+TASK:
+R1. Implement in Rust as a SINGLE source file that compiles with `rustc --edition 2024`, std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes (`#![...]`) or inner documentation (`//!`).
+
+R2. The exact public API is given below. Every listed type, variant, field and function must be public; derive Debug, Clone, PartialEq and Eq on every listed type. Private helpers are allowed. All positions are zero-based; error byte offsets are UTF-8 byte offsets within the original cell.
+
+R3. An empty outer rows slice returns Ok(String::new()) immediately, ignoring all options and validation. Otherwise every row must contain at least one cell.
+
+R4. First inspect ALL rows for zero cells; return EmptyRow for the earliest such row, even if an earlier row is ragged. Only after this, take the first row length n and return Ragged for the earliest row whose length differs from n.
+
+R5. Options.alignments may be empty, meaning Left for every column. Otherwise its length must equal n; return AlignmentCount { expected: n, actual: len } if not. This check follows shape validation and precedes all cell validation.
+
+R6. Options.max_width is a budget measured in emitted Unicode scalar values per physical output line, excluding its LF. Zero means unlimited. It controls column widths; it never removes columns or rows.
+
+R7. The fixed per-line overhead is 3*n + 1 and each column has minimum width 1.
+
+R8. Let minimum = fixed overhead + n * minimum column width. For a nonzero budget smaller than minimum return TooNarrow { minimum, provided: options.max_width }. This check follows option validation and precedes ALL character validation, even if natural content would be empty.
+
+R9. Accept Unicode except characters for which Rust char::is_control() is true and U+2028/U+2029. Newlines, tabs, NUL, CR, DEL and C1 controls are therefore invalid. Scan original cells in row-major order and characters by increasing byte offset, returning InvalidChar for the first invalid scalar.
+
+R10. After validation, remove trailing ASCII spaces U+0020 only; preserve leading/internal spaces and every other accepted scalar, including nonbreaking space and combining marks. Empty/all-space cells are valid.
+
+R11. Width means the number of Unicode scalar values (`chars().count()`), not UTF-8 bytes, display columns or graphemes. Combining marks, emoji, wide characters and zero-width scalars each count as one. Natural column width is maximum trimmed cell width, at least 1. There is no 32-character limit.
+
+R12. If natural widths plus overhead exceed a nonzero budget, repeatedly decrement by ONE the currently widest column that exceeds its minimum. On a tie select the RIGHTMOST eligible column. Repeat until the sum plus overhead fits; never distribute spare width, expand to fill a budget, or shrink a column below its minimum.
+
+R13. After width allocation, a cell whose scalar count exceeds its column width becomes its first (width-1) scalars followed by U+2026 (the single scalar ellipsis). At width 1 this is only the ellipsis. A cell exactly fitting the width remains unchanged.
+
+R14. Truncation uses trimmed original content, happens before alignment, and may split a grapheme but never a UTF-8 scalar. The ellipsis counts as one scalar and is never three ASCII dots.
+
+R15. Alignment.Left places all extra width spaces on the right; Right puts them on the left; Center uses floor(extra/2) on the left and ceil(extra/2) on the right. Apply this after truncation/wrapping if present, using scalar widths for Unicode levels. Do not strip source leading or internal spaces.
+
+R16. The border is "+", followed for each column by (width + 2) hyphens and "+", followed by LF. Emit exactly one top border and one bottom border.
+
+R17. A data line starts with "|". For each column append one space, the aligned content filling exactly its width, one space, then "|". End every data line with LF.
+
+R18. Emit rows in input order and columns in their original order. There are no blank lines, carriage returns or extra spaces beyond the specified content/padding; the result always ends in LF for a nonempty table.
+
+R19. options.header identifies the first input row as a header. If true AND at least one body row exists, insert exactly one border after the first row. A lone header has no extra separator. No other row separators are emitted.
+
+R20. Header cells participate in width computation and use the same alignments and content transformation as body cells. A header cell containing empty content is still a header.
+
+R21. Calls must not mutate inputs, print, or retain state. All specified valid inputs return normally without panicking.
+
+R22. The complete error precedence is: empty-table success, earliest empty row, earliest ragged row, alignment count, TooNarrow, earliest InvalidChar.
+
+R23. An unlimited or sufficiently large budget preserves the natural widths exactly; do not append spaces to reach max_width. Empty alignment vectors equal explicit all-Left vectors.
+
+Exact public API:
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableError {
+    EmptyRow { row: usize },
+    Ragged { row: usize, expected: usize, actual: usize },
+    InvalidChar { row: usize, column: usize, byte: usize },
+    AlignmentCount { expected: usize, actual: usize },
+    TooNarrow { minimum: usize, provided: usize },
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Alignment { Left, Right, Center }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Options {
+    pub alignments: Vec<Alignment>,
+    pub header: bool,
+    pub max_width: usize,
+}
+pub fn render(rows: &[Vec<String>], options: &Options) -> Result<String, TableError>;
+```
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+fn r(rows: &[&[&str]]) -> Vec<Vec<String>> {
+    rows.iter().map(|row| row.iter().map(|s| (*s).to_owned()).collect()).collect()
+}
+
+#[test]
+fn public_unicode() {
+    // R1-R2, R5-R6, R9-R11, R15-R18
+    assert_eq!(render(&r(&[&["猫", "é"], &["two", "🙂"]]), &Options { alignments: vec![], header: false, max_width: 0 }).unwrap(), "+-----+---+\n| 猫   | é |\n| two | 🙂 |\n+-----+---+\n");
+}
+
+#[test]
+fn public_clip() {
+    // R6-R8, R12-R14, R16-R18
+    assert_eq!(render(&r(&[&["alphabet"]]), &Options { alignments: vec![], header: false, max_width: 9 }).unwrap(), "+-------+\n| alph… |\n+-------+\n");
+}
+
+#[test]
+fn public_header_alignment() {
+    // R5, R15-R20
+    assert_eq!(render(&r(&[&["ab", "cd"], &["long", "wide"]]), &Options { alignments: vec![Alignment::Right, Alignment::Center], header: true, max_width: 0 }).unwrap(), "+------+------+\n|   ab |  cd  |\n+------+------+\n| long | wide |\n+------+------+\n");
+}
+
+#[test]
+fn public_large_budget() {
+    // R6, R10-R11, R23
+    assert_eq!(render(&r(&[&["x ", "value"]]), &Options { alignments: vec![], header: false, max_width: 100 }).unwrap(), "+---+-------+\n| x | value |\n+---+-------+\n");
+}
+```
+
+
+CANDIDATES:
+
+### A.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableError {
+    EmptyRow { row: usize },
+    Ragged { row: usize, expected: usize, actual: usize },
+    InvalidChar { row: usize, column: usize, byte: usize },
+    AlignmentCount { expected: usize, actual: usize },
+    TooNarrow { minimum: usize, provided: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Alignment {
+    Left,
+    Right,
+    Center,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Options {
+    pub alignments: Vec<Alignment>,
+    pub header: bool,
+    pub max_width: usize,
+}
+
+pub fn render(rows: &[Vec<String>], options: &Options) -> Result<String, TableError> {
+    if rows.is_empty() {
+        return Ok(String::new());
+    }
+
+    if let Some(row) = rows.iter().position(Vec::is_empty) {
+        return Err(TableError::EmptyRow { row });
+    }
+
+    let n = rows[0].len();
+    if let Some((row, cells)) = rows
+        .iter()
+        .enumerate()
+        .find(|(_, cells)| cells.len() != n)
+    {
+        return Err(TableError::Ragged {
+            row,
+            expected: n,
+            actual: cells.len(),
+        });
+    }
+
+    if !options.alignments.is_empty() && options.alignments.len() != n {
+        return Err(TableError::AlignmentCount {
+            expected: n,
+            actual: options.alignments.len(),
+        });
+    }
+
+    let overhead = 3 * n + 1;
+    let minimum = overhead + n;
+    if options.max_width != 0 && options.max_width < minimum {
+        return Err(TableError::TooNarrow {
+            minimum,
+            provided: options.max_width,
+        });
+    }
+
+    for (row, cells) in rows.iter().enumerate() {
+        for (column, cell) in cells.iter().enumerate() {
+            for (byte, ch) in cell.char_indices() {
+                if ch.is_control() || ch == '\u{2028}' || ch == '\u{2029}' {
+                    return Err(TableError::InvalidChar { row, column, byte });
+                }
+            }
+        }
+    }
+
+    let trimmed: Vec<Vec<String>> = rows
+        .iter()
+        .map(|cells| {
+            cells
+                .iter()
+                .map(|cell| cell.trim_end_matches(' ').to_owned())
+                .collect()
+        })
+        .collect();
+
+    let mut widths = vec![1usize; n];
+    for cells in &trimmed {
+        for (column, cell) in cells.iter().enumerate() {
+            widths[column] = widths[column].max(cell.chars().count());
+        }
+    }
+
+    if options.max_width != 0 {
+        while widths.iter().sum::<usize>() + overhead > options.max_width {
+            let widest = widths
+                .iter()
+                .enumerate()
+                .filter(|(_, width)| **width > 1)
+                .max_by(|(index_a, width_a), (index_b, width_b)| {
+                    width_a.cmp(width_b).then_with(|| index_a.cmp(index_b))
+                })
+                .map(|(index, _)| index);
+            if let Some(column) = widest {
+                widths[column] -= 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    let alignments: Vec<Alignment> = if options.alignments.is_empty() {
+        vec![Alignment::Left; n]
+    } else {
+        options.alignments.clone()
+    };
+
+    fn border(widths: &[usize], output: &mut String) {
+        output.push('+');
+        for width in widths {
+            output.extend(std::iter::repeat_n('-', width + 2));
+            output.push('+');
+        }
+        output.push('\n');
+    }
+
+    fn data_line(cells: &[String], widths: &[usize], alignments: &[Alignment], output: &mut String) {
+        output.push('|');
+        for ((cell, &width), alignment) in cells.iter().zip(widths).zip(alignments) {
+            let chars: Vec<char> = cell.chars().collect();
+            let content: String = if chars.len() > width {
+                let mut value: String = chars.into_iter().take(width - 1).collect();
+                value.push('…');
+                value
+            } else {
+                cell.clone()
+            };
+            let content_width = content.chars().count();
+            let extra = width - content_width;
+            let (left, right) = match alignment {
+                Alignment::Left => (0, extra),
+                Alignment::Right => (extra, 0),
+                Alignment::Center => (extra / 2, extra - extra / 2),
+            };
+
+            output.push(' ');
+            output.extend(std::iter::repeat_n(' ', left));
+            output.push_str(&content);
+            output.extend(std::iter::repeat_n(' ', right));
+            output.push(' ');
+            output.push('|');
+        }
+        output.push('\n');
+    }
+
+    let mut output = String::new();
+    border(&widths, &mut output);
+
+    for (row, cells) in trimmed.iter().enumerate() {
+        data_line(cells, &widths, &alignments, &mut output);
+        if options.header && row == 0 && trimmed.len() > 1 {
+            border(&widths, &mut output);
+        }
+    }
+
+    border(&widths, &mut output);
+    Ok(output)
+}
+```
+
+### B.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableError {
+    EmptyRow { row: usize },
+    Ragged { row: usize, expected: usize, actual: usize },
+    InvalidChar { row: usize, column: usize, byte: usize },
+    AlignmentCount { expected: usize, actual: usize },
+    TooNarrow { minimum: usize, provided: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Alignment {
+    Left,
+    Right,
+    Center,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Options {
+    pub alignments: Vec<Alignment>,
+    pub header: bool,
+    pub max_width: usize,
+}
+
+pub fn render(rows: &[Vec<String>], options: &Options) -> Result<String, TableError> {
+    if rows.is_empty() {
+        return Ok(String::new());
+    }
+
+    if let Some(row) = rows.iter().position(Vec::is_empty) {
+        return Err(TableError::EmptyRow { row });
+    }
+
+    let expected = rows[0].len();
+    if let Some((row, cells)) = rows
+        .iter()
+        .enumerate()
+        .find(|(_, cells)| cells.len() != expected)
+    {
+        return Err(TableError::Ragged {
+            row,
+            expected,
+            actual: cells.len(),
+        });
+    }
+
+    if !options.alignments.is_empty() && options.alignments.len() != expected {
+        return Err(TableError::AlignmentCount {
+            expected,
+            actual: options.alignments.len(),
+        });
+    }
+
+    let minimum = 3 * expected + 1 + expected;
+    if options.max_width != 0 && options.max_width < minimum {
+        return Err(TableError::TooNarrow {
+            minimum,
+            provided: options.max_width,
+        });
+    }
+
+    for (row, cells) in rows.iter().enumerate() {
+        for (column, cell) in cells.iter().enumerate() {
+            for (byte, ch) in cell.char_indices() {
+                if ch.is_control() || ch == '\u{2028}' || ch == '\u{2029}' {
+                    return Err(TableError::InvalidChar { row, column, byte });
+                }
+            }
+        }
+    }
+
+    let trimmed: Vec<Vec<String>> = rows
+        .iter()
+        .map(|cells| {
+            cells
+                .iter()
+                .map(|cell| cell.trim_end_matches(' ').to_owned())
+                .collect()
+        })
+        .collect();
+
+    let mut widths = vec![1usize; expected];
+    for cells in &trimmed {
+        for (column, cell) in cells.iter().enumerate() {
+            widths[column] = widths[column].max(cell.chars().count());
+        }
+    }
+
+    if options.max_width != 0 {
+        let mut total = 3 * expected + 1 + widths.iter().sum::<usize>();
+        while total > options.max_width {
+            let widest = widths
+                .iter()
+                .enumerate()
+                .filter(|(_, width)| **width > 1)
+                .max_by_key(|(column, width)| (**width, *column))
+                .map(|(column, _)| column);
+
+            if let Some(column) = widest {
+                widths[column] -= 1;
+                total -= 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    let mut output = String::new();
+    append_border(&mut output, &widths);
+
+    for (row_index, cells) in trimmed.iter().enumerate() {
+        output.push('|');
+        for (column, cell) in cells.iter().enumerate() {
+            let width = widths[column];
+            let content = truncate(cell, width);
+            let content_width = content.chars().count();
+            let extra = width - content_width;
+            let alignment = options
+                .alignments
+                .get(column)
+                .unwrap_or(&Alignment::Left);
+
+            let (left, right) = match alignment {
+                Alignment::Left => (0, extra),
+                Alignment::Right => (extra, 0),
+                Alignment::Center => (extra / 2, extra - extra / 2),
+            };
+
+            output.push(' ');
+            output.extend(std::iter::repeat_n(' ', left));
+            output.push_str(&content);
+            output.extend(std::iter::repeat_n(' ', right));
+            output.push(' ');
+            output.push('|');
+        }
+        output.push('\n');
+
+        if options.header && row_index == 0 && rows.len() > 1 {
+            append_border(&mut output, &widths);
+        }
+    }
+
+    append_border(&mut output, &widths);
+    Ok(output)
+}
+
+fn append_border(output: &mut String, widths: &[usize]) {
+    output.push('+');
+    for &width in widths {
+        output.extend(std::iter::repeat_n('-', width + 2));
+        output.push('+');
+    }
+    output.push('\n');
+}
+
+fn truncate(cell: &str, width: usize) -> String {
+    let count = cell.chars().count();
+    if count <= width {
+        return cell.to_owned();
+    }
+
+    let mut result: String = cell.chars().take(width - 1).collect();
+    result.push('…');
+    result
+}
+```
+
+### C.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableError {
+    EmptyRow { row: usize },
+    Ragged { row: usize, expected: usize, actual: usize },
+    InvalidChar { row: usize, column: usize, byte: usize },
+    AlignmentCount { expected: usize, actual: usize },
+    TooNarrow { minimum: usize, provided: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Alignment {
+    Left,
+    Right,
+    Center,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Options {
+    pub alignments: Vec<Alignment>,
+    pub header: bool,
+    pub max_width: usize,
+}
+
+pub fn render(rows: &[Vec<String>], options: &Options) -> Result<String, TableError> {
+    if rows.is_empty() {
+        return Ok(String::new());
+    }
+
+    if let Some(row) = rows.iter().position(Vec::is_empty) {
+        return Err(TableError::EmptyRow { row });
+    }
+
+    let n = rows[0].len();
+    if let Some((row, cells)) = rows
+        .iter()
+        .enumerate()
+        .find(|(_, cells)| cells.len() != n)
+    {
+        return Err(TableError::Ragged {
+            row,
+            expected: n,
+            actual: cells.len(),
+        });
+    }
+
+    if !options.alignments.is_empty() && options.alignments.len() != n {
+        return Err(TableError::AlignmentCount {
+            expected: n,
+            actual: options.alignments.len(),
+        });
+    }
+
+    let fixed = n.checked_mul(3).and_then(|v| v.checked_add(1));
+    let minimum = fixed.and_then(|v| v.checked_add(n));
+    if options.max_width != 0
+        && minimum.map_or(true, |min| options.max_width < min)
+    {
+        return Err(TableError::TooNarrow {
+            minimum: minimum.unwrap_or(usize::MAX),
+            provided: options.max_width,
+        });
+    }
+
+    for (row_index, row) in rows.iter().enumerate() {
+        for (column_index, cell) in row.iter().enumerate() {
+            for (byte, ch) in cell.char_indices() {
+                if ch.is_control() || ch == '\u{2028}' || ch == '\u{2029}' {
+                    return Err(TableError::InvalidChar {
+                        row: row_index,
+                        column: column_index,
+                        byte,
+                    });
+                }
+            }
+        }
+    }
+
+    let trimmed: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.trim_end_matches(' ').to_owned())
+                .collect()
+        })
+        .collect();
+
+    let mut widths = vec![1usize; n];
+    for row in &trimmed {
+        for (column, cell) in row.iter().enumerate() {
+            widths[column] = widths[column].max(cell.chars().count());
+        }
+    }
+
+    if options.max_width != 0 {
+        let overhead = fixed.unwrap_or(usize::MAX);
+        let mut total = widths
+            .iter()
+            .try_fold(overhead, |sum, width| sum.checked_add(*width))
+            .unwrap_or(usize::MAX);
+
+        while total > options.max_width {
+            let eligible = widths
+                .iter()
+                .enumerate()
+                .filter(|(_, width)| **width > 1)
+                .max_by_key(|(column, width)| (**width, *column))
+                .map(|(column, _)| column);
+
+            let Some(column) = eligible else {
+                break;
+            };
+            widths[column] -= 1;
+            total -= 1;
+        }
+    }
+
+    let alignments: Vec<&Alignment> = if options.alignments.is_empty() {
+        vec![&Alignment::Left; n]
+    } else {
+        options.alignments.iter().collect()
+    };
+
+    let mut output = String::new();
+    append_border(&mut output, &widths);
+
+    for (row_index, row) in trimmed.iter().enumerate() {
+        output.push('|');
+        for (column, cell) in row.iter().enumerate() {
+            output.push(' ');
+            let content = truncate(cell, widths[column]);
+            append_aligned(
+                &mut output,
+                &content,
+                widths[column],
+                alignments[column],
+            );
+            output.push(' ');
+            output.push('|');
+        }
+        output.push('\n');
+
+        if options.header && row_index == 0 && rows.len() > 1 {
+            append_border(&mut output, &widths);
+        }
+    }
+
+    append_border(&mut output, &widths);
+    Ok(output)
+}
+
+fn truncate(cell: &str, width: usize) -> String {
+    if cell.chars().count() <= width {
+        return cell.to_owned();
+    }
+
+    let mut result: String = cell.chars().take(width - 1).collect();
+    result.push('…');
+    result
+}
+
+fn append_aligned(output: &mut String, content: &str, width: usize, alignment: &Alignment) {
+    let content_width = content.chars().count();
+    let extra = width - content_width;
+
+    let (left, right) = match alignment {
+        Alignment::Left => (0, extra),
+        Alignment::Right => (extra, 0),
+        Alignment::Center => (extra / 2, extra - extra / 2),
+    };
+
+    output.extend(std::iter::repeat_n(' ', left));
+    output.push_str(content);
+    output.extend(std::iter::repeat_n(' ', right));
+}
+
+fn append_border(output: &mut String, widths: &[usize]) {
+    output.push('+');
+    for width in widths {
+        output.extend(std::iter::repeat_n('-', width + 2));
+        output.push('+');
+    }
+    output.push('\n');
+}
+```
+
+### D.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableError {
+    EmptyRow { row: usize },
+    Ragged { row: usize, expected: usize, actual: usize },
+    InvalidChar { row: usize, column: usize, byte: usize },
+    AlignmentCount { expected: usize, actual: usize },
+    TooNarrow { minimum: usize, provided: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Alignment {
+    Left,
+    Right,
+    Center,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Options {
+    pub alignments: Vec<Alignment>,
+    pub header: bool,
+    pub max_width: usize,
+}
+
+pub fn render(rows: &[Vec<String>], options: &Options) -> Result<String, TableError> {
+    if rows.is_empty() {
+        return Ok(String::new());
+    }
+
+    if let Some(row) = rows.iter().position(Vec::is_empty) {
+        return Err(TableError::EmptyRow { row });
+    }
+
+    let columns = rows[0].len();
+    if let Some((row, cells)) = rows
+        .iter()
+        .enumerate()
+        .find(|(_, cells)| cells.len() != columns)
+    {
+        return Err(TableError::Ragged {
+            row,
+            expected: columns,
+            actual: cells.len(),
+        });
+    }
+
+    if !options.alignments.is_empty() && options.alignments.len() != columns {
+        return Err(TableError::AlignmentCount {
+            expected: columns,
+            actual: options.alignments.len(),
+        });
+    }
+
+    let fixed_overhead = columns.saturating_mul(3).saturating_add(1);
+    let minimum = fixed_overhead.saturating_add(columns);
+    if options.max_width != 0 && options.max_width < minimum {
+        return Err(TableError::TooNarrow {
+            minimum,
+            provided: options.max_width,
+        });
+    }
+
+    for (row, cells) in rows.iter().enumerate() {
+        for (column, cell) in cells.iter().enumerate() {
+            let mut byte = 0;
+            for ch in cell.chars() {
+                if ch.is_control() || ch == '\u{2028}' || ch == '\u{2029}' {
+                    return Err(TableError::InvalidChar { row, column, byte });
+                }
+                byte += ch.len_utf8();
+            }
+        }
+    }
+
+    let trimmed: Vec<Vec<String>> = rows
+        .iter()
+        .map(|cells| {
+            cells
+                .iter()
+                .map(|cell| cell.trim_end_matches(' ').to_owned())
+                .collect()
+        })
+        .collect();
+
+    let mut widths = vec![1usize; columns];
+    for cells in &trimmed {
+        for (column, cell) in cells.iter().enumerate() {
+            widths[column] = widths[column].max(cell.chars().count());
+        }
+    }
+
+    if options.max_width != 0 {
+        let budget = options.max_width - fixed_overhead;
+        while widths.iter().sum::<usize>() > budget {
+            let widest = (0..columns)
+                .filter(|&column| widths[column] > 1)
+                .max_by_key(|&column| (widths[column], column));
+            match widest {
+                Some(column) => widths[column] -= 1,
+                None => break,
+            }
+        }
+    }
+
+    let alignments: Vec<Alignment> = if options.alignments.is_empty() {
+        vec![Alignment::Left; columns]
+    } else {
+        options.alignments.clone()
+    };
+
+    fn border(widths: &[usize], output: &mut String) {
+        output.push('+');
+        for &width in widths {
+            for _ in 0..width + 2 {
+                output.push('-');
+            }
+            output.push('+');
+        }
+        output.push('\n');
+    }
+
+    fn data_line(
+        cells: &[String],
+        widths: &[usize],
+        alignments: &[Alignment],
+        output: &mut String,
+    ) {
+        output.push('|');
+        for ((cell, &width), alignment) in cells.iter().zip(widths).zip(alignments) {
+            let chars: Vec<char> = cell.chars().collect();
+            let content: String = if chars.len() > width {
+                chars[..width - 1]
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once('\u{2026}'))
+                    .collect()
+            } else {
+                cell.clone()
+            };
+            let content_width = content.chars().count();
+            let extra = width - content_width;
+            let (left, right) = match alignment {
+                Alignment::Left => (0, extra),
+                Alignment::Right => (extra, 0),
+                Alignment::Center => (extra / 2, extra - extra / 2),
+            };
+
+            output.push(' ');
+            for _ in 0..left {
+                output.push(' ');
+            }
+            output.push_str(&content);
+            for _ in 0..right {
+                output.push(' ');
+            }
+            output.push(' ');
+            output.push('|');
+        }
+        output.push('\n');
+    }
+
+    let mut output = String::new();
+    border(&widths, &mut output);
+
+    for (row, cells) in trimmed.iter().enumerate() {
+        data_line(cells, &widths, &alignments, &mut output);
+        if options.header && row == 0 && rows.len() > 1 {
+            border(&widths, &mut output);
+        }
+    }
+
+    border(&widths, &mut output);
+    Ok(output)
+}
+```

@@ -1,0 +1,181 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    StartOutOfBounds { offset: usize },
+    Truncated { offset: usize, start: usize },
+    Overflow { offset: usize, start: usize },
+}
+
+pub fn encode_u64(mut value: u64) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    loop {
+        let payload = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            bytes.push(payload);
+            break;
+        }
+        bytes.push(payload | 0x80);
+    }
+    bytes
+}
+
+pub fn decode_u64(input: &[u8], start: usize) -> Result<(u64, usize), Error> {
+    if start > input.len() {
+        return Err(Error::StartOutOfBounds { offset: start });
+    }
+
+    let mut value = 0u64;
+    let mut index = start;
+
+    for group in 0..10usize {
+        if index >= input.len() {
+            return Err(Error::Truncated {
+                offset: input.len(),
+                start,
+            });
+        }
+
+        let byte = input[index];
+        let payload = byte & 0x7f;
+
+        if group == 9 {
+            if payload > 1 || byte & 0x80 != 0 {
+                return Err(Error::Overflow {
+                    offset: index,
+                    start,
+                });
+            }
+            value |= (payload as u64) << 63;
+            return Ok((value, index + 1));
+        }
+
+        value |= (payload as u64) << (group * 7);
+        index += 1;
+
+        if byte & 0x80 == 0 {
+            return Ok((value, index));
+        }
+    }
+
+    unreachable!()
+}
+
+pub fn decode_many(
+    input: &[u8],
+    start: usize,
+    count: usize,
+) -> Result<(Vec<u64>, usize), Error> {
+    if start > input.len() {
+        return Err(Error::StartOutOfBounds { offset: start });
+    }
+
+    let mut values = Vec::with_capacity(count);
+    let mut cursor = start;
+
+    for _ in 0..count {
+        let (value, next) = decode_u64(input, cursor)?;
+        values.push(value);
+        cursor = next;
+    }
+
+    Ok((values, cursor))
+}
+
+pub fn encode_i64(value: i64) -> Vec<u8> {
+    let encoded = if value >= 0 {
+        (value as u64) << 1
+    } else {
+        (value.unsigned_abs() << 1).wrapping_sub(1)
+    };
+    encode_u64(encoded)
+}
+
+pub fn decode_i64(input: &[u8], start: usize) -> Result<(i64, usize), Error> {
+    let (value, cursor) = decode_u64(input, start)?;
+    let decoded = if value & 1 == 0 {
+        (value >> 1) as i64
+    } else {
+        -((value >> 1) as i64) - 1
+    };
+    Ok((decoded, cursor))
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamDecoder {
+    position: usize,
+    pending: Vec<u8>,
+}
+
+impl StreamDecoder {
+    pub fn new() -> Self {
+        Self {
+            position: 0,
+            pending: Vec::new(),
+        }
+    }
+
+    pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<u64>, Error> {
+        let mut output = Vec::new();
+        let mut pending = self.pending.clone();
+        let mut position = self.position;
+
+        for &byte in chunk {
+            let integer_start = position - pending.len();
+            if pending.len() == 9 && byte & 0x7f > 1 {
+                return Err(Error::Overflow {
+                    offset: position,
+                    start: integer_start,
+                });
+            }
+            if pending.len() == 9 && byte & 0x80 != 0 {
+                return Err(Error::Overflow {
+                    offset: position,
+                    start: integer_start,
+                });
+            }
+
+            pending.push(byte);
+            position += 1;
+
+            if byte & 0x80 == 0 {
+                let (value, _) = decode_u64(&pending, 0)?;
+                output.push(value);
+                pending.clear();
+            }
+        }
+
+        self.pending = pending;
+        self.position = position;
+        Ok(output)
+    }
+
+    pub fn finish(&self) -> Result<(), Error> {
+        if self.pending.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Truncated {
+                offset: self.position,
+                start: self.position - self.pending.len(),
+            })
+        }
+    }
+
+    pub fn position(&self) -> usize {
+        self.position
+    }
+
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    pub fn reset(&mut self) {
+        self.position = 0;
+        self.pending.clear();
+    }
+}
+
+impl Default for StreamDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}

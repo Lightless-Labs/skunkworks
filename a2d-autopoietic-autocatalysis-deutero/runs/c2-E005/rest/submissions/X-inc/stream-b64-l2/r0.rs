@@ -1,0 +1,263 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    InvalidByte { offset: usize, byte: u8 },
+    BadPadding { offset: usize },
+    Truncated { offset: usize },
+    AlreadyFinished,
+}
+
+const ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn digit(byte: u8) -> Option<u8> {
+    ALPHABET.iter().position(|&b| b == byte).map(|i| i as u8)
+}
+
+fn encode_group(a: u8, b: u8, c: u8, out: &mut String) {
+    out.push(ALPHABET[(a >> 2) as usize] as char);
+    out.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+    out.push(ALPHABET[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char);
+    out.push(ALPHABET[(c & 0x3f) as usize] as char);
+}
+
+pub fn encode(input: &[u8]) -> String {
+    let mut out = String::new();
+    let mut chunks = input.chunks_exact(3);
+    for chunk in &mut chunks {
+        encode_group(chunk[0], chunk[1], chunk[2], &mut out);
+    }
+
+    let tail = chunks.remainder();
+    if tail.len() == 1 {
+        let a = tail[0];
+        out.push(ALPHABET[(a >> 2) as usize] as char);
+        out.push(ALPHABET[((a & 0x03) << 4) as usize] as char);
+        out.push_str("==");
+    } else if tail.len() == 2 {
+        let a = tail[0];
+        let b = tail[1];
+        out.push(ALPHABET[(a >> 2) as usize] as char);
+        out.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+        out.push(ALPHABET[((b & 0x0f) << 2) as usize] as char);
+        out.push('=');
+    }
+    out
+}
+
+#[derive(Clone, Copy)]
+struct Symbol {
+    byte: u8,
+    offset: usize,
+}
+
+#[derive(Clone, Copy)]
+enum DecodeState {
+    Open,
+    PendingSecondPadding { first: Symbol, second: Symbol, third: Symbol },
+    TerminalPadding,
+}
+
+struct DecoderCore {
+    group: Vec<Symbol>,
+    state: DecodeState,
+    offset: usize,
+    error: Option<Error>,
+    finished: bool,
+}
+
+impl DecoderCore {
+    fn new() -> Self {
+        Self {
+            group: Vec::with_capacity(4),
+            state: DecodeState::Open,
+            offset: 0,
+            error: None,
+            finished: false,
+        }
+    }
+
+    fn push(&mut self, input: &[u8]) -> Result<Vec<u8>, Error> {
+        if let Some(error) = &self.error {
+            return Err(error.clone());
+        }
+        if self.finished {
+            let error = Error::AlreadyFinished;
+            self.error = Some(error.clone());
+            return Err(error);
+        }
+
+        let mut out = Vec::new();
+        for &byte in input {
+            let offset = self.offset;
+            self.offset += 1;
+
+            let result = match self.state {
+                DecodeState::TerminalPadding => Err(Error::BadPadding { offset }),
+                DecodeState::PendingSecondPadding { first, second, .. } => {
+                    if byte != b'=' {
+                        Err(Error::BadPadding { offset })
+                    } else {
+                        out.push((digit(first.byte).unwrap() << 2) | (digit(second.byte).unwrap() >> 4));
+                        self.group.clear();
+                        self.state = DecodeState::TerminalPadding;
+                        Ok(())
+                    }
+                }
+                DecodeState::Open => self.scan_open(byte, offset, &mut out),
+            };
+
+            if let Err(error) = result {
+                self.error = Some(error.clone());
+                return Err(error);
+            }
+        }
+        Ok(out)
+    }
+
+    fn scan_open(&mut self, byte: u8, offset: usize, out: &mut Vec<u8>) -> Result<(), Error> {
+        let position = self.group.len();
+
+        if byte == b'=' {
+            match position {
+                0 | 1 => Err(Error::BadPadding { offset }),
+                2 => {
+                    self.group.push(Symbol { byte, offset });
+                    let first = self.group[0];
+                    let second = self.group[1];
+                    self.state = DecodeState::PendingSecondPadding {
+                        first,
+                        second,
+                        third: self.group[2],
+                    };
+                    Ok(())
+                }
+                3 => {
+                    let a = digit(self.group[0].byte).unwrap();
+                    let b = digit(self.group[1].byte).unwrap();
+                    let c = digit(self.group[2].byte).unwrap();
+                    out.push((a << 2) | (b >> 4));
+                    out.push((b << 4) | (c >> 2));
+                    self.group.clear();
+                    self.state = DecodeState::TerminalPadding;
+                    Ok(())
+                }
+                _ => unreachable!(),
+            }
+        } else if let Some(value) = digit(byte) {
+            self.group.push(Symbol { byte, offset });
+            if self.group.len() == 4 {
+                let a = digit(self.group[0].byte).unwrap();
+                let b = digit(self.group[1].byte).unwrap();
+                let c = digit(self.group[2].byte).unwrap();
+                let d = value;
+                out.push((a << 2) | (b >> 4));
+                out.push((b << 4) | (c >> 2));
+                out.push((c << 6) | d);
+                self.group.clear();
+            }
+            Ok(())
+        } else {
+            Err(Error::InvalidByte { offset, byte })
+        }
+    }
+
+    fn finish(&mut self) -> Result<Vec<u8>, Error> {
+        if let Some(error) = &self.error {
+            return Err(error.clone());
+        }
+        if self.finished {
+            let error = Error::AlreadyFinished;
+            self.error = Some(error.clone());
+            return Err(error);
+        }
+
+        match self.state {
+            DecodeState::PendingSecondPadding { second: _, third, .. } => {
+                let error = Error::BadPadding { offset: third.offset };
+                self.error = Some(error.clone());
+                Err(error)
+            }
+            _ if !self.group.is_empty() => {
+                let error = Error::Truncated {
+                    offset: self.group[0].offset,
+                };
+                self.error = Some(error.clone());
+                Err(error)
+            }
+            _ => {
+                self.finished = true;
+                Ok(Vec::new())
+            }
+        }
+    }
+}
+
+pub fn decode(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut decoder = Decoder::new();
+    let mut out = decoder.push(input)?;
+    out.extend(decoder.finish()?);
+    Ok(out)
+}
+
+pub struct Encoder {
+    pending: Vec<u8>,
+    finished: bool,
+}
+
+impl Encoder {
+    pub fn new() -> Self {
+        Self {
+            pending: Vec::with_capacity(2),
+            finished: false,
+        }
+    }
+
+    pub fn push(&mut self, input: &[u8]) -> Result<String, Error> {
+        if self.finished {
+            return Err(Error::AlreadyFinished);
+        }
+
+        let mut combined = Vec::with_capacity(self.pending.len() + input.len());
+        combined.extend_from_slice(&self.pending);
+        combined.extend_from_slice(input);
+
+        let complete_len = combined.len() / 3 * 3;
+        let mut out = String::with_capacity(complete_len / 3 * 4);
+        for chunk in combined[..complete_len].chunks_exact(3) {
+            encode_group(chunk[0], chunk[1], chunk[2], &mut out);
+        }
+        self.pending.clear();
+        self.pending.extend_from_slice(&combined[complete_len..]);
+        Ok(out)
+    }
+
+    pub fn finish(&mut self) -> Result<String, Error> {
+        if self.finished {
+            return Err(Error::AlreadyFinished);
+        }
+        let out = encode(&self.pending);
+        self.pending.clear();
+        self.finished = true;
+        Ok(out)
+    }
+}
+
+pub struct Decoder {
+    core: DecoderCore,
+}
+
+impl Decoder {
+    pub fn new() -> Self {
+        Self {
+            core: DecoderCore::new(),
+        }
+    }
+
+    pub fn push(&mut self, input: &[u8]) -> Result<Vec<u8>, Error> {
+        self.core.push(input)
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<u8>, Error> {
+        self.core.finish()
+    }
+}

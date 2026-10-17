@@ -1,0 +1,280 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitError {
+    Nul { pos: usize },
+    TrailingEscape { pos: usize },
+    UnterminatedSingle { pos: usize },
+    UnterminatedDouble { pos: usize },
+    UnterminatedExpansion { pos: usize },
+    InvalidExpansion { pos: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Quote {
+    None,
+    Single { pos: usize },
+    Double { pos: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Word {
+    text: String,
+    active: bool,
+}
+
+impl Word {
+    fn new() -> Self {
+        Self {
+            text: String::new(),
+            active: false,
+        }
+    }
+}
+
+fn is_separator(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\r' | '\n')
+}
+
+fn is_name_start(c: char) -> bool {
+    c == '_' || c.is_ascii_alphabetic()
+}
+
+fn is_name_continue(c: char) -> bool {
+    is_name_start(c) || c.is_ascii_digit()
+}
+
+fn lookup<'a>(name: &str, env: &'a [(&str, &str)]) -> Option<&'a str> {
+    env.iter()
+        .find_map(|(key, value)| (*key == name).then_some(*value))
+}
+
+pub fn split(input: &str, env: &[(&str, &str)]) -> Result<Vec<String>, SplitError> {
+    if let Some(pos) = input.find('\0') {
+        return Err(SplitError::Nul { pos });
+    }
+
+    let mut words = Vec::new();
+    let mut word = Word::new();
+    let mut quote = Quote::None;
+    let mut i = 0;
+
+    while i < input.len() {
+        let c = input[i..].chars().next().expect("valid character boundary");
+        let next_i = i + c.len_utf8();
+
+        match quote {
+            Quote::Single { .. } => {
+                if c == '\'' {
+                    quote = Quote::None;
+                } else {
+                    word.text.push(c);
+                }
+                i = next_i;
+            }
+            Quote::Double { .. } => {
+                if c == '"' {
+                    quote = Quote::None;
+                    i = next_i;
+                } else if c == '\\' {
+                    if next_i == input.len() {
+                        return Err(SplitError::TrailingEscape { pos: i });
+                    }
+                    let escaped = input[next_i..]
+                        .chars()
+                        .next()
+                        .expect("character follows backslash");
+                    let escaped_end = next_i + escaped.len_utf8();
+                    if matches!(escaped, '"' | '\\' | '$' | '\n') {
+                        if escaped != '\n' {
+                            word.text.push(escaped);
+                        }
+                        i = escaped_end;
+                    } else {
+                        word.text.push('\\');
+                        i = next_i;
+                    }
+                } else if c == '$' {
+                    word.active = true;
+                    let (end, value) = parse_expansion(input, i, env)?;
+                    word.text.push_str(&value);
+                    i = end;
+                } else {
+                    word.text.push(c);
+                    i = next_i;
+                }
+            }
+            Quote::None => {
+                if is_separator(c) {
+                    if word.active {
+                        words.push(std::mem::take(&mut word.text));
+                        word.active = false;
+                    }
+                    i = next_i;
+                } else if c == '\'' {
+                    word.active = true;
+                    quote = Quote::Single { pos: i };
+                    i = next_i;
+                } else if c == '"' {
+                    word.active = true;
+                    quote = Quote::Double { pos: i };
+                    i = next_i;
+                } else if c == '\\' {
+                    if next_i == input.len() {
+                        return Err(SplitError::TrailingEscape { pos: i });
+                    }
+                    let escaped = input[next_i..]
+                        .chars()
+                        .next()
+                        .expect("character follows backslash");
+                    let escaped_end = next_i + escaped.len_utf8();
+                    if escaped == '\n' {
+                        i = escaped_end;
+                    } else {
+                        word.active = true;
+                        word.text.push(escaped);
+                        i = escaped_end;
+                    }
+                } else if c == '$' {
+                    word.active = true;
+                    let (end, value) = parse_expansion(input, i, env)?;
+                    word.text.push_str(&value);
+                    i = end;
+                } else {
+                    word.active = true;
+                    word.text.push(c);
+                    i = next_i;
+                }
+            }
+        }
+    }
+
+    match quote {
+        Quote::Single { pos } => return Err(SplitError::UnterminatedSingle { pos }),
+        Quote::Double { pos } => return Err(SplitError::UnterminatedDouble { pos }),
+        Quote::None => {}
+    }
+
+    if word.active {
+        words.push(word.text);
+    }
+
+    Ok(words)
+}
+
+fn parse_expansion(
+    input: &str,
+    dollar: usize,
+    env: &[(&str, &str)],
+) -> Result<(usize, String), SplitError> {
+    let after_dollar = dollar + 1;
+    if after_dollar == input.len() {
+        return Ok((after_dollar, "$".to_string()));
+    }
+
+    let first = input[after_dollar..]
+        .chars()
+        .next()
+        .expect("character follows dollar");
+
+    if first == '{' {
+        return parse_braced_expansion(input, dollar, after_dollar + 1, env);
+    }
+
+    if !is_name_start(first) {
+        return Ok((after_dollar, "$".to_string()));
+    }
+
+    let mut end = after_dollar;
+    for c in input[after_dollar..].chars() {
+        if !is_name_continue(c) {
+            break;
+        }
+        end += c.len_utf8();
+    }
+
+    let name = &input[after_dollar..end];
+    let value = lookup(name, env).unwrap_or("");
+    Ok((end, value.to_string()))
+}
+
+fn parse_braced_expansion(
+    input: &str,
+    dollar: usize,
+    content_start: usize,
+    env: &[(&str, &str)],
+) -> Result<(usize, String), SplitError> {
+    let mut close = None;
+    let mut i = content_start;
+
+    while i < input.len() {
+        let c = input[i..].chars().next().expect("valid character boundary");
+        let next_i = i + c.len_utf8();
+
+        if c == '\\' {
+            if next_i < input.len() {
+                let escaped = input[next_i..]
+                    .chars()
+                    .next()
+                    .expect("character follows backslash");
+                i = next_i + escaped.len_utf8();
+            } else {
+                i = next_i;
+            }
+        } else if c == '}' {
+            close = Some(i);
+            break;
+        } else {
+            i = next_i;
+        }
+    }
+
+    let close = close.ok_or(SplitError::UnterminatedExpansion { pos: dollar })?;
+    let contents = &input[content_start..close];
+
+    let name_end_rel = contents
+        .char_indices()
+        .find_map(|(idx, c)| (!is_name_continue(c)).then_some(idx))
+        .unwrap_or(contents.len());
+
+    let name = &contents[..name_end_rel];
+    if name.is_empty() || !name.chars().next().is_some_and(is_name_start) {
+        return Err(SplitError::InvalidExpansion { pos: dollar });
+    }
+
+    let tail = &contents[name_end_rel..];
+    let value = if tail.is_empty() {
+        lookup(name, env).unwrap_or("").to_string()
+    } else if let Some(default) = tail.strip_prefix(":-") {
+        match lookup(name, env) {
+            Some(value) if !value.is_empty() => value.to_string(),
+            _ => decode_default(default),
+        }
+    } else {
+        return Err(SplitError::InvalidExpansion { pos: dollar });
+    };
+
+    Ok((close + 1, value))
+}
+
+fn decode_default(text: &str) -> String {
+    let mut result = String::new();
+    let mut i = 0;
+
+    while i < text.len() {
+        let c = text[i..].chars().next().expect("valid character boundary");
+        let next_i = i + c.len_utf8();
+
+        if c == '\\' && next_i < text.len() {
+            let escaped = text[next_i..]
+                .chars()
+                .next()
+                .expect("character follows backslash");
+            result.push(escaped);
+            i = next_i + escaped.len_utf8();
+        } else {
+            result.push(c);
+            i = next_i;
+        }
+    }
+
+    result
+}

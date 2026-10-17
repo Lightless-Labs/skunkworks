@@ -1,0 +1,188 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    Ok(())
+}
+
+fn directory_intent(path: &str) -> bool {
+    path.ends_with('/')
+        || path
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .last()
+            .is_some_and(|component| component == "." || component == "..")
+}
+
+fn reduce_components<'a>(
+    components: impl Iterator<Item = (&'a str, usize)>,
+    absolute: bool,
+) -> Result<Vec<String>, PathError> {
+    let mut result: Vec<String> = Vec::new();
+
+    for (component, at) in components {
+        match component {
+            "" | "." => {}
+            ".." => {
+                if result.last().is_some_and(|last| last != "..") {
+                    result.pop();
+                } else if absolute {
+                    return Err(PathError::Escape { at });
+                } else {
+                    result.push("..".to_owned());
+                }
+            }
+            other => result.push(other.to_owned()),
+        }
+    }
+
+    Ok(result)
+}
+
+fn join_components(components: &[String], absolute: bool, intent: bool) -> String {
+    let joined = components.join("/");
+    let mut result = if absolute {
+        if joined.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{joined}")
+        }
+    } else if joined.is_empty() {
+        ".".to_owned()
+    } else {
+        joined
+    };
+
+    if intent && result != "/" && result != "." {
+        result.push('/');
+    }
+    result
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+
+    let absolute = path.as_bytes().first() == Some(&b'/');
+    let mut components = Vec::new();
+    let mut offset = 0;
+
+    for component in path.split('/') {
+        if !component.is_empty() {
+            components.push((component, offset));
+        }
+        offset += component.len() + 1;
+    }
+
+    let reduced = reduce_components(components.into_iter(), absolute)?;
+    Ok(join_components(
+        &reduced,
+        absolute,
+        directory_intent(path),
+    ))
+}
+
+fn normalized_context(path: &str) -> Result<Vec<String>, ()> {
+    if !path.starts_with('/') {
+        return Err(());
+    }
+
+    validate_raw(path).map_err(|_| ())?;
+    let mut components = Vec::new();
+    let mut offset = 0;
+
+    for component in path.split('/') {
+        if !component.is_empty() {
+            components.push((component, offset));
+        }
+        offset += component.len() + 1;
+    }
+
+    reduce_components(components.into_iter(), true).map_err(|_| ())
+}
+
+pub fn resolve(
+    path: &str,
+    cwd: &str,
+    home: Option<&str>,
+) -> Result<String, PathError> {
+    let cwd_components = normalized_context(cwd).map_err(|_| PathError::InvalidCwd)?;
+
+    let home_components = match home {
+        Some(home) => Some(normalized_context(home).map_err(|_| PathError::InvalidHome)?),
+        None => None,
+    };
+
+    validate_raw(path)?;
+
+    let bytes = path.as_bytes();
+    let (absolute, start, start_offset) = if bytes.first() == Some(&b'/') {
+        (true, Vec::new(), 0)
+    } else if bytes.first() == Some(&b'~') {
+        if bytes.len() == 1 || bytes.get(1) == Some(&b'/') {
+            let start = home_components.ok_or(PathError::MissingHome)?;
+            let offset = if bytes.len() > 1 { 2 } else { 1 };
+            (true, start, offset)
+        } else {
+            return Err(PathError::UnsupportedTilde { at: 1 });
+        }
+    } else {
+        (true, cwd_components, 0)
+    };
+
+    let remainder = &path[start_offset..];
+    let mut components = start;
+    let mut offset = start_offset;
+
+    for component in remainder.split('/') {
+        if !component.is_empty() {
+            match component {
+                "." => {}
+                ".." => {
+                    if components.pop().is_none() {
+                        return Err(PathError::Escape { at: offset });
+                    }
+                }
+                other => components.push(other.to_owned()),
+            }
+        }
+        offset += component.len() + 1;
+    }
+
+    Ok(join_components(
+        &components,
+        absolute,
+        directory_intent(path),
+    ))
+}
+```

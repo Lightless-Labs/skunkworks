@@ -1,0 +1,536 @@
+Reading additional input from stdin...
+OpenAI Codex v0.162.0
+--------
+workdir: /private/var/folders/bw/k7kxg1l12fvg3_w6t1w04msr0000gp/T/a2d-provider-codex-36823-1792206661421476000
+model: gpt-6-luna
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: low
+reasoning summaries: none
+session id: 01a147d7-7467-7933-a391-8cda62349845
+--------
+user
+You are an expert Rust engineer. Write one complete, self-contained Rust source file that satisfies the task, using only the standard library. Respond with the whole file in a single ```rust fenced code block and nothing else.
+
+R1. Implement in Rust as a SINGLE source file that compiles with `rustc --edition 2024`, std only. Output ONLY the Rust source code inside ```rust fences. All listed API items, fields and enum variants must be public; private implementation helpers are allowed. Do not add inner attributes or inner documentation comments.
+R2. Use the exact public API below. Store::new() creates an empty store. Error and the result structs must derive Debug, Clone, PartialEq, Eq; Store need not implement those traits. Strings are compared by Rust String ordering, without normalization. Values may be empty; keys may contain any characters except that the empty string is invalid for key-based operations.
+Exact API (Rust signatures):
+```rust
+pub enum Error { KeyEmpty, NameEmpty, NameInvalid { at: usize }, SnapshotLimit, NoTransaction, DepthLimit, SnapshotMissing(String), TimeBackwards { previous: u64, now: u64 }, DeadlineOverflow, InvalidRange, CursorMismatch, InvalidNumber { key: String, value: String }, SumOverflow { key: String } }
+pub struct Store { /* private fields */ }
+impl Store {
+ pub fn new() -> Self;
+ pub fn begin(&mut self, now: u64) -> Result<(), Error>;
+ pub fn commit(&mut self, now: u64) -> Result<(), Error>;
+ pub fn rollback(&mut self, now: u64) -> Result<(), Error>;
+ pub fn set(&mut self, now: u64, key: &str, value: &str, ttl: Option<u64>) -> Result<(), Error>;
+ pub fn delete(&mut self, now: u64, key: &str) -> Result<bool, Error>;
+ pub fn get(&mut self, now: u64, key: &str) -> Result<Option<String>, Error>;
+ pub fn count(&mut self, now: u64, value: &str) -> Result<usize, Error>;
+ pub fn depth(&mut self, now: u64) -> Result<usize, Error>;
+ pub fn snapshot(&mut self, now: u64, name: &str) -> Result<(), Error>;
+ pub fn restore(&mut self, now: u64, name: &str) -> Result<(), Error>;
+ pub fn forget(&mut self, now: u64, name: &str) -> Result<(), Error>;
+ pub fn scan(&mut self, now: u64, start: &str, end: Option<&str>, prefix: Option<&str>, offset: usize, limit: usize, cursor: Option<&Cursor>) -> Result<Page, Error>;
+ pub fn aggregate(&mut self, now: u64, start: &str, end: Option<&str>, prefix: Option<&str>) -> Result<Aggregate, Error>;
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cursor { pub start: String, pub end: Option<String>, pub prefix: Option<String>, pub offset: usize, pub last: String }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Page { pub items: Vec<(String, String)>, pub next: Option<Cursor> }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Aggregate { pub count: usize, pub sum: i64 }
+```
+R3. A visible map consists of committed data at depth zero, otherwise the innermost working scope. Every get/count/snapshot uses that map, including earlier writes and deletes in the same scope. get returns an owned value or None, never an error for a missing nonempty key.
+R4. set inserts or overwrites one key; delete removes it and returns true exactly when it was present in the visible map. Deleting a missing nonempty key returns false. Both operate only on the visible map.
+R5. count returns the number of visible keys whose entire value equals the supplied string; it counts keys, not distinct values. Empty values are included. An empty store has count zero.
+R6. begin copies the visible map into a new working scope. At most four scopes may be open; a fifth begin returns DepthLimit without adding a scope. depth returns the number of open scopes.
+R7. commit without a scope returns NoTransaction. Otherwise it removes the innermost scope and replaces its parent working map, or committed map at depth zero, with the removed scope's complete map. Inner commit is still undone by a later outer rollback.
+R8. rollback without a scope returns NoTransaction. Otherwise it discards exactly the innermost scope; the parent map becomes visible again. It does not undo changes to the snapshot registry.
+R9. snapshot(name) copies the complete visible map into a registry under name, replacing an existing entry of the same name. A snapshot never records the scope stack or depth. Snapshots can be taken and replaced inside scopes.
+R10. restore(name) replaces only the visible map with a copy of the named snapshot. Scope depth and suspended parent maps are unchanged. Restoring inside a scope can subsequently be committed or rolled back normally.
+R11. forget(name) removes the named snapshot and never changes data or scopes. restore and forget of an unknown valid name return SnapshotMissing(name.to_string()).
+R12. snapshot/restore/forget with an empty name return NameEmpty, before any registry lookup or mutation. A name must start with an ASCII lowercase letter and continue only with ASCII lowercase letters, digits, or underscores. Otherwise return NameInvalid { at }, where at is the UTF-8 byte offset of the first offending character. Validate left to right before any registry lookup or capacity check. Valid names are compared exactly.
+R13. get/set/delete with an empty key return KeyEmpty before any data access or mutation. count's argument is a value, so an empty argument is valid.
+R14. At level 1 every error leaves all data, scopes and snapshots unchanged. Independent Store instances share no state.
+R15. Snapshots remain usable after any commits or rollbacks, including rollback of the scope in which they were created. Restore copies data; later edits do not mutate the saved snapshot.
+R16. At most three named snapshots may exist. Creating a fourth distinct valid name returns SnapshotLimit with no registry mutation; replacing an existing name at capacity succeeds. Name validation precedes this capacity check, and forget frees a slot. Snapshot slots, like the registry, are not undone by rollback. All operations must be deterministic. There is no automatic commit, expiry, normalization, persistence, or concurrency at this level.
+R17. At levels 2 and 3, the API replaces the level 1 signatures: every method except new takes an explicit now: u64 first. new starts the logical clock at zero. These levels have expiry; R16's no-expiry statement applies only to level 1. R3–R16 still apply subject to the clock/expiry rules below; R14's error atomicity excludes the admitted clock advancement and expiry.
+R18. Every call first checks now against the last admitted time. now < previous returns TimeBackwards { previous, now } before all other validation, and leaves everything unchanged. Equal times are allowed. An admitted time becomes the clock even when the call later returns another error.
+R19. After time admission, immediately remove entries with deadline <= now from the current visible map, before any other validation. Suspended maps and saved snapshots are not purged at this point. count ignores expired keys, and depth/failed calls also trigger this purge.
+R20. set with ttl None writes a permanent entry, replacing any old deadline. ttl Some(d) writes deadline now+d. Checked addition overflow returns DeadlineOverflow without changing that key (apart from prior expiry). Empty-key validation precedes deadline calculation. Some(0) removes the key immediately and returns Ok(()), even if it was absent.
+R21. begin copies only currently live entries with their existing absolute deadlines; it never restarts TTL. commit preserves deadlines when replacing its parent map.
+R22. rollback exposes the suspended parent map and immediately purges it at the admitted now. Thus a discarded overwrite cannot resurrect an original value whose original deadline has passed. Values whose original deadline is still in the future are restored with that original deadline.
+R23. snapshot saves absolute deadlines. restore copies the saved map and immediately purges it at now, without renewing deadlines. The saved snapshot itself remains unchanged and reusable. A snapshot can restore a deleted, still-live entry, but cannot restore an already-expired entry.
+R24. For commit/rollback the NoTransaction check follows clock admission and purge. For snapshot/restore/forget, name validation precedes lookup but follows admission/purge. Expiry in the visible map is irreversible even if a subsequent call attempts a backwards clock. Stores have independent clocks.
+R25. scan and aggregate use the current visible live map, including writes and deletes in scopes. They filter keys k by k >= start, and k < end if end is Some, and k.starts_with(prefix) if prefix is Some. Empty start and empty prefix are allowed. None end means unbounded. Sorting is ascending Rust String ordering, including non-ASCII keys.
+R26. For both APIs, Some(end) with end <= start returns InvalidRange. This validation follows clock admission/purge and precedes cursor validation or numeric parsing. Empty or disjoint valid selections return empty results.
+R27. On a scan without cursor, discard offset matching keys, then take at most limit matching keys. Huge offsets/limits must not overflow or panic. limit zero returns an empty Page with next None, after validating the range and cursor if any.
+R28. A nonempty page has next Some exactly when a further matching key exists beyond its last returned key. The returned Cursor copies start/end/prefix/offset and sets last to that last returned key. Otherwise next is None. An empty page always has next None.
+R29. On a scan with cursor, start/end/prefix/offset must equal the cursor's fields exactly (None and Some("") differ). Its last must be a nonempty key satisfying the requested filters; otherwise return CursorMismatch. Cursor fields are public and callers may construct them. There is no store identity, revision, or existence validation for last. limit may change between pages.
+R30. With a valid cursor select only matching keys strictly greater than last, and do NOT apply offset again. Resumption is over the current visible live map: later insertions after last can appear; insertions at/before last cannot; deletion/expiry of last does not invalidate the cursor. Never return duplicates across unchanged pages.
+R31. aggregate examines matching keys in ascending order and returns the count of matching entries and checked i64 sum of their values. Empty selection returns Aggregate { count: 0, sum: 0 }. It has no pagination and counts entries with zero values too.
+R32. Numeric values must be canonical ASCII signed i64 decimal: "0", or a nonzero digit followed by zero or more digits, optionally preceded by one minus. Reject empty text, plus signs, whitespace, leading zeros, "-0", non-ASCII digits, nondecimal characters, and values outside i64 range. Reject with InvalidNumber { key, value } containing the original strings.
+R33. Parse and add each entry before proceeding to the next key. A checked-add overflow returns SumOverflow { key } for the key causing it. The first error in key order wins, even if a later entry has another type of error. No partial aggregate is returned.
+R34. InvalidRange, CursorMismatch, InvalidNumber, and SumOverflow do not alter data/scopes/snapshots beyond the already-admitted clock and expiry. Scans return owned strings and cursors: saved results cannot be mutated by later writes.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// R1, R3–R5, R17–R20
+#[test]
+fn public_ttl() {
+    let mut s = Store::new();
+    s.set(2, "red", "9", Some(5)).unwrap();
+    assert_eq!(s.get(3, "red"), Ok(Some("9".into())));
+    assert_eq!(s.count(3, "9"), Ok(1));
+    assert_eq!(s.delete(4, "red"), Ok(true));
+    assert_eq!(s.get(4, "red"), Ok(None));
+}
+
+// R6–R8, R17, R21–R22
+#[test]
+fn public_scopes() {
+    let mut s = Store::new();
+    s.begin(1).unwrap();
+    s.set(1, "key", "v", None).unwrap();
+    s.begin(2).unwrap();
+    s.set(2, "key", "w", None).unwrap();
+    s.commit(2).unwrap();
+    assert_eq!(s.depth(2), Ok(1));
+    s.rollback(3).unwrap();
+    assert_eq!(s.get(3, "key"), Ok(None));
+}
+
+// R25–R30
+#[test]
+fn public_pages() {
+    let mut s = Store::new();
+    for (k, v) in [("aa", "1"), ("ab", "2"), ("ac", "3")] {
+        s.set(0, k, v, None).unwrap();
+    }
+    let p = s.scan(0, "", None, Some("a"), 0, 2, None).unwrap();
+    assert_eq!(
+        p.items,
+        vec![("aa".into(), "1".into()), ("ab".into(), "2".into())]
+    );
+    let q = s
+        .scan(0, "", None, Some("a"), 0, 2, p.next.as_ref())
+        .unwrap();
+    assert_eq!(q.items, vec![("ac".into(), "3".into())]);
+    assert_eq!(q.next, None);
+}
+
+// R9–R12, R23, R31–R33
+#[test]
+fn public_numbers_and_save() {
+    let mut s = Store::new();
+    s.set(1, "n1", "4", None).unwrap();
+    s.set(1, "n2", "-2", None).unwrap();
+    s.snapshot(1, "saved").unwrap();
+    assert_eq!(
+        s.aggregate(1, "", None, None),
+        Ok(Aggregate { count: 2, sum: 2 })
+    );
+    s.delete(2, "n2").unwrap();
+    s.restore(2, "saved").unwrap();
+    assert_eq!(s.count(2, "-2"), Ok(1));
+    s.forget(2, "saved").unwrap();
+}
+```
+
+
+## Approach
+
+Follow the requirements literally and in order. Where they fix an order of checks, a precedence, a format or a tie-break, implement exactly that rule even if another seems more natural, and add no behaviour they do not ask for. Respond with only the code block.
+
+deprecated: `[features].web_search_request` is deprecated because web search is enabled by default.
+Set `web_search` to `"live"`, `"indexed"`, `"cached"`, or `"disabled"` at the top level (or under a profile) in config.toml if you want to override it.
+2026-10-17T03:11:05.658787Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp\", scope=\"user:read account:read\"" })
+codex
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    KeyEmpty,
+    NameEmpty,
+    NameInvalid { at: usize },
+    SnapshotLimit,
+    NoTransaction,
+    DepthLimit,
+    SnapshotMissing(String),
+    TimeBackwards { previous: u64, now: u64 },
+    DeadlineOverflow,
+    InvalidRange,
+    CursorMismatch,
+    InvalidNumber { key: String, value: String },
+    SumOverflow { key: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cursor {
+    pub start: String,
+    pub end: Option<String>,
+    pub prefix: Option<String>,
+    pub offset: usize,
+    pub last: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Page {
+    pub items: Vec<(String, String)>,
+    pub next: Option<Cursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Aggregate {
+    pub count: usize,
+    pub sum: i64,
+}
+
+#[derive(Clone)]
+struct Entry {
+    value: String,
+    deadline: Option<u64>,
+}
+
+type Data = BTreeMap<String, Entry>;
+
+pub struct Store {
+    committed: Data,
+    scopes: Vec<Data>,
+    snapshots: BTreeMap<String, Data>,
+    last_time: u64,
+}
+
+impl Store {
+    pub fn new() -> Self {
+        Self {
+            committed: BTreeMap::new(),
+            scopes: Vec::new(),
+            snapshots: BTreeMap::new(),
+            last_time: 0,
+        }
+    }
+
+    fn admit(&mut self, now: u64) -> Result<(), Error> {
+        if now < self.last_time {
+            return Err(Error::TimeBackwards {
+                previous: self.last_time,
+                now,
+            });
+        }
+        self.last_time = now;
+        self.purge_visible(now);
+        Ok(())
+    }
+
+    fn purge(data: &mut Data, now: u64) {
+        data.retain(|_, entry| entry.deadline.map_or(true, |deadline| deadline > now));
+    }
+
+    fn purge_visible(&mut self, now: u64) {
+        if let Some(data) = self.scopes.last_mut() {
+            Self::purge(data, now);
+        } else {
+            Self::purge(&mut self.committed, now);
+        }
+    }
+
+    fn visible(&self) -> &Data {
+        self.scopes.last().unwrap_or(&self.committed)
+    }
+
+    fn visible_mut(&mut self) -> &mut Data {
+        self.scopes.last_mut().unwrap_or(&mut self.committed)
+    }
+
+    pub fn begin(&mut self, now: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        if self.scopes.len() >= 4 {
+            return Err(Error::DepthLimit);
+        }
+        self.scopes.push(self.visible().clone());
+        Ok(())
+    }
+
+    pub fn commit(&mut self, now: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        let data = self.scopes.pop().ok_or(Error::NoTransaction)?;
+        if let Some(parent) = self.scopes.last_mut() {
+            *parent = data;
+        } else {
+            self.committed = data;
+        }
+        Ok(())
+    }
+
+    pub fn rollback(&mut self, now: u64) -> Result<(), Error> {
+        self.admit(now)?;
+        if self.scopes.pop().is_none() {
+            return Err(Error::NoTransaction);
+        }
+        if let Some(parent) = self.scopes.last_mut() {
+            Self::purge(parent, now);
+        } else {
+            Self::purge(&mut self.committed, now);
+        }
+        Ok(())
+    }
+
+    pub fn set(
+        &mut self,
+        now: u64,
+        key: &str,
+        value: &str,
+        ttl: Option<u64>,
+    ) -> Result<(), Error> {
+        self.admit(now)?;
+        if key.is_empty() {
+            return Err(Error::KeyEmpty);
+        }
+        let deadline = match ttl {
+            Some(d) => Some(now.checked_add(d).ok_or(Error::DeadlineOverflow)?),
+            None => None,
+        };
+        if deadline == Some(now) {
+            self.visible_mut().remove(key);
+        } else {
+            self.visible_mut().insert(
+                key.to_string(),
+                Entry {
+                    value: value.to_string(),
+                    deadline,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    pub fn delete(&mut self, now: u64, key: &str) -> Result<bool, Error> {
+        self.admit(now)?;
+        if key.is_empty() {
+            return Err(Error::KeyEmpty);
+        }
+        Ok(self.visible_mut().remove(key).is_some())
+    }
+
+    pub fn get(&mut self, now: u64, key: &str) -> Result<Option<String>, Error> {
+        self.admit(now)?;
+        if key.is_empty() {
+            return Err(Error::KeyEmpty);
+        }
+        Ok(self.visible().get(key).map(|entry| entry.value.clone()))
+    }
+
+    pub fn count(&mut self, now: u64, value: &str) -> Result<usize, Error> {
+        self.admit(now)?;
+        Ok(self
+            .visible()
+            .values()
+            .filter(|entry| entry.value == value)
+            .count())
+    }
+
+    pub fn depth(&mut self, now: u64) -> Result<usize, Error> {
+        self.admit(now)?;
+        Ok(self.scopes.len())
+    }
+
+    fn validate_name(name: &str) -> Result<(), Error> {
+        if name.is_empty() {
+            return Err(Error::NameEmpty);
+        }
+        for (at, ch) in name.char_indices() {
+            let valid = if at == 0 {
+                ch.is_ascii_lowercase()
+            } else {
+                ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'
+            };
+            if !valid {
+                return Err(Error::NameInvalid { at });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn snapshot(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        if !self.snapshots.contains_key(name) && self.snapshots.len() >= 3 {
+            return Err(Error::SnapshotLimit);
+        }
+        self.snapshots
+            .insert(name.to_string(), self.visible().clone());
+        Ok(())
+    }
+
+    pub fn restore(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        let mut data = self
+            .snapshots
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::SnapshotMissing(name.to_string()))?;
+        Self::purge(&mut data, now);
+        *self.visible_mut() = data;
+        Ok(())
+    }
+
+    pub fn forget(&mut self, now: u64, name: &str) -> Result<(), Error> {
+        self.admit(now)?;
+        Self::validate_name(name)?;
+        if self.snapshots.remove(name).is_none() {
+            return Err(Error::SnapshotMissing(name.to_string()));
+        }
+        Ok(())
+    }
+
+    fn matches(key: &str, start: &str, end: Option<&str>, prefix: Option<&str>) -> bool {
+        key >= start
+            && end.map_or(true, |end| key < end)
+            && prefix.map_or(true, |prefix| key.starts_with(prefix))
+    }
+
+    fn valid_cursor_key(
+        key: &str,
+        start: &str,
+        end: Option<&str>,
+        prefix: Option<&str>,
+    ) -> bool {
+        !key.is_empty() && Self::matches(key, start, end, prefix)
+    }
+
+    pub fn scan(
+        &mut self,
+        now: u64,
+        start: &str,
+        end: Option<&str>,
+        prefix: Option<&str>,
+        offset: usize,
+        limit: usize,
+        cursor: Option<&Cursor>,
+    ) -> Result<Page, Error> {
+        self.admit(now)?;
+        if end.is_some_and(|end| end <= start) {
+            return Err(Error::InvalidRange);
+        }
+        if let Some(cursor) = cursor {
+            if cursor.start != start
+                || cursor.end.as_deref() != end
+                || cursor.prefix.as_deref() != prefix
+                || cursor.offset != offset
+                || !Self::valid_cursor_key(&cursor.last, start, end, prefix)
+            {
+                return Err(Error::CursorMismatch);
+            }
+        }
+
+        if limit == 0 {
+            return Ok(Page {
+                items: Vec::new(),
+                next: None,
+            });
+        }
+
+        let mut matching = self
+            .visible()
+            .iter()
+            .filter(|(key, _)| Self::matches(key, start, end, prefix))
+            .filter(|(key, _)| cursor.map_or(true, |cursor| key.as_str() > cursor.last.as_str()));
+
+        if cursor.is_none() {
+            for _ in 0..offset {
+                if matching.next().is_none() {
+                    return Ok(Page {
+                        items: Vec::new(),
+                        next: None,
+                    });
+                }
+            }
+        }
+
+        let mut items = Vec::new();
+        for _ in 0..limit {
+            match matching.next() {
+                Some((key, entry)) => items.push((key.clone(), entry.value.clone())),
+                None => break,
+            }
+        }
+
+        let next = if !items.is_empty() && matching.next().is_some() {
+            let last = items.last().unwrap().0.clone();
+            Some(Cursor {
+                start: start.to_string(),
+                end: end.map(str::to_string),
+                prefix: prefix.map(str::to_string),
+                offset,
+                last,
+            })
+        } else {
+            None
+        };
+
+        Ok(Page { items, next })
+    }
+
+    fn parse_number(key: &str, value: &str) -> Result<i64, Error> {
+        let bytes = value.as_bytes();
+        let valid = if bytes == b"0" {
+            true
+        } else if let Some(digits) = bytes.strip_prefix(b"-") {
+            !digits.is_empty()
+                && digits[0] != b'0'
+                && digits.iter().all(u8::is_ascii_digit)
+        } else {
+            !bytes.is_empty()
+                && bytes[0] != b'0'
+                && bytes.iter().all(u8::is_ascii_digit)
+        };
+        if !valid {
+            return Err(Error::InvalidNumber {
+                key: key.to_string(),
+                value: value.to_string(),
+            });
+        }
+        value.parse::<i64>().map_err(|_| Error::InvalidNumber {
+            key: key.to_string(),
+            value: value.to_string(),
+        })
+    }
+
+    pub fn aggregate(
+        &mut self,
+        now: u64,
+        start: &str,
+        end: Option<&str>,
+        prefix: Option<&str>,
+    ) -> Result<Aggregate, Error> {
+        self.admit(now)?;
+        if end.is_some_and(|end| end <= start) {
+            return Err(Error::InvalidRange);
+        }
+
+        let mut count = 0usize;
+        let mut sum = 0i64;
+        for (key, entry) in self.visible() {
+            if !Self::matches(key, start, end, prefix) {
+                continue;
+            }
+            let value = Self::parse_number(key, &entry.value)?;
+            sum = sum.checked_add(value).ok_or_else(|| Error::SumOverflow {
+                key: key.clone(),
+            })?;
+            count += 1;
+        }
+        Ok(Aggregate { count, sum })
+    }
+}
+```
+tokens used
+11,330

@@ -1,0 +1,369 @@
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Product {
+    pub id: String,
+    pub price: u16,
+    pub stock: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct State {
+    pub credit: u16,
+    pub selected: Option<String>,
+    pub escrow: Vec<u16>,
+    pub tubes: [u16; 4],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Receipt {
+    pub id: String,
+    pub price: u16,
+    pub change: Vec<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    EmptyCatalog,
+    BadId { id: String },
+    DuplicateId { id: String },
+    BadPrice { id: String },
+    BadCoin { coin: u16 },
+    CreditLimit,
+    UnknownProduct { id: String },
+    SameSelection,
+    NoSelection,
+    Underpaid { price: u16, credit: u16 },
+    TubeLimit { coin: u16 },
+    NoChange { amount: u16 },
+    StockLimit { id: String },
+    SoldOut { id: String },
+    Busy,
+    ZeroRestock,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EventKind {
+    Inserted { coin: u16, credit: u16 },
+    Selected { id: String },
+    Vended { id: String, price: u16, change: Vec<u16> },
+    Refunded { coins: Vec<u16> },
+    PriceChanged { id: String, old: u16, new: u16 },
+    Restocked { id: String, added: u16, stock: u16 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Event {
+    pub seq: usize,
+    pub kind: EventKind,
+}
+
+pub struct Machine {
+    products: Vec<Product>,
+    credit: u16,
+    selected: Option<String>,
+    escrow: Vec<u16>,
+    tubes: [u16; 4],
+    events: Vec<Event>,
+}
+
+const DENOMS: [u16; 4] = [1, 3, 4, 10];
+
+fn valid_id(id: &str) -> bool {
+    (1..=8).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_lowercase())
+}
+
+impl Machine {
+    pub fn new(products: Vec<Product>, tubes: [u16; 4]) -> Result<Self, Error> {
+        if products.is_empty() {
+            return Err(Error::EmptyCatalog);
+        }
+
+        let mut seen = Vec::<String>::new();
+        for product in &products {
+            if !valid_id(&product.id) {
+                return Err(Error::BadId {
+                    id: product.id.clone(),
+                });
+            }
+            if seen.iter().any(|id| id == &product.id) {
+                return Err(Error::DuplicateId {
+                    id: product.id.clone(),
+                });
+            }
+            seen.push(product.id.clone());
+
+            if !(1..=100).contains(&product.price) {
+                return Err(Error::BadPrice {
+                    id: product.id.clone(),
+                });
+            }
+            if product.stock > 100 {
+                return Err(Error::StockLimit {
+                    id: product.id.clone(),
+                });
+            }
+        }
+
+        for (i, count) in tubes.iter().enumerate() {
+            if *count > 100 {
+                return Err(Error::TubeLimit { coin: DENOMS[i] });
+            }
+        }
+
+        Ok(Self {
+            products,
+            credit: 0,
+            selected: None,
+            escrow: Vec::new(),
+            tubes,
+            events: Vec::new(),
+        })
+    }
+
+    pub fn state(&self) -> State {
+        State {
+            credit: self.credit,
+            selected: self.selected.clone(),
+            escrow: self.escrow.clone(),
+            tubes: self.tubes,
+        }
+    }
+
+    pub fn insert(&mut self, coin: u16) -> Result<(), Error> {
+        let index = DENOMS.iter().position(|&d| d == coin);
+        let Some(_) = index else {
+            return Err(Error::BadCoin { coin });
+        };
+
+        let Some(new_credit) = self.credit.checked_add(coin) else {
+            return Err(Error::CreditLimit);
+        };
+        if new_credit > 100 {
+            return Err(Error::CreditLimit);
+        }
+
+        self.credit = new_credit;
+        self.escrow.push(coin);
+        self.log(EventKind::Inserted {
+            coin,
+            credit: new_credit,
+        });
+        Ok(())
+    }
+
+    pub fn select(&mut self, id: &str) -> Result<(), Error> {
+        if !self.products.iter().any(|p| p.id == id) {
+            return Err(Error::UnknownProduct { id: id.to_owned() });
+        }
+        if self.selected.as_deref() == Some(id) {
+            return Err(Error::SameSelection);
+        }
+
+        let id = id.to_owned();
+        self.selected = Some(id.clone());
+        self.log(EventKind::Selected { id });
+        Ok(())
+    }
+
+    pub fn vend(&mut self) -> Result<Receipt, Error> {
+        let Some(id) = self.selected.clone() else {
+            return Err(Error::NoSelection);
+        };
+        let product_index = self.products.iter().position(|p| p.id == id).unwrap();
+        let product = &self.products[product_index];
+
+        if product.stock == 0 {
+            return Err(Error::SoldOut { id });
+        }
+        if self.credit < product.price {
+            return Err(Error::Underpaid {
+                price: product.price,
+                credit: self.credit,
+            });
+        }
+
+        let price = product.price;
+        let amount = self.credit - price;
+        let change = make_change(amount, self.tubes)
+            .ok_or(Error::NoChange { amount })?;
+
+        let mut proposed = self.tubes;
+        for &coin in &change {
+            let i = DENOMS.iter().position(|&d| d == coin).unwrap();
+            proposed[i] -= 1;
+        }
+        for &coin in &self.escrow {
+            let i = DENOMS.iter().position(|&d| d == coin).unwrap();
+            proposed[i] += 1;
+        }
+        for (i, count) in proposed.iter().enumerate() {
+            if *count > 100 {
+                return Err(Error::TubeLimit { coin: DENOMS[i] });
+            }
+        }
+
+        self.tubes = proposed;
+        self.products[product_index].stock -= 1;
+        self.credit = 0;
+        self.selected = None;
+        self.escrow.clear();
+
+        let receipt = Receipt {
+            id: id.clone(),
+            price,
+            change: change.clone(),
+        };
+        self.log(EventKind::Vended { id, price, change });
+        Ok(receipt)
+    }
+
+    pub fn refund(&mut self) -> Result<Vec<u16>, Error> {
+        let coins: Vec<u16> = self.escrow.iter().rev().copied().collect();
+        self.credit = 0;
+        self.selected = None;
+        self.escrow.clear();
+        self.log(EventKind::Refunded {
+            coins: coins.clone(),
+        });
+        Ok(coins)
+    }
+
+    pub fn products(&self) -> Vec<Product> {
+        let mut products = self.products.clone();
+        products.sort_by(|a, b| a.id.as_bytes().cmp(b.id.as_bytes()));
+        products
+    }
+
+    pub fn set_price(&mut self, id: &str, price: u16) -> Result<(), Error> {
+        let Some(index) = self.products.iter().position(|p| p.id == id) else {
+            return Err(Error::UnknownProduct { id: id.to_owned() });
+        };
+        if self.credit != 0 {
+            return Err(Error::Busy);
+        }
+        if !(1..=100).contains(&price) {
+            return Err(Error::BadPrice { id: id.to_owned() });
+        }
+
+        let old = self.products[index].price;
+        self.products[index].price = price;
+        self.log(EventKind::PriceChanged {
+            id: id.to_owned(),
+            old,
+            new: price,
+        });
+        Ok(())
+    }
+
+    pub fn restock(&mut self, id: &str, count: u16) -> Result<(), Error> {
+        let Some(index) = self.products.iter().position(|p| p.id == id) else {
+            return Err(Error::UnknownProduct { id: id.to_owned() });
+        };
+        if count == 0 {
+            return Err(Error::ZeroRestock);
+        }
+
+        let Some(stock) = self.products[index].stock.checked_add(count) else {
+            return Err(Error::StockLimit { id: id.to_owned() });
+        };
+        if stock > 100 {
+            return Err(Error::StockLimit { id: id.to_owned() });
+        }
+
+        self.products[index].stock = stock;
+        self.log(EventKind::Restocked {
+            id: id.to_owned(),
+            added: count,
+            stock,
+        });
+        Ok(())
+    }
+
+    pub fn events(&self) -> &[Event] {
+        &self.events
+    }
+
+    fn log(&mut self, kind: EventKind) {
+        let seq = self.events.len();
+        self.events.push(Event { seq, kind });
+    }
+}
+
+fn make_change(amount: u16, tubes: [u16; 4]) -> Option<Vec<u16>> {
+    if amount == 0 {
+        return Some(Vec::new());
+    }
+
+    let mut remaining = amount;
+    let mut greedy_counts = [0u16; 4];
+    for i in (0..4).rev() {
+        let coin = DENOMS[i];
+        let take = tubes[i].min(remaining / coin);
+        greedy_counts[i] = take;
+        remaining -= take * coin;
+    }
+
+    if remaining == 0 {
+        return Some(counts_to_descending(greedy_counts));
+    }
+
+    let mut best: Option<[u16; 4]> = None;
+    let mut counts = [0u16; 4];
+    search_change(3, amount, &tubes, &mut counts, &mut best);
+
+    best.map(counts_to_descending)
+}
+
+fn search_change(
+    index: isize,
+    remaining: u16,
+    tubes: &[u16; 4],
+    counts: &mut [u16; 4],
+    best: &mut Option<[u16; 4]>,
+) {
+    if index < 0 {
+        if remaining != 0 {
+            return;
+        }
+        let total: u32 = counts.iter().map(|&c| c as u32).sum();
+        let replace = match best {
+            None => true,
+            Some(current) => {
+                let current_total: u32 = current.iter().map(|&c| c as u32).sum();
+                total < current_total
+                    || (total == current_total
+                        && (0..4).rev().find_map(|i| {
+                            (counts[i] != current[i]).then_some(counts[i] > current[i])
+                        }) == Some(true))
+            }
+        };
+        if replace {
+            *best = Some(*counts);
+        }
+        return;
+    }
+
+    let i = index as usize;
+    let coin = DENOMS[i];
+    let max_take = tubes[i].min(remaining / coin);
+    for take in 0..=max_take {
+        counts[i] = take;
+        search_change(
+            index - 1,
+            remaining - take * coin,
+            tubes,
+            counts,
+            best,
+        );
+    }
+    counts[i] = 0;
+}
+
+fn counts_to_descending(counts: [u16; 4]) -> Vec<u16> {
+    let mut result = Vec::new();
+    for i in (0..4).rev() {
+        for _ in 0..counts[i] {
+            result.push(DENOMS[i]);
+        }
+    }
+    result
+}

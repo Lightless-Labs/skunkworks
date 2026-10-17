@@ -1,0 +1,357 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchOptions {
+    pub max_offset: usize,
+    pub fuzz: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyError {
+    InvalidOptions,
+    BadHeader { line: usize },
+    BadHunkHeader { line: usize },
+    BadBody { line: usize },
+    CountMismatch { line: usize },
+    Misordered { line: usize },
+    SourceFormat { byte: usize },
+    SourceMissingLf,
+    TooLarge,
+    NoMatch { hunk: usize },
+    Ambiguous {
+        hunk: usize,
+        first: usize,
+        second: usize,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum RowKind {
+    Context,
+    Remove,
+    Add,
+}
+
+struct Row {
+    kind: RowKind,
+    text: String,
+}
+
+struct Hunk {
+    line: usize,
+    old_start: usize,
+    old_count: usize,
+    new_start: usize,
+    new_count: usize,
+    rows: Vec<Row>,
+}
+
+fn parse_number(s: &str) -> Option<usize> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if s.len() > 1 && s.starts_with('0') {
+        return None;
+    }
+    let n = s.parse::<usize>().ok()?;
+    (n <= 128).then_some(n)
+}
+
+fn parse_hunk_header(line: &str) -> Option<(usize, usize, usize, usize)> {
+    let rest = line.strip_prefix("@@ -")?;
+    let (old, rest) = rest.split_once(" +")?;
+    let (new, suffix) = rest.split_once(" @@")?;
+    if !suffix.is_empty() {
+        return None;
+    }
+
+    let (a, b) = old.split_once(',')?;
+    let (c, d) = new.split_once(',')?;
+    let (a, b, c, d) = (
+        parse_number(a)?,
+        parse_number(b)?,
+        parse_number(c)?,
+        parse_number(d)?,
+    );
+
+    if (b > 0 && a == 0) || (d > 0 && c == 0) {
+        return None;
+    }
+    Some((a, b, c, d))
+}
+
+fn nominal_start(anchor: usize, count: usize) -> usize {
+    if count > 0 {
+        anchor - 1
+    } else {
+        anchor
+    }
+}
+
+fn parse_patch(patch: &str) -> Result<Vec<Hunk>, ApplyError> {
+    if patch.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !patch.ends_with('\n') {
+        return Err(ApplyError::BadHeader {
+            line: 1 + patch.bytes().filter(|&b| b == b'\n').count(),
+        });
+    }
+
+    let lines: Vec<&str> = patch[..patch.len() - 1].split('\n').collect();
+    if lines.get(0) != Some(&"--- before") {
+        return Err(ApplyError::BadHeader { line: 1 });
+    }
+    if lines.get(1) != Some(&"+++ after") {
+        return Err(ApplyError::BadHeader { line: 2 });
+    }
+    if lines.len() < 3 || !lines[2].starts_with("@@") {
+        return Err(ApplyError::BadHunkHeader { line: 3 });
+    }
+
+    let mut hunks = Vec::new();
+    let mut i = 2;
+    let mut previous_old_end = 0usize;
+    let mut net: i128 = 0;
+
+    while i < lines.len() {
+        let header_line = i + 1;
+        let Some((a, b, c, d)) = parse_hunk_header(lines[i]) else {
+            return Err(ApplyError::BadHunkHeader { line: header_line });
+        };
+        let old_start = nominal_start(a, b);
+        let new_start = nominal_start(c, d);
+
+        i += 1;
+        let mut rows = Vec::new();
+        let mut old_seen = 0usize;
+        let mut new_seen = 0usize;
+
+        while i < lines.len() && !lines[i].starts_with("@@") {
+            let row_line = i + 1;
+            let row = lines[i];
+            let Some((prefix, payload)) = row.split_at_checked(1) else {
+                return Err(ApplyError::BadBody { line: row_line });
+            };
+            if payload.contains('\r') {
+                return Err(ApplyError::BadBody { line: row_line });
+            }
+            let kind = match prefix {
+                " " => {
+                    old_seen += 1;
+                    new_seen += 1;
+                    RowKind::Context
+                }
+                "-" => {
+                    old_seen += 1;
+                    RowKind::Remove
+                }
+                "+" => {
+                    new_seen += 1;
+                    RowKind::Add
+                }
+                _ => return Err(ApplyError::BadBody { line: row_line }),
+            };
+            rows.push(Row {
+                kind,
+                text: payload.to_owned(),
+            });
+            i += 1;
+        }
+
+        if old_seen != b || new_seen != d {
+            return Err(ApplyError::CountMismatch { line: header_line });
+        }
+        if !rows
+            .iter()
+            .any(|r| matches!(r.kind, RowKind::Add | RowKind::Remove))
+        {
+            return Err(ApplyError::BadBody { line: header_line });
+        }
+
+        if old_start < previous_old_end
+            || (new_start as i128) != (old_start as i128 + net)
+        {
+            return Err(ApplyError::Misordered { line: header_line });
+        }
+
+        if hunks.len() == 16 {
+            return Err(ApplyError::TooLarge);
+        }
+
+        previous_old_end = old_start + b;
+        net += d as i128 - b as i128;
+        hunks.push(Hunk {
+            line: header_line,
+            old_start,
+            old_count: b,
+            new_start,
+            new_count: d,
+            rows,
+        });
+    }
+
+    Ok(hunks)
+}
+
+fn source_lines(source: &str) -> Result<Vec<String>, ApplyError> {
+    if let Some(byte) = source.as_bytes().iter().position(|&b| b == b'\r') {
+        return Err(ApplyError::SourceFormat { byte });
+    }
+    if !source.is_empty() && !source.ends_with('\n') {
+        return Err(ApplyError::SourceMissingLf);
+    }
+    if source.is_empty() {
+        return Ok(Vec::new());
+    }
+    let lines: Vec<String> = source[..source.len() - 1]
+        .split('\n')
+        .map(str::to_owned)
+        .collect();
+    if lines.len() > 128 {
+        return Err(ApplyError::TooLarge);
+    }
+    Ok(lines)
+}
+
+fn abs_distance(a: i128, b: i128) -> u128 {
+    (a - b).unsigned_abs()
+}
+
+pub fn apply_unified(
+    source: &str,
+    patch: &str,
+    options: PatchOptions,
+) -> Result<String, ApplyError> {
+    if options.max_offset > 16 || options.fuzz > 2 {
+        return Err(ApplyError::InvalidOptions);
+    }
+
+    let hunks = parse_patch(patch)?;
+    let mut working = source_lines(source)?;
+    let mut net: i128 = 0;
+    let mut drift: i128 = 0;
+
+    for (hunk_index, hunk) in hunks.iter().enumerate() {
+        let mut lead = 0usize;
+        while lead < hunk.rows.len()
+            && matches!(hunk.rows[lead].kind, RowKind::Context)
+        {
+            lead += 1;
+        }
+        let mut trail = 0usize;
+        while trail < hunk.rows.len()
+            && matches!(hunk.rows[hunk.rows.len() - 1 - trail].kind, RowKind::Context)
+        {
+            trail += 1;
+        }
+
+        let expected = hunk.old_start as i128 + net + drift;
+        let mut best_rank: Option<(usize, u128)> = None;
+        let mut best_starts = Vec::new();
+        let mut selected: Option<(usize, usize, usize)> = None;
+
+        for left in 0..=options.fuzz.min(lead) {
+            for right in 0..=options.fuzz.min(trail) {
+                if left + right > hunk.old_count {
+                    continue;
+                }
+
+                let mut old_payloads = Vec::new();
+                for row in &hunk.rows[left..hunk.rows.len() - right] {
+                    if matches!(row.kind, RowKind::Context | RowKind::Remove) {
+                        old_payloads.push(row.text.as_str());
+                    }
+                }
+
+                for start in 0..=working.len().saturating_sub(hunk.old_count) {
+                    if start + hunk.old_count > working.len() {
+                        continue;
+                    }
+                    let offset = abs_distance(start as i128, expected);
+                    if offset > options.max_offset as u128 {
+                        continue;
+                    }
+                    let match_start = start + left;
+                    let match_end = start + hunk.old_count - right;
+                    if match_end - match_start != old_payloads.len()
+                        || !old_payloads
+                            .iter()
+                            .zip(&working[match_start..match_end])
+                            .all(|(expected, actual)| *expected == actual)
+                    {
+                        continue;
+                    }
+
+                    let rank = (left + right, offset);
+                    match best_rank {
+                        None => {
+                            best_rank = Some(rank);
+                            best_starts.clear();
+                            best_starts.push(start);
+                            selected = Some((start, left, right));
+                        }
+                        Some(best) if rank < best => {
+                            best_rank = Some(rank);
+                            best_starts.clear();
+                            best_starts.push(start);
+                            selected = Some((start, left, right));
+                        }
+                        Some(best) if rank == best => {
+                            if !best_starts.contains(&start) {
+                                best_starts.push(start);
+                            }
+                            if let Some((chosen_start, chosen_left, _)) = selected {
+                                if start == chosen_start && left < chosen_left {
+                                    selected = Some((start, left, right));
+                                }
+                            } else {
+                                selected = Some((start, left, right));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        let Some((start, left, right)) = selected else {
+            return Err(ApplyError::NoMatch {
+                hunk: hunk_index + 1,
+            });
+        };
+
+        best_starts.sort_unstable();
+        best_starts.dedup();
+        if best_starts.len() > 1 {
+            return Err(ApplyError::Ambiguous {
+                hunk: hunk_index + 1,
+                first: best_starts[0],
+                second: best_starts[1],
+            });
+        }
+
+        let begin = start + left;
+        let end = start + hunk.old_count - right;
+        let mut replacement = Vec::new();
+        for row in &hunk.rows[left..hunk.rows.len() - right] {
+            if matches!(row.kind, RowKind::Context | RowKind::Add) {
+                replacement.push(row.text.clone());
+            }
+        }
+        working.splice(begin..end, replacement);
+
+        if working.len() > 128 {
+            return Err(ApplyError::TooLarge);
+        }
+
+        let previous_net = net;
+        net += hunk.new_count as i128 - hunk.old_count as i128;
+        drift = start as i128 - (hunk.old_start as i128 + previous_net);
+    }
+
+    let mut output = String::new();
+    for line in working {
+        output.push_str(&line);
+        output.push('\n');
+    }
+    Ok(output)
+}

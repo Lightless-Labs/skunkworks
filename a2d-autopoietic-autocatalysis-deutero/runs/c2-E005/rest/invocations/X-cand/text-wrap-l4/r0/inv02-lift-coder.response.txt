@@ -1,0 +1,377 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WrapError {
+    WidthZero,
+    WidthTooLarge { width: usize },
+    FirstIndentTooWide { indent: usize },
+    RestIndentTooWide { indent: usize },
+    HyphenCostTooLarge { cost: usize },
+    InputTooLong { chars: usize },
+    InvalidControl { index: usize },
+    InvalidMarker { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapOptions {
+    pub width: usize,
+    pub first_indent: usize,
+    pub rest_indent: usize,
+    pub hyphen_cost: usize,
+    pub justify: bool,
+}
+
+#[derive(Clone)]
+struct Word {
+    chars: Vec<char>,
+    markers: Vec<usize>,
+}
+
+#[derive(Clone)]
+struct Line {
+    text: String,
+    consumed: usize,
+    marker_ended: bool,
+    raw: bool,
+    pieces: usize,
+    gap: usize,
+}
+
+#[derive(Clone)]
+struct Solution {
+    cost: u64,
+    marker_lines: usize,
+    lines: Vec<Line>,
+}
+
+impl Solution {
+    fn better_than(&self, other: &Self) -> bool {
+        if self.cost != other.cost {
+            return self.cost < other.cost;
+        }
+        if self.marker_lines != other.marker_lines {
+            return self.marker_lines < other.marker_lines;
+        }
+        if self.lines.len() != other.lines.len() {
+            return self.lines.len() < other.lines.len();
+        }
+
+        for (a, b) in self.lines.iter().zip(&other.lines) {
+            if a.consumed != b.consumed {
+                return a.consumed > b.consumed;
+            }
+        }
+        for (a, b) in self.lines.iter().zip(&other.lines) {
+            if a.text != b.text {
+                return a.text < b.text;
+            }
+        }
+        false
+    }
+}
+
+fn scalar_len(s: &str) -> usize {
+    s.chars().count()
+}
+
+fn solve(
+    words: &[Word],
+    wi: usize,
+    offset: usize,
+    first: bool,
+    options: &WrapOptions,
+    memo: &mut Vec<Vec<Option<Solution>>>,
+) -> Solution {
+    if wi == words.len() {
+        return Solution { cost: 0, marker_lines: 0, lines: Vec::new() };
+    }
+    let key = offset * 2 + usize::from(!first);
+    if let Some(value) = &memo[wi][key] {
+        return value.clone();
+    }
+
+    let indent = if first { options.first_indent } else { options.rest_indent };
+    let cap = options.width - indent;
+    let mut candidates: Vec<(usize, usize, usize, bool, bool, String)> = Vec::new();
+
+    let mut used = 0usize;
+    let mut pieces = 0usize;
+    let mut current_word = wi;
+    let mut start = offset;
+    let mut prefix = String::new();
+
+    loop {
+        let word = &words[current_word];
+        let remaining = word.chars.len() - start;
+
+        if pieces > 0 {
+            if used + 1 > cap {
+                break;
+            }
+            prefix.push(' ');
+            used += 1;
+        }
+        pieces += 1;
+
+        let available = cap - used;
+        let full_fit = remaining <= available;
+        let take = remaining.min(available);
+        if take > 0 {
+            for c in &word.chars[start..start + take] {
+                prefix.push(*c);
+            }
+        }
+
+        if full_fit {
+            used += remaining;
+            candidates.push((current_word + 1, 0, used, false, false, prefix.clone()));
+            if current_word + 1 == words.len() {
+                break;
+            }
+            current_word += 1;
+            start = 0;
+            continue;
+        }
+
+        // Marker splits strictly inside this word, including on an occupied line.
+        let remaining_prefix_capacity = available;
+        for &mark in &word.markers {
+            if mark > start && mark < word.chars.len() && mark - start + 1 <= remaining_prefix_capacity {
+                let mut text = String::new();
+                for c in &word.chars[start..mark] {
+                    text.push(*c);
+                }
+                text.push('-');
+                let mut line_prefix = prefix.clone();
+                // prefix currently has only the available scalar prefix of this word.
+                let already = take;
+                if already > 0 {
+                    let chars_before = scalar_len(&line_prefix);
+                    let _ = chars_before;
+                }
+                let before = used - take;
+                if pieces > 1 {
+                    line_prefix.truncate(line_prefix.len());
+                    // Rebuild safely from previously rendered words/spaces.
+                    let mut rebuilt = String::new();
+                    let mut u = wi;
+                    let mut off = offset;
+                    while u < current_word {
+                        if !rebuilt.is_empty() { rebuilt.push(' '); }
+                        rebuilt.extend(words[u].chars[off..].iter());
+                        u += 1;
+                        off = 0;
+                    }
+                    if !rebuilt.is_empty() { rebuilt.push(' '); }
+                    rebuilt.push_str(&text);
+                    line_prefix = rebuilt;
+                } else {
+                    line_prefix = text;
+                }
+                let _ = before;
+                candidates.push((current_word, mark, indent + scalar_len(&line_prefix), true, false, line_prefix));
+            }
+        }
+
+        // Raw split only when the line contains exactly this single piece and no marker split fits.
+        if pieces == 1 && remaining > cap {
+            let any_marker_fits = word.markers.iter().any(|&mark| {
+                mark > start && mark < word.chars.len() && mark - start + 1 <= cap
+            });
+            if !any_marker_fits {
+                let raw_text: String = word.chars[start..start + cap].iter().collect();
+                candidates.push((current_word, start + cap, cap, false, true, raw_text));
+            }
+        }
+        break;
+    }
+
+    let mut best: Option<Solution> = None;
+    for (next_w, next_off, content_width, marker_ended, raw, body) in candidates {
+        if content_width == 0 {
+            continue;
+        }
+        let next_first = false;
+        let suffix = solve(words, next_w, next_off, next_first, options, memo);
+        let total_width = indent + scalar_len(&body);
+        let gap = options.width - total_width;
+        let final_line = next_w == words.len();
+        let mut line_cost = (gap as u64) * (gap as u64);
+        if final_line {
+            line_cost /= 4;
+        }
+        if marker_ended {
+            line_cost += options.hyphen_cost as u64;
+        }
+        if raw {
+            line_cost += (2 * options.width + 1) as u64;
+        }
+        let line_pieces = if marker_ended || raw {
+            if body.contains(' ') { scalar_len(&body.split(' ').collect::<Vec<_>>().join("")) /* placeholder */ } else { 1 }
+        } else {
+            body.split(' ').filter(|s| !s.is_empty()).count()
+        };
+        if !final_line && line_pieces == 1 {
+            line_cost += 3;
+        }
+
+        let mut line_text = " ".repeat(indent);
+        line_text.push_str(&body);
+        let line = Line {
+            text: line_text,
+            consumed: content_width,
+            marker_ended,
+            raw,
+            pieces: line_pieces,
+            gap,
+        };
+        let mut candidate = Solution {
+            cost: line_cost + suffix.cost,
+            marker_lines: usize::from(marker_ended) + suffix.marker_lines,
+            lines: {
+                let mut v = Vec::with_capacity(1 + suffix.lines.len());
+                v.push(line);
+                v.extend(suffix.lines);
+                v
+            },
+        };
+        if best.as_ref().is_none_or(|b| candidate.better_than(b)) {
+            best = Some(candidate.clone());
+        }
+    }
+
+    let result = best.unwrap_or_else(|| Solution { cost: u64::MAX / 4, marker_lines: usize::MAX / 4, lines: Vec::new() });
+    memo[wi][key] = Some(result.clone());
+    result
+}
+
+pub fn wrap(input: &str, options: &WrapOptions) -> Result<Vec<String>, WrapError> {
+    if options.width == 0 {
+        return Err(WrapError::WidthZero);
+    }
+    if options.width > 256 {
+        return Err(WrapError::WidthTooLarge { width: options.width });
+    }
+    if options.first_indent >= options.width {
+        return Err(WrapError::FirstIndentTooWide { indent: options.first_indent });
+    }
+    if options.rest_indent >= options.width {
+        return Err(WrapError::RestIndentTooWide { indent: options.rest_indent });
+    }
+    if options.hyphen_cost > 1_000_000 {
+        return Err(WrapError::HyphenCostTooLarge { cost: options.hyphen_cost });
+    }
+
+    let chars = input.chars().count();
+    if chars > 512 {
+        return Err(WrapError::InputTooLong { chars });
+    }
+
+    for (index, c) in input.char_indices() {
+        if c.is_control() && c != '\t' && c != '\r' && c != '\n' {
+            return Err(WrapError::InvalidControl { index });
+        }
+    }
+
+    let original: Vec<(usize, char)> = input.char_indices().collect();
+    let is_sep = |c: char| c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\u{00a0}';
+    for i in 0..original.len() {
+        if original[i].1 == '~' {
+            let bad = i == 0 || i + 1 == original.len()
+                || original[i - 1].1 == '~' || original[i + 1].1 == '~'
+                || is_sep(original[i - 1].1) || is_sep(original[i + 1].1);
+            if bad {
+                return Err(WrapError::InvalidMarker { index: original[i].0 });
+            }
+        }
+    }
+
+    let mut normalized = String::new();
+    let mut chars_iter = input.chars().peekable();
+    while let Some(c) = chars_iter.next() {
+        if c == '\r' {
+            if chars_iter.peek() == Some(&'\n') {
+                chars_iter.next();
+            }
+            normalized.push('\n');
+        } else {
+            normalized.push(c);
+        }
+    }
+
+    let norm: Vec<char> = normalized.chars().collect();
+    let mut result = Vec::new();
+    let mut segment_start = 0usize;
+    let mut i = 0usize;
+    while i < norm.len() {
+        if norm[i] == '\n' {
+            let mut j = i;
+            while j < norm.len() && norm[j] == '\n' { j += 1; }
+            if j - i >= 2 {
+                let segment: Vec<char> = norm[segment_start..i].to_vec();
+                result.extend(layout_segment(&segment, options));
+                for _ in 1..(j - i) { result.push(String::new()); }
+                segment_start = j;
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    let segment: Vec<char> = norm[segment_start..].to_vec();
+    result.extend(layout_segment(&segment, options));
+    Ok(result)
+}
+
+fn layout_segment(segment: &[char], options: &WrapOptions) -> Vec<String> {
+    let is_sep = |c: char| *c == ' ' || *c == '\t' || *c == '\n' || *c == '\r' || *c == '\u{00a0}';
+    let mut words = Vec::new();
+    let mut current = Vec::new();
+    let mut markers = Vec::new();
+    for &c in segment {
+        if is_sep(&c) {
+            if !current.is_empty() {
+                words.push(Word { chars: std::mem::take(&mut current), markers: std::mem::take(&mut markers) });
+            }
+        } else if c == '~' {
+            markers.push(current.len());
+        } else {
+            current.push(c);
+        }
+    }
+    if !current.is_empty() {
+        words.push(Word { chars: current, markers });
+    }
+    if words.is_empty() {
+        return Vec::new();
+    }
+
+    let mut memo = vec![vec![None; 2 * 514]; words.len()];
+    let solution = solve(&words, 0, 0, true, options, &mut memo);
+    let mut lines = solution.lines;
+    if options.justify {
+        for (idx, line) in lines.iter_mut().enumerate() {
+            if idx + 1 == lines.len() || line.pieces < 2 {
+                continue;
+            }
+            let mut parts: Vec<String> = line.text.trim_start().split(' ').map(str::to_string).collect();
+            if parts.len() < 2 { continue; }
+            let gaps = parts.len() - 1;
+            let extra = line.gap;
+            let each = extra / gaps;
+            let rem = extra % gaps;
+            let mut rendered = " ".repeat(if idx == 0 { options.first_indent } else { options.rest_indent });
+            for (g, part) in parts.drain(..).enumerate() {
+                if g > 0 {
+                    let gap_index = g - 1;
+                    let offset = if gaps == 0 { 0 } else { idx % gaps };
+                    let rotated = (gap_index + gaps - offset) % gaps;
+                    rendered.push_str(&" ".repeat(1 + each + usize::from(rotated < rem)));
+                }
+                rendered.push_str(&part);
+            }
+            line.text = rendered;
+        }
+    }
+    lines.into_iter().map(|l| l.text).collect()
+}
+```

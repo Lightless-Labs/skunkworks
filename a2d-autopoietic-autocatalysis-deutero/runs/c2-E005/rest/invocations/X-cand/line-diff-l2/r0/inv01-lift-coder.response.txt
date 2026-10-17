@@ -1,0 +1,236 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Side {
+    Old,
+    New,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    Keep {
+        old_index: usize,
+        new_index: usize,
+        line: String,
+    },
+    Delete {
+        old_index: usize,
+        line: String,
+    },
+    Insert {
+        new_index: usize,
+        line: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffError {
+    ContextTooLarge { context: usize },
+    CarriageReturn { side: Side, byte: usize },
+    MissingFinalLf { side: Side },
+    TooLarge { old_len: usize, new_len: usize },
+}
+
+fn validate_cr(text: &str, side: Side) -> Result<(), DiffError> {
+    if let Some(byte) = text.as_bytes().iter().position(|&b| b == b'\r') {
+        Err(DiffError::CarriageReturn { side, byte })
+    } else {
+        Ok(())
+    }
+}
+
+fn lines(text: &str) -> Vec<&str> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        text[..text.len() - 1].split('\n').collect()
+    }
+}
+
+pub fn unified_diff(old: &str, new: &str, context: usize) -> Result<String, DiffError> {
+    if context > 8 {
+        return Err(DiffError::ContextTooLarge { context });
+    }
+
+    validate_cr(old, Side::Old)?;
+    validate_cr(new, Side::New)?;
+
+    if !old.is_empty() && !old.ends_with('\n') {
+        return Err(DiffError::MissingFinalLf { side: Side::Old });
+    }
+    if !new.is_empty() && !new.ends_with('\n') {
+        return Err(DiffError::MissingFinalLf { side: Side::New });
+    }
+
+    let old_lines = lines(old);
+    let new_lines = lines(new);
+    if old_lines.len() > 128 || new_lines.len() > 128 {
+        return Err(DiffError::TooLarge {
+            old_len: old_lines.len(),
+            new_len: new_lines.len(),
+        });
+    }
+
+    let m = old_lines.len();
+    let n = new_lines.len();
+    let mut lcs = vec![vec![0usize; n + 1]; m + 1];
+
+    for i in (0..m).rev() {
+        for j in (0..n).rev() {
+            lcs[i][j] = if old_lines[i] == new_lines[j] {
+                1 + lcs[i + 1][j + 1]
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+
+    let mut edits = Vec::with_capacity(m + n);
+    let (mut i, mut j) = (0, 0);
+    while i < m && j < n {
+        if old_lines[i] == new_lines[j] {
+            edits.push(Edit::Keep {
+                old_index: i,
+                new_index: j,
+                line: old_lines[i].to_owned(),
+            });
+            i += 1;
+            j += 1;
+        } else {
+            let del = lcs[i + 1][j];
+            let ins = lcs[i][j + 1];
+            if del > ins || (del == ins && (i + j) % 2 == 0) {
+                edits.push(Edit::Delete {
+                    old_index: i,
+                    line: old_lines[i].to_owned(),
+                });
+                i += 1;
+            } else {
+                edits.push(Edit::Insert {
+                    new_index: j,
+                    line: new_lines[j].to_owned(),
+                });
+                j += 1;
+            }
+        }
+    }
+    while i < m {
+        edits.push(Edit::Delete {
+            old_index: i,
+            line: old_lines[i].to_owned(),
+        });
+        i += 1;
+    }
+    while j < n {
+        edits.push(Edit::Insert {
+            new_index: j,
+            line: new_lines[j].to_owned(),
+        });
+        j += 1;
+    }
+
+    let is_change = |edit: &Edit| !matches!(edit, Edit::Keep { .. });
+    if !edits.iter().any(is_change) {
+        return Ok(String::new());
+    }
+
+    let mut groups = Vec::<(usize, usize)>::new();
+    let mut pos = 0;
+    while pos < edits.len() {
+        if is_change(&edits[pos]) {
+            let start = pos;
+            while pos + 1 < edits.len() && is_change(&edits[pos + 1]) {
+                pos += 1;
+            }
+            groups.push((start, pos));
+        }
+        pos += 1;
+    }
+
+    let merge_gap = context * 2;
+    let mut merged = Vec::<(usize, usize)>::new();
+    for (start, end) in groups {
+        if let Some(last) = merged.last_mut() {
+            let gap = start - last.1 - 1;
+            if gap <= merge_gap {
+                last.1 = end;
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+
+    let mut out = String::from("--- before\n+++ after\n");
+    let mut old_before = vec![0usize; edits.len() + 1];
+    let mut new_before = vec![0usize; edits.len() + 1];
+    for (k, edit) in edits.iter().enumerate() {
+        old_before[k + 1] = old_before[k]
+            + usize::from(matches!(edit, Edit::Keep { .. } | Edit::Delete { .. }));
+        new_before[k + 1] = new_before[k]
+            + usize::from(matches!(edit, Edit::Keep { .. } | Edit::Insert { .. }));
+    }
+
+    for (group_start, group_end) in merged {
+        let mut start = group_start;
+        let mut preceding = 0;
+        while start > 0 && preceding < context {
+            if matches!(edits[start - 1], Edit::Keep { .. }) {
+                start -= 1;
+                preceding += 1;
+            } else {
+                break;
+            }
+        }
+
+        let mut end = group_end;
+        let mut following = 0;
+        while end + 1 < edits.len() && following < context {
+            if matches!(edits[end + 1], Edit::Keep { .. }) {
+                end += 1;
+                following += 1;
+            } else {
+                break;
+            }
+        }
+
+        let old_count = old_before[end + 1] - old_before[start];
+        let new_count = new_before[end + 1] - new_before[start];
+        let old_consumed = old_before[start];
+        let new_consumed = new_before[start];
+        let old_start = if old_count > 0 {
+            old_consumed + 1
+        } else {
+            old_consumed
+        };
+        let new_start = if new_count > 0 {
+            new_consumed + 1
+        } else {
+            new_consumed
+        };
+
+        out.push_str(&format!(
+            "@@ -{old_start},{old_count} +{new_start},{new_count} @@\n"
+        ));
+        for edit in &edits[start..=end] {
+            match edit {
+                Edit::Keep { line, .. } => {
+                    out.push(' ');
+                    out.push_str(line);
+                    out.push('\n');
+                }
+                Edit::Delete { line, .. } => {
+                    out.push('-');
+                    out.push_str(line);
+                    out.push('\n');
+                }
+                Edit::Insert { line, .. } => {
+                    out.push('+');
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        }
+    }
+
+    Ok(out)
+}
+```

@@ -1,0 +1,86 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WrapError {
+    WidthZero,
+    WidthTooLarge { width: usize },
+    InvalidByte { index: usize, byte: u8 },
+}
+
+pub fn wrap(input: &str, width: usize) -> Result<Vec<String>, WrapError> {
+    if width == 0 {
+        return Err(WrapError::WidthZero);
+    }
+    if width > 256 {
+        return Err(WrapError::WidthTooLarge { width });
+    }
+
+    let bytes = input.as_bytes();
+
+    for (index, &byte) in bytes.iter().enumerate() {
+        if !(32..=126).contains(&byte) && !matches!(byte, b'\t' | b'\n' | b'\r') {
+            return Err(WrapError::InvalidByte { index, byte });
+        }
+    }
+
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut pos = 0;
+
+    while pos < bytes.len() {
+        while pos < bytes.len() && matches!(bytes[pos], b' ' | b'\t' | b'\n' | b'\r') {
+            pos += 1;
+        }
+        if pos == bytes.len() {
+            break;
+        }
+
+        let start = pos;
+        while pos < bytes.len() && !matches!(bytes[pos], b' ' | b'\t' | b'\n' | b'\r') {
+            pos += 1;
+        }
+        let word = &bytes[start..pos];
+        let mut consumed = 0;
+
+        while consumed < word.len() {
+            if line.len() == width {
+                lines.push(std::mem::take(&mut line));
+            }
+
+            let remaining = &word[consumed..];
+            let separator_len = usize::from(!line.is_empty());
+
+            if remaining.len() <= width {
+                if line.len() + separator_len + remaining.len() <= width {
+                    if separator_len != 0 {
+                        line.push(' ');
+                    }
+                    line.push_str(std::str::from_utf8(remaining).unwrap());
+                    consumed = word.len();
+                } else {
+                    if !line.is_empty() {
+                        lines.push(std::mem::take(&mut line));
+                    }
+                }
+            } else if line.is_empty() {
+                line.push_str(std::str::from_utf8(&remaining[..width]).unwrap());
+                lines.push(std::mem::take(&mut line));
+                consumed += width;
+            } else {
+                let available = width - line.len() - 1;
+                if available >= 2 {
+                    line.push(' ');
+                    line.push_str(std::str::from_utf8(&remaining[..available]).unwrap());
+                    lines.push(std::mem::take(&mut line));
+                    consumed += available;
+                } else {
+                    lines.push(std::mem::take(&mut line));
+                }
+            }
+        }
+    }
+
+    if !line.is_empty() {
+        lines.push(line);
+    }
+
+    Ok(lines)
+}

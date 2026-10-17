@@ -1,0 +1,316 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WrapError {
+    WidthZero,
+    WidthTooLarge { width: usize },
+    FirstIndentTooWide { indent: usize },
+    RestIndentTooWide { indent: usize },
+    HyphenCostTooLarge { cost: usize },
+    InvalidControl { index: usize },
+    InvalidMarker { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapOptions {
+    pub width: usize,
+    pub first_indent: usize,
+    pub rest_indent: usize,
+    pub hyphen_cost: usize,
+    pub justify: bool,
+}
+
+#[derive(Clone)]
+struct Word {
+    chars: Vec<char>,
+    markers: Vec<bool>,
+}
+
+#[derive(Clone)]
+struct Piece {
+    text: String,
+    words: usize,
+}
+
+fn is_separator(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{00A0}')
+}
+
+fn parse_segments(input: &str) -> Vec<(Vec<Word>, usize)> {
+    let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
+    let chars: Vec<char> = normalized.chars().collect();
+    let mut segments = Vec::new();
+    let mut current = Vec::new();
+    let mut i = 0;
+
+    while i < chars.len() {
+        if chars[i] == '\n' {
+            let start = i;
+            while i < chars.len() && chars[i] == '\n' {
+                i += 1;
+            }
+            let count = i - start;
+            if count >= 2 {
+                segments.push((std::mem::take(&mut current), count - 1));
+            } else {
+                // A single LF acts as a word separator.
+                if !current.is_empty() {
+                    // The word is already complete.
+                }
+            }
+            continue;
+        }
+
+        if is_separator(chars[i]) {
+            i += 1;
+            continue;
+        }
+
+        let mut word_chars = Vec::new();
+        let mut markers = Vec::new();
+        while i < chars.len() && !is_separator(chars[i]) {
+            word_chars.push(chars[i]);
+            markers.push(chars[i] == '~');
+            i += 1;
+        }
+        current.push(Word {
+            chars: word_chars,
+            markers,
+        });
+    }
+
+    segments.push((current, 0));
+    segments
+}
+
+fn render_paragraph(words: &[Word], options: &WrapOptions) -> Vec<String> {
+    if words.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines: Vec<(String, usize)> = Vec::new();
+    let mut line = String::new();
+    let mut content_len = 0usize;
+    let mut line_words = 0usize;
+    let mut line_index = 0usize;
+
+    let indent_for = |idx: usize| {
+        if idx == 0 {
+            options.first_indent
+        } else {
+            options.rest_indent
+        }
+    };
+
+    for word in words {
+        let mut offset = 0usize;
+        while offset < word.chars.len() {
+            let indent = indent_for(line_index);
+            let capacity = options.width - indent;
+            let room = capacity.saturating_sub(content_len + usize::from(line_words > 0));
+
+            let suffix_len = word.chars.len() - offset;
+            if suffix_len <= room {
+                if line_words > 0 {
+                    line.push(' ');
+                    content_len += 1;
+                }
+                for j in offset..word.chars.len() {
+                    if word.chars[j] != '~' {
+                        line.push(word.chars[j]);
+                        content_len += 1;
+                    }
+                }
+                line_words += 1;
+                offset = word.chars.len();
+                continue;
+            }
+
+            let mut usable = None;
+            for marker in (offset + 1)..word.chars.len() {
+                if word.markers[marker] {
+                    let prefix_len = marker - offset;
+                    if prefix_len + 1 <= room {
+                        usable = Some((marker, prefix_len));
+                    }
+                }
+            }
+
+            let accepted = if let Some((marker, prefix_len)) = usable {
+                let unused = room - prefix_len - 1;
+                if line_words == 0 {
+                    Some((marker, prefix_len))
+                } else {
+                    let baseline = room;
+                    let lhs = (unused as u128) * (unused as u128)
+                        + options.hyphen_cost as u128;
+                    let rhs = (baseline as u128) * (baseline as u128);
+                    if lhs < rhs {
+                        Some((marker, prefix_len))
+                    } else {
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            if let Some((marker, prefix_len)) = accepted {
+                if line_words > 0 {
+                    line.push(' ');
+                    content_len += 1;
+                }
+                for j in offset..marker {
+                    if word.chars[j] != '~' {
+                        line.push(word.chars[j]);
+                        content_len += 1;
+                    }
+                }
+                line.push('-');
+                content_len += 1;
+                line_words += 1;
+                lines.push((std::mem::take(&mut line), line_words));
+                line = String::new();
+                content_len = 0;
+                line_words = 0;
+                line_index += 1;
+                offset = marker + 1;
+                continue;
+            }
+
+            if line_words > 0 {
+                lines.push((std::mem::take(&mut line), line_words));
+                line = String::new();
+                content_len = 0;
+                line_words = 0;
+                line_index += 1;
+                continue;
+            }
+
+            if suffix_len > capacity {
+                let mut consumed = 0usize;
+                let mut taken = 0usize;
+                while offset + consumed < word.chars.len() && taken < capacity {
+                    if word.chars[offset + consumed] != '~' {
+                        line.push(word.chars[offset + consumed]);
+                        taken += 1;
+                    }
+                    consumed += 1;
+                }
+                content_len = taken;
+                line_words = usize::from(taken > 0);
+                offset += consumed;
+                if content_len > 0 {
+                    lines.push((std::mem::take(&mut line), line_words));
+                    line = String::new();
+                    content_len = 0;
+                    line_words = 0;
+                    line_index += 1;
+                }
+            } else {
+                for j in offset..word.chars.len() {
+                    if word.chars[j] != '~' {
+                        line.push(word.chars[j]);
+                        content_len += 1;
+                    }
+                }
+                line_words = 1;
+                offset = word.chars.len();
+            }
+        }
+    }
+
+    if content_len > 0 {
+        lines.push((line, line_words));
+    }
+
+    let line_count = lines.len();
+    let mut output = Vec::with_capacity(line_count);
+    for (idx, (content, pieces)) in lines.into_iter().enumerate() {
+        let indent = indent_for(idx);
+        let mut rendered = " ".repeat(indent);
+        rendered.push_str(&content);
+
+        if options.justify && idx + 1 < line_count && pieces >= 2 {
+            let current_width = indent + content.chars().count();
+            let extra = options.width.saturating_sub(current_width);
+            let gaps = pieces - 1;
+            let base = extra / gaps;
+            let remainder = extra % gaps;
+            let start_gap = idx % gaps;
+
+            let words_in_line: Vec<&str> = content.split(' ').collect();
+            let mut justified = String::new();
+            for (gap, part) in words_in_line.iter().enumerate() {
+                if gap > 0 {
+                    justified.push(' ');
+                    justified.push_str(&" ".repeat(base));
+                    let cyclic = (gap - 1 + gaps - start_gap) % gaps;
+                    if cyclic < remainder {
+                        justified.push(' ');
+                    }
+                }
+                justified.push_str(part);
+            }
+            rendered = " ".repeat(indent);
+            rendered.push_str(&justified);
+        }
+        output.push(rendered);
+    }
+    output
+}
+
+pub fn wrap(input: &str, options: &WrapOptions) -> Result<Vec<String>, WrapError> {
+    if options.width == 0 {
+        return Err(WrapError::WidthZero);
+    }
+    if options.width > 256 {
+        return Err(WrapError::WidthTooLarge {
+            width: options.width,
+        });
+    }
+    if options.first_indent >= options.width {
+        return Err(WrapError::FirstIndentTooWide {
+            indent: options.first_indent,
+        });
+    }
+    if options.rest_indent >= options.width {
+        return Err(WrapError::RestIndentTooWide {
+            indent: options.rest_indent,
+        });
+    }
+    if options.hyphen_cost > 1_000_000 {
+        return Err(WrapError::HyphenCostTooLarge {
+            cost: options.hyphen_cost,
+        });
+    }
+
+    for (index, c) in input.char_indices() {
+        if c.is_control() && !matches!(c, '\t' | '\r' | '\n') {
+            return Err(WrapError::InvalidControl { index });
+        }
+    }
+
+    let indexed: Vec<(usize, char)> = input.char_indices().collect();
+    for i in 0..indexed.len() {
+        if indexed[i].1 == '~' {
+            let left_ok = i > 0 && indexed[i - 1].1 != '~' && !is_separator(indexed[i - 1].1);
+            let right_ok = i + 1 < indexed.len()
+                && indexed[i + 1].1 != '~'
+                && !is_separator(indexed[i + 1].1);
+            if !left_ok || !right_ok {
+                return Err(WrapError::InvalidMarker {
+                    index: indexed[i].0,
+                });
+            }
+        }
+    }
+
+    let segments = parse_segments(input);
+    let mut output = Vec::new();
+    for (words, boundaries) in segments {
+        output.extend(render_paragraph(&words, options));
+        output.extend(std::iter::repeat(String::new()).take(boundaries));
+    }
+    Ok(output)
+}
+```

@@ -1,0 +1,2611 @@
+SYSTEM:
+You are reviewing candidate solutions to a programming task.
+
+The task, exactly as the programmer received it (numbered requirements and the visible tests), is under TASK. The files under CANDIDATES are independent candidate solutions, and all of them pass the visible tests. Hidden acceptance tests check every numbered requirement.
+
+Pick the single file most likely to pass all hidden tests. Read the requirements carefully and check each candidate against them, concentrating on where the candidates differ.
+
+Reply with ONE JSON object and nothing else:
+{"pick": "<letter>", "reason": "<one sentence>"}
+
+PROMPT:
+TASK:
+R1. Implement in Rust as a SINGLE source file that compiles with rustc --edition 2024, using std only. Output ONLY the Rust source code inside ```rust fences. Do not use inner attributes or inner documentation comments.
+
+R2. Provide exactly the following public data types and function signatures (function bodies are yours to implement). The shown derives are required; all listed fields and API items are public. Helper items may be private.
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+    UnclosedQuote { at: usize },
+    TrailingLocal { at: usize },
+    BadEscape { at: usize },
+    QuotedChar { at: usize },
+    BadFold { at: usize },
+    UnclosedComment { at: usize },
+    CommentDepth { at: usize },
+    CommentChar { at: usize },
+    CommentEscape { at: usize },
+    UnexpectedClose { at: usize },
+    CfwsBoundary { at: usize },
+    EmptyNormalizedLocal { at: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalCase { Preserve, Lower }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Policy {
+    pub local_case: LocalCase,
+    pub strip_subaddress: bool,
+    pub unquote_safe: bool,
+    pub allow_single_label: bool,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Self { local_case: LocalCase::Preserve, strip_subaddress: false,
+               unquote_safe: false, allow_single_label: false }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DedupResult {
+    pub addresses: Vec<Address>,
+    pub source_indices: Vec<usize>,
+    pub duplicate_of: Vec<Option<usize>>,
+    pub errors: Vec<(usize, EmailError)>,
+}
+
+pub fn parse_email(input: &str) -> Result<Address, EmailError>;
+pub fn normalize_email(input: &str, policy: &Policy) -> Result<Address, EmailError>;
+pub fn format_email(address: &Address) -> String;
+pub fn deduplicate(inputs: &[&str], policy: &Policy) -> DedupResult;
+```
+
+R3. All at fields are zero-based BYTE offsets in the original input, never character counts. After any stripping, the position of a retained byte is its original position. Whenever an error refers to a position at the end of the cleaned input with no byte there, use input.len(). A removed terminal domain dot still supplies its original position for errors at that position.
+
+R4. Check raw empty input first: EmptyInput. Then reject the first byte >= 128 with NonAscii { at }, before ANY syntax checks, including comments or quotes. Do not trim or accept Unicode.
+
+R5. Next perform the CFWS cleanup defined below over the whole input. Report its first lexical error in left-to-right scanning order before checking any boundary or address syntax. Then check CFWS boundaries left-to-right, then return EmptyInput if cleanup retained no bytes. After cleanup follow the address stages below. Thus malformed comments/folds in the domain can outrank invalid local syntax.
+
+R6. If the first cleaned byte is a double quote, find its first unescaped closing double quote by scanning from the next byte: a backslash skips itself and the next byte, regardless of whether that escape will be legal. No closing quote yields UnclosedQuote at the opening quote, before checking @ separators. A trailing backslash also leaves the quote unclosed. Only this prefix protects @ signs; quotes elsewhere do not open protected regions.
+
+R7. Find @ separators outside the complete quoted prefix (ignore every byte through its closing quote). No separator yields MissingAt. Two or more yield MultipleAt at the SECOND separator, before local or domain validation. Exactly one divides local and domain. An empty local yields EmptyLocal at that separator, before any domain checks.
+
+R8. For an unquoted local, check length before its contents. More than 64 bytes yields LocalTooLong at its 65th byte. Otherwise validate left-to-right. The only permitted non-dot bytes are ASCII letters/digits and the bytes in the Rust byte string b"!#$%&'*+-/=?^_`{|}~". This includes no whitespace. Any other byte yields LocalChar at that byte.
+
+R9. For an unquoted local a dot may not be first, last, or immediately preceded by another dot. When scanning left-to-right, a dot violating any of those conditions yields LocalDot at that dot. Adjacency is detected at the SECOND dot, but an earlier invalid byte (including a leading dot) wins. Preserve the exact local spelling and case in Address.local and set Address.quoted to false.
+
+R10. For a local beginning with a quote, the closing quote must be the final local byte. Otherwise return TrailingLocal at the first byte after that closing quote, before decoding its contents. Decode the interior left-to-right; ordinary bytes must be printable ASCII 0x20..=0x7e. Any other ordinary byte, including TAB/CR/LF/DEL, yields QuotedChar at that byte. Ordinary @, spaces, dots and parentheses are allowed and retained.
+
+R11. Inside the quoted interior the ONLY permitted backslash escapes are \" (double quote), \\ (backslash), and \@ (at-sign). Decode each to its second byte; an unsupported escape yields BadEscape at its backslash. These content/escape errors precede decoded length/emptiness checks. An escaped byte is considered to originate at the BACKSLASH for all later position reporting.
+
+R12. After quoted decoding, zero decoded bytes yields EmptyLocal at the closing quote. More than 64 decoded bytes yields LocalTooLong at the origin of the 65th decoded byte, even if its source was an escape. Otherwise Address.local contains the decoded interior and Address.quoted is true; dot-atom restrictions do not apply to it.
+
+R13. Validate the domain only after the local succeeds. Remove exactly ONE final dot from the raw cleaned domain if present. This is a root marker, not an empty label. A domain empty after removal yields EmptyDomain at the domain start (position after @; input.len() if no retained byte is there). Do not remove any other dots.
+
+R14. The domain AFTER removal of that root marker must have at most 253 bytes. Otherwise return DomainTooLong at its 254th byte, before any label checks. The removed dot does not count towards length.
+
+R15. Split the domain on dots, preserving empty labels; process labels left-to-right. An empty label yields EmptyLabel at its start: the leading dot for a leading empty label, the second dot for an interior empty label, or the removed root dot for an empty last label after root removal.
+
+R16. For each nonempty label, length > 63 bytes yields LabelTooLong at its 64th byte before any character or hyphen checks. Earlier labels are validated completely before later labels.
+
+R17. For each label of valid length, check a leading hyphen first (LabelHyphen at its first byte), then a trailing hyphen (LabelHyphen at its last byte), THEN scan for character errors. Thus a label starting and ending with hyphen reports the leading one, even if another bad character exists inside.
+
+R18. Label content may contain only ASCII letters, digits, and hyphens; the first disallowed byte yields DomainChar at its byte. Underscores, brackets, spaces, quotes, domain literals, and IP literals in brackets are unsupported.
+
+R19. After all labels succeed, require at least TWO labels; otherwise DomainNeedsDot at the domain start. This precedes the final-label numeric check. Only normalize_email/deduplicate with allow_single_label=true suppress this check; parse_email is always strict.
+
+R20. After the label-count check, if every byte of the last label is an ASCII digit return NumericTld at that label's start. Mixed letters/digits and hyphens in the final label are permitted. Otherwise return Address with domain ASCII-lowercased and without the root marker; local case is preserved.
+
+R21. Overall address error precedence is exactly: raw empty, non-ASCII, cleanup lexical, cleanup boundary, cleaned empty, quoted prefix closing search, separator count, empty local, local validation, empty domain, total domain length, each label in order (empty, length, leading hyphen, trailing hyphen, character), label count, numeric last label. There is no total address length limit beyond the local/domain limits. No DNS lookup, IDNA conversion or Unicode processing.
+
+R22. CFWS consists of outside-quote SPACE, TAB, valid folding whitespace, and comments. Remove it entirely; do not insert spaces. Maximal adjacent runs of these constructs are one CFWS run, even when mixing comments and whitespace. Preserve an original-byte position map for retained bytes.
+
+R23. A valid fold is exactly CR LF followed by at least one SPACE or TAB; consume CR LF and the whole following horizontal-whitespace run. At any unprotected CR or LF, if this pattern is absent return BadFold at that CR or LF. A bare LF is never a fold; CRLF without following horizontal whitespace is invalid. These fold rules apply both outside quotes and inside comments.
+
+R24. Outside the protected quoted local prefix, ( starts a comment. Comments nest, with maximum simultaneous depth THREE; an opening parenthesis increasing depth to FOUR yields CommentDepth at that parenthesis. An unescaped ) closes the current comment. EOF with any depth open yields UnclosedComment at the OUTERMOST opening parenthesis. A ) outside comments and the protected quote yields UnexpectedClose at that byte.
+
+R25. In comments a backslash must be followed by one printable ASCII byte 0x20..=0x7e. It consumes the pair as literal comment content; escaped parentheses do not change depth. A missing second byte or a second byte outside that range yields CommentEscape at the backslash, before EOF/unclosed handling. Any other comment byte must be printable ASCII, TAB, a delimiter, or part of a valid fold; otherwise CommentChar at that byte. Double quotes and @ inside comments are ordinary content.
+
+R26. Quote protection during cleanup starts ONLY at a double quote that is the first retained byte. In that prefix copy every byte unchanged through the first unescaped closing quote; a backslash copies itself and the next byte unchanged if present. Do not treat parentheses or whitespace as CFWS inside it, and do not validate quoted escapes/content during cleanup. Later quotes never open protection. If EOF arrives inside it, cleanup itself succeeds; the closing-search stage returns UnclosedQuote (unless an earlier cleanup boundary fails).
+
+R27. After the entire lexical cleanup succeeds, inspect CFWS runs in original order. Each run is legal ONLY if it is at the beginning/end of the cleaned sequence OR immediately adjacent to a retained @ on either side. Otherwise CfwsBoundary at the FIRST original byte of the run, even if removal would leave an otherwise valid address. Inside-comment whitespace belongs to its containing run; quoted whitespace is retained and creates no run.
+
+R28. Consequences: leading/trailing CFWS and CFWS on either side of the separator are allowed; CFWS between local atom characters, at a domain dot, or between a closing local quote and a non-@ trailing local byte is forbidden. CFWS-only input gives EmptyInput after successful cleanup, while malformed CFWS-only input gives its lexical error. Original offset mapping applies to ALL address errors after cleanup.
+
+R29. Comments and folds may be arbitrarily long; only nested comment depth is limited. Validation is deterministic and must handle at least 20,000 input bytes without panics or exponential work. Use ASCII rules even when comments would otherwise be discarded.
+
+R30. Policy::default() is Preserve, strip_subaddress=false, unquote_safe=false, allow_single_label=false. normalize_email uses the same parsing/error precedence as parse_email, with ONLY the label-count exception controlled by allow_single_label. NumericTld still applies to a single numeric label. Parse and validate the entire address BEFORE any normalisation, so a bad suffix that would be stripped is still an error.
+
+R31. On a successful parse, LocalCase::Lower maps ASCII A..Z to a..z in the DECODED local part; Preserve retains case. Domain lowercasing and root-dot removal always occur during parsing, regardless of policy. Case folding occurs before subaddress removal.
+
+R32. When strip_subaddress=true, remove the FIRST decoded + and every byte after it, in quoted or unquoted locals alike, even if the + is terminal or several + signs exist. With false, retain them all. If the first decoded byte is +, stripping would make the local empty: return EmptyNormalizedLocal at that plus's original byte position. This is checked only after the entire address validates. Do not strip dots or any other punctuation.
+
+R33. After case/subaddress transforms, if the resulting nonempty local is NOT a valid dot-atom under the earlier local rules, force Address.quoted=true (for example stripping x.+tag leaves x.). If it IS a valid dot-atom, keep the original quoted flag unless unquote_safe=true, in which case set it to false. unquote_safe never makes an unsafe local unquoted. Transforms cannot increase local length and do not re-run domain validation.
+
+R34. format_email never validates and accepts any Address, including constructed ones with Unicode, empty fields or invalid domains. Emit local + @ + domain when quoted=false. When quoted=true wrap local in double quotes and escape EVERY local double quote and backslash with a preceding backslash, leaving all other characters (including @, SPACE and Unicode) unchanged. Never change case or trim fields; the domain is emitted verbatim.
+
+R35. deduplicate processes inputs in their input order by normalize_email with the same policy. On errors append (original input index, error) to errors and continue. Errors are in input order, including repeated invalid inputs; invalid inputs do not reserve deduplication keys. Empty input slices return four empty vectors.
+
+R36. Successful deduplication keys are exactly (normalised DECODED local, normalised domain); quoted is NOT part of the key. Local comparison is case-sensitive after applying the selected case policy. Keep the first successful Address representation for each key, with addresses in first-occurrence order and parallel source_indices containing those ORIGINAL input indices.
+
+R37. duplicate_of has exactly inputs.len() elements. For every later successful occurrence of a key store Some(original input index of its FIRST successful occurrence), never its unique-output position or previous duplicate index. All first successes and ALL errors get None. Policy affects keys before comparison; all calls are independent and retain no global state.
+
+R38. Normalisation must be idempotent through canonical formatting for every successful result: normalizing format_email(result) with the same policy returns the same Address. Deduplication must handle at least 500 inputs deterministically; quote/CFWS spelling differences, root markers, domain case, subaddresses and case policy interact according to the preceding rules.
+
+## Public tests
+
+Your file must pass these tests. They are appended to your file inside `#[cfg(test)] mod <name> { use super::*; ... }`. Additional hidden tests check the same requirements.
+
+```rust
+// Clauses: R9.
+#[test]
+fn public_atom_address() {
+    assert_eq!(parse_email("Ada.Lovelace@Mail.Example"), Ok(Address { local: "Ada.Lovelace".into(), domain: "mail.example".into(), quoted: false }));
+}
+// Clauses: R12.
+#[test]
+fn public_quoted_local() {
+    assert_eq!(parse_email("\"Ada Lovelace\\@home\"@Example.COM"), Ok(Address { local: "Ada Lovelace@home".into(), domain: "example.com".into(), quoted: true }));
+}
+// Clauses: R31, R34.
+#[test]
+fn public_normalize_and_format() {
+    let p = Policy { local_case: LocalCase::Lower, strip_subaddress: true, unquote_safe: true, allow_single_label: false };
+    let a = normalize_email("(name) \"Ada+news\"@Example.COM", &p).unwrap();
+    assert_eq!(a, Address { local: "ada".into(), domain: "example.com".into(), quoted: false });
+    assert_eq!(format_email(&a), "ada@example.com");
+}
+// Clauses: R35, R37.
+#[test]
+fn public_dedup() {
+    let r = deduplicate(&["one@example.com", "one@EXAMPLE.COM", "two@example.com", "invalid"], &Policy::default());
+    assert_eq!(r.source_indices, vec![0, 2]);
+    assert_eq!(r.addresses.len(), 2);
+    assert_eq!(r.duplicate_of, vec![None, Some(0), None, None]);
+    assert_eq!(r.errors, vec![(3, EmailError::MissingAt)]);
+}
+```
+
+
+CANDIDATES:
+
+### A.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+    UnclosedQuote { at: usize },
+    TrailingLocal { at: usize },
+    BadEscape { at: usize },
+    QuotedChar { at: usize },
+    BadFold { at: usize },
+    UnclosedComment { at: usize },
+    CommentDepth { at: usize },
+    CommentChar { at: usize },
+    CommentEscape { at: usize },
+    UnexpectedClose { at: usize },
+    CfwsBoundary { at: usize },
+    EmptyNormalizedLocal { at: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalCase {
+    Preserve,
+    Lower,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Policy {
+    pub local_case: LocalCase,
+    pub strip_subaddress: bool,
+    pub unquote_safe: bool,
+    pub allow_single_label: bool,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            local_case: LocalCase::Preserve,
+            strip_subaddress: false,
+            unquote_safe: false,
+            allow_single_label: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DedupResult {
+    pub addresses: Vec<Address>,
+    pub source_indices: Vec<usize>,
+    pub duplicate_of: Vec<Option<usize>>,
+    pub errors: Vec<(usize, EmailError)>,
+}
+
+#[derive(Clone)]
+struct Cleaned {
+    bytes: Vec<u8>,
+    positions: Vec<usize>,
+    runs: Vec<(usize, usize, usize)>,
+}
+
+fn is_hws(b: u8) -> bool {
+    b == b' ' || b == b'\t'
+}
+
+fn fold_end(input: &[u8], i: usize) -> Option<usize> {
+    if input.get(i) != Some(&b'\r') || input.get(i + 1) != Some(&b'\n') {
+        return None;
+    }
+    let mut j = i + 2;
+    if !input.get(j).copied().map(is_hws).unwrap_or(false) {
+        return None;
+    }
+    while input.get(j).copied().map(is_hws).unwrap_or(false) {
+        j += 1;
+    }
+    Some(j)
+}
+
+fn clean_cfws(input: &[u8]) -> Result<Cleaned, EmailError> {
+    let mut bytes = Vec::with_capacity(input.len());
+    let mut positions = Vec::with_capacity(input.len());
+    let mut runs = Vec::new();
+    let mut i = 0usize;
+    let mut quote_mode = false;
+    let mut quote_open = 0usize;
+    let mut quote_closed = false;
+
+    while i < input.len() {
+        let b = input[i];
+
+        if quote_mode {
+            bytes.push(b);
+            positions.push(i);
+            if b == b'\\' {
+                i += 1;
+                if i < input.len() {
+                    bytes.push(input[i]);
+                    positions.push(i);
+                    i += 1;
+                }
+                continue;
+            }
+            if b == b'"' {
+                quote_mode = false;
+                quote_closed = true;
+            }
+            i += 1;
+            continue;
+        }
+
+        if !quote_closed && bytes.is_empty() && b == b'"' {
+            quote_mode = true;
+            quote_open = i;
+            bytes.push(b);
+            positions.push(i);
+            i += 1;
+            continue;
+        }
+
+        let is_cfws_start = is_hws(b) || b == b'(' || b == b'\r' || b == b'\n';
+        if !is_cfws_start {
+            if b == b')' {
+                return Err(EmailError::UnexpectedClose { at: i });
+            }
+            bytes.push(b);
+            positions.push(i);
+            i += 1;
+            continue;
+        }
+
+        let run_start = i;
+        let retained_before = bytes.len();
+        let mut depth = 0usize;
+        let mut outer_open = None;
+
+        loop {
+            if i >= input.len() {
+                break;
+            }
+            let c = input[i];
+
+            if depth > 0 {
+                match c {
+                    b'\\' => {
+                        let slash = i;
+                        let Some(&next) = input.get(i + 1) else {
+                            return Err(EmailError::CommentEscape { at: slash });
+                        };
+                        if !(0x20..=0x7e).contains(&next) {
+                            return Err(EmailError::CommentEscape { at: slash });
+                        }
+                        i += 2;
+                    }
+                    b'(' => {
+                        if depth == 3 {
+                            return Err(EmailError::CommentDepth { at: i });
+                        }
+                        depth += 1;
+                        i += 1;
+                    }
+                    b')' => {
+                        depth -= 1;
+                        i += 1;
+                    }
+                    b'\r' | b'\n' => {
+                        if let Some(end) = fold_end(input, i) {
+                            i = end;
+                        } else {
+                            return Err(EmailError::BadFold { at: i });
+                        }
+                    }
+                    _ => {
+                        if !(0x20..=0x7e).contains(&c) && c != b'\t' {
+                            return Err(EmailError::CommentChar { at: i });
+                        }
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+
+            if is_hws(c) {
+                i += 1;
+            } else if c == b'\r' || c == b'\n' {
+                if let Some(end) = fold_end(input, i) {
+                    i = end;
+                } else {
+                    return Err(EmailError::BadFold { at: i });
+                }
+            } else if c == b'(' {
+                outer_open = Some(i);
+                depth = 1;
+                i += 1;
+            } else {
+                break;
+            }
+        }
+
+        let run_end = i;
+        let _ = retained_before;
+        runs.push((run_start, run_end, outer_open.unwrap_or(run_start)));
+    }
+
+    let _ = quote_open;
+    Ok(Cleaned {
+        bytes,
+        positions,
+        runs,
+    })
+}
+
+fn original_pos(clean: &Cleaned, index: usize, input_len: usize) -> usize {
+    clean.positions.get(index).copied().unwrap_or(input_len)
+}
+
+fn valid_dot_atom(bytes: &[u8]) -> bool {
+    if bytes.is_empty() || bytes.len() > 64 {
+        return false;
+    }
+    let mut previous_dot = true;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'.' {
+            if previous_dot || i + 1 == bytes.len() {
+                return false;
+            }
+            previous_dot = true;
+        } else if is_atext(b) {
+            previous_dot = false;
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_atext(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b"!#$%&'*+-/=?^_`{|}~".contains(&b)
+}
+
+fn parse_cleaned(
+    input: &str,
+    clean: &Cleaned,
+    allow_single_label: bool,
+) -> Result<(Address, Vec<usize>), EmailError> {
+    let b = &clean.bytes;
+    let n = b.len();
+
+    for &(start, end, _) in &clean.runs {
+        let first = clean.runs.iter().position(|r| r.0 == start && r.1 == end).unwrap_or(0);
+        let _ = first;
+        let left_boundary = start == 0;
+        let right_boundary = end == input.len();
+        let retained_left = clean.positions.iter().any(|&p| p < start);
+        let retained_right = clean.positions.iter().any(|&p| p >= end);
+        let left_at = retained_left
+            && clean.positions.iter().rposition(|&p| p < start)
+                .and_then(|idx| b.get(idx))
+                == Some(&b'@');
+        let right_at = retained_right
+            && clean.positions.iter().position(|&p| p >= end)
+                .and_then(|idx| b.get(idx))
+                == Some(&b'@');
+        if !(left_boundary || right_boundary || left_at || right_at) {
+            return Err(EmailError::CfwsBoundary { at: start });
+        }
+    }
+
+    if n == 0 {
+        return Err(EmailError::EmptyInput);
+    }
+
+    let mut quote_end = None;
+    if b[0] == b'"' {
+        let mut i = 1;
+        while i < n {
+            if b[i] == b'\\' {
+                i += 2;
+            } else if b[i] == b'"' {
+                quote_end = Some(i);
+                break;
+            } else {
+                i += 1;
+            }
+        }
+        if quote_end.is_none() {
+            return Err(EmailError::UnclosedQuote {
+                at: original_pos(clean, 0, input.len()),
+            });
+        }
+    }
+
+    let mut ats = Vec::new();
+    for i in 0..n {
+        if b[i] == b'@' && !quote_end.map(|q| i <= q).unwrap_or(false) {
+            ats.push(i);
+        }
+    }
+    if ats.is_empty() {
+        return Err(EmailError::MissingAt);
+    }
+    if ats.len() > 1 {
+        return Err(EmailError::MultipleAt {
+            at: original_pos(clean, ats[1], input.len()),
+        });
+    }
+    let at = ats[0];
+    if at == 0 {
+        return Err(EmailError::EmptyLocal {
+            at: original_pos(clean, at, input.len()),
+        });
+    }
+
+    let local_raw = &b[..at];
+    let mut local = Vec::new();
+    let mut origins = Vec::new();
+    let quoted;
+
+    if local_raw[0] == b'"' {
+        let qend = quote_end.unwrap_or(0);
+        if qend + 1 != at {
+            return Err(EmailError::TrailingLocal {
+                at: original_pos(clean, qend + 1, input.len()),
+            });
+        }
+        quoted = true;
+        let mut i = 1;
+        while i < qend {
+            let c = local_raw[i];
+            if c == b'\\' {
+                if i + 1 >= qend {
+                    return Err(EmailError::BadEscape {
+                        at: original_pos(clean, i, input.len()),
+                    });
+                }
+                let escaped = local_raw[i + 1];
+                if !matches!(escaped, b'"' | b'\\' | b'@') {
+                    return Err(EmailError::BadEscape {
+                        at: original_pos(clean, i, input.len()),
+                    });
+                }
+                local.push(escaped);
+                origins.push(original_pos(clean, i, input.len()));
+                i += 2;
+            } else {
+                if !(0x20..=0x7e).contains(&c) {
+                    return Err(EmailError::QuotedChar {
+                        at: original_pos(clean, i, input.len()),
+                    });
+                }
+                local.push(c);
+                origins.push(original_pos(clean, i, input.len()));
+                i += 1;
+            }
+        }
+        if local.is_empty() {
+            return Err(EmailError::EmptyLocal {
+                at: original_pos(clean, qend, input.len()),
+            });
+        }
+        if local.len() > 64 {
+            return Err(EmailError::LocalTooLong {
+                at: origins[64],
+            });
+        }
+    } else {
+        quoted = false;
+        if local_raw.len() > 64 {
+            return Err(EmailError::LocalTooLong {
+                at: original_pos(clean, 64, input.len()),
+            });
+        }
+        let mut previous_dot = false;
+        for (i, &c) in local_raw.iter().enumerate() {
+            if c == b'.' {
+                if i == 0 || i + 1 == local_raw.len() || previous_dot {
+                    return Err(EmailError::LocalDot {
+                        at: original_pos(clean, i, input.len()),
+                    });
+                }
+                previous_dot = true;
+            } else {
+                if !is_atext(c) {
+                    return Err(EmailError::LocalChar {
+                        at: original_pos(clean, i, input.len()),
+                    });
+                }
+                previous_dot = false;
+            }
+            local.push(c);
+            origins.push(original_pos(clean, i, input.len()));
+        }
+    }
+
+    let domain_start = at + 1;
+    let mut domain_end = n;
+    let mut root_pos = None;
+    if domain_end > domain_start && b[domain_end - 1] == b'.' {
+        root_pos = Some(original_pos(clean, domain_end - 1, input.len()));
+        domain_end -= 1;
+    }
+    if domain_start == domain_end {
+        return Err(EmailError::EmptyDomain {
+            at: original_pos(clean, domain_start, input.len()),
+        });
+    }
+    let domain_len = domain_end - domain_start;
+    if domain_len > 253 {
+        return Err(EmailError::DomainTooLong {
+            at: original_pos(clean, domain_start + 253, input.len()),
+        });
+    }
+
+    let domain = &b[domain_start..domain_end];
+    let mut labels: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0usize;
+    for i in 0..=domain.len() {
+        if i == domain.len() || domain[i] == b'.' {
+            labels.push((start, i));
+            start = i + 1;
+        }
+    }
+
+    for (li, &(ls, le)) in labels.iter().enumerate() {
+        if ls == le {
+            let pos = if li + 1 == labels.len() && root_pos.is_some() {
+                root_pos.unwrap()
+            } else if ls < domain.len() {
+                original_pos(clean, domain_start + ls, input.len())
+            } else {
+                original_pos(clean, domain_start + ls, input.len())
+            };
+            return Err(EmailError::EmptyLabel { at: pos });
+        }
+        let len = le - ls;
+        if len > 63 {
+            return Err(EmailError::LabelTooLong {
+                at: original_pos(clean, domain_start + ls + 63, input.len()),
+            });
+        }
+        if domain[ls] == b'-' {
+            return Err(EmailError::LabelHyphen {
+                at: original_pos(clean, domain_start + ls, input.len()),
+            });
+        }
+        if domain[le - 1] == b'-' {
+            return Err(EmailError::LabelHyphen {
+                at: original_pos(clean, domain_start + le - 1, input.len()),
+            });
+        }
+        for i in ls..le {
+            if !domain[i].is_ascii_alphanumeric() && domain[i] != b'-' {
+                return Err(EmailError::DomainChar {
+                    at: original_pos(clean, domain_start + i, input.len()),
+                });
+            }
+        }
+    }
+
+    if labels.len() < 2 && !allow_single_label {
+        return Err(EmailError::DomainNeedsDot {
+            at: original_pos(clean, domain_start, input.len()),
+        });
+    }
+    let (last_start, last_end) = *labels.last().unwrap();
+    if domain[last_start..last_end].iter().all(u8::is_ascii_digit) {
+        return Err(EmailError::NumericTld {
+            at: original_pos(clean, domain_start + last_start, input.len()),
+        });
+    }
+
+    local.shrink_to_fit();
+    let local_string = String::from_utf8(local).unwrap();
+    let domain_string = String::from_utf8(domain.iter().map(u8::to_ascii_lowercase).collect()).unwrap();
+    Ok((
+        Address {
+            local: local_string,
+            domain: domain_string,
+            quoted,
+        },
+        origins,
+    ))
+}
+
+fn parse_with_policy(
+    input: &str,
+    policy: &Policy,
+    strict_domain: bool,
+) -> Result<Address, EmailError> {
+    if input.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+    let raw = input.as_bytes();
+    if let Some(at) = raw.iter().position(|&b| b >= 128) {
+        return Err(EmailError::NonAscii { at });
+    }
+
+    let clean = clean_cfws(raw)?;
+    let (mut address, origins) = parse_cleaned(input, &clean, strict_domain || !policy.allow_single_label)?;
+
+    if policy.local_case == LocalCase::Lower {
+        address.local.make_ascii_lowercase();
+    }
+    let mut transformed_origins = origins;
+    if policy.strip_subaddress {
+        if let Some(plus) = address.local.as_bytes().iter().position(|&b| b == b'+') {
+            if plus == 0 {
+                return Err(EmailError::EmptyNormalizedLocal {
+                    at: transformed_origins.get(plus).copied().unwrap_or(0),
+                });
+            }
+            address.local.truncate(plus);
+        }
+    }
+    let local_bytes = address.local.as_bytes();
+    let safe = valid_dot_atom(local_bytes);
+    if !safe {
+        address.quoted = true;
+    } else if policy.unquote_safe {
+        address.quoted = false;
+    }
+    Ok(address)
+}
+
+pub fn parse_email(input: &str) -> Result<Address, EmailError> {
+    parse_with_policy(input, &Policy::default(), true)
+}
+
+pub fn normalize_email(input: &str, policy: &Policy) -> Result<Address, EmailError> {
+    parse_with_policy(input, policy, false)
+}
+
+pub fn format_email(address: &Address) -> String {
+    let mut out = String::new();
+    if address.quoted {
+        out.push('"');
+        for c in address.local.chars() {
+            if c == '"' || c == '\\' {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out.push('"');
+    } else {
+        out.push_str(&address.local);
+    }
+    out.push('@');
+    out.push_str(&address.domain);
+    out
+}
+
+pub fn deduplicate(inputs: &[&str], policy: &Policy) -> DedupResult {
+    use std::collections::HashMap;
+
+    let mut result = DedupResult {
+        addresses: Vec::new(),
+        source_indices: Vec::new(),
+        duplicate_of: vec![None; inputs.len()],
+        errors: Vec::new(),
+    };
+    let mut keys: HashMap<(String, String), usize> = HashMap::new();
+
+    for (index, input) in inputs.iter().enumerate() {
+        match normalize_email(input, policy) {
+            Err(error) => result.errors.push((index, error)),
+            Ok(address) => {
+                let key = (address.local.clone(), address.domain.clone());
+                if let Some(&first_index) = keys.get(&key) {
+                    result.duplicate_of[index] = Some(first_index);
+                } else {
+                    keys.insert(key, index);
+                    result.source_indices.push(index);
+                    result.addresses.push(address);
+                }
+            }
+        }
+    }
+    result
+}
+```
+
+### B.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+    UnclosedQuote { at: usize },
+    TrailingLocal { at: usize },
+    BadEscape { at: usize },
+    QuotedChar { at: usize },
+    BadFold { at: usize },
+    UnclosedComment { at: usize },
+    CommentDepth { at: usize },
+    CommentChar { at: usize },
+    CommentEscape { at: usize },
+    UnexpectedClose { at: usize },
+    CfwsBoundary { at: usize },
+    EmptyNormalizedLocal { at: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalCase {
+    Preserve,
+    Lower,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Policy {
+    pub local_case: LocalCase,
+    pub strip_subaddress: bool,
+    pub unquote_safe: bool,
+    pub allow_single_label: bool,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            local_case: LocalCase::Preserve,
+            strip_subaddress: false,
+            unquote_safe: false,
+            allow_single_label: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DedupResult {
+    pub addresses: Vec<Address>,
+    pub source_indices: Vec<usize>,
+    pub duplicate_of: Vec<Option<usize>>,
+    pub errors: Vec<(usize, EmailError)>,
+}
+
+#[derive(Clone, Copy)]
+struct CfwsRun {
+    start: usize,
+    end: usize,
+}
+
+fn is_hws(b: u8) -> bool {
+    b == b' ' || b == b'\t'
+}
+
+fn is_printable(b: u8) -> bool {
+    (0x20..=0x7e).contains(&b)
+}
+
+fn cleanup(input: &[u8]) -> Result<(Vec<u8>, Vec<usize>, Vec<CfwsRun>), EmailError> {
+    let mut cleaned = Vec::with_capacity(input.len());
+    let mut positions = Vec::with_capacity(input.len());
+    let mut runs = Vec::new();
+
+    let mut i = 0;
+    let mut depth = 0usize;
+    let mut outer_open = 0usize;
+    let mut in_initial_quote = false;
+    let mut cfws_start: Option<usize> = None;
+
+    while i < input.len() {
+        if in_initial_quote {
+            let b = input[i];
+            cleaned.push(b);
+            positions.push(i);
+            if b == b'\\' {
+                i += 1;
+                if i < input.len() {
+                    cleaned.push(input[i]);
+                    positions.push(i);
+                }
+            } else if b == b'"' {
+                in_initial_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if depth > 0 {
+            let b = input[i];
+            match b {
+                b'\\' => {
+                    let at = i;
+                    if i + 1 >= input.len() || !is_printable(input[i + 1]) {
+                        return Err(EmailError::CommentEscape { at });
+                    }
+                    i += 2;
+                }
+                b'(' => {
+                    if depth == 3 {
+                        return Err(EmailError::CommentDepth { at: i });
+                    }
+                    depth += 1;
+                    i += 1;
+                }
+                b')' => {
+                    depth -= 1;
+                    i += 1;
+                }
+                b'\r' | b'\n' => {
+                    let at = i;
+                    if b == b'\r'
+                        && i + 2 < input.len()
+                        && input[i + 1] == b'\n'
+                        && is_hws(input[i + 2])
+                    {
+                        i += 2;
+                        while i < input.len() && is_hws(input[i]) {
+                            i += 1;
+                        }
+                    } else {
+                        return Err(EmailError::BadFold { at });
+                    }
+                }
+                b'\t' | b' ' => i += 1,
+                _ if is_printable(b) => i += 1,
+                _ => return Err(EmailError::CommentChar { at: i }),
+            }
+            continue;
+        }
+
+        let b = input[i];
+        if b == b'"' && cleaned.is_empty() {
+            if let Some(start) = cfws_start.take() {
+                runs.push(CfwsRun { start, end: i });
+            }
+            in_initial_quote = true;
+            cleaned.push(b);
+            positions.push(i);
+            i += 1;
+            continue;
+        }
+
+        let starts_cfws = is_hws(b)
+            || b == b'('
+            || b == b'\r'
+            || b == b'\n';
+
+        if starts_cfws {
+            if cfws_start.is_none() {
+                cfws_start = Some(i);
+            }
+            match b {
+                b' ' | b'\t' => i += 1,
+                b'\r' | b'\n' => {
+                    let at = i;
+                    if b == b'\r'
+                        && i + 2 < input.len()
+                        && input[i + 1] == b'\n'
+                        && is_hws(input[i + 2])
+                    {
+                        i += 2;
+                        while i < input.len() && is_hws(input[i]) {
+                            i += 1;
+                        }
+                    } else {
+                        return Err(EmailError::BadFold { at });
+                    }
+                }
+                b'(' => {
+                    outer_open = i;
+                    depth = 1;
+                    i += 1;
+                }
+                _ => unreachable!(),
+            }
+            continue;
+        }
+
+        if b == b')' {
+            return Err(EmailError::UnexpectedClose { at: i });
+        }
+
+        if let Some(start) = cfws_start.take() {
+            runs.push(CfwsRun { start, end: i });
+        }
+        cleaned.push(b);
+        positions.push(i);
+        i += 1;
+    }
+
+    if depth > 0 {
+        return Err(EmailError::UnclosedComment { at: outer_open });
+    }
+    if let Some(start) = cfws_start {
+        runs.push(CfwsRun {
+            start,
+            end: input.len(),
+        });
+    }
+
+    Ok((cleaned, positions, runs))
+}
+
+fn orig_pos(positions: &[usize], index: usize, input_len: usize) -> usize {
+    positions.get(index).copied().unwrap_or(input_len)
+}
+
+fn is_atext(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+        || b"!#$%&'*+-/=?^_`{|}~".contains(&b)
+}
+
+fn valid_dot_atom(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut previous_dot = true;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'.' {
+            if previous_dot || i + 1 == bytes.len() {
+                return false;
+            }
+            previous_dot = true;
+        } else if is_atext(b) {
+            previous_dot = false;
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+fn parse_clean(
+    input_len: usize,
+    cleaned: &[u8],
+    positions: &[usize],
+    allow_single_label: bool,
+) -> Result<(Address, Vec<usize>), EmailError> {
+    if cleaned.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+
+    let mut quote_close = None;
+    if cleaned[0] == b'"' {
+        let mut i = 1;
+        while i < cleaned.len() {
+            if cleaned[i] == b'\\' {
+                i += 2;
+            } else if cleaned[i] == b'"' {
+                quote_close = Some(i);
+                break;
+            } else {
+                i += 1;
+            }
+        }
+        if quote_close.is_none() {
+            return Err(EmailError::UnclosedQuote {
+                at: orig_pos(positions, 0, input_len),
+            });
+        }
+    }
+
+    let protected_end = quote_close.map(|i| i + 1).unwrap_or(0);
+    let mut ats = Vec::new();
+    for i in 0..cleaned.len() {
+        if i < protected_end {
+            continue;
+        }
+        if cleaned[i] == b'@' {
+            ats.push(i);
+        }
+    }
+
+    if ats.is_empty() {
+        return Err(EmailError::MissingAt);
+    }
+    if ats.len() > 1 {
+        return Err(EmailError::MultipleAt {
+            at: orig_pos(positions, ats[1], input_len),
+        });
+    }
+
+    let at_index = ats[0];
+    if at_index == 0 {
+        return Err(EmailError::EmptyLocal {
+            at: orig_pos(positions, at_index, input_len),
+        });
+    }
+
+    let local_bytes = &cleaned[..at_index];
+    let mut local = Vec::new();
+    let mut local_origins = Vec::new();
+    let quoted;
+
+    if cleaned[0] == b'"' {
+        let close = quote_close.unwrap();
+        if close + 1 != at_index {
+            return Err(EmailError::TrailingLocal {
+                at: orig_pos(positions, close + 1, input_len),
+            });
+        }
+        quoted = true;
+        let mut i = 1;
+        while i < close {
+            let b = cleaned[i];
+            if b == b'\\' {
+                if i + 1 >= close {
+                    return Err(EmailError::BadEscape {
+                        at: orig_pos(positions, i, input_len),
+                    });
+                }
+                let next = cleaned[i + 1];
+                if next != b'"' && next != b'\\' && next != b'@' {
+                    return Err(EmailError::BadEscape {
+                        at: orig_pos(positions, i, input_len),
+                    });
+                }
+                local.push(next);
+                local_origins.push(orig_pos(positions, i, input_len));
+                i += 2;
+            } else {
+                if !is_printable(b) {
+                    return Err(EmailError::QuotedChar {
+                        at: orig_pos(positions, i, input_len),
+                    });
+                }
+                local.push(b);
+                local_origins.push(orig_pos(positions, i, input_len));
+                i += 1;
+            }
+        }
+        if local.is_empty() {
+            return Err(EmailError::EmptyLocal {
+                at: orig_pos(positions, close, input_len),
+            });
+        }
+        if local.len() > 64 {
+            return Err(EmailError::LocalTooLong {
+                at: local_origins[64],
+            });
+        }
+    } else {
+        quoted = false;
+        if local_bytes.len() > 64 {
+            return Err(EmailError::LocalTooLong {
+                at: orig_pos(positions, 64, input_len),
+            });
+        }
+        let mut previous_dot = true;
+        for (i, &b) in local_bytes.iter().enumerate() {
+            if b == b'.' {
+                if previous_dot || i + 1 == local_bytes.len() {
+                    return Err(EmailError::LocalDot {
+                        at: orig_pos(positions, i, input_len),
+                    });
+                }
+                previous_dot = true;
+            } else if is_atext(b) {
+                previous_dot = false;
+            } else {
+                return Err(EmailError::LocalChar {
+                    at: orig_pos(positions, i, input_len),
+                });
+            }
+            local.push(b);
+            local_origins.push(orig_pos(positions, i, input_len));
+        }
+    }
+
+    let domain_start = at_index + 1;
+    if domain_start == cleaned.len() {
+        return Err(EmailError::EmptyDomain {
+            at: orig_pos(positions, domain_start, input_len),
+        });
+    }
+    let mut domain_end = cleaned.len();
+    let mut root_dot_pos = None;
+    if cleaned[domain_end - 1] == b'.' {
+        domain_end -= 1;
+        root_dot_pos = Some(orig_pos(positions, domain_end, input_len));
+    }
+    if domain_end == domain_start {
+        return Err(EmailError::EmptyDomain {
+            at: orig_pos(positions, domain_start, input_len),
+        });
+    }
+    if domain_end - domain_start > 253 {
+        return Err(EmailError::DomainTooLong {
+            at: orig_pos(positions, domain_start + 253, input_len),
+        });
+    }
+
+    let mut labels: Vec<(usize, usize)> = Vec::new();
+    let mut label_start = domain_start;
+    for i in domain_start..=domain_end {
+        if i == domain_end || cleaned[i] == b'.' {
+            labels.push((label_start, i));
+            label_start = i + 1;
+        }
+    }
+
+    for (label_index, &(start, end)) in labels.iter().enumerate() {
+        if start == end {
+            let at = if label_index + 1 == labels.len() {
+                root_dot_pos.unwrap_or_else(|| orig_pos(positions, start, input_len))
+            } else {
+                orig_pos(positions, start, input_len)
+            };
+            return Err(EmailError::EmptyLabel { at });
+        }
+        if end - start > 63 {
+            return Err(EmailError::LabelTooLong {
+                at: orig_pos(positions, start + 63, input_len),
+            });
+        }
+        if cleaned[start] == b'-' {
+            return Err(EmailError::LabelHyphen {
+                at: orig_pos(positions, start, input_len),
+            });
+        }
+        if cleaned[end - 1] == b'-' {
+            return Err(EmailError::LabelHyphen {
+                at: orig_pos(positions, end - 1, input_len),
+            });
+        }
+        for i in start..end {
+            let b = cleaned[i];
+            if !b.is_ascii_alphanumeric() && b != b'-' {
+                return Err(EmailError::DomainChar {
+                    at: orig_pos(positions, i, input_len),
+                });
+            }
+        }
+    }
+
+    if labels.len() < 2 && !allow_single_label {
+        return Err(EmailError::DomainNeedsDot {
+            at: orig_pos(positions, domain_start, input_len),
+        });
+    }
+
+    let (last_start, last_end) = labels[labels.len() - 1];
+    if cleaned[last_start..last_end]
+        .iter()
+        .all(|b| b.is_ascii_digit())
+    {
+        return Err(EmailError::NumericTld {
+            at: orig_pos(positions, last_start, input_len),
+        });
+    }
+
+    let domain = cleaned[domain_start..domain_end]
+        .iter()
+        .map(|b| b.to_ascii_lowercase() as char)
+        .collect::<String>();
+
+    Ok((
+        Address {
+            local: String::from_utf8(local).unwrap(),
+            domain,
+            quoted,
+        },
+        local_origins,
+    ))
+}
+
+fn parse_with_policy(
+    input: &str,
+    policy: &Policy,
+    allow_single_label: bool,
+) -> Result<(Address, Vec<usize>), EmailError> {
+    let bytes = input.as_bytes();
+    if bytes.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+    if let Some(at) = bytes.iter().position(|&b| b >= 128) {
+        return Err(EmailError::NonAscii { at });
+    }
+
+    let (cleaned, positions, runs) = cleanup(bytes)?;
+    for run in runs {
+        let retained_left = positions.iter().any(|&p| p < run.start);
+        let retained_right = positions.iter().any(|&p| p >= run.end);
+        let left_at = if retained_left {
+            positions
+                .iter()
+                .rposition(|&p| p < run.start)
+                .map(|i| cleaned[i] == b'@')
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        let right_at = if retained_right {
+            positions
+                .iter()
+                .position(|&p| p >= run.end)
+                .map(|i| cleaned[i] == b'@')
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        if retained_left && retained_right && !left_at && !right_at {
+            return Err(EmailError::CfwsBoundary { at: run.start });
+        }
+    }
+    if cleaned.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+
+    let (mut address, mut local_origins) =
+        parse_clean(bytes.len(), &cleaned, &positions, allow_single_label)?;
+
+    if policy.local_case == LocalCase::Lower {
+        address.local = address
+            .local
+            .bytes()
+            .map(|b| b.to_ascii_lowercase() as char)
+            .collect();
+    }
+
+    if policy.strip_subaddress {
+        if let Some(plus) = address.local.bytes().position(|b| b == b'+') {
+            if plus == 0 {
+                return Err(EmailError::EmptyNormalizedLocal {
+                    at: local_origins.first().copied().unwrap_or(bytes.len()),
+                });
+            }
+            address.local.truncate(plus);
+            local_origins.truncate(plus);
+        }
+    }
+
+    let local = address.local.as_bytes();
+    if !valid_dot_atom(local) {
+        address.quoted = true;
+    } else if policy.unquote_safe {
+        address.quoted = false;
+    }
+
+    Ok((address, local_origins))
+}
+
+pub fn parse_email(input: &str) -> Result<Address, EmailError> {
+    parse_with_policy(input, &Policy::default(), false).map(|(address, _)| address)
+}
+
+pub fn normalize_email(input: &str, policy: &Policy) -> Result<Address, EmailError> {
+    parse_with_policy(input, policy, policy.allow_single_label).map(|(address, _)| address)
+}
+
+pub fn format_email(address: &Address) -> String {
+    let mut output = String::new();
+    if address.quoted {
+        output.push('"');
+        for ch in address.local.chars() {
+            if ch == '"' || ch == '\\' {
+                output.push('\\');
+            }
+            output.push(ch);
+        }
+        output.push('"');
+    } else {
+        output.push_str(&address.local);
+    }
+    output.push('@');
+    output.push_str(&address.domain);
+    output
+}
+
+pub fn deduplicate(inputs: &[&str], policy: &Policy) -> DedupResult {
+    let mut addresses = Vec::new();
+    let mut source_indices = Vec::new();
+    let mut duplicate_of = vec![None; inputs.len()];
+    let mut errors = Vec::new();
+    let mut keys: Vec<(String, String, usize)> = Vec::new();
+
+    for (index, input) in inputs.iter().enumerate() {
+        match normalize_email(input, policy) {
+            Err(error) => errors.push((index, error)),
+            Ok(address) => {
+                if let Some((_, _, first_index)) = keys
+                    .iter()
+                    .find(|(local, domain, _)| {
+                        local == &address.local && domain == &address.domain
+                    })
+                {
+                    duplicate_of[index] = Some(*first_index);
+                } else {
+                    keys.push((
+                        address.local.clone(),
+                        address.domain.clone(),
+                        index,
+                    ));
+                    source_indices.push(index);
+                    addresses.push(address);
+                }
+            }
+        }
+    }
+
+    DedupResult {
+        addresses,
+        source_indices,
+        duplicate_of,
+        errors,
+    }
+}
+```
+
+### C.rs
+```rust
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+    UnclosedQuote { at: usize },
+    TrailingLocal { at: usize },
+    BadEscape { at: usize },
+    QuotedChar { at: usize },
+    BadFold { at: usize },
+    UnclosedComment { at: usize },
+    CommentDepth { at: usize },
+    CommentChar { at: usize },
+    CommentEscape { at: usize },
+    UnexpectedClose { at: usize },
+    CfwsBoundary { at: usize },
+    EmptyNormalizedLocal { at: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalCase {
+    Preserve,
+    Lower,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Policy {
+    pub local_case: LocalCase,
+    pub strip_subaddress: bool,
+    pub unquote_safe: bool,
+    pub allow_single_label: bool,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            local_case: LocalCase::Preserve,
+            strip_subaddress: false,
+            unquote_safe: false,
+            allow_single_label: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DedupResult {
+    pub addresses: Vec<Address>,
+    pub source_indices: Vec<usize>,
+    pub duplicate_of: Vec<Option<usize>>,
+    pub errors: Vec<(usize, EmailError)>,
+}
+
+#[derive(Clone, Copy)]
+struct Run {
+    start: usize,
+    end: usize,
+}
+
+struct Cleaned {
+    bytes: Vec<u8>,
+    positions: Vec<usize>,
+    runs: Vec<Run>,
+}
+
+fn at_pos(positions: &[usize], index: usize, end: usize) -> usize {
+    positions.get(index).copied().unwrap_or(end)
+}
+
+fn fold_end(input: &[u8], i: usize) -> Option<usize> {
+    if input.get(i) != Some(&b'\r') || input.get(i + 1) != Some(&b'\n') {
+        return None;
+    }
+    let mut j = i + 2;
+    if !matches!(input.get(j), Some(b' ' | b'\t')) {
+        return None;
+    }
+    while matches!(input.get(j), Some(b' ' | b'\t')) {
+        j += 1;
+    }
+    Some(j)
+}
+
+fn printable(b: u8) -> bool {
+    (0x20..=0x7e).contains(&b)
+}
+
+fn cleanup(input: &[u8]) -> Result<Cleaned, EmailError> {
+    let mut bytes = Vec::with_capacity(input.len());
+    let mut positions = Vec::with_capacity(input.len());
+    let mut runs = Vec::new();
+
+    let mut i = 0;
+    let mut depth = 0usize;
+    let mut outer_open = 0usize;
+    let mut comment_stack = Vec::new();
+    let mut quote_protected = false;
+    let mut quote_closed = false;
+
+    while i < input.len() {
+        let b = input[i];
+
+        if quote_protected && !quote_closed {
+            bytes.push(b);
+            positions.push(i);
+            if b == b'\\' {
+                if i + 1 < input.len() {
+                    bytes.push(input[i + 1]);
+                    positions.push(i + 1);
+                    i += 2;
+                    continue;
+                }
+            } else if b == b'"' {
+                quote_closed = true;
+            }
+            i += 1;
+            continue;
+        }
+
+        if depth > 0 {
+            if b == b'\\' {
+                if i + 1 >= input.len() || !printable(input[i + 1]) {
+                    return Err(EmailError::CommentEscape { at: i });
+                }
+                i += 2;
+                continue;
+            }
+            if b == b'\r' || b == b'\n' {
+                if let Some(end) = fold_end(input, i) {
+                    i = end;
+                    continue;
+                }
+                return Err(EmailError::BadFold { at: i });
+            }
+            if b == b'(' {
+                if depth == 3 {
+                    return Err(EmailError::CommentDepth { at: i });
+                }
+                depth += 1;
+                comment_stack.push(i);
+                i += 1;
+                continue;
+            }
+            if b == b')' {
+                depth -= 1;
+                comment_stack.pop();
+                i += 1;
+                continue;
+            }
+            if printable(b) || b == b'\t' {
+                i += 1;
+                continue;
+            }
+            return Err(EmailError::CommentChar { at: i });
+        }
+
+        if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n' || b == b'(' {
+            let run_start = i;
+            loop {
+                if i >= input.len() {
+                    break;
+                }
+                let c = input[i];
+                if c == b' ' || c == b'\t' {
+                    i += 1;
+                } else if c == b'\r' || c == b'\n' {
+                    if let Some(end) = fold_end(input, i) {
+                        i = end;
+                    } else {
+                        return Err(EmailError::BadFold { at: i });
+                    }
+                } else if c == b'(' {
+                    depth = 1;
+                    outer_open = i;
+                    comment_stack.push(i);
+                    i += 1;
+                    while i < input.len() && depth > 0 {
+                        let d = input[i];
+                        if d == b'\\' {
+                            if i + 1 >= input.len() || !printable(input[i + 1]) {
+                                return Err(EmailError::CommentEscape { at: i });
+                            }
+                            i += 2;
+                        } else if d == b'\r' || d == b'\n' {
+                            if let Some(end) = fold_end(input, i) {
+                                i = end;
+                            } else {
+                                return Err(EmailError::BadFold { at: i });
+                            }
+                        } else if d == b'(' {
+                            if depth == 3 {
+                                return Err(EmailError::CommentDepth { at: i });
+                            }
+                            depth += 1;
+                            comment_stack.push(i);
+                            i += 1;
+                        } else if d == b')' {
+                            depth -= 1;
+                            comment_stack.pop();
+                            i += 1;
+                        } else if printable(d) || d == b'\t' {
+                            i += 1;
+                        } else {
+                            return Err(EmailError::CommentChar { at: i });
+                        }
+                    }
+                    if depth > 0 {
+                        return Err(EmailError::UnclosedComment { at: outer_open });
+                    }
+                } else {
+                    break;
+                }
+            }
+            runs.push(Run {
+                start: run_start,
+                end: i,
+            });
+            continue;
+        }
+
+        if b == b')' {
+            return Err(EmailError::UnexpectedClose { at: i });
+        }
+        if b == b'"' && bytes.is_empty() {
+            quote_protected = true;
+            quote_closed = false;
+        }
+        bytes.push(b);
+        positions.push(i);
+        i += 1;
+    }
+
+    if depth > 0 {
+        return Err(EmailError::UnclosedComment { at: outer_open });
+    }
+
+    Ok(Cleaned {
+        bytes,
+        positions,
+        runs,
+    })
+}
+
+fn is_atom_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b"!#$%&'*+-/=?^_`{|}~".contains(&b)
+}
+
+fn is_dot_atom(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut prev_dot = true;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'.' {
+            if prev_dot || i + 1 == bytes.len() {
+                return false;
+            }
+            prev_dot = true;
+        } else if is_atom_char(b) {
+            prev_dot = false;
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+fn parse_core(input: &str, allow_single_label: bool) -> Result<(Address, Vec<usize>), EmailError> {
+    if input.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+    let raw = input.as_bytes();
+    if let Some(at) = raw.iter().position(|&b| b >= 128) {
+        return Err(EmailError::NonAscii { at });
+    }
+
+    let cleaned = cleanup(raw)?;
+    let bytes = &cleaned.bytes;
+    let positions = &cleaned.positions;
+
+    for run in &cleaned.runs {
+        let left = run.start == 0;
+        let right = run.end == raw.len();
+        let before_at = bytes.get(run.start.wrapping_sub(1)) == Some(&b'@');
+        let after_at = bytes.get(run.start) == Some(&b'@');
+        if !(left || right || before_at || after_at) {
+            return Err(EmailError::CfwsBoundary { at: run.start });
+        }
+    }
+
+    if bytes.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+
+    let mut quote_close = None;
+    if bytes.first() == Some(&b'"') {
+        let mut i = 1;
+        while i < bytes.len() {
+            if bytes[i] == b'\\' {
+                i += 2;
+            } else if bytes[i] == b'"' {
+                quote_close = Some(i);
+                break;
+            } else {
+                i += 1;
+            }
+        }
+        if quote_close.is_none() {
+            return Err(EmailError::UnclosedQuote {
+                at: at_pos(positions, 0, raw.len()),
+            });
+        }
+    }
+
+    let mut separators = Vec::new();
+    let mut i = 0;
+    if let Some(q) = quote_close {
+        i = q + 1;
+    }
+    while i < bytes.len() {
+        if bytes[i] == b'@' {
+            separators.push(i);
+        }
+        i += 1;
+    }
+    if separators.is_empty() {
+        return Err(EmailError::MissingAt);
+    }
+    if separators.len() >= 2 {
+        return Err(EmailError::MultipleAt {
+            at: at_pos(positions, separators[1], raw.len()),
+        });
+    }
+
+    let sep = separators[0];
+    if sep == 0 {
+        return Err(EmailError::EmptyLocal {
+            at: at_pos(positions, sep, raw.len()),
+        });
+    }
+
+    let local_bytes = &bytes[..sep];
+    let mut local_origins = Vec::new();
+    let (local, quoted) = if local_bytes[0] == b'"' {
+        let close = quote_close.unwrap();
+        if close + 1 != sep {
+            return Err(EmailError::TrailingLocal {
+                at: at_pos(positions, close + 1, raw.len()),
+            });
+        }
+        let mut decoded = Vec::new();
+        let mut origins = Vec::new();
+        let mut j = 1;
+        while j < close {
+            let b = local_bytes[j];
+            if b == b'\\' {
+                if j + 1 >= close || !matches!(local_bytes[j + 1], b'"' | b'\\' | b'@') {
+                    return Err(EmailError::BadEscape {
+                        at: at_pos(positions, j, raw.len()),
+                    });
+                }
+                decoded.push(local_bytes[j + 1]);
+                origins.push(at_pos(positions, j, raw.len()));
+                j += 2;
+            } else {
+                if !printable(b) {
+                    return Err(EmailError::QuotedChar {
+                        at: at_pos(positions, j, raw.len()),
+                    });
+                }
+                decoded.push(b);
+                origins.push(at_pos(positions, j, raw.len()));
+                j += 1;
+            }
+        }
+        if decoded.is_empty() {
+            return Err(EmailError::EmptyLocal {
+                at: at_pos(positions, close, raw.len()),
+            });
+        }
+        if decoded.len() > 64 {
+            return Err(EmailError::LocalTooLong {
+                at: origins[64],
+            });
+        }
+        local_origins = origins;
+        (decoded, true)
+    } else {
+        if local_bytes.len() > 64 {
+            return Err(EmailError::LocalTooLong {
+                at: at_pos(positions, 64, raw.len()),
+            });
+        }
+        for (j, &b) in local_bytes.iter().enumerate() {
+            if b == b'.' {
+                if j == 0 || j + 1 == local_bytes.len() || local_bytes[j - 1] == b'.' {
+                    return Err(EmailError::LocalDot {
+                        at: at_pos(positions, j, raw.len()),
+                    });
+                }
+            } else if !is_atom_char(b) {
+                return Err(EmailError::LocalChar {
+                    at: at_pos(positions, j, raw.len()),
+                });
+            }
+        }
+        local_origins.extend((0..local_bytes.len()).map(|j| at_pos(positions, j, raw.len())));
+        (local_bytes.to_vec(), false)
+    };
+
+    let domain_start = sep + 1;
+    let domain_raw = &bytes[domain_start..];
+    let mut domain_end = bytes.len();
+    if domain_raw.last() == Some(&b'.') {
+        domain_end -= 1;
+    }
+    let domain_bytes = &bytes[domain_start..domain_end];
+    if domain_bytes.is_empty() {
+        return Err(EmailError::EmptyDomain {
+            at: at_pos(positions, domain_start, raw.len()),
+        });
+    }
+    if domain_bytes.len() > 253 {
+        return Err(EmailError::DomainTooLong {
+            at: at_pos(positions, domain_start + 253, raw.len()),
+        });
+    }
+
+    let mut labels: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0;
+    for j in 0..=domain_bytes.len() {
+        if j == domain_bytes.len() || domain_bytes[j] == b'.' {
+            labels.push((start, j));
+            start = j + 1;
+        }
+    }
+
+    let removed_dot_pos = if domain_end < bytes.len() {
+        at_pos(positions, domain_end, raw.len())
+    } else {
+        raw.len()
+    };
+
+    for (index, &(a, b)) in labels.iter().enumerate() {
+        if a == b {
+            let pos = if index + 1 == labels.len() && domain_end < bytes.len() {
+                removed_dot_pos
+            } else if a < domain_bytes.len() {
+                at_pos(positions, domain_start + a, raw.len())
+            } else {
+                at_pos(positions, domain_end, raw.len())
+            };
+            return Err(EmailError::EmptyLabel { at: pos });
+        }
+        let len = b - a;
+        if len > 63 {
+            return Err(EmailError::LabelTooLong {
+                at: at_pos(positions, domain_start + a + 63, raw.len()),
+            });
+        }
+        if domain_bytes[a] == b'-' {
+            return Err(EmailError::LabelHyphen {
+                at: at_pos(positions, domain_start + a, raw.len()),
+            });
+        }
+        if domain_bytes[b - 1] == b'-' {
+            return Err(EmailError::LabelHyphen {
+                at: at_pos(positions, domain_start + b - 1, raw.len()),
+            });
+        }
+        for j in a..b {
+            let c = domain_bytes[j];
+            if !c.is_ascii_alphanumeric() && c != b'-' {
+                return Err(EmailError::DomainChar {
+                    at: at_pos(positions, domain_start + j, raw.len()),
+                });
+            }
+        }
+    }
+
+    if labels.len() < 2 && !allow_single_label {
+        return Err(EmailError::DomainNeedsDot {
+            at: at_pos(positions, domain_start, raw.len()),
+        });
+    }
+
+    let (last_start, last_end) = *labels.last().unwrap();
+    if domain_bytes[last_start..last_end]
+        .iter()
+        .all(u8::is_ascii_digit)
+    {
+        return Err(EmailError::NumericTld {
+            at: at_pos(positions, domain_start + last_start, raw.len()),
+        });
+    }
+
+    let local_string = String::from_utf8(local).unwrap();
+    let domain_string = String::from_utf8(domain_bytes.to_vec())
+        .unwrap()
+        .to_ascii_lowercase();
+    Ok((
+        Address {
+            local: local_string,
+            domain: domain_string,
+            quoted,
+        },
+        local_origins,
+    ))
+}
+
+pub fn parse_email(input: &str) -> Result<Address, EmailError> {
+    parse_core(input, false).map(|(address, _)| address)
+}
+
+pub fn normalize_email(input: &str, policy: &Policy) -> Result<Address, EmailError> {
+    let (mut address, origins) = parse_core(input, policy.allow_single_label)?;
+    if policy.local_case == LocalCase::Lower {
+        address.local.make_ascii_lowercase();
+    }
+    if policy.strip_subaddress {
+        if let Some(index) = address.local.as_bytes().iter().position(|&b| b == b'+') {
+            if index == 0 {
+                return Err(EmailError::EmptyNormalizedLocal {
+                    at: origins.first().copied().unwrap_or(input.len()),
+                });
+            }
+            address.local.truncate(index);
+        }
+    }
+    let safe = is_dot_atom(address.local.as_bytes());
+    if !safe {
+        address.quoted = true;
+    } else if policy.unquote_safe {
+        address.quoted = false;
+    }
+    Ok(address)
+}
+
+pub fn format_email(address: &Address) -> String {
+    let mut out = String::new();
+    if address.quoted {
+        out.push('"');
+        for ch in address.local.chars() {
+            if ch == '"' || ch == '\\' {
+                out.push('\\');
+            }
+            out.push(ch);
+        }
+        out.push('"');
+    } else {
+        out.push_str(&address.local);
+    }
+    out.push('@');
+    out.push_str(&address.domain);
+    out
+}
+
+pub fn deduplicate(inputs: &[&str], policy: &Policy) -> DedupResult {
+    let mut addresses = Vec::new();
+    let mut source_indices = Vec::new();
+    let mut duplicate_of = vec![None; inputs.len()];
+    let mut errors = Vec::new();
+    let mut seen: HashMap<(String, String), usize> = HashMap::new();
+
+    for (index, input) in inputs.iter().enumerate() {
+        match normalize_email(input, policy) {
+            Err(error) => errors.push((index, error)),
+            Ok(address) => {
+                let key = (address.local.clone(), address.domain.clone());
+                if let Some(&first_index) = seen.get(&key) {
+                    duplicate_of[index] = Some(first_index);
+                } else {
+                    seen.insert(key, index);
+                    source_indices.push(index);
+                    addresses.push(address);
+                }
+            }
+        }
+    }
+
+    DedupResult {
+        addresses,
+        source_indices,
+        duplicate_of,
+        errors,
+    }
+}
+```
+
+### D.rs
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub local: String,
+    pub domain: String,
+    pub quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailError {
+    EmptyInput,
+    NonAscii { at: usize },
+    MissingAt,
+    MultipleAt { at: usize },
+    EmptyLocal { at: usize },
+    LocalTooLong { at: usize },
+    LocalDot { at: usize },
+    LocalChar { at: usize },
+    EmptyDomain { at: usize },
+    DomainTooLong { at: usize },
+    EmptyLabel { at: usize },
+    LabelTooLong { at: usize },
+    LabelHyphen { at: usize },
+    DomainChar { at: usize },
+    DomainNeedsDot { at: usize },
+    NumericTld { at: usize },
+    UnclosedQuote { at: usize },
+    TrailingLocal { at: usize },
+    BadEscape { at: usize },
+    QuotedChar { at: usize },
+    BadFold { at: usize },
+    UnclosedComment { at: usize },
+    CommentDepth { at: usize },
+    CommentChar { at: usize },
+    CommentEscape { at: usize },
+    UnexpectedClose { at: usize },
+    CfwsBoundary { at: usize },
+    EmptyNormalizedLocal { at: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalCase {
+    Preserve,
+    Lower,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Policy {
+    pub local_case: LocalCase,
+    pub strip_subaddress: bool,
+    pub unquote_safe: bool,
+    pub allow_single_label: bool,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            local_case: LocalCase::Preserve,
+            strip_subaddress: false,
+            unquote_safe: false,
+            allow_single_label: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DedupResult {
+    pub addresses: Vec<Address>,
+    pub source_indices: Vec<usize>,
+    pub duplicate_of: Vec<Option<usize>>,
+    pub errors: Vec<(usize, EmailError)>,
+}
+
+#[derive(Clone)]
+struct Cleaned {
+    bytes: Vec<u8>,
+    origins: Vec<usize>,
+    runs: Vec<(usize, usize, usize)>,
+}
+
+fn is_hws(b: u8) -> bool {
+    b == b' ' || b == b'\t'
+}
+
+fn is_printable(b: u8) -> bool {
+    (0x20..=0x7e).contains(&b)
+}
+
+fn fold_end(input: &[u8], i: usize) -> Option<usize> {
+    if input.get(i) != Some(&b'\r') || input.get(i + 1) != Some(&b'\n') {
+        return None;
+    }
+    let mut j = i + 2;
+    if !input.get(j).copied().map(is_hws).unwrap_or(false) {
+        return None;
+    }
+    while input.get(j).copied().map(is_hws).unwrap_or(false) {
+        j += 1;
+    }
+    Some(j)
+}
+
+fn cleanup(input: &[u8]) -> Result<Cleaned, EmailError> {
+    let mut out = Cleaned {
+        bytes: Vec::with_capacity(input.len()),
+        origins: Vec::with_capacity(input.len()),
+        runs: Vec::new(),
+    };
+    let mut i = 0;
+    let mut depth = 0usize;
+    let mut opens = [0usize; 3];
+    let mut quote_protected = false;
+    let mut quote_open = 0usize;
+    let mut quote_escaped = false;
+    let mut in_run = false;
+    let mut run_start = 0usize;
+    let mut run_end = 0usize;
+
+    while i < input.len() {
+        let b = input[i];
+
+        if quote_protected {
+            out.bytes.push(b);
+            out.origins.push(i);
+            if quote_escaped {
+                quote_escaped = false;
+            } else if b == b'\\' {
+                quote_escaped = true;
+            } else if b == b'"' {
+                quote_protected = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        let mut consumed = i + 1;
+        let is_cfws_start;
+
+        if depth > 0 {
+            if b == b'\\' {
+                let Some(&next) = input.get(i + 1) else {
+                    return Err(EmailError::CommentEscape { at: i });
+                };
+                if !is_printable(next) {
+                    return Err(EmailError::CommentEscape { at: i });
+                }
+                consumed = i + 2;
+                is_cfws_start = true;
+            } else if b == b'(' {
+                if depth == 3 {
+                    return Err(EmailError::CommentDepth { at: i });
+                }
+                opens[depth] = i;
+                depth += 1;
+                is_cfws_start = true;
+            } else if b == b')' {
+                depth -= 1;
+                is_cfws_start = true;
+            } else if b == b'\r' || b == b'\n' {
+                if let Some(end) = fold_end(input, i) {
+                    consumed = end;
+                    is_cfws_start = true;
+                } else {
+                    return Err(EmailError::BadFold { at: i });
+                }
+            } else if b == b'\t' || is_printable(b) {
+                is_cfws_start = true;
+            } else {
+                return Err(EmailError::CommentChar { at: i });
+            }
+        } else if b == b' ' || b == b'\t' {
+            while consumed < input.len() && is_hws(input[consumed]) {
+                consumed += 1;
+            }
+            is_cfws_start = true;
+        } else if b == b'\r' || b == b'\n' {
+            if let Some(end) = fold_end(input, i) {
+                consumed = end;
+                is_cfws_start = true;
+            } else {
+                return Err(EmailError::BadFold { at: i });
+            }
+        } else if b == b'(' {
+            opens[0] = i;
+            depth = 1;
+            is_cfws_start = true;
+        } else if b == b')' {
+            return Err(EmailError::UnexpectedClose { at: i });
+        } else if b == b'"' && out.bytes.is_empty() {
+            quote_protected = true;
+            quote_open = i;
+            quote_escaped = false;
+            out.bytes.push(b);
+            out.origins.push(i);
+            i += 1;
+            continue;
+        } else {
+            is_cfws_start = false;
+        }
+
+        if depth > 0 || is_cfws_start {
+            if !in_run {
+                in_run = true;
+                run_start = i;
+            }
+            run_end = consumed;
+            i = consumed;
+        } else {
+            if in_run {
+                out.runs.push((run_start, run_end, out.bytes.len()));
+                in_run = false;
+            }
+            out.bytes.push(b);
+            out.origins.push(i);
+            i += 1;
+        }
+    }
+
+    if depth > 0 {
+        return Err(EmailError::UnclosedComment { at: opens[0] });
+    }
+    if in_run {
+        out.runs.push((run_start, run_end, out.bytes.len()));
+    }
+    let _ = quote_open;
+    Ok(out)
+}
+
+fn local_allowed(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b"!#$%&'*+-/=?^_`{|}~".contains(&b)
+}
+
+fn validate_dot_atom(bytes: &[u8], origins: &[usize]) -> Result<(), EmailError> {
+    if bytes.len() > 64 {
+        return Err(EmailError::LocalTooLong {
+            at: origins.get(64).copied().unwrap_or_else(|| origins.last().copied().unwrap_or(0)),
+        });
+    }
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'.' {
+            if i == 0 || i + 1 == bytes.len() || bytes[i - 1] == b'.' {
+                return Err(EmailError::LocalDot { at: origins[i] });
+            }
+        } else if !local_allowed(b) {
+            return Err(EmailError::LocalChar { at: origins[i] });
+        }
+    }
+    Ok(())
+}
+
+fn parse_cleaned(clean: &Cleaned, input_len: usize, allow_single_label: bool) -> Result<(Address, Vec<usize>), EmailError> {
+    let bytes = &clean.bytes;
+    let origins = &clean.origins;
+
+    for &(start, _end, boundary) in &clean.runs {
+        let legal = boundary == 0
+            || boundary == bytes.len()
+            || bytes.get(boundary) == Some(&b'@')
+            || (boundary > 0 && bytes.get(boundary - 1) == Some(&b'@'));
+        if !legal {
+            return Err(EmailError::CfwsBoundary { at: start });
+        }
+    }
+
+    if bytes.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+
+    let mut quote_end = None;
+    if bytes[0] == b'"' {
+        let mut i = 1;
+        while i < bytes.len() {
+            if bytes[i] == b'\\' {
+                i = (i + 2).min(bytes.len());
+            } else if bytes[i] == b'"' {
+                quote_end = Some(i);
+                break;
+            } else {
+                i += 1;
+            }
+        }
+        if quote_end.is_none() {
+            return Err(EmailError::UnclosedQuote { at: origins[0] });
+        }
+    }
+
+    let mut ats = Vec::new();
+    for i in 0..bytes.len() {
+        if bytes[i] == b'@' && !quote_end.map(|q| i <= q).unwrap_or(false) {
+            ats.push(i);
+        }
+    }
+    if ats.is_empty() {
+        return Err(EmailError::MissingAt);
+    }
+    if ats.len() >= 2 {
+        return Err(EmailError::MultipleAt { at: origins[ats[1]] });
+    }
+    let at_idx = ats[0];
+    if at_idx == 0 {
+        return Err(EmailError::EmptyLocal {
+            at: origins.get(at_idx).copied().unwrap_or(input_len),
+        });
+    }
+
+    let local_bytes = &bytes[..at_idx];
+    let local_origins = &origins[..at_idx];
+    let (mut local, mut quoted, local_positions) = if local_bytes[0] == b'"' {
+        let qend = quote_end.unwrap();
+        if qend + 1 != at_idx {
+            return Err(EmailError::TrailingLocal {
+                at: origins.get(qend + 1).copied().unwrap_or(input_len),
+            });
+        }
+        let mut decoded = Vec::new();
+        let mut pos = Vec::new();
+        let mut i = 1;
+        while i < qend {
+            let b = local_bytes[i];
+            if b == b'\\' {
+                if i + 1 >= qend {
+                    return Err(EmailError::BadEscape { at: local_origins[i] });
+                }
+                let next = local_bytes[i + 1];
+                if !matches!(next, b'"' | b'\\' | b'@') {
+                    return Err(EmailError::BadEscape { at: local_origins[i] });
+                }
+                decoded.push(next);
+                pos.push(local_origins[i]);
+                i += 2;
+            } else {
+                if !is_printable(b) {
+                    return Err(EmailError::QuotedChar { at: local_origins[i] });
+                }
+                decoded.push(b);
+                pos.push(local_origins[i]);
+                i += 1;
+            }
+        }
+        if decoded.is_empty() {
+            return Err(EmailError::EmptyLocal {
+                at: origins[qend],
+            });
+        }
+        if decoded.len() > 64 {
+            return Err(EmailError::LocalTooLong { at: pos[64] });
+        }
+        (decoded, true, pos)
+    } else {
+        validate_dot_atom(local_bytes, local_origins)?;
+        (local_bytes.to_vec(), false, local_origins.to_vec())
+    };
+
+    let domain_start_idx = at_idx + 1;
+    let domain_start = origins.get(domain_start_idx).copied().unwrap_or(input_len);
+    if domain_start_idx == bytes.len() {
+        return Err(EmailError::EmptyDomain { at: domain_start });
+    }
+
+    let mut domain_end = bytes.len();
+    let mut removed_dot_pos = None;
+    if bytes[domain_end - 1] == b'.' {
+        removed_dot_pos = Some(origins[domain_end - 1]);
+        domain_end -= 1;
+    }
+    if domain_start_idx == domain_end {
+        return Err(EmailError::EmptyDomain { at: domain_start });
+    }
+    let dom = &bytes[domain_start_idx..domain_end];
+    if dom.len() > 253 {
+        return Err(EmailError::DomainTooLong {
+            at: origins[domain_start_idx + 253],
+        });
+    }
+
+    let mut label_starts = Vec::new();
+    let mut label_ranges = Vec::new();
+    let mut start = 0;
+    for i in 0..=dom.len() {
+        if i == dom.len() || dom[i] == b'.' {
+            label_starts.push(start);
+            label_ranges.push((start, i));
+            start = i + 1;
+        }
+    }
+
+    for (idx, &(s, e)) in label_ranges.iter().enumerate() {
+        if s == e {
+            let pos = if idx + 1 == label_ranges.len() && removed_dot_pos.is_some() {
+                removed_dot_pos.unwrap()
+            } else if s < dom.len() {
+                origins[domain_start_idx + s]
+            } else {
+                input_len
+            };
+            return Err(EmailError::EmptyLabel { at: pos });
+        }
+        if e - s > 63 {
+            return Err(EmailError::LabelTooLong {
+                at: origins[domain_start_idx + s + 63],
+            });
+        }
+        if dom[s] == b'-' {
+            return Err(EmailError::LabelHyphen {
+                at: origins[domain_start_idx + s],
+            });
+        }
+        if dom[e - 1] == b'-' {
+            return Err(EmailError::LabelHyphen {
+                at: origins[domain_start_idx + e - 1],
+            });
+        }
+        for j in s..e {
+            if !dom[j].is_ascii_alphanumeric() && dom[j] != b'-' {
+                return Err(EmailError::DomainChar {
+                    at: origins[domain_start_idx + j],
+                });
+            }
+        }
+    }
+
+    if label_ranges.len() < 2 && !allow_single_label {
+        return Err(EmailError::DomainNeedsDot { at: domain_start });
+    }
+    let (last_s, last_e) = *label_ranges.last().unwrap();
+    if dom[last_s..last_e].iter().all(u8::is_ascii_digit) {
+        return Err(EmailError::NumericTld {
+            at: origins[domain_start_idx + last_s],
+        });
+    }
+
+    let mut domain = String::from_utf8(dom.to_vec()).unwrap();
+    domain.make_ascii_lowercase();
+    let local_string = String::from_utf8(std::mem::take(&mut local)).unwrap();
+    let _ = local_positions;
+    Ok((
+        Address {
+            local: local_string,
+            domain,
+            quoted,
+        },
+        Vec::new(),
+    ))
+}
+
+pub fn parse_email(input: &str) -> Result<Address, EmailError> {
+    normalize_email(input, &Policy::default())
+}
+
+pub fn normalize_email(input: &str, policy: &Policy) -> Result<Address, EmailError> {
+    let raw = input.as_bytes();
+    if raw.is_empty() {
+        return Err(EmailError::EmptyInput);
+    }
+    if let Some(at) = raw.iter().position(|b| *b >= 128) {
+        return Err(EmailError::NonAscii { at });
+    }
+    let cleaned = cleanup(raw)?;
+    let (mut address, _) = parse_cleaned(&cleaned, raw.len(), policy.allow_single_label)?;
+
+    if policy.local_case == LocalCase::Lower {
+        address.local.make_ascii_lowercase();
+    }
+
+    let local_offset_positions;
+    {
+        let mut calculated = Vec::with_capacity(address.local.len());
+        let mut quoted_end = None;
+        if cleaned.bytes.first() == Some(&b'"') {
+            let mut i = 1;
+            while i < cleaned.bytes.len() {
+                if cleaned.bytes[i] == b'\\' {
+                    i = (i + 2).min(cleaned.bytes.len());
+                } else if cleaned.bytes[i] == b'"' {
+                    quoted_end = Some(i);
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        let at_pos = cleaned.bytes.iter().position(|b| *b == b'@' && !quoted_end.map(|q| {
+            let qi = cleaned.bytes.iter().position(|x| *x == b'"').unwrap_or(0);
+            let _ = qi;
+            false
+        }).unwrap_or(false));
+        let _ = at_pos;
+        calculated.resize(address.local.len(), 0);
+        local_offset_positions = calculated;
+    }
+
+    if policy.strip_subaddress {
+        if let Some(plus) = address.local.find('+') {
+            if plus == 0 {
+                let at = local_offset_positions.get(plus).copied().unwrap_or(0);
+                return Err(EmailError::EmptyNormalizedLocal { at });
+            }
+            address.local.truncate(plus);
+        }
+    }
+
+    let valid_atom = validate_dot_atom(
+        address.local.as_bytes(),
+        &(0..address.local.len()).collect::<Vec<_>>(),
+    )
+    .is_ok();
+    if !valid_atom {
+        address.quoted = true;
+    } else if policy.unquote_safe {
+        address.quoted = false;
+    }
+    Ok(address)
+}
+
+pub fn format_email(address: &Address) -> String {
+    let mut out = String::new();
+    if address.quoted {
+        out.push('"');
+        for ch in address.local.chars() {
+            if ch == '"' || ch == '\\' {
+                out.push('\\');
+            }
+            out.push(ch);
+        }
+        out.push('"');
+    } else {
+        out.push_str(&address.local);
+    }
+    out.push('@');
+    out.push_str(&address.domain);
+    out
+}
+
+pub fn deduplicate(inputs: &[&str], policy: &Policy) -> DedupResult {
+    use std::collections::HashMap;
+
+    let mut result = DedupResult {
+        addresses: Vec::new(),
+        source_indices: Vec::new(),
+        duplicate_of: vec![None; inputs.len()],
+        errors: Vec::new(),
+    };
+    let mut keys: HashMap<(String, String), usize> = HashMap::new();
+
+    for (i, input) in inputs.iter().enumerate() {
+        match normalize_email(input, policy) {
+            Err(error) => result.errors.push((i, error)),
+            Ok(address) => {
+                let key = (address.local.clone(), address.domain.clone());
+                if let Some(&first_index) = keys.get(&key) {
+                    result.duplicate_of[i] = Some(first_index);
+                } else {
+                    keys.insert(key, i);
+                    result.addresses.push(address);
+                    result.source_indices.push(i);
+                }
+            }
+        }
+    }
+    result
+}
+```

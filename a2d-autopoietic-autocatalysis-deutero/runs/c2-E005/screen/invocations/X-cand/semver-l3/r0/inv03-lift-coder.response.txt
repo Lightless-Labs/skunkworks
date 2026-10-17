@@ -1,0 +1,979 @@
+```rust
+use std::cmp::Ordering;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Version {
+    pub major: u64,
+    pub minor: u64,
+    pub patch: u64,
+    pub pre: Vec<String>,
+    pub build: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VersionError {
+    Empty,
+    MissingCore { at: usize },
+    LeadingZero { at: usize },
+    Overflow { at: usize },
+    EmptyIdentifier { at: usize },
+    InvalidChar { at: usize },
+}
+
+fn is_digit(b: u8) -> bool {
+    b.is_ascii_digit()
+}
+
+fn parse_u64_field(s: &str, at: usize) -> Result<u64, VersionError> {
+    s.parse::<u64>().map_err(|_| VersionError::Overflow { at })
+}
+
+fn parse_identifiers(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    is_pre: bool,
+) -> Result<Vec<String>, VersionError> {
+    let mut result = Vec::new();
+    let mut pos = start;
+
+    loop {
+        let ident_start = pos;
+        while pos < end && bytes[pos] != b'.' {
+            let b = bytes[pos];
+            if !(b.is_ascii_alphanumeric() || b == b'-') {
+                return Err(VersionError::InvalidChar { at: pos });
+            }
+            pos += 1;
+        }
+
+        if pos == ident_start {
+            return Err(VersionError::EmptyIdentifier { at: ident_start });
+        }
+
+        if is_pre {
+            let id = &bytes[ident_start..pos];
+            if id.iter().all(|b| is_digit(*b))
+                && id.len() > 1
+                && id[0] == b'0'
+            {
+                return Err(VersionError::LeadingZero { at: ident_start });
+            }
+        }
+
+        result.push(
+            std::str::from_utf8(&bytes[ident_start..pos])
+                .expect("validated ASCII")
+                .to_owned(),
+        );
+
+        if pos == end {
+            break;
+        }
+
+        pos += 1;
+        if pos == end {
+            return Err(VersionError::EmptyIdentifier { at: pos });
+        }
+    }
+
+    Ok(result)
+}
+
+pub fn parse_version(s: &str) -> Result<Version, VersionError> {
+    if s.is_empty() {
+        return Err(VersionError::Empty);
+    }
+
+    let bytes = s.as_bytes();
+    let mut pos = 0;
+    let mut fields = [0u64; 3];
+
+    for field_index in 0..3 {
+        let start = pos;
+        while pos < bytes.len() && is_digit(bytes[pos]) {
+            pos += 1;
+        }
+
+        if start == pos {
+            if pos == bytes.len()
+                || matches!(bytes[pos], b'.' | b'-' | b'+')
+            {
+                return Err(VersionError::MissingCore { at: pos });
+            }
+            return Err(VersionError::InvalidChar { at: pos });
+        }
+
+        let digits = &s[start..pos];
+        if digits.len() > 1 && digits.as_bytes()[0] == b'0' {
+            return Err(VersionError::LeadingZero { at: start });
+        }
+        fields[field_index] = parse_u64_field(digits, start)?;
+
+        if field_index < 2 {
+            if pos == bytes.len()
+                || matches!(bytes[pos], b'-' | b'+')
+            {
+                return Err(VersionError::MissingCore { at: pos });
+            }
+            if bytes[pos] != b'.' {
+                return Err(VersionError::InvalidChar { at: pos });
+            }
+            pos += 1;
+        }
+    }
+
+    if pos == bytes.len() {
+        return Ok(Version {
+            major: fields[0],
+            minor: fields[1],
+            patch: fields[2],
+            pre: Vec::new(),
+            build: Vec::new(),
+        });
+    }
+
+    if !matches!(bytes[pos], b'-' | b'+') {
+        return Err(VersionError::InvalidChar { at: pos });
+    }
+
+    let mut pre = Vec::new();
+    let mut build = Vec::new();
+
+    if bytes[pos] == b'-' {
+        let pre_start = pos + 1;
+        let plus = bytes[pre_start..]
+            .iter()
+            .position(|b| *b == b'+')
+            .map(|i| pre_start + i)
+            .unwrap_or(bytes.len());
+        pre = parse_identifiers(bytes, pre_start, plus, true)?;
+        pos = plus;
+    }
+
+    if pos < bytes.len() {
+        if bytes[pos] != b'+' {
+            return Err(VersionError::InvalidChar { at: pos });
+        }
+        build = parse_identifiers(bytes, pos + 1, bytes.len(), false)?;
+    }
+
+    Ok(Version {
+        major: fields[0],
+        minor: fields[1],
+        patch: fields[2],
+        pre,
+        build,
+    })
+}
+
+fn core_cmp(a: &Version, b: &Version) -> Ordering {
+    (a.major, a.minor, a.patch).cmp(&(b.major, b.minor, b.patch))
+}
+
+fn numeric_identifier(s: &str) -> bool {
+    !s.is_empty() && s.as_bytes().iter().all(|b| is_digit(*b))
+}
+
+fn compare_pre_identifier(a: &str, b: &str) -> Ordering {
+    let an = numeric_identifier(a);
+    let bn = numeric_identifier(b);
+    match (an, bn) {
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        (true, true) => a.len().cmp(&b.len()).then_with(|| a.as_bytes().cmp(b.as_bytes())),
+        (false, false) => a.as_bytes().cmp(b.as_bytes()),
+    }
+}
+
+pub fn compare_versions(a: &Version, b: &Version) -> Ordering {
+    match core_cmp(a, b) {
+        Ordering::Equal => {}
+        other => return other,
+    }
+
+    match (a.pre.is_empty(), b.pre.is_empty()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => return Ordering::Greater,
+        (false, true) => return Ordering::Less,
+        (false, false) => {}
+    }
+
+    for (x, y) in a.pre.iter().zip(&b.pre) {
+        match compare_pre_identifier(x, y) {
+            Ordering::Equal => {}
+            other => return other,
+        }
+    }
+    a.pre.len().cmp(&b.pre.len())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RangeError {
+    Empty { at: usize },
+    Syntax { at: usize },
+    Version { at: usize, error: VersionError },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Op {
+    Eq,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+#[derive(Clone, Debug)]
+struct Constraint {
+    op: Op,
+    version: Version,
+    admits: bool,
+}
+
+#[derive(Clone, Debug)]
+struct Arm {
+    constraints: Vec<Constraint>,
+    anchors: Vec<(u64, u64, u64)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Range {
+    arms: Vec<Arm>,
+}
+
+fn version_core(v: &Version) -> (u64, u64, u64) {
+    (v.major, v.minor, v.patch)
+}
+
+fn zero_pre(mut v: Version) -> Version {
+    v.pre = vec!["0".to_owned()];
+    v.build.clear();
+    v
+}
+
+fn core_version(major: u64, minor: u64, patch: u64) -> Version {
+    Version {
+        major,
+        minor,
+        patch,
+        pre: Vec::new(),
+        build: Vec::new(),
+    }
+}
+
+fn parse_full_operand(s: &str, at: usize) -> Result<Version, RangeError> {
+    parse_version(s).map_err(|error| RangeError::Version { at, error })
+}
+
+fn is_wildcard(s: &str) -> bool {
+    matches!(s, "*" | "x" | "X")
+}
+
+#[derive(Clone, Debug)]
+struct Partial {
+    fields: [Option<u64>; 3],
+    k: usize,
+    full: Option<Version>,
+}
+
+fn parse_partial_operand(s: &str, at: usize) -> Result<Partial, RangeError> {
+    if s.contains('-')
+        || s.contains('+')
+        || (s.split('.').count() >= 3
+            && !s.split('.').any(is_wildcard))
+    {
+        let full = parse_full_operand(s, at)?;
+        return Ok(Partial {
+            fields: [Some(full.major), Some(full.minor), Some(full.patch)],
+            k: 3,
+            full: Some(full),
+        });
+    }
+
+    let fields: Vec<&str> = s.split('.').collect();
+    if fields.is_empty() || fields.len() > 3 || fields.iter().any(|f| f.is_empty()) {
+        return Err(RangeError::Syntax { at });
+    }
+
+    let mut parsed = [None; 3];
+    let mut saw_wildcard = false;
+    let mut k = 0;
+
+    for (i, field) in fields.iter().enumerate() {
+        if is_wildcard(field) {
+            saw_wildcard = true;
+            continue;
+        }
+        if saw_wildcard
+            || field.as_bytes().iter().any(|b| !is_digit(*b))
+            || (field.len() > 1 && field.as_bytes()[0] == b'0')
+        {
+            return Err(RangeError::Syntax { at });
+        }
+        let number = match field.parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => return Err(RangeError::Syntax { at }),
+        };
+        parsed[i] = Some(number);
+        k += 1;
+    }
+
+    Ok(Partial {
+        fields: parsed,
+        k,
+        full: None,
+    })
+}
+
+fn padded(p: &Partial) -> Version {
+    core_version(
+        p.fields[0].unwrap_or(0),
+        p.fields[1].unwrap_or(0),
+        p.fields[2].unwrap_or(0),
+    )
+}
+
+fn full_or_padded(p: &Partial) -> Version {
+    p.full.clone().unwrap_or_else(|| padded(p))
+}
+
+fn push_constraint(arm: &mut Arm, op: Op, version: Version, admits: bool) {
+    if admits && !version.pre.is_empty() {
+        arm.anchors.push(version_core(&version));
+    }
+    arm.constraints.push(Constraint {
+        op,
+        version,
+        admits,
+    });
+}
+
+fn increment_upper(
+    p: &Partial,
+    kind: &str,
+    operand_at: usize,
+) -> Result<Version, RangeError> {
+    let (mut major, mut minor, mut patch) = (
+        p.fields[0].unwrap_or(0),
+        p.fields[1].unwrap_or(0),
+        p.fields[2].unwrap_or(0),
+    );
+
+    let bump_major = match kind {
+        "caret" => major > 0 || p.k == 1,
+        "tilde" => p.k == 1,
+        _ => false,
+    };
+
+    if bump_major {
+        major = major.checked_add(1).ok_or(RangeError::Syntax { at: operand_at })?;
+        minor = 0;
+        patch = 0;
+    } else if kind == "caret" && (minor > 0 || p.k == 2) {
+        minor = minor.checked_add(1).ok_or(RangeError::Syntax { at: operand_at })?;
+        patch = 0;
+    } else {
+        patch = patch.checked_add(1).ok_or(RangeError::Syntax { at: operand_at })?;
+    }
+
+    Ok(zero_pre(core_version(major, minor, patch)))
+}
+
+fn standalone_hyphen(tokens: &[(&str, usize)]) -> Option<usize> {
+    tokens.iter().find(|(s, _)| *s == "-").map(|(_, at)| *at)
+}
+
+fn process_hyphen_arm(
+    tokens: &[(&str, usize)],
+    arm: &mut Arm,
+) -> Result<(), RangeError> {
+    let minus_at = standalone_hyphen(tokens).unwrap_or(0);
+    if tokens.len() != 3 || tokens[1].0 != "-" {
+        return Err(RangeError::Syntax { at: minus_at });
+    }
+
+    let (lower_text, lower_at) = tokens[0];
+    let (upper_text, upper_at) = tokens[2];
+
+    let lower = parse_partial_operand(lower_text, lower_at)?;
+    let upper = parse_partial_operand(upper_text, upper_at)?;
+
+    if lower.k == 0 {
+        return Err(RangeError::Syntax { at: lower_at });
+    }
+    if upper.k == 0 {
+        return Err(RangeError::Syntax { at: upper_at });
+    }
+
+    let lower_v = full_or_padded(&lower);
+    push_constraint(arm, Op::Ge, lower_v, true);
+
+    if let Some(full) = upper.full {
+        push_constraint(arm, Op::Le, full, true);
+    } else {
+        let exclusive = if upper.k == 1 {
+            let mut p = upper.clone();
+            p.fields[1] = Some(0);
+            p.fields[2] = Some(0);
+            increment_upper(&p, "tilde", upper_at)?
+        } else {
+            let mut p = upper.clone();
+            p.fields[2] = Some(0);
+            increment_upper(&p, "plain", upper_at)?
+        };
+        push_constraint(arm, Op::Lt, exclusive, false);
+    }
+
+    Ok(())
+}
+
+fn add_token(
+    arm: &mut Arm,
+    token: &str,
+    token_at: usize,
+) -> Result<(), RangeError> {
+    let bytes = token.as_bytes();
+
+    if token.starts_with('^') || token.starts_with('~') {
+        let kind = if bytes[0] == b'^' { "caret" } else { "tilde" };
+        let operand_at = token_at + 1;
+        let operand = &token[1..];
+        let p = parse_partial_operand(operand, operand_at)?;
+        if p.k == 0 {
+            return Err(RangeError::Syntax { at: token_at });
+        }
+        let lower = full_or_padded(&p);
+        let upper = increment_upper(&p, kind, operand_at)?;
+        push_constraint(arm, Op::Ge, lower, true);
+        push_constraint(arm, Op::Lt, upper, false);
+        return Ok(());
+    }
+
+    let first = bytes[0];
+    if matches!(first, b'<' | b'>' | b'=') {
+        let (op, prefix) = if token.starts_with("<=") {
+            (Op::Le, 2)
+        } else if token.starts_with(">=") {
+            (Op::Ge, 2)
+        } else {
+            (
+                match first {
+                    b'<' => Op::Lt,
+                    b'>' => Op::Gt,
+                    _ => Op::Eq,
+                },
+                1,
+            )
+        };
+
+        let operand_at = token_at + prefix;
+        let operand = &token[prefix..];
+        if operand.is_empty() || !operand.as_bytes()[0].is_ascii_digit() {
+            return Err(RangeError::Syntax { at: token_at });
+        }
+        let version = parse_full_operand(operand, operand_at)?;
+        push_constraint(arm, op, version, true);
+        return Ok(());
+    }
+
+    if !(first.is_ascii_digit() || matches!(first, b'*' | b'x' | b'X')) {
+        return Err(RangeError::Syntax { at: token_at });
+    }
+
+    let p = parse_partial_operand(token, token_at)?;
+    if let Some(full) = p.full {
+        push_constraint(arm, Op::Eq, full, true);
+    } else if p.k == 0 {
+        // An all-wildcard bare operand imposes no bound.
+    } else if p.k == 3 {
+        push_constraint(arm, Op::Eq, padded(&p), true);
+    } else {
+        let lower = padded(&p);
+        let upper = increment_upper(&p, "tilde", token_at)?;
+        push_constraint(arm, Op::Ge, lower, false);
+        push_constraint(arm, Op::Lt, upper, false);
+    }
+
+    Ok(())
+}
+
+fn is_range_ws(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\r' | b'\n')
+}
+
+fn tokenize(s: &str) -> Vec<(String, usize)> {
+    let bytes = s.as_bytes();
+    let mut tokens = Vec::new();
+    let mut pos = 0;
+    while pos < bytes.len() {
+        while pos < bytes.len() && is_range_ws(bytes[pos]) {
+            pos += 1;
+        }
+        if pos == bytes.len() {
+            break;
+        }
+        let start = pos;
+        while pos < bytes.len() && !is_range_ws(bytes[pos]) {
+            pos += 1;
+        }
+        tokens.push((s[start..pos].to_owned(), start));
+    }
+    tokens
+}
+
+pub fn parse_range(s: &str) -> Result<Range, RangeError> {
+    let tokens = tokenize(s);
+    if tokens.is_empty() {
+        return Err(RangeError::Empty { at: 0 });
+    }
+
+    let mut arms = Vec::new();
+    let mut current = Vec::new();
+
+    for (token, at) in tokens {
+        if token == "||" {
+            if current.is_empty() {
+                return Err(RangeError::Empty { at });
+            }
+            let mut arm = Arm {
+                constraints: Vec::new(),
+                anchors: Vec::new(),
+            };
+            if let Some(minus) = standalone_hyphen(
+                &current.iter().map(|(t, a)| (t.as_str(), *a)).collect::<Vec<_>>(),
+            ) {
+                let refs: Vec<(&str, usize)> =
+                    current.iter().map(|(t, a)| (t.as_str(), *a)).collect();
+                let _ = minus;
+                process_hyphen_arm(&refs, &mut arm)?;
+            } else {
+                for (t, a) in &current {
+                    add_token(&mut arm, t, *a)?;
+                }
+            }
+            arms.push(arm);
+            current.clear();
+        } else {
+            current.push((token, at));
+        }
+    }
+
+    if current.is_empty() {
+        return Err(RangeError::Empty { at: s.len() });
+    }
+
+    let mut arm = Arm {
+        constraints: Vec::new(),
+        anchors: Vec::new(),
+    };
+    let refs: Vec<(&str, usize)> = current.iter().map(|(t, a)| (t.as_str(), *a)).collect();
+    if standalone_hyphen(&refs).is_some() {
+        process_hyphen_arm(&refs, &mut arm)?;
+    } else {
+        for (t, a) in &current {
+            add_token(&mut arm, t, *a)?;
+        }
+    }
+    arms.push(arm);
+
+    Ok(Range { arms })
+}
+
+fn satisfies_constraint(v: &Version, c: &Constraint) -> bool {
+    let ord = compare_versions(v, &c.version);
+    match c.op {
+        Op::Eq => ord == Ordering::Equal,
+        Op::Lt => ord == Ordering::Less,
+        Op::Le => ord != Ordering::Greater,
+        Op::Gt => ord == Ordering::Greater,
+        Op::Ge => ord != Ordering::Less,
+    }
+}
+
+fn arm_matches(v: &Version, arm: &Arm, include_prerelease: bool) -> bool {
+    if !arm.constraints.iter().all(|c| satisfies_constraint(v, c)) {
+        return false;
+    }
+
+    if include_prerelease || v.pre.is_empty() {
+        return true;
+    }
+
+    let core = version_core(v);
+    arm.anchors.contains(&core)
+}
+
+pub fn matches_with(v: &Version, r: &Range, include_prerelease: bool) -> bool {
+    r.arms
+        .iter()
+        .any(|arm| arm_matches(v, arm, include_prerelease))
+}
+
+pub fn matches(v: &Version, r: &Range) -> bool {
+    matches_with(v, r, false)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CandidateError {
+    pub index: usize,
+    pub error: VersionError,
+}
+
+fn satisfying_extreme(
+    candidates: &[String],
+    r: &Range,
+    want_max: bool,
+) -> Result<Option<String>, CandidateError> {
+    let mut parsed = Vec::with_capacity(candidates.len());
+
+    for (index, candidate) in candidates.iter().enumerate() {
+        let version = parse_version(candidate).map_err(|error| CandidateError { index, error })?;
+        parsed.push(version);
+    }
+
+    let mut best: Option<usize> = None;
+    for (index, version) in parsed.iter().enumerate() {
+        if !matches(version, r) {
+            continue;
+        }
+        match best {
+            None => best = Some(index),
+            Some(old) => {
+                let ord = compare_versions(version, &parsed[old]);
+                if (want_max && ord == Ordering::Greater)
+                    || (!want_max && ord == Ordering::Less)
+                {
+                    best = Some(index);
+                }
+            }
+        }
+    }
+
+    Ok(best.map(|i| candidates[i].clone()))
+}
+
+pub fn max_satisfying(
+    candidates: &[String],
+    r: &Range,
+) -> Result<Option<String>, CandidateError> {
+    satisfying_extreme(candidates, r, true)
+}
+
+pub fn min_satisfying(
+    candidates: &[String],
+    r: &Range,
+) -> Result<Option<String>, CandidateError> {
+    satisfying_extreme(candidates, r, false)
+}
+
+#[derive(Clone, Debug)]
+struct Bounds {
+    lower: Option<(Version, bool)>,
+    upper: Option<(Version, bool)>,
+}
+
+fn arm_bounds(arm: &Arm) -> Bounds {
+    let mut bounds = Bounds {
+        lower: None,
+        upper: None,
+    };
+
+    for c in &arm.constraints {
+        match c.op {
+            Op::Eq => {
+                tighten_lower(&mut bounds.lower, c.version.clone(), true);
+                tighten_upper(&mut bounds.upper, c.version.clone(), true);
+            }
+            Op::Gt => tighten_lower(&mut bounds.lower, c.version.clone(), false),
+            Op::Ge => tighten_lower(&mut bounds.lower, c.version.clone(), true),
+            Op::Lt => tighten_upper(&mut bounds.upper, c.version.clone(), false),
+            Op::Le => tighten_upper(&mut bounds.upper, c.version.clone(), true),
+        }
+    }
+
+    bounds
+}
+
+fn tighten_lower(bound: &mut Option<(Version, bool)>, version: Version, inclusive: bool) {
+    match bound {
+        None => *bound = Some((version, inclusive)),
+        Some((old, old_inclusive)) => match compare_versions(&version, old) {
+            Ordering::Greater => *bound = Some((version, inclusive)),
+            Ordering::Equal if !inclusive && *old_inclusive => {
+                *bound = Some((version, false))
+            }
+            _ => {}
+        },
+    }
+}
+
+fn tighten_upper(bound: &mut Option<(Version, bool)>, version: Version, inclusive: bool) {
+    match bound {
+        None => *bound = Some((version, inclusive)),
+        Some((old, old_inclusive)) => match compare_versions(&version, old) {
+            Ordering::Less => *bound = Some((version, inclusive)),
+            Ordering::Equal if !inclusive && *old_inclusive => {
+                *bound = Some((version, false))
+            }
+            _ => {}
+        },
+    }
+}
+
+fn next_core(core: (u64, u64, u64)) -> Option<(u64, u64, u64)> {
+    let (major, minor, patch) = core;
+    if patch < u64::MAX {
+        Some((major, minor, patch + 1))
+    } else if minor < u64::MAX {
+        Some((major, minor + 1, 0))
+    } else if major < u64::MAX {
+        Some((major + 1, 0, 0))
+    } else {
+        None
+    }
+}
+
+fn successor(v: &Version) -> Option<Version> {
+    if !v.pre.is_empty() {
+        let mut n = v.clone();
+        n.pre.push("0".to_owned());
+        n.build.clear();
+        Some(n)
+    } else {
+        let c = next_core(version_core(v))?;
+        Some(zero_pre(core_version(c.0, c.1, c.2)))
+    }
+}
+
+fn first_in_bounds(bounds: &Bounds) -> Option<Version> {
+    let mut candidate = if let Some((lower, inclusive)) = &bounds.lower {
+        if *inclusive {
+            lower.clone()
+        } else {
+            successor(lower)?
+        }
+    } else {
+        zero_pre(core_version(0, 0, 0))
+    };
+
+    if candidate.pre.is_empty() {
+        candidate.build.clear();
+    }
+
+    if let Some((upper, inclusive)) = &bounds.upper {
+        let cmp = compare_versions(&candidate, upper);
+        if cmp == Ordering::Greater || (cmp == Ordering::Equal && !inclusive) {
+            return None;
+        }
+    }
+    Some(candidate)
+}
+
+fn stable_exists(bounds: &Bounds) -> bool {
+    let mut core = (0, 0, 0);
+
+    if let Some((lower, inclusive)) = &bounds.lower {
+        let c = version_core(lower);
+        match compare_versions(lower, &core_version(c.0, c.1, c.2)) {
+            Ordering::Less | Ordering::Equal if *inclusive => core = c,
+            Ordering::Less | Ordering::Equal => {
+                core = next_core(c).unwrap_or((u64::MAX, u64::MAX, u64::MAX));
+                if core == c {
+                    return false;
+                }
+            }
+            Ordering::Greater => {
+                core = match next_core(c) {
+                    Some(n) => n,
+                    None => return false,
+                }
+            }
+        }
+    }
+
+    let candidate = core_version(core.0, core.1, core.2);
+    if let Some((upper, inclusive)) = &bounds.upper {
+        match compare_versions(&candidate, upper) {
+            Ordering::Greater => return false,
+            Ordering::Equal if !inclusive => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
+fn prerelease_at_core_exists(bounds: &Bounds, core: (u64, u64, u64)) -> bool {
+    let least = zero_pre(core_version(core.0, core.1, core.2));
+
+    let mut candidate = least.clone();
+    if let Some((lower, inclusive)) = &bounds.lower {
+        match compare_versions(&least, lower) {
+            Ordering::Less => {
+                if version_core(lower) != core || lower.pre.is_empty() {
+                    return false;
+                }
+                if *inclusive {
+                    candidate = lower.clone();
+                } else {
+                    candidate = match successor(lower) {
+                        Some(v) => v,
+                        None => return false,
+                    };
+                }
+            }
+            Ordering::Equal if !inclusive => {
+                candidate = match successor(lower) {
+                    Some(v) => v,
+                    None => return false,
+                };
+            }
+            _ => {}
+        }
+    }
+
+    if version_core(&candidate) != core || candidate.pre.is_empty() {
+        return false;
+    }
+
+    if let Some((upper, inclusive)) = &bounds.upper {
+        match compare_versions(&candidate, upper) {
+            Ordering::Greater => return false,
+            Ordering::Equal if !inclusive => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
+fn arm_has_default_witness(arm: &Arm) -> bool {
+    let bounds = arm_bounds(arm);
+    if stable_exists(&bounds) {
+        return true;
+    }
+
+    let mut anchors = arm.anchors.clone();
+    anchors.sort_unstable();
+    anchors.dedup();
+    anchors
+        .into_iter()
+        .any(|core| prerelease_at_core_exists(&bounds, core))
+}
+
+fn combine_bounds(a: &Bounds, b: &Bounds) -> Bounds {
+    let mut result = Bounds {
+        lower: a.lower.clone(),
+        upper: a.upper.clone(),
+    };
+    if let Some((v, i)) = &b.lower {
+        tighten_lower(&mut result.lower, v.clone(), *i);
+    }
+    if let Some((v, i)) = &b.upper {
+        tighten_upper(&mut result.upper, v.clone(), *i);
+    }
+    result
+}
+
+fn arm_intersects(a: &Arm, b: &Arm, include_prerelease: bool) -> bool {
+    let bounds = combine_bounds(&arm_bounds(a), &arm_bounds(b));
+    if stable_exists(&bounds) {
+        return true;
+    }
+    if include_prerelease {
+        return first_in_bounds(&bounds).is_some();
+    }
+
+    let mut anchors = a.anchors.clone();
+    anchors.extend_from_slice(&b.anchors);
+    anchors.sort_unstable();
+    anchors.dedup();
+
+    anchors.into_iter().any(|core| {
+        a.anchors.contains(&core)
+            && b.anchors.contains(&core)
+            && prerelease_at_core_exists(&bounds, core)
+    })
+}
+
+pub fn intersects(a: &Range, b: &Range, include_prerelease: bool) -> bool {
+    a.arms.iter().any(|x| {
+        b.arms
+            .iter()
+            .any(|y| arm_intersects(x, y, include_prerelease))
+    })
+}
+
+fn display_version(v: &Version) -> String {
+    let mut result = format!("{}.{}.{}", v.major, v.minor, v.patch);
+    if !v.pre.is_empty() {
+        result.push('-');
+        result.push_str(&v.pre.join("."));
+    }
+    result
+}
+
+fn bound_display(bound: &Option<(Version, bool)>, lower: bool) -> String {
+    match bound {
+        None => "*".to_owned(),
+        Some((v, inclusive)) => {
+            let op = match (lower, inclusive) {
+                (true, true) => ">=",
+                (true, false) => ">",
+                (false, true) => "<=",
+                (false, false) => "<",
+            };
+            format!("{}{}", op, display_version(v))
+        }
+    }
+}
+
+fn canonical_arm(arm: &Arm) -> String {
+    let bounds = arm_bounds(arm);
+    let lower = bounds.lower.as_ref().map(|(v, i)| {
+        let mut v = v.clone();
+        v.build.clear();
+        (v, *i)
+    });
+    let upper = bounds.upper.as_ref().map(|(v, i)| {
+        let mut v = v.clone();
+        v.build.clear();
+        (v, *i)
+    });
+
+    let mut anchors = arm.anchors.clone();
+    anchors.sort_unstable();
+    anchors.dedup();
+    let anchors = if anchors.is_empty() {
+        "-".to_owned()
+    } else {
+        anchors
+            .iter()
+            .map(|(a, b, c)| format!("{}.{}.{}", a, b, c))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+
+    format!(
+        "[{};{};pre={}]",
+        bound_display(&lower, true),
+        bound_display(&upper, false),
+        anchors
+    )
+}
+
+pub fn canonical(r: &Range) -> String {
+    let mut arms: Vec<String> = r
+        .arms
+        .iter()
+        .filter(|arm| arm_has_default_witness(arm))
+        .map(canonical_arm)
+        .collect();
+    arms.sort();
+    arms.dedup();
+    if arms.is_empty() {
+        "EMPTY".to_owned()
+    } else {
+        arms.join(" || ")
+    }
+}
+```

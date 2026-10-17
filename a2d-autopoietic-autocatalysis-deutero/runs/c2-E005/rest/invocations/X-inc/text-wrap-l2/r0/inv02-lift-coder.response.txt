@@ -1,0 +1,192 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WrapError {
+    WidthZero,
+    WidthTooLarge { width: usize },
+    FirstIndentTooWide { indent: usize },
+    RestIndentTooWide { indent: usize },
+    InvalidControl { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapOptions {
+    pub width: usize,
+    pub first_indent: usize,
+    pub rest_indent: usize,
+}
+
+pub fn wrap(input: &str, options: &WrapOptions) -> Result<Vec<String>, WrapError> {
+    if options.width == 0 {
+        return Err(WrapError::WidthZero);
+    }
+    if options.width > 256 {
+        return Err(WrapError::WidthTooLarge {
+            width: options.width,
+        });
+    }
+    if options.first_indent >= options.width {
+        return Err(WrapError::FirstIndentTooWide {
+            indent: options.first_indent,
+        });
+    }
+    if options.rest_indent >= options.width {
+        return Err(WrapError::RestIndentTooWide {
+            indent: options.rest_indent,
+        });
+    }
+
+    for (index, ch) in input.char_indices() {
+        if ch.is_control() && ch != '\t' && ch != '\r' && ch != '\n' {
+            return Err(WrapError::InvalidControl { index });
+        }
+    }
+
+    let normalized: String = {
+        let mut result = String::with_capacity(input.len());
+        let mut chars = input.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\r' {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                result.push('\n');
+            } else {
+                result.push(ch);
+            }
+        }
+        result
+    };
+
+    let chars: Vec<char> = normalized.chars().collect();
+    let mut output = Vec::new();
+    let mut segment_start = 0;
+    let mut i = 0;
+
+    while i < chars.len() {
+        if chars[i] == '\n' {
+            let run_start = i;
+            while i < chars.len() && chars[i] == '\n' {
+                i += 1;
+            }
+            if i - run_start >= 2 {
+                wrap_segment(&chars[segment_start..run_start], options, &mut output);
+                for _ in 1..(i - run_start) {
+                    output.push(String::new());
+                }
+                segment_start = i;
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    wrap_segment(&chars[segment_start..], options, &mut output);
+    Ok(output)
+}
+
+fn is_separator(ch: char) -> bool {
+    ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\u{00a0}'
+}
+
+fn wrap_segment(segment: &[char], options: &WrapOptions, output: &mut Vec<String>) {
+    let mut words: Vec<Vec<char>> = Vec::new();
+    let mut word = Vec::new();
+
+    for &ch in segment {
+        if is_separator(ch) {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+        } else {
+            word.push(ch);
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+
+    if words.is_empty() {
+        return;
+    }
+
+    let mut first_line = true;
+    let mut indent = options.first_indent;
+    let mut content = String::new();
+    let mut content_len = 0usize;
+
+    let emit_line = |output: &mut Vec<String>,
+                     content: &mut String,
+                     content_len: &mut usize,
+                     indent: usize| {
+        let mut line = " ".repeat(indent);
+        line.push_str(content);
+        output.push(line);
+        content.clear();
+        *content_len = 0;
+    };
+
+    for mut suffix in words {
+        loop {
+            let capacity = options.width - indent;
+
+            if suffix.len() <= capacity {
+                if content_len == 0 {
+                    content.extend(suffix.iter());
+                    content_len += suffix.len();
+                    break;
+                }
+
+                let needed = content_len + 1 + suffix.len();
+                if needed <= capacity {
+                    content.push(' ');
+                    content.extend(suffix.iter());
+                    content_len = needed;
+                    break;
+                }
+
+                emit_line(output, &mut content, &mut content_len, indent);
+                first_line = false;
+                indent = options.rest_indent;
+                continue;
+            }
+
+            if content_len == 0 {
+                content.extend(suffix.iter().take(capacity));
+                content_len = capacity;
+                emit_line(output, &mut content, &mut content_len, indent);
+                first_line = false;
+                indent = options.rest_indent;
+                suffix.drain(..capacity);
+                if suffix.is_empty() {
+                    break;
+                }
+                continue;
+            }
+
+            let available = capacity - content_len - 1;
+            if available >= 2 {
+                content.push(' ');
+                content.extend(suffix.iter().take(available));
+                content_len += 1 + available;
+                emit_line(output, &mut content, &mut content_len, indent);
+                first_line = false;
+                indent = options.rest_indent;
+                suffix.drain(..available);
+            } else {
+                emit_line(output, &mut content, &mut content_len, indent);
+                first_line = false;
+                indent = options.rest_indent;
+            }
+        }
+    }
+
+    if content_len > 0 {
+        let line_indent = if first_line {
+            options.first_indent
+        } else {
+            options.rest_indent
+        };
+        emit_line(output, &mut content, &mut content_len, line_indent);
+    }
+}
+```

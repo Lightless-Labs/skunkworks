@@ -1,0 +1,220 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    UnexpectedClose { pos: usize },
+    Unclosed { pos: usize },
+    NestedOpen { pos: usize },
+    EmptyExpression { pos: usize },
+    UnsupportedOperator { pos: usize },
+    EmptyVariable { pos: usize },
+    InvalidName { pos: usize },
+    DuplicateVariable { pos: usize },
+}
+
+#[derive(Debug)]
+struct Variable {
+    name: String,
+    start: usize,
+}
+
+#[derive(Debug)]
+struct Expression {
+    start: usize,
+    end: usize,
+    operator: Option<char>,
+    variables: Vec<Variable>,
+}
+
+pub fn expand(template: &str, vars: &[(&str, &str)]) -> Result<String, Error> {
+    let bytes = template.as_bytes();
+    let mut expressions = Vec::new();
+    let mut pos = 0;
+
+    while pos < bytes.len() {
+        match bytes[pos] {
+            b'}' => return Err(Error::UnexpectedClose { pos }),
+            b'{' => {
+                let opening = pos;
+                let Some(relative_close) = bytes[pos + 1..].iter().position(|&b| b == b'}') else {
+                    return Err(Error::Unclosed { pos: opening });
+                };
+                let closing = pos + 1 + relative_close;
+
+                if let Some(relative_open) = bytes[pos + 1..closing]
+                    .iter()
+                    .position(|&b| b == b'{')
+                {
+                    return Err(Error::NestedOpen {
+                        pos: pos + 1 + relative_open,
+                    });
+                }
+
+                let (operator, content_start) = if pos + 1 < closing {
+                    match bytes[pos + 1] {
+                        b'+' | b'#' | b'.' | b'/' | b';' | b'?' | b'&' => {
+                            (Some(bytes[pos + 1] as char), pos + 2)
+                        }
+                        _ => (None, pos + 1),
+                    }
+                } else {
+                    (None, pos + 1)
+                };
+
+                if let Some(op @ ('.' | '/' | ';' | '?' | '&')) = operator {
+                    let _ = op;
+                    return Err(Error::UnsupportedOperator { pos: pos + 1 });
+                }
+
+                if content_start == closing {
+                    return Err(Error::EmptyExpression { pos: closing });
+                }
+
+                let mut variables = Vec::new();
+                let mut spec_start = content_start;
+                let mut seen: Vec<String> = Vec::new();
+
+                loop {
+                    let spec_end = bytes[spec_start..closing]
+                        .iter()
+                        .position(|&b| b == b',')
+                        .map_or(closing, |offset| spec_start + offset);
+
+                    if spec_start == spec_end {
+                        return Err(Error::EmptyVariable { pos: spec_start });
+                    }
+
+                    let name_bytes = &bytes[spec_start..spec_end];
+                    for (offset, &byte) in name_bytes.iter().enumerate() {
+                        let valid = if offset == 0 {
+                            byte.is_ascii_alphabetic() || byte == b'_'
+                        } else {
+                            byte.is_ascii_alphanumeric() || byte == b'_'
+                        };
+                        if !valid {
+                            return Err(Error::InvalidName {
+                                pos: spec_start + offset,
+                            });
+                        }
+                    }
+
+                    let name = template[spec_start..spec_end].to_owned();
+                    if seen.iter().any(|existing| existing == &name) {
+                        return Err(Error::DuplicateVariable { pos: spec_start });
+                    }
+                    seen.push(name.clone());
+                    variables.push(Variable {
+                        name,
+                        start: spec_start,
+                    });
+
+                    if spec_end == closing {
+                        break;
+                    }
+                    spec_start = spec_end + 1;
+                }
+
+                expressions.push(Expression {
+                    start: opening,
+                    end: closing,
+                    operator,
+                    variables,
+                });
+                pos = closing + 1;
+            }
+            _ => pos += 1,
+        }
+    }
+
+    let mut output = String::new();
+    let mut literal_start = 0;
+
+    for expression in expressions {
+        output.push_str(&template[literal_start..expression.start]);
+
+        let mut fields = Vec::new();
+        for variable in expression.variables {
+            let _ = variable.start;
+            if let Some(value) = vars
+                .iter()
+                .rev()
+                .find(|(name, _)| *name == variable.name)
+                .map(|(_, value)| *value)
+            {
+                fields.push(encode(value, matches!(expression.operator, Some('+' | '#'))));
+            }
+        }
+
+        if !fields.is_empty() {
+            if expression.operator == Some('#') {
+                output.push('#');
+            }
+            output.push_str(&fields.join(","));
+        }
+
+        literal_start = expression.end + 1;
+    }
+
+    output.push_str(&template[literal_start..]);
+    Ok(output)
+}
+
+fn encode(value: &str, allow_reserved: bool) -> String {
+    let bytes = value.as_bytes();
+    let mut encoded = String::new();
+    let mut pos = 0;
+
+    while pos < bytes.len() {
+        let byte = bytes[pos];
+
+        if byte == b'%' {
+            if pos + 2 < bytes.len()
+                && is_hex(bytes[pos + 1])
+                && is_hex(bytes[pos + 2])
+            {
+                encoded.push('%');
+                encoded.push((bytes[pos + 1] as char).to_ascii_uppercase());
+                encoded.push((bytes[pos + 2] as char).to_ascii_uppercase());
+                pos += 3;
+                continue;
+            }
+            encoded.push_str("%25");
+            pos += 1;
+            continue;
+        }
+
+        if is_unreserved(byte) || (allow_reserved && is_reserved(byte)) {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(hex_digit(byte >> 4));
+            encoded.push(hex_digit(byte & 0x0f));
+        }
+        pos += 1;
+    }
+
+    encoded
+}
+
+fn is_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+}
+
+fn is_reserved(byte: u8) -> bool {
+    matches!(
+        byte,
+        b':' | b'/' | b'?' | b'#' | b'[' | b']' | b'@' | b'!' | b'$' | b'&' | b'\''
+            | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
+    )
+}
+
+fn is_hex(byte: u8) -> bool {
+    byte.is_ascii_hexdigit()
+}
+
+fn hex_digit(nibble: u8) -> char {
+    match nibble {
+        0..=9 => (b'0' + nibble) as char,
+        _ => (b'A' + nibble - 10) as char,
+    }
+}
+```
