@@ -1390,4 +1390,4 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **Both arms proposed the same idea:** a Sol review of the picked file, then a Luna fix. That is the idea of E007, which is pending in the search. The protocol's blinded idea-category labels will show same-idea rounds.
   - The proposals already know E002's design from the incumbent source, so convergence on "review then repair" is expected from both arms.
 - **First smoke** (`runs/c2-pc-smoke`, before the fix): both proposals voided, which is the C2-WEB finding. It is kept as evidence.
-- **Spend:** about 120 Luna and 8 Sol across both smokes. Luna today: 2,8xx of 3k.
+- **Spend:** about 120 Luna and 8 Sol across both smokes. Luna today: 2,775 of 3k (UTC).

@@ -53,7 +53,7 @@
      - Per-angle: no per-sample cost, small decorrelation, +5 tasks from generation.
      - The in-run E002 arm drew low (116 vs 123 and 117 on 10-16), so expect a close confirmation. See the LOG.
    - **E007 (Sol-directed repair): screen passed,** 65/68 vs 62/68 (+4.4 pp). Its rest stage was cap-deferred and resumes on 10-18. Its first prompts were read and are as designed.
-   - **Phase-B tooling:** a live smoke (`runs/c2-pc-smoke`) found and fixed the voided-proposal bug (C2-WEB). Re-smoke in a fresh dir before the real round 1.
+   - **Phase-B tooling:** live-smoked end to end (`runs/c2-pc-smoke2`, after the C2-WEB fix): valid proposals, the round runs and scores. The driver is `$SCRATCH/phaseb_smoke.py <root> <family> <dir>`. The real `runs/c2-pc` is not created yet: the first `propose` freezes the incumbent.
 3. **Proposer comparison (phase B)** triggers at ≥ 3 keeps or 11k Luna left. The protocol is frozen (plan addendum 2026-10-16) and the tooling is ready (`docs/experiments/analysis/c2_phaseb.py`).
 - **C2-ISO2 (merged 32e72a53):** the oracle's compile and test run now execute under sandbox-exec.
   - Both steps: no network and no file access under `$HOME` or the temp roots.
