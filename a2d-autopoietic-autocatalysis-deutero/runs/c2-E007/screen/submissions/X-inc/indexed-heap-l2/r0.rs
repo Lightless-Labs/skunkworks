@@ -1,0 +1,244 @@
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub key: String,
+    pub priority: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    EmptyKey,
+    InvalidKey { at: usize },
+    Duplicate { key: String },
+    Missing { key: String },
+    WrongDirection { current: i64, requested: i64 },
+}
+
+#[derive(Debug)]
+pub struct IndexedHeap {
+    items: Vec<Entry>,
+    indices: HashMap<String, usize>,
+    next_age: u128,
+}
+
+#[derive(Debug)]
+struct Entry {
+    item: Item,
+    age: u128,
+}
+
+impl IndexedHeap {
+    pub fn new() -> Self {
+        Self {
+            items: Vec::new(),
+            indices: HashMap::new(),
+            next_age: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn push(&mut self, key: &str, priority: i64, value: &str) -> Result<(), Error> {
+        let key = canonicalize_key(key)?;
+        if self.indices.contains_key(&key) {
+            return Err(Error::Duplicate { key });
+        }
+
+        let age = self.next_age;
+        self.next_age = self.next_age.wrapping_add(1);
+        let index = self.items.len();
+        self.items.push(Entry {
+            item: Item {
+                key: key.clone(),
+                priority,
+                value: value.to_owned(),
+            },
+            age,
+        });
+        self.indices.insert(key, index);
+        self.sift_up(index);
+        Ok(())
+    }
+
+    pub fn peek(&self) -> Option<Item> {
+        self.items.first().map(|entry| entry.item.clone())
+    }
+
+    pub fn pop(&mut self) -> Option<Item> {
+        if self.items.is_empty() {
+            None
+        } else {
+            Some(self.remove_at(0).item)
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Item>, Error> {
+        let key = canonicalize_key(key)?;
+        Ok(self.indices.get(&key).map(|&index| self.items[index].item.clone()))
+    }
+
+    pub fn decrease_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        self.update_priority(key, priority, true)
+    }
+
+    pub fn increase_key(&mut self, key: &str, priority: i64) -> Result<i64, Error> {
+        self.update_priority(key, priority, false)
+    }
+
+    pub fn replace_value(&mut self, key: &str, value: &str) -> Result<String, Error> {
+        let key = canonicalize_key(key)?;
+        let Some(&index) = self.indices.get(&key) else {
+            return Err(Error::Missing { key });
+        };
+
+        let previous = std::mem::replace(&mut self.items[index].item.value, value.to_owned());
+        self.repair(index);
+        Ok(previous)
+    }
+
+    pub fn remove(&mut self, key: &str) -> Result<Item, Error> {
+        let key = canonicalize_key(key)?;
+        let Some(&index) = self.indices.get(&key) else {
+            return Err(Error::Missing { key });
+        };
+        Ok(self.remove_at(index).item)
+    }
+
+    fn update_priority(
+        &mut self,
+        key: &str,
+        requested: i64,
+        decrease: bool,
+    ) -> Result<i64, Error> {
+        let key = canonicalize_key(key)?;
+        let Some(&index) = self.indices.get(&key) else {
+            return Err(Error::Missing { key });
+        };
+
+        let current = self.items[index].item.priority;
+        if (decrease && requested >= current) || (!decrease && requested <= current) {
+            return Err(Error::WrongDirection { current, requested });
+        }
+
+        self.items[index].item.priority = requested;
+        self.repair(index);
+        Ok(current)
+    }
+
+    fn precedes(&self, a: usize, b: usize) -> bool {
+        let a = &self.items[a];
+        let b = &self.items[b];
+        (
+            a.item.priority,
+            a.item.value.len(),
+            a.age,
+        ) < (
+            b.item.priority,
+            b.item.value.len(),
+            b.age,
+        )
+    }
+
+    fn swap_slots(&mut self, a: usize, b: usize) {
+        self.items.swap(a, b);
+        self.indices.insert(self.items[a].item.key.clone(), a);
+        self.indices.insert(self.items[b].item.key.clone(), b);
+    }
+
+    fn sift_up(&mut self, mut index: usize) {
+        while index > 0 {
+            let parent = (index - 1) / 2;
+            if !self.precedes(index, parent) {
+                break;
+            }
+            self.swap_slots(index, parent);
+            index = parent;
+        }
+    }
+
+    fn sift_down(&mut self, mut index: usize) {
+        let len = self.items.len();
+        loop {
+            let left = index * 2 + 1;
+            if left >= len {
+                break;
+            }
+            let right = left + 1;
+            let best = if right < len && self.precedes(right, left) {
+                right
+            } else {
+                left
+            };
+            if !self.precedes(best, index) {
+                break;
+            }
+            self.swap_slots(index, best);
+            index = best;
+        }
+    }
+
+    fn repair(&mut self, index: usize) {
+        if index > 0 && self.precedes(index, (index - 1) / 2) {
+            self.sift_up(index);
+        } else {
+            self.sift_down(index);
+        }
+    }
+
+    fn remove_at(&mut self, index: usize) -> Entry {
+        let removed = self.items.swap_remove(index);
+        self.indices.remove(&removed.item.key);
+
+        if index < self.items.len() {
+            self.indices.insert(self.items[index].item.key.clone(), index);
+            self.repair(index);
+        }
+
+        removed
+    }
+}
+
+impl Default for IndexedHeap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn canonicalize_key(input: &str) -> Result<String, Error> {
+    let bytes = input.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && bytes[start] == b' ' {
+        start += 1;
+    }
+    while end > start && bytes[end - 1] == b' ' {
+        end -= 1;
+    }
+
+    if start == end {
+        return Err(Error::EmptyKey);
+    }
+
+    let key_bytes = &bytes[start..end];
+    for (offset, &byte) in key_bytes.iter().enumerate() {
+        let valid = if offset == 0 {
+            byte.is_ascii_alphabetic()
+        } else {
+            byte.is_ascii_alphabetic() || byte.is_ascii_digit() || byte == b'-'
+        };
+        if !valid {
+            return Err(Error::InvalidKey { at: start + offset });
+        }
+    }
+
+    Ok(String::from_utf8(key_bytes.iter().map(u8::to_ascii_lowercase).collect()).unwrap())
+}

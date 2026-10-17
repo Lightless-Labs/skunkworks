@@ -1,0 +1,207 @@
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Point {
+    pub x: i64,
+    pub y: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Clockwise,
+    Degenerate,
+    CounterClockwise,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Measures {
+    pub signed_area2: i128,
+    pub area2: u128,
+    pub orientation: Orientation,
+    pub edge_milli: Vec<u64>,
+    pub perimeter_milli: u64,
+    pub longest_edge: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeomError {
+    TooManyVertices { len: usize },
+    OutOfRange { index: usize },
+    TooFewVertices { len: usize },
+    TooManyQueries { len: usize },
+    QueryOutOfRange { index: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Location {
+    Outside,
+    Inside,
+    Boundary { edge: usize },
+}
+
+const COORD_LIMIT: i64 = 1_000_000_000;
+const MAX_VERTICES: usize = 4096;
+
+fn in_range(p: Point) -> bool {
+    (-COORD_LIMIT..=COORD_LIMIT).contains(&p.x)
+        && (-COORD_LIMIT..=COORD_LIMIT).contains(&p.y)
+}
+
+fn prepare(points: &[Point]) -> Result<&[Point], GeomError> {
+    if points.len() > MAX_VERTICES {
+        return Err(GeomError::TooManyVertices { len: points.len() });
+    }
+    for (index, &point) in points.iter().enumerate() {
+        if !in_range(point) {
+            return Err(GeomError::OutOfRange { index });
+        }
+    }
+
+    let effective_len = points.len()
+        - usize::from(points.len() >= 2 && points[0] == points[points.len() - 1]);
+    if effective_len < 3 {
+        return Err(GeomError::TooFewVertices { len: effective_len });
+    }
+    Ok(&points[..effective_len])
+}
+
+fn cross(a: Point, b: Point, q: Point) -> i128 {
+    let abx = b.x as i128 - a.x as i128;
+    let aby = b.y as i128 - a.y as i128;
+    let aqx = q.x as i128 - a.x as i128;
+    let aqy = q.y as i128 - a.y as i128;
+    abx * aqy - aby * aqx
+}
+
+fn squared_distance(a: Point, b: Point) -> u128 {
+    let dx = (b.x as i128 - a.x as i128) as u128;
+    let dy = (b.y as i128 - a.y as i128) as u128;
+    dx * dx + dy * dy
+}
+
+fn rounded_edge_milli(d2: u128) -> u64 {
+    // sqrt(d2 * 1_000_000) == 1000 * sqrt(d2).
+    // Find the nearest integer using an exact midpoint comparison.
+    let target = d2 * 1_000_000;
+    let mut lo = 0u128;
+    let mut hi = 2_828_427_125u128;
+    while lo < hi {
+        let mid = lo + (hi - lo + 1) / 2;
+        if mid * mid <= target {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let floor = lo;
+    let midpoint_cmp = target * 4 - (floor * 2 + 1) * (floor * 2 + 1);
+    let rounded = if midpoint_cmp >= 0 { floor + 1 } else { floor };
+    rounded as u64
+}
+
+pub fn measure(points: &[Point]) -> Result<Measures, GeomError> {
+    let polygon = prepare(points)?;
+    let n = polygon.len();
+
+    let mut signed_area2 = 0i128;
+    let mut edge_milli = Vec::with_capacity(n);
+    let mut perimeter_milli = 0u64;
+
+    for i in 0..n {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % n];
+        signed_area2 += a.x as i128 * b.y as i128 - a.y as i128 * b.x as i128;
+
+        let length = rounded_edge_milli(squared_distance(a, b));
+        edge_milli.push(length);
+        perimeter_milli += length;
+    }
+
+    let longest_edge = (0..n).max_by(|&i, &j| {
+        edge_milli[i]
+            .cmp(&edge_milli[j])
+            .then_with(|| {
+                let pair_i = {
+                    let a = polygon[i];
+                    let b = polygon[(i + 1) % n];
+                    if a <= b { (a, b) } else { (b, a) }
+                };
+                let pair_j = {
+                    let a = polygon[j];
+                    let b = polygon[(j + 1) % n];
+                    if a <= b { (a, b) } else { (b, a) }
+                };
+                pair_j.cmp(&pair_i)
+            })
+            .then_with(|| j.cmp(&i))
+    });
+
+    let orientation = match signed_area2.cmp(&0) {
+        std::cmp::Ordering::Less => Orientation::Clockwise,
+        std::cmp::Ordering::Equal => Orientation::Degenerate,
+        std::cmp::Ordering::Greater => Orientation::CounterClockwise,
+    };
+
+    Ok(Measures {
+        signed_area2,
+        area2: signed_area2.unsigned_abs(),
+        orientation,
+        edge_milli,
+        perimeter_milli,
+        longest_edge,
+    })
+}
+
+fn on_segment(a: Point, b: Point, q: Point) -> bool {
+    cross(a, b, q) == 0
+        && q.x >= a.x.min(b.x)
+        && q.x <= a.x.max(b.x)
+        && q.y >= a.y.min(b.y)
+        && q.y <= a.y.max(b.y)
+}
+
+pub fn classify(points: &[Point], queries: &[Point]) -> Result<Vec<Location>, GeomError> {
+    let polygon = prepare(points)?;
+
+    if queries.len() > MAX_VERTICES {
+        return Err(GeomError::TooManyQueries { len: queries.len() });
+    }
+    for (index, &query) in queries.iter().enumerate() {
+        if !in_range(query) {
+            return Err(GeomError::QueryOutOfRange { index });
+        }
+    }
+
+    let n = polygon.len();
+    let mut results = Vec::with_capacity(queries.len());
+
+    for &query in queries {
+        let mut boundary = None;
+        let mut inside = false;
+
+        for i in 0..n {
+            let a = polygon[i];
+            let b = polygon[(i + 1) % n];
+
+            if on_segment(a, b, query) {
+                boundary = Some(i);
+                break;
+            }
+
+            if (a.y > query.y) != (b.y > query.y) {
+                let determinant = cross(a, b, query);
+                if (b.y > a.y && determinant > 0) || (b.y < a.y && determinant < 0) {
+                    inside = !inside;
+                }
+            }
+        }
+
+        results.push(match boundary {
+            Some(edge) => Location::Boundary { edge },
+            None if inside => Location::Inside,
+            None => Location::Outside,
+        });
+    }
+
+    Ok(results)
+}
+```

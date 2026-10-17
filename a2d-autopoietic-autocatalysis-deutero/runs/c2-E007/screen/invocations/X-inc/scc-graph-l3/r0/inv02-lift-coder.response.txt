@@ -1,0 +1,313 @@
+```rust
+pub const MAX_VERTICES: usize = 4096;
+pub const MAX_EDGES: usize = 32768;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    TooManyVertices { count: usize, limit: usize },
+    TooManyEdges { limit: usize },
+    BadEndpoint { edge: usize, side: u8, vertex: usize },
+    BadQuery { side: u8, vertex: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arc {
+    pub from: usize,
+    pub to: usize,
+    pub multiplicity: usize,
+    pub first_edge: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Relation {
+    Cycle,
+    Trivial,
+    Forward,
+    Backward,
+    Separate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Query {
+    pub kind: Relation,
+    pub route: Vec<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Graph {
+    pub components: Vec<Vec<usize>>,
+    pub component_of: Vec<usize>,
+    pub cyclic: Vec<bool>,
+    pub internal_edges: Vec<usize>,
+    pub arcs: Vec<Arc>,
+    pub topo: Vec<usize>,
+    pub depth: Vec<usize>,
+}
+
+pub fn analyze(n: usize, edges: &[(usize, usize)]) -> Result<Graph, GraphError> {
+    if n > MAX_VERTICES {
+        return Err(GraphError::TooManyVertices {
+            count: n,
+            limit: MAX_VERTICES,
+        });
+    }
+    if edges.len() > MAX_EDGES {
+        return Err(GraphError::TooManyEdges { limit: MAX_EDGES });
+    }
+    for (i, &(from, to)) in edges.iter().enumerate() {
+        if from >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 0,
+                vertex: from,
+            });
+        }
+        if to >= n {
+            return Err(GraphError::BadEndpoint {
+                edge: i,
+                side: 1,
+                vertex: to,
+            });
+        }
+    }
+
+    let mut adj = vec![Vec::new(); n];
+    let mut rev = vec![Vec::new(); n];
+    for &(u, v) in edges {
+        adj[u].push(v);
+        rev[v].push(u);
+    }
+
+    // Iterative Kosaraju avoids recursion limits on long paths.
+    let mut seen = vec![false; n];
+    let mut order = Vec::with_capacity(n);
+    for start in 0..n {
+        if seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        let mut stack = vec![(start, 0usize)];
+        while let Some((v, next)) = stack.last_mut() {
+            if *next < adj[*v].len() {
+                let w = adj[*v][*next];
+                *next += 1;
+                if !seen[w] {
+                    seen[w] = true;
+                    stack.push((w, 0));
+                }
+            } else {
+                let (v, _) = stack.pop().unwrap();
+                order.push(v);
+            }
+        }
+    }
+
+    let mut raw_components = Vec::<Vec<usize>>::new();
+    let mut assigned = vec![false; n];
+    for &start in order.iter().rev() {
+        if assigned[start] {
+            continue;
+        }
+        assigned[start] = true;
+        let mut members = Vec::new();
+        let mut stack = vec![start];
+        while let Some(v) = stack.pop() {
+            members.push(v);
+            for &w in &rev[v] {
+                if !assigned[w] {
+                    assigned[w] = true;
+                    stack.push(w);
+                }
+            }
+        }
+        members.sort_unstable();
+        raw_components.push(members);
+    }
+
+    raw_components.sort_by(|a, b| {
+        b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0]))
+    });
+
+    let components = raw_components;
+    let mut component_of = vec![0usize; n];
+    for (cid, members) in components.iter().enumerate() {
+        for &v in members {
+            component_of[v] = cid;
+        }
+    }
+
+    let count = components.len();
+    let mut cyclic = vec![false; count];
+    for (cid, members) in components.iter().enumerate() {
+        cyclic[cid] = members.len() > 1;
+    }
+
+    let mut internal_edges = vec![0usize; count];
+    let mut arc_map = std::collections::BTreeMap::<(usize, usize), (usize, usize)>::new();
+    for (i, &(u, v)) in edges.iter().enumerate() {
+        let a = component_of[u];
+        let b = component_of[v];
+        if a == b {
+            internal_edges[a] += 1;
+            if u == v {
+                cyclic[a] = true;
+            }
+        } else {
+            let entry = arc_map.entry((a, b)).or_insert((0, i));
+            entry.0 += 1;
+            entry.1 = entry.1.min(i);
+        }
+    }
+
+    let mut arcs: Vec<Arc> = arc_map
+        .into_iter()
+        .map(|((from, to), (multiplicity, first_edge))| Arc {
+            from,
+            to,
+            multiplicity,
+            first_edge,
+        })
+        .collect();
+    arcs.sort_by(|a, b| a.from.cmp(&b.from).then_with(|| b.to.cmp(&a.to)));
+
+    let mut outgoing = vec![Vec::<usize>::new(); count];
+    let mut indegree = vec![0usize; count];
+    for arc in &arcs {
+        outgoing[arc.from].push(arc.to);
+        indegree[arc.to] += 1;
+    }
+
+    // Priority queue ordering: internal edge count descending, smallest member
+    // descending, then component ID ascending for a deterministic final tie.
+    let mut ready = std::collections::BinaryHeap::<(usize, usize, std::cmp::Reverse<usize>)>::new();
+    for cid in 0..count {
+        if indegree[cid] == 0 {
+            ready.push((
+                internal_edges[cid],
+                components[cid][0],
+                std::cmp::Reverse(cid),
+            ));
+        }
+    }
+
+    let mut topo = Vec::with_capacity(count);
+    let mut depth = vec![0usize; count];
+    while let Some((_, _, std::cmp::Reverse(cid))) = ready.pop() {
+        topo.push(cid);
+        for &to in &outgoing[cid] {
+            depth[to] = depth[to].max(depth[cid] + 1);
+            indegree[to] -= 1;
+            if indegree[to] == 0 {
+                ready.push((
+                    internal_edges[to],
+                    components[to][0],
+                    std::cmp::Reverse(to),
+                ));
+            }
+        }
+    }
+
+    Ok(Graph {
+        components,
+        component_of,
+        cyclic,
+        internal_edges,
+        arcs,
+        topo,
+        depth,
+    })
+}
+
+impl Graph {
+    pub fn query(&self, from: usize, to: usize) -> Result<Query, GraphError> {
+        let n = self.component_of.len();
+        if from >= n {
+            return Err(GraphError::BadQuery {
+                side: 0,
+                vertex: from,
+            });
+        }
+        if to >= n {
+            return Err(GraphError::BadQuery {
+                side: 1,
+                vertex: to,
+            });
+        }
+
+        let a = self.component_of[from];
+        let b = self.component_of[to];
+        if a == b {
+            if self.cyclic[a] {
+                return Ok(Query {
+                    kind: Relation::Cycle,
+                    route: vec![a, a],
+                });
+            }
+            return Ok(Query {
+                kind: Relation::Trivial,
+                route: vec![a],
+            });
+        }
+
+        let count = self.components.len();
+        let mut outgoing = vec![Vec::<usize>::new(); count];
+        for arc in &self.arcs {
+            outgoing[arc.from].push(arc.to);
+        }
+        for list in &mut outgoing {
+            list.sort_unstable();
+        }
+
+        fn shortest(
+            start: usize,
+            goal: usize,
+            outgoing: &[Vec<usize>],
+        ) -> Option<Vec<usize>> {
+            let mut parent = vec![usize::MAX; outgoing.len()];
+            let mut queue = std::collections::VecDeque::new();
+            parent[start] = start;
+            queue.push_back(start);
+            while let Some(v) = queue.pop_front() {
+                if v == goal {
+                    break;
+                }
+                for &w in &outgoing[v] {
+                    if parent[w] == usize::MAX {
+                        parent[w] = v;
+                        queue.push_back(w);
+                    }
+                }
+            }
+            if parent[goal] == usize::MAX {
+                return None;
+            }
+            let mut route = vec![goal];
+            let mut v = goal;
+            while v != start {
+                v = parent[v];
+                route.push(v);
+            }
+            route.reverse();
+            Some(route)
+        }
+
+        if let Some(route) = shortest(a, b, &outgoing) {
+            return Ok(Query {
+                kind: Relation::Forward,
+                route,
+            });
+        }
+        if let Some(mut route) = shortest(b, a, &outgoing) {
+            route.reverse();
+            return Ok(Query {
+                kind: Relation::Backward,
+                route,
+            });
+        }
+        Ok(Query {
+            kind: Relation::Separate,
+            route: Vec::new(),
+        })
+    }
+}
+```
