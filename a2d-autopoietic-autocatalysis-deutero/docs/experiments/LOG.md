@@ -1176,7 +1176,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Audit, no exploitation found:**
   - No harness file under `nano/` or `runs/c2-*` contains `include_str`, `include!`, `std::fs`, `/Users`, `a2d-holdout` or `hidden_tests`.
   - No cycle-2 submission was flagged suspicious.
-  - The model-response scan is below.
+  - None of the 3,484 model responses under `runs/c2-*` contains `include_str!`, `include_bytes!`, `std::fs::`, `fs::read`, `File::open`, `/Users/`, `a2d-holdout` or `hidden_tests`.
 - **Fix:** branch `c2-oracle-iso`, merged only after look 1's gate, because `crates/` is frozen by its registration.
   - The compiler and the test binary each run under `sandbox-exec` with: no network; no file access under `$HOME`, `$TMPDIR` or `/private/tmp`; the toolchain sysroot and the binary readable; their own build or run dir read/write.
   - `rustc` is the toolchain's own binary, resolved once through the rustup proxy from an empty directory: the same toolchain as before.
