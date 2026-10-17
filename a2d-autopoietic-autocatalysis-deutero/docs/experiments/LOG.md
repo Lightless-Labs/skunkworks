@@ -1294,6 +1294,9 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - two deferred replicates with D, B and X:frozen, then `manifest`, then `score --expect-head`, then `pool` with the claim;
   - pooled n = 2 per comparison (no replicate collision), claim rule all-supported, class INCONCLUSIVE (1 family);
   - `worst_case_void_lifts` equals the pooled lifts when there are no voids.
+- **Re-registration (same day, before any confirmation call).** The first registration commit, b8a274aa, failed its own binding check: `git show <sha>:<path>` resolves paths from the git top level (`skunkworks/`), not from the A²D root, so the runner refused it.
+  - The fix (`<sha>:./<path>`) is inside the bound runner section, so the registration moves to the next commit. Its sha is recorded in HANDOFF and in the queue line.
+  - The runner was verified against it with a cap-deferred call (no attempt record, no model call).
 - **Schedule:**
   - replicate 1 at 00:05 UTC 2026-10-18;
   - replicate 2 at 00:05 UTC 2026-10-19;

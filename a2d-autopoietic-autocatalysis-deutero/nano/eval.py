@@ -565,10 +565,10 @@ def confirm_registration(registered_at):
     if git("merge-base", "--is-ancestor", registered_at, "HEAD")[0]:
         sys.exit(f"{registered_at} is not a commit on HEAD's history")
     for rel in ("runs/c2-confirm2/registration.json", "runs/c2-confirm2/frozen.py"):
-        code, then = git("show", f"{registered_at}:{rel}")
+        code, then = git("show", f"{registered_at}:./{rel}")  # ./: relative to ROOT, not the git top level
         if code or then != (ROOT / rel).read_text():
             sys.exit(f"{rel} differs from the registration commit {registered_at}")
-    code, then = git("show", f"{registered_at}:nano/eval.py")
+    code, then = git("show", f"{registered_at}:./nano/eval.py")
     if code or confirm_section(then) != confirm_section((NANO / "eval.py").read_text()):
         sys.exit("the confirmation runner differs from the registration commit")
     reg = json.loads((CONFIRM2_DIR / "registration.json").read_text())
