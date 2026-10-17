@@ -36,7 +36,8 @@ class ConfirmBest(unittest.TestCase):
         self.register("E5")
         self.register("E7")
         out = self.plan(["E5", "E6", "E7"], [row("E5", "full", "provisional keep", "+0.0500")])
-        self.assertEqual(out, "echo 'confirm-best: waiting for E6 E7'")
+        self.assertEqual(out, confirm_best.say("waiting for E6 E7"))
+        self.assertEqual(out, """echo '{"decision": "confirm-best: waiting for E6 E7"}'""")
 
     def test_picks_the_largest_full_stage_delta_then_the_smaller_se(self):
         for e in ("E5", "E6", "E7", "E8"):
@@ -59,7 +60,7 @@ class ConfirmBest(unittest.TestCase):
                 row("E7", "confirm", "discard (confirm)", "+0.0100")]
         self.assertIn("--id E5 ", self.plan(["E5", "E7"], rows))
         rows.append(row("E5", "confirm", "keep", "+0.0400"))
-        self.assertEqual(self.plan(["E5", "E7"], rows), "echo 'confirm-best: E5 was already promoted'")
+        self.assertEqual(self.plan(["E5", "E7"], rows), confirm_best.say("E5 was already promoted"))
 
     def test_refuses_an_experiment_registered_against_another_incumbent(self):
         self.register("E5", incumbent="old")
@@ -69,7 +70,7 @@ class ConfirmBest(unittest.TestCase):
     def test_nothing_left(self):
         self.register("E5")
         self.assertEqual(self.plan(["E5"], [row("E5", "full", "discard (full)")]),
-                         "echo 'confirm-best: no provisional keep left'")
+                         confirm_best.say("no provisional keep left"))
 
 
 if __name__ == "__main__":

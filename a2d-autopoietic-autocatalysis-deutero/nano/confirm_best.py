@@ -24,6 +24,11 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def say(msg):
+    # The queue runner only passes through lines carrying a "decision" key.
+    return "echo " + shlex.quote(json.dumps({"decision": "confirm-best: " + msg}))
+
+
 def plan(batch, results_text, incumbent_sha, runs):
     rows = [dict(zip(results_text.splitlines()[0].split("\t"), line.split("\t")))
             for line in results_text.splitlines()[1:] if line.strip()]
@@ -32,12 +37,12 @@ def plan(batch, results_text, incumbent_sha, runs):
         manifest = runs / f"c2-{exp}" / "manifest.json"
         mine = [r for r in rows if r["id"] == exp]
         if any(r["stage"] == "confirm" and r["decision"] == "keep" for r in mine):
-            return f"echo {shlex.quote(f'confirm-best: {exp} was already promoted')}"
+            return say(f"{exp} was already promoted")
         if not manifest.exists() or not mine:
             pending.append(exp)
             continue
         if json.loads(manifest.read_text())["incumbent_sha"] != incumbent_sha:
-            return f"echo {shlex.quote(f'confirm-best: {exp} was registered against another incumbent')}"
+            return say(f"{exp} was registered against another incumbent")
         if any(r["stage"] == "confirm" or r["decision"].startswith("discard") for r in mine):
             continue
         full = [r for r in mine if r["stage"] == "full" and r["decision"] == "provisional keep"]
@@ -47,9 +52,9 @@ def plan(batch, results_text, incumbent_sha, runs):
         else:
             pending.append(exp)
     if pending:
-        return f"echo {shlex.quote('confirm-best: waiting for ' + ' '.join(pending))}"
+        return say("waiting for " + " ".join(pending))
     if not provisional:
-        return "echo 'confirm-best: no provisional keep left'"
+        return say("no provisional keep left")
     _, _, exp, proposer = min(provisional)
     d = runs / f"c2-{exp}"
     hyp = (d / "hypothesis.txt").read_text().strip()
