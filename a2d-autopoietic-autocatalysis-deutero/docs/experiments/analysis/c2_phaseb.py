@@ -427,6 +427,7 @@ def call_model(prompt):
                "--ephemeral", "--ignore-user-config", "--ignore-rules", "--json", "-o", str(reply_path)]
         for feature in proposer.DISABLED:
             cmd += ["--disable", feature]
+        cmd += proposer.NO_WEB
         try:
             result = subprocess.run(cmd, cwd=empty, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3600)
         except subprocess.TimeoutExpired as error:
@@ -660,7 +661,7 @@ def run_round(base, suite, externals, lanes, seed, jobs, lift, cap):
         out = base / name
         if (out / "summary.json").exists():
             summary = read_json(out / "summary.json")
-            if not summary.get("aborted", False) and summary.get("integrity_ok", True):
+            if not summary.get("aborted", False) and summary.get("integrity_ok", True) and not ev.web_search_events(out):
                 return out
         if any(failure["attempt"] == attempt for failure in status["failures"]):
             continue
@@ -676,7 +677,7 @@ def run_round(base, suite, externals, lanes, seed, jobs, lift, cap):
             try:
                 lift(f"C2-PC-{base.name[5:]}", suite, list(ARMS), externals, lanes, out, seed + attempt, jobs)
                 summary = read_json(out / "summary.json")
-                if not summary.get("aborted", False) and summary.get("integrity_ok", True):
+                if not summary.get("aborted", False) and summary.get("integrity_ok", True) and not ev.web_search_events(out):
                     return out
                 reason = "aborted or integrity-invalid run"
             except (Exception, SystemExit) as error:

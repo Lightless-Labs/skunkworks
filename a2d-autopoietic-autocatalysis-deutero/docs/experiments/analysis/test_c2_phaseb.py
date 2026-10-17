@@ -203,6 +203,10 @@ class AuditAndProposalTests(Fixtures):
             self.assertEqual(list(pathlib.Path(kwargs["cwd"]).iterdir()), [])
             for feature in pc.proposer.DISABLED:
                 self.assertTrue(any(cmd[i:i + 2] == ["--disable", feature] for i in range(len(cmd) - 1)))
+            # codex-cli 0.162 ignores the deprecated feature flag (web search is on by
+            # default) and emits an `error` item that voids every call; the config key works.
+            self.assertTrue(any(cmd[i:i + 2] == ["-c", 'web_search="disabled"'] for i in range(len(cmd) - 1)))
+            self.assertNotIn("web_search_request", cmd)
             pathlib.Path(cmd[cmd.index("-o") + 1]).write_text(REPLY)
             return types.SimpleNamespace(returncode=0, stdout=EVENTS, stderr="")
 
@@ -292,6 +296,30 @@ class StatsAndRoundTests(Fixtures):
         self.assertEqual(calls, [(sources, 23), (sources, 24)])
         self.assertEqual(pc.run_round(base, self.suite, sources, {}, 23, 6, runner, lambda *args: True), result)
         self.assertEqual(len(calls), 2)
+
+    def test_a_web_search_in_any_transcript_makes_the_run_integrity_invalid(self):
+        # The frozen provider's tool count sees only `exec`; codex-cli 0.162 can web-search.
+        base = pc.round_dir(1)
+        base.mkdir(parents=True)
+        pc.write_json(base / "manifest.json", {"frozen": True})
+        sources = {"inc": self.root / "nano/harness.py"}
+        seeds = []
+
+        def runner(exp, suite, arms, externals, lanes, out, seed, jobs):
+            seeds.append(seed)
+            tuple_dir = out / "invocations/X-inf/t/r0"
+            tuple_dir.mkdir(parents=True)
+            line = "web search: rust semver\n" if len(seeds) == 1 else "exec\n"
+            (tuple_dir / "inv00-lift-coder.transcript.txt").write_text("codex\n" + line)
+            pc.write_json(out / "summary.json", {"complete": True, "integrity_ok": True})
+
+        result = pc.run_round(base, self.suite, sources, {}, 23, 6, runner, lambda *args: True)
+        self.assertEqual(result.name, "run-retry")
+        self.assertEqual(seeds, [23, 24])
+        self.assertEqual(pc.read_json(base / "run-attempts.json")["failures"][0]["reason"],
+                         "aborted or integrity-invalid run")
+        self.assertEqual(pc.run_round(base, self.suite, sources, {}, 23, 6, runner, lambda *args: True), result)
+        self.assertEqual(len(seeds), 2)
 
     def test_lane_conflicts_preserve_efforts_and_default_lane(self):
         # The synthetic harness only emits protocol lines; no model is called.

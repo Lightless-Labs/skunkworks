@@ -15,8 +15,11 @@ import argparse, json, pathlib, re, subprocess, sys, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 NANO = ROOT / "nano"
-DISABLED = ["shell_tool", "unified_exec", "js_repl", "web_search_request", "standalone_web_search",
+DISABLED = ["shell_tool", "unified_exec", "js_repl", "standalone_web_search",
             "browser_use", "computer_use", "apps"]
+# codex-cli 0.162 turns web search on by default and ignores the deprecated
+# `--disable web_search_request` (it only emits an `error` item); this key works.
+NO_WEB = ["-c", 'web_search="disabled"']
 
 PROTOCOL = """\
 ## The harness protocol (controller side is fixed)
@@ -123,6 +126,7 @@ def main():
                "--ignore-user-config", "--ignore-rules", "-o", str(pathlib.Path(empty) / "reply.md")]
         for f in DISABLED:
             cmd += ["--disable", f]
+        cmd += NO_WEB
         r = subprocess.run(cmd, cwd=empty, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3600)
         (out_dir / "codex.log").write_text(r.stdout[-20000:] + "\n--- stderr ---\n" + r.stderr[-20000:])
         reply_path = pathlib.Path(empty) / "reply.md"
