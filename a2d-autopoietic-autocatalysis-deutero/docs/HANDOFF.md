@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-17 04:45 UTC (session 145: E005 provisional keep (+5.0 pp, confirmation deferred); **look 1 PASSED; confirmation-2 registered** at `78727f29`. E002, 4 Luna samples plus a Sol judge, is frozen as `runs/c2-confirm2/frozen.py`. Replicate 1 runs at 00:05 UTC 10-18 and replicate 2 at 00:05 UTC 10-19; then manifests, scoring and pooling. The oracle is now OS-sandboxed (C2-ISO2), with parity 420/420.)
+**Last updated:** 2026-10-17 05:55 UTC (session 145: C2-WEB: web search was open but unused, and confirmation-2 now has a count-only web audit; E007 screen passed; E005 provisional keep (+5.0 pp, confirmation deferred); **look 1 PASSED; confirmation-2 registered** at `78727f29`. E002, 4 Luna samples plus a Sol judge, is frozen as `runs/c2-confirm2/frozen.py`. Replicate 1 runs at 00:05 UTC 10-18 and replicate 2 at 00:05 UTC 10-19; then manifests, scoring and pooling. The oracle is now OS-sandboxed (C2-ISO2), with parity 420/420.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -35,10 +35,12 @@
    - **After both replicates have generated:**
      1. `python3 -I nano/eval.py confirm-manifest`;
      2. commit and push `runs/c2-confirm2/manifest-r*.json`;
-     3. `python3 -I nano/eval.py confirm-score` (jobs 6). It writes `pooled-summary.json` and `decision.json`. Only the pooled claim decides.
+     3. `python3 -I nano/eval.py confirm-score` (jobs 6). It writes `pooled-summary.json` and `decision.json`. Only the pooled claim decides, **subject to C2-WEB:**
+     4. `runs/c2-confirm2/web-audit-r{1,2}.json` (queued after each confirm line; counts only) must show 0 web-search events. Any search means the outcome is IntegrityReview. This amendment was registered in the LOG before any call. Commit both audit files with the manifests.
    - **Freeze window, through `decision.json`:** do not touch `crates/`, `Cargo.toml`, `Cargo.lock` or the `CONFIRM2…main()` section of `nano/eval.py`. The controller and the runner both refuse to run if they change.
      - Rebuilding the binary from the same source is fine: the binary sha is logged, not enforced, because debug builds are not byte-reproducible.
-     - The harness-supplied-tests op idea waits until this window closes.
+     - The harness-supplied-tests op idea waits until this window closes. So does the **provider web-search fix (C2-WEB):** add `-c web_search="disabled"` and count `web search:` lines in `codex_tool_calls`, with a test.
+     - codex-cli 0.162 ignores `--disable web_search_request`, so web search is ON in every `a2d lift` call until then. There were 0 uses in about 15k recorded transcripts. `eval.py` stops a dev experiment on any search, and phase B invalidates the round.
    - **If a replicate's generation fails or aborts:** the runner refuses to rerun it by design. The registered policy allows one relaunch with the same seed:
      1. move `~/.a2d-holdout/runs/c2-confirm2-r<n>` (and its `.log`) to `…-failed1`;
      2. move `runs/c2-confirm2/attempt-r<n>.json` to `attempt-r<n>-failed1.json`;
@@ -50,7 +52,8 @@
    - **E005 (diverse angles): provisional keep at full, +5.0 pp (SE 2.8), 123 vs 116/140.** Its confirmation waits for the sequencing rule: once E006–E010 have reached full, the largest Δ is confirmed first.
      - Per-angle: no per-sample cost, small decorrelation, +5 tasks from generation.
      - The in-run E002 arm drew low (116 vs 123 and 117 on 10-16), so expect a close confirmation. See the LOG.
-   - E007 (Sol-directed repair) has been running since 04:11 UTC 10-17. Its first prompts were read and are as designed.
+   - **E007 (Sol-directed repair): screen passed,** 65/68 vs 62/68 (+4.4 pp). Its rest stage was cap-deferred and resumes on 10-18. Its first prompts were read and are as designed.
+   - **Phase-B tooling:** a live smoke (`runs/c2-pc-smoke`) found and fixed the voided-proposal bug (C2-WEB). Re-smoke in a fresh dir before the real round 1.
 3. **Proposer comparison (phase B)** triggers at ≥ 3 keeps or 11k Luna left. The protocol is frozen (plan addendum 2026-10-16) and the tooling is ready (`docs/experiments/analysis/c2_phaseb.py`).
 - **C2-ISO2 (merged 32e72a53):** the oracle's compile and test run now execute under sandbox-exec.
   - Both steps: no network and no file access under `$HOME` or the temp roots.
