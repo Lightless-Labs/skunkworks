@@ -1182,6 +1182,36 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - `rustc` is the toolchain's own binary, resolved once through the rustup proxy from an empty directory: the same toolchain as before.
   - The oracle fails closed without `sandbox-exec`.
   - New test: a file planted in the temp root and this crate's manifest are unreadable at compile time (`include_str!` fails, and the needle never appears in the output) and at run time (`read_to_string` errs).
+- **Development findings** (branch commits 37e9f43f, 65aa4974, 88a5b458):
+  - **xcrun cache.** The first sandboxed compile hit the 120 s compile timeout. Every compile took 5–10 s because the linker's `xcrun` shim could not create its cache (`$TMPDIR/xcrun_db-*`, "Operation not permitted").
+    - Fix: allow exactly `xcrun_db` and `xcrun_db-<random>`, at compile time only. Compiles then take about 0.2 s, the same as unsandboxed.
+    - No candidate code executes at compile time.
+  - **Live probes on this machine.** All of these are denied:
+    - the direct path;
+    - the `/System/Volumes/Data` firmlink twin;
+    - `..` paths;
+    - symlinks;
+    - sandboxed `ln`, `cp` and `mv` of a denied file (EPERM).
+    - `launchctl submit` from inside the profile was refused. The same submit without the profile ran unsandboxed and read the file.
+- **Reviews:** Codex Sol (no tools, inline) and a fresh Claude Opus agent (copies only).
+  - **Fixed:**
+    - **Brokers.** `(allow default)` leaves IPC open, so an unsandboxed broker could act for the code.
+      - The run step now denies `process-fork`, `process-exec*` (except its binary), `mach-lookup` and `appleevent-send`.
+      - The same rules now apply to the C2-ISO harness profile, which still allows the interpreter's own re-exec. Live-checked: Python harnesses still run, and `os.system` fails.
+    - **Environment.** The children now start from a cleared environment: PATH, HOME, LANG, TMPDIR, DEVELOPER_DIR and SDKROOT. `env!` and `std::env` no longer see the controller's variables.
+    - **Temp dirs.** The run step's `TMPDIR` is its own dir. Both profiles also deny `/private/var/folders` and `/private/var/tmp`.
+    - **Small fixes.** stdin is closed; the binary is a `literal` rule; only a successful rustc lookup is cached.
+  - **New tests:**
+    - planted file and manifest, plus their data-volume twins, unreadable at compile time and run time;
+    - runtime `hard_link` fails;
+    - `env!` fails to compile and `std::env` is empty;
+    - a process spawn fails;
+    - private `temp_dir()` works;
+    - the harness test spawns `/bin/echo` and requires the spawn to fail.
+  - **Noted, not changed:**
+    - `compile_tests_against_library` and `evaluate_rust_code` stay unsandboxed. No harness operation reaches them: they serve task validation and the old challenge runner, and `public_test` uses only `run_isolated_tests`.
+    - The hidden-scoring nonce is deterministic, but hidden-scoring output never reaches a harness.
+    - The compile step keeps process and IPC rights, because rustc has to spawn the linker and no candidate code runs there.
 - **Pre-registered parity check (zero Luna):**
   - Re-score the 420 submissions of `runs/c2-aa-200daaa763c4/run` with the new binary, via `a2d lift score` on a copy of the ledger cut at `generation_complete`.
   - Compare `compiled`, `passed`, `failed`, `expected`, `timed_out` and `all_passed` against the recorded scores.
