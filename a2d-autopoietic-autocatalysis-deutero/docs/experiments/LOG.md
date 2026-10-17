@@ -1416,3 +1416,16 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - transactional promotion: `log_result` and the copy are adjacent;
   - an atomic cross-process budget: one sequential writer;
   - auto-relaunch of a failed confirmation replicate: the registered policy is a by-hand relaunch after moving dirs. Instead, watchers wake the session on milestones and failures.
+
+### Queue runner stopped by the Claude Code memory reaper; restart queue moved to `~/.a2d-queue`  [cycle 2, 2026-10-17 15:23 UTC; before any confirmation call]
+- **What happened:** at 15:23 UTC, with the machine low on memory, Claude Code stopped the session's idle background shells: the queue runner, its `caffeinate` and the milestone watcher.
+  - The runner was sleeping in line 5's wait for 00:05 UTC 10-18. Lines 1–4 had finished (look 1, the oracle wait, E005 full, E007 screen).
+  - **Nothing was half-run:** no `attempt-r1.json` and no replicate-1 directory exist, so confirmation-2 is untouched.
+- **The hazard:** the same stop during replicate generation would leave an attempt record. The registered policy allows one relaunch, and a second failure makes confirmation-2 "not run" with the set spent.
+  - So the runner must no longer live as a Claude Code background shell.
+- **Restart, prepared but not started** (Claude Code's note says a stopped job restarts only when the owner asks). Everything lives under `~/.a2d-queue/`; the session scratchpad is under `/private/tmp`, which macOS may clean.
+  - `start.sh` launches `queue-runner.sh` with `nohup caffeinate -i`, detached and disowned, and refuses to start a second copy (`runner.pid`).
+  - `queue-2026-10-18.txt` holds the old lines 5–37, all through `qrun.sh`. Line 5 was unwrapped before; it is now wrapped.
+  - **Date-robust confirmation lines:** `L05-confirm-r1` and `L09-confirm-r2` keep their ≥ 10-18 and ≥ 10-19 lower bounds. On any "deferred" answer (the cap, or replicate 2 on replicate 1's UTC day) they retry at the next 00:05 UTC, at most 5 days. Before, a late restart would have walked past a deferred replicate 2 and never run it.
+  - Stub-tested: both exit paths propagate their rc, and the deferral path retries 5 times then exits 1. Syntax-checked; no scratchpad paths remain.
+- **No registered setting changes:** same commands, seeds, `--registered-at` and arms; only the scheduling wrapper changed. A one-day slip costs nothing against the budget or the 2026-11-30 deadline.
