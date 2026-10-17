@@ -43,7 +43,9 @@ def plan(batch, results_text, incumbent_sha, runs):
             continue
         if json.loads(manifest.read_text())["incumbent_sha"] != incumbent_sha:
             return say(f"{exp} was registered against another incumbent")
-        if any(r["stage"] == "confirm" or r["decision"].startswith("discard") for r in mine):
+        # Final without a keep: a discard at any stage, a used confirmation, or an
+        # integrity review (eval.py stops an experiment on an uncounted tool call).
+        if any(r["stage"] == "confirm" or r["decision"].startswith(("discard", "integrity review")) for r in mine):
             continue
         full = [r for r in mine if r["stage"] == "full" and r["decision"] == "provisional keep"]
         if full:

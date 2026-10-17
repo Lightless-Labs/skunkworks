@@ -67,6 +67,13 @@ class ConfirmBest(unittest.TestCase):
         out = self.plan(["E5"], [row("E5", "full", "provisional keep", "+0.0500")])
         self.assertIn("registered against another incumbent", out)
 
+    def test_an_integrity_review_is_a_final_decision_not_pending(self):
+        for e in ("E5", "E9"):
+            self.register(e)
+        rows = [row("E5", "full", "provisional keep", "+0.0500"),
+                row("E9", "screen", "integrity review (1 web-search events)", "+0.0300")]
+        self.assertIn("--id E5 ", self.plan(["E5", "E9"], rows))
+
     def test_nothing_left(self):
         self.register("E5")
         self.assertEqual(self.plan(["E5"], [row("E5", "full", "discard (full)")]),
