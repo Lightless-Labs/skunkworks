@@ -20,6 +20,7 @@
   - Fresh confirmation replicate: Δ > thr/2, then promote.
   - `nano/aa.json` is E002's A/A, taken from its own two full replicates: thr_allpass 0.0357, thr_frac 0.0174.
 - **Results log:** `nano/results.tsv` (every experiment and stage, including discards). Narrative and pre-registrations: `docs/experiments/LOG.md`, Cycle 2.
+- **Report draft:** `docs/reports/cycle2-nanoharness-report.md`. The settled sections are written; fill in the **[pending]** ones at close.
 
 ## In flight / next
 1. **Confirmation-2 (C2-CONFIRM2):** registered at `78727f29e53743dc5d989c62e1de23ab1a81e6c6`. The spec is `runs/c2-confirm2/registration.json`; the LOG entry holds the review dispositions and the power exception.
@@ -41,6 +42,7 @@
      - Rebuilding the binary from the same source is fine: the binary sha is logged, not enforced, because debug builds are not byte-reproducible.
      - The harness-supplied-tests op idea waits until this window closes. So does the **provider web-search fix (C2-WEB):** add `-c web_search="disabled"` and count `web search:` lines in `codex_tool_calls`, with a test.
      - codex-cli 0.162 ignores `--disable web_search_request`, so web search is ON in every `a2d lift` call until then. There were 0 uses in about 15k recorded transcripts. `eval.py` stops a dev experiment on any search, and phase B invalidates the round.
+     - **The fix is ready** on branch `c2-web-provider` (4b80fe67, pushed): provider tests 20/20, a2d-lift 66/66, and a live 1-task smoke with no deprecation notice and a pass. Merge it to main right after `decision.json`, rebuild, and log it.
    - **If a replicate's generation fails or aborts:** the runner refuses to rerun it by design. The registered policy allows one relaunch with the same seed:
      1. move `~/.a2d-holdout/runs/c2-confirm2-r<n>` (and its `.log`) to `…-failed1`;
      2. move `runs/c2-confirm2/attempt-r<n>.json` to `attempt-r<n>-failed1.json`;

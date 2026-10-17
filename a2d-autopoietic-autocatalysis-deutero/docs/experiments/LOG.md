@@ -1391,3 +1391,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - The proposals already know E002's design from the incumbent source, so convergence on "review then repair" is expected from both arms.
 - **First smoke** (`runs/c2-pc-smoke`, before the fix): both proposals voided, which is the C2-WEB finding. It is kept as evidence.
 - **Spend:** about 120 Luna and 8 Sol across both smokes. Luna today: 2,775 of 3k (UTC).
+- **Addendum (same day): the provider fix is prepared but not merged** (branch `c2-web-provider`, 4b80fe67).
+  - `-c web_search="disabled"` replaces the ignored flag, and `codex_tool_calls` counts `web search:` lines (tests: providers 20/20, a2d-lift 66/66).
+  - Live 1-task smoke with that binary, outside `runs/`, 1 Luna call: completed and passed, with no deprecation notice.
+  - It is merged after `decision.json`. The confirmation-2 replicates run on the registered source (32e72a53 crates).
