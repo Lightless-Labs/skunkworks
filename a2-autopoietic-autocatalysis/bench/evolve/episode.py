@@ -250,6 +250,14 @@ def deny_read_args(sealed_root: Path) -> list[str]:
     return [arg for path in paths if path.exists() for arg in ("--deny-read", str(path))]
 
 
+def _deny_args(cfg, sealed_root: Path) -> list[str]:
+    """`cfg.deny_read` (the confirmation's list, identical for every arm) overrides the loop default."""
+    paths = getattr(cfg, "deny_read", None)
+    if not paths:
+        return deny_read_args(sealed_root)
+    return [arg for path in paths if Path(path).exists() for arg in ("--deny-read", str(path))]
+
+
 def _run_agent_call(cfg, opaque: str, workspace: Path, payload: dict, emit: Path, log: Path,
                     sealed_root: Path) -> int:
     argv = [str(cfg.a2ctl), "run", "--provider", cfg.provider, "--attempts", "1",
@@ -257,7 +265,7 @@ def _run_agent_call(cfg, opaque: str, workspace: Path, payload: dict, emit: Path
             "--network-policy", "allowlist:" + ",".join(cfg.endpoint),
             "--egress-proxy", f"127.0.0.1:{cfg.proxy_port}", "--workspace", str(workspace),
             "--lineage-db", "none", "--verifier-feedback", "raw", "--prompt-profile", "external",
-            "--emit-jsonl", str(emit), *deny_read_args(sealed_root)]
+            "--emit-jsonl", str(emit), *_deny_args(cfg, sealed_root)]
     with log.open("a") as handle:
         handle.write(json.dumps({"argv": argv[1:], "task_id": payload["task_id"]}) + "\n")
         handle.flush()

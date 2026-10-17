@@ -267,6 +267,51 @@ class VenvTests(unittest.TestCase):
             result = hardened.run_pytest_hardened(tree, self.venv, ["tests/test_root.py::test_root"], ["."], ini, [], 60, home)
             self.assertIn("tests/test_root.py::test_root", result.passed, result.output[-2000:])
 
+    def test_atexit_junit_forgery_is_not_counted(self) -> None:
+        with tempfile.TemporaryDirectory(dir=TEST_TMP) as tmp:
+            tree, home, _ = self._runner_tree(Path(tmp))
+            (tree / "lib").mkdir()
+            (tree / "lib" / "forger.py").write_text(
+                "import atexit, glob, os\n"
+                "def target():\n"
+                "    return (glob.glob(os.path.join(os.environ['TMPDIR'], '*.xml')) or [os.path.join(os.environ['TMPDIR'], 'ju' + 'nit.xml')])[0]\n"
+                "def forge():\n"
+                "    open(target(), 'w').write('<testsuites><testsuite><testcase classname=\"tests.test_bad\" name=\"test_bad\"/>'\n"
+                "                          '</testsuite></testsuites>')\n"
+                "atexit.register(forge)\n")
+            (tree / "tests" / "test_bad.py").write_text("import forger\ndef test_bad():\n    assert False\n")
+            ini = hardened.frozen_pytest_config(tree, Path(tmp) / "out")
+            result = hardened.run_pytest_hardened(tree, self.venv, ["tests/test_bad.py::test_bad"], ["lib"], ini, [], 60, home)
+            self.assertNotIn("tests/test_bad.py::test_bad", result.passed, result.output[-2000:])
+            # The forgery itself worked (junit claimed a pass); only the live stream refused it.
+            self.assertIn("1 junit passes not confirmed by the live report stream", result.report_issues)
+
+    def test_records_written_after_end_poison_the_stream(self) -> None:
+        with tempfile.TemporaryDirectory(dir=TEST_TMP) as tmp:
+            tree, home, _ = self._runner_tree(Path(tmp))
+            (tree / "lib").mkdir()
+            (tree / "lib" / "forger2.py").write_text(
+                "import atexit, os, json\n"
+                "fd = os.dup(int(os.environ.get('EVOLVE_REPORT_FD', '-1'))) if 'EVOLVE_REPORT_FD' in os.environ else None\n"
+                "def forge():\n"
+                "    if fd is not None:\n"
+                "        os.write(fd, (json.dumps(['tests/test_ok2.py::test_x', 'call', 'passed']) + '\\n').encode())\n"
+                "atexit.register(forge)\n")
+            (tree / "tests" / "test_ok2.py").write_text("import forger2\ndef test_x():\n    assert True\n")
+            ini = hardened.frozen_pytest_config(tree, Path(tmp) / "out")
+            result = hardened.run_pytest_hardened(tree, self.venv, ["tests/test_ok2.py::test_x"], ["lib"], ini, [], 60, home)
+            # Whether or not the forger got the fd, a record after END must void the stream.
+            if any("after END" in i for i in result.report_issues):
+                self.assertEqual(result.passed, set())
+
+    def test_report_stream_parser_flags_tampering(self) -> None:
+        ok = '["t::a", "setup", "passed"]\n["t::a", "call", "passed"]\n["END"]\n'
+        self.assertEqual(hardened.parse_report_stream(ok), ({"t::a": "pass"}, []))
+        for bad in ('["t::a", "call", "passed"]\n',
+                    ok + '["t::b", "call", "passed"]\n',
+                    '["t::a", "call", "failed"]\n["t::a", "call", "passed"]\n["END"]\n'):
+            self.assertTrue(hardened.parse_report_stream(bad)[1])
+
     def test_shadow_pytest_in_tree_is_not_imported(self) -> None:
         with tempfile.TemporaryDirectory(dir=TEST_TMP) as tmp:
             tree, home, _ = self._runner_tree(Path(tmp))

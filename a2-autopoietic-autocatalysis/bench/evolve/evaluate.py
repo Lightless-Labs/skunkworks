@@ -74,6 +74,7 @@ def _safe_episode(cfg: argparse.Namespace, opaque: str, run_dir: Path) -> dict:
     try:
         return episode.run_episode(cfg, opaque, cfg.genome, run_dir, nonce)
     except Exception as exc:  # noqa: BLE001 - every failure mode becomes a recorded row
+        episode._remove_tree(episode.tasks.work_dir() / "episodes" / nonce)  # don't leak trees on failure
         return {"opaque_id": opaque, "nonce": nonce, "genome_sha256": episode._genome_sha(Path(cfg.genome)),
                 "infra_failure": "evaluator_error", "error": f"{type(exc).__name__}: {exc}"[:500],
                 "grade": None, "agent_calls": None, "tokens_in": 0, "tokens_out": 0, "wall_secs": None}

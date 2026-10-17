@@ -90,3 +90,13 @@ The thresholds quoted above are what that rule gives on G0's noise-floor rates. 
 Two corrections from the same audit apply from the next experiment on:
 - A task the champion never ran cleanly is left out of both the null and the observed Δ. Previously such a task crashed the decision.
 - A candidate's infrastructure-failed task is imputed at the champion's p̂, which makes it neutral. Previously it was scored 0, which biased decisions against the candidate.
+
+## Addendum, 2026-10-17: the audit's evaluator changes are in force from exp-0004
+
+The loop was stopped at the experiment boundary after exp-0003, and the remaining audit fixes were installed. These are the changes, under evaluator sha256 `6ab0fe7e…`:
+- **Live result stream.** The guard plugin writes each test phase result, followed by an END marker, to an inherited pipe. A junit pass now counts only if the stream confirms it. Any tampering, or a record written after END, voids the run's passes. This closes the hole where a candidate could forge junit at interpreter exit.
+- **Stats corrections.** The two corrections in the previous addendum now apply.
+- **`cfg.deny_read` honoured.** The episode now uses `cfg.deny_read`, which the confirmation runner needs.
+- **Cleanup on errors.** A crashed episode's work dir is removed.
+
+Before the swap, with no loop running, all 44 dev tasks were re-gated under the new grader. 44/44 pass: gold resolves and the empty diff does not. G0's noise-floor rates were graded by the old grader, and they stand. The new check only removes passes that the stream does not confirm, and honest runs produce a complete stream: gold does on all 44 tasks. Nightly control runs re-measure the champion under the new grader.

@@ -180,6 +180,13 @@ class EpisodeTests(unittest.TestCase):
 
 
 class DenyReadTests(unittest.TestCase):
+    def test_cfg_deny_read_overrides_the_default_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            a, b = Path(tmp) / "a", Path(tmp) / "b"; a.mkdir()
+            cfg = argparse.Namespace(deny_read=[a, b])
+            self.assertEqual(episode._deny_args(cfg, Path(tmp) / "sealed"), ["--deny-read", str(a)])
+            self.assertEqual(episode._deny_args(argparse.Namespace(), Path(tmp)), episode.deny_read_args(Path(tmp)))
+
     def test_agents_are_denied_secrets_sealed_projects_and_ssh(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             sealed = Path(tmp) / "sealed"; sealed.mkdir()
