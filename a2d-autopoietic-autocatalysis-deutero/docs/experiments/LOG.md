@@ -1302,3 +1302,35 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - replicate 2 at 00:05 UTC 2026-10-19;
   - then manifests, then scoring.
   - Dev-set search experiments fill the rest of each day's cap.
+
+### E005 — full stage: PROVISIONAL KEEP (+5.0 pp all-pass vs E002); per-angle analysis  [cycle 2, 2026-10-17]
+- **Run:** `runs/c2-E005/` (screen 68 tasks + rest 72 tasks, against an in-run E002 arm; 0 void, integrity OK). First prompts were read before the run: sample 1 is plain, samples 2–4 each end with one different "## Approach" paragraph.
+- **Full (140 tasks): Δall-pass = +5.0 pp (cluster SE 2.8), Δfrac = +0.015 (SE 0.010). Provisional keep**, since +5.0 > max(3.57, 1.645 × 2.81 = 4.62) and the fraction is not negative.
+  - Screen: 57/68 vs 54/68 (+4.4 pp). Rest: 66/72 vs 62/72 (+5.6 pp). Total: 123/140 vs 116/140.
+  - Discordant tasks: 12 for E005, 5 for E002.
+  - It would **not** clear the v0 threshold (0.0714), which is reported per the 10-16 note.
+  - Spend: 1,386 invocations (cand: Luna 566 and Sol 128; inc: Luna 565 and Sol 127) and 10.3M tokens.
+- **Sequencing:** per the promotion sequencing rule, E005 is not confirmed yet. E006–E010 also run to `--stop-after full`; then the largest provisional full-stage Δ is confirmed first.
+- **Per-angle analysis** (exploratory; `docs/experiments/analysis/candidate_pool.py` re-scored every sample of both arms, `runs/2026-10-17-c2-e005-pool/`). Hidden pass rates, green-and-hidden, by sample position over the same 140 task-runs:
+
+  | Position | E005 (angle) | E002, same run | E002, 10-16 runs (280) |
+  |---|---|---|---|
+  | 1 | 0.614 (plain) | 0.586 | 0.654 |
+  | 2 | 0.636 (requirement-by-requirement) | 0.614 | 0.593 |
+  | 3 | **0.707** (edge cases + checked arithmetic) | 0.636 | 0.646 |
+  | 4 | 0.621 (literal precedence) | 0.671 | 0.679 |
+  | any-pass@4 | **0.857** | 0.821 | 0.850 |
+
+  - E002's positions are exchangeable (same prompt), so their spread (0.586–0.679) is the noise band at n = 140 (SE ≈ 0.04).
+  - **The feared cost did not appear:** no angle lowered the per-sample rate below that band. The edge-case angle is the highest single position seen in any E002-class run, but only by about one SE.
+  - **Decorrelation is small and directional.** On the same tasks:
+    - tasks where no sample passes: 20 vs 25;
+    - intra-task correlation of sample outcomes: 0.46 vs 0.51;
+    - pairwise disagreement between samples: 0.246 vs 0.230.
+  - **Where the +7 tasks came from:**
+    - **generation +5:** 120 vs 115 tasks have a public-green, hidden-passing sample;
+    - **selection +2:** E002's arm lost 2 tasks where a passing green existed, E005's lost 0, with the same judge, so these two are noise;
+    - **no-green repair 0:** 3 rescues in each arm.
+- **Reading:** the mechanism points in the hypothesised direction (more tasks with a right reading in the pool), but the generation gain (+5 tasks, +3.6 pp any-pass) is about one SE.
+  - **Caveat:** E002's own dev replicates scored 123/140 (10-16 full) and 117/140 (10-16 confirm). Its in-run arm here, 116/140, is the lowest of the three, and E005's 123/140 only equals E002's best replicate.
+  - Part of the +5.0 pp is likely a low draw of the incumbent arm (winner's-curse direction). **The confirmation replicate decides**, and with this effect size it will be close.
