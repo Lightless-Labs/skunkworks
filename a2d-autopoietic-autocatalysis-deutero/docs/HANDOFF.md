@@ -14,11 +14,11 @@
   - Exploratory dev-set result vs v0 (= D): screen +11.8, full +10.7 (SE 2.9), confirm +7.1 (SE 3.5).
   - **Not cost-matched:** about 4.0 Luna + 0.9 Sol calls and 6.4M tokens per 140 tasks, vs about 1.3 Luna and 1.4M for D.
   - Sol is from the same vendor as Luna, so this is not a cross-family claim.
-- **Keep rule (eval v2.2, `nano/eval.py`):** all-pass is primary and fraction is a guard.
+- **Keep rule (eval v2.3, `nano/eval.py`):** all-pass is primary and fraction is a guard.
   - Screen (half): Δ ≥ thr/2.
   - Full: Δ > max(thr, 1.645·SE), with Δfrac not significantly negative.
   - Fresh confirmation replicate: Δ > thr/2, then promote.
-  - **`nano/aa.json` is stale** (calibrated on v0); `eval.py run` refuses until the A/A is re-run for the new incumbent.
+  - `nano/aa.json` is E002's A/A, taken from its own two full replicates: thr_allpass 0.0357, thr_frac 0.0174.
 - **Results log:** `nano/results.tsv` (every experiment and stage, including discards). Narrative and pre-registrations: `docs/experiments/LOG.md`, Cycle 2.
 
 ## In flight / next
