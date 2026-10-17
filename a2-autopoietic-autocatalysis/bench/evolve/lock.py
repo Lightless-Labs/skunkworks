@@ -16,7 +16,7 @@ LOCK_PATH = REPO_ROOT / "bench" / "evolve" / "evaluator.lock"
 
 def _frozen_paths() -> list[str]:
     paths = set()
-    for folder in (REPO_ROOT / "bench" / "e1", REPO_ROOT / "bench" / "evolve"):
+    for folder in (REPO_ROOT / "bench" / "e1", REPO_ROOT / "bench" / "evolve", REPO_ROOT / "bench" / "confirm"):
         for path in folder.rglob("*"):
             if not path.is_file() or path.name.startswith("test_") or "__pycache__" in path.parts:
                 continue

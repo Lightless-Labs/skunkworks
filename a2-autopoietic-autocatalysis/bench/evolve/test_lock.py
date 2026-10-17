@@ -28,6 +28,11 @@ class LockTests(unittest.TestCase):
                 self.assertIn("bench/e1/frozen.py", mismatches)
                 self.assertEqual(first["files"]["bench/e1/frozen.py"], hashlib.sha256(b"value = 1\n").hexdigest())
 
+    def test_confirmation_runner_is_frozen_but_its_tests_are_not(self):
+        self.assertIn("bench/confirm/confirm.py", lock.FROZEN)
+        self.assertIn("bench/confirm/verify_cmd.py", lock.FROZEN)
+        self.assertNotIn("bench/confirm/test_confirm.py", lock.FROZEN)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -183,7 +183,7 @@ def _candidate_diff(workspace: Path, root_commit: str, patch_diff: str) -> str:
     except RuntimeError:
         index = _index_with(workspace, "")  # unappliable agent diff: the candidate is its base
     try:
-        return _git(workspace, "diff", "--cached", "--binary", root_commit, index=index).stdout
+        return _git(workspace, "diff", "--cached", "--binary", "--no-renames", root_commit, index=index).stdout
     finally:
         index.unlink(missing_ok=True)
 

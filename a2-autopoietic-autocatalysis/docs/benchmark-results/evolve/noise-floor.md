@@ -100,3 +100,12 @@ The loop was stopped at the experiment boundary after exp-0003, and the remainin
 - **Cleanup on errors.** A crashed episode's work dir is removed.
 
 Before the swap, with no loop running, all 44 dev tasks were re-gated under the new grader. 44/44 pass: gold resolves and the empty diff does not. G0's noise-floor rates were graded by the old grader, and they stand. The new check only removes passes that the stream does not confirm, and honest runs produce a complete stream: gold does on all 44 tasks. Nightly control runs re-measure the champion under the new grader.
+
+## Addendum, 2026-10-17: rename and binary audit, in force from exp-0006
+
+The loop was stopped at the boundary after exp-0005, while exp-0006 was in the researcher stage. The researcher stage restarts from scratch on resume. The evaluator sha256 is now `63404eaa…`. Changes:
+- Candidate diffs are generated with `--no-renames`, so moved content appears as added lines and is scanned.
+- `audit_diff` rejects rename and copy headers, and binary patches outside test paths.
+- `bench/confirm` is now part of the lock.
+
+None of the 193 gold patches (68 dev, 125 sealed) contains a rename, copy or binary section, so every gate result is unchanged.

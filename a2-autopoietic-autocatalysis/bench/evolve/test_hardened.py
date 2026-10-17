@@ -76,6 +76,25 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(any("pytest" in reason for reason in reasons))
         self.assertEqual(len(reasons), 1)
 
+    def test_binary_patch_in_production_path_is_rejected(self) -> None:
+        diff = ("diff --git a/pkg/blob.bin b/pkg/blob.bin\nnew file mode 100644\n"
+                "index 0000000..1111111\nGIT binary patch\nliteral 4\nLcmZ?wbYK7g0Am0u\n\n")
+        self.assertTrue(any("binary" in reason for reason in hardened.audit_diff(diff, ["."], set())))
+        summary = "diff --git a/pkg/blob.bin b/pkg/blob.bin\nBinary files a/pkg/blob.bin and b/pkg/blob.bin differ\n"
+        self.assertTrue(any("binary" in reason for reason in hardened.audit_diff(summary, ["."], set())))
+
+    def test_binary_fixture_under_tests_is_allowed(self) -> None:
+        diff = ("diff --git a/tests/data/blob.bin b/tests/data/blob.bin\nnew file mode 100644\n"
+                "GIT binary patch\nliteral 4\nLcmZ?wbYK7g0Am0u\n\n")
+        self.assertEqual(hardened.audit_diff(diff, ["."], set()), [])
+
+    def test_rename_or_copy_is_rejected_because_moved_content_is_unscanned(self) -> None:
+        for kind in ("rename", "copy"):
+            diff = (f"diff --git a/tests/helper.py b/pkg/helper.py\nsimilarity index 100%\n"
+                    f"{kind} from tests/helper.py\n{kind} to pkg/helper.py\n")
+            with self.subTest(kind=kind):
+                self.assertTrue(any(kind in reason for reason in hardened.audit_diff(diff, ["."], set())))
+
     def test_junit_duplicate_or_missing_required_id_is_not_passed(self) -> None:
         node = "tests/test_x.py::test_x"
         result = hardened.enforce_required_ids({node: ["pass", "pass"]}, [node])

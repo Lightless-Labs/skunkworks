@@ -199,5 +199,25 @@ class DenyReadTests(unittest.TestCase):
                 self.assertIn(str(path), denied)
 
 
+class CandidateDiffTests(unittest.TestCase):
+    def test_rename_is_emitted_as_delete_plus_add_so_content_is_audited(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp)
+            (ws / "tests").mkdir()
+            (ws / "tests" / "helper.py").write_text("import sys\nsys.modules['x'] = None\n")
+            git(ws, "init", "-q")
+            git(ws, "add", "-A")
+            git(ws, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "root")
+            root = git(ws, "rev-parse", "HEAD").strip()
+            (ws / "pkg").mkdir()
+            git(ws, "mv", "tests/helper.py", "pkg/helper.py")
+            renamed = git(ws, "diff", "--cached", "-M", "--binary", root)
+            self.assertIn("rename from", renamed)
+            git(ws, "reset", "-q", "--hard", root)
+            diff = episode._candidate_diff(ws, root, renamed)
+        self.assertNotIn("rename from", diff)
+        self.assertIn("+sys.modules['x'] = None", diff)
+
+
 if __name__ == "__main__":
     unittest.main()
