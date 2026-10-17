@@ -189,33 +189,50 @@ fn seatbelt_path(path: &Path) -> String {
     format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// The toolchain's own `rustc`, resolved once through the `rustup` proxy
-/// from an empty directory (the toolchain the oracle has always used), so
-/// the sandbox can keep that sysroot readable and the proxy's home closed.
+/// The toolchain's own `rustc` and its sysroot, resolved through the
+/// `rustup` proxy from an empty directory (the toolchain the oracle has
+/// always used), so the sandbox can keep that sysroot readable and the
+/// proxy's home closed. Only a successful lookup is cached.
 fn toolchain_rustc() -> Option<(PathBuf, PathBuf)> {
-    static RUSTC: std::sync::OnceLock<Option<(PathBuf, PathBuf)>> = std::sync::OnceLock::new();
-    RUSTC
-        .get_or_init(|| {
-            let dir = tempfile::tempdir().ok()?;
-            let mut command = Command::new("rustc");
-            command.args(["--print", "sysroot"]).current_dir(dir.path());
-            harden_sandbox_child_command(&mut command);
-            let output = command.output().ok().filter(|o| o.status.success())?;
-            let sysroot = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
-            let rustc = sysroot.join("bin").join("rustc");
-            rustc.exists().then_some((rustc, sysroot))
-        })
-        .clone()
+    static RUSTC: std::sync::OnceLock<(PathBuf, PathBuf)> = std::sync::OnceLock::new();
+    if let Some(found) = RUSTC.get() {
+        return Some(found.clone());
+    }
+    let dir = tempfile::tempdir().ok()?;
+    let mut command = Command::new("rustc");
+    command.args(["--print", "sysroot"]).current_dir(dir.path());
+    harden_sandbox_child_command(&mut command);
+    let output = command.output().ok().filter(|o| o.status.success())?;
+    let sysroot = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
+    let rustc = sysroot.join("bin").join("rustc");
+    rustc
+        .exists()
+        .then(|| RUSTC.get_or_init(|| (rustc, sysroot)).clone())
 }
 
-/// macOS seatbelt profile for code under test, at compile time
-/// (`include_str!` takes any literal path) and at run time (`std::fs`).
-/// Hidden tests, holdouts, ledgers and other runs' build dirs live under the
-/// user's home and the temporary roots, so those are closed and the network
-/// is off, except `readable` (the toolchain, the test binary) and
-/// `writable` (this run's own directory).
-fn oracle_sandbox_profile(writable: &Path, readable: &[&Path]) -> String {
-    let mut denied: Vec<PathBuf> = vec!["/private/tmp".into()];
+/// One step of the oracle, for its sandbox.
+enum Step<'a> {
+    /// `rustc` and the linker it spawns; no candidate code executes.
+    Compile { sysroot: &'a Path },
+    /// The test binary, where candidate code executes.
+    Run { binary: &'a Path },
+}
+
+/// macOS seatbelt profile for one oracle step. Candidate code can name any
+/// file: at compile time with `include_str!` of a literal path, at run time
+/// with `std::fs`. Hidden tests, holdouts, ledgers and other runs' build
+/// dirs live under the user's home and the temporary roots, so those are
+/// closed and the network is off; the step's own directory stays open.
+/// The compile step also reads its sysroot and keeps xcrun's toolchain
+/// cache. The run step reads only its binary and may not spawn processes,
+/// look up Mach services or send Apple Events, so no unsandboxed broker
+/// can read on its behalf.
+fn oracle_sandbox_profile(step: &Step, writable: &Path) -> String {
+    let mut denied: Vec<PathBuf> = vec![
+        "/private/tmp".into(),
+        "/private/var/folders".into(),
+        "/private/var/tmp".into(),
+    ];
     for name in ["HOME", "TMPDIR"] {
         if let Some(value) = std::env::var_os(name).filter(|v| !v.is_empty()) {
             denied.push(value.into());
@@ -227,17 +244,26 @@ fn oracle_sandbox_profile(writable: &Path, readable: &[&Path]) -> String {
         "(version 1)(allow default)(deny network*)(deny file-read* file-write* {})",
         denied.join(" ")
     );
-    for path in readable {
-        profile += &format!("(allow file-read* (subpath {}))", seatbelt_path(path));
+    match step {
+        Step::Compile { sysroot } => {
+            profile += &format!("(allow file-read* (subpath {}))", seatbelt_path(sysroot));
+            profile += &xcrun_cache_rule();
+        }
+        Step::Run { binary } => {
+            let binary = seatbelt_path(binary);
+            profile += &format!(
+                "(deny process-fork process-exec* mach-lookup appleevent-send)\
+                 (allow process-exec (literal {binary}))(allow file-read* (literal {binary}))"
+            );
+        }
     }
     profile += &format!("(allow file-read* file-write* (subpath {}))", seatbelt_path(writable));
     profile
 }
 
-/// The linker runs through the `xcrun` shim, whose toolchain cache lives at
-/// `$TMPDIR/xcrun_db*`; without it every link re-resolves the toolchain
-/// (5-10 s instead of 0.2 s). Only the compile step gets this rule, and no
-/// candidate code executes at compile time.
+/// The linker runs through the `xcrun` shim, whose toolchain cache is
+/// `$TMPDIR/xcrun_db` (written via `xcrun_db-<random>`); without it every
+/// link re-resolves the toolchain (5-10 s instead of 0.2 s).
 fn xcrun_cache_rule() -> String {
     let Some(tmp) = std::env::var_os("TMPDIR").filter(|v| !v.is_empty()) else {
         return String::new();
@@ -252,15 +278,28 @@ fn xcrun_cache_rule() -> String {
             special.then_some('\\').into_iter().chain(std::iter::once(c))
         })
         .collect();
-    format!("(allow file-read* file-write* (regex #\"^{escaped}/xcrun_db\"))")
+    format!("(allow file-read* file-write* (regex #\"^{escaped}/xcrun_db(-[A-Za-z0-9]+)?$\"))")
 }
 
-fn sandboxed(program: &Path, writable: &Path, readable: &[&Path], extra_rules: &str) -> Command {
+/// `program` under `step`'s sandbox, in `writable`, with a cleared
+/// environment so the controller's variables reach neither `env!` nor
+/// `std::env`. The run step's `TMPDIR` is its own directory.
+fn sandboxed(program: &Path, step: Step, writable: &Path) -> Command {
     let mut command = Command::new(SANDBOX_EXEC);
     command
         .arg("-p")
-        .arg(oracle_sandbox_profile(writable, readable) + extra_rules)
-        .arg(program);
+        .arg(oracle_sandbox_profile(&step, writable))
+        .arg(program)
+        .current_dir(writable)
+        .env_clear();
+    for name in ["PATH", "HOME", "LANG", "TMPDIR", "DEVELOPER_DIR", "SDKROOT"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    if let Step::Run { .. } = step {
+        command.env("TMPDIR", writable);
+    }
     command
 }
 
@@ -312,7 +351,7 @@ pub fn run_isolated_tests(
     };
 
     let binary = build_dir.path().join("oracle_bin");
-    let mut compile = sandboxed(&rustc, build_dir.path(), &[&sysroot], &xcrun_cache_rule());
+    let mut compile = sandboxed(&rustc, Step::Compile { sysroot: &sysroot }, build_dir.path());
     compile
         .args(["--test", "--edition", "2024"])
         .arg(&harness_path)
@@ -331,7 +370,7 @@ pub fn run_isolated_tests(
     let _ = fs::remove_file(&harness_path);
     let _ = fs::remove_file(&candidate_path);
 
-    let mut run = sandboxed(&binary, run_dir.path(), &[&binary], "");
+    let mut run = sandboxed(&binary, Step::Run { binary: &binary }, run_dir.path());
     run.arg(filter).current_dir(run_dir.path());
     harden_sandbox_child_command(&mut run);
     match run_with_timeout(run, test_timeout) {
@@ -879,5 +918,20 @@ mod tests {{
             let result = isolated(reader, &run_time, "oracle_r2::");
             assert_eq!((result.passed, result.failed), (1, 0), "{literal}: {}", result.output);
         }
+    }
+
+    #[test]
+    fn code_under_test_gets_no_processes_and_no_controller_environment() {
+        // Cargo sets this for the test process; the oracle's children must
+        // not see it at compile time or at run time.
+        assert!(std::env::var("CARGO_MANIFEST_DIR").is_ok());
+        let compile_time = "const LEAK: &str = env!(\"CARGO_MANIFEST_DIR\");\nfn add(a: i32, b: i32) -> i32 { a + b + 0 * LEAK.len() as i32 }\n";
+        let result = isolated(HARNESS, compile_time, "oracle_x1::");
+        assert!(!result.compiled, "{}", result.output);
+
+        let harness = "#[cfg(test)]\nmod oracle_p1 {\n    use super::*;\n    #[test]\n    fn no_env() { assert!(env_seen().is_none()); }\n    #[test]\n    fn no_spawn() { assert!(spawned().is_err()); }\n    #[test]\n    fn private_temp_works() { assert!(temp_round_trip()); }\n}\ninclude!(\"c_test.rs\");\n";
+        let candidate = "fn env_seen() -> Option<String> { std::env::var(\"CARGO_MANIFEST_DIR\").ok() }\nfn spawned() -> std::io::Result<std::process::Output> { std::process::Command::new(\"/bin/echo\").output() }\nfn temp_round_trip() -> bool { let p = std::env::temp_dir().join(\"x\"); std::fs::write(&p, \"y\").is_ok() && std::fs::read_to_string(&p).map(|s| s == \"y\").unwrap_or(false) }\n";
+        let result = isolated(harness, candidate, "oracle_p1::");
+        assert_eq!((result.passed, result.failed), (3, 0), "{}", result.output);
     }
 }
