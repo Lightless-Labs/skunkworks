@@ -1355,3 +1355,27 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
     - phase B compares proposers against the incumbent, so a pending provisional keep should not wait three days or more;
     - the order is fixed before knowing which experiment is best, and confirm_best removes the remaining choice.
   - **Budget check:** 11.1k − ≤ 2.5k (two confirmations) − 6.6k (phase B) − 1.3k (final look) ≥ 0.7k.
+
+### C2-WEB — Codex web search was available to every call and invisible to the tool count; 0 uses on record; confirmation-2 amendment  [cycle 2, instrument finding, 2026-10-17 ~05:50 UTC; before any confirmation call]
+- **How it was found:** a live end-to-end smoke of the phase-B tooling, in a throwaway phase dir (`runs/c2-pc-smoke`, one-family quarter, results.tsv redirected; about 60 Luna and 4 Sol).
+  - Stats reproduced C2-FA1 exactly. 8 dossiers were built, and the 3-arm round ran and scored.
+  - **But both live proposals were voided twice** ("void tool event(s): error"), so in the real phase B every proposal would have scored Δ = 0 as invalid.
+- **Cause:** codex-cli 0.162.0 (in use since at least 2026-10-14, i.e. every `a2d lift` run) deprecated the `web_search_request` feature flag. Web search is now on by default.
+  - `--disable web_search_request` is ignored, and only produces an `error` item in the JSON stream. The phase-B audit correctly treats it as void.
+  - **Probe** with the frozen provider's exact flags (Luna, low effort, asked to search): the call web-searched (`web search: …` in the transcript) and answered with a live URL. With `-c web_search="disabled"` added, it answered "NO-WEB-TOOL" with no search event.
+  - The controller's tool-call count (`codex_tool_calls`) counts only `exec` lines, so **a search would not have set `integrity_ok` false.** The dev tasks' hidden tests are in this public repo, so this was a potential leak channel for dev runs.
+- **Exposure on record** (full stderr is stored verbatim per call: `read_to_end`, then `meter.rs` `fs::write`; failed calls store none):
+  - **Dev:** every cycle-2 run and every 10-15 run has **0 transcripts with a web search**, out of about 9,000. All of them show the deprecation, so search was available.
+  - **Holdout runs** (counts only): E07, E07b, E12, S4 and c2-look1, **0 of 5,793.**
+  - The coder and judge prompts never invite search, and at low or medium effort the models never used it.
+  - **No recorded result is affected.**
+- **Fixes now (outside the freeze):**
+  - **Phase-B proposer calls:** `-c web_search="disabled"` replaces the deprecated flag (`c2_propose.NO_WEB`; test). A round whose transcripts contain a web search is integrity-invalid and retried once with a new seed, like any invalid run (test).
+  - **Dev experiments:** `eval.py` counts web-search events per stage (`web_search_events`; test). Any search stops the experiment with decision "integrity review (N web-search events)", so there is no keep.
+- **Confirmation-2 amendment (registered here, before any confirmation call; strictly tightening):**
+  - The registered instrument is unchanged (crates frozen at 32e72a53), and D, B and X:frozen have the same open channel, so it is symmetric.
+  - After each replicate's generation, `python3 -I nano/eval.py confirm-web-audit --rep <n>` (queued right after each confirm line) writes `runs/c2-confirm2/web-audit-r<n>.json`. It holds counts only, per arm: web-search events, transcripts, invocations without a transcript, and transcripts not from codex 0.162.0.
+  - **If either replicate has ≥ 1 web-search event in any arm, the outcome is IntegrityReview** (which already dominates in the registered decision rule), whatever `decision.json` says. Replicate 2 runs regardless.
+  - Transcripts from a codex version other than 0.162.0 are disclosed, because the `web search:` marker is version-specific.
+  - This can only turn a would-be SUPPORTED into no claim, never the reverse. So the existing Sol and fresh-Claude reviews stand, and no re-review is needed.
+- **After `decision.json` (freeze lifted):** fix the provider (`-c web_search="disabled"`, and count `web search:` lines in `codex_tool_calls`, with a test). Then extend the count to the 10-14 runs to complete the record.
