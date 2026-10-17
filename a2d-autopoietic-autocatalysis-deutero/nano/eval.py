@@ -279,6 +279,10 @@ def log_result(fields):
     path = NANO / "results.tsv"
     if not path.exists() or not path.read_text().startswith("id\t"):
         path.write_text("\t".join(FIELDS) + "\n")
+    # A resumed experiment re-reaches the same decision; log each (id, stage, decision) once.
+    key = (str(fields.get("id")), str(fields.get("stage")), str(fields.get("decision")))
+    if any(tuple(r.split("\t")[i] for i in (0, 3, 12)) == key for r in path.read_text().splitlines()[1:]):
+        return
     with open(path, "a") as f:
         f.write("\t".join(str(fields.get(k, "")).replace("\t", " ") for k in FIELDS) + "\n")
 
