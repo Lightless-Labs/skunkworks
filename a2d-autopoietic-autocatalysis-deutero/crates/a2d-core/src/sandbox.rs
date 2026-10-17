@@ -291,6 +291,7 @@ fn sandboxed(program: &Path, step: Step, writable: &Path) -> Command {
         .arg(oracle_sandbox_profile(&step, writable))
         .arg(program)
         .current_dir(writable)
+        .stdin(Stdio::null())
         .env_clear();
     for name in ["PATH", "HOME", "LANG", "TMPDIR", "DEVELOPER_DIR", "SDKROOT"] {
         if let Some(value) = std::env::var_os(name) {
@@ -904,7 +905,10 @@ mod tests {{
         fs::write(&secret, &needle).unwrap();
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         let reader = "#[cfg(test)]\nmod oracle_r2 {\n    use super::*;\n    #[test]\n    fn unreadable() { assert!(probe().is_err()); }\n}\ninclude!(\"c_test.rs\");\n";
-        for path in [secret.as_path(), manifest.as_path()] {
+        // The APFS data-volume twin of each path names the same files.
+        let alias = |p: &Path| Path::new("/System/Volumes/Data").join(fs::canonicalize(p).unwrap().strip_prefix("/").unwrap());
+        let (secret_alias, manifest_alias) = (alias(&secret), alias(&manifest));
+        for path in [secret.as_path(), manifest.as_path(), secret_alias.as_path(), manifest_alias.as_path()] {
             let literal = format!("{:?}", path.to_str().unwrap());
             let compile_time = format!(
                 "const LEAK: &str = include_str!({literal});\nfn add(a: i32, b: i32) -> i32 {{ a + b + 0 * LEAK.len() as i32 }}\n"
@@ -913,8 +917,9 @@ mod tests {{
             assert!(!result.compiled, "include_str!({literal}) compiled:\n{}", result.output);
             assert!(!result.output.contains(&needle), "{}", result.output);
 
-            let run_time =
-                format!("fn probe() -> std::io::Result<String> {{ std::fs::read_to_string({literal}) }}\n");
+            let run_time = format!(
+                "fn probe() -> std::io::Result<String> {{ std::fs::read_to_string({literal}).or_else(|_| {{ std::fs::hard_link({literal}, \"l\")?; std::fs::read_to_string(\"l\") }}) }}\n"
+            );
             let result = isolated(reader, &run_time, "oracle_r2::");
             assert_eq!((result.passed, result.failed), (1, 0), "{literal}: {}", result.output);
         }

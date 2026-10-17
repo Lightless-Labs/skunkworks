@@ -177,15 +177,22 @@ fn seatbelt_path(path: &Path) -> String {
 /// working directory; the interpreter's installation stays readable. The
 /// stderr log is opened by the controller, but seatbelt also checks I/O
 /// through inherited descriptors (Python's startup stats them too), so that
-/// one file stays readable and writable.
+/// one file stays readable and writable. The harness may not spawn
+/// processes (other than the interpreter's own re-exec), look up Mach
+/// services or send Apple Events, so no unsandboxed broker (launchd,
+/// LaunchServices) can act for it.
 fn harness_sandbox_profile(
     script: &Path,
     cwd: &Path,
     stderr: &Path,
+    python: &Path,
     python_prefix: Option<&Path>,
 ) -> String {
-    let mut denied: Vec<std::path::PathBuf> =
-        vec!["/private/tmp".into(), "/private/var/folders".into()];
+    let mut denied: Vec<std::path::PathBuf> = vec![
+        "/private/tmp".into(),
+        "/private/var/folders".into(),
+        "/private/var/tmp".into(),
+    ];
     for name in ["HOME", "TMPDIR"] {
         if let Some(value) = std::env::var_os(name).filter(|v| !v.is_empty()) {
             denied.push(value.into());
@@ -193,11 +200,14 @@ fn harness_sandbox_profile(
     }
     let denied: Vec<String> = denied.iter().map(|p| format!("(subpath {})", seatbelt_path(p))).collect();
     let mut profile = format!(
-        "(version 1)(allow default)(deny network*)(deny file-read* file-write* {})",
-        denied.join(" ")
+        "(version 1)(allow default)(deny network*)(deny file-read* file-write* {})\
+         (deny process-fork process-exec* mach-lookup appleevent-send)(allow process-exec (literal {}))",
+        denied.join(" "),
+        seatbelt_path(python)
     );
     if let Some(prefix) = python_prefix {
-        profile += &format!("(allow file-read* (subpath {}))", seatbelt_path(prefix));
+        let prefix = seatbelt_path(prefix);
+        profile += &format!("(allow file-read* (subpath {prefix}))(allow process-exec (subpath {prefix}))");
     }
     profile += &format!(
         "(allow file-read* (literal {}))(allow file-read* file-write* (subpath {}))(allow file-read* file-write* (literal {}))",
@@ -238,7 +248,7 @@ pub(crate) fn external_harness(
         let mut command = Command::new(SANDBOX_EXEC);
         command
             .arg("-p")
-            .arg(harness_sandbox_profile(&path, cwd.path(), &stderr_path, prefix.as_deref()))
+            .arg(harness_sandbox_profile(&path, cwd.path(), &stderr_path, &python, prefix.as_deref()))
             .arg(python)
             .arg("-I")
             .arg(&path)
