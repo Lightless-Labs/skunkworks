@@ -37,3 +37,18 @@ root_cause: selection_headroom_spent_so_remaining_error_is_correlated_generation
 - **Measure it offline first.** The whole analysis re-scored existing runs and needed no model calls, before any live budget went to the next experiments.
 - **Next experiments registered from it:** E005 (diverse sampling angles) and E006 (Sol spec-analysis notes before 3 samples).
 - **Scope:** exploratory, dev set. Sol and Luna share a vendor, so this is not a cross-family claim, and the run is not cost-matched (about 6.4M vs 1.4M tokens per 140 tasks).
+
+## Addendum 2026-10-17: reading a generation-side candidate's lift (E005)
+- **E005** (samples 2–4 each get a different "Approach" paragraph) is a provisional keep: +5.0 pp all-pass vs E002 at the full stage, 123 vs 116 of 140. The same re-scoring split that gain into parts:
+  - **generation +5 tasks:** more tasks had a public-green, hidden-passing sample, any-pass@4 0.857 vs 0.821;
+  - **selection +2:** the in-run E002 arm lost 2 tasks to the judge, E005's lost none, with the same judge prompt, so this part is noise;
+  - **no-green repair 0.**
+- **Lesson 1: split every lift into generation, selection and repair** before believing the mechanism.
+  - A generation-side change should move only the generation term.
+  - Gain in a term the change does not touch measures noise in the comparison.
+- **Lesson 2: check the incumbent arm's draw against its own earlier replicates.**
+  - E002 scored 123, 117 and now 116 of 140 on the same dev tasks. E005's 123 only ties E002's best replicate, so part of the lift is a low incumbent draw.
+  - The paired SE covers this in expectation, but on a single run the decomposition and the replicate history show where it came from.
+- **Lesson 3: identical-prompt positions give a free noise band.**
+  - E002's 4 sample positions are exchangeable, and their per-position pass rates spread 0.586 to 0.679 at n = 140.
+  - Any per-angle difference inside that band is not a finding. E005's angles stayed in or above it, so they cost nothing per sample, and none clearly helped.
