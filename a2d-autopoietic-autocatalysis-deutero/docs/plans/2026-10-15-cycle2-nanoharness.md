@@ -118,7 +118,7 @@
 - **Gap:** confirmation sets are spent once, so the goal's done-path (a frozen harness SUPPORTED vs D and B on its confirmation set) is unreachable on confirmation-2. A new blind set is needed: **confirmation-3**.
   - The budget and deadline exits are unchanged.
 - **Fixed now (requirements for any confirmation-3 call):**
-  - The provider fix (`c2-web-provider`, 4b80fe67) is merged after `decision.json`. It sets `-c web_search="disabled"`, and `codex_tool_calls` counts `web search:` lines, so `integrity_ok` fails on any search.
+  - The provider fix (`c2-web-provider`, 4b80fe67) is merged after `decision.json` **and** after the batch confirmation step, before phase-B round 1 (the 10-17 review rule: no provider change between an experiment's stages). It sets `-c web_search="disabled"`, and `codex_tool_calls` counts `web search:` lines, so `integrity_ok` fails on any search.
   - The fix is verified live: a dev smoke with 0 search events and no deprecation notice.
   - The count-only web audit stays as a second check.
   - **No confirmation-3 call runs on an instrument with a known open channel.** That is this addendum's lesson.

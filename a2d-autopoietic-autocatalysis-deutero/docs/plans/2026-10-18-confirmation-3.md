@@ -53,7 +53,7 @@ These choices are written before any data that could inform them. That means bef
 ### 0.6 Order of work (each step gates the next one marked ⇒)
 1. **Blind power script:** it reads only dev and dev-holdout ledgers and prints the SE and P(SUPPORTED / INCONCLUSIVE / RULED OUT) at fixed hypothetical lifts (0, +7.1, +8.9, +10, +15). It never prints a lift estimate.
 2. **Authoring pipeline in the repo** (driver, assembly, gateway, disjointness check), tested on visible fixtures and frozen by hash. Old scripts died in a scratchpad.
-3. **Capability inventory and the `--json` allowlist detector:** designed now, implemented after the freeze lifts (`decision.json`). Then merge `c2-web-provider` (4b80fe67), run the positive-control probes per tool per lane, and re-freeze at a new commit.
+3. **Capability inventory and the `--json` allowlist detector:** designed now, built on a branch (crates stay frozen), and merged once **both** confirmation-2's `decision.json` exists **and** the batch confirmation step has ended. The second condition is the 10-17 review rule: the provider must not change between an experiment's stages. The merge comes with `c2-web-provider` (4b80fe67), before phase-B round 1. Then run the positive-control probes per tool per lane, and re-freeze at a new commit. Authoring (step 4) calls `codex exec` directly with its own flags, so it does not wait for this merge.
 4. ⇒ **Authoring** starts only after confirmation-2's replicate 2 generation and web audit have finished (no overlap), with these settings:
    - Option B: Sol picks the families from a disjointness inventory;
    - opaque ids (`c3-fNN-lM`) from the first byte;

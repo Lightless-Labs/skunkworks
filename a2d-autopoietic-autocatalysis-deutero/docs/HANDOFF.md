@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-18 04:20 UTC (session 145: **confirmation-2 is IntegrityReview** — replicate 1 (01:35–03:46 UTC, 1,486 Luna) audit found 2 web searches in arm B, so by the registered C2-WEB rule the set is spent with no claim; replicate 2 still runs (descriptive). A SUPPORTED claim now needs confirmation-3 (plan addendum 10-18). The queue runner was restarted on the owner's request at 01:35 UTC 10-18, pid 7116. Earlier: C2-WEB: web search was open but unused, and confirmation-2 now has a count-only web audit; E007 screen passed; E005 provisional keep (+5.0 pp, confirmation deferred); look 1 PASSED; confirmation-2 registered at `78727f29`, E002 frozen as `runs/c2-confirm2/frozen.py`. The oracle is OS-sandboxed (C2-ISO2), parity 420/420.)
+**Last updated:** 2026-10-18 05:40 UTC (session 145: **confirmation-3 pre-commitment fixed and reviewed** (plan §0). **Confirmation-2 is IntegrityReview** — replicate 1 (01:35–03:46 UTC, 1,486 Luna) audit found 2 web searches in arm B, so by the registered C2-WEB rule the set is spent with no claim; replicate 2 still runs (descriptive). A SUPPORTED claim now needs confirmation-3 (plan addendum 10-18). The queue runner was restarted on the owner's request at 01:35 UTC 10-18, pid 7116. Earlier: C2-WEB: web search was open but unused, and confirmation-2 now has a count-only web audit; E007 screen passed; E005 provisional keep (+5.0 pp, confirmation deferred); look 1 PASSED; confirmation-2 registered at `78727f29`, E002 frozen as `runs/c2-confirm2/frozen.py`. The oracle is OS-sandboxed (C2-ISO2), parity 420/420.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -28,7 +28,27 @@
      - Don't narrow the rule, and don't look at what was searched: no transcripts, task ids or file order.
      - Replicate 2, its audit, `confirm-manifest` and `confirm-score` still run as registered. Report the `decision.json` numbers as **descriptive**.
      - Keep the freeze until `decision.json`. After it: merge `c2-web-provider` (4b80fe67), smoke it live (0 searches), then log it.
-     - **Next goal path: confirmation-3** (plan addendum 10-18). It is authored blind by Codex Sol, and its design is reviewed by Sol plus a fresh Claude before registration. No call runs before the provider fix is verified.
+     - **Next goal path: confirmation-3.** Its pre-commitment is fixed in `docs/plans/2026-10-18-confirmation-3.md` §0 (fb8b55c9, 1958ba0a; LOG 10-18 ~05:30). The registration copies it.
+       - Candidate: the batch winner iff it is promoted and passes one look by 10-23 23:59 UTC; otherwise E002.
+       - The spend is at or after 10-24.
+       - The order of work is in §0.6: blind power script → pipeline in the repo, tested on visible fixtures → capability inventory and allowlist detector → authoring after replicate 2's audit → validation and audit → registration and its review.
+     - **Seal confirmation-2's scores (§0.8):**
+       - Run `confirm-manifest` and `confirm-score` with stdout redirected to `~/.a2d-holdout/runs/`.
+       - Move `decision.json` and `pooled-summary.json`, **unread**, to `~/.a2d-holdout/runs/c2-confirm2-decision/`. Commit only their sha256.
+       - Read them only after confirmation-3's decision.
+   - **Owner request (pending):** please pause the A² session during confirmation generation windows: replicate 2 at ≥ 00:05 UTC 10-19, and confirmation-3's replicates at ≥ 10-24. Luna calls took 60–175 s on 10-18.
+   - **Luna ledger (25k total):**
+
+     | | Luna |
+     |---|---|
+     | Spent, from all cycle-2 ledgers on 10-18 05:00 UTC | 7,530 (dev 4,984; look 1 1,060; confirmation-2 r1 1,486) |
+     | Left | ≈ 17.5k |
+     | Projected left after the batch and its confirmations (10-17 projection) | ≈ 8.6k |
+     | Ring-fenced: confirmation-3 plus relaunch reserve | 4.5k |
+     | Candidate look (only if a keep is promoted; it doubles as the final look) | 1.3k |
+     | Phase B (rounds only; R = 6 ≈ 2.6k, floor R = 4) | ≈ 2.8k worst case |
+
+     Update the ledger daily: `python3 -I nano/eval.py budget` gives today's spend; the total comes from the ledger count script in the 10-18 session.
    - **The queue runner is RUNNING** (pid 7116, started 01:35:43 UTC 10-18 on the owner's request; check with `kill -0 $(cat ~/.a2d-queue/runner.pid)`). Replicate 1 started at that time. Before that it had been stopped by Claude Code's memory reaper (15:23 UTC 10-17, idle before line 5, nothing half-run); see the LOG entry of that time.
      - **Restart (if it dies):** `zsh ~/.a2d-queue/start.sh` (detached, `nohup caffeinate -i`, refuses a second copy). Run it from the owner's terminal, or by Claude only when the owner asks; **never as a Claude Code background shell,** whose reaping mid-replicate would spend the single relaunch.
      - Output: `~/.a2d-queue/runner.out`; per-line logs: `~/.a2d-queue/qlogs/`; pid: `~/.a2d-queue/runner.pid` (check with `kill -0`).

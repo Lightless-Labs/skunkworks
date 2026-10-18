@@ -1460,3 +1460,20 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **The amendment's premise failed:** it rested on "at low or medium effort the models never used it" (0 in about 15.8k). The next 720 B transcripts held 2 searches.
   - **Learning** (to compound): don't spend a once-only set on an instrument with a known open channel. Close the channel and re-register first, even if that costs a re-review. An audit run after the spend can only show that the set is gone.
 - **Consequence for the goal:** a SUPPORTED claim in this cycle now needs a new blind confirmation set (confirmation sets are spent once). This is planned in the plan addendum of 10-18, not decided here.
+
+### Confirmation-3 pre-commitment  [cycle 2, 2026-10-18 ~05:30 UTC; before confirmation-2's replicate 2, before any E006–E010 decision, before `confirm_best`]
+- **Plan:** `docs/plans/2026-10-18-confirmation-3.md`, §0 (commits fb8b55c9 and 1958ba0a). The registration will copy it.
+- **Reviews:** Codex Sol (high; no tools; web disabled, 0 search events) and a fresh Claude (copies only) reviewed the draft. Sol then reviewed §0 again. All dispositions are in §7 and §0.10, and none were rejected.
+- **Fixed now:**
+  - **Candidate:** the batch winner iff `confirm_best` promotes it and it passes exactly one dev-holdout look by 2026-10-23 23:59 UTC. Otherwise E002.
+  - **Spend:** at or after 10-24, after the registration is committed and the instrument re-frozen.
+  - **Set:** 36 new families × 4, r = 2, k = 5. Arms D, B and X:frozen. Claim rule unchanged.
+  - **Integrity:**
+    - an allowlist over `--json` events, with positive controls and a pinned codex;
+    - tuple voids with worst-case imputation;
+    - IntegrityReview on a hidden-name hit, a per-replicate tool-event rate > 0.5%, or pooled voids > 5%.
+  - **Budget:** confirmation-3 is ring-fenced before phase B (3.0k plus a 1.5k reserve). Phase B gets the rest, with R = 6 fitting rounds-only and an R = 4 floor.
+  - **Authoring:** Sol picks the families, with opaque ids, `CODEX_HOME` in the holdout dir, prompts by pointer file, canary checks, and launch-isolation and drain checks.
+  - **Confirmation-2's scored data** stays sealed in the holdout dir until confirmation-3's decision.
+- **Ex-ante:** at E002's honest estimates (+7.1 to +8.9 pp), INCONCLUSIVE is the likely outcome, and the +10 pp bar is not lowered.
+- **Owner request:** please quiesce the A² session during confirmation generation windows.
