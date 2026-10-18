@@ -1516,3 +1516,16 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - an explicit feature allowlist: disable every stable default-on tool feature (`plugins`, `remote_plugin`, `multi_agent`, `skill_search`, `skill_mcp_dependency_install`, `tool_suggest`, `view_image`, `image_generation`, `in_app_browser`, `browser_use_external`, …);
   - the `--json` allowlist detector, which counts `mcp_tool_call` items;
   - a live `prompt-input` check that the injected context is gone.
+
+### E007 — Sol-directed repair: full stage PROVISIONAL KEEP (+7.1 pp all-pass vs E002)  [cycle 2, proposer: sol, screen 10-17, rest and full 10-18 03:59–07:58 UTC]
+- **Design** (registered in proposer round r1, 10-16; prompts read in its smoke test): 3 Luna drafts → one Sol call that picks among the distinct greens and lists concrete defects, no code → one Luna repair of the pick.
+- **Results vs the incumbent E002** (paired, same tasks, X:cand vs X:inc):
+  - **Screen** (68 tasks): 65/68 vs 62/68, discordant 3 vs 0. It passed the screen gate.
+  - **Rest** (72 tasks): 65/72 vs 58/72, discordant 10 vs 3.
+  - **Full** (140 tasks, 35 families): **Δall-pass +7.14 pp (SE 3.15)**, i.e. +10 net (130 vs 120); Δfrac +0.0108 (SE 0.0231).
+  - Δ clears the threshold (0.0357) and 1.645·SE (0.052), and Δfrac is not significantly negative, so the registered decision is **provisional keep (confirmation deferred)**.
+- **Integrity:** integrity_ok and 0 void tuples in both stages. C2-MCP counted 1 no-op MCP call in the screen, in the X:inc arm.
+- **Spend:** 1,291 invocations, made up of X:cand (Luna 470, Sol 140) and X:inc (Luna 571, Sol 110), plus 10.2M tokens.
+  - That is fewer Luna calls than E002: about 3.4 per task against 4.1.
+- **What happens next is mechanical:** `confirm_best` (≥ 10-20) confirms the largest full-stage provisional keep first. E007's +7.1 pp is now the largest, ahead of E005's +5.0. A promotion makes it the confirmation-3 candidate only if it also passes one dev-holdout look by 10-23 23:59 UTC (plan §0.1).
+- **Caveat:** the winner's curse applies, as it did to E005. The fresh confirmation replicate decides.
