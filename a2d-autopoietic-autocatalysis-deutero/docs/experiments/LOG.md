@@ -1430,3 +1430,9 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Stub-tested: both exit paths propagate their rc, and the deferral path retries 5 times then exits 1. Syntax-checked; no scratchpad paths remain.
 - **No registered setting changes:** same commands, seeds, `--registered-at` and arms; only the scheduling wrapper changed. A one-day slip costs nothing against the budget or the 2026-11-30 deadline.
 - **C2-WEB record completed (same day, count only):** the six 10-14 dev runs (e01–e06) have **0 web-search events in 775 transcripts**. Every holdout run directory on disk was already in the first scan (E07, E07b, E12, S4, c2-look1). Total on record: 0 searches in about 15.8k calls.
+
+### Queue runner restarted on the owner's request; confirmation-2 replicate 1 started  [cycle 2, 2026-10-18 01:35 UTC]
+- The owner asked for the restart at 01:35 UTC 10-18. `zsh ~/.a2d-queue/start.sh` launched the runner detached (pid 7116, `nohup caffeinate -i`, not a Claude Code background shell).
+- Line 1 of `queue-2026-10-18.txt`, `L05-confirm-r1`, started at 01:35:43 UTC. Its ≥ 00:05 UTC 10-18 lower bound had passed, so replicate 1 began at once. This is the first confirmation-2 call: nothing was run on 10-17.
+- No registered setting changed. Replicate 2 (`L09`) keeps its ≥ 10-19 lower bound and its deferral retry, so the two replicates still fall on distinct UTC days.
+- The 10 hours between the reaper stop and the restart cost no Luna. The only cost is about 1.5 h of the 10-18 UTC day for the daily cap.

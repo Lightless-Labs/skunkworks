@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-17 16:00 UTC (session 145: **the queue runner was stopped by Claude Code's memory reaper before confirmation-2 started; restart with `zsh ~/.a2d-queue/start.sh`.** Earlier: C2-WEB: web search was open but unused, and confirmation-2 now has a count-only web audit; E007 screen passed; E005 provisional keep (+5.0 pp, confirmation deferred); look 1 PASSED; confirmation-2 registered at `78727f29`, E002 frozen as `runs/c2-confirm2/frozen.py`. The oracle is OS-sandboxed (C2-ISO2), parity 420/420.)
+**Last updated:** 2026-10-18 01:40 UTC (session 145: **queue runner restarted on the owner's request at 01:35 UTC 10-18 (pid 7116); confirmation-2 replicate 1 (`L05-confirm-r1`) started 01:35:43 UTC.** It had been stopped by Claude Code's memory reaper on 10-17 before confirmation-2 started. Earlier: C2-WEB: web search was open but unused, and confirmation-2 now has a count-only web audit; E007 screen passed; E005 provisional keep (+5.0 pp, confirmation deferred); look 1 PASSED; confirmation-2 registered at `78727f29`, E002 frozen as `runs/c2-confirm2/frozen.py`. The oracle is OS-sandboxed (C2-ISO2), parity 420/420.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -24,8 +24,8 @@
 
 ## In flight / next
 1. **Confirmation-2 (C2-CONFIRM2):** registered at `78727f29e53743dc5d989c62e1de23ab1a81e6c6`. The spec is `runs/c2-confirm2/registration.json`; the LOG entry holds the review dispositions and the power exception.
-   - **⚠ The queue runner is STOPPED** (Claude Code's memory reaper, 15:23 UTC 10-17, while it idled before line 5). Nothing was half-run: no `attempt-r1.json`, no replicate-1 dir. See the LOG entry of that time.
-     - **Restart:** `zsh ~/.a2d-queue/start.sh` (detached, `nohup caffeinate -i`, refuses a second copy). Run it from the owner's terminal, or by Claude only when the owner asks; **never as a Claude Code background shell,** whose reaping mid-replicate would spend the single relaunch.
+   - **The queue runner is RUNNING** (pid 7116, started 01:35:43 UTC 10-18 on the owner's request; check with `kill -0 $(cat ~/.a2d-queue/runner.pid)`). Replicate 1 started at that time. Before that it had been stopped by Claude Code's memory reaper (15:23 UTC 10-17, idle before line 5, nothing half-run); see the LOG entry of that time.
+     - **Restart (if it dies):** `zsh ~/.a2d-queue/start.sh` (detached, `nohup caffeinate -i`, refuses a second copy). Run it from the owner's terminal, or by Claude only when the owner asks; **never as a Claude Code background shell,** whose reaping mid-replicate would spend the single relaunch.
      - Output: `~/.a2d-queue/runner.out`; per-line logs: `~/.a2d-queue/qlogs/`; pid: `~/.a2d-queue/runner.pid` (check with `kill -0`).
    - **Queue** (`~/.a2d-queue/queue-2026-10-18.txt`, re-read line by line; its line n is the old line n+4):
      - at ≥ 00:05 UTC 10-18, `L05-confirm-r1` (`python3 -I nano/eval.py confirm --rep 1 --registered-at 78727f29… --jobs 8`), then the web audit, E007 resume, E006;
