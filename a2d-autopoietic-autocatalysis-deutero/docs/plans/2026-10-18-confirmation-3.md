@@ -4,6 +4,7 @@
 **Status:** Active. **§0 is a pre-commitment, fixed 2026-10-18 before confirmation-2's replicate 2 (≥ 00:05 UTC 10-19) and before `confirm_best` (≥ 10-20).** §§1–5 are the reviewed draft, read with the dispositions in §7. Nothing is authored before the work items in §0.6 that come ahead of authoring are done.
 **Reviewed:** 2026-10-18, draft design review by Codex `gpt-6.1-sol` high (no tools, web disabled, everything inline; 0 search events) and a fresh Claude subagent (copies only). Dispositions in §7.
 **Parent:** `docs/plans/2026-10-15-cycle2-nanoharness.md`, addendum 2026-10-18.
+**Addendum:** 2026-10-18 ~12:00 UTC — §0.12. Sol's second pipeline re-check found 5 startup blockers. A live probe then showed that a *copied* `open` launched an app outside the sandbox. All 5 are closed in code, and one gap in the frozen rules is filled: an authoring-exhausted family is replaced. Still before any selection call.
 **Why:** confirmation-2 ended in IntegrityReview (LOG, 10-18 03:59 UTC: 2 web searches in arm B, replicate 1). Confirmation sets are spent once, so the goal's done-path (a frozen harness SUPPORTED vs both D and B on its confirmation set) needs a new blind set in the same regime.
 
 ## 0. Pre-commitment (fixed 2026-10-18; binds the registration)
@@ -167,8 +168,35 @@ Implemented in `tools/holdout/` and committed before any selection call. The pip
   - The OAuth token in `auth.json` is readable by the job; it is never writable.
   - Global file-metadata reads are allowed.
   - The controller's API-surface check compiles model-written Rust without the oracle's sandbox. It compiles only, never runs, and the crates are frozen until `decision.json`.
-  - No dedicated uid (no admin rights). Instead the profile denies writes by default, keeps signals and process info within the sandbox, denies broker binaries (`launchctl`, `open`, `osascript`, `ssh`, …) and blocks unix sockets in user dirs. Every route was probed live with real codex on 10-18 and denied.
+  - No dedicated uid (no admin rights). Instead the profile denies writes by default, keeps signals and process info within the sandbox, denies broker binaries (`launchctl`, `open`, `osascript`, `ssh`, …) and blocks unix sockets in user dirs. Every route was probed live with real codex on 10-18 and denied. *(Corrected by §0.12: denying the binaries' paths did not hold against copies.)*
 - **SPEC.md stays byte-identical** (sha256 prefix `447f84b907a6`) to the spec that authored the dev-holdout and the confirmation-2 extension. That keeps confirmation-3 on the same task distribution as the data the harnesses were searched on. Sol's #22, to remove its retrospective difficulty cues, is therefore not adopted, and the registration discloses it.
+
+### 0.12 Addendum: startup blockers from Sol's second re-check (2026-10-18, before any selection call)
+Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup blockers first." What was done for each:
+- **Broker confinement (was open).**
+  - A live probe under the real profile showed that a copy of `/usr/bin/open` in the workdir **launched TextEdit outside the sandbox** through LaunchServices. Path denies do not stop a copy, so the escape was real; `open -a Terminal x.command` would have run code unsandboxed.
+  - Now Mach lookups are an allowlist (`c3lib.MACH_ALLOW`):
+    - logd, notification center, opendirectoryd (libinfo and membership), dirhelper, trustd (and its agent), configd, and SecurityServer, which codex needs to load TLS roots (bisected live: without it, codex's API connection fails while `curl` works).
+    - The list was harvested with `(allow mach-lookup (with report))` from a sandboxed compile, link and test run and a live codex call.
+  - TCP to `localhost` (v4 and v6) is denied.
+  - Probed live and now repeated before every job:
+    - copied `open` (by name and by path), `launchctl`, `pbpaste` and `mdfind` fail;
+    - `curl` to a localhost listener fails, and the listener sees no connection.
+  - Checked once: `osascript` to Finder hangs and never answers, and a weakened profile fails the probes (negative control).
+  - **Disclosed:** a copied `security` can list the *system* keychain's item metadata, which is world-readable outside the sandbox anyway. The login keychain's file is unreadable.
+- **Job quiescence (was open).**
+  - `setsid` descendants survive `killpg`. Jobs are now identified by sandbox membership: each profile alone may read its own tag file, and the host checks this with `sandbox_check` on every pid.
+  - After each job or probe, the driver stops every member to a fixpoint, kills them, and verifies that none remain before touching any artifact. It raises if any survive.
+  - `DriverLock` first reaps every unretired tag (driver-death recovery), and `drained()` requires no live member.
+  - Verified live: a setsid'd, double-forked, env-scrubbed, chdir'd daemon is found only under its own tag and reaped in 0.35 s.
+  - Host reads are descriptor-relative (`O_NOFOLLOW` per component; `os.fwalk`).
+- **Selection provenance:** `select.json` carries the generation; `--reset` retires it with the failed briefs and job records.
+- **STOP enforcement:** one launch lock serialises `STOP` creation and every job `Popen`, select and namecheck included. A launch refused at the gate releases its reservation.
+- **Inventory completeness:** traversal errors raise; excluded subtrees are pruned before descent.
+- **Similarity state (was partly open):**
+  - a re-authored family is decided only by a check of a suite that holds the re-authored version (`assembled.json`); a stale suite leaves it pending;
+  - a failed re-author is terminal.
+- **Gap filled in §0.11** (it named no outcome for an authoring-exhausted family): a family whose 2 authoring attempts are used up without verified output is **replaced by the next spare, or dropped** at assembly. This is the same rule as the other exhaustion paths.
 
 ### 0.9 Owner request
 - The A² session shares the account. Luna calls take 60–175 s today.

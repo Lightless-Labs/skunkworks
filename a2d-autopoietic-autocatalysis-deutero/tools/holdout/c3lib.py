@@ -144,9 +144,8 @@ def _check_chain(path, root):
             return
 
 
-def safe_read_bytes(path, root=None):
-    _check_chain(path, root or HOLDOUT)
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)   # a FIFO must not block
+def _read_fd(fd):
+    """Read a regular file from an open descriptor (closes it)."""
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise PermissionError("not a regular file")
@@ -156,6 +155,33 @@ def safe_read_bytes(path, root=None):
     finally:
         if fd is not None:
             os.close(fd)
+
+
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK          # a FIFO must not block
+
+
+def safe_read_bytes(path, root=None):
+    """Descriptor-relative read: every component below root is opened with O_NOFOLLOW
+    relative to its parent's descriptor, so no component can be swapped for a symlink."""
+    root = Path(os.path.abspath(root or HOLDOUT))
+    path = Path(os.path.abspath(path))
+    if path == root or root not in path.parents:
+        raise PermissionError("outside root")
+    parts = path.relative_to(root).parts
+    dfd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parts[:-1]:
+            nfd = os.open(part, _DIR_FLAGS, dir_fd=dfd)
+            os.close(dfd)
+            dfd = nfd
+        return _read_fd(os.open(parts[-1], _FILE_FLAGS, dir_fd=dfd))
+    except OSError as e:
+        if e.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise PermissionError("symlink") from e
+        raise
+    finally:
+        os.close(dfd)
 
 
 def safe_read_text(path, root=None):
@@ -223,8 +249,17 @@ def _q(s):
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def profile(workdir):
-    """SBPL profile for one job."""
+# Harvested 2026-10-18 with (allow mach-lookup (with report)) from a sandboxed compile+link
+# +test run and a live codex call; only these are reachable from a job.
+MACH_ALLOW = ("com.apple.logd", "com.apple.system.notification_center", "com.apple.system.opendirectoryd.libinfo",
+              "com.apple.system.opendirectoryd.membership", "com.apple.bsd.dirhelper", "com.apple.trustd",
+              "com.apple.trustd.agent", "com.apple.SystemConfiguration.configd",
+              "com.apple.SecurityServer")   # codex loads TLS roots through it; keychain files stay unreadable
+
+
+def profile(workdir, tag):
+    """SBPL profile for one job. `tag` is an empty driver-owned file only this profile may
+    read: it identifies the job's processes to the host (see job_members)."""
     home = str(Path.home())
     w = _rp(workdir)
     codex_dir = _rp(Path(CODEX).resolve().parent)
@@ -243,6 +278,14 @@ def profile(workdir):
         "(deny process-info*)",
         "(allow process-info* (target same-sandbox))",
         "(deny process-exec " + " ".join(f"(literal {_q(b)})" for b in brokers) + ")",
+        # Mach services are an allowlist: copied broker binaries (open, launchctl, security,
+        # mdfind, pbpaste, ...) bypass the exec denies above but need LaunchServices, the
+        # keychain, Spotlight or the pasteboard, which stay unreachable (probed live).
+        "(deny mach-lookup)",
+        "(allow mach-lookup " + " ".join(f"(global-name {_q(n)})" for n in MACH_ALLOW) + ")",
+        # Local TCP services (dev servers, browser debug ports, local MCP/HTTP brokers) are
+        # closed; the remote API stays reachable.
+        '(deny network-outbound (remote ip "localhost:*"))',
         # Unix sockets under the user's dirs and temp roots (ssh-agent, launchd listeners,
         # other daemons) are closed; only sockets inside the workdir are allowed.
         "(deny network-outbound (remote unix-socket"
@@ -257,7 +300,7 @@ def profile(workdir):
         ' (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/private/var/tmp"))',
         f"(allow file-read* file-write* (subpath {_q(w)}))",
         '(allow file-write* (literal "/dev/null") (literal "/dev/zero"))',
-        f"(allow file-read* (literal {_q(_rp(REAL_AUTH))}))",
+        f"(allow file-read* (literal {_q(_rp(REAL_AUTH))}) (literal {_q(_rp(tag))}))",
         f"(allow file-read* (subpath {_q(_rp(TOOLCHAIN))}) (subpath {_q(codex_dir)}))",
         "(allow file-read-metadata)",
         '(deny file-read* file-write* (regex #"^/dev/tty"))',
@@ -305,13 +348,22 @@ def _env(workdir, home):
 
 
 def sandboxed(workdir, argv, record=None, **kw):
-    """Run argv under the job's profile with a cleared environment (no codex home needed)."""
+    """Run argv under a fresh tagged profile with a cleared environment, then reap every
+    process left in that sandbox (fails closed if one survives)."""
+    import threading
     rec = record_dir(record or "_probe")
-    prof = rec / f"probe-{os.getpid()}-{time.time_ns()}.sb"
-    safe_write_text(prof, profile(workdir))
+    name = f"probe-{os.getpid()}-{threading.get_ident()}-{time.time_ns()}"
+    tag = new_tag(name)
+    prof = rec / f"{name}.sb"
+    safe_write_text(prof, profile(workdir, tag))
     env = _env(workdir, Path(workdir) / "_codex_home")
-    return subprocess.run(["/usr/bin/sandbox-exec", "-f", str(prof), *argv], cwd=workdir, env=env,
-                          stdin=subprocess.DEVNULL, **kw)
+    try:
+        return subprocess.run(["/usr/bin/sandbox-exec", "-f", str(prof), *argv], cwd=workdir, env=env,
+                              stdin=subprocess.DEVNULL, **kw)
+    finally:
+        if not reap(tag):
+            raise RuntimeError("probe not quiesced")
+        retire_tag(tag)
 
 
 # ------------------------------------------------------------ isolation checks
@@ -388,7 +440,54 @@ def _probes(w, canary, secret, extra_denied):
                   capture_output=True, text=True, timeout=60)
     if r.returncode == 0 or "Operation not permitted" not in r.stderr:
         return False
-    return True
+    return _brokers_closed(w, secret)
+
+
+BROKER_COPIES = ("/usr/bin/open", "/bin/launchctl", "/usr/bin/pbpaste", "/usr/bin/mdfind")
+
+
+def _brokers_closed(w, secret):
+    """Copies of broker binaries (which bypass the exec denies) must not reach their
+    services, and a local TCP listener must be unreachable. Each case has its own
+    expected-failure test (they do not all fail with EPERM)."""
+    import socket
+    w = Path(w)
+    pdir = w / f".c3-brokers-{secret[-24:]}"
+    pdir.mkdir()
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    srv.setblocking(False)
+    try:
+        x = {}
+        for b in BROKER_COPIES:
+            x[os.path.basename(b)] = pdir / f"x{os.path.basename(b)}"
+            safe_copy(b, x[os.path.basename(b)], "/", w, mode=0o755)
+        port = srv.getsockname()[1]
+        cases = [
+            ([x["open"], "-g", "-j", "/System/Applications/Calculator.app"], lambda r: r.returncode != 0),
+            ([x["launchctl"], "list"], lambda r: r.returncode != 0 and not r.stdout.strip()),
+            ([x["pbpaste"]], lambda r: r.returncode != 0),
+            ([x["mdfind"], "-onlyin", "/Applications", "-name", "Safari"], lambda r: not r.stdout.strip()),
+            (["/usr/bin/curl", "-s", "-m", "5", f"http://127.0.0.1:{port}/"], lambda r: r.returncode == 7),
+        ]
+        for argv, denied in cases:
+            try:
+                r = sandboxed(w, [str(a) for a in argv], capture_output=True, text=True, timeout=30)
+            except subprocess.TimeoutExpired:
+                return False
+            if not denied(r):
+                return False
+        try:
+            srv.accept()
+            return False                     # something reached the listener
+        except BlockingIOError:
+            return True
+    finally:
+        srv.close()
+        for f in pdir.iterdir():
+            f.unlink()
+        pdir.rmdir()
 
 
 def disable_args():
@@ -398,6 +497,111 @@ def disable_args():
     return out
 
 
+# ------------------------------------------------------------ job quiescence
+#
+# A job's processes are identified by their sandbox, not by process group, session,
+# environment or ancestry (all of which a job can shed): each profile alone may read its
+# empty tag file under records/tags/, which every other profile denies (it is inside the
+# holdout dir) and unsandboxed processes can read. sandbox_check(pid, "file-read-data",
+# tag) == allowed, while records/tags/_none is denied, means the pid is in that sandbox.
+
+TAGS = RECORDS / "tags"
+_FILTER_PATH, _NO_REPORT = 1, 0x40000000
+_lib = None
+
+
+def _libsystem():
+    global _lib
+    if _lib is None:
+        import ctypes
+        lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        lib.sandbox_check.restype = ctypes.c_int
+        lib.sandbox_check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]  # path is variadic
+        lib.proc_listallpids.restype = ctypes.c_int
+        lib.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        _lib = lib
+    return _lib
+
+
+def _all_pids():
+    import ctypes
+    lib = _libsystem()
+    n = lib.proc_listallpids(None, 0)
+    buf = (ctypes.c_int * (n + 512))()
+    n = lib.proc_listallpids(buf, ctypes.sizeof(buf))
+    if n <= 0:
+        raise OSError("proc_listallpids")
+    return [buf[i] for i in range(n) if buf[i] > 1 and buf[i] != os.getpid()]
+
+
+def _may_read(pid, path):
+    import ctypes
+    return _libsystem().sandbox_check(pid, b"file-read-data", _FILTER_PATH | _NO_REPORT,
+                                      ctypes.c_char_p(str(path).encode())) == 0
+
+
+def _member(pid, tag):
+    return _libsystem().sandbox_check(pid, None, 0) == 1 and _may_read(pid, tag) \
+        and not _may_read(pid, TAGS / "_none")
+
+
+def new_tag(name):
+    TAGS.mkdir(parents=True, exist_ok=True)
+    if not (TAGS / "_none").exists():
+        safe_write_text(TAGS / "_none", "")
+    tag = TAGS / f"{name}.tag"
+    safe_write_text(tag, "")
+    return tag
+
+
+def retire_tag(tag):
+    try:
+        os.unlink(tag)
+    except FileNotFoundError:
+        pass
+
+
+def job_members(tag):
+    if not os.path.exists(tag):
+        raise FileNotFoundError("tag")
+    return [p for p in _all_pids() if _member(p, tag)]
+
+
+def reap(tag, deadline=60):
+    """Stop every member of the tag's sandbox to a fixpoint (stopped processes cannot
+    fork), kill them, repeat until none is left. A stopped pid that no longer belongs to
+    the sandbox (pid reuse) is continued, never killed. True iff nothing survives."""
+    end = time.time() + deadline
+    while time.time() < end:
+        stopped = set()
+        while True:
+            new = [p for p in job_members(tag) if p not in stopped]
+            if not new:
+                break
+            for p in new:
+                try:
+                    os.kill(p, signal.SIGSTOP)
+                except ProcessLookupError:
+                    pass
+                stopped.add(p)
+        if not stopped:
+            return True
+        for p in stopped:
+            try:
+                os.kill(p, signal.SIGKILL if _member(p, tag) else signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+        time.sleep(0.2)
+    return not job_members(tag)
+
+
+def reap_all():
+    """Driver-death recovery: reap every job whose tag was never retired."""
+    if not TAGS.exists():
+        return True
+    return all(reap(t) for t in sorted(TAGS.glob("*.tag")))
+
+
 # ------------------------------------------------------------------ job runner
 
 def _kill_group(p):
@@ -405,6 +609,44 @@ def _kill_group(p):
         os.killpg(p.pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         pass
+
+
+class StopRequested(Exception):
+    """STOP existed when the launch gate was taken; nothing was launched."""
+
+
+class _Gate:
+    """One exclusive lock (records/launch.lock) serialises STOP creation and every job
+    launch, so no job starts after STOP exists (closes the check-to-launch race)."""
+
+    def __enter__(self):
+        import fcntl
+        RECORDS.mkdir(parents=True, exist_ok=True)
+        self.fd = os.open(RECORDS / "launch.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        import fcntl
+        fcntl.flock(self.fd, fcntl.LOCK_UN)
+        os.close(self.fd)
+        return False
+
+
+def request_stop():
+    with _Gate():
+        safe_write_text(C3 / "STOP", "stop\n")
+
+
+def launch(argv, **kw):
+    """Popen through the launch gate: refuses once STOP exists; records the pgid."""
+    with _Gate():
+        if stop_requested():
+            raise StopRequested()
+        p = subprocess.Popen(argv, start_new_session=True, **kw)
+        with open(RECORDS / "pids.txt", "a") as f:   # process-group ids (new session)
+            f.write(f"{p.pid}\n")
+        return p
 
 
 def run_codex(workdir, record, model="gpt-6.1-sol", effort="high", timeout=7200):
@@ -417,18 +659,17 @@ def run_codex(workdir, record, model="gpt-6.1-sol", effort="high", timeout=7200)
     w = Path(workdir).resolve()
     rec = record_dir(record)
     home = job_codex_home(w)
+    tag = new_tag(record)
     prof = rec / "job.sb"
-    safe_write_text(prof, profile(w))
+    safe_write_text(prof, profile(w, tag))
     argv = [CODEX, "exec", "-m", model, "-c", f'model_reasoning_effort="{effort}"',
             "-c", 'web_search="disabled"', "-c", 'approval_policy="never"',
             "--sandbox", "danger-full-access", "--skip-git-repo-check", "--json",
             *disable_args(), "Read INSTRUCTIONS.md in the current directory and follow it."]
     code = None
     with open(rec / "codex.jsonl", "wb") as out, open(rec / "codex.err", "wb") as err:
-        p = subprocess.Popen(["/usr/bin/sandbox-exec", "-f", str(prof), *argv], cwd=w, env=_env(w, home),
-                             stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True)
-        with open(RECORDS / "pids.txt", "a") as f:   # process-group ids (new session)
-            f.write(f"{p.pid}\n")
+        p = launch(["/usr/bin/sandbox-exec", "-f", str(prof), *argv], cwd=w, env=_env(w, home),
+                   stdin=subprocess.DEVNULL, stdout=out, stderr=err)
         try:
             code = p.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -436,6 +677,11 @@ def run_codex(workdir, record, model="gpt-6.1-sol", effort="high", timeout=7200)
         finally:
             _kill_group(p)
             p.wait()
+            # setsid/double-forked descendants survive killpg: every process still in this
+            # job's sandbox is stopped and killed before the driver touches any artifact.
+            if not reap(tag):
+                raise RuntimeError("job not quiesced")
+    retire_tag(tag)
     safe_write_text(rec / "exit.txt", f"{code}\n")
     return code, count_other_events(rec / "codex.jsonl")
 
@@ -538,6 +784,9 @@ class DriverLock:
         safe_write_text(RECORDS / "driver.pid", f"{os.getpid()}\n")
         if not (RECORDS / "pids.txt").exists():
             safe_write_text(RECORDS / "pids.txt", "")
+        if not reap_all():                   # a previous driver died with live jobs
+            self.__exit__(None, None, None)
+            raise RuntimeError("unquiesced job")
         return self
 
     def __exit__(self, *exc):
@@ -577,17 +826,26 @@ def drained():
             continue
         except PermissionError:
             return False
-    return True
+    try:
+        return not any(job_members(t) for t in TAGS.glob("*.tag")) if TAGS.exists() else True
+    except OSError:
+        return False
+
+
+def _raise(e):
+    raise e
 
 
 def task_files(root, exclude=()):
-    """Every task.json under root, following symlinked dirs without cycles."""
+    """Every task.json under root, following symlinked dirs without cycles. Any traversal
+    error (unreadable dir, vanished entry) raises: an inventory must never be partial."""
     seen_dirs, seen_files, out = set(), set(), []
-    for dirpath, dirs, files in os.walk(root, followlinks=True):
+    for dirpath, dirs, files in os.walk(root, followlinks=True, onerror=_raise):
         real = os.path.realpath(dirpath)
-        if real in seen_dirs or any(x in dirpath for x in exclude):
+        if real in seen_dirs:
             dirs[:] = []
             continue
+        dirs[:] = [d for d in dirs if not any(x in os.path.join(dirpath, d) + "/" for x in exclude)]
         seen_dirs.add(real)
         if "task.json" in files:
             p = os.path.realpath(os.path.join(dirpath, "task.json"))
@@ -649,18 +907,18 @@ def replace_family(fid, reason):
 # --------------------------------------------------- artifacts, hashes, command scan
 
 def tree_hashes(root):
-    """sha256 of every regular file under root (relative paths); symlinks or other
-    non-regular entries make it fail."""
+    """sha256 of every regular file under root (relative paths), walked descriptor-relative
+    (os.fwalk, no symlink following); symlinks, other non-regular entries or any traversal
+    error make it fail."""
     out = {}
-    for dirpath, dirs, files in os.walk(root):
+    for dirpath, dirs, files, dfd in os.fwalk(root, follow_symlinks=False, onerror=_raise):
         for name in dirs + files:
-            full = Path(dirpath) / name
-            mode = os.lstat(full).st_mode
+            mode = os.lstat(name, dir_fd=dfd).st_mode
             if stat.S_ISLNK(mode) or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
                 raise PermissionError("non-regular entry")
         for name in files:
-            full = Path(dirpath) / name
-            out[str(full.relative_to(root))] = hashlib.sha256(safe_read_bytes(full, root)).hexdigest()
+            rel = os.path.relpath(os.path.join(dirpath, name), root)
+            out[rel] = hashlib.sha256(_read_fd(os.open(name, _FILE_FLAGS, dir_fd=dfd))).hexdigest()
     return out
 
 

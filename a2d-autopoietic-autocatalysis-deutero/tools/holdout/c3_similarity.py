@@ -11,8 +11,13 @@ median Jaccard 0.62, median containment 0.97.
 
 State machine (records/similarity.json), deterministic:
 - first conflict of a family -> "reauthor" (c3_author.py --reauthor, its 2nd attempt);
-- conflict after a re-author, or no attempt left -> family replaced by the next spare,
-  or dropped when none remain (c3lib.replace_family).
+  it stays "reauthor" (pending) until re-authored;
+- a successful re-author sets "reauthor-done"; only a check of a suite that holds the
+  re-authored version (records/assembled.json) decides it: conflict -> replaced, no
+  conflict -> "reauthored". A stale suite leaves it pending;
+- a failed re-author is terminal ("reauthor-failed"): the assembly replaces the family;
+- conflict with no attempt left -> family replaced by the next spare, or dropped when
+  none remain (c3lib.replace_family).
 Prints only gateway lines (counts, maximum similarities, opaque ids).
 
 usage: python3 -I tools/holdout/c3_similarity.py
@@ -66,17 +71,25 @@ def main():
         emit(stage="similarity", tasks=len(mine), n=len(corpus), max_sim=round(worst_j, 2),
              max_contain=round(worst_c, 2), conflicts=len(conflicted))
         state = load_json(RECORDS / "similarity.json", {})
+        assembled = load_json(RECORDS / "assembled.json", {})
+
+        def attempts(fam):
+            return load_json(RECORDS / f"author-{fam}" / "status.json", {"attempts": 0})["attempts"]
+
         for fam in sorted(conflicted):
-            st = load_json(RECORDS / f"author-{fam}" / "status.json", {"attempts": 0})
-            if state.get(fam) == "reauthor":
-                emit(stage="similarity-conflict", id=fam, status="pending")       # idempotent until re-authored
-            elif state.get(fam) is None and st["attempts"] < 2:
+            s = state.get(fam)
+            if s in ("reauthor", "reauthor-failed") or (s == "reauthor-done" and assembled.get(fam) != attempts(fam)):
+                emit(stage="similarity-conflict", id=fam, status="pending")       # idempotent until resolved
+            elif s is None and attempts(fam) < 2:
                 state[fam] = "reauthor"
                 emit(stage="similarity-conflict", id=fam, status="reauthor")
             else:
                 state[fam] = "replaced"
                 spare = replace_family(fam, "similarity")
                 emit(stage="similarity-conflict", id=fam, status="replaced" if spare else "dropped")
+        for fam in sorted(state):
+            if state[fam] == "reauthor-done" and fam not in conflicted and assembled.get(fam) == attempts(fam):
+                state[fam] = "reauthored"                                         # re-authored version is clean
         save_json(RECORDS / "similarity.json", state)
 
 

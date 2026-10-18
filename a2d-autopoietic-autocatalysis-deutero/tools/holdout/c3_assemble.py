@@ -5,7 +5,10 @@ exactly task.json, public_tests.rs, hidden_tests.rs, reference.rs and mutants/m1
 from authoring/confirmation-3/<id>/out/<id>/<id>-lN/. A family enters the suite only with
 all 4 tasks complete and carrying their opaque ids; then the staging dir atomically replaces
 $A2D_HOLDOUT_DIR/confirmation-3. Tasks excluded by the validation caps (records/
-excluded.json) are left out and their family is replaced or dropped (§0.11).
+excluded.json) are left out and their family is replaced or dropped (§0.11); so is a family
+whose 2 authoring attempts are used up without a verified output (addendum 10-18).
+records/assembled.json maps each admitted family to the authoring attempt it holds (the
+similarity re-check uses it to tell a re-authored family from a stale suite).
 Prints only counts and opaque ids.
 
 usage: python3 -I tools/holdout/c3_assemble.py
@@ -19,7 +22,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from c3lib import (C3, RECORDS, SUITE, TASK_RE, DriverLock, emit, gateway, load_json,  # noqa: E402
-                   replace_family, safe_copy, safe_read_text, tree_hashes)
+                   replace_family, safe_copy, safe_read_text, save_json, tree_hashes)
+
+MAX_ATTEMPTS = 2
 
 CONTRACT = ("task.json", "public_tests.rs", "hidden_tests.rs", "reference.rs")
 MUTANTS = tuple(f"m{i}.rs" for i in (1, 2, 3, 4))
@@ -57,7 +62,13 @@ def main():
         for fam in sorted({t.rsplit("-l", 1)[0] for t in excluded}):
             spare = replace_family(fam, "validation-cap")
             emit(stage="assemble-exclude", id=fam, status="replaced" if spare else "dropped")
+        for fam in list(load_json(RECORDS / "active.json")["active"]):
+            st = load_json(RECORDS / f"author-{fam}" / "status.json", {"attempts": 0})
+            if st["attempts"] >= MAX_ATTEMPTS and not st.get("done"):
+                spare = replace_family(fam, "author-exhausted")
+                emit(stage="assemble-exhausted", id=fam, status="replaced" if spare else "dropped")
         active = load_json(RECORDS / "active.json")["active"]
+        assembled = {}
         staging = SUITE.parent / f".confirmation-3.staging-{os.getpid()}-{time.time_ns()}"
         staging.mkdir(parents=True)
         complete, incomplete = 0, 0
@@ -72,6 +83,7 @@ def main():
             if ok:
                 for tdir in fam_dir.iterdir():
                     shutil.move(str(tdir), str(staging / tdir.name))
+                assembled[fid] = st["attempts"]
                 complete += 1
             else:
                 incomplete += 1
@@ -83,6 +95,7 @@ def main():
         os.rename(staging, SUITE)
         if old.exists():
             shutil.rmtree(old)
+        save_json(RECORDS / "assembled.json", assembled)
         emit(stage="assemble", families=complete, missing=incomplete, tasks=complete * 4)
 
 

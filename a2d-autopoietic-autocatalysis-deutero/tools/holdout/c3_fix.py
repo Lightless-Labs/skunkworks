@@ -16,9 +16,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import shutil
 
-from c3lib import (AUTHORING_FILES, C3, RECORDS, DriverLock, emit, gateway, isolation_check,  # noqa: E402
-                   load_json, prereqs_ok, run_codex, safe_write_text, save_json, stop_requested,
-                   suspicious_commands, tree_hashes)
+from c3lib import (AUTHORING_FILES, C3, RECORDS, DriverLock, StopRequested, emit, gateway,  # noqa: E402
+                   isolation_check, load_json, prereqs_ok, run_codex, safe_write_text, save_json,
+                   stop_requested, suspicious_commands, tree_hashes)
 
 MAX_ROUNDS = 2
 _lock = threading.Lock()
@@ -61,7 +61,15 @@ def one(fam, stamp):
     if snapshot.exists():
         shutil.rmtree(snapshot)
     shutil.copytree(out, snapshot, symlinks=True)        # verified regular files (hashes matched)
-    code, other = run_codex(w, record, effort="high", timeout=5400)
+    try:
+        code, other = run_codex(w, record, effort="high", timeout=5400)
+    except StopRequested:             # STOP won the launch gate: nothing ran, release the round
+        with _lock:
+            rec["rounds"] -= 1
+            rec["stamps"].remove(stamp)
+            save_json(RECORDS / f"fix-{fam}" / "rounds.json", rec)
+            emit(stage="fix", id=fam, status="stopped")
+        return
     susp = suspicious_commands(record, w)
     ok = code == 0 and other == 0 and susp == 0 and complete(fam)
     with _lock:

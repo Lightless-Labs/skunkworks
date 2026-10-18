@@ -51,9 +51,9 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(r.stderr.strip(), "", f"{name} wrote to stderr")
         return r.returncode, [json.loads(x) for x in r.stdout.splitlines() if x.strip()]
 
-    def lib(self, code):
+    def lib(self, code, timeout=300):
         r = subprocess.run([sys.executable, "-I", "-c", f"import sys; sys.path.insert(0, {str(TOOLS)!r})\n{code}"],
-                           capture_output=True, text=True, env=self.env, timeout=300)
+                           capture_output=True, text=True, env=self.env, timeout=timeout)
         self.assertEqual(r.returncode, 0, r.stderr[-2000:])
         return r.stdout.strip()
 
@@ -117,6 +117,33 @@ class Pipeline(unittest.TestCase):
                        "        print('REFUSED')")
         self.assertEqual(out, "REFUSED")
 
+    def test_stop_gate_refuses_launch(self):
+        out = self.lib("from c3lib import StopRequested, launch, request_stop\n"
+                       "request_stop()\n"
+                       "try:\n    launch(['/usr/bin/true'])\n    print('LAUNCHED')\n"
+                       "except StopRequested:\n    print('REFUSED')")
+        self.assertEqual(out, "REFUSED")
+
+    def test_brokers_closed(self):
+        """Copied open/launchctl/pbpaste/mdfind and a local TCP listener are unreachable."""
+        w = self.c3 / "c3-f01"
+        w.mkdir(parents=True)
+        self.assertEqual(self.lib(f"from c3lib import _brokers_closed\n"
+                                  f"print(_brokers_closed({str(w)!r}, 'C3-CANARY-test-brokers-0123456789'))"), "True")
+
+    def test_inventory_traversal_error_fails_selection(self):
+        bad = self.holdout / "old-set" / "unreadable"
+        bad.mkdir(parents=True)
+        bad.chmod(0)
+        try:
+            code, lines = self.run_script("c3_select.py")
+        finally:
+            bad.chmod(0o755)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(lines[-1].get("error"), "permissionerror", lines)
+        self.assertFalse((self.c3 / "_records" / "prior_manifest.json").exists())
+        self.assertFalse((self.c3 / "_select").exists())
+
     def test_check_sh_compiles_under_sandbox(self):
         """The real toolchain must compile, link and run tests inside the job profile."""
         w = self.c3 / "c3-f01"
@@ -132,7 +159,7 @@ class Pipeline(unittest.TestCase):
             f" capture_output=True, text=True, timeout=400)\n"
             f"a = sandboxed({str(w)!r}, ['/bin/sh', './api_check.sh', 'reference.rs', 'public_tests.rs'],"
             f" capture_output=True, text=True, timeout=400)\n"
-            f"print(r.returncode, a.returncode, 'API_OK' in a.stdout, 'test result: ok' in r.stdout)")
+            f"print(r.returncode, a.returncode, 'API_OK' in a.stdout, 'test result: ok' in r.stdout)", timeout=900)
         self.assertEqual(out, "0 0 True True", out)
 
     # ------------------------------------------------------------------- flows
@@ -180,6 +207,46 @@ class Pipeline(unittest.TestCase):
         code, lines = self.run_script("c3_author.py", "--parallel", "3")
         self.assertEqual(lines[-1]["done"], 36)                  # STOP: nothing new launched
 
+    def test_reset_retires_the_selection_record(self):
+        env = dict(self.env, C3_TEST_CONFLICTS="5")              # 35 OK < 36: short, reselect allowed
+        code, lines = self.run_script("c3_select.py", env=env)
+        self.assertNotEqual(code, 0)
+        self.assertIn("short-reselect-allowed", [x.get("status") for x in lines])
+        rec = self.c3 / "_records"
+        old = (rec / "select.json").read_text()
+        code, lines = self.run_script("c3_select.py", "--reset", env=dict(env, C3_TEST_FAILSELECT="1"))
+        self.assertNotEqual(code, 0)                              # generation 1's selection job failed
+        self.assertFalse((rec / "select.json").exists())          # generation 0's record was retired
+        # a stale generation-0 success record next to its own briefs is never accepted
+        shutil.rmtree(self.c3 / "_select")
+        shutil.copytree(self.c3 / "_select-failed1", self.c3 / "_select")
+        (rec / "select.json").write_text(old)
+        code, lines = self.run_script("c3_select.py")
+        self.assertNotEqual(code, 0)
+        self.assertFalse((self.c3 / "FAMILIES.txt").exists())
+
+    def test_orphan_is_reaped_before_artifacts_are_read(self):
+        self.select()
+        fid = (self.c3 / "FAMILIES.txt").read_text().split()[0]
+        code, lines = self.run_script("c3_author.py", "--only", fid, env=dict(self.env, C3_TEST_ORPHAN="8641"))
+        self.assertEqual(code, 0, lines)
+        alive = subprocess.run(["/usr/bin/pgrep", "-f", "sleep 8641"], capture_output=True, text=True).stdout.split()
+        self.assertEqual(alive, [], "a detached job process survived")
+        self.assertTrue([x for x in lines if x.get("stage") == "author" and x.get("id") == fid][0]["ok"])
+
+    def test_exhausted_family_is_replaced_at_assembly(self):
+        self.select()
+        fams = (self.c3 / "FAMILIES.txt").read_text().split()
+        env = dict(self.env, C3_TEST_FAILFID=fams[0])
+        for _ in range(2):
+            self.run_script("c3_author.py", "--only", fams[0], env=env)
+        code, lines = self.run_script("c3_author.py", "--only", fams[0], env=env)
+        self.assertIn("cap-exhausted", [x.get("status") for x in lines])
+        code, lines = self.run_script("c3_assemble.py")
+        self.assertIn({"stage": "assemble-exhausted", "id": fams[0], "status": "replaced"}, lines)
+        self.assertNotIn(fams[0], self.active()["active"])
+        self.assertEqual(self.active()["active"][0], "c3-f38")
+
     def test_symlinked_artifact_is_not_assembled(self):
         self.select()
         fams = (self.c3 / "FAMILIES.txt").read_text().split()
@@ -210,6 +277,9 @@ class Pipeline(unittest.TestCase):
         for f in fams[:2]:
             code, lines = self.run_script("c3_author.py", "--reauthor", f, env=env)
             self.assertEqual(code, 0, lines)
+        code, lines = self.run_script("c3_similarity.py")              # suite still holds the old version
+        self.assertEqual({x["status"] for x in lines if x.get("stage") == "similarity-conflict"}, {"pending"})
+        self.assertIn(fams[0], self.active()["active"])
         self.run_script("c3_assemble.py")
         self.run_script("c3_similarity.py")
         act = self.active()

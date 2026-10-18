@@ -21,9 +21,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from c3lib import (AUTHORING_FILES, C3, ID_RE, RECORDS, TASK_RE, DriverLock, drained, emit, gateway,  # noqa: E402
-                   isolation_check, load_json, prereqs_ok, run_codex, safe_copy, safe_read_text,
-                   safe_write_text, save_json, stop_requested, suspicious_commands, tree_hashes)
+from c3lib import (AUTHORING_FILES, C3, ID_RE, RECORDS, TASK_RE, DriverLock, StopRequested, drained,  # noqa: E402
+                   emit, gateway, isolation_check, load_json, prereqs_ok, request_stop, run_codex, safe_copy,
+                   safe_read_text, safe_write_text, save_json, stop_requested, suspicious_commands,
+                   tree_hashes)
 
 MAX_ATTEMPTS = 2
 CONTRACT = ("task.json", "public_tests.rs", "hidden_tests.rs", "reference.rs")
@@ -103,7 +104,14 @@ def one(fid, reauthor=False):
         st["done"] = False
         save_json(RECORDS / f"author-{fid}" / "status.json", st)
     rec = f"author-{fid}-a{st['attempts']}"
-    code, other = run_codex(w, rec, effort="high", timeout=7200)
+    try:
+        code, other = run_codex(w, rec, effort="high", timeout=7200)
+    except StopRequested:             # STOP won the launch gate: nothing ran, release the attempt
+        with _lock:
+            st["attempts"] -= 1
+            save_json(RECORDS / f"author-{fid}" / "status.json", st)
+            emit(stage="author", id=fid, status="stopped")
+        return
     susp = suspicious_commands(rec, w)
     ok = code == 0 and other == 0 and susp == 0 and complete(fid)
     with _lock:
@@ -117,7 +125,7 @@ def one(fid, reauthor=False):
 def main():
     args = sys.argv[1:]
     if args[:1] == ["--stop"]:
-        safe_write_text(C3 / "STOP", "stop\n")
+        request_stop()                 # through the launch gate: no job starts after this
         emit(stage="author", status="stop-requested")
         return
     if args[:1] == ["--drained"]:
@@ -133,9 +141,12 @@ def main():
             if not ID_RE.match(fid) or sim.get(fid) != "reauthor":
                 raise ValueError("reauthor not flagged")
             one(fid, reauthor=True)
-            if status(fid)["done"]:
-                sim[fid] = "reauthored"
-                save_json(RECORDS / "similarity.json", sim)
+            st = status(fid)
+            if st["done"]:            # cleared only by the similarity re-check on the re-assembled suite
+                sim[fid] = "reauthor-done"
+            elif st["attempts"] >= MAX_ATTEMPTS:
+                sim[fid] = "reauthor-failed"   # terminal: the assembly replaces the family
+            save_json(RECORDS / "similarity.json", sim)
             return
         parallel = int(args[args.index("--parallel") + 1]) if "--parallel" in args else 3
         if not 1 <= parallel <= 3:

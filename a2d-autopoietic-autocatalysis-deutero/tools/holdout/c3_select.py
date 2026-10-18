@@ -19,9 +19,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from c3lib import (AUTHORING_FILES, C3, ID_RE, RECORDS, DriverLock, emit, gateway, isolation_check,  # noqa: E402
-                   load_json, opaque_id, prereqs_ok, prior_manifest, prior_tasks, run_codex, safe_copy,
-                   safe_read_text, safe_write_text, save_json, stop_requested, suspicious_commands, tree_hashes)
+from c3lib import (AUTHORING_FILES, C3, ID_RE, RECORDS, DriverLock, StopRequested, emit, gateway,  # noqa: E402
+                   isolation_check, load_json, opaque_id, prereqs_ok, prior_manifest, prior_tasks, run_codex,
+                   safe_copy, safe_read_text, safe_write_text, save_json, stop_requested, suspicious_commands,
+                   tree_hashes)
 
 N_FAMILIES, N_TOTAL, MIN_FAMILIES = 36, 40, 30
 IDS = [opaque_id(i) for i in range(1, N_TOTAL + 1)]
@@ -49,6 +50,22 @@ def briefs_complete(fam_dir):
         return False
 
 
+def generation():
+    """Selection generation: 0, or 1 after the single --reset (§0.11)."""
+    return load_json(RECORDS / "reselect.json", {"count": 0})["count"]
+
+
+def guarded_run(w, record, timeout):
+    """run_codex, but a STOP at the launch gate removes the unlaunched workdir (nothing ran,
+    so the write-once selection is not consumed) and exits."""
+    try:
+        return run_codex(w, record, effort="high", timeout=timeout)
+    except StopRequested:
+        shutil.rmtree(w)
+        emit(stage=record, status="stopped")
+        sys.exit(2)
+
+
 def select(inventory):
     w = C3 / "_select"
     if w.exists():
@@ -58,13 +75,14 @@ def select(inventory):
     emit(stage="select-isolation", ok=ok)
     if not ok:
         sys.exit(2)
-    code, other = run_codex(w, "select", effort="high", timeout=5400)
+    code, other = guarded_run(w, "select", 5400)
     susp = suspicious_commands("select", w)
     complete = briefs_complete(w / "families")
     ok = code == 0 and other == 0 and susp == 0 and complete
     emit(stage="select", exit=code, other_events=other, skipped=susp, ok=ok)
-    if ok:
-        save_json(RECORDS / "select.json", {"ok": True, "hashes": tree_hashes(w / "families")})
+    if ok:   # bound to this generation's successful job (a reset retires it)
+        save_json(RECORDS / "select.json", {"ok": True, "generation": generation(),
+                                            "hashes": tree_hashes(w / "families")})
     return ok
 
 
@@ -72,7 +90,8 @@ def check(inventory):
     if (C3 / "FAMILIES.txt").exists():
         raise RuntimeError("FAMILIES.txt exists (write-once)")
     rec = load_json(RECORDS / "select.json", {})
-    if not rec.get("ok") or rec.get("hashes") != tree_hashes(C3 / "_select" / "families"):
+    if not rec.get("ok") or rec.get("generation") != generation() \
+            or rec.get("hashes") != tree_hashes(C3 / "_select" / "families"):
         raise RuntimeError("no successful selection record for these briefs")
     w = C3 / "_namecheck"
     if w.exists():
@@ -84,7 +103,7 @@ def check(inventory):
     emit(stage="namecheck-isolation", ok=ok)
     if not ok:
         sys.exit(2)
-    code, other = run_codex(w, "namecheck", effort="high", timeout=3600)
+    code, other = guarded_run(w, "namecheck", 3600)
     other += suspicious_commands("namecheck", w)
     verdicts = {}
     try:
@@ -129,12 +148,16 @@ def main():
         sys.exit(2)
     with DriverLock():
         if "--reset" in sys.argv[1:]:
-            n = load_json(RECORDS / "reselect.json", {"count": 0})["count"]
+            n = generation()
             if n >= 1 or (C3 / "FAMILIES.txt").exists():
                 raise RuntimeError("reselection not allowed")
             for d in ("_select", "_namecheck"):
                 if (C3 / d).exists():
                     shutil.move(str(C3 / d), str(C3 / f"{d}-failed{n + 1}"))
+            # retire the failed generation's success record and job records with it
+            for r in ("select.json", "select", "namecheck"):
+                if (RECORDS / r).exists():
+                    shutil.move(str(RECORDS / r), str(RECORDS / f"failed{n + 1}-{r}"))
             save_json(RECORDS / "reselect.json", {"count": n + 1})
         rows, counts = prior_tasks()
         for k in sorted(counts):
@@ -146,7 +169,8 @@ def main():
             emit(stage="select", status="incomplete")
             sys.exit(1)
         rec = load_json(RECORDS / "select.json", {})
-        if not rec.get("ok") or not briefs_complete(C3 / "_select" / "families"):
+        if not rec.get("ok") or rec.get("generation") != generation() \
+                or not briefs_complete(C3 / "_select" / "families"):
             emit(stage="select", status="incomplete")
             sys.exit(1)
         if not check(inventory):

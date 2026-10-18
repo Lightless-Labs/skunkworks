@@ -7,6 +7,7 @@ here=$(dirname "$0")
 echo '{"type":"thread.started"}'
 echo '{"type":"turn.started"}'
 if grep -q "choose and brief 40" INSTRUCTIONS.md; then
+  if [ -n "$C3_TEST_FAILSELECT" ]; then exit 1; fi
   mkdir -p families; : > families/NAMES.tsv
   i=1
   while [ $i -le 40 ]; do
@@ -21,12 +22,13 @@ elif grep -q "independent overlap check" INSTRUCTIONS.md; then
   i=1
   while [ $i -le 40 ]; do
     n=$(printf '%02d' $i)
-    if [ "$n" = "05" ]; then v=CONFLICT; else v=OK; fi
+    if [ "$n" = "05" ] || [ "$i" -le "${C3_TEST_CONFLICTS:-0}" ]; then v=CONFLICT; else v=OK; fi
     printf 'c3-f%s\t%s\n' "$n" "$v" >> VERDICTS.tsv
     i=$((i + 1))
   done
 elif grep -q "author one task family" INSTRUCTIONS.md; then
   fid=$(grep -o 'c3-f[0-9][0-9]' INSTRUCTIONS.md | head -1)
+  if [ -n "$C3_TEST_FAILFID" ] && [ "$C3_TEST_FAILFID" = "$fid" ]; then exit 1; fi
   for l in 1 2 3 4; do
     d=out/$fid/$fid-l$l
     mkdir -p $d/mutants
@@ -49,6 +51,10 @@ if grep -q "repair rejected tasks" INSTRUCTIONS.md; then
   fid=$(ls out | head -1)
   if [ -n "$C3_TEST_FIXFAIL" ]; then printf 'BROKEN' > out/$fid/$fid-l1/reference.rs; exit 1; fi
   printf '\n// repaired\n' >> out/$fid/$fid-l4/reference.rs
+fi
+if [ -n "$C3_TEST_ORPHAN" ]; then   # a detached, env-scrubbed daemon in a new session
+  /usr/bin/perl -e 'use POSIX; fork and exit; POSIX::setsid(); fork and exit; open STDIN, "</dev/null";
+    open STDOUT, ">/dev/null"; open STDERR, ">/dev/null"; %ENV = (); chdir "/"; exec "/bin/sleep", $ARGV[0]' "$C3_TEST_ORPHAN"
 fi
 if [ -n "$C3_TEST_TOOL" ]; then echo '{"type":"item.completed","item":{"type":"mcp_tool_call"}}'; fi
 echo '{"type":"item.completed","item":{"type":"agent_message","text":"SECRET-MODEL-TEXT DONE"}}'
