@@ -1529,3 +1529,38 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - That is fewer Luna calls than E002: about 3.4 per task against 4.1.
 - **What happens next is mechanical:** `confirm_best` (≥ 10-20) confirms the largest full-stage provisional keep first. E007's +7.1 pp is now the largest, ahead of E005's +5.0. A promotion makes it the confirmation-3 candidate only if it also passes one dev-holdout look by 10-23 23:59 UTC (plan §0.1).
 - **Caveat:** the winner's curse applies, as it did to E005. The fresh confirmation replicate decides.
+
+### Confirmation-3 pipeline built and reviewed; provider and controller hardened on `c2-web-provider`  [cycle 2, 2026-10-18 06:30–10:40 UTC; no confirmation-3 call yet]
+- **Blind power (plan §0.6 step 1):** `docs/experiments/analysis/c3_power.py`, dev summaries only.
+  - Pooled dev discordance is 0.173, which calibrates the task deviation SE to 1.5.
+  - At 36 × 4 and r = 2: P(RULED OUT | 0) = 0.91, P(SUPPORTED) = 0.14 / 0.33 / 0.47 / 0.96 at +7.1 / +8.9 / +10 / +15 pp.
+- **Authoring pipeline (step 2):** `tools/holdout/`, rebuilt in the repo; the 10-14 scripts were lost with a scratchpad.
+  - **Code review 1** (Codex Sol plus a fresh Claude, copies only) found 6 blockers. Among them:
+    - an allow-default sandbox;
+    - writable credentials;
+    - a shared codex home;
+    - symlink-following host I/O;
+    - an output token that could print names;
+    - no process-group kill.
+  - **The live probe proved a real gap:** a job could connect to the ssh-agent socket. All of these are fixed.
+  - **Sol re-check 2** found 8 new majors: a lock race, unlink-then-write, a resumable failed selection, admission of failed-job files, an idempotency bug, a FIFO, the assembly crash window and copied brokers. These are fixed too.
+  - **Live probe with real codex under the final profile:** reads of the canary, the holdout dir and `/Users`; writes to `/opt/homebrew`; signals to the driver; ssh-agent connects; `launchctl`; `open`; `/dev/tty`. **All denied.**
+  - Tests: 11/11 on fixtures with a fake codex under the real seatbelt profile.
+  - Commits: 9f4d36cf, ef6b58fb, 59d210ac, d50bee58.
+  - **Frozen pre-authoring rules:** plan §0.11, covering caps, the shortfall rule, the similarity state machine, the repair and exclusion rules, adjudication criteria and the disclosed limits.
+- **Instrument (step 3), on branch `c2-web-provider`** (not merged: freeze until `decision.json`, then the batch confirmation step):
+  - **be96d21b, provider:**
+    - per-call isolated `CODEX_HOME` (auth link only);
+    - every tool feature disabled;
+    - `--json` with `--output-last-message`;
+    - allowlist tool counting over event items, failing closed;
+    - usage read from `turn.completed`.
+    - Tests 24/24, plus one live Luna call (PONG, 0 tool events).
+  - **27757c6b, controller:** a tool event voids its tuple. IntegrityReview applies above 0.5% tool events per replicate or on any hidden-name hit. Tests 67/67.
+- **Still to do before step 5:**
+  - the adjudication tooling;
+  - merging the branch;
+  - positive controls per tool per lane;
+  - re-freezing;
+  - confirmation-3 scoring with worst-case imputation in `eval.py` (a new `CONFIRM3` section).
+- **Authoring (step 4) starts only after confirmation-2 replicate 2's web audit is committed**, which `prereqs_ok` checks.
