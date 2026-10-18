@@ -1477,3 +1477,42 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **Confirmation-2's scored data** stays sealed in the holdout dir until confirmation-3's decision.
 - **Ex-ante:** at E002's honest estimates (+7.1 to +8.9 pp), INCONCLUSIVE is the likely outcome, and the +10 pp bar is not lowered.
 - **Owner request:** please quiesce the A² session during confirmation generation windows.
+
+### C2-MCP — codex loads a curated Cloudflare plugin (MCP server) and local skills despite `--ignore-user-config`; 7 dev and 3 look-1 no-op MCP calls  [cycle 2, instrument finding, 2026-10-18 ~06:30 UTC; counts only for holdouts]
+- **How it was found:** a scan of every cycle-2 dev transcript (5,658) for lines that are neither headers nor role markers. Neither `exec` nor `web search:` appeared, but **`mcp:` lines did**: `mcp: codex/list_mcp_resources started/(completed)`, sometimes also `list_mcp_resource_templates`.
+- **Source:**
+  - codex-cli 0.162.0 loads plugins by default (`plugins` and `remote_plugin` are stable and on), and `--ignore-user-config` does not drop them.
+  - A cached plugin from `openai-curated-remote` declares one MCP server, `cloudflare` (`https://mcp.cloudflare.com/mcp`, streamable HTTP). It is the only plugin MCP server.
+  - That server needs OAuth and was never authorised. Every transcript logs `rmcp … AuthRequired … mcp.cloudflare.com` at startup, so the server never connects and exposes no tools or resources.
+  - The coder's `list_mcp_resources` and `list_mcp_resource_templates` are codex built-ins that list connected servers' resources, and there were none.
+  - The controller's `codex_tool_calls` counts `exec` lines only, so these calls were invisible to `integrity_ok`.
+- **Counts** (transcripts with ≥ 1 MCP tool call / transcripts; holdout dirs counted, never opened):
+
+  | run | MCP calls / transcripts |
+  |---|---|
+  | E002 | 2 / 421 |
+  | E002b | 1 / 1,317 |
+  | E003 | 1 / 366 |
+  | E005 | 2 / 1,386 |
+  | E007 (so far) | 1 / 839 |
+  | E003b, E004, C2-AA, phase-B smokes | 0 |
+  | look 1 (holdout) | 3 / 1,240, all in X:inc (E002) |
+  | confirmation-2 replicate 1 (holdout) | 0 / 1,618 |
+  | cycle-1 holdout runs | E07 3 / 1,825; E07b 0; E12 2 / 652; S4 0 |
+
+- **Effect on results:**
+  - No information could flow: the only MCP server never connected, so the listing calls returned nothing. Hidden tests and holdouts are not reachable through this channel.
+  - The calls are rare (≈ 0.1%) and spread over both incumbent and candidate arms.
+  - **Look 1's gate,** checked count-only with one bit released: with the 3 X:inc MCP tuples imputed worst-case (pass → fail), lift and CI low shifted by 3/n, the gate is still **PASS**. This is approximate: the bootstrap was not re-run.
+  - **Confirmation-2's outcome is unchanged:** 0 MCP calls, and IntegrityReview rests on the 2 web searches.
+  - **No recorded result is affected.**
+- **Also found, symmetric across arms** (rendered with `codex debug prompt-input`):
+  - codex injects about 9.9k chars of `<skills_instructions>` and about 2.7k chars of multi-agent role and mode messages ahead of our prompt. The skill list comes from local skill dirs and plugins (e.g. `refinery`, `foundry-*`, `openai-docs`, `claude-code`).
+  - Whether `--ignore-user-config` drops the skills could not be checked: `prompt-input` has no such flag. To be probed live.
+  - Every arm of every run gets the same context, so the paired comparisons stand, but our "prompt" is not the whole input.
+- **The dev batch continues.** The channel carries no information, and the arms are symmetric. No E006–E010 decision rule depends on it.
+- **Fixes (after the freeze, with the C2-WEB provider fix; confirmation-3 §0.4 and §0.6 step 3):**
+  - an empty, dedicated `CODEX_HOME` holding only auth (no plugins, skills, memories, `AGENTS.md` or hooks);
+  - an explicit feature allowlist: disable every stable default-on tool feature (`plugins`, `remote_plugin`, `multi_agent`, `skill_search`, `skill_mcp_dependency_install`, `tool_suggest`, `view_image`, `image_generation`, `in_app_browser`, `browser_use_external`, …);
+  - the `--json` allowlist detector, which counts `mcp_tool_call` items;
+  - a live `prompt-input` check that the injected context is gone.
