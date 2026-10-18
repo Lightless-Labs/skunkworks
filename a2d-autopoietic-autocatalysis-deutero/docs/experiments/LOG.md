@@ -1603,3 +1603,8 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Sol re-check 5** (of 134393a2): the probe race is FIXED and no blocker remains. **Verdict: Yes.** Selection and authoring may start once replicate 2's web audit is committed and the pipeline is committed clean (`prereqs_ok` checks both).
 - **Step-5 tooling built:** `c3_audit.py`, `c3_adjudicate.py` and the frozen `authoring/ADJUDICATE.md`, tested end to end with a fake `a2d` and a fake codex (plan §0.12).
   - The flow test caught a real ordering bug. A repair changes the author files, not the assembled suite, so the suite digest still matched, and the re-audit would have run on the unrepaired task. The audit now also requires every suite family to match its current verified author files (`assembled-hashes.json`).
+- **Host degradation, root cause** (15:30 UTC): the data volume is **98% full (8.9 GB free) with 6.8 GB of swap** in use. That, not the sweep alone, is why `fseventsd` is stuck and file-creating processes sit in `U`.
+  - The `cargo-sweep` ended at 15:09, yet an unsandboxed hello-world compile took 7 min 38 s at 15:30. A fresh-workdir `check.sh` under the profile took 552 s (179 s on the second run).
+  - So the profile's healthy-host compile time is still **unmeasured**. The acceptance bar (first ≤ ~90 s, second ≤ 5 s) is checked before selection starts, on a host with free disk.
+  - Selection and authoring do not start on a degraded host.
+  - L09 (replicate 2, ≥ 00:05 UTC 10-19) writes into `~/.a2d-holdout/runs`. Free space is checked against replicate 1's run size before it fires, and an abort from a full disk or a stall would be attributable to the host (this note precedes the line).
