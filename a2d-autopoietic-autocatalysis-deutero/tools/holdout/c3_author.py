@@ -1,17 +1,19 @@
-"""Confirmation-3 authoring driver (plan §0.6 step 4).
+"""Confirmation-3 authoring driver (plan §0.6 step 4; caps frozen in §0.11).
 
-One Sol (high) job per family in $A2D_HOLDOUT_DIR/authoring/confirmation-3/<id>/,
-each inside the outer sandbox, at most --parallel jobs at once (default 3). Resumable:
-a family whose exit.txt is 0 is skipped. Prints only gateway lines (opaque id, exit
-code, count of non-allowlisted events). Per-family cap: one authoring job (repairs are
-c3_fix.py, at most 2 rounds per task).
+One Sol (high) job per active family in $A2D_HOLDOUT_DIR/authoring/confirmation-3/<id>/,
+inside the outer sandbox, at most --parallel (≤ 3) at once. Caps: 2 authoring attempts per
+family (an attempt is reserved in the records before launch; a re-author after a
+similarity conflict uses the second). A family is done only when the driver has verified
+its output: exit 0, zero non-allowlisted events, and exactly 4 complete task dirs with the
+opaque ids. Prints only gateway lines.
 
-Draining: `--stop` creates STOP; the driver launches nothing new once STOP exists and
-returns when its running jobs finish. `--drained` reports whether every recorded pid
-has exited (kill -0).
+  --stop        request a stop; nothing new launches once STOP exists
+  --drained     §0.10 drain check (STOP, no live driver, no live job process group)
+  --reauthor ID re-author a family flagged by c3_similarity.py (consumes its 2nd attempt)
 
-usage: python3 -I tools/holdout/c3_author.py [--parallel N] [--only c3-fNN] | --stop | --drained
+usage: python3 -I tools/holdout/c3_author.py [--parallel N] [--only c3-fNN] | --stop | --drained | --reauthor c3-fNN
 """
+import json
 import shutil
 import sys
 import threading
@@ -19,73 +21,130 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from c3lib import (AUTHORING_FILES, C3, drained, emit, gateway, isolation_check, read_ids,  # noqa: E402
-                   run_codex)
+from c3lib import (AUTHORING_FILES, C3, ID_RE, RECORDS, TASK_RE, DriverLock, drained, emit, gateway,  # noqa: E402
+                   isolation_check, load_json, prereqs_ok, run_codex, safe_copy, safe_read_text,
+                   safe_write_text, save_json, stop_requested)
 
-PIDS = C3 / "pids.txt"
-STOP = C3 / "STOP"
+MAX_ATTEMPTS = 2
+CONTRACT = ("task.json", "public_tests.rs", "hidden_tests.rs", "reference.rs")
 _lock = threading.Lock()
 
 
-def prepare(fid):
+def active_ids():
+    act = load_json(RECORDS / "active.json")
+    if not act or not all(ID_RE.match(i) for i in act["active"]):
+        raise ValueError("no active list")
+    return act["active"]
+
+
+def complete(fid):
+    """Verify the family's output from the files themselves (symlinks refused)."""
+    base = C3 / fid / "out" / fid
+    try:
+        for lv in (1, 2, 3, 4):
+            tid = f"{fid}-l{lv}"
+            d = base / tid
+            for f in CONTRACT:
+                if not safe_read_text(d / f, C3).strip():
+                    return False
+            if sorted(p.name for p in (d / "mutants").iterdir()) != [f"m{i}.rs" for i in (1, 2, 3, 4)]:
+                return False
+            for i in (1, 2, 3, 4):
+                safe_read_text(d / "mutants" / f"m{i}.rs", C3)
+            tj = json.loads(safe_read_text(d / "task.json", C3))
+            if tj.get("id") != tid or tj.get("family") != fid or not TASK_RE.match(tid):
+                return False
+        safe_read_text(base / "REPORT.md", C3)
+        return True
+    except (OSError, PermissionError, ValueError):
+        return False
+
+
+def status(fid):
+    return load_json(RECORDS / f"author-{fid}" / "status.json", {"attempts": 0, "done": False})
+
+
+def prepare(fid, reauthor=False):
     w = C3 / fid
     w.mkdir(parents=True, exist_ok=True)
     for f in ("SPEC.md", "check.sh", "api_check.sh"):
-        shutil.copy(AUTHORING_FILES / f, w / f)
-        if f.endswith(".sh"):
-            (w / f).chmod(0o755)
-    shutil.copy(C3 / "_select" / "families" / fid / "FAMILY.md", w / "FAMILY.md")
-    (w / "INSTRUCTIONS.md").write_text((AUTHORING_FILES / "AUTHOR.md").read_text().replace("{FAMILY_ID}", fid))
+        safe_copy(AUTHORING_FILES / f, w / f, AUTHORING_FILES, mode=0o755 if f.endswith(".sh") else None)
+    safe_copy(C3 / "_select" / "families" / fid / "FAMILY.md", w / "FAMILY.md", C3)
+    text = (AUTHORING_FILES / "AUTHOR.md").read_text().replace("{FAMILY_ID}", fid)
+    if reauthor:
+        if (w / "out").exists():
+            shutil.rmtree(w / "out")
+        text += ("\n5. A previous version of this family was too similar to an existing benchmark task. "
+                 "Write it afresh: keep the brief's domain but choose different concrete rules, formats, "
+                 "data and API details.\n")
+    safe_write_text(w / "INSTRUCTIONS.md", text)
     return w
 
 
-def done(fid):
-    ex = C3 / fid / "exit.txt"
-    return ex.exists() and ex.read_text().strip() == "0" and (C3 / fid / "out" / fid).is_dir()
-
-
-def one(fid):
-    if STOP.exists():
-        with _lock:
-            emit(stage="author", id=fid, status="skipped")
-        return
-    w = prepare(fid)
-    ok = isolation_check(w)
-    if not ok:
+def one(fid, reauthor=False):
+    with _lock:
+        if stop_requested():
+            emit(stage="author", id=fid, status="stopped")
+            return
+        if status(fid)["attempts"] >= MAX_ATTEMPTS:
+            emit(stage="author", id=fid, status="cap-exhausted")
+            return
+    w = prepare(fid, reauthor)
+    if not isolation_check(w):
         with _lock:
             emit(stage="author-isolation", id=fid, ok=False)
         return
-    code, other = run_codex(w, effort="high", timeout=7200, pidfile=PIDS)
     with _lock:
-        emit(stage="author", id=fid, exit=code, other_events=other)
+        if stop_requested():
+            emit(stage="author", id=fid, status="stopped")
+            return
+        st = status(fid)
+        st["attempts"] += 1           # reserved before launch
+        st["done"] = False
+        save_json(RECORDS / f"author-{fid}" / "status.json", st)
+    code, other = run_codex(w, f"author-{fid}-a{st['attempts']}", effort="high", timeout=7200)
+    ok = code == 0 and other == 0 and complete(fid)
+    with _lock:
+        st["done"] = ok
+        save_json(RECORDS / f"author-{fid}" / "status.json", st)
+        emit(stage="author", id=fid, exit=code, other_events=other, ok=ok, round=st["attempts"])
 
 
 @gateway("author")
 def main():
     args = sys.argv[1:]
     if args[:1] == ["--stop"]:
-        STOP.write_text("stop\n")
+        safe_write_text(C3 / "STOP", "stop\n")
         emit(stage="author", status="stop-requested")
         return
     if args[:1] == ["--drained"]:
-        emit(stage="author", ok=drained(PIDS))
+        emit(stage="author", ok=drained())
         return
-    parallel = 3
-    only = None
-    if "--parallel" in args:
-        parallel = int(args[args.index("--parallel") + 1])
-    if "--only" in args:
-        only = args[args.index("--only") + 1]
-    if parallel < 1 or parallel > 3:
-        raise ValueError("parallel")
-    ids = read_ids(C3 / "FAMILIES.txt")
-    if only:
-        ids = [i for i in ids if i == only]
-    pending = [i for i in ids if not done(i)]
-    emit(stage="author", families=len(ids), pending=len(pending), done=len(ids) - len(pending))
-    with ThreadPoolExecutor(max_workers=parallel) as ex:
-        list(ex.map(one, pending))
-    emit(stage="author", done=sum(done(i) for i in ids), families=len(ids))
+    if not prereqs_ok():
+        emit(stage="author", status="prereqs-not-met")
+        sys.exit(2)
+    with DriverLock():
+        if args[:1] == ["--reauthor"]:
+            fid = args[1]
+            sim = load_json(RECORDS / "similarity.json", {})
+            if not ID_RE.match(fid) or sim.get(fid) != "reauthor":
+                raise ValueError("reauthor not flagged")
+            one(fid, reauthor=True)
+            if status(fid)["done"]:
+                sim[fid] = "reauthored"
+                save_json(RECORDS / "similarity.json", sim)
+            return
+        parallel = int(args[args.index("--parallel") + 1]) if "--parallel" in args else 3
+        if not 1 <= parallel <= 3:
+            raise ValueError("parallel")
+        ids = active_ids()
+        if "--only" in args:
+            ids = [i for i in ids if i == args[args.index("--only") + 1]]
+        pending = [i for i in ids if not status(i)["done"]]
+        emit(stage="author", families=len(ids), pending=len(pending), done=len(ids) - len(pending))
+        with ThreadPoolExecutor(max_workers=parallel) as ex:
+            list(ex.map(one, pending))
+        emit(stage="author", done=sum(status(i)["done"] for i in ids), families=len(ids))
 
 
 if __name__ == "__main__":

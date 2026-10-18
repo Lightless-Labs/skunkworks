@@ -137,6 +137,39 @@ These choices are written before any data that could inform them. That means bef
     - Every child pid it recorded in its pid file has exited, checked with `kill -0` (never `pgrep -f`).
     - The relocated `CODEX_HOME` holds the authoring jobs' session files. This positive check shows the relocation took effect without reading `~/.codex`, which the A² session also writes to.
 
+### 0.11 Rules frozen before step 4 (2026-10-18, after the pipeline code review by Codex Sol and a fresh Claude)
+Implemented in `tools/holdout/` and committed before any selection call. The pipeline's commit is recorded at launch in `records/pipeline.json`.
+
+- **Selection:**
+  - Write-once. Exactly 40 opaque briefs come from one Sol job, and an independent Sol job (fresh workdir and `CODEX_HOME`) marks each OK or CONFLICT against the inventory of every prior family.
+  - `FAMILIES.txt` takes the first 36 OK ids; the remaining OK ids are spares, in id order.
+  - With fewer than 36 OK: one fresh re-selection (`--reset`). If still short, the set uses the OK families when there are ≥ 30, disclosed. Below 30, stop and report.
+- **Authoring:**
+  - At most **2 attempts per family**, each one Sol (high) job, reserved before launch.
+  - A family is done only when verified from its files: exit 0, zero non-allowlisted `--json` events, 4 complete tasks with opaque ids and exactly `m1..m4`, and `REPORT.md`.
+  - Any non-allowlisted event fails the attempt (fail closed).
+- **Similarity** (word 5-gram shingles of `requirements`):
+  - A task conflicts at Jaccard ≥ 0.15 or containment ≥ 0.40 against any prior task (the repo's `tasks/` plus everything in the holdout dir except confirmation-3, authoring history included) or against another confirmation-3 family.
+  - A family's first conflict means a re-author, which uses its 2nd attempt. A conflict after that, or with no attempt left, means replacement by the next spare; with no spare left, the family is dropped (disclosed).
+  - The similarity check re-runs after every assembly, including after the last repair round.
+- **Validation and repair:**
+  - At most **2 FIX rounds per family**, each bound to the validation run that produced its verdicts.
+  - Tasks still rejected after round 2 are excluded, and their family is replaced by the next spare (fresh authoring with its own 2 attempts) or dropped.
+  - The suite contains only families with all 4 tasks.
+- **Independent-solve audit and adjudication** (step 5, on the re-frozen fixed provider):
+  - Audit: Codex Sol (medium), arm D, k = 3, once per task, the same solver as for confirmation-2.
+  - **Adjudication** runs in one sandboxed Sol job per family with failing tasks. It classifies each failing hidden test:
+    - **DETERMINED:** the requirements text implies the expected behaviour. The task is **kept unchanged**; a solver failure on a well-specified test is legitimate difficulty.
+    - **UNDERDETERMINED:** the requirements leave it open. The adjudicator repairs the requirements or the test, followed by one re-audit of that task. If it is still failing and still UNDERDETERMINED, the task is excluded and the family replaced or dropped.
+  - So the audit never conditions the set on Sol solving it, only on the tasks being specified (Claude D8, Sol #19).
+- **Disclosed limits** (not closed by the code):
+  - Network stays open to jobs, because codex needs the API and per-process network rules are not available. Copying public tasks is caught by similarity.
+  - The OAuth token in `auth.json` is readable by the job; it is never writable.
+  - Global file-metadata reads are allowed.
+  - The controller's API-surface check compiles model-written Rust without the oracle's sandbox. It compiles only, never runs, and the crates are frozen until `decision.json`.
+  - No dedicated uid (no admin rights). Instead the profile denies writes by default, keeps signals and process info within the sandbox, denies broker binaries (`launchctl`, `open`, `osascript`, `ssh`, …) and blocks unix sockets in user dirs. Every route was probed live with real codex on 10-18 and denied.
+- **SPEC.md stays byte-identical** (sha256 prefix `447f84b907a6`) to the spec that authored the dev-holdout and the confirmation-2 extension. That keeps confirmation-3 on the same task distribution as the data the harnesses were searched on. Sol's #22, to remove its retrospective difficulty cues, is therefore not adopted, and the registration discloses it.
+
 ### 0.9 Owner request
 - The A² session shares the account. Luna calls take 60–175 s today.
 - **Please pause the A² session during confirmation generation windows** (about 2–3 h each, announced in the HANDOFF), and if possible during confirmation-2's replicate 2 (from 00:05 UTC 10-19).

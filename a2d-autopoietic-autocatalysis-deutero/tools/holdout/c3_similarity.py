@@ -1,35 +1,32 @@
-"""Mechanical disjointness check for confirmation-3 (plan §0.6 step 5; rule frozen in §0.10).
+"""Mechanical disjointness check for confirmation-3 (plan §0.6 step 5; rules frozen in §0.10/§0.11).
 
-Metric: Jaccard similarity of word 5-gram shingles of a task's `requirements` text
-(lower-cased, non-alphanumerics collapsed to spaces). Corpus: every task.json in the
-repo's tasks/ tree and in the holdout sets confirmation-1, confirmation-2, dev-holdout
-and c1-validation. Also compared: confirmation-3 tasks of DIFFERENT families with each
-other. A task conflicts if its maximum similarity to any corpus or other-family task is
->= THRESHOLD. Prints only the overall maximum (2 dp), the conflict count and the opaque
-ids of families with a conflict.
+Metrics on word 5-gram shingles of each task's `requirements` (lower-cased, non-alphanumerics
+collapsed): Jaccard, and containment |A∩B| / min(|A|, |B|) (catches a short task reused
+inside a longer one). Corpus: every prior task (repo tasks/ and everything in the holdout
+dir except confirmation-3, malformed records fail the run) plus confirmation-3 tasks of
+OTHER families. A task conflicts if Jaccard >= 0.15 or containment >= 0.40 against any of
+them. Calibrated 2026-10-18 on the repo's 167 visible tasks: max cross-family Jaccard 0.077,
+max cross-family containment 0.170 (shared boilerplate); same family at another level:
+median Jaccard 0.62, median containment 0.97.
 
-Conflict handling (frozen before authoring): a conflicting family is re-authored once
-(new job, same brief, told only "too similar to an existing task; change the domain
-details"); if it conflicts again it is replaced by the next spare or excluded before
-the hash.
+State machine (records/similarity.json), deterministic:
+- first conflict of a family -> "reauthor" (c3_author.py --reauthor, its 2nd attempt);
+- conflict after a re-author, or no attempt left -> family replaced by the next spare,
+  or dropped when none remain (c3lib.replace_family).
+Prints only gateway lines (counts, maximum similarities, opaque ids).
 
 usage: python3 -I tools/holdout/c3_similarity.py
 """
 import json
-import os
 import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from c3lib import HOLDOUT, SUITE, emit, gateway  # noqa: E402
+from c3lib import (ID_RE, RECORDS, SUITE, DriverLock, emit, gateway, load_json, prior_tasks,  # noqa: E402
+                   replace_family, save_json, task_files)
 
-REPO = Path(__file__).resolve().parents[2]
-# Calibrated 2026-10-18 on the repo's 167 visible tasks: max cross-family similarity per
-# task median 0.023, p95 0.044, max 0.077; same family at another level median 0.62.
-# 0.15 is about twice the highest cross-family value seen.
-THRESHOLD = 0.15
-K = 5
+JACCARD, CONTAIN, K = 0.15, 0.40, 5
 
 
 def shingles(text):
@@ -37,53 +34,45 @@ def shingles(text):
     return {" ".join(words[i:i + K]) for i in range(max(0, len(words) - K + 1))}
 
 
-def jaccard(a, b):
+def scores(a, b):
     if not a or not b:
-        return 0.0
-    return len(a & b) / len(a | b)
-
-
-def task_files(root):
-    """Every task.json under root, following symlinked task dirs (train-all is symlinks)."""
-    seen, out = set(), []
-    for dirpath, _dirs, files in os.walk(root, followlinks=True):
-        if "task.json" in files:
-            p = Path(dirpath) / "task.json"
-            real = p.resolve()
-            if real not in seen:
-                seen.add(real)
-                out.append(p)
-    return sorted(out)
-
-
-def load(root):
-    out = []
-    for tj in task_files(root):
-        try:
-            d = json.loads(tj.read_text())
-        except (OSError, ValueError):
-            continue
-        out.append((d.get("family", ""), shingles(d.get("requirements", ""))))
-    return out
+        return 0.0, 0.0
+    inter = len(a & b)
+    return inter / len(a | b), inter / min(len(a), len(b))
 
 
 @gateway("similarity")
 def main():
-    corpus = load(REPO / "tasks")
-    for s in ("confirmation-1", "confirmation-2", "dev-holdout", "c1-validation"):
-        corpus += load(HOLDOUT / s)
-    mine = load(SUITE)
-    worst, conflicts, fams = 0.0, 0, set()
-    for i, (fam, sh) in enumerate(mine):
-        others = corpus + [m for m in mine if m[0] != fam]
-        best = max((jaccard(sh, o[1]) for o in others), default=0.0)
-        worst = max(worst, best)
-        if best >= THRESHOLD:
-            conflicts += 1
-            fams.add(fam)
-    emit(stage="similarity", tasks=len(mine), n=len(corpus), max_sim=round(worst, 2), conflicts=conflicts)
-    for f in sorted(fams):
-        emit(stage="similarity-conflict", id=f)
+    with DriverLock():
+        prior, counts = prior_tasks()
+        corpus = [(fam, shingles(req)) for fam, req in prior]
+        mine = []
+        for tj in task_files(SUITE):
+            d = json.loads(Path(tj).read_text())
+            if not ID_RE.match(str(d.get("family", ""))) or not str(d.get("requirements", "")).strip():
+                raise ValueError("malformed suite task")
+            mine.append((d["family"], shingles(d["requirements"])))
+        worst_j = worst_c = 0.0
+        conflicted = set()
+        for fam, sh in mine:
+            for ofam, osh in corpus + [m for m in mine if m[0] != fam]:
+                j, c = scores(sh, osh)
+                worst_j, worst_c = max(worst_j, j), max(worst_c, c)
+                if j >= JACCARD or c >= CONTAIN:
+                    conflicted.add(fam)
+        emit(stage="similarity", tasks=len(mine), n=len(corpus), max_sim=round(worst_j, 2),
+             max_contain=round(worst_c, 2), conflicts=len(conflicted))
+        state = load_json(RECORDS / "similarity.json", {})
+        for fam in sorted(conflicted):
+            st = load_json(RECORDS / f"author-{fam}" / "status.json", {"attempts": 0})
+            if state.get(fam) is None and st["attempts"] < 2:
+                state[fam] = "reauthor"
+                emit(stage="similarity-conflict", id=fam, status="reauthor")
+            else:
+                state[fam] = "replaced"
+                spare = replace_family(fam, "similarity")
+                emit(stage="similarity-conflict", id=fam, status="replaced" if spare else "dropped")
+        save_json(RECORDS / "similarity.json", state)
 
 
 if __name__ == "__main__":
