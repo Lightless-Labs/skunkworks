@@ -17,16 +17,47 @@ pub struct CliProvider {
     output_parser: Box<dyn Fn(&str) -> (String, Option<String>) + Send + Sync>,
 }
 
-/// Codex features that give the model tools beyond producing text.
+/// Codex features that give the model tools or extra context beyond producing
+/// text (codex-cli 0.162: every stable, default-on tool feature; LOG C2-WEB and
+/// C2-MCP). Web search is off via the `web_search` config key instead.
 pub const CODEX_DISABLED_FEATURES: &[&str] = &[
     "shell_tool",
     "unified_exec",
     "js_repl",
     "standalone_web_search",
     "browser_use",
+    "browser_use_external",
+    "browser_use_full_cdp_access",
+    "browser_annotation_api",
     "computer_use",
     "apps",
+    "plugins",
+    "remote_plugin",
+    "multi_agent",
+    "skill_search",
+    "skill_mcp_dependency_install",
+    "tool_suggest",
+    "image_generation",
+    "in_app_browser",
+    "view_image",
+    "goals",
+    "hooks",
 ];
+
+/// `--json` event item types a no-tools Codex call may produce. Anything else
+/// (commands, file changes, MCP or web calls, errors, unknown types) counts as a
+/// tool event (allowlist, fail closed; plan 2026-10-18-confirmation-3 §0.4).
+pub const CODEX_ALLOWED_ITEMS: &[&str] = &["agent_message", "reasoning"];
+const CODEX_ALLOWED_EVENTS: &[&str] = &[
+    "thread.started",
+    "turn.started",
+    "turn.completed",
+    "item.started",
+    "item.updated",
+    "item.completed",
+];
+/// Separates the `--json` event stream from Codex's stderr in a transcript.
+pub const CODEX_STDERR_MARKER: &str = "\n--- codex stderr ---\n";
 
 impl CliProvider {
     /// Create a Codex CLI provider.
@@ -80,6 +111,11 @@ impl CliProvider {
                 // 2026-10-17, A²D LOG C2-WEB); the config key turns it off.
                 args.push("-c".to_string());
                 args.push("web_search=\"disabled\"".to_string());
+                // Structured events on stdout (tool detection by allowlist) and the
+                // final message in a file the provider reads back.
+                args.push("--json".to_string());
+                args.push("--output-last-message".to_string());
+                args.push(CODEX_LAST_MESSAGE_FILE.to_string());
                 args
             }),
             output_parser: Box::new(|output: &str| (output.to_string(), None)),
@@ -347,13 +383,100 @@ fn codex_usage(stderr: &str) -> TokenUsage {
     }
 }
 
-/// Tool calls in a Codex CLI stderr log: a command is announced by a line
-/// `exec`, a web search by a line starting `web search:` (codex-cli 0.162).
+/// File (in the provider's isolated cwd) that receives Codex's final message.
+pub const CODEX_LAST_MESSAGE_FILE: &str = "last-message.txt";
+
+/// Tool events in a Codex transcript.
+///
+/// `--json` transcripts (event stream, then `CODEX_STDERR_MARKER`, then stderr):
+/// every item whose type is not in `CODEX_ALLOWED_ITEMS`, every event type outside
+/// the known lifecycle, every unparsable line, and a missing `turn.completed` each
+/// count one (allowlist, fail closed).
+///
+/// Legacy text transcripts (codex stderr before 2026-10-18): lines `exec`,
+/// `web search: …` and `mcp: …` (C2-WEB, C2-MCP).
 pub fn codex_tool_calls(transcript: &str) -> usize {
-    transcript
+    let events = transcript
+        .split_once(CODEX_STDERR_MARKER)
+        .map(|(events, _)| events)
+        .unwrap_or(transcript);
+    if !events.trim_start().starts_with('{') {
+        return transcript
+            .lines()
+            .filter(|line| {
+                line.trim() == "exec" || line.starts_with("web search:") || line.starts_with("mcp: ")
+            })
+            .count();
+    }
+    let mut count = 0;
+    let mut completed = false;
+    for line in events.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            count += 1;
+            continue;
+        };
+        let kind = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if !CODEX_ALLOWED_EVENTS.contains(&kind) {
+            count += 1;
+            continue;
+        }
+        if kind == "turn.completed" {
+            completed = true;
+        }
+        if kind.starts_with("item.") {
+            let item_type = event
+                .get("item")
+                .and_then(|i| i.get("type"))
+                .and_then(|t| t.as_str());
+            if !item_type.is_some_and(|t| CODEX_ALLOWED_ITEMS.contains(&t)) {
+                count += 1;
+            }
+        }
+    }
+    if !completed {
+        count += 1;
+    }
+    count
+}
+
+/// Token usage from a `--json` transcript's `turn.completed` event.
+fn codex_json_usage(events: &str) -> Option<TokenUsage> {
+    let usage = events
         .lines()
-        .filter(|line| line.trim() == "exec" || line.starts_with("web search:"))
-        .count()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|e| e.get("type").and_then(|t| t.as_str()) == Some("turn.completed"))
+        .filter_map(|e| e.get("usage").cloned())
+        .last()?;
+    let get = |k: &str| usage.get(k).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let prompt = get("input_tokens");
+    let completion = get("output_tokens");
+    Some(TokenUsage {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+        thinking_tokens: get("reasoning_output_tokens"),
+        reported_total: Some(prompt + completion),
+    })
+}
+
+/// A dedicated `CODEX_HOME` inside the provider's isolated cwd holding only a
+/// link to the caller's `auth.json`: no plugins, skills, memories, AGENTS.md,
+/// hooks or config from the user's home reach the model (C2-MCP), and the
+/// environment cannot drift with the user's codex setup.
+fn isolated_codex_home(cwd: &std::path::Path) -> Result<std::path::PathBuf, ProviderError> {
+    let home = cwd.join(".codex_home");
+    std::fs::create_dir_all(&home).map_err(|e| {
+        ProviderError::InvocationFailed(format!("failed to create isolated CODEX_HOME: {e}"))
+    })?;
+    let source = std::env::var_os("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".codex")))
+        .map(|d| d.join("auth.json"))
+        .ok_or_else(|| ProviderError::InvocationFailed("no codex auth.json".to_string()))?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&source, home.join("auth.json")).map_err(|e| {
+        ProviderError::InvocationFailed(format!("failed to link codex auth.json: {e}"))
+    })?;
+    Ok(home)
 }
 
 impl Provider for CliProvider {
@@ -412,6 +535,12 @@ impl Provider for CliProvider {
             .stderr(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped());
         remove_network_configuration_env(&mut command);
+        if self.command == "codex" {
+            let home = isolated_codex_home(&sandbox_dir).inspect_err(|_| {
+                let _ = std::fs::remove_dir_all(&sandbox_dir);
+            })?;
+            command.env("CODEX_HOME", home);
+        }
 
         let mut child = command.spawn().map_err(|e| {
             let _ = std::fs::remove_dir_all(&sandbox_dir);
@@ -468,6 +597,9 @@ impl Provider for CliProvider {
         })?;
         let stdout = join_pipe_reader(stdout_reader);
         let stderr = String::from_utf8_lossy(&join_pipe_reader(stderr_reader)).into_owned();
+        let last_message = (self.command == "codex")
+            .then(|| std::fs::read_to_string(sandbox_dir.join(CODEX_LAST_MESSAGE_FILE)).ok())
+            .flatten();
         let _ = std::fs::remove_dir_all(&sandbox_dir);
 
         if !status.success() {
@@ -478,13 +610,27 @@ impl Provider for CliProvider {
         }
 
         let raw = String::from_utf8_lossy(&stdout).to_string();
-        let (text, thinking) = (self.output_parser)(&raw);
+        // Codex in `--json` mode: stdout is the event stream; the answer is the
+        // final message file. A missing file is a failed call, not empty text.
+        let (text, thinking) = if self.command == "codex" {
+            match &last_message {
+                Some(message) => (message.clone(), None),
+                None => {
+                    return Err(ProviderError::InvocationFailed(
+                        "codex produced no final message".to_string(),
+                    ));
+                }
+            }
+        } else {
+            (self.output_parser)(&raw)
+        };
 
         // CLI providers don't give us fine-grained tool events, so the
         // observer sees a minimal constant trace: one Think + one Text.
         let tool_events = vec![ToolEvent::Think, ToolEvent::Text];
         let (usage, transcript) = if self.command == "codex" {
-            (codex_usage(&stderr), Some(stderr))
+            let usage = codex_json_usage(&raw).unwrap_or_else(|| codex_usage(&stderr));
+            (usage, Some(format!("{raw}{CODEX_STDERR_MARKER}{stderr}")))
         } else {
             (TokenUsage::default(), None)
         };
@@ -514,6 +660,79 @@ mod tests {
         assert_eq!(codex_usage(stderr).reported_total, Some(48_034));
         assert_eq!(codex_usage("no total").reported_total, None);
         assert_eq!(codex_tool_calls("exec\n/bin/zsh -lc ls\nexec\ncat x\n"), 2);
+    }
+
+    #[test]
+    fn codex_json_transcript_allowlist_counts_every_non_text_item() {
+        let clean = "{\"type\":\"thread.started\"}\n{\"type\":\"turn.started\"}\n\
+{\"type\":\"item.completed\",\"item\":{\"type\":\"reasoning\"}}\n\
+{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"PONG\"}}\n\
+{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}\n";
+        assert_eq!(codex_tool_calls(&format!("{clean}{CODEX_STDERR_MARKER}exec\nstderr noise")), 0);
+        for bad in ["command_execution", "mcp_tool_call", "web_search", "file_change", "error", "todo_list"] {
+            let t = format!("{clean}{{\"type\":\"item.completed\",\"item\":{{\"type\":\"{bad}\"}}}}\n");
+            assert_eq!(codex_tool_calls(&t), 1, "{bad} must count");
+        }
+        // unparsable line, unknown event type, item without a type, missing turn.completed
+        assert_eq!(codex_tool_calls(&format!("{clean}not json\n")), 1);
+        assert_eq!(codex_tool_calls(&format!("{clean}{{\"type\":\"weird\"}}\n")), 1);
+        assert_eq!(codex_tool_calls(&format!("{clean}{{\"type\":\"item.started\"}}\n")), 1);
+        let truncated = clean.replace("{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}\n", "");
+        assert_eq!(codex_tool_calls(&truncated), 1);
+        let usage = codex_json_usage(clean).unwrap();
+        assert_eq!((usage.prompt_tokens, usage.completion_tokens, usage.reported_total), (10, 2, Some(12)));
+    }
+
+    #[test]
+    fn codex_legacy_text_transcripts_count_mcp_calls() {
+        assert_eq!(codex_tool_calls("codex\nmcp: codex/list_mcp_resources started\nPONG\n"), 1);
+    }
+
+    #[test]
+    fn codex_args_use_json_events_and_disable_every_tool_feature() {
+        let provider = CliProvider::codex("gpt-6-luna", Some("low"));
+        let request = InvocationRequest {
+            enzyme_id: a2d_core::types::EnzymeId::from("coder"),
+            system: "s".to_string(),
+            prompt: "p".to_string(),
+            max_tokens: 10,
+        };
+        let args = (provider.args_builder)(&request);
+        assert!(args.contains(&"--json".to_string()));
+        assert!(args.windows(2).any(|w| w[0] == "--output-last-message" && w[1] == CODEX_LAST_MESSAGE_FILE));
+        for feature in ["plugins", "remote_plugin", "multi_agent", "skill_search", "shell_tool", "apps"] {
+            assert!(args.windows(2).any(|w| w[0] == "--disable" && w[1] == feature), "{feature}");
+        }
+        assert!(!args.iter().any(|a| a == "web_search_request"));
+    }
+
+    /// Live: one real Luna call through the provider (run with `--ignored`).
+    #[test]
+    #[ignore]
+    fn live_codex_call_returns_text_with_zero_tool_events() {
+        let provider = CliProvider::codex("gpt-6-luna", Some("low"));
+        let request = InvocationRequest {
+            enzyme_id: a2d_core::types::EnzymeId::from("coder"),
+            system: "Reply with exactly one word.".to_string(),
+            prompt: "Reply with the single word PONG.".to_string(),
+            max_tokens: 10,
+        };
+        let response = provider.invoke(&request).expect("live codex call");
+        assert_eq!(response.text.trim(), "PONG");
+        let transcript = response.transcript.expect("transcript");
+        assert_eq!(codex_tool_calls(&transcript), 0, "{transcript}");
+        assert!(response.usage.total() > 0);
+    }
+
+    #[test]
+    fn isolated_codex_home_holds_only_an_auth_link() {
+        let dir = std::env::temp_dir().join(format!("a2d-codex-home-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let home = isolated_codex_home(&dir).unwrap();
+        let entries: Vec<_> = std::fs::read_dir(&home).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from("auth.json")]);
+        assert!(std::fs::symlink_metadata(home.join("auth.json")).unwrap().file_type().is_symlink());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
