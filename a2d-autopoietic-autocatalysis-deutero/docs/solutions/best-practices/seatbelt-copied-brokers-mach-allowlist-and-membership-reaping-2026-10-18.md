@@ -42,6 +42,10 @@ The confirmation-3 authoring pipeline (`tools/holdout/`) runs Codex jobs that mu
   - Reap: SIGSTOP every member to a fixpoint (stopped processes cannot fork), re-check membership (pid reuse), SIGKILL, repeat until empty. Only then read artifacts. If any survive, raise.
   - The driver lock reaps every unretired tag on start, which recovers from a dead driver.
 
+- **Close the launch window too.** Between `Popen` and the moment `sandbox-exec` applies the profile, the launcher is unsandboxed, so membership reaping cannot see it. Every job *and probe* therefore starts in its own session as `sh -c 'read go && exec sandbox-exec … </dev/null'` with stdin = a driver pipe.
+  - The driver fsyncs `pid start_time` (libproc `PROC_PIDTBSDINFO`) before writing "go". If the driver dies first, the read gets EOF and the launcher exits.
+  - Recovery kills recorded live groups, but only when the live leader's start time matches the record (otherwise the id was reused), and only then reaps by sandbox. Two review rounds were needed: the first fix registered jobs but not probes.
+
 ## Gotchas
 - **`log` in zsh is a builtin.** `log show …` silently prints nothing, so use `/usr/bin/log`. Half an hour of "the sandbox logs nothing" was this.
 - **ctypes on arm64 macOS:** `sandbox_check` is variadic. Without `argtypes` for the 3 fixed arguments, the path arrives in a register instead of on the stack, and every check returns -1.
@@ -50,6 +54,8 @@ The confirmation-3 authoring pipeline (`tools/holdout/`) runs Codex jobs that mu
 - **Time the unsandboxed baseline before bisecting a slowdown.** During this work a `cargo-sweep` from another session flooded `fseventsd` (2.4 GB, "stuck"). Every file-creating process sat in `U` state, and an *unsandboxed* hello-world compile took 3.5 min. That looked exactly like a profile regression.
   - Check `top -stats command,cpu,mem,state` for a stuck `fseventsd`.
   - Check `ps -axo stat,comm | awk '$1 ~ /^U/'` for processes in uninterruptible wait.
+- **`subprocess.Popen(pass_fds=(r,))` keeps the fd's own number.** It does not move it to 3. A handshake written as `read go <&3` read from whatever held fd 3 (a listening socket in the broker probe), and every probe failed closed. Pass the handshake on stdin instead.
+- **Harvest the allowlist from an authoring-shaped job, not only "reply OK".** A Sol job that wrote and tested Rust under the profile passed. Its transcript also exposed a command-scan false positive (`"$HOME/.rustup/…/rustc"`) that would have spent an authoring attempt.
 - **Live probes can leave side effects.** The escaping `open` really launched TextEdit, and the weakened-profile control launched Calculator. Close them afterwards; use a harmless target (`-g -j`) in recurring probes.
 
 ## Practice
