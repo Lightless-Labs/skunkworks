@@ -196,6 +196,9 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
 - **Similarity state (was partly open):**
   - a re-authored family is decided only by a check of a suite that holds the re-authored version (`assembled.json`); a stale suite leaves it pending;
   - a failed re-author is terminal.
+- **Sol re-check 3** (6ea429f6): FIXED for broker confinement, selection provenance, STOP, inventory and both PARTLY items. Quiescence was PARTLY: a launcher between `Popen` and sandbox entry is unsandboxed, so a recovery after driver death could miss it.
+  - Fixed with a launch handshake. The launcher waits on a driver pipe and execs `sandbox-exec` only after its pid and start time are fsync'd; if the driver dies first, it gets EOF and exits.
+  - Recovery kills every recorded live launcher group (start-time verified, so a reused id is never signalled) before reaping tagged members.
 - **Gap filled in §0.11** (it named no outcome for an authoring-exhausted family): a family whose 2 authoring attempts are used up without verified output is **replaced by the next spare, or dropped** at assembly. This is the same rule as the other exhaustion paths.
 
 ### 0.9 Owner request

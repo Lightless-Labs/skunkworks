@@ -1590,3 +1590,9 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Host incident:** from about 10:50 UTC a `cargo-sweep` from another session flooded `fseventsd` (2.4 GB, stuck). File-creating processes sit in uninterruptible wait, and an unsandboxed hello-world compile takes 3.5 min. Two environment-sensitive tests (the sandboxed toolchain and the broker probes, both timeout-bound) are re-run after it clears.
 - **E006 screen** (Sol spec notes before 3 Luna samples): all-pass 61/68 vs 59/68 (+2.9 pp); hidden fraction 0.973 vs 0.989; 332 vs 329 invocations. The rest stage is deferred by the cap (Luna today 2,520).
   - First prompts were read (url-parse-l1, X:cand). Sol gets the requirements and public tests with a no-code reviewer brief. Luna's prompt is the controller prompt plus "## Reviewer notes on the requirements". No hidden content.
+- **Sol re-check 3** (of 6ea429f6, copies only, web disabled, 0 search events) marked all 5 blockers and both partial items FIXED, except quiescence, which was PARTLY.
+  - The gap: a launcher between `Popen` and sandbox entry is unsandboxed, so a recovery after driver death would miss it.
+  - **Fix: a launch handshake.** The launcher reads "go" from a driver pipe and execs `sandbox-exec` with stdin from /dev/null. The driver writes "go" only after fsync'ing the launcher's pid and libproc start time, so on driver death the launcher gets EOF and exits.
+  - `DriverLock` then kills every recorded live launcher group, verifying start times so a reused id is never signalled, before reaping the tagged members.
+  - Tests: an unregistered launcher never runs; recovery kills an orphaned group member and spares a reused id.
+  - A first version passed the pipe as fd 3 through `pass_fds`, which keeps the fd's own number. In the broker probe a listening socket already held fd 3, so every probe failed closed. Hence the stdin handshake.

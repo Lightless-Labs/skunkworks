@@ -357,9 +357,18 @@ def sandboxed(workdir, argv, record=None, **kw):
     prof = rec / f"{name}.sb"
     safe_write_text(prof, profile(workdir, tag))
     env = _env(workdir, Path(workdir) / "_codex_home")
+    pipe = subprocess.PIPE if kw.get("capture_output") else None
+    p = None
     try:
-        return subprocess.run(["/usr/bin/sandbox-exec", "-f", str(prof), *argv], cwd=workdir, env=env,
-                              stdin=subprocess.DEVNULL, **kw)
+        p = _handshake_popen(prof, argv, record=False, cwd=workdir, env=env, stdin=subprocess.DEVNULL,
+                             stdout=pipe, stderr=pipe, text=kw.get("text", False))
+        try:
+            out, err = p.communicate(timeout=kw.get("timeout"))
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+            raise
+        return subprocess.CompletedProcess(argv, p.returncode, out, err)
     finally:
         if not reap(tag):
             raise RuntimeError("probe not quiesced")
@@ -519,6 +528,8 @@ def _libsystem():
         lib.sandbox_check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]  # path is variadic
         lib.proc_listallpids.restype = ctypes.c_int
         lib.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.proc_pidinfo.restype = ctypes.c_int
+        lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
         _lib = lib
     return _lib
 
@@ -532,6 +543,68 @@ def _all_pids():
     if n <= 0:
         raise OSError("proc_listallpids")
     return [buf[i] for i in range(n) if buf[i] > 1 and buf[i] != os.getpid()]
+
+
+def _proc_start(pid):
+    """Process start time in microseconds (libproc PROC_PIDTBSDINFO), or None if gone."""
+    import ctypes
+
+    class BsdInfo(ctypes.Structure):
+        _fields_ = [("u32", ctypes.c_uint32 * 12), ("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32),
+                    ("u32b", ctypes.c_uint32 * 5), ("nice", ctypes.c_int32), ("start_sec", ctypes.c_uint64),
+                    ("start_usec", ctypes.c_uint64)]
+    lib = _libsystem()
+    info = BsdInfo()
+    n = lib.proc_pidinfo(pid, 3, ctypes.c_uint64(0), ctypes.byref(info), ctypes.sizeof(info))
+    if n != ctypes.sizeof(info):
+        return None
+    return info.start_sec * 1_000_000 + info.start_usec
+
+
+def _recorded_groups():
+    """(pgid, start) of every job launched by a driver since the last clean recovery."""
+    try:
+        lines = safe_read_text(RECORDS / "pids.txt").splitlines()
+    except FileNotFoundError:
+        return []
+    out = []
+    for line in lines:
+        if line.strip():
+            pgid, start = line.split()
+            out.append((int(pgid), int(start)))
+    return out
+
+
+def _group_live(pgid, start):
+    """True iff the recorded job group may still have members. A live leader with another
+    start time means the id was reused: our group is gone (never signal it)."""
+    leader = _proc_start(pgid)
+    if leader is not None and leader != start:
+        return False
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def kill_recorded_groups(deadline=30):
+    """Kill every recorded launcher group still alive; True once none is left."""
+    end = time.time() + deadline
+    while True:
+        live = [(g, s) for g, s in _recorded_groups() if _group_live(g, s)]
+        if not live:
+            return True
+        if time.time() > end:
+            return False
+        for pgid, _ in live:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        time.sleep(0.2)                     # killed members are reaped by launchd
 
 
 def _may_read(pid, path):
@@ -638,15 +711,43 @@ def request_stop():
         safe_write_text(C3 / "STOP", "stop\n")
 
 
-def launch(argv, **kw):
-    """Popen through the launch gate: refuses once STOP exists; records the pgid."""
+# The launcher reads "go" from its stdin (a driver pipe) before it execs sandbox-exec with
+# stdin from /dev/null, so it never runs anything before the driver has durably recorded its
+# pid and start time. If the driver dies first, the pipe hits EOF and the launcher exits
+# without running anything.
+_HANDSHAKE = 'IFS= read -r go && [ "$go" = go ] && exec /usr/bin/sandbox-exec -f "$0" "$@" </dev/null; exit 125'
+
+
+def _handshake_popen(prof, argv, record, **kw):
+    kw.pop("stdin", None)
+    r, w = os.pipe()
+    try:
+        p = subprocess.Popen(["/bin/sh", "-c", _HANDSHAKE, str(prof), *[str(a) for a in argv]], stdin=r,
+                             start_new_session=record, **kw)
+        os.close(r)
+        r = None
+        if record:                                    # its own session: pgid == pid
+            start = _proc_start(p.pid)
+            if start is None:
+                raise RuntimeError("launcher vanished")
+            with open(RECORDS / "pids.txt", "a") as f:
+                f.write(f"{p.pid} {start}\n")
+                f.flush()
+                os.fsync(f.fileno())
+        os.write(w, b"go\n")
+        return p
+    finally:
+        if r is not None:
+            os.close(r)
+        os.close(w)
+
+
+def launch(prof, argv, **kw):
+    """Start one job through the launch gate (refused once STOP exists) and the handshake."""
     with _Gate():
         if stop_requested():
             raise StopRequested()
-        p = subprocess.Popen(argv, start_new_session=True, **kw)
-        with open(RECORDS / "pids.txt", "a") as f:   # process-group ids (new session)
-            f.write(f"{p.pid}\n")
-        return p
+        return _handshake_popen(prof, argv, record=True, **kw)
 
 
 def run_codex(workdir, record, model="gpt-6.1-sol", effort="high", timeout=7200):
@@ -668,8 +769,7 @@ def run_codex(workdir, record, model="gpt-6.1-sol", effort="high", timeout=7200)
             *disable_args(), "Read INSTRUCTIONS.md in the current directory and follow it."]
     code = None
     with open(rec / "codex.jsonl", "wb") as out, open(rec / "codex.err", "wb") as err:
-        p = launch(["/usr/bin/sandbox-exec", "-f", str(prof), *argv], cwd=w, env=_env(w, home),
-                   stdin=subprocess.DEVNULL, stdout=out, stderr=err)
+        p = launch(prof, argv, cwd=w, env=_env(w, home), stdin=subprocess.DEVNULL, stdout=out, stderr=err)
         try:
             code = p.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -782,11 +882,13 @@ class DriverLock:
             os.close(self.fd)
             raise RuntimeError("driver already running")
         safe_write_text(RECORDS / "driver.pid", f"{os.getpid()}\n")
-        if not (RECORDS / "pids.txt").exists():
-            safe_write_text(RECORDS / "pids.txt", "")
-        if not reap_all():                   # a previous driver died with live jobs
+        # Recovery from a driver that died with live jobs: first every recorded launcher
+        # group (which covers a launcher not yet inside its sandbox), then every member of
+        # an unretired job sandbox. Only then may anything touch an artifact.
+        if not kill_recorded_groups() or not reap_all():
             self.__exit__(None, None, None)
             raise RuntimeError("unquiesced job")
+        safe_write_text(RECORDS / "pids.txt", "")
         return self
 
     def __exit__(self, *exc):
@@ -814,18 +916,13 @@ def drained():
         return False
     except (FileNotFoundError, ValueError, ProcessLookupError):
         pass
-    try:
-        pids = [int(x) for x in safe_read_text(RECORDS / "pids.txt").split()]
-    except (FileNotFoundError, ValueError):
+    if not (RECORDS / "pids.txt").exists():
         return False
-    for pgid in pids:
-        try:
-            os.killpg(pgid, 0)
+    try:
+        if any(_group_live(g, s) for g, s in _recorded_groups()):
             return False
-        except ProcessLookupError:
-            continue
-        except PermissionError:
-            return False
+    except ValueError:
+        return False
     try:
         return not any(job_members(t) for t in TAGS.glob("*.tag")) if TAGS.exists() else True
     except OSError:

@@ -99,12 +99,53 @@ class Pipeline(unittest.TestCase):
         (self.c3 / "STOP").write_text("stop")
         self.assertEqual(self.lib(drained), "False")            # no pid record
         (self.c3 / "_records").mkdir()
-        (self.c3 / "_records" / "pids.txt").write_text(f"{os.getpgid(0)}\n")
+        live = subprocess.Popen(["/bin/sleep", "60"], start_new_session=True)
+        start = self.lib(f"from c3lib import _proc_start\nprint(_proc_start({live.pid}))")
+        (self.c3 / "_records" / "pids.txt").write_text(f"{live.pid} {start}\n")
         self.assertEqual(self.lib(drained), "False")            # a live group
+        (self.c3 / "_records" / "pids.txt").write_text(f"{live.pid} 1\n")
+        self.assertEqual(self.lib(drained), "True")             # same id, other start time: reused, not ours
+        live.kill()
+        live.wait()
         dead = subprocess.Popen(["/usr/bin/true"], start_new_session=True)
         dead.wait()
-        (self.c3 / "_records" / "pids.txt").write_text(f"{dead.pid}\n")
+        (self.c3 / "_records" / "pids.txt").write_text(f"{dead.pid} 1\n")
         self.assertEqual(self.lib(drained), "True")
+
+    def test_unregistered_launcher_exits_on_driver_death(self):
+        """The handshake launcher never execs if the driver dies before saying go."""
+        marker = self.tmp / "ran"
+        out = self.lib("import os, subprocess\nfrom c3lib import _HANDSHAKE\n"
+                       "r, w = os.pipe()\n"
+                       f"p = subprocess.Popen(['/bin/sh', '-c', _HANDSHAKE, '/dev/null', '/usr/bin/touch', {str(marker)!r}],"
+                       " stdin=r)\n"
+                       "os.close(r)\nos.close(w)\nprint(p.wait())")
+        self.assertEqual(out, "125")
+        self.assertFalse(marker.exists())
+
+    def test_recovery_kills_recorded_launcher_groups(self):
+        """A dead driver's launcher group is killed before the next driver proceeds; a
+        recorded id whose live leader has another start time is never signalled."""
+        rec = self.c3 / "_records"
+        rec.mkdir(parents=True)
+        # the leader records its start time, then leaves an orphan in its group and exits
+        # (as a launcher's group looks after its driver died: no parent of ours to reap it)
+        leader = subprocess.Popen(["/bin/sh", "-c", "/bin/sleep 300 </dev/null >/dev/null 2>&1 & echo $!; read x"],
+                                  start_new_session=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        sleeper = int(leader.stdout.readline())
+        start = self.lib(f"from c3lib import _proc_start\nprint(_proc_start({leader.pid}))")
+        leader.stdin.close()
+        leader.wait()
+        bystander = subprocess.Popen(["/bin/sleep", "300"], start_new_session=True)
+        (rec / "pids.txt").write_text(f"{leader.pid} {start}\n{bystander.pid} 1\n")
+        os.kill(sleeper, 0)                                          # alive before recovery
+        self.lib("from c3lib import DriverLock\nwith DriverLock():\n    pass")
+        with self.assertRaises(ProcessLookupError):
+            os.kill(sleeper, 0)
+        self.assertIsNone(bystander.poll())
+        bystander.kill()
+        bystander.wait()
+        self.assertEqual((rec / "pids.txt").read_text(), "")
 
     def test_driver_lock_is_exclusive(self):
         out = self.lib("import subprocess, sys\n"
@@ -120,7 +161,7 @@ class Pipeline(unittest.TestCase):
     def test_stop_gate_refuses_launch(self):
         out = self.lib("from c3lib import StopRequested, launch, request_stop\n"
                        "request_stop()\n"
-                       "try:\n    launch(['/usr/bin/true'])\n    print('LAUNCHED')\n"
+                       "try:\n    launch('/dev/null', ['/usr/bin/true'])\n    print('LAUNCHED')\n"
                        "except StopRequested:\n    print('REFUSED')")
         self.assertEqual(out, "REFUSED")
 
