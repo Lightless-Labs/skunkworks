@@ -37,16 +37,24 @@ import time
 from pathlib import Path
 
 HOLDOUT = Path(os.environ.get("A2D_HOLDOUT_DIR", str(Path.home() / ".a2d-holdout"))).resolve()
+DEFAULT_HOLDOUT = (Path.home() / ".a2d-holdout").resolve()
+# Test hooks (C3_* overrides of the codex binary, pins, auth, canary) are honoured only
+# against a non-default holdout dir; production always uses the pinned values below.
+TESTING = HOLDOUT != DEFAULT_HOLDOUT and bool(os.environ.get("C3_TEST_SKIP_PREREQS"))
+
+
+def _cfg(name, default):
+    return os.environ.get(name, default) if TESTING else default
 C3 = HOLDOUT / "authoring" / "confirmation-3"
 RECORDS = C3 / "_records"
 SUITE = HOLDOUT / "confirmation-3"
 REPO = Path(__file__).resolve().parents[2]
-CODEX = os.environ.get("C3_CODEX", "/opt/homebrew/bin/codex")
-PINNED_CODEX = os.environ.get("C3_PINNED_CODEX", "codex-cli 0.162.0")
-PINNED_SHA = os.environ.get("C3_PINNED_SHA", "8238273076041e55")  # prefix of sha256(codex binary)
-TOOLCHAIN = Path(os.environ.get("C3_TOOLCHAIN", str(Path.home() / ".rustup/toolchains/stable-aarch64-apple-darwin")))
-REAL_AUTH = Path(os.environ.get("C3_AUTH", str(Path.home() / ".codex" / "auth.json")))
-CANARY = Path(os.environ.get("C3_CANARY", str(Path.home() / ".a2d-canary.txt")))
+CODEX = _cfg("C3_CODEX", "/opt/homebrew/bin/codex")
+PINNED_CODEX = _cfg("C3_PINNED_CODEX", "codex-cli 0.162.0")
+PINNED_SHA = _cfg("C3_PINNED_SHA", "8238273076041e55")  # prefix of sha256(codex binary)
+TOOLCHAIN = Path(_cfg("C3_TOOLCHAIN", str(Path.home() / ".rustup/toolchains/stable-aarch64-apple-darwin")))
+REAL_AUTH = Path(_cfg("C3_AUTH", str(Path.home() / ".codex" / "auth.json")))
+CANARY = Path(_cfg("C3_CANARY", str(Path.home() / ".a2d-canary.txt")))
 AUTHORING_FILES = Path(__file__).resolve().parent / "authoring"
 
 DISABLE = [
@@ -138,7 +146,7 @@ def _check_chain(path, root):
 
 def safe_read_bytes(path, root=None):
     _check_chain(path, root or HOLDOUT)
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)   # a FIFO must not block
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise PermissionError("not a regular file")
@@ -155,32 +163,36 @@ def safe_read_text(path, root=None):
 
 
 def safe_write_text(path, text, root=None):
-    """Create or replace a regular file without following symlinks."""
-    _check_chain(path, root or HOLDOUT)
-    p = Path(path)
-    try:
-        if stat.S_ISLNK(os.lstat(p).st_mode) or not stat.S_ISREG(os.lstat(p).st_mode):
-            raise PermissionError("not a regular file")
-        os.unlink(p)
-    except FileNotFoundError:
-        pass
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
-    with os.fdopen(fd, "w") as f:
-        f.write(text)
+    safe_write_bytes(path, text.encode("utf-8"), root)
 
 
 def safe_write_bytes(path, data, root=None):
+    """Atomic, durable create-or-replace that never follows a symlink: write a fresh temp
+    file in the same dir (O_EXCL|O_NOFOLLOW), fsync, then rename over the target (rename
+    replaces a symlink itself, never its target)."""
     _check_chain(path, root or HOLDOUT)
     p = Path(path)
+    if os.path.lexists(p) and not stat.S_ISREG(os.lstat(p).st_mode) and not stat.S_ISLNK(os.lstat(p).st_mode):
+        raise PermissionError("not a regular file")
+    tmp = p.parent / f".{p.name}.tmp-{os.getpid()}-{time.time_ns()}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
     try:
-        if stat.S_ISLNK(os.lstat(p).st_mode) or not stat.S_ISREG(os.lstat(p).st_mode):
-            raise PermissionError("not a regular file")
-        os.unlink(p)
-    except FileNotFoundError:
-        pass
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
+        dfd = os.open(p.parent, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def safe_copy(src, dst, src_root, dst_root=None, mode=None):
@@ -369,12 +381,12 @@ def _probes(w, canary, secret, extra_denied):
             continue
         argv = ["/bin/ls", str(target)] if Path(target).is_dir() else ["/bin/cat", str(target)]
         r = sandboxed(w, argv, capture_output=True, text=True, timeout=60)
-        if r.returncode == 0 or secret in r.stdout + r.stderr:
+        if r.returncode == 0 or secret in r.stdout + r.stderr or "Operation not permitted" not in r.stderr:
             return False
     # writes outside the workdir must fail too
     r = sandboxed(w, ["/usr/bin/touch", str(C3 / f".c3-write-probe-{os.getpid()}")],
                   capture_output=True, text=True, timeout=60)
-    if r.returncode == 0:
+    if r.returncode == 0 or "Operation not permitted" not in r.stderr:
         return False
     return True
 
@@ -480,46 +492,62 @@ def _git(*args):
     return subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True, timeout=600)
 
 
+PIPELINE_PATHS = ("tools/holdout", "docs/plans/2026-10-18-confirmation-3.md")
+
+
 def prereqs_ok():
     """§0.6 gates checked before any selection/authoring job:
-    (a) confirmation-2 replicate 2's web audit is committed at HEAD (its generation and audit finished);
-    (b) the pipeline and the confirmation-3 plan are unmodified relative to HEAD (frozen by commit).
-    Records the pipeline commit. Tests may skip this only against a non-default holdout dir."""
-    if os.environ.get("C3_TEST_SKIP_PREREQS") and HOLDOUT != (Path.home() / ".a2d-holdout").resolve():
+    (a) confirmation-2 replicate 2's count-only web audit is committed at HEAD and is a
+        complete replicate-2 record (its generation and audit finished);
+    (b) the pipeline and the confirmation-3 plan have no modified or untracked files;
+    records the commit and a launch manifest (sha256 of every pipeline file at HEAD)."""
+    if TESTING:
         return True
-    if _git("ls-files", "--error-unmatch", "runs/c2-confirm2/web-audit-r2.json").returncode != 0:
+    r = _git("show", "HEAD:a2d-autopoietic-autocatalysis-deutero/runs/c2-confirm2/web-audit-r2.json")
+    if r.returncode != 0:
         return False
-    if _git("diff", "--quiet", "HEAD", "--", "tools/holdout", "docs/plans/2026-10-18-confirmation-3.md").returncode != 0:
+    try:
+        audit = json.loads(r.stdout)
+    except ValueError:
+        return False
+    if audit.get("rep") != 2 or set(audit.get("arms", {})) != {"B", "D", "X-frozen"}:
+        return False
+    if _git("status", "--porcelain", "--", *PIPELINE_PATHS).stdout.strip():
         return False
     head = _git("rev-parse", "HEAD").stdout.strip()
-    save_json(RECORDS / "pipeline.json", {"commit": head, "checked_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
-    return bool(head)
+    files = _git("ls-files", "--", *PIPELINE_PATHS).stdout.split()
+    manifest = {f: hashlib.sha256((REPO / f).read_bytes()).hexdigest() for f in files}
+    save_json(RECORDS / "pipeline.json", {"commit": head, "files": manifest,
+                                          "checked_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    return bool(head) and bool(manifest)
 
 
 class DriverLock:
-    """One driver at a time; its pid is recorded so drained() can see it."""
-
-    def __init__(self):
-        self.path = RECORDS / "driver.pid"
+    """One driver at a time (fcntl.flock held for the driver's lifetime); its pid is
+    recorded so drained() can see it."""
 
     def __enter__(self):
+        import fcntl
         RECORDS.mkdir(parents=True, exist_ok=True)
+        self.fd = os.open(RECORDS / "driver.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
         try:
-            pid = int(safe_read_text(self.path).strip())
-            os.kill(pid, 0)
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(self.fd)
             raise RuntimeError("driver already running")
-        except (FileNotFoundError, ValueError, ProcessLookupError):
-            pass
-        safe_write_text(self.path, f"{os.getpid()}\n")
+        safe_write_text(RECORDS / "driver.pid", f"{os.getpid()}\n")
         if not (RECORDS / "pids.txt").exists():
             safe_write_text(RECORDS / "pids.txt", "")
         return self
 
     def __exit__(self, *exc):
+        import fcntl
         try:
-            os.unlink(self.path)
+            os.unlink(RECORDS / "driver.pid")
         except FileNotFoundError:
             pass
+        fcntl.flock(self.fd, fcntl.LOCK_UN)
+        os.close(self.fd)
         return False
 
 
@@ -573,7 +601,7 @@ def prior_roots():
     """Every prior task set: the repo's tasks/ and everything under the holdout dir except
     confirmation-3 (this includes authoring history such as excluded families)."""
     return [("repo-tasks", REPO / "tasks", ()),
-            ("holdout", HOLDOUT, ("/confirmation-3", "/_records"))]
+            ("holdout", HOLDOUT, ("/confirmation-3", "/_records", "/.confirmation-3.", "/runs/", "/audit/"))]
 
 
 EXPECTED_HOLDOUT_SETS = ("confirmation-1", "confirmation-2", "dev-holdout", "c1-validation")
@@ -616,3 +644,73 @@ def replace_family(fid, reason):
     act["events"].append({"family": fid, "reason": reason, "replacement": spare})
     save_json(RECORDS / "active.json", act)
     return spare
+
+
+# --------------------------------------------------- artifacts, hashes, command scan
+
+def tree_hashes(root):
+    """sha256 of every regular file under root (relative paths); symlinks or other
+    non-regular entries make it fail."""
+    out = {}
+    for dirpath, dirs, files in os.walk(root):
+        for name in dirs + files:
+            full = Path(dirpath) / name
+            mode = os.lstat(full).st_mode
+            if stat.S_ISLNK(mode) or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+                raise PermissionError("non-regular entry")
+        for name in files:
+            full = Path(dirpath) / name
+            out[str(full.relative_to(root))] = hashlib.sha256(safe_read_bytes(full, root)).hexdigest()
+    return out
+
+
+def prior_manifest():
+    """Frozen at selection: one sha256 over every prior task file (sorted), and the count."""
+    h, n = hashlib.sha256(), 0
+    for name, root, excl in prior_roots():
+        for tj in task_files(root, excl):
+            h.update(hashlib.sha256(Path(tj).read_bytes()).digest())
+            n += 1
+    return {"sha256": h.hexdigest(), "count": n}
+
+
+SUSPICIOUS_TOOLS = {"launchctl", "osascript", "open", "curl", "wget", "nc", "ncat", "ssh", "scp", "sftp", "git",
+                    "pip", "pip3", "npm", "brew", "sudo", "su", "security", "defaults", "pbcopy", "pbpaste",
+                    "crontab", "at", "batch", "ping", "dig", "nslookup", "telnet", "ftp", "rsync"}
+OUTSIDE_PATH = re.compile(r"/Users/|/Volumes/|/private/(?:tmp|var)|~/|\$HOME|\.a2d-")
+SYSTEM_TOOL_PATH = re.compile(r"/(?:usr/)?s?bin/(" + "|".join(sorted(SUSPICIOUS_TOOLS)) + r")\b")
+
+
+def _segments(inner):
+    """First word of every shell segment (split on ; & | newlines, $( and backticks)."""
+    words = []
+    for seg in re.split(r"[;&|\n]+|\$\(|`", inner):
+        toks = [t for t in seg.strip().split() if "=" not in t.split("/")[0] or t.startswith("/")]
+        if toks:
+            words.append(os.path.basename(toks[0].strip("\"'(")))
+    return words
+
+
+def suspicious_commands(record, workdir):
+    """Count-only scan of a job's command strings: broker/network tools or paths outside
+    the workdir and toolchain. Content is never returned. Missing transcript counts 1."""
+    try:
+        lines = safe_read_text(RECORDS / record / "codex.jsonl").splitlines()
+    except OSError:
+        return 1
+    w, tc = str(Path(workdir).resolve()), str(TOOLCHAIN.resolve())
+    n = 0
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        item = e.get("item") if isinstance(e, dict) else None
+        if e.get("type") == "item.started" and isinstance(item, dict) and item.get("type") == "command_execution":
+            cmd = str(item.get("command", ""))
+            m = re.match(r"^/bin/(?:zsh|bash|sh) -lc (['\"])(.*)\1$", cmd, re.S)
+            inner = (m.group(2) if m else cmd).replace(w, "").replace(tc, "")
+            if OUTSIDE_PATH.search(inner) or SYSTEM_TOOL_PATH.search(inner) \
+                    or any(x in SUSPICIOUS_TOOLS for x in _segments(inner)):
+                n += 1
+    return n

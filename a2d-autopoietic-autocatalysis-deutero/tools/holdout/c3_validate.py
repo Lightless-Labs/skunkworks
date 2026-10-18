@@ -11,6 +11,7 @@ or drops the family, §0.11). Prints only counts and opaque task ids.
 
 usage: python3 -I tools/holdout/c3_validate.py [--binary <a2d>]
 """
+import hashlib
 import re
 import subprocess
 import sys
@@ -22,6 +23,7 @@ from c3lib import (C3, RECORDS, REPO, SUITE, TASK_RE, DriverLock, emit, gateway,
                    safe_write_text, save_json)
 
 LINE = re.compile(r"^(c3-f\d{2}-l[1-4]): (OK|REJECT)\b")
+SUMMARY = re.compile(r"^suite [0-9a-f]{64} \u2014 (\d+) tasks, (\d+) accepted, (\d+) rejected$")
 MAX_FIX_ROUNDS = 2
 
 
@@ -35,7 +37,10 @@ def main():
             raise ValueError("empty suite")
         r = subprocess.run([binary, "lift", "validate", str(SUITE), "--jobs", "4"], capture_output=True, text=True)
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        safe_write_text(RECORDS / f"validate-{stamp}.txt", r.stdout + "\n--- stderr ---\n" + r.stderr)
+        full = r.stdout + "\n--- stderr ---\n" + r.stderr
+        safe_write_text(RECORDS / f"validate-{stamp}.txt", full)
+        sha = hashlib.sha256(full.encode()).hexdigest()
+        summary = [SUMMARY.match(x) for x in r.stdout.splitlines() if SUMMARY.match(x)]
         verdict, lines, unparsed = {}, {}, 0
         for line in r.stdout.splitlines():
             m = LINE.match(line)
@@ -47,7 +52,10 @@ def main():
                 raise ValueError("duplicate verdict")
             verdict[m.group(1)] = m.group(2)
             lines[m.group(1)] = line
-        if sorted(verdict) != expected or unparsed:
+        ok_summary = len(summary) == 1 and int(summary[0].group(1)) == len(expected) \
+            and int(summary[0].group(2)) + int(summary[0].group(3)) == len(expected) \
+            and int(summary[0].group(3)) == sum(v == "REJECT" for v in verdict.values())
+        if sorted(verdict) != expected or unparsed or not ok_summary:
             emit(stage="validate", status="incomplete-parse", tasks=len(expected), count=len(verdict),
                  unparsed=unparsed)
             sys.exit(1)
@@ -66,7 +74,8 @@ def main():
                 safe_write_text(target, "\n".join(per_family[fam]) + "\n")
             elif target.exists() or target.is_symlink():
                 target.unlink()
-        save_json(RECORDS / "validate.json", {"stamp": stamp, "rejected": rejected, "exit": r.returncode})
+        save_json(RECORDS / "validate.json", {"stamp": stamp, "sha256": sha, "rejected": rejected,
+                                              "exit": r.returncode})
         save_json(RECORDS / "excluded.json", {"tasks": sorted(excluded)})
         emit(stage="validate", exit=r.returncode, tasks=len(expected), count=len(expected) - len(rejected),
              missing=len(rejected), skipped=len(excluded))

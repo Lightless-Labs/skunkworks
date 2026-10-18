@@ -23,8 +23,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from c3lib import (ID_RE, RECORDS, SUITE, DriverLock, emit, gateway, load_json, prior_tasks,  # noqa: E402
-                   replace_family, save_json, task_files)
+from c3lib import (ID_RE, RECORDS, SUITE, DriverLock, emit, gateway, load_json, prior_manifest,  # noqa: E402
+                   prior_tasks, replace_family, save_json, task_files)
 
 JACCARD, CONTAIN, K = 0.15, 0.40, 5
 
@@ -44,12 +44,15 @@ def scores(a, b):
 @gateway("similarity")
 def main():
     with DriverLock():
+        frozen = load_json(RECORDS / "prior_manifest.json")
+        if not frozen or frozen != prior_manifest():
+            raise ValueError("prior corpus changed since selection")
         prior, counts = prior_tasks()
         corpus = [(fam, shingles(req)) for fam, req in prior]
         mine = []
         for tj in task_files(SUITE):
             d = json.loads(Path(tj).read_text())
-            if not ID_RE.match(str(d.get("family", ""))) or not str(d.get("requirements", "")).strip():
+            if not ID_RE.match(str(d.get("family", ""))) or len(str(d.get("requirements", "")).split()) < 20:
                 raise ValueError("malformed suite task")
             mine.append((d["family"], shingles(d["requirements"])))
         worst_j = worst_c = 0.0
@@ -65,7 +68,9 @@ def main():
         state = load_json(RECORDS / "similarity.json", {})
         for fam in sorted(conflicted):
             st = load_json(RECORDS / f"author-{fam}" / "status.json", {"attempts": 0})
-            if state.get(fam) is None and st["attempts"] < 2:
+            if state.get(fam) == "reauthor":
+                emit(stage="similarity-conflict", id=fam, status="pending")       # idempotent until re-authored
+            elif state.get(fam) is None and st["attempts"] < 2:
                 state[fam] = "reauthor"
                 emit(stage="similarity-conflict", id=fam, status="reauthor")
             else:

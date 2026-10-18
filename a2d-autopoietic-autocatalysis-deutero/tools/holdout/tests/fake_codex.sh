@@ -45,6 +45,11 @@ elif grep -q "author one task family" INSTRUCTIONS.md; then
   fi
   if [ -n "$C3_TEST_PROBE" ]; then cat "$C3_TEST_PROBE" > probe-result.txt 2>&1; fi
 fi
+if grep -q "repair rejected tasks" INSTRUCTIONS.md; then
+  fid=$(ls out | head -1)
+  if [ -n "$C3_TEST_FIXFAIL" ]; then printf 'BROKEN' > out/$fid/$fid-l1/reference.rs; exit 1; fi
+  printf '\n// repaired\n' >> out/$fid/$fid-l4/reference.rs
+fi
 if [ -n "$C3_TEST_TOOL" ]; then echo '{"type":"item.completed","item":{"type":"mcp_tool_call"}}'; fi
 echo '{"type":"item.completed","item":{"type":"agent_message","text":"SECRET-MODEL-TEXT DONE"}}'
 echo '{"type":"turn.completed"}'

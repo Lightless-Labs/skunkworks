@@ -19,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from c3lib import (C3, RECORDS, SUITE, TASK_RE, DriverLock, emit, gateway, load_json,  # noqa: E402
-                   replace_family, safe_copy, safe_read_text)
+                   replace_family, safe_copy, safe_read_text, tree_hashes)
 
 CONTRACT = ("task.json", "public_tests.rs", "hidden_tests.rs", "reference.rs")
 MUTANTS = tuple(f"m{i}.rs" for i in (1, 2, 3, 4))
@@ -46,6 +46,13 @@ def copy_task(fid, level, staging):
 @gateway("assemble")
 def main():
     with DriverLock():
+        # recover an interrupted swap: the suite is missing but a backup exists
+        backups = sorted(SUITE.parent.glob(".confirmation-3.old-*"))
+        if not SUITE.exists() and backups:
+            os.rename(backups[-1], SUITE)
+            backups = backups[:-1]
+        for b in backups + sorted(SUITE.parent.glob(".confirmation-3.staging-*")):
+            shutil.rmtree(b)
         excluded = set(load_json(RECORDS / "excluded.json", {"tasks": []})["tasks"])
         for fam in sorted({t.rsplit("-l", 1)[0] for t in excluded}):
             spare = replace_family(fam, "validation-cap")
@@ -56,7 +63,12 @@ def main():
         complete, incomplete = 0, 0
         for fid in active:
             fam_dir = staging / "_tmp" / fid
-            ok = all(copy_task(fid, lv, fam_dir) for lv in (1, 2, 3, 4))
+            st = load_json(RECORDS / f"author-{fid}" / "status.json", {})
+            try:
+                verified = bool(st.get("done")) and st.get("hashes") == tree_hashes(C3 / fid / "out" / fid)
+            except (OSError, PermissionError):
+                verified = False
+            ok = verified and all(copy_task(fid, lv, fam_dir) for lv in (1, 2, 3, 4))
             if ok:
                 for tdir in fam_dir.iterdir():
                     shutil.move(str(tdir), str(staging / tdir.name))

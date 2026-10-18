@@ -106,6 +106,17 @@ class Pipeline(unittest.TestCase):
         (self.c3 / "_records" / "pids.txt").write_text(f"{dead.pid}\n")
         self.assertEqual(self.lib(drained), "True")
 
+    def test_driver_lock_is_exclusive(self):
+        out = self.lib("import subprocess, sys\n"
+                       "from c3lib import DriverLock\n"
+                       "with DriverLock():\n"
+                       "    try:\n"
+                       "        with DriverLock():\n"
+                       "            print('SECOND')\n"
+                       "    except RuntimeError:\n"
+                       "        print('REFUSED')")
+        self.assertEqual(out, "REFUSED")
+
     def test_check_sh_compiles_under_sandbox(self):
         """The real toolchain must compile, link and run tests inside the job profile."""
         w = self.c3 / "c3-f01"
@@ -193,6 +204,9 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(lines[0]["conflicts"], 2, lines)
         sim = json.loads((self.c3 / "_records" / "similarity.json").read_text())
         self.assertEqual((sim[fams[0]], sim[fams[1]]), ("reauthor", "reauthor"))
+        code, lines = self.run_script("c3_similarity.py")              # re-run before re-authoring
+        self.assertEqual({x["status"] for x in lines if x.get("stage") == "similarity-conflict"}, {"pending"})
+        self.assertIn(fams[0], self.active()["active"])
         for f in fams[:2]:
             code, lines = self.run_script("c3_author.py", "--reauthor", f, env=env)
             self.assertEqual(code, 0, lines)
@@ -216,11 +230,20 @@ class Pipeline(unittest.TestCase):
         self.assertNotEqual(code, 0)                              # l4 missing -> no state change
         self.assertFalse((self.c3 / "_records" / "validate.json").exists())
         fake.write_text("#!/bin/sh\n" + "".join(f"echo '{fams[0]}-l{i}: OK (x)'\n" for i in (1, 2, 3))
-                        + f"echo '{fams[0]}-l4: REJECT mutant m1 passes hidden'\n")
+                        + f"echo '{fams[0]}-l4: REJECT mutant m1 passes hidden'\n"
+                        + "echo 'suite " + "a" * 64 + " \u2014 4 tasks, 3 accepted, 1 rejected'\nexit 1\n")
         code, lines = self.run_script("c3_validate.py", "--binary", str(fake))
         self.assertEqual(code, 0, lines)
         self.assertTrue((self.c3 / fams[0] / "FIX-VERDICTS.txt").exists())
         self.assertEqual([x["id"] for x in lines if x.get("stage") == "validate-reject"], [f"{fams[0]}-l4"])
+        # a failed repair round restores the verified files; a clean one updates the hashes
+        ref1 = (self.c3 / fams[0] / "out" / fams[0] / f"{fams[0]}-l1" / "reference.rs").read_bytes()
+        code, lines = self.run_script("c3_fix.py", env=dict(self.env, C3_TEST_FIXFAIL="1"))
+        ev = [x for x in lines if x.get("stage") == "fix" and x.get("id") == fams[0]][0]
+        self.assertFalse(ev["ok"])
+        self.assertEqual((self.c3 / fams[0] / "out" / fams[0] / f"{fams[0]}-l1" / "reference.rs").read_bytes(), ref1)
+        code, lines = self.run_script("c3_assemble.py")
+        self.assertEqual(lines[-1]["families"], 1, lines)            # restored files still verify
 
     def test_tool_events_counted(self):
         self.select()

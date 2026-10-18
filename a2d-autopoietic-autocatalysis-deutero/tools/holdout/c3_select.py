@@ -20,8 +20,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from c3lib import (AUTHORING_FILES, C3, ID_RE, RECORDS, DriverLock, emit, gateway, isolation_check,  # noqa: E402
-                   load_json, opaque_id, prereqs_ok, prior_tasks, run_codex, safe_copy, safe_read_text,
-                   safe_write_text, save_json, stop_requested)
+                   load_json, opaque_id, prereqs_ok, prior_manifest, prior_tasks, run_codex, safe_copy,
+                   safe_read_text, safe_write_text, save_json, stop_requested, suspicious_commands, tree_hashes)
 
 N_FAMILIES, N_TOTAL, MIN_FAMILIES = 36, 40, 30
 IDS = [opaque_id(i) for i in range(1, N_TOTAL + 1)]
@@ -59,14 +59,21 @@ def select(inventory):
     if not ok:
         sys.exit(2)
     code, other = run_codex(w, "select", effort="high", timeout=5400)
+    susp = suspicious_commands("select", w)
     complete = briefs_complete(w / "families")
-    emit(stage="select", exit=code, other_events=other, ok=complete)
-    return code == 0 and other == 0 and complete
+    ok = code == 0 and other == 0 and susp == 0 and complete
+    emit(stage="select", exit=code, other_events=other, skipped=susp, ok=ok)
+    if ok:
+        save_json(RECORDS / "select.json", {"ok": True, "hashes": tree_hashes(w / "families")})
+    return ok
 
 
 def check(inventory):
     if (C3 / "FAMILIES.txt").exists():
         raise RuntimeError("FAMILIES.txt exists (write-once)")
+    rec = load_json(RECORDS / "select.json", {})
+    if not rec.get("ok") or rec.get("hashes") != tree_hashes(C3 / "_select" / "families"):
+        raise RuntimeError("no successful selection record for these briefs")
     w = C3 / "_namecheck"
     if w.exists():
         raise RuntimeError("namecheck exists (write-once)")
@@ -78,6 +85,7 @@ def check(inventory):
     if not ok:
         sys.exit(2)
     code, other = run_codex(w, "namecheck", effort="high", timeout=3600)
+    other += suspicious_commands("namecheck", w)
     verdicts = {}
     try:
         for line in safe_read_text(w / "VERDICTS.tsv", C3).splitlines():
@@ -133,10 +141,12 @@ def main():
             emit(stage="inventory", status=k, n=counts[k])
         inventory = sorted({fam for fam, _ in rows} | {"spreadsheet-eval"})
         emit(stage="inventory", families=len(inventory))
+        save_json(RECORDS / "prior_manifest.json", prior_manifest())
         if not (C3 / "_select").exists() and not select(inventory):
             emit(stage="select", status="incomplete")
             sys.exit(1)
-        if not briefs_complete(C3 / "_select" / "families"):
+        rec = load_json(RECORDS / "select.json", {})
+        if not rec.get("ok") or not briefs_complete(C3 / "_select" / "families"):
             emit(stage="select", status="incomplete")
             sys.exit(1)
         if not check(inventory):

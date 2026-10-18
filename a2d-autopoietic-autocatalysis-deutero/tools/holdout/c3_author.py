@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from c3lib import (AUTHORING_FILES, C3, ID_RE, RECORDS, TASK_RE, DriverLock, drained, emit, gateway,  # noqa: E402
                    isolation_check, load_json, prereqs_ok, run_codex, safe_copy, safe_read_text,
-                   safe_write_text, save_json, stop_requested)
+                   safe_write_text, save_json, stop_requested, suspicious_commands, tree_hashes)
 
 MAX_ATTEMPTS = 2
 CONTRACT = ("task.json", "public_tests.rs", "hidden_tests.rs", "reference.rs")
@@ -102,12 +102,15 @@ def one(fid, reauthor=False):
         st["attempts"] += 1           # reserved before launch
         st["done"] = False
         save_json(RECORDS / f"author-{fid}" / "status.json", st)
-    code, other = run_codex(w, f"author-{fid}-a{st['attempts']}", effort="high", timeout=7200)
-    ok = code == 0 and other == 0 and complete(fid)
+    rec = f"author-{fid}-a{st['attempts']}"
+    code, other = run_codex(w, rec, effort="high", timeout=7200)
+    susp = suspicious_commands(rec, w)
+    ok = code == 0 and other == 0 and susp == 0 and complete(fid)
     with _lock:
         st["done"] = ok
+        st["hashes"] = tree_hashes(C3 / fid / "out" / fid) if ok else None
         save_json(RECORDS / f"author-{fid}" / "status.json", st)
-        emit(stage="author", id=fid, exit=code, other_events=other, ok=ok, round=st["attempts"])
+        emit(stage="author", id=fid, exit=code, other_events=other, skipped=susp, ok=ok, round=st["attempts"])
 
 
 @gateway("author")
