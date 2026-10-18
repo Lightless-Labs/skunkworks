@@ -25,7 +25,7 @@ These choices are written before any data that could inform them. That means bef
 
 ### 0.3 Size and replicates
 - **36 new families × 4 levels = 144 tasks, r = 2, k = 5, arms D, B and X:frozen,** in the same regime and with the same claim rule as confirmation-2: SUPPORTED iff the point estimate is ≥ +10 pp and CI95 low > 0 vs both D and B; RULED OUT iff X vs D is RuledOut.
-- **48 families do not fit** the budget (§0.5) without cutting phase B below its registered R = 6, so they are not used.
+- **48 families do not fit** the budget: they would leave phase B about 0.8k, below its R = 4 floor (§0.10). So they are not used.
 - The power statement is computed blind (§0.6 step 1) and recorded in the registration. It does not change n.
 
 ### 0.4 Integrity policy (replaces run-level "any event → IntegrityReview")
@@ -77,6 +77,50 @@ These choices are written before any data that could inform them. That means bef
   - Their stdout goes to `$A2D_HOLDOUT_DIR/runs/`.
   - `decision.json` is moved, unread, to `$A2D_HOLDOUT_DIR/runs/c2-confirm2-decision/`. The repo records only its sha256 and a "written" line.
 - Nobody reads it until confirmation-3's `decision.json` exists. The C2-WEB rule has already fixed confirmation-2's outcome, so its contents cannot change it.
+
+### 0.10 Closing the gaps found by the review of §0 (Codex Sol, 2026-10-18, before 00:05 UTC 10-19)
+- **Amendments:**
+  - Before the first confirmation-3 call, the registration review may only tighten §0.4: lower thresholds, add detectors, add isolation checks. Every other part of §0 is copied unchanged.
+  - **After the first confirmation-3 call, nothing in the registration changes.** No amendment may depend on any confirmation-3 output.
+- **Phase-B arithmetic (worst case):** 8.6k − 4.5k (confirmation-3 plus its reserve) − 1.3k (look) = **2.8k for phase B**.
+  - Rounds cost about 0.43k each, so R = 6 (about 2.6k) fits without continuations. R = 4 (about 1.7k) is the floor.
+  - With 48 families (+1.0k per replicate), phase B would fall to about 0.8k, below R = 4. That is why §0.3 uses 36.
+  - **Shortage outcome:** if fewer than 4 rounds' worth of Luna remain when phase B starts, it runs the rounds that fit and reports them descriptively, with no precision-endpoint claim, as a disclosed shortfall.
+  - The unused relaunch reserve returns to phase B after confirmation-3's decision.
+- **Relaunch:** confirmation-2's registered failure policy, copied.
+  - Each replicate is attempted once, and `attempt-r<n>.json` is written before any model call. A cap or latency deferral before launch is not an attempt.
+  - A generation that fails before `generation_complete` may be relaunched **once** with the same seed in a new output dir, logged.
+  - A second failure ends confirmation-3 as not run: no claim, and the set is spent.
+  - Tuple-level failures are voids under §0.4.
+- **Validity gate and tuples (fixed now):**
+  - A tuple is one (task, arm, replicate), meaning all of that arm's invocations on that task in that replicate.
+  - The void gate is confirmation-2's: excluded (void) tuples ≤ 5% of all tuples, over the pooled run (both replicates, all arms).
+  - The tool-event rate of §0.4 (> 0.5%) is computed per replicate, over that replicate's invocations in all arms. Either replicate crossing it means IntegrityReview.
+  - Controller guards are unchanged: ≥ 10 families, and ≥ 1 discordant pair per comparison.
+- **Spend day:**
+  - Replicate 1 starts at 00:05 UTC on the first UTC day that meets all of these:
+    - it is ≥ 2026-10-24;
+    - it is strictly after the UTC day on which the registration, with its review dispositions, was committed;
+    - `decision.json` of confirmation-2 exists, and the re-frozen instrument is committed.
+  - A cap or latency no-go moves the start to the next day's 00:05 UTC.
+  - Replicate 2 follows the same rule from the day after replicate 1's generation.
+- **Rules frozen before the step that uses them** (each committed in this plan or in the pipeline's own spec, before the step starts):
+  - **before step 4 (authoring):**
+    - per-family caps on authoring, repair and audit calls;
+    - DETERMINED / UNDERDETERMINED classification, at most 2 repair rounds per task and one re-audit;
+    - the exhausted-cap outcome: the task is excluded with disclosure before the hash, and the family is excluded if fewer than 4 tasks remain;
+    - the similarity metric, corpus and threshold, with conflict handling (conflicting family re-authored once, else excluded before the hash);
+  - **before step 5:** the accepted `--json` event schema, including which thread/turn bookkeeping items are benign. It comes from step 3's positive and negative controls.
+- **Executable isolation and drain checks:**
+  - **Launch isolation, scripted and run before every authoring, repair and audit job, and before each replicate.** Any failure means the job does not start.
+    - No `.codex/` directory, `AGENTS.md` or skills directory exists in the cwd or any ancestor.
+    - `CODEX_HOME` is under `$A2D_HOLDOUT_DIR`.
+    - The canary read-deny check passes.
+    - The codex version matches the pinned one.
+  - **Process drain, before each replicate:**
+    - The authoring driver has stopped launching.
+    - Every child pid it recorded in its pid file has exited, checked with `kill -0` (never `pgrep -f`).
+    - The relocated `CODEX_HOME` holds the authoring jobs' session files. This positive check shows the relocation took effect without reading `~/.codex`, which the A² session also writes to.
 
 ### 0.9 Owner request
 - The A² session shares the account. Luna calls take 60–175 s today.
