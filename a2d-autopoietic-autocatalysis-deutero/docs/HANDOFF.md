@@ -32,9 +32,14 @@
        - Candidate: the batch winner iff it is promoted and passes one look by 10-23 23:59 UTC; otherwise E002.
        - The spend is at or after 10-24.
        - The order of work is in §0.6: blind power script → pipeline in the repo, tested on visible fixtures → capability inventory and allowlist detector → authoring after replicate 2's audit → validation and audit → registration and its review.
-       - **State (10-18 10:40 UTC):**
+       - **State (10-18 13:00 UTC):**
          - Step 1 is done: `c3_power.py` gives null RULED OUT 0.91 and SUPPORTED 0.47 at +10 pp.
-         - Step 2 is done: the pipeline is in `tools/holdout/`, reviewed twice, tests 11/11, last commit d50bee58. Read its README first.
+         - Step 2: the pipeline is in `tools/holdout/`; read its README first.
+           - Sol's re-check of d50bee58 said "No" (5 startup blockers). All 5 are closed in code (plan §0.12, LOG 10-18 12:30).
+           - A **copied `open` escaped the profile** in a live probe; Mach lookups are now an allowlist.
+           - Quiescence is by sandbox membership; the STOP launch gate, selection generation and raising inventory traversal are in.
+           - **Next:** Sol re-check 3 of the new commit. Selection may start only after it says yes **and** replicate 2's audit is committed.
+         - **Host note:** the owner's `~/bin/agents-disk-maintenance` (`cargo-sweep --recursive ~/Projects`) floods `fseventsd` while it runs. File-creating processes then stall (an unsandboxed hello-world compile took 3.5 min). Don't read a timing-bound test failure as a regression without checking `top` for a stuck `fseventsd` first.
          - Step 3: provider and controller hardening on branch `c2-web-provider` (be96d21b, 27757c6b). Merge it after `decision.json` **and** the batch confirmation step.
          - **Next:**
            - after replicate 2's audit is committed (≥ 10-19): `python3 -I tools/holdout/c3_select.py`, then `c3_author.py --parallel 3` in idle queue windows;

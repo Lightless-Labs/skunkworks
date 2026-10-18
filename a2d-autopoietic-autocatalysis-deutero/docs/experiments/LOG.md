@@ -1564,3 +1564,29 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - re-freezing;
   - confirmation-3 scoring with worst-case imputation in `eval.py` (a new `CONFIRM3` section).
 - **Authoring (step 4) starts only after confirmation-2 replicate 2's web audit is committed**, which `prereqs_ok` checks.
+
+### Confirmation-3 pipeline: Sol re-check 3 blockers closed; a copied `open` escaped the sandbox  [cycle 2, 2026-10-18 10:20–12:30 UTC; no confirmation-3 call yet]
+- **Sol's re-check of d50bee58 said "No"** and listed 5 startup blockers: broker confinement, job quiescence, selection provenance, STOP enforcement and inventory completeness. It also found 2 partial fixes in the similarity state.
+- **Live escape (correcting the 10-18 entry's "`open` denied"):**
+  - The path deny on `/usr/bin/open` held. A **copy** of `open` in the workdir did not: it launched TextEdit outside the sandbox through LaunchServices. With `open -a Terminal x.command` that would have been unsandboxed code execution.
+  - No job ever ran under that profile. Selection had not started, and `prereqs_ok` was still closed.
+- **Fix: Mach lookups are an allowlist** (`c3lib.MACH_ALLOW`, 9 services). It was harvested with `(allow mach-lookup (with report))` from a sandboxed compile and a live codex call.
+  - Codex needs SecurityServer for TLS roots. This was bisected live: without it, codex's connection fails while `curl` works.
+  - TCP to localhost (v4 and v6) is also denied.
+  - Copied `open` (by name and by path), `launchctl`, `pbpaste` and `mdfind` now fail, and so does a localhost listener. These checks now run before every job; a weakened profile fails them (negative control).
+  - Disclosed: a copied `security` lists the system keychain's metadata, which is world-readable anyway.
+- **Quiescence by sandbox membership:**
+  - Each profile alone may read its own tag file. The host finds a job's processes with `sandbox_check` on every pid, whatever their session, group, environment or cwd.
+  - After every job and probe, the driver stops all members to a fixpoint, kills them, and verifies that none remain before reading any artifact.
+  - Verified live: a setsid'd, double-forked, env-scrubbed daemon was found only under its own tag and reaped in 0.35 s.
+  - `DriverLock` reaps leftovers from a dead driver first.
+- **Also fixed:**
+  - one launch lock for STOP and every job launch;
+  - selection generation in `select.json`, retired by `--reset`;
+  - traversal errors raise during inventory;
+  - descriptor-relative host reads;
+  - re-authored families are decided only on a re-assembled suite;
+  - exhausted families are replaced. This fills a gap in the frozen rules, recorded in plan §0.12.
+- **Host incident:** from about 10:50 UTC a `cargo-sweep` from another session flooded `fseventsd` (2.4 GB, stuck). File-creating processes sit in uninterruptible wait, and an unsandboxed hello-world compile takes 3.5 min. Two environment-sensitive tests (the sandboxed toolchain and the broker probes, both timeout-bound) are re-run after it clears.
+- **E006 screen** (Sol spec notes before 3 Luna samples): all-pass 61/68 vs 59/68 (+2.9 pp); hidden fraction 0.973 vs 0.989; 332 vs 329 invocations. The rest stage is deferred by the cap (Luna today 2,520).
+  - First prompts were read (url-parse-l1, X:cand). Sol gets the requirements and public tests with a no-code reviewer brief. Luna's prompt is the controller prompt plus "## Reviewer notes on the requirements". No hidden content.
