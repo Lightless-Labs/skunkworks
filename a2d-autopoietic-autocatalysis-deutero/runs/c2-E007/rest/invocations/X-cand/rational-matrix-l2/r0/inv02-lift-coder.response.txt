@@ -1,0 +1,453 @@
+```rust
+use std::fmt;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rational {
+    num: i64,
+    den: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParseKind {
+    Empty,
+    InvalidByte,
+    NonCanonical,
+    OutOfRange,
+    ZeroDenominator,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RationalError {
+    ZeroDenominator,
+    DivideByZero,
+    Overflow,
+    Parse { at: usize, kind: ParseKind },
+}
+
+fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a
+}
+
+impl Rational {
+    pub fn new(num: i64, den: i64) -> Result<Self, RationalError> {
+        if den == 0 {
+            return Err(RationalError::ZeroDenominator);
+        }
+
+        let mut n = num as i128;
+        let mut d = den as i128;
+        if d < 0 {
+            n = -n;
+            d = -d;
+        }
+
+        if n == 0 {
+            return Ok(Self { num: 0, den: 1 });
+        }
+
+        let g = gcd_u128(n.unsigned_abs(), d as u128) as i128;
+        n /= g;
+        d /= g;
+
+        if n < i64::MIN as i128 || n > i64::MAX as i128 || d > i64::MAX as i128 {
+            return Err(RationalError::Overflow);
+        }
+
+        Ok(Self {
+            num: n as i64,
+            den: d as i64,
+        })
+    }
+
+    pub fn numerator(&self) -> i64 {
+        self.num
+    }
+
+    pub fn denominator(&self) -> i64 {
+        self.den
+    }
+
+    pub fn add(&self, rhs: &Self) -> Result<Self, RationalError> {
+        let n = self.num as i128 * rhs.den as i128
+            + rhs.num as i128 * self.den as i128;
+        let d = self.den as i128 * rhs.den as i128;
+        Self::from_i128(n, d)
+    }
+
+    pub fn sub(&self, rhs: &Self) -> Result<Self, RationalError> {
+        let n = self.num as i128 * rhs.den as i128
+            - rhs.num as i128 * self.den as i128;
+        let d = self.den as i128 * rhs.den as i128;
+        Self::from_i128(n, d)
+    }
+
+    pub fn mul(&self, rhs: &Self) -> Result<Self, RationalError> {
+        let a = self.num as i128;
+        let b = rhs.num as i128;
+        let c = self.den as i128;
+        let d = rhs.den as i128;
+
+        let g1 = gcd_u128(a.unsigned_abs(), d as u128) as i128;
+        let g2 = gcd_u128(b.unsigned_abs(), c as u128) as i128;
+        Self::from_i128((a / g1) * (b / g2), (c / g2) * (d / g1))
+    }
+
+    pub fn div(&self, rhs: &Self) -> Result<Self, RationalError> {
+        if rhs.num == 0 {
+            return Err(RationalError::DivideByZero);
+        }
+
+        let a = self.num as i128;
+        let b = rhs.den as i128;
+        let c = self.den as i128;
+        let d = rhs.num as i128;
+
+        let g1 = gcd_u128(a.unsigned_abs(), d.unsigned_abs()) as i128;
+        let g2 = gcd_u128(b as u128, c as u128) as i128;
+        Self::from_i128((a / g1) * (b / g2), (c / g2) * (d / g1))
+    }
+
+    pub fn neg(&self) -> Result<Self, RationalError> {
+        if self.num == i64::MIN {
+            return Err(RationalError::Overflow);
+        }
+        Ok(Self {
+            num: -self.num,
+            den: self.den,
+        })
+    }
+
+    fn from_i128(num: i128, den: i128) -> Result<Self, RationalError> {
+        if den == 0 {
+            return Err(RationalError::ZeroDenominator);
+        }
+
+        let mut n = num;
+        let mut d = den;
+        if d < 0 {
+            n = -n;
+            d = -d;
+        }
+
+        if n == 0 {
+            return Ok(Self { num: 0, den: 1 });
+        }
+
+        let g = gcd_u128(n.unsigned_abs(), d as u128) as i128;
+        n /= g;
+        d /= g;
+
+        if n < i64::MIN as i128 || n > i64::MAX as i128 || d > i64::MAX as i128 {
+            return Err(RationalError::Overflow);
+        }
+
+        Ok(Self {
+            num: n as i64,
+            den: d as i64,
+        })
+    }
+
+    pub fn parse(text: &str) -> Result<Self, RationalError> {
+        let bytes = text.as_bytes();
+        let parse_error = |at, kind| RationalError::Parse { at, kind };
+
+        if bytes.is_empty() {
+            return Err(parse_error(0, ParseKind::Empty));
+        }
+
+        let mut i = 0;
+        if bytes[0] == b'-' {
+            i = 1;
+            if i == bytes.len() {
+                return Err(parse_error(i, ParseKind::InvalidByte));
+            }
+        }
+
+        let num_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == num_start {
+            return Err(parse_error(i, ParseKind::InvalidByte));
+        }
+
+        let num_end = i;
+        let mut den_start = None;
+        let mut den_end = None;
+
+        if i < bytes.len() {
+            if bytes[i] != b'/' {
+                return Err(parse_error(i, ParseKind::InvalidByte));
+            }
+            i += 1;
+            let start = i;
+            if i == bytes.len() || !bytes[i].is_ascii_digit() {
+                return Err(parse_error(i, ParseKind::InvalidByte));
+            }
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            den_start = Some(start);
+            den_end = Some(i);
+
+            if i < bytes.len() {
+                return Err(parse_error(i, ParseKind::InvalidByte));
+            }
+        }
+
+        let negative = bytes[0] == b'-';
+        if num_end - num_start >= 2 && bytes[num_start] == b'0' {
+            return Err(parse_error(num_start + 1, ParseKind::NonCanonical));
+        }
+        if negative && num_end - num_start == 1 && bytes[num_start] == b'0' {
+            return Err(parse_error(0, ParseKind::NonCanonical));
+        }
+        if let (Some(start), Some(end)) = (den_start, den_end) {
+            if end - start >= 2 && bytes[start] == b'0' {
+                return Err(parse_error(start + 1, ParseKind::NonCanonical));
+            }
+        }
+
+        let num_limit: u128 = if negative {
+            1u128 << 63
+        } else {
+            i64::MAX as u128
+        };
+        let mut num_mag = 0u128;
+        for &b in &bytes[num_start..num_end] {
+            num_mag = num_mag.saturating_mul(10).saturating_add((b - b'0') as u128);
+            if num_mag > num_limit {
+                return Err(parse_error(0, ParseKind::OutOfRange));
+            }
+        }
+
+        let mut den_value = None;
+        if let (Some(start), Some(end)) = (den_start, den_end) {
+            let mut value = 0u128;
+            for &b in &bytes[start..end] {
+                value = value.saturating_mul(10).saturating_add((b - b'0') as u128);
+                if value > i64::MAX as u128 {
+                    return Err(parse_error(start, ParseKind::OutOfRange));
+                }
+            }
+            den_value = Some(value as i64);
+        }
+
+        if let (Some(start), Some(den)) = (den_start, den_value) {
+            if den == 0 {
+                return Err(parse_error(start, ParseKind::ZeroDenominator));
+            }
+        }
+
+        let slash = num_end;
+        if let (Some(_), Some(den)) = (den_start, den_value) {
+            if den == 1 {
+                return Err(parse_error(slash, ParseKind::NonCanonical));
+            }
+            if num_mag == 0 {
+                return Err(parse_error(slash, ParseKind::NonCanonical));
+            }
+            if gcd_u128(num_mag, den as u128) > 1 {
+                return Err(parse_error(slash, ParseKind::NonCanonical));
+            }
+        }
+
+        let signed_num = if negative {
+            if num_mag == 1u128 << 63 {
+                i64::MIN
+            } else {
+                -(num_mag as i64)
+            }
+        } else {
+            num_mag as i64
+        };
+
+        match den_value {
+            Some(den) => Ok(Self {
+                num: signed_num,
+                den,
+            }),
+            None => Ok(Self {
+                num: signed_num,
+                den: 1,
+            }),
+        }
+    }
+}
+
+impl fmt::Display for Rational {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.den == 1 {
+            write!(f, "{}", self.num)
+        } else {
+            write!(f, "{}/{}", self.num, self.den)
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Matrix {
+    rows: usize,
+    cols: usize,
+    data: Vec<Rational>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MatrixError {
+    ShapeOverflow,
+    DataLength {
+        expected: usize,
+        actual: usize,
+    },
+    Index {
+        row: usize,
+        col: usize,
+    },
+    DimensionMismatch {
+        left: (usize, usize),
+        right: (usize, usize),
+    },
+    Arithmetic {
+        row: usize,
+        col: usize,
+        step: usize,
+        source: RationalError,
+    },
+    NotSquare {
+        rows: usize,
+        cols: usize,
+    },
+    Singular {
+        rank: usize,
+    },
+}
+
+impl Matrix {
+    pub fn new(rows: usize, cols: usize, data: Vec<Rational>) -> Result<Self, MatrixError> {
+        let expected = rows.checked_mul(cols).ok_or(MatrixError::ShapeOverflow)?;
+        if data.len() != expected {
+            return Err(MatrixError::DataLength {
+                expected,
+                actual: data.len(),
+            });
+        }
+        Ok(Self { rows, cols, data })
+    }
+
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+
+    pub fn data(&self) -> &[Rational] {
+        &self.data
+    }
+
+    pub fn get(&self, row: usize, col: usize) -> Result<Rational, MatrixError> {
+        if row >= self.rows || col >= self.cols {
+            return Err(MatrixError::Index { row, col });
+        }
+        let index = row
+            .checked_mul(self.cols)
+            .and_then(|base| base.checked_add(col))
+            .ok_or(MatrixError::Index { row, col })?;
+        self.data
+            .get(index)
+            .copied()
+            .ok_or(MatrixError::Index { row, col })
+    }
+
+    pub fn transpose(&self) -> Self {
+        let mut data = Vec::with_capacity(self.data.len());
+        for r in 0..self.rows {
+            for c in 0..self.cols {
+                data.push(self.data[r * self.cols + c]);
+            }
+        }
+
+        if self.rows == 0 || self.cols == 0 {
+            return Self {
+                rows: self.cols,
+                cols: self.rows,
+                data: Vec::new(),
+            };
+        }
+
+        let mut transposed = vec![self.data[0]; self.data.len()];
+        for r in 0..self.rows {
+            for c in 0..self.cols {
+                transposed[c * self.rows + r] = self.data[r * self.cols + c];
+            }
+        }
+        Self {
+            rows: self.cols,
+            cols: self.rows,
+            data: transposed,
+        }
+    }
+
+    pub fn mul(&self, rhs: &Self) -> Result<Self, MatrixError> {
+        if self.cols != rhs.rows {
+            return Err(MatrixError::DimensionMismatch {
+                left: (self.rows, self.cols),
+                right: (rhs.rows, rhs.cols),
+            });
+        }
+
+        let output_len = self
+            .rows
+            .checked_mul(rhs.cols)
+            .ok_or(MatrixError::ShapeOverflow)?;
+
+        let mut data = Vec::with_capacity(output_len);
+        if output_len == 0 {
+            return Ok(Self {
+                rows: self.rows,
+                cols: rhs.cols,
+                data,
+            });
+        }
+
+        for r in 0..self.rows {
+            for c in 0..rhs.cols {
+                let mut acc = Self::zero();
+                for k in 0..self.cols {
+                    let left = self.get(r, k).map_err(|_| MatrixError::Index { row: r, col: k })?;
+                    let right = rhs.get(k, c).map_err(|_| MatrixError::Index { row: k, col: c })?;
+                    let term = left.mul(&right).map_err(|source| MatrixError::Arithmetic {
+                        row: r,
+                        col: c,
+                        step: k,
+                        source,
+                    })?;
+                    acc = acc.add(&term).map_err(|source| MatrixError::Arithmetic {
+                        row: r,
+                        col: c,
+                        step: k,
+                        source,
+                    })?;
+                }
+                data.push(acc);
+            }
+        }
+
+        Ok(Self {
+            rows: self.rows,
+            cols: rhs.cols,
+            data,
+        })
+    }
+
+    fn zero() -> Rational {
+        Rational { num: 0, den: 1 }
+    }
+}
+```

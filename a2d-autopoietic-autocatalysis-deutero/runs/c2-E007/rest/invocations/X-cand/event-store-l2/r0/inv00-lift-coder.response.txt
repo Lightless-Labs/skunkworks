@@ -1,0 +1,336 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    New,
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    pub status: Status,
+    pub balance: i64,
+    pub limit: i64,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Open { limit: i64 },
+    Deposit { amount: i64 },
+    Withdraw { amount: i64, floor: i64 },
+    Close { expected_version: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyError {
+    VersionOverflow,
+    InvalidLimit,
+    AlreadyOpened,
+    NotOpened,
+    Closed,
+    InvalidAmount,
+    LimitExceeded,
+    InvalidFloor,
+    InsufficientFunds,
+    FloorViolation,
+    CloseVersion { expected: u64, actual: u64 },
+    NonZeroBalance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayError {
+    pub index: usize,
+    pub kind: ApplyError,
+}
+
+pub fn replay(events: &[Event]) -> Result<Account, ReplayError> {
+    let mut account = Account {
+        status: Status::New,
+        balance: 0,
+        limit: 0,
+        version: 0,
+    };
+
+    for (index, event) in events.iter().enumerate() {
+        let failure = match event {
+            Event::Open { limit } => {
+                if !(1..=1_000_000_000).contains(limit) {
+                    Some(ApplyError::InvalidLimit)
+                } else if account.status != Status::New {
+                    Some(ApplyError::AlreadyOpened)
+                } else {
+                    account.status = Status::Open;
+                    account.limit = *limit;
+                    None
+                }
+            }
+            Event::Deposit { amount } => match account.status {
+                Status::New => Some(ApplyError::NotOpened),
+                Status::Closed => Some(ApplyError::Closed),
+                Status::Open => {
+                    if *amount <= 0 {
+                        Some(ApplyError::InvalidAmount)
+                    } else if *amount > account.limit - account.balance {
+                        Some(ApplyError::LimitExceeded)
+                    } else {
+                        account.balance += *amount;
+                        None
+                    }
+                }
+            },
+            Event::Withdraw { amount, floor } => match account.status {
+                Status::New => Some(ApplyError::NotOpened),
+                Status::Closed => Some(ApplyError::Closed),
+                Status::Open => {
+                    if *amount <= 0 {
+                        Some(ApplyError::InvalidAmount)
+                    } else if *floor < 0 || *floor > account.limit {
+                        Some(ApplyError::InvalidFloor)
+                    } else if *amount > account.balance {
+                        Some(ApplyError::InsufficientFunds)
+                    } else if account.balance - *amount < *floor {
+                        Some(ApplyError::FloorViolation)
+                    } else {
+                        account.balance -= *amount;
+                        None
+                    }
+                }
+            },
+            Event::Close { expected_version } => match account.status {
+                Status::New => Some(ApplyError::NotOpened),
+                Status::Closed => Some(ApplyError::Closed),
+                Status::Open => {
+                    if *expected_version != account.version {
+                        Some(ApplyError::CloseVersion {
+                            expected: *expected_version,
+                            actual: account.version,
+                        })
+                    } else if account.balance != 0 {
+                        Some(ApplyError::NonZeroBalance)
+                    } else {
+                        account.status = Status::Closed;
+                        None
+                    }
+                }
+            },
+        };
+
+        if let Some(kind) = failure {
+            return Err(ReplayError { index, kind });
+        }
+
+        account.version += 1;
+    }
+
+    Ok(account)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Expected {
+    Any,
+    Missing,
+    Exact(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreError {
+    InvalidId { byte: usize },
+    Conflict {
+        expected: Expected,
+        actual: Option<u64>,
+    },
+    Rejected(ReplayError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Store {
+    streams: Vec<(String, Vec<Event>, Account)>,
+}
+
+impl Store {
+    pub fn new() -> Self {
+        Self {
+            streams: Vec::new(),
+        }
+    }
+
+    fn validate_id(id: &str) -> Result<(), StoreError> {
+        let bytes = id.as_bytes();
+
+        if bytes.is_empty() {
+            return Err(StoreError::InvalidId { byte: 0 });
+        }
+
+        if !(b'a'..=b'z').contains(&bytes[0]) {
+            return Err(StoreError::InvalidId { byte: 0 });
+        }
+
+        for (index, byte) in bytes.iter().enumerate().skip(1).take(23) {
+            if !byte.is_ascii_lowercase() && !byte.is_ascii_digit() && *byte != b'-' {
+                return Err(StoreError::InvalidId { byte: index });
+            }
+        }
+
+        if bytes.len() > 24 {
+            return Err(StoreError::InvalidId { byte: 24 });
+        }
+
+        Ok(())
+    }
+
+    fn find(&self, id: &str) -> Option<usize> {
+        self.streams.iter().position(|(stream_id, _, _)| stream_id == id)
+    }
+
+    pub fn append(
+        &mut self,
+        id: &str,
+        expected: Expected,
+        events: &[Event],
+    ) -> Result<Account, StoreError> {
+        Self::validate_id(id)?;
+
+        let existing_index = self.find(id);
+        let actual = existing_index.map(|index| self.streams[index].2.version);
+
+        let matches = match expected {
+            Expected::Any => true,
+            Expected::Missing => actual.is_none(),
+            Expected::Exact(version) => actual == Some(version),
+        };
+
+        if !matches {
+            return Err(StoreError::Conflict { expected, actual });
+        }
+
+        let initial = Account {
+            status: Status::New,
+            balance: 0,
+            limit: 0,
+            version: 0,
+        };
+
+        let current = existing_index
+            .map(|index| self.streams[index].2.clone())
+            .unwrap_or(initial);
+
+        let mut updated = current;
+        for (index, event) in events.iter().enumerate() {
+            let next = replay_one(&updated, event).map_err(|kind| {
+                StoreError::Rejected(ReplayError { index, kind })
+            })?;
+            updated = next;
+        }
+
+        if events.is_empty() {
+            return Ok(updated);
+        }
+
+        match existing_index {
+            Some(index) => {
+                self.streams[index].1.extend_from_slice(events);
+                self.streams[index].2 = updated.clone();
+            }
+            None => {
+                self.streams
+                    .push((id.to_owned(), events.to_vec(), updated.clone()));
+            }
+        }
+
+        Ok(updated)
+    }
+
+    pub fn state(&self, id: &str) -> Result<Option<Account>, StoreError> {
+        Self::validate_id(id)?;
+        Ok(self.find(id).map(|index| self.streams[index].2.clone()))
+    }
+
+    pub fn history(&self, id: &str, after: u64) -> Result<Option<Vec<Event>>, StoreError> {
+        Self::validate_id(id)?;
+        let Some(index) = self.find(id) else {
+            return Ok(None);
+        };
+
+        let history = &self.streams[index].1;
+        let result = history
+            .iter()
+            .enumerate()
+            .filter_map(|(event_index, event)| {
+                let version = (event_index as u64) + 1;
+                (version > after).then(|| event.clone())
+            })
+            .collect();
+
+        Ok(Some(result))
+    }
+}
+
+fn replay_one(account: &Account, event: &Event) -> Result<Account, ApplyError> {
+    let mut next = account.clone();
+
+    match event {
+        Event::Open { limit } => {
+            if !(1..=1_000_000_000).contains(limit) {
+                return Err(ApplyError::InvalidLimit);
+            }
+            if next.status != Status::New {
+                return Err(ApplyError::AlreadyOpened);
+            }
+            next.status = Status::Open;
+            next.limit = *limit;
+        }
+        Event::Deposit { amount } => match next.status {
+            Status::New => return Err(ApplyError::NotOpened),
+            Status::Closed => return Err(ApplyError::Closed),
+            Status::Open => {
+                if *amount <= 0 {
+                    return Err(ApplyError::InvalidAmount);
+                }
+                if *amount > next.limit - next.balance {
+                    return Err(ApplyError::LimitExceeded);
+                }
+                next.balance += *amount;
+            }
+        },
+        Event::Withdraw { amount, floor } => match next.status {
+            Status::New => return Err(ApplyError::NotOpened),
+            Status::Closed => return Err(ApplyError::Closed),
+            Status::Open => {
+                if *amount <= 0 {
+                    return Err(ApplyError::InvalidAmount);
+                }
+                if *floor < 0 || *floor > next.limit {
+                    return Err(ApplyError::InvalidFloor);
+                }
+                if *amount > next.balance {
+                    return Err(ApplyError::InsufficientFunds);
+                }
+                if next.balance - *amount < *floor {
+                    return Err(ApplyError::FloorViolation);
+                }
+                next.balance -= *amount;
+            }
+        },
+        Event::Close { expected_version } => match next.status {
+            Status::New => return Err(ApplyError::NotOpened),
+            Status::Closed => return Err(ApplyError::Closed),
+            Status::Open => {
+                if *expected_version != next.version {
+                    return Err(ApplyError::CloseVersion {
+                        expected: *expected_version,
+                        actual: next.version,
+                    });
+                }
+                if next.balance != 0 {
+                    return Err(ApplyError::NonZeroBalance);
+                }
+                next.status = Status::Closed;
+            }
+        },
+    }
+
+    next.version = next.version.checked_add(1).ok_or(ApplyError::VersionOverflow)?;
+    Ok(next)
+}
+```

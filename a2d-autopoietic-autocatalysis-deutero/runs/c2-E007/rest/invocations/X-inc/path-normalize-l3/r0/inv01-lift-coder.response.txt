@@ -1,0 +1,359 @@
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    Empty,
+    Nul { at: usize },
+    Backslash { at: usize },
+    Control { at: usize },
+    Escape { at: usize },
+    InvalidCwd,
+    InvalidHome,
+    MissingHome,
+    UnsupportedTilde { at: usize },
+    InvalidLink { index: usize },
+    DuplicateLink { first: usize, second: usize },
+    Loop { index: usize },
+    Limit { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    pub path: String,
+    pub target: String,
+}
+
+fn validate_raw(path: &str) -> Result<(), PathError> {
+    if path.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == 0) {
+        return Err(PathError::Nul { at });
+    }
+
+    if let Some(at) = path.as_bytes().iter().position(|&b| b == b'\\') {
+        return Err(PathError::Backslash { at });
+    }
+
+    if let Some(at) = path
+        .as_bytes()
+        .iter()
+        .position(|&b| (1..=31).contains(&b) || b == 127)
+    {
+        return Err(PathError::Control { at });
+    }
+
+    Ok(())
+}
+
+fn directory_intent(path: &str) -> bool {
+    if path.ends_with('/') {
+        return true;
+    }
+
+    path.split('/')
+        .filter(|component| !component.is_empty())
+        .last()
+        .is_some_and(|component| component == "." || component == "..")
+}
+
+fn append_directory_slash(result: &mut String, intent: bool) {
+    if intent && result != "/" && result != "." && !result.ends_with('/') {
+        result.push('/');
+    }
+}
+
+pub fn normalize(path: &str) -> Result<String, PathError> {
+    validate_raw(path)?;
+
+    let absolute = path.starts_with('/');
+    let intent = directory_intent(path);
+    let mut components: Vec<&str> = Vec::new();
+    let mut offset = 0;
+
+    for component in path.split('/') {
+        let start = offset;
+        offset += component.len() + 1;
+
+        if component.is_empty() || component == "." {
+            continue;
+        }
+
+        if component == ".." {
+            if components.last().is_some_and(|last| *last != "..") {
+                components.pop();
+            } else if absolute {
+                return Err(PathError::Escape { at: start });
+            } else {
+                components.push("..");
+            }
+        } else {
+            components.push(component);
+        }
+    }
+
+    let mut result = if absolute {
+        format!("/{}", components.join("/"))
+    } else if components.is_empty() {
+        ".".to_owned()
+    } else {
+        components.join("/")
+    };
+
+    append_directory_slash(&mut result, intent);
+    Ok(result)
+}
+
+fn validated_context(path: &str, error: PathError) -> Result<Vec<String>, PathError> {
+    if !path.starts_with('/') {
+        return Err(error);
+    }
+
+    let normalized = normalize(path).map_err(|_| error)?;
+    Ok(normalized
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+fn expanded_request<'a>(
+    path: &'a str,
+    home: Option<&'a [String]>,
+) -> Result<(bool, Vec<String>, &'a str, usize), PathError> {
+    if path.starts_with('~') {
+        let bytes = path.as_bytes();
+        if bytes.len() > 1 && bytes[1] != b'/' {
+            return Err(PathError::UnsupportedTilde { at: 1 });
+        }
+
+        let home = home.ok_or(PathError::MissingHome)?;
+        let remainder_start = if bytes.len() > 1 { 2 } else { 1 };
+        Ok((
+            true,
+            home.to_vec(),
+            &path[remainder_start..],
+            remainder_start,
+        ))
+    } else if path.starts_with('/') {
+        Ok((true, Vec::new(), path, 0))
+    } else {
+        Ok((false, Vec::new(), path, 0))
+    }
+}
+
+pub fn resolve(
+    path: &str,
+    cwd: &str,
+    home: Option<&str>,
+) -> Result<String, PathError> {
+    let cwd_components = validated_context(cwd, PathError::InvalidCwd)?;
+    let home_components = match home {
+        Some(value) => Some(validated_context(value, PathError::InvalidHome)?),
+        None => None,
+    };
+
+    validate_raw(path)?;
+    let intent = directory_intent(path);
+    let (absolute, mut components, remainder, base_offset) =
+        expanded_request(path, home_components.as_deref())?;
+
+    if !absolute {
+        components = cwd_components;
+    }
+
+    let mut offset = base_offset;
+    for component in remainder.split('/') {
+        let start = offset;
+        offset += component.len() + 1;
+
+        if component.is_empty() || component == "." {
+            continue;
+        }
+
+        if component == ".." {
+            if components.pop().is_none() {
+                return Err(PathError::Escape { at: start });
+            }
+        } else {
+            components.push(component.to_owned());
+        }
+    }
+
+    let mut result = format!("/{}", components.join("/"));
+    append_directory_slash(&mut result, intent);
+    Ok(result)
+}
+
+#[derive(Clone)]
+struct Work {
+    raw: String,
+    offset: usize,
+    is_request: bool,
+    active_link: Option<usize>,
+}
+
+fn link_table(links: &[Link]) -> Result<(), PathError> {
+    for (index, link) in links.iter().enumerate() {
+        let valid_path = link.path.starts_with('/')
+            && !link.path.ends_with('/')
+            && link.path != "/"
+            && normalize(&link.path)
+                .is_ok_and(|normalized| normalized == link.path);
+        let valid_target = validate_raw(&link.target).is_ok();
+
+        if !valid_path || !valid_target {
+            return Err(PathError::InvalidLink { index });
+        }
+
+        if let Some(first) = links[..index]
+            .iter()
+            .position(|earlier| earlier.path == link.path)
+        {
+            return Err(PathError::DuplicateLink {
+                first,
+                second: index,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+pub fn resolve_links(
+    path: &str,
+    cwd: &str,
+    home: Option<&str>,
+    links: &[Link],
+    max_expansions: usize,
+) -> Result<String, PathError> {
+    let cwd_components = validated_context(cwd, PathError::InvalidCwd)?;
+    let home_components = match home {
+        Some(value) => Some(validated_context(value, PathError::InvalidHome)?),
+        None => None,
+    };
+
+    link_table(links)?;
+    validate_raw(path)?;
+
+    let intent = directory_intent(path);
+    let (absolute, _, remainder, base_offset) =
+        expanded_request(path, home_components.as_deref())?;
+    let mut components = if absolute {
+        if path.starts_with('~') {
+            home_components.unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    } else {
+        cwd_components
+    };
+
+    let mut work = vec![Work {
+        raw: remainder.to_owned(),
+        offset: base_offset,
+        is_request: true,
+        active_link: None,
+    }];
+    let mut active = Vec::new();
+    let mut expansions = 0usize;
+
+    while let Some(mut item) = work.pop() {
+        if let Some(index) = item.active_link.take() {
+            if active.last() == Some(&index) {
+                active.pop();
+            } else if let Some(position) = active.iter().rposition(|&x| x == index) {
+                active.remove(position);
+            }
+        }
+
+        let bytes = item.raw.as_bytes();
+        let mut cursor = 0usize;
+
+        while cursor <= bytes.len() {
+            let start = cursor;
+            while cursor < bytes.len() && bytes[cursor] != b'/' {
+                cursor += 1;
+            }
+            let component = &item.raw[start..cursor];
+            let component_offset = item.offset + start;
+            cursor += 1;
+
+            if component.is_empty() || component == "." {
+                if cursor > bytes.len() {
+                    break;
+                }
+                continue;
+            }
+
+            if component == ".." {
+                if components.pop().is_none() {
+                    return Err(PathError::Escape {
+                        at: component_offset,
+                    });
+                }
+                if cursor > bytes.len() {
+                    break;
+                }
+                continue;
+            }
+
+            components.push(component.to_owned());
+            let absolute_name = format!("/{}", components.join("/"));
+
+            if let Some((index, link)) = links
+                .iter()
+                .enumerate()
+                .find(|(_, link)| link.path == absolute_name)
+            {
+                if active.contains(&index) {
+                    return Err(PathError::Loop { index });
+                }
+                if expansions >= max_expansions {
+                    return Err(PathError::Limit { index });
+                }
+                expansions += 1;
+
+                // A relative target begins at the parent of the matched link.
+                components.pop();
+                if link.target.starts_with('/') {
+                    components.clear();
+                }
+
+                active.push(index);
+                work.push(Work {
+                    raw: String::new(),
+                    offset: 0,
+                    is_request: item.is_request,
+                    active_link: Some(index),
+                });
+                work.push(Work {
+                    raw: link.target.clone(),
+                    offset: 0,
+                    is_request: false,
+                    active_link: None,
+                });
+
+                // Preserve the unprocessed suffix so expansion completes first.
+                if cursor <= bytes.len() && cursor < bytes.len() {
+                    work.push(Work {
+                        raw: item.raw[cursor..].to_owned(),
+                        offset: item.offset + cursor,
+                        is_request: item.is_request,
+                        active_link: None,
+                    });
+                }
+                break;
+            }
+
+            if cursor > bytes.len() {
+                break;
+            }
+        }
+    }
+
+    let mut result = format!("/{}", components.join("/"));
+    append_directory_slash(&mut result, intent);
+    Ok(result)
+}
+```
