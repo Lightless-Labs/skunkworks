@@ -11,7 +11,7 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
 **Goal:** the session `/goal` of 2026-10-15 (quoted in the plan).
 **Plan:** `docs/plans/2026-10-15-cycle2-nanoharness.md`.
 **Evidence:** `docs/experiments/LOG.md`, section "Cycle 2" (every entry registered before its run), and `nano/results.tsv` (one row per experiment stage, including discards).
-**Outcome:** **[pending]**
+**Outcome:** **[pending]**. Known so far (10-18): confirmation-2 ended in **IntegrityReview** (2 web searches in arm B, replicate 1). The set is spent with no claim, so a SUPPORTED claim in this cycle needs a new blind confirmation set.
 
 ## The question
 
@@ -79,7 +79,11 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
   - It was reviewed by Codex Sol and a fresh Claude before spending.
   - Power at a true +10 pp is about 0.47, with a recorded exception for P(RULED OUT | 0) = 0.73.
 - **C2-WEB amendment (strictly tightening):** any web-search event in any arm makes the outcome IntegrityReview.
-- **Result:** **[pending]**
+- **Result: IntegrityReview, so no claim.** The confirmation-2 set is spent.
+  - Replicate 1 (10-18, 1,486 Luna and 132 Sol calls): its web audit counted **2 web-search events in arm B** (720 transcripts), against 0 in D (185) and 0 in X:frozen (713). There were no invocations without a transcript and no other codex version.
+  - By the registered amendment, this fixes the outcome whatever `decision.json` says. Replicate 2 still runs, as registered.
+  - The scored numbers will be **descriptive only**: **[pending: `decision.json`]**.
+  - The cause is not examined: that would mean opening the set. The counts are the whole permitted view.
 
 ## Proposer comparison (phase B)
 
@@ -96,8 +100,10 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
 - **C2-ISO2** (10-17): the oracle's compile and test steps now also run sandboxed. The run step gets no processes, no Mach lookups and a cleared environment.
   - Parity: 420/420 identical against the old binary.
 - **C2-WEB** (10-17): codex-cli 0.162.0 ignores `--disable web_search_request`, so web search was available to every call, and the controller's tool count (exec only) could not see it.
-  - **0 searches in about 15.8k recorded transcripts** (every dev run since 10-14, and every holdout run, counts only), so no recorded result is affected.
+  - **0 searches in about 15.8k recorded transcripts** (every dev run since 10-14, and every holdout run, counts only), so no result recorded before confirmation-2 is affected.
   - Fixed for proposers. Dev runs stop on any search, and confirmation-2 is audited. The provider itself is fixed after the confirmation-2 freeze.
+  - **Confirmation-2 is the exception:** 2 searches by arm B in replicate 1, which voids its claim (above).
+  - **Lesson:** a known open channel on a spend-once set must be closed and re-registered before the spend, even at the cost of a re-review. An audit run after the spend can only tell you the set is gone.
 
 ## Claims and scope
 

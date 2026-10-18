@@ -1436,3 +1436,27 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - Line 1 of `queue-2026-10-18.txt`, `L05-confirm-r1`, started at 01:35:43 UTC. Its ≥ 00:05 UTC 10-18 lower bound had passed, so replicate 1 began at once. This is the first confirmation-2 call: nothing was run on 10-17.
 - No registered setting changed. Replicate 2 (`L09`) keeps its ≥ 10-19 lower bound and its deferral retry, so the two replicates still fall on distinct UTC days.
 - The 10 hours between the reaper stop and the restart cost no Luna. The only cost is about 1.5 h of the 10-18 UTC day for the daily cap.
+
+### C2-CONFIRM2 replicate 1: generated; web audit finds 2 searches in arm B, so the outcome is IntegrityReview  [cycle 2, 2026-10-18 03:59 UTC; counts only]
+- **Replicate 1** (`L05-confirm-r1`): 01:35:43–03:46:18 UTC, rc=0, decision "generated (scoring deferred)".
+  - Spend, from the replicate's ledger (invocation records only): **1,486 Luna, 132 Sol**. Luna today: 1,486 of 3k.
+  - Attempt record: `runs/c2-confirm2/attempt-r1.json` (commit 26e02426).
+- **Web audit** (`L06-audit-r1`, `confirm-web-audit --rep 1`, `runs/c2-confirm2/web-audit-r1.json`), verbatim counts:
+
+  | arm | web-search events | transcripts | invocations without transcript | not codex 0.162.0 |
+  |---|---|---|---|---|
+  | B | **2** | 720 | 0 | 0 |
+  | D | 0 | 185 | 0 | 0 |
+  | X:frozen | 0 | 713 | 0 | 0 |
+
+  `"integrity_review": true`.
+- **Outcome, fixed by the registered C2-WEB amendment (10-17, before any confirmation call): IntegrityReview.**
+  - Any event in any arm, in either replicate, decides it, whatever `decision.json` says. The rule is not narrowed: "only B searched" and "2 of 720" are post-hoc readings that the amendment's review did not cover.
+  - **Confirmation-2 is spent with no claim.**
+- **What is not done:** no transcript, task id, timestamp or file order in the replicate directory is examined to find what was searched or why B and not X. That would reveal set membership, so the cause stays unknown by design.
+- **Replicate 2 runs as registered** (`L09`, ≥ 00:05 UTC 10-19, then its audit). `confirm-score` then writes `decision.json`, whose numbers are reported as **descriptive** only.
+  - **The freeze still holds until then:** crates, Cargo files and `eval.py`'s CONFIRM2 section stay untouched, and `c2-web-provider` (4b80fe67) waits.
+  - The queue and the dev batch (E007 resume, E006 to E010, `confirm_best`) are unaffected and keep running.
+- **The amendment's premise failed:** it rested on "at low or medium effort the models never used it" (0 in about 15.8k). The next 720 B transcripts held 2 searches.
+  - **Learning** (to compound): don't spend a once-only set on an instrument with a known open channel. Close the channel and re-register first, even if that costs a re-review. An audit run after the spend can only show that the set is gone.
+- **Consequence for the goal:** a SUPPORTED claim in this cycle now needs a new blind confirmation set (confirmation sets are spent once). This is planned in the plan addendum of 10-18, not decided here.
