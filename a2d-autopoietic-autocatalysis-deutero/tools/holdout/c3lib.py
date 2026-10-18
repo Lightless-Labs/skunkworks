@@ -872,6 +872,16 @@ def prereqs_ok():
     return bool(head) and bool(manifest)
 
 
+PROVIDER_COMMIT = "27757c6b"   # c2-web-provider: isolated CODEX_HOME, tools off, --json, tool events void
+
+
+def provider_merged():
+    """The audit runs on the fixed provider only (plan §0.6 step 3 merge, then re-freeze)."""
+    if TESTING:
+        return True
+    return _git("merge-base", "--is-ancestor", PROVIDER_COMMIT, "HEAD").returncode == 0
+
+
 class DriverLock:
     """One driver at a time (fcntl.flock held for the driver's lifetime); its pid is
     recorded so drained() can see it."""
@@ -1021,6 +1031,19 @@ def tree_hashes(root):
             rel = os.path.relpath(os.path.join(dirpath, name), root)
             out[rel] = hashlib.sha256(_read_fd(os.open(name, _FILE_FLAGS, dir_fd=dfd))).hexdigest()
     return out
+
+
+def hashes_digest(hashes):
+    """One sha256 over a family's verified file hashes (author status.json)."""
+    return hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
+
+
+def suite_digest():
+    """One sha256 over the assembled suite's files (relative paths and contents)."""
+    h = hashlib.sha256()
+    for rel, digest in sorted(tree_hashes(SUITE).items()):
+        h.update(f"{rel}\0{digest}\n".encode())
+    return h.hexdigest()
 
 
 def prior_manifest():

@@ -46,7 +46,14 @@ Plan: `docs/plans/2026-10-18-confirmation-3.md` (§0.4, §0.6, §0.10, §0.11). 
 3. `c3_assemble.py`: a fresh staging suite of complete families only, atomically swapped into `$A2D_HOLDOUT_DIR/confirmation-3/`.
 4. `c3_similarity.py`: Jaccard ≥ 0.15 or containment ≥ 0.40 → re-author once → next spare → drop.
 5. `c3_validate.py`, then `c3_fix.py` (at most 2 rounds per family, each bound to a validation run), re-assembling and re-validating between rounds. Exhausted tasks are excluded and their family replaced.
-6. The independent-solve audit and adjudication on the re-frozen provider (§0.11; tooling to follow before step 5), then the hash.
+6. `c3_audit.py`: the independent-solve audit (Codex Sol medium, arm D, k = 3, via `a2d lift run --record-hidden-output` on a sub-suite of the tasks due).
+   - It runs only on the merged, fixed provider. It also requires that validation and similarity were both clean on exactly the current suite (digest), that nothing is pending, and that every suite family matches its current verified author files.
+   - Round 1 covers every task once. Round 2 is the single re-audit, of repaired tasks and of tasks whose round-1 tuple was void.
+7. `c3_adjudicate.py`: one sandboxed Sol job per family and mode (`authoring/ADJUDICATE.md`), with only the failing tasks, the solver's submission and its hidden output. Each failing hidden test is classified DETERMINED (kept unchanged) or UNDERDETERMINED. Verdicts are strictly parsed against the failing tests the driver read.
+   - Repair mode: UNDERDETERMINED tasks come back with only `requirements` and/or `hidden_tests.rs` changed, applied the `c3_fix` way. Then steps 3–5 run again, then the re-audit.
+   - Classify mode, after the re-audit: still UNDERDETERMINED means excluded, and the family is replaced.
+   - A missing or malformed repair, or 2 failed jobs, excludes the task (fail closed).
+8. The hash and the registration.
 
 All scripts are run as `python3 -I tools/holdout/<script>`. **The long drivers (`c3_select.py`, `c3_author.py`, `c3_fix.py`) are launched only through `tools/holdout/detached.sh <script> [args]`.** It uses its own session, `caffeinate` and no terminal. A Claude Code background shell can be reaped under memory pressure, and the next driver's recovery would then kill the in-flight jobs, spending their attempts. The detached driver's gateway output goes to `~/.a2d-c3-drivers/`, outside the holdout dir. **Never read by hand:** anything under `$A2D_HOLDOUT_DIR/{authoring/confirmation-3,confirmation-3}`. **Never print process command lines** while these jobs run.
 

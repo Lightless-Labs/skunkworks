@@ -47,6 +47,20 @@ elif grep -q "author one task family" INSTRUCTIONS.md; then
   fi
   if [ -n "$C3_TEST_PROBE" ]; then cat "$C3_TEST_PROBE" > probe-result.txt 2>&1; fi
 fi
+if grep -q "adjudicate failing hidden tests" INSTRUCTIONS.md; then
+  : > VERDICTS.tsv
+  for d in tasks/*; do
+    tid=$(basename "$d")
+    names=$(grep ' FAILED$' "solver/$tid/hidden_output.txt" | cut -d' ' -f2)
+    [ -z "$names" ] && names='*'
+    v=DETERMINED
+    if [ -n "$C3_TEST_ADJ_UNDER" ] && echo " $C3_TEST_ADJ_UNDER " | grep -q " $tid "; then v=UNDERDETERMINED; fi
+    for n in $names; do printf '%s\t%s\t%s\n' "$tid" "$n" "$v" >> VERDICTS.tsv; done
+    if [ "$v" = UNDERDETERMINED ] && grep -q "## Repair" INSTRUCTIONS.md; then
+      mkdir -p "out/$tid"; cp "$d/hidden_tests.rs" "out/$tid/hidden_tests.rs"; printf '\n// clarified\n' >> "out/$tid/hidden_tests.rs"
+    fi
+  done
+fi
 if grep -q "repair rejected tasks" INSTRUCTIONS.md; then
   fid=$(ls out | head -1)
   if [ -n "$C3_TEST_FIXFAIL" ]; then printf 'BROKEN' > out/$fid/$fid-l1/reference.rs; exit 1; fi

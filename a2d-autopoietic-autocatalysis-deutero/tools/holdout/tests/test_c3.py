@@ -374,6 +374,45 @@ class Pipeline(unittest.TestCase):
         code, lines = self.run_script("c3_assemble.py")
         self.assertEqual(lines[-1]["families"], 1, lines)            # restored files still verify
 
+    def test_audit_adjudicate_repair_reaudit_exclude(self):
+        """Audit -> adjudication (DETERMINED kept unchanged, UNDERDETERMINED repaired) -> re-audit
+        of the repaired and void tasks -> still UNDERDETERMINED -> excluded -> family replaced."""
+        fake = str(HERE / "fake_a2d.py")
+        self.select()
+        f = (self.c3 / "FAMILIES.txt").read_text().split()[0]
+        self.run_script("c3_author.py", "--only", f)
+
+        def settle():
+            self.run_script("c3_assemble.py")
+            self.assertEqual(self.run_script("c3_validate.py", "--binary", fake)[0], 0)
+            self.run_script("c3_similarity.py")
+
+        settle()
+        out = self.c3 / f / "out" / f
+        l3_before = (out / f"{f}-l3" / "hidden_tests.rs").read_bytes()
+        env = dict(self.env, C3_TEST_AUDIT_FAIL=f"{f}-l2 {f}-l3", C3_TEST_AUDIT_VOID=f"{f}-l4")
+        code, lines = self.run_script("c3_audit.py", "--binary", fake, env=env)
+        self.assertEqual(code, 0, lines)
+        self.assertEqual(sorted(x["id"] for x in lines if x.get("stage") == "audit-fail"), [f"{f}-l2", f"{f}-l3"])
+        code, lines = self.run_script("c3_adjudicate.py", env=dict(self.env, C3_TEST_ADJ_UNDER=f"{f}-l2"))
+        self.assertEqual(code, 0, lines)
+        adj = json.loads((self.c3 / "_records" / "adjudication.json").read_text())
+        self.assertEqual((adj[f"{f}-l2"]["r1"]["repaired"], adj[f"{f}-l3"]["r1"]["repaired"]), (True, False))
+        self.assertIn("clarified", (out / f"{f}-l2" / "hidden_tests.rs").read_text())
+        self.assertEqual((out / f"{f}-l3" / "hidden_tests.rs").read_bytes(), l3_before)   # DETERMINED: unchanged
+        code, lines = self.run_script("c3_audit.py", "--binary", fake, env=env)      # suite changed: not clean
+        self.assertIn("suite-not-clean", [x.get("status") for x in lines])
+        settle()
+        code, lines = self.run_script("c3_audit.py", "--binary", fake,
+                                      env=dict(self.env, C3_TEST_AUDIT_FAIL=f"{f}-l2"))
+        self.assertEqual(lines[0]["tasks"], 2, lines)                                 # only l2 (repaired) and l4 (void)
+        code, lines = self.run_script("c3_adjudicate.py", env=dict(self.env, C3_TEST_ADJ_UNDER=f"{f}-l2"))
+        adj = json.loads((self.c3 / "_records" / "adjudication.json").read_text())
+        self.assertTrue(adj[f"{f}-l2"]["r2"]["excluded"])
+        code, lines = self.run_script("c3_assemble.py")
+        self.assertIn({"stage": "assemble-exclude", "id": f, "status": "replaced"}, lines)
+        self.assertNotIn(f, self.active()["active"])
+
     def test_tool_events_counted(self):
         self.select()
         fid = (self.c3 / "FAMILIES.txt").read_text().split()[0]

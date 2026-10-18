@@ -29,7 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from c3lib import (ID_RE, RECORDS, SUITE, DriverLock, emit, gateway, load_json, prior_manifest,  # noqa: E402
-                   prior_tasks, replace_family, save_json, task_files)
+                   prior_tasks, replace_family, save_json, suite_digest, task_files)
 
 JACCARD, CONTAIN, K = 0.15, 0.40, 5
 
@@ -91,6 +91,7 @@ def main():
             if state[fam] == "reauthor-done" and fam not in conflicted and assembled.get(fam) == attempts(fam):
                 state[fam] = "reauthored"                                         # re-authored version is clean
         save_json(RECORDS / "similarity.json", state)
+        save_json(RECORDS / "similarity-last.json", {"suite": suite_digest(), "conflicts": len(conflicted)})
 
 
 if __name__ == "__main__":

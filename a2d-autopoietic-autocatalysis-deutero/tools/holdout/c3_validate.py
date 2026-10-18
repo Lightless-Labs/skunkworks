@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from c3lib import (C3, RECORDS, REPO, SUITE, TASK_RE, DriverLock, emit, gateway, load_json,  # noqa: E402
-                   safe_write_text, save_json)
+                   safe_write_text, save_json, suite_digest)
 
 LINE = re.compile(r"^(c3-f\d{2}-l[1-4]): (OK|REJECT)\b")
 SUMMARY = re.compile(r"^suite [0-9a-f]{64} \u2014 (\d+) tasks, (\d+) accepted, (\d+) rejected$")
@@ -75,7 +75,7 @@ def main():
             elif target.exists() or target.is_symlink():
                 target.unlink()
         save_json(RECORDS / "validate.json", {"stamp": stamp, "sha256": sha, "rejected": rejected,
-                                              "exit": r.returncode})
+                                              "exit": r.returncode, "suite": suite_digest()})
         save_json(RECORDS / "excluded.json", {"tasks": sorted(excluded)})
         emit(stage="validate", exit=r.returncode, tasks=len(expected), count=len(expected) - len(rejected),
              missing=len(rejected), skipped=len(excluded))

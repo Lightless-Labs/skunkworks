@@ -202,6 +202,12 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
 - **Sol re-check 4** (85bf32e1) found the same race in **probes**, which were released without registration. Fixed: probes now launch exactly like jobs (own session, registered before "go", under the launch lock).
   - Also, an authoring-shaped smoke job (a Sol job writing and testing a small Rust file through `check.sh` under the real profile) passed: exit 0, 0 non-allowlisted events, `test result: ok`.
   - The command scan flagged its `"$HOME/.rustup/…/rustc" --version`. That false positive would have spent an attempt, so the toolchain's `$HOME`/`~` spellings are now stripped like its absolute path (test added).
+- **Sol re-check 5** (134393a2): probes FIXED, no remaining blocker. **Verdict: Yes.** Selection and authoring may start once replicate 2's audit is committed and the pipeline is committed clean.
+- **Step-5 tooling** (`c3_audit.py`, `c3_adjudicate.py`, `authoring/ADJUDICATE.md`, frozen with the pipeline and reviewed with the registration) implements §0.11's audit and adjudication. It makes these choices, which the registration discloses:
+  - a void audit tuple is no information. The task is re-audited once; a second void keeps it, disclosed;
+  - a task whose first informative audit is the re-audit (void at round 1) is classified only, with no repair left;
+  - a repair may change only `requirements` and/or `hidden_tests.rs`, and must then pass validation (the reference passes, the mutants fail) and similarity again;
+  - a missing or malformed repair, or 2 failed adjudication jobs for a family and mode, excludes the task.
 - **Gap filled in §0.11** (it named no outcome for an authoring-exhausted family): a family whose 2 authoring attempts are used up without verified output is **replaced by the next spare, or dropped** at assembly. This is the same rule as the other exhaustion paths.
 
 ### 0.9 Owner request

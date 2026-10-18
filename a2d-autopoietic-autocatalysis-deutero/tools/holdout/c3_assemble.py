@@ -21,8 +21,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from c3lib import (C3, RECORDS, SUITE, TASK_RE, DriverLock, emit, gateway, load_json,  # noqa: E402
-                   replace_family, safe_copy, safe_read_text, save_json, tree_hashes)
+from c3lib import (C3, RECORDS, SUITE, TASK_RE, DriverLock, emit, gateway, hashes_digest,  # noqa: E402
+                   load_json, replace_family, safe_copy, safe_read_text, save_json, tree_hashes)
 
 MAX_ATTEMPTS = 2
 
@@ -68,7 +68,7 @@ def main():
                 spare = replace_family(fam, "author-exhausted")
                 emit(stage="assemble-exhausted", id=fam, status="replaced" if spare else "dropped")
         active = load_json(RECORDS / "active.json")["active"]
-        assembled = {}
+        assembled, admitted = {}, {}
         staging = SUITE.parent / f".confirmation-3.staging-{os.getpid()}-{time.time_ns()}"
         staging.mkdir(parents=True)
         complete, incomplete = 0, 0
@@ -84,6 +84,7 @@ def main():
                 for tdir in fam_dir.iterdir():
                     shutil.move(str(tdir), str(staging / tdir.name))
                 assembled[fid] = st["attempts"]
+                admitted[fid] = hashes_digest(st["hashes"])
                 complete += 1
             else:
                 incomplete += 1
@@ -96,6 +97,7 @@ def main():
         if old.exists():
             shutil.rmtree(old)
         save_json(RECORDS / "assembled.json", assembled)
+        save_json(RECORDS / "assembled-hashes.json", admitted)   # the audit requires the suite to be current
         emit(stage="assemble", families=complete, missing=incomplete, tasks=complete * 4)
 
 
