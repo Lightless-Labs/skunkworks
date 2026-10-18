@@ -27,6 +27,21 @@ These choices are written before any data that could inform them. That means bef
 - **36 new families × 4 levels = 144 tasks, r = 2, k = 5, arms D, B and X:frozen,** in the same regime and with the same claim rule as confirmation-2: SUPPORTED iff the point estimate is ≥ +10 pp and CI95 low > 0 vs both D and B; RULED OUT iff X vs D is RuledOut.
 - **48 families do not fit** the budget: they would leave phase B about 0.8k, below its R = 4 floor (§0.10). So they are not used.
 - The power statement is computed blind (§0.6 step 1) and recorded in the registration. It does not change n.
+- **Step 1 result, 2026-10-18** (`docs/experiments/analysis/c3_power.py 300 2`, dev summaries only):
+  - Pooled dev discordance is 0.173 over 14 paired comparisons; confirmation-2 assumed 0.26.
+  - The calibrated task-level deviation SE is 1.5 (confirmation-2 used 3.2).
+  - At 36 × 4, r = 2, with B − D = −3.6 pp:
+
+    | true X − D | P(SUPPORTED) | P(INCONCLUSIVE) | P(RULED OUT) |
+    |---|---|---|---|
+    | 0 (null) | 0.00 | 0.09 | **0.91** |
+    | +7.1 pp | 0.14 | 0.67 | 0.19 |
+    | +8.9 pp | 0.33 | 0.61 | 0.07 |
+    | +10 pp | 0.47 | 0.49 | 0.04 |
+    | +15 pp | **0.96** | 0.04 | 0.00 |
+
+  - Both PROTOCOL targets are met: P(RULED OUT | 0) ≥ 0.8 (unlike confirmation-2), and P(SUPPORTED | +15 pp) ≥ 0.8.
+  - The ex-ante statement (§0.7) stands: at E002's estimates INCONCLUSIVE is the most likely class.
 
 ### 0.4 Integrity policy (replaces run-level "any event → IntegrityReview")
 - **Detection is an allowlist** (`codex exec --json` structured events): any item other than an agent message or reasoning is a tool event. That includes `error`, unknown types and parse failures.
