@@ -1,9 +1,87 @@
 # Plan: Confirmation-3 — a new blind confirmation set for cycle 2
 
 **Created:** 2026-10-18
-**Status:** Draft, for design review (Codex `gpt-6.1-sol` high, no tools, web disabled, everything inline, plus a fresh Claude subagent with copies only). Nothing is authored or registered before the review dispositions are recorded here.
+**Status:** Active. **§0 is a pre-commitment, fixed 2026-10-18 before confirmation-2's replicate 2 (≥ 00:05 UTC 10-19) and before `confirm_best` (≥ 10-20).** §§1–5 are the reviewed draft, read with the dispositions in §7. Nothing is authored before the work items in §0.6 that come ahead of authoring are done.
+**Reviewed:** 2026-10-18, draft design review by Codex `gpt-6.1-sol` high (no tools, web disabled, everything inline; 0 search events) and a fresh Claude subagent (copies only). Dispositions in §7.
 **Parent:** `docs/plans/2026-10-15-cycle2-nanoharness.md`, addendum 2026-10-18.
 **Why:** confirmation-2 ended in IntegrityReview (LOG, 10-18 03:59 UTC: 2 web searches in arm B, replicate 1). Confirmation sets are spent once, so the goal's done-path (a frozen harness SUPPORTED vs both D and B on its confirmation set) needs a new blind set in the same regime.
+
+## 0. Pre-commitment (fixed 2026-10-18; binds the registration)
+These choices are written before any data that could inform them. That means before confirmation-2's replicate 2, before any E006–E010 decision, before `confirm_best` and before any confirmation-3 content exists. The registration copies them; it does not reopen them.
+
+### 0.1 Candidate rule (dated; no operator choice)
+- **Candidate = the batch winner** iff both hold:
+  - `nano/confirm_best.py` promotes a keep (its registered sequencing rule, 10-17);
+  - that keep passes **exactly one** registered dev-holdout look under the existing gate (all-pass lift vs D ≥ +10 pp point estimate at r = 2, paired family-cluster CI low > 0), completed by **T = 2026-10-23 23:59 UTC**.
+- **Otherwise the candidate is E002** (`runs/c2-confirm2/frozen.py`, which passed look 1). There is no second look and no other candidate.
+- If a promotion happens and its look is not complete by T, for any reason, the candidate is E002.
+- The candidate is frozen by file hash at T, or at the look's result if that comes first.
+- **Its dev-holdout look doubles as the cycle's "final frozen-candidate look"** when the final frozen harness is that candidate. That look is not run twice.
+
+### 0.2 Spend date
+- **Replicate 1** runs on the first UTC day ≥ max(T + 1 day, certification day, freeze-lift day + 1). Certification is §0.6 step 5, and freeze-lift is when `decision.json` exists.
+- **Replicate 2** runs on the next UTC day the daily cap allows. A cap or latency deferral is not an attempt.
+- Neither preliminary results, nor phase-B progress, nor certification speed can move the candidate. They can only delay the spend.
+
+### 0.3 Size and replicates
+- **36 new families × 4 levels = 144 tasks, r = 2, k = 5, arms D, B and X:frozen,** in the same regime and with the same claim rule as confirmation-2: SUPPORTED iff the point estimate is ≥ +10 pp and CI95 low > 0 vs both D and B; RULED OUT iff X vs D is RuledOut.
+- **48 families do not fit** the budget (§0.5) without cutting phase B below its registered R = 6, so they are not used.
+- The power statement is computed blind (§0.6 step 1) and recorded in the registration. It does not change n.
+
+### 0.4 Integrity policy (replaces run-level "any event → IntegrityReview")
+- **Detection is an allowlist** (`codex exec --json` structured events): any item other than an agent message or reasoning is a tool event. That includes `error`, unknown types and parse failures.
+  - Each detector gets a positive control per tool kind, on every lane, before registration.
+  - The codex version is pinned to the probed binary, and a mismatch voids the tuple.
+- **Tuple-level voids with worst-case imputation.**
+  - A tuple with any tool event or missing transcript is void.
+  - A void X tuple counts as a fail; a void D or B tuple counts as a pass. This can only lower X's lift.
+- **Run-level IntegrityReview** (no claim) if any of these holds:
+  - any hidden-test name hit in any prompt;
+  - tool events in > 0.5% of the replicate's invocations;
+  - void tuples above the registered void gate.
+- **Disclosure:** this is weaker than confirmation-2's any-event amendment, which would have voided the claim on one stray event. It stays conservative for the claim through imputation. The registration review may tighten it, and no post-registration amendment is allowed unless a live probe backs it.
+
+### 0.5 Budget priority (Luna)
+- **The 10-17 projection:** about 11.1k left after the E005–E010 batch, with confirmation-2 already inside the spend. After at most 2.5k of batch confirmations, about 8.6k is left for phase B (6.6k) and the final look (1.3k). The slack was about 0.7k.
+- **Confirmation-3 is ring-fenced first,** before phase B starts: about 3.0k for r = 2 (replicate 1 of confirmation-2 used 1,486), plus a 1.5k relaunch reserve.
+- **The candidate's look** (1.3k, only if a keep is promoted) merges with the final look (§0.1).
+- **Phase B then gets what remains.** Its registered fallback applies ("if the budget ends early, rounds already run are analysed as is; the minimum is R = 4"). Continuations (endpoint 1) run only if the budget remains after the confirmation-3 reserve.
+  - This is a disclosed amendment to phase B's budget envelope, fixed before any phase-B data. Its precision endpoint (2) keeps R ≥ 4.
+- **Confirmation-2's replicate 2 still runs** as registered (about 1.5k, already inside the 10-17 projection).
+- An explicit ledger table is kept in the HANDOFF and updated daily.
+
+### 0.6 Order of work (each step gates the next one marked ⇒)
+1. **Blind power script:** it reads only dev and dev-holdout ledgers and prints the SE and P(SUPPORTED / INCONCLUSIVE / RULED OUT) at fixed hypothetical lifts (0, +7.1, +8.9, +10, +15). It never prints a lift estimate.
+2. **Authoring pipeline in the repo** (driver, assembly, gateway, disjointness check), tested on visible fixtures and frozen by hash. Old scripts died in a scratchpad.
+3. **Capability inventory and the `--json` allowlist detector:** designed now, implemented after the freeze lifts (`decision.json`). Then merge `c2-web-provider` (4b80fe67), run the positive-control probes per tool per lane, and re-freeze at a new commit.
+4. ⇒ **Authoring** starts only after confirmation-2's replicate 2 generation and web audit have finished (no overlap), with these settings:
+   - Option B: Sol picks the families from a disjointness inventory;
+   - opaque ids (`c3-fNN-lM`) from the first byte;
+   - `CODEX_HOME` inside `$A2D_HOLDOUT_DIR`, and the prompt passed as a pointer file (never in argv);
+   - a canary read-deny check before the first job.
+5. ⇒ **Validation, the independent-solve audit and hashing,** all under the re-frozen commit:
+   - the audit runs on the fixed provider;
+   - DETERMINED failures stay as they are, and only UNDERDETERMINED tests are repaired;
+   - a mechanical content-similarity check runs against every prior set and prints only the maximum and the conflict count.
+6. ⇒ **The registration,** with its own Codex Sol and fresh-Claude review, then the spend per §0.2.
+
+### 0.7 Ex-ante statement (for the owner)
+- **E002's honest estimates are +7.1 pp** (the fresh dev confirm stage) and about +9 pp (dev). The claim needs a +10 pp point estimate.
+- At those values, P(SUPPORTED) is roughly 0.2–0.4, and **INCONCLUSIVE is the most likely outcome at any feasible size**.
+- More tasks only make a null result informative (RULED OUT power). They do not raise SUPPORTED near +10 pp.
+- The only lever on SUPPORTED is the candidate's true effect, which is why §0.1 waits a few days for a possibly stronger batch winner under a fixed rule.
+- **The +10 pp bar is the owner's and is not lowered.**
+
+### 0.8 Confirmation-2's scored data stays sealed
+- `confirm-manifest` and `confirm-score` are run by hand after replicate 2's audit.
+  - Their stdout goes to `$A2D_HOLDOUT_DIR/runs/`.
+  - `decision.json` is moved, unread, to `$A2D_HOLDOUT_DIR/runs/c2-confirm2-decision/`. The repo records only its sha256 and a "written" line.
+- Nobody reads it until confirmation-3's `decision.json` exists. The C2-WEB rule has already fixed confirmation-2's outcome, so its contents cannot change it.
+
+### 0.9 Owner request
+- The A² session shares the account. Luna calls take 60–175 s today.
+- **Please pause the A² session during confirmation generation windows** (about 2–3 h each, announced in the HANDOFF), and if possible during confirmation-2's replicate 2 (from 00:05 UTC 10-19).
+- This is not a pause of this session. Each spend also checks latency first (a pre-registered go/no-go), and a deferral is not an attempt.
 
 ## 1. The set
 - **Regime:** identical to confirmation-2: single-file Rust tasks from numbered specifications, with weak public tests and ≥ 20 hidden tests. Authoring spec: the `SPEC.md` used for the dev-holdout and the confirmation-2 extension (sha256 prefix `447f84b907a6`).
@@ -64,3 +142,38 @@ The pipeline is the one in `docs/solutions/best-practices/blind-holdout-authorin
 4. Are 144 tasks and r = 2 still right, given that confirmation-2's power at a true +10 pp was about 0.47?
 5. Is the §3 channel enumeration sufficient? What else in codex-cli 0.162 is on by default?
 6. Anything about running the authoring jobs while the A² session shares the account?
+
+## 7. Review dispositions (2026-10-18)
+Reviewers: Codex `gpt-6.1-sol` high (no tools, web disabled, everything inline; 0 search events) and a fresh Claude subagent (copies only). Both recommended revising before any authoring or registration.
+
+- **Accepted, now in §0:**
+  - Option B (both reviewers), with opaque ids everywhere and names revealed only after confirmation-3's decision.
+  - A dated candidate rule fixed now, with no timing discretion. Wait for the batch under a fixed cutoff T.
+  - A blind power script that prints SE and power only, never a lift estimate.
+  - Allowlist detection on structured events, positive controls per tool and lane, a pinned codex version, and an isolated environment (`CODEX_HOME`, no project `.codex`, no `AGENTS.md`).
+  - Tuple-level voids with worst-case imputation, plus a rate threshold. Confirmation-3 cannot again be spent by one stray event.
+  - `CODEX_HOME` inside the holdout dir for authoring, repair and audit jobs, a canary read-deny check, and a content-similarity disjointness check.
+  - DETERMINED audit failures stay as they are, so the audit does not condition the set on Sol solving it.
+  - Validation, audit and hashing re-run under the re-frozen commit.
+  - The pipeline committed to the repo and tested on visible fixtures.
+  - Prompts passed as pointer files (argv is visible in `ps`).
+  - Drain the authoring driver before any registered window (`kill -STOP` does not stop children), and no overlap with confirmation-2's replicate 2.
+  - The budget ring-fence and ledger.
+  - A registration review step, and no post-registration amendments without a live probe.
+  - Confirmation-2's data sealed in the holdout dir until confirmation-3's decision (resolves Claude D3 and Sol's release boundary).
+  - An ex-ante statement of the likely outcome.
+- **Accepted, for the registration step:**
+  - Branch-specific call caps read from the frozen candidate. Sol noted that a no-green Luna repair makes the branch 4 Luna + 1 Luna, so claim wording follows the implementation.
+  - Per-family Sol caps and a predefined failure outcome for authoring, repair and audit.
+  - Balanced interleaving of arms and task order. Check whether the controller interleaves; if it runs arms in blocks, fix that before registration.
+  - New seeds and an exposure-exclusion policy.
+  - Disclosure of possible model drift, the author–judge alignment (Sol authors, audits and judges), and every spent set. The claim stays narrow, to this authoring distribution.
+  - A latency go/no-go before each spend.
+- **Partly accepted:**
+  - **"Exclusive evaluation windows across both sessions" (Sol).** This session cannot control the A² session, so it becomes an owner request (§0.9) plus a latency go/no-go.
+  - **"Add families rather than replicates" (Claude).** Right in principle, but 48 families do not fit the budget (§0.5). The size stays 36 × 4, and the power statement records the RULED OUT power honestly.
+  - **"Cancel confirmation-2's replicate 2 to fund confirmation-3" (Claude D7, offered as an option).** Not taken: it is registered and in the projection, and cancelling a registered step the first time the budget looks tight is the decision shape this cycle's lesson warns against.
+- **Rejected:** none.
+- **Noted:**
+  - Option A would let the brief author, who knows E002's mechanism, favour weak-public-test families, which biases the set toward X (Claude). That is why B is chosen.
+  - SUPPORTED near +10 pp is decided by the point threshold, not by n (Claude, with Sol's point 4 concurring). See §0.7.
