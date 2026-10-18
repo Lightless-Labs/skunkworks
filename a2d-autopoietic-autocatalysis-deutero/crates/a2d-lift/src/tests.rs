@@ -1104,6 +1104,47 @@ fn multi_comparison_claim_requires_all_pairs_and_uses_first_for_falsification() 
 }
 
 #[test]
+fn isolated_tool_event_voids_its_tuple_but_a_high_rate_is_integrity_review() {
+    // 70 one-task families x 3 arms = 210 invocations in one replicate.
+    let a = Arm::parse("C:a").unwrap();
+    let mut plan = claim_plan();
+    plan.arms = vec![a.clone(), Arm::B, Arm::D];
+    plan.claim = Some(vec![(a.clone(), Arm::D), (a.clone(), Arm::B)]);
+    let run = |events: usize| {
+        let mut result = RunResult {
+            outcomes: (0..70)
+                .flat_map(|f| {
+                    [
+                        outcome(a.clone(), f, 0, true),
+                        outcome(Arm::B, f, 0, f % 2 == 0),
+                        outcome(Arm::D, f, 0, f % 2 == 0),
+                    ]
+                })
+                .collect(),
+            tuples_planned: 70,
+            aborted: false,
+            hidden_name_hits: Vec::new(),
+            scored: true,
+        };
+        for i in 0..events {
+            result.outcomes[3 * i].tool_calls = 1;
+        }
+        result
+    };
+    // One event: 1/210 = 0.48% <= 0.5%; the tuple is void and excluded.
+    let one = summarize(&run(1), &plan);
+    assert_eq!(one["integrity_ok"], true);
+    assert_eq!(one["tool_event_tuples"], 1);
+    assert_eq!(one["tuples_void"], 1);
+    assert_eq!(one["tuples_complete"], 69);
+    assert_ne!(one["claim"], "IntegrityReview");
+    // Two events: 2/210 = 0.95% > 0.5%: the whole run is IntegrityReview.
+    let two = summarize(&run(2), &plan);
+    assert_eq!(two["integrity_ok"], false);
+    assert_eq!(two["claim"], "IntegrityReview");
+}
+
+#[test]
 fn variant_registration_survives_manifest_scoring_pooling_and_compare() {
     let dir = tempfile::tempdir().unwrap();
     let mut args = variant_args(dir.path(), "C:a,C:b,D,D:lessons");

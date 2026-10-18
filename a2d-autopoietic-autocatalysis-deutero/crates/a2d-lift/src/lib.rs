@@ -37,6 +37,12 @@ use task::{PublicTask, Suite};
 pub const CONTROLLER_PATHS: &[&str] = &["crates", "Cargo.toml", "Cargo.lock"];
 
 pub const MIN_EFFECT: f64 = 0.10;
+/// Integrity: tool events (any non-text Codex event, `cli::codex_tool_calls`) may
+/// make up at most this share of a replicate's invocations; above it the run is
+/// IntegrityReview. Below it, each tuple with a tool event is void (excluded and
+/// bounded by `max_excluded_share`; confirmation scoring imputes voids worst
+/// case). Plan 2026-10-18-confirmation-3 §0.4.
+pub const MAX_TOOL_EVENT_RATE: f64 = 0.005;
 pub const DEFAULT_MIN_FAMILIES: usize = 10;
 pub const DEFAULT_MAX_EXCLUDED_SHARE: f64 = 0.05;
 const BOOTSTRAP_ITERATIONS: usize = 10_000;
@@ -1042,9 +1048,14 @@ fn parse_claim(spec: &str, arms: &[Arm]) -> Result<Vec<(Arm, Arm)>, String> {
 pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
     let mut complete_tuples: BTreeSet<(String, u32)> = BTreeSet::new();
     let mut void_tuples: BTreeSet<(String, u32)> = BTreeSet::new();
+    let mut tool_event_tuples: BTreeSet<(String, u32)> = BTreeSet::new();
     for o in &result.outcomes {
         if o.void_reason.is_some() {
             void_tuples.insert((o.task.clone(), o.replicate));
+        }
+        if o.tool_calls > 0 {
+            void_tuples.insert((o.task.clone(), o.replicate));
+            tool_event_tuples.insert((o.task.clone(), o.replicate));
         }
     }
     for o in &result.outcomes {
@@ -1079,9 +1090,28 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
             o.hidden.passed as f64 / o.hidden.expected as f64
         }
     };
-    // Integrity findings block classification until reviewed.
+    // Integrity findings block classification until reviewed: any hidden-name
+    // hit, or tool events above MAX_TOOL_EVENT_RATE of any replicate's
+    // invocations. Isolated tool events void only their tuple (above).
     let tool_calls: usize = result.outcomes.iter().map(|o| o.tool_calls).sum();
-    let integrity_ok = result.hidden_name_hits.is_empty() && tool_calls == 0;
+    let mut per_replicate: BTreeMap<u32, (usize, usize)> = BTreeMap::new();
+    for o in &result.outcomes {
+        let entry = per_replicate.entry(o.replicate).or_default();
+        entry.0 += o.tool_calls;
+        entry.1 += o.invocations;
+    }
+    let tool_event_rate_max = per_replicate
+        .values()
+        .map(|(events, invocations)| {
+            if *invocations == 0 {
+                if *events == 0 { 0.0 } else { 1.0 }
+            } else {
+                *events as f64 / *invocations as f64
+            }
+        })
+        .fold(0.0_f64, f64::max);
+    let integrity_ok =
+        result.hidden_name_hits.is_empty() && tool_event_rate_max <= MAX_TOOL_EVENT_RATE + 1e-12;
 
     let per_arm: Vec<Value> = plan
         .arms
@@ -1212,6 +1242,9 @@ pub fn summarize(result: &RunResult, plan: &RunPlan) -> Value {
         "tuples_void": void_tuples.len(),
         "hidden_name_hits": result.hidden_name_hits,
         "coder_tool_calls": tool_calls,
+        "tool_event_tuples": tool_event_tuples.len(),
+        "tool_event_rate_max": tool_event_rate_max,
+        "max_tool_event_rate": MAX_TOOL_EVENT_RATE,
         "integrity_ok": integrity_ok,
         "min_effect": MIN_EFFECT,
         "min_families": plan.min_families,
