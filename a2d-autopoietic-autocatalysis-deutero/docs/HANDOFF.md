@@ -1,6 +1,6 @@
 # A²D Handoff Document
 
-**Last updated:** 2026-10-18 05:40 UTC (session 145: **confirmation-3 pre-commitment fixed and reviewed** (plan §0). **Confirmation-2 is IntegrityReview** — replicate 1 (01:35–03:46 UTC, 1,486 Luna) audit found 2 web searches in arm B, so by the registered C2-WEB rule the set is spent with no claim; replicate 2 still runs (descriptive). A SUPPORTED claim now needs confirmation-3 (plan addendum 10-18). The queue runner was restarted on the owner's request at 01:35 UTC 10-18, pid 7116. Earlier: C2-WEB: web search was open but unused, and confirmation-2 now has a count-only web audit; E007 screen passed; E005 provisional keep (+5.0 pp, confirmation deferred); look 1 PASSED; confirmation-2 registered at `78727f29`, E002 frozen as `runs/c2-confirm2/frozen.py`. The oracle is OS-sandboxed (C2-ISO2), parity 420/420.)
+**Last updated:** 2026-10-18 14:40 UTC (session 145: **confirmation-3 pre-commitment fixed and reviewed** (plan §0). **Confirmation-2 is IntegrityReview** — replicate 1 (01:35–03:46 UTC, 1,486 Luna) audit found 2 web searches in arm B, so by the registered C2-WEB rule the set is spent with no claim; replicate 2 still runs (descriptive). A SUPPORTED claim now needs confirmation-3 (plan addendum 10-18). The queue runner was restarted on the owner's request at 01:35 UTC 10-18, pid 7116. Earlier: C2-WEB: web search was open but unused, and confirmation-2 now has a count-only web audit; E007 screen passed; E005 provisional keep (+5.0 pp, confirmation deferred); look 1 PASSED; confirmation-2 registered at `78727f29`, E002 frozen as `runs/c2-confirm2/frozen.py`. The oracle is OS-sandboxed (C2-ISO2), parity 420/420.)
 **Update this document:** before context compaction, at session end, or when significant state changes. Keep it short: current truth only. History lives in git, `docs/experiments/LOG.md` and `docs/handoff-archive/`.
 
 ## Headline (read this first)
@@ -32,13 +32,18 @@
        - Candidate: the batch winner iff it is promoted and passes one look by 10-23 23:59 UTC; otherwise E002.
        - The spend is at or after 10-24.
        - The order of work is in §0.6: blind power script → pipeline in the repo, tested on visible fixtures → capability inventory and allowlist detector → authoring after replicate 2's audit → validation and audit → registration and its review.
-       - **State (10-18 13:00 UTC):**
+       - **State (10-18 14:40 UTC):**
          - Step 1 is done: `c3_power.py` gives null RULED OUT 0.91 and SUPPORTED 0.47 at +10 pp.
-         - Step 2: the pipeline is in `tools/holdout/`; read its README first.
-           - Sol's re-check of d50bee58 said "No" (5 startup blockers). All 5 are closed in code (plan §0.12, LOG 10-18 12:30).
-           - A **copied `open` escaped the profile** in a live probe; Mach lookups are now an allowlist.
-           - Quiescence is by sandbox membership; the STOP launch gate, selection generation and raising inventory traversal are in.
-           - **Next:** Sol re-check 3 of the new commit. Selection may start only after it says yes **and** replicate 2's audit is committed.
+         - Step 2 is done: the pipeline is in `tools/holdout/` (read its README first). Sol's 5th re-check (134393a2) says **Yes**. Plan §0.12 and the LOG (10-18) cover 4 rounds of fixes:
+           - a copied `open` escaped the profile, so Mach lookups are now an allowlist and localhost is denied;
+           - quiescence is by sandbox membership, plus the launch handshake;
+           - the STOP gate, selection generation, raising inventory traversal and terminal states are in.
+         - Step-5 tooling is built and tested: `c3_audit.py`, `c3_adjudicate.py` and `authoring/ADJUDICATE.md` (737e826c).
+         - **Next (≥ 10-19, after L09 and L10 finish and `web-audit-r2.json` is committed):**
+           1. confirm `fseventsd` is healthy, then `tools/holdout/detached.sh c3_select.py`, following `~/.a2d-c3-drivers/*.out`;
+           2. then `detached.sh c3_author.py --parallel 3`, in idle queue windows, never overlapping a confirmation generation;
+           3. then assemble → similarity → validate/fix.
+         - Never run the long drivers as Claude Code background shells.
          - **Host note:** the owner's `~/bin/agents-disk-maintenance` (`cargo-sweep --recursive ~/Projects`) floods `fseventsd` while it runs. File-creating processes then stall (an unsandboxed hello-world compile took 3.5 min). Don't read a timing-bound test failure as a regression without checking `top` for a stuck `fseventsd` first.
          - Step 3: provider and controller hardening on branch `c2-web-provider` (be96d21b, 27757c6b). Merge it after `decision.json` **and** the batch confirmation step.
          - **Next:**
