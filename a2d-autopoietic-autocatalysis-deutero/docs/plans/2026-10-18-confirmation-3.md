@@ -199,6 +199,9 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
 - **Sol re-check 3** (6ea429f6): FIXED for broker confinement, selection provenance, STOP, inventory and both PARTLY items. Quiescence was PARTLY: a launcher between `Popen` and sandbox entry is unsandboxed, so a recovery after driver death could miss it.
   - Fixed with a launch handshake. The launcher waits on a driver pipe and execs `sandbox-exec` only after its pid and start time are fsync'd; if the driver dies first, it gets EOF and exits.
   - Recovery kills every recorded live launcher group (start-time verified, so a reused id is never signalled) before reaping tagged members.
+- **Sol re-check 4** (85bf32e1) found the same race in **probes**, which were released without registration. Fixed: probes now launch exactly like jobs (own session, registered before "go", under the launch lock).
+  - Also, an authoring-shaped smoke job (a Sol job writing and testing a small Rust file through `check.sh` under the real profile) passed: exit 0, 0 non-allowlisted events, `test result: ok`.
+  - The command scan flagged its `"$HOME/.rustup/…/rustc" --version`. That false positive would have spent an attempt, so the toolchain's `$HOME`/`~` spellings are now stripped like its absolute path (test added).
 - **Gap filled in §0.11** (it named no outcome for an authoring-exhausted family): a family whose 2 authoring attempts are used up without verified output is **replaced by the next spare, or dropped** at assembly. This is the same rule as the other exhaustion paths.
 
 ### 0.9 Owner request

@@ -1596,3 +1596,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - `DriverLock` then kills every recorded live launcher group, verifying start times so a reused id is never signalled, before reaping the tagged members.
   - Tests: an unregistered launcher never runs; recovery kills an orphaned group member and spares a reused id.
   - A first version passed the pipe as fd 3 through `pass_fds`, which keeps the fd's own number. In the broker probe a listening socket already held fd 3, so every probe failed closed. Hence the stdin handshake.
+- **Sol re-check 4** (of 85bf32e1) found that probes were still launched without registration, so the same driver-death race survived for them. Probes now launch exactly like jobs.
+  - **Authoring-shaped smoke under the real profile:** one Sol job in the probe holdout wrote a small Rust library and tests, ran `check.sh` and wrote `REPORT.md`. Result: exit 0, 0 non-allowlisted events, `test result: ok`, 551 s (during the fseventsd stall). So the Mach allowlist holds for a real tool loop, not just a "reply OK" call.
+  - The command scan flagged 1 of its 12 commands: `"$HOME/.rustup/…/rustc" --version`. That false positive would have failed an authoring attempt, so the toolchain's `$HOME`/`~` spellings are now stripped too (test added).
+  - The long drivers now launch only through `tools/holdout/detached.sh` (own session, `caffeinate`, gateway output in `~/.a2d-c3-drivers/`), because a reaped Claude Code shell would spend in-flight attempts at the next recovery.

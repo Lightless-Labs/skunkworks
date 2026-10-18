@@ -360,16 +360,19 @@ def sandboxed(workdir, argv, record=None, **kw):
     pipe = subprocess.PIPE if kw.get("capture_output") else None
     p = None
     try:
-        p = _handshake_popen(prof, argv, record=False, cwd=workdir, env=env, stdin=subprocess.DEVNULL,
-                             stdout=pipe, stderr=pipe, text=kw.get("text", False))
+        with _Gate():                                 # registered like a job (no STOP check: probes only)
+            p = _handshake_popen(prof, argv, cwd=workdir, env=env, stdout=pipe, stderr=pipe,
+                                 text=kw.get("text", False))
         try:
             out, err = p.communicate(timeout=kw.get("timeout"))
         except subprocess.TimeoutExpired:
-            p.kill()
+            _kill_group(p)
             p.wait()
             raise
         return subprocess.CompletedProcess(argv, p.returncode, out, err)
     finally:
+        if p is not None:
+            _kill_group(p)                            # the launcher's group, then its sandbox
         if not reap(tag):
             raise RuntimeError("probe not quiesced")
         retire_tag(tag)
@@ -482,7 +485,7 @@ def _brokers_closed(w, secret):
         ]
         for argv, denied in cases:
             try:
-                r = sandboxed(w, [str(a) for a in argv], capture_output=True, text=True, timeout=30)
+                r = sandboxed(w, [str(a) for a in argv], capture_output=True, text=True, timeout=60)
             except subprocess.TimeoutExpired:
                 return False
             if not denied(r):
@@ -718,22 +721,23 @@ def request_stop():
 _HANDSHAKE = 'IFS= read -r go && [ "$go" = go ] && exec /usr/bin/sandbox-exec -f "$0" "$@" </dev/null; exit 125'
 
 
-def _handshake_popen(prof, argv, record, **kw):
+def _handshake_popen(prof, argv, **kw):
+    """Every launcher (jobs and probes alike) runs in its own session (pgid == pid) and is
+    released only after its pid and start time are fsync'd to pids.txt. Callers hold _Gate."""
     kw.pop("stdin", None)
     r, w = os.pipe()
     try:
         p = subprocess.Popen(["/bin/sh", "-c", _HANDSHAKE, str(prof), *[str(a) for a in argv]], stdin=r,
-                             start_new_session=record, **kw)
+                             start_new_session=True, **kw)
         os.close(r)
         r = None
-        if record:                                    # its own session: pgid == pid
-            start = _proc_start(p.pid)
-            if start is None:
-                raise RuntimeError("launcher vanished")
-            with open(RECORDS / "pids.txt", "a") as f:
-                f.write(f"{p.pid} {start}\n")
-                f.flush()
-                os.fsync(f.fileno())
+        start = _proc_start(p.pid)
+        if start is None:
+            raise RuntimeError("launcher vanished")
+        with open(RECORDS / "pids.txt", "a") as f:
+            f.write(f"{p.pid} {start}\n")
+            f.flush()
+            os.fsync(f.fileno())
         os.write(w, b"go\n")
         return p
     finally:
@@ -747,7 +751,7 @@ def launch(prof, argv, **kw):
     with _Gate():
         if stop_requested():
             raise StopRequested()
-        return _handshake_popen(prof, argv, record=True, **kw)
+        return _handshake_popen(prof, argv, **kw)
 
 
 def run_codex(workdir, record, model="gpt-6.1-sol", effort="high", timeout=7200):
@@ -1054,6 +1058,9 @@ def suspicious_commands(record, workdir):
     except OSError:
         return 1
     w, tc = str(Path(workdir).resolve()), str(TOOLCHAIN.resolve())
+    home = str(Path.home())
+    # the toolchain may also be spelled through $HOME or ~ (e.g. "$HOME/.rustup/.../rustc")
+    tcs = [tc] + ([tc.replace(home, h, 1) for h in ("${HOME}", "$HOME", "~")] if tc.startswith(home + "/") else [])
     n = 0
     for line in lines:
         try:
@@ -1064,7 +1071,9 @@ def suspicious_commands(record, workdir):
         if e.get("type") == "item.started" and isinstance(item, dict) and item.get("type") == "command_execution":
             cmd = str(item.get("command", ""))
             m = re.match(r"^/bin/(?:zsh|bash|sh) -lc (['\"])(.*)\1$", cmd, re.S)
-            inner = (m.group(2) if m else cmd).replace(w, "").replace(tc, "")
+            inner = (m.group(2) if m else cmd).replace(w, "")
+            for t in tcs:
+                inner = inner.replace(t, "")
             if OUTSIDE_PATH.search(inner) or SYSTEM_TOOL_PATH.search(inner) \
                     or any(x in SUSPICIOUS_TOOLS for x in _segments(inner)):
                 n += 1

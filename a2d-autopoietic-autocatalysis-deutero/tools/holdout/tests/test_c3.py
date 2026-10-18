@@ -158,6 +158,24 @@ class Pipeline(unittest.TestCase):
                        "        print('REFUSED')")
         self.assertEqual(out, "REFUSED")
 
+    def test_command_scan(self):
+        """Toolchain calls spelled through $HOME are not flagged; outside paths, copied
+        system tools and network tools are."""
+        rec = self.c3 / "_records" / "scan"
+        rec.mkdir(parents=True)
+        w = self.c3 / "c3-f01"
+        w.mkdir()
+        cmds = ['/bin/zsh -lc \'"$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" --version\'',
+                "/bin/zsh -lc './check.sh reference.rs hidden_tests.rs'",
+                "/bin/zsh -lc 'cat ~/.ssh/id_ed25519'",
+                "/bin/zsh -lc 'cp /usr/bin/open ./x && ./x -a Terminal'",
+                "/bin/zsh -lc 'ls; curl -s example.com'"]
+        (rec / "codex.jsonl").write_text("".join(
+            json.dumps({"type": "item.started", "item": {"type": "command_execution", "command": c}}) + "\n"
+            for c in cmds))
+        self.assertEqual(self.lib(f"from c3lib import suspicious_commands\nprint(suspicious_commands('scan', {str(w)!r}))"),
+                         "3")
+
     def test_stop_gate_refuses_launch(self):
         out = self.lib("from c3lib import StopRequested, launch, request_stop\n"
                        "request_stop()\n"
