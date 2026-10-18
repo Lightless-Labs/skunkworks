@@ -124,7 +124,24 @@ def profile(workdir):
         f'(allow file-read* (subpath "{_rp(TOOLCHAIN)}") (subpath "{codex_dir}"))',
         "(allow file-read-metadata)",
     ]
+    # The linker runs through the xcrun shim, which caches toolchain lookups in
+    # <user temp dir>/xcrun_db (resolved via confstr, not $TMPDIR). Without this anchored
+    # rule every link re-resolves the toolchain and takes ~1 min (seatbelt oracle lesson,
+    # 2026-10-17); same rule as crates/a2d-core/src/sandbox.rs.
+    user_tmp = _user_temp_dir()
+    if user_tmp:
+        esc = re.sub(r'([\\.^$|?*+()\[\]{}"])', r"\\\1", user_tmp.rstrip("/"))
+        lines.append(f'(allow file-read* file-write* (regex #"^{esc}/xcrun_db(-[A-Za-z0-9]+)?$"))')
     return "\n".join(lines) + "\n"
+
+
+def _user_temp_dir():
+    try:
+        out = subprocess.run(["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"], capture_output=True, text=True,
+                             timeout=10).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return _rp(out) if out else None
 
 
 def write_profile(workdir):

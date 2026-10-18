@@ -29,5 +29,11 @@ Plan: `docs/plans/2026-10-18-confirmation-3.md` (§0.4, §0.6, §0.10). History:
 5. `python3 -I tools/holdout/c3_validate.py`, then `python3 -I tools/holdout/c3_fix.py` (at most 2 rounds), re-assembling after each round.
 6. The independent-solve audit, adjudication and hash, on the re-frozen instrument (§0.6 step 5).
 
+## Gotcha: the linker inside the profile
+- `cc` goes through the `xcrun` shim, which caches toolchain lookups in `<user temp dir>/xcrun_db`. The dir is resolved via `confstr`, not `$TMPDIR`.
+- Without the anchored allow rule for that file (the same rule as the oracle sandbox), every link took about 1 min and `check.sh` timed out.
+- With the rule, the first link in a fresh workdir still takes about 1 min while the cache fills; later links take 0.2–0.5 s.
+- `test_check_sh_compiles_under_sandbox` guards this.
+
 ## Tests
 `python3 -I -m unittest discover -s tools/holdout/tests -v` runs the full flow on fixtures with a fake codex (`tests/fake_codex.sh`), under the real seatbelt profile. It makes no model calls.

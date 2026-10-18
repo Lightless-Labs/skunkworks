@@ -136,6 +136,24 @@ class Pipeline(unittest.TestCase):
         code, lines = self.run_script("c3_author.py", "--drained")
         self.assertTrue(lines[-1]["ok"])
 
+    def test_check_sh_compiles_under_sandbox(self):
+        """The real toolchain must compile, link and run tests inside the job profile."""
+        w = self.holdout / "authoring" / "confirmation-3" / "c3-f01"
+        w.mkdir(parents=True)
+        for f in ("check.sh", "api_check.sh"):
+            shutil.copy(TOOLS / "authoring" / f, w / f)
+            (w / f).chmod(0o755)
+        for f in ("reference.rs", "public_tests.rs", "hidden_tests.rs"):
+            shutil.copy(HERE / "fixture" / f, w / f)
+        out = self.lib(
+            f"from c3lib import sandboxed\n"
+            f"r = sandboxed({str(w)!r}, ['/bin/sh', './check.sh', 'reference.rs', 'hidden_tests.rs'],"
+            f" capture_output=True, text=True, timeout=240)\n"
+            f"a = sandboxed({str(w)!r}, ['/bin/sh', './api_check.sh', 'reference.rs', 'public_tests.rs'],"
+            f" capture_output=True, text=True, timeout=240)\n"
+            f"print(r.returncode, a.returncode, 'API_OK' in a.stdout, 'test result: ok' in r.stdout)")
+        self.assertEqual(out, "0 0 True True", out)
+
     def test_tool_events_counted(self):
         self.run_script("c3_select.py")
         env = dict(self.env, C3_TEST_TOOL="1")
