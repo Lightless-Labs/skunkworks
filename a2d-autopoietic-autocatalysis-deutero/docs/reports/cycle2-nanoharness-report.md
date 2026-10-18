@@ -104,6 +104,12 @@ Look-1 numbers stay in `~/.a2d-holdout/runs/c2-look1/report.json` until close, p
   - Fixed for proposers. Dev runs stop on any search, and confirmation-2 is audited. The provider itself is fixed after the confirmation-2 freeze.
   - **Confirmation-2 is the exception:** 2 searches by arm B in replicate 1, which voids its claim (above).
   - **Lesson:** a known open channel on a spend-once set must be closed and re-registered before the spend, even at the cost of a re-review. An audit run after the spend can only tell you the set is gone.
+- **C2-MCP** (10-18): codex also loads a curated Cloudflare plugin (an MCP server) and local skills, despite `--ignore-user-config`.
+  - The server needs OAuth and never connected, so the coder's rare `list_mcp_resources` calls returned nothing.
+  - Counts: 7 in about 5.7k dev transcripts; 3 of 1,240 in look 1, all in X; 0 in confirmation-2's replicate 1.
+  - Look 1's gate still passes with those 3 tuples imputed as fails (a one-bit check).
+  - About 12k chars of codex-injected skill and multi-agent context precede every prompt, the same in every arm.
+  - No recorded result is affected. The fix is an empty `CODEX_HOME`, a feature allowlist and structured-event detection.
 
 ## Claims and scope
 

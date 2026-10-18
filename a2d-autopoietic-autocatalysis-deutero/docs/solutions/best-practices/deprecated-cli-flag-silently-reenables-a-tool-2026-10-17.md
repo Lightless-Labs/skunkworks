@@ -36,3 +36,13 @@ root_cause: cli_upgrade_deprecated_the_disable_flag_and_turned_the_tool_on_by_de
 - **When the registered instrument is frozen, amend by tightening only.**
   - Add a pre-registered, count-only audit where any hit means IntegrityReview, and fix the instrument after the decision.
   - A tightening can only remove a claim, so the existing reviews stand. A loosening would need a re-review.
+
+## Second instance (2026-10-18, LOG C2-MCP): plugins load despite `--ignore-user-config`
+- **What it was:** codex-cli 0.162.0 loads plugins by default. A cached curated plugin declared a Cloudflare MCP server, and in 7 of about 5.7k dev transcripts the coder called the built-in `list_mcp_resources`.
+  - The server needed OAuth and never connected, so nothing flowed.
+  - Local skills (about 9.9k chars) and multi-agent role messages are also injected ahead of every prompt.
+- **Lesson:**
+  - `--ignore-user-config` drops `config.toml`, not the rest of `CODEX_HOME`: plugins, skills, memories, `AGENTS.md` and hooks still load.
+  - Isolate with a dedicated empty `CODEX_HOME` holding only auth, and disable features by allowlist.
+  - Detect tool use from the structured `--json` events (`mcp_tool_call` included), not by grepping for one marker per known tool.
+  - Read the model-visible input (`codex debug prompt-input`) for every lane before trusting "the prompt is all it sees".
