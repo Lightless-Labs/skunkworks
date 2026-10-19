@@ -883,22 +883,25 @@ mod tests {
         assert!(!args.iter().any(|a| a == "web_search_request"));
     }
 
-    /// Live: one real Luna call through the provider (run with `--ignored`).
+    /// Live: one real call per lane (Luna coder, Sol judge) through the provider: the
+    /// negative control for the positive controls below (run with `--ignored`).
     #[test]
     #[ignore]
     fn live_codex_call_returns_text_with_zero_tool_events() {
-        let provider = CliProvider::codex("gpt-6-luna", Some("low"));
-        let request = InvocationRequest {
-            enzyme_id: a2d_core::types::EnzymeId::from("coder"),
-            system: "Reply with exactly one word.".to_string(),
-            prompt: "Reply with the single word PONG.".to_string(),
-            max_tokens: 10,
-        };
-        let response = provider.invoke(&request).expect("live codex call");
-        assert_eq!(response.text.trim(), "PONG");
-        let transcript = response.transcript.expect("transcript");
-        assert_eq!(codex_tool_calls(&transcript), 0, "{transcript}");
-        assert!(response.usage.total() > 0);
+        for model in ["gpt-6-luna", "gpt-6.1-sol"] {
+            let provider = CliProvider::codex(model, Some("low"));
+            let request = InvocationRequest {
+                enzyme_id: a2d_core::types::EnzymeId::from("coder"),
+                system: "Reply with exactly one word.".to_string(),
+                prompt: "Reply with the single word PONG.".to_string(),
+                max_tokens: 10,
+            };
+            let response = provider.invoke(&request).expect("live codex call");
+            assert_eq!(response.text.trim(), "PONG", "{model}");
+            let transcript = response.transcript.expect("transcript");
+            assert_eq!(codex_tool_calls(&transcript), 0, "{model}: {transcript}");
+            assert!(response.usage.total() > 0);
+        }
     }
 
     /// Live: a real Luna call killed at a short timeout leaves its partial transcript,
@@ -923,6 +926,63 @@ mod tests {
         let transcript = take_failed_call_transcript().expect("partial transcript");
         assert!(transcript.contains(CODEX_STDERR_MARKER));
         assert_eq!(codex_tool_calls_failed(&transcript), 0, "{transcript}");
+    }
+
+    /// Live positive controls (confirmation-3 §0.4, step 3): with one tool switched back
+    /// on, a call asked to use it must show up in `codex_tool_calls`, on both lanes (Luna
+    /// coder, Sol judge). The negative control is `live_codex_call_returns_text_with_zero_tool_events`.
+    /// Run alone: `cargo test -p a2d-providers live_codex_positive_controls -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_codex_positive_controls_count_each_tool_kind() {
+        let kinds: [(&str, &str, &str); 2] = [
+            ("shell", "shell_tool", "Run the shell command `echo probe-ok` and then reply with its output."),
+            ("web", "", "Use web search to find the URL of the Rust programming language's official website, then reply with it."),
+        ];
+        for (model, effort) in [("gpt-6-luna", "low"), ("gpt-6.1-sol", "low")] {
+            for (kind, feature, prompt) in kinds {
+                let base = CliProvider::codex(model, Some(effort));
+                let provider = CliProvider {
+                    name: base.name.clone(),
+                    command: base.command.clone(),
+                    output_parser: Box::new(|output: &str| (output.to_string(), None)),
+                    args_builder: Box::new(move |req: &InvocationRequest| {
+                        let mut args = (base.args_builder)(req);
+                        if !feature.is_empty() {
+                            // drop "--disable <feature>" and its unified-exec twin
+                            let mut i = 0;
+                            while i + 1 < args.len() {
+                                if args[i] == "--disable" && (args[i + 1] == feature || args[i + 1] == "unified_exec") {
+                                    args.drain(i..i + 2);
+                                } else {
+                                    i += 1;
+                                }
+                            }
+                        } else {
+                            for a in args.iter_mut() {
+                                if a == "web_search=\"disabled\"" {
+                                    *a = "web_search=\"live\"".to_string();
+                                }
+                            }
+                        }
+                        args
+                    }),
+                };
+                let request = InvocationRequest {
+                    enzyme_id: a2d_core::types::EnzymeId::from("coder"),
+                    system: String::new(),
+                    prompt: prompt.to_string(),
+                    max_tokens: 10,
+                };
+                let transcript = match provider.invoke(&request) {
+                    Ok(response) => response.transcript.expect("transcript"),
+                    Err(error) => take_failed_call_transcript().unwrap_or_else(|| panic!("{model} {kind}: {error}")),
+                };
+                let n = codex_tool_calls(&transcript);
+                eprintln!("positive control {model} {kind}: {n} tool events");
+                assert!(n >= 1, "{model} {kind}: the detector saw no tool event");
+            }
+        }
     }
 
     #[test]
