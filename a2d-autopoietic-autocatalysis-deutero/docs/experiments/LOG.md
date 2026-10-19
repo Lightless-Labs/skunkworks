@@ -1612,3 +1612,8 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - Free space is 9.9 GB against replicate 1's 80 MB run dir, so a full disk is not a risk.
   - L09 fires as registered. It is descriptive only (confirmation-2 is spent as IntegrityReview), so slow sandbox compiles cost wall clock but no claim.
   - Any oracle timeouts or voids in replicate 2 are attributed to this host state.
+- **Confirmation-2 replicate 2** (L09): generated 00:06–05:53 UTC 10-19. That is 5 h 47 m, against replicate 1's 2 h 11 m, and the slowdown is the host stall.
+  - 1,617 invocations (D 191, B 720, X:frozen 706), against replicate 1's 1,618. No submission is void in either replicate.
+  - **L10 web audit:** 0 web-search events in every arm. However, 11 invocations have no transcript (B 2, D 1, X-frozen 8; replicate 1 had 0), so they are unaudited. Descriptive only: the set is already IntegrityReview from replicate 1.
+  - The attempt record and the audit are committed (9b5ca3c9), and so are the content-free manifests of both replicates (c6c61814).
+  - `confirm-score` runs detached and sealed from 05:58 UTC. Its stdout goes to the holdout runs dir. A wrapper moves `decision.json` and `pooled-summary.json` unread to `c2-confirm2-decision/` and keeps only their sha256 and the exit code.
