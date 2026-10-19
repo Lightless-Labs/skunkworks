@@ -1620,3 +1620,9 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
 - **Confirmation-2 scored and sealed** (06:11 UTC 10-19, rc 0, 14 min): `decision.json` and `pooled-summary.json` are unread in the holdout dir. Their sha256s are pinned in `runs/c2-confirm2/sealed-sha256.txt` (7e4735fd), and they are read only after confirmation-3's decision.
   - `confirm-score` now refuses once that file exists (70b5c85c). Without the guard, a re-run would re-pool and write the decision back into the repo.
   - **The freeze window is over** (`crates/`, Cargo files, eval.py's CONFIRM2 section). `c2-web-provider` is still merged only after the batch's confirmation step (≥ 10-22), so the provider doesn't change between an experiment's stages.
+- **Profile compile timing, measured** (06:20 UTC 10-19): paired and interleaved (S U U S S U), using fresh workdirs under `~/.a2d-holdout-c3probe` and the fixture's `check.sh reference.rs hidden_tests.rs`. Sandboxed runs took 43.1 / 1.1 / 1.1 s and unsandboxed runs 24.1 / 0.9 / 0.7 s.
+  - In `/private/tmp` the times were 10.9 / 0.6 / 0.6 s sandboxed and 3.4 / 0.4 / 1.0 s unsandboxed.
+  - **The acceptance bar is met:** the first run took ≤ 90 s and warm runs ≤ 5 s. The profile adds about 20 s to a cold start and nothing measurable when warm.
+  - Yesterday's 552 s / 179 s were the host stall, not the profile. `fseventsd` is still hot (about 80% CPU), but file creation has recovered.
+  - The confirmation-3 suite passes 21/21 (987 s), including `test_check_sh_compiles_under_sandbox` (24 s).
+- **Confirmation-3 selection started** (06:45 UTC, `detached.sh c3_select.py`). The prerequisites hold: replicate 2's web audit is at HEAD and the pipeline is clean. Authoring follows in idle queue windows.
