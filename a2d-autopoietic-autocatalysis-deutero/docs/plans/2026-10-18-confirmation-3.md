@@ -320,7 +320,10 @@ Sol re-checked the round-2 pipeline (d50bee58): "No — resolve these startup bl
     - Every call's CODEX_HOME sits under the holdout dir (`A2D_CODEX_HOME_ROOT`, branch 6112c307).
     - The probe runs are ledgers under `holdout/runs/c2-*`, so the cap counts them. A probe group is recorded before launch, and one without a go holds the UTC day.
     - Live: one Luna probe took 15.9 s, with no leak, 0 tool events and no homes left behind.
-  - **B7, controls:** pending.
+  - **B7, controls.** Fixed (branch 70be19ac). The inventory of exec item types comes from the binary. Live positive controls run on every lane in `A2D_CONTROL_LANES` for shell, web search, file change, MCP (a stdio echo server), sub-agent and error, each showing its item type.
+    - On 10-19, on Luna low and Sol medium: all present, plus the negative control.
+    - `todo_list` could not be triggered in exec mode even with every feature on; the allowlist covers it.
+    - `c3_controls.py` records the run (`runs/c2-confirm3/controls.json`). The generator requires that record, complete, for the coder lane and every registered lane, at the registered provider commit and codex fingerprint.
   - **B8, registration text:** states the imputed CI guards.
   - **B9, repairs.** A hidden-test repair may change or remove only the tests judged UNDERDETERMINED; the preamble and every other test stay byte-identical, and nothing is added. A whole-task (`*`) verdict allows only `task.json`.
 

@@ -72,9 +72,13 @@ FIXED_DISCLOSURES = [
     "best-case RULED OUT guard lowers P(RULED OUT | 0) below 0.91.",
     "Latency go/no-go probes are model calls (3 per spend attempt) made before the attempt record; they count "
     "toward the daily cap.",
-    "Launch isolation for a replicate covers what applies to a no-tool run: no codex context in any ancestor of "
-    "the temp root, an auth-only CODEX_HOME per call (provider), the codex fingerprint. The canary read-deny and "
-    "CODEX_HOME-under-holdout checks are authoring-job checks: replicate calls run no tools.",
+    "Launch isolation before each replicate (§0.10): no codex context in any ancestor of the temp root; every "
+    "call's auth-only CODEX_HOME under the holdout dir (A2D_CODEX_HOME_ROOT); a canary preflight through the "
+    "real provider on every lane (the secret in no response, 0 tool events); the codex fingerprint.",
+    "Detector inventory (codex 0.162 exec item types): command_execution, file_change, mcp_tool_call, web_search, "
+    "collab_tool_call and error have live positive controls on every lane (controls.json); todo_list could not be "
+    "triggered in exec mode even with every feature on and is covered by the allowlist only; image tools have no "
+    "exec item type and are disabled by feature flags.",
     "Exposure policy: no confirmation-3 content was shown to any proposer, harness or operator. Task content "
     "exists only under the holdout dir; only counts, opaque ids and gateway booleans left it (diagnostics of "
     "2026-10-19 printed fixed vocabularies only). A task found exposed is excluded before the hash; none was.",
@@ -173,6 +177,23 @@ def _certified(tasks):
     return (c3_audit.clean_suite(tasks) and all("r1" in audit.get(t, {}) for t in tasks)
             and all(c3_audit.needs(audit, adj, t) is None for t in tasks)
             and not c3_adjudicate.due(audit, adj, tasks) and not (excluded & set(tasks)))
+
+
+CONTROLS = c3.DIR / "controls.json"
+
+
+def controls_ok(reg):
+    """The live detector controls (c3_controls.py) cover the coder lane and every registered lane,
+    are complete (negative 0 events; shell, web, file, MCP, sub-agent and error each detected),
+    ran on a checkout containing the registered provider commit, with the registered codex."""
+    if not CONTROLS.exists() or not committed(CONTROLS) or not reg.get("provider_commit"):
+        return False
+    rec = json.loads(CONTROLS.read_text())
+    needed = {f"{reg['model']}:{reg['effort']}"} | set(reg["lanes"].values())
+    head = rec.get("provider_checkout_head") or ""
+    return (rec.get("complete") is True and needed <= set(rec.get("lanes", []))
+            and bool(head) and not c3.git("merge-base", "--is-ancestor", reg["provider_commit"], head)[0]
+            and (rec.get("codex") or {}).get("files") == reg.get("codex_files"))
 
 
 def provider_commit():
@@ -293,6 +314,7 @@ def main():
         (f">= {MIN_FAMILIES} families", reg["families"] < MIN_FAMILIES),
         ("4 tasks per family", len(reg["tasks"]) != 4 * reg["families"]),
         ("certification", not certified(reg["tasks"])),
+        ("live detector controls on every lane (c3_controls.py)", not controls_ok(reg)),
     ) if bad]
     if problems:
         sys.exit("not registrable: " + ", ".join(problems))
