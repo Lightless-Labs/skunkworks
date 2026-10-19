@@ -1608,3 +1608,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - So the profile's healthy-host compile time is still **unmeasured**. The acceptance bar (first ≤ ~90 s, second ≤ 5 s) is checked before selection starts, on a host with free disk.
   - Selection and authoring do not start on a degraded host.
   - L09 (replicate 2, ≥ 00:05 UTC 10-19) writes into `~/.a2d-holdout/runs`. Free space is checked against replicate 1's run size before it fires, and an abort from a full disk or a stall would be attributable to the host (this note precedes the line).
+- **Pre-L09 host check** (23:55 UTC 10-18): the sweep is gone, but `fseventsd` is still at 90% CPU and 5.9 GB RSS. Swap is 6.5 GB of 8 GB, and git, rg and Python processes sit in `U`.
+  - Free space is 9.9 GB against replicate 1's 80 MB run dir, so a full disk is not a risk.
+  - L09 fires as registered. It is descriptive only (confirmation-2 is spent as IntegrityReview), so slow sandbox compiles cost wall clock but no claim.
+  - Any oracle timeouts or voids in replicate 2 are attributed to this host state.
