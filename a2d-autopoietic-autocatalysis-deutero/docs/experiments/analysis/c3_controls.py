@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT / "nano"))
 import confirm3 as c3  # noqa: E402
 
 KINDS = ("shell", "web", "file", "mcp", "collab", "error")
-LINE = re.compile(r"^positive control (\S+):(\S+) (\w+): (\w+) present (true|false), (\d+) tool events$")
+LINE = re.compile(r"^positive control (\S+):(\S+) (\w+): (\w+) present (true|false), (\d+) tool events(?:, (\d+) attempts)?$")
 
 
 def cargo(checkout, test, lanes):
@@ -47,9 +47,10 @@ def main():
     for line in text.splitlines():
         m = LINE.match(line.strip())
         if m:
-            model, effort, kind, item, present, n = m.groups()
+            model, effort, kind, item, present, n, attempts = m.groups()
             positive.setdefault(f"codex/{model}:{effort}", {})[kind] = {"item": item, "present": present == "true",
-                                                                         "events": int(n)}
+                                                                         "events": int(n),
+                                                                         "attempts": int(attempts or 1)}
     commit = subprocess.run(["git", "-C", str(args.checkout), "rev-parse", "HEAD"], capture_output=True,
                             text=True).stdout.strip()
     record = {"utc": datetime.datetime.now(datetime.timezone.utc).isoformat(), "provider_checkout_head": commit,
