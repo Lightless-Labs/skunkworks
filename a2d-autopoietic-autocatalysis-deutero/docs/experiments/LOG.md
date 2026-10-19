@@ -1684,3 +1684,7 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - inv03 is the synthesis call (13.8k chars): the task, the public tests, then "Earlier candidate drafts", which holds the three drafts with their public results only. It asks for one solution that uses the drafts as material and keeps the exact API.
   - inv04 is E002's unchanged Sol judge over the candidate files.
   - No hidden content: "hidden" appears only in the standard boilerplate and judge wording. The design matches the hypothesis.
+- **Early review of the confirmation-3 runner** (09:20 UTC 10-19, before any registration).
+  - `docs/experiments/analysis/c3_review.py` builds a copies-only packet: the plan, the runner and its tests, the generator, the pipeline README, the provider diff and the LOG's confirmation-3 entries.
+  - Codex Sol (high, web disabled) reviews it from the packet dir. A fresh Claude subagent reviews a separate copy, so the two are independent.
+  - Purpose: find runner and scoring defects early. The registration itself gets its own full review once `registration.json` exists (§0.6 step 6).
