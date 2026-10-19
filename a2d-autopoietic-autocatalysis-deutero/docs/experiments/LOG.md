@@ -1662,3 +1662,19 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - With one tool switched back on, a call asked to use it shows ≥ 1 tool event in the provider's detector: Luna shell 2, Luna web search 2, Sol shell 2, Sol web search 2.
   - The provider as configured shows 0 tool events on a PONG call on both lanes.
   - So the detector works on both lanes, and a run with 0 events is informative. 6 live calls (3 Luna, 3 Sol); branch head f06dc9fb.
+
+### C2-LOOK2 — conditional dev-holdout look of the promoted batch keep  [registered 2026-10-19 ~09:30 UTC, before any batch confirmation]
+- **Why:** plan 2026-10-18-confirmation-3 §0.1. The confirmation-3 candidate is the batch winner iff `confirm_best` promotes a keep and that keep passes **exactly one** dev-holdout look by T = 2026-10-23 23:59 UTC; otherwise it is E002. No queue line ran that look, so a promotion would have silently defaulted to E002.
+- **Trigger:** `nano/look_if_promoted.py E005 E006 E007 E008 E009 E010`, queued at the end (after L37 on 10-22, then again after 00:05 UTC 10-23). It runs the look only if all of these hold:
+  - a batch keep was promoted (a confirm-stage keep in `results.tsv`);
+  - `nano/harness.py` is that keep's candidate snapshot;
+  - look 2 was never attempted (no `~/.a2d-holdout/runs/c2-look2`);
+  - the time is before T.
+  Otherwise it prints why.
+- **Command:** `python3 -I nano/eval.py look --n 2 --registered-at <this commit> --seed 6262 --jobs 8`. That is look 1's protocol unchanged: D vs X:inc on the dev-holdout split, k = 5, r = 2, max 3,000 invocations; out `~/.a2d-holdout/runs/c2-look2`.
+- **Read discipline and gate:** exactly look 1's.
+  - Only `gate.json` (valid, PASS/FAIL, n, spend) reaches the repo.
+  - PASS ⇔ valid and X:inc − D all-pass ≥ +10 pp with family-bootstrap CI low > 0.
+  - **PASS:** the promoted keep is the confirmation-3 candidate, frozen by file hash. **FAIL, failed run or past T:** E002.
+- **Instrument:** the look runs under this registration's controller, so the provider merge (`c2-web-provider`) waits until look 2 is done or T has passed. The controller refuses a run whose crates changed since `--registered-at`.
+- **Budget:** about 1.25k Luna + 0.2k Sol (look 1: 1,240 invocations). The worst-case cap check is 2,000, and a cap deferral is not an attempt.
