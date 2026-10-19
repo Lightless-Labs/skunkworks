@@ -1706,3 +1706,16 @@ E05 descriptive diagnostic, computed after the tie-break commit 007c7c7:
   - **Round 3** (combined Sol and fresh-Claude re-review) launched at 11:50.
 - **Authoring:** pass 2 finished at 11:43 with **31 of 36 families verified**. The retry pass for c3-f01, c3-f06, c3-f10, c3-f18 and c3-f27 started at 11:44 on HEAD, which carries the codex-home and mutants-check fixes.
 - **E006** is discarded (above). E008's screen is at 55 of 68 tasks per arm.
+- **Early runner reviews, round 3** (11:50–12:20 UTC). Sol: **No**, 7 blockers. Fresh Claude: **Yes** once 5 blockers are fixed. **All fixed** (5c160e, 7f519b; provider branch bc6922f7, pinned as `PROVIDER_COMMIT`; dispositions in plan §0.13):
+  - repairs are requirements-only;
+  - the audit is bound to the instrument, isolated and reserved (canary preflight, holdout-local homes, per-tuple voids, codex bracket, durable reservations, lock inheritance);
+  - controller classes must agree with the claim;
+  - `a2d` is built from the bound source;
+  - a missing bracket voids its replicate;
+  - every lane needs canary evidence;
+  - the drain check verifies the relocated sessions.
+  - Pipeline suite 23/23.
+- **Confirmation-3 authoring complete** (12:34 UTC): **36 of 36 families verified**. The 5 retries all passed on their second attempt.
+- **Assembly** (12:48): 36 families, 144 tasks, 0 missing.
+- **Similarity** (12:51): 144 tasks against 1,035 prior tasks; max similarity 0.04, max containment 0.17, **0 conflicts**.
+- **Validation** running from 12:54.
