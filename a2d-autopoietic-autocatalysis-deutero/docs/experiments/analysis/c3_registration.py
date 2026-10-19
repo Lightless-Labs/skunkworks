@@ -33,6 +33,9 @@ E002_SHA = "e772bd6e99f6483b8a01f1e6e3910a540b5a1d3898ba9b1b46c13e172acf2f09"
 LOOK2_GATE = ROOT / "runs" / "c2-look2" / "gate.json"
 LOOK2_SNAPSHOT = ROOT / "runs" / "c2-look2" / "harness.py"
 LOOK2_RUN = c3.HOLDOUT / "runs" / "c2-look2"
+LOOK2_MANIFEST = ROOT / "runs" / "c2-look2" / "manifest.json"
+LOOK2_REGISTERED_AT = ROOT / "runs" / "c2-look2-registration" / "registered_at.txt"
+BATCH = ("E005", "E006", "E007", "E008", "E009", "E010")
 T = datetime.datetime(2026, 10, 23, 23, 59, tzinfo=datetime.timezone.utc)
 MIN_FAMILIES = 30
 
@@ -87,28 +90,55 @@ def lanes_of(path):
     return lanes
 
 
-def look2_completed_by_t():
-    """(PASS and completed by T, why): the look's last summary record time, metadata only."""
+def committed(path):
+    rel = str(path.relative_to(ROOT))
+    return not c3.git("ls-files", "--error-unmatch", rel)[0] and not c3.git("diff", "--quiet", "HEAD", "--", rel)[0]
+
+
+def promoted():
+    """Batch ids promoted by confirm_best (a confirm-stage keep in results.tsv)."""
+    lines = (ROOT / "nano" / "results.tsv").read_text().splitlines()
+    rows = [dict(zip(lines[0].split("\t"), x.split("\t"))) for x in lines[1:] if x.strip()]
+    return sorted({r["id"] for r in rows if r["id"] in BATCH and r["stage"] == "confirm" and r["decision"] == "keep"})
+
+
+def look2_result():
+    """None while look 2 has no committed result; else (PASS by T, why), with its provenance
+    checked: exactly one promoted keep, the look run at its registration commit on that keep's
+    evaluated snapshot, and the gate committed (content-free evidence only)."""
     if not LOOK2_GATE.exists():
-        return False, "no look-2 gate"
+        return None
+    keeps = promoted()
+    if len(keeps) != 1:
+        sys.exit(f"look 2 exists but {len(keeps)} promoted keeps")
+    manifest = json.loads(LOOK2_MANIFEST.read_text())
+    snapshot_sha = c3.sha256(LOOK2_SNAPSHOT)
+    if not (committed(LOOK2_GATE) and committed(LOOK2_MANIFEST) and committed(LOOK2_SNAPSHOT)):
+        sys.exit("look 2's gate, manifest and snapshot must be committed and unmodified")
+    if manifest.get("registered_at") != LOOK2_REGISTERED_AT.read_text().strip():
+        sys.exit("look 2 did not run at its registration commit")
+    if not (manifest.get("incumbent_sha") == snapshot_sha == c3.sha256(ROOT / "runs" / f"c2-{keeps[0]}" / "candidate.py")):
+        sys.exit("look 2's snapshot is not the promoted keep")
     gate = json.loads(LOOK2_GATE.read_text())
-    if not (gate.get("valid") is True and gate.get("gate") == "PASS"):
-        return False, "look 2 not a valid PASS"
     led = LOOK2_RUN / "ledger.jsonl"
     stamps = [json.loads(x).get("ts_ms", 0) for x in led.read_text().splitlines() if '"summary"' in x] if led.exists() else []
-    if not stamps or datetime.datetime.fromtimestamp(max(stamps) / 1000, datetime.timezone.utc) > T:
-        return False, "look 2 not completed by T"
-    return True, "look 2 PASS by T"
+    on_time = bool(stamps) and datetime.datetime.fromtimestamp(max(stamps) / 1000, datetime.timezone.utc) <= T
+    if gate.get("valid") is True and gate.get("gate") == "PASS" and on_time:
+        return True, f"look 2 PASS by T for {keeps[0]}"
+    return False, f"look 2 {'not on time' if not on_time else 'not a valid PASS'} for {keeps[0]}"
 
 
-def candidate():
-    """§0.1, mechanically: (path, why)."""
-    ok, why = look2_completed_by_t()
-    if ok:
-        return LOOK2_SNAPSHOT, why
+def candidate(at=None):
+    """§0.1, mechanically: (path, why). Fixed at the look's result, or at T; unresolved before."""
+    result = look2_result()
+    at = at or datetime.datetime.now(datetime.timezone.utc)
+    if result is None and at <= T:
+        sys.exit("the candidate is unresolved until T (2026-10-23 23:59 UTC) or a look-2 result")
+    if result and result[0]:
+        return LOOK2_SNAPSHOT, result[1]
     if c3.sha256(E002) != E002_SHA:
         sys.exit("E002's frozen file changed")
-    return E002, why + "; candidate E002"
+    return E002, (result[1] if result else "no look-2 result by T") + "; candidate E002"
 
 
 def certified(tasks):
@@ -125,6 +155,12 @@ def _certified(tasks):
     import c3_adjudicate
     import c3_audit
     from c3lib import RECORDS, load_json
+    active = load_json(RECORDS / "active.json", {}).get("active")
+    if not active or {t.rsplit("-l", 1)[0] for t in tasks} != set(active):
+        return False                    # every active family, and nothing else, is in the suite
+    for fid in active:
+        if not load_json(RECORDS / f"author-{fid}" / "status.json", {}).get("done"):
+            return False                # an unfinished family: authoring, then assembly, first
     audit = load_json(RECORDS / "audit.json", {})
     adj = load_json(RECORDS / "adjudication.json", {})
     excluded = set(load_json(RECORDS / "excluded.json", {"tasks": []})["tasks"])
@@ -149,9 +185,17 @@ def build(args, suite):
     controller = c3.git("log", "-1", "--format=%h %cI", "--", "crates", "Cargo.toml", "Cargo.lock")[1].strip()
     path, why = args.candidate_path, args.candidate_why
     families = {t.rsplit("-l", 1)[0] for t in tasks}
-    shortfall = [] if len(families) >= 36 else [
+    events = []
+    try:
+        from c3lib import RECORDS, load_json
+        events = load_json(RECORDS / "active.json", {}).get("events", [])
+    except (OSError, ValueError):
+        pass
+    shortfall = ([f"Assembly replaced or dropped {len(events)} active families by recorded events "
+                  f"(authoring exhaustion or validation caps, §0.11 and the 10-18 addendum)."] if events else []) + \
+        ([] if len(families) >= 36 else [
         f"{len(families)} families (< 36 registered in §0.3): power is below the §0.3 statement; recompute with "
-        f"c3_power.py before the review."]
+        f"c3_power.py before the review."])
     return {
         "experiment": "C2-CONFIRM3",
         "protocol": "plan docs/plans/2026-10-18-confirmation-3.md §0 (copied, not reopened; §0.10 allows the review only "
@@ -228,7 +272,8 @@ def main():
     args = ap.parse_args()
     if args.suite != c3.SUITE and not args.dry_run:
         sys.exit("--suite is for dry runs only")
-    args.candidate_path, args.candidate_why = candidate()
+    args.candidate_path, args.candidate_why = candidate(
+        datetime.datetime.max.replace(tzinfo=datetime.timezone.utc) if args.dry_run else None)
     reg = build(args, args.suite)
     if args.dry_run:
         print(json.dumps({**reg, "tasks": len(reg["tasks"])}, indent=1))
