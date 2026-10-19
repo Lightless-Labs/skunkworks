@@ -1036,12 +1036,18 @@ mod tests {
                     .invoke(&request)
                     .unwrap_or_else(|e| panic!("{model} {kind}: the control call failed: {e}"));
                 let transcript = response.transcript.expect("transcript");
-                let marker = format!("\"type\":\"{item}\"");
+                // Only the event stream counts (not stderr), and the intended item type itself.
+                let events = transcript.split(CODEX_STDERR_MARKER).next().unwrap_or("");
+                let own = events
+                    .lines()
+                    .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                    .filter(|e| e.get("type").and_then(|t| t.as_str()).is_some_and(|t| t.starts_with("item.")))
+                    .filter(|e| e.get("item").and_then(|i| i.get("type")).and_then(|t| t.as_str()) == Some(*item))
+                    .count();
                 let n = codex_tool_calls(&transcript);
-                eprintln!("positive control {model}:{effort} {kind}: {item} present {}, {n} tool events",
-                          transcript.contains(&marker));
-                assert!(transcript.contains(&marker), "{model} {kind}: no {item} item");
-                assert!(n >= 1, "{model} {kind}: the detector saw no tool event");
+                eprintln!("positive control {model}:{effort} {kind}: {item} present {}, {n} tool events", own >= 1);
+                assert!(own >= 1, "{model} {kind}: no {item} item in the event stream");
+                assert!(n >= own, "{model} {kind}: the detector did not count the {item} items");
             }
         }
     }
