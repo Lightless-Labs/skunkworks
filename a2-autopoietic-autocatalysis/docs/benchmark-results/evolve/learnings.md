@@ -33,6 +33,11 @@
 ## Working hypotheses for the next genome, if nothing is promoted
 
 - **The search space may be too narrow to clear the bar.** The genome controls only the prompt, the base and the effort of up to 3 calls to a fixed `a2ctl` harness. Detection needs about +1 logit per task. Changes inside this space, such as call sequencing or feedback wording, may all be smaller than that. A wider genome would let the researcher vary the agent's own instructions and tool use, not only the call sequence.
+- **The agent cannot run tests inside a call** (verified 2026-10-19 from `bench/evolve/episode.py` and `bench/e1/tasks.py`):
+  - each task's venv lives under the evaluator's private dir, which every agent call is denied (`--deny-read`);
+  - network egress is allowlisted to the model provider only, so the agent cannot install dependencies.
+
+  All test feedback therefore arrives between calls, through the policy, and the 3-call budget allows at most 2 rounds of it. The E1 a2-full arm has the same limit. This may be why changing the call sequence moves so little. The strongest candidate for the next genome is an **in-call visible-verifier tool**: a sandboxed, evaluator-owned command the agent can run while it works, returning the same scrubbed visible results the policy sees. That is an evaluator change, so it would need its own gate, and it applies to the next campaign, not to this one.
 - **Target where the headroom is.** Half the pool never passes the visible tests. Approaches that change what the agent does inside a call, such as reproducing the failure first or running the visible tests before finishing, are more likely to move these tasks than approaches that only reorder calls.
 
 ## Design-change rule check
